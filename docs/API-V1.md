@@ -2,7 +2,7 @@
 
 API 前缀为 `/api/ext/v1`。路由由 [api.go](../internal/api.go) 定义，字段模型见 [models.go](../internal/models.go)，完整字段契约见 [openapi.json](../internal/openapi.json)。服务通过 `/openapi.json` 提供同一契约，通过 `/docs` 提供交互文档。本文说明访问范围、分页、任务和错误语义。
 
-本版本提供笔记读取与同步管理。笔记写入、回顾、检索、AI 和扩展 MCP 按[路线图](ROADMAP.md)接入。
+本版本提供笔记读取、创建与同步管理。回顾、检索、AI 和扩展 MCP 按[路线图](ROADMAP.md)接入。
 
 ## 资源与身份
 
@@ -15,10 +15,11 @@ API 前缀为 `/api/ext/v1`。路由由 [api.go](../internal/api.go) 定义，�
 | Scope | 允许操作 |
 | --- | --- |
 | `notes:read` | 读取身份、笔记列表和单条笔记 |
+| `notes:write` | 创建私有笔记与重放创建请求 |
 | `sync:read` | 读取同步状态和任务结果 |
 | `sync:write` | 请求增量同步或全量修复 |
 
-只读凭据不能触发同步。笔记创建、修改、附件上传和消息平台操作在后续接口中提供。
+只读凭据不能创建笔记或触发同步，写入请求返回 403 `FORBIDDEN`。笔记修改、附件上传和消息平台操作在后续接口中提供。
 
 ## 路由
 
@@ -28,6 +29,7 @@ API 前缀为 `/api/ext/v1`。路由由 [api.go](../internal/api.go) 定义，�
 | GET | `/health/ready` | 无 | `ready` 或 `degraded` |
 | GET | `/api/ext/v1/me` | `notes:read` | 实例、账号、凭据名称、Scope、时区 |
 | GET | `/api/ext/v1/notes` | `notes:read` | 已索引笔记的分页结果，逐条复查来源 |
+| POST | `/api/ext/v1/notes` | `notes:write` | 首次成功 201；幂等重放成功 200，直接返回 `Note` |
 | GET | `/api/ext/v1/notes/{memo_id}` | `notes:read` | 直接复查并读取一条来源笔记 |
 | GET | `/api/ext/v1/sync` | `sync:read` | 水位、完整同步时间、来源状态、数量与任务统计 |
 | POST | `/api/ext/v1/sync` | `sync:write` | 202，返回持久任务 |
@@ -61,6 +63,40 @@ Authorization: Bearer <reader-token>
 附件数组沿用 Memos 返回的附件元数据。`source_hash` 包含正文、状态、标签、附件和关系等来源信息；正文摘要单独保存在索引中，供后续向量任务判断正文变化。
 
 来源身份或版本无法验证、Memos 连接失败时，读取接口返回 503。接口不使用旧缓存正文替代来源复查。
+
+## 创建笔记
+
+```http
+POST /api/ext/v1/notes
+Authorization: Bearer <operator-token>
+Idempotency-Key: capture-20261025-001
+Content-Type: application/json
+
+{"content":"记录一个想法。","tags":["工作/灵感","记录"]}
+```
+
+请求头 `Idempotency-Key` 必填，长度为 1 至 128 个字符，只允许 ASCII 字母、数字、`.`、`_`、`:` 和 `-`。每次独立创建使用新的键；同一创建操作的重试复用原键与原请求体。
+
+| 字段 | 必填 | 约束 |
+| --- | --- | --- |
+| `content` | 是 | 字符串，不能是空字符串或仅含空白 |
+| `tags` | 否 | 字符串数组，省略时为 `[]`，输入最多 20 项 |
+
+每个标签为 1 至 100 个 Unicode 字符。标签由一个或多个非空段组成，段之间用 `/` 分隔，每段只允许 Unicode 字母、Unicode 十进制数字、下划线和连字符。上标数字等其他数字形式不接受。标签不能包含 `#` 或空白，也不能以 `/` 开头或结尾，不能含连续 `/`。
+
+服务将标签去重并按字符串升序排序。规范化内容由原样保留的 `content` 和去重排序后的 `tags` 决定；省略 `tags` 与 `tags:[]` 等价，标签顺序或重复项的差异不构成内容冲突。非空标签生成 `#tag1 #tag2\n\n` 前缀并写入正文，使 Memos 按正文解析标签；空标签不生成前缀。原始正文与生成前缀合计的 UTF-8 编码长度不能超过 65536 字节。正文自身包含的标签也由 Memos 解析，层级标签还会包含父级，例如 `parent/child` 同时返回 `parent`。响应的 `tags` 以来源复查结果为准。
+
+只接受 `content` 和 `tags`，其他字段返回 422 `INVALID_ARGUMENT`。笔记固定创建为 `PRIVATE`，作者为绑定账号；`creator`、`visibility`、`attachments` 和 `state` 均不能通过该接口指定。
+
+### 幂等与来源复查
+
+首次请求成功返回 201，响应体直接使用已有 `Note` 模型。相同键与相同规范化内容重放成功返回 200，响应为从 Memos 复查的最新 `Note`，包含来源中的后续修改。同一键对应不同规范化内容返回 409 `IDEMPOTENCY_CONFLICT`。分配的来源资源发生冲突，或确认创建时 Memos 未完整保留请求标签，返回 409 `WRITE_CONFLICT`，调用方按原资源检查来源内容。
+
+调用 Memos 前，服务将幂等键、规范化内容摘要、分配的 `memoId` 和处理状态持久写入 `state.sqlite3`，不将笔记原文存入产品状态。发生超时、5xx 或响应不可信等无法确定写入结果的情况时，返回 503 `WRITE_OUTCOME_UNKNOWN`，且 `error.retryable=true`。调用方只用相同键与相同请求体重试；服务先按持久分配的 `memoId` 复查，必要时才使用同一 ID 创建，重试不会另行生成笔记 ID。
+
+已确认成功的来源笔记被删除后，同键重放返回 404 `SOURCE_NOT_FOUND`，不重建笔记。POST 返回笔记前及每次重放均验证来源身份，并从 Memos 复查作者与正文。身份或来源故障时返回错误，不输出旧正文；幂等记录不作为正文缓存。来源连接与身份错误沿用下表中的 503 错误。
+
+幂等记录随产品状态备份，服务重启后继续使用，索引重建保留记录。恢复快照只能恢复其中已有的幂等记录；快照生成后创建的记录需结合 Memos 原文核实，不能将旧请求直接视为尚未写入。
 
 ## 同步任务
 
@@ -109,9 +145,12 @@ Content-Type: application/json
 | 403 | `FORBIDDEN` | 检查凭据 Scope |
 | 404 | `SOURCE_NOT_FOUND`、`JOB_NOT_FOUND`、`NOT_FOUND` | 移除失效资源或重新开始查询 |
 | 405 | `METHOD_NOT_ALLOWED` | 检查方法和路由 |
+| 409 | `IDEMPOTENCY_CONFLICT` | 同一幂等键已对应其他规范化内容；独立创建使用新键 |
+| 409 | `WRITE_CONFLICT` | 检查来源资源冲突，不将冲突资源作为创建结果 |
 | 422 | `INVALID_ARGUMENT`、`INVALID_PAGE_TOKEN` | 修正参数，游标失效时重读第一页 |
 | 503 | `UPSTREAM_UNAVAILABLE`、`UPSTREAM_AUTH`、`IDENTITY_MISMATCH` | 检查来源连接与绑定 |
 | 503 | `UNSUPPORTED_UPSTREAM`、`UPSTREAM_PROTOCOL`、`UPSTREAM_REQUEST_REJECTED` | 检查 Memos 版本与适配层 |
+| 503 | `WRITE_OUTCOME_UNKNOWN` | `retryable=true`，仅用相同幂等键与请求体重试 |
 | 500 | `INTERNAL` | 通过请求标识和服务日志定位 |
 
 业务响应携带 `X-Request-ID` 和 `Cache-Control: no-store`。日志记录任务标识与错误代码，省略笔记正文、请求凭据和模型密钥。

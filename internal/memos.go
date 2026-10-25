@@ -18,6 +18,7 @@ type Source interface {
 	Identity(context.Context) (string, error)
 	Get(context.Context, string) (*Memo, error)
 	ListPage(context.Context, string, *int64, string) ([]Memo, string, error)
+	Create(context.Context, string, string) (*Memo, error)
 }
 
 type MemosClient struct {
@@ -37,15 +38,22 @@ func NewMemosClient(config MemosConfig) *MemosClient {
 func (m *MemosClient) Close() { m.client.CloseIdleConnections() }
 
 func (m *MemosClient) request(ctx context.Context, path string, query url.Values, target any) error {
+	return m.do(ctx, http.MethodGet, path, query, nil, target)
+}
+
+func (m *MemosClient) do(ctx context.Context, method, path string, query url.Values, body []byte, target any) error {
 	address := m.config.BaseURL + path
 	if len(query) > 0 {
 		address += "?" + query.Encode()
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, address, nil)
+	req, err := http.NewRequestWithContext(ctx, method, address, bytes.NewReader(body))
 	if err != nil {
 		return upstreamError("UPSTREAM_PROTOCOL", "Invalid Memos request")
 	}
 	req.Header.Set("Authorization", "Bearer "+m.config.Token)
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
 	response, err := m.client.Do(req)
 	if err != nil {
 		return upstreamError("UPSTREAM_UNAVAILABLE", "Memos is unavailable")
@@ -58,6 +66,8 @@ func (m *MemosClient) request(ctx context.Context, path string, query url.Values
 		return failure("SOURCE_NOT_FOUND", "Memo is unavailable", 404, false)
 	case response.StatusCode == 400:
 		return upstreamError("UPSTREAM_REQUEST_REJECTED", "Memos rejected the adapter request")
+	case response.StatusCode == 409:
+		return failure("UPSTREAM_RESOURCE_EXISTS", "The Memos resource already exists", 409, false)
 	case response.StatusCode >= 300:
 		return upstreamError("UPSTREAM_UNAVAILABLE", "Memos request failed")
 	}
@@ -74,6 +84,26 @@ func (m *MemosClient) request(ctx context.Context, path string, query url.Values
 		return upstreamError("UPSTREAM_PROTOCOL", "Memos returned invalid JSON")
 	}
 	return nil
+}
+
+func (m *MemosClient) Create(ctx context.Context, name, content string) (*Memo, error) {
+	if !memoPattern.MatchString(name) {
+		return nil, failure("INVALID_RESOURCE", "Invalid memo resource name", 422, false)
+	}
+	body, _ := json.Marshal(map[string]string{"content": content, "visibility": "PRIVATE"})
+	var raw map[string]any
+	if err := m.do(ctx, http.MethodPost, "/api/v1/memos",
+		url.Values{"memoId": {strings.TrimPrefix(name, "memos/")}}, body, &raw); err != nil {
+		return nil, err
+	}
+	memo, err := normalizeMemo(raw)
+	if err != nil {
+		return nil, err
+	}
+	if memo.Name != name || memo.Creator != m.config.User {
+		return nil, upstreamError("UPSTREAM_PROTOCOL", "Memos returned a different resource or author")
+	}
+	return &memo, nil
 }
 
 func (m *MemosClient) Identity(ctx context.Context) (string, error) {

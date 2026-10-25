@@ -21,12 +21,13 @@ type API struct {
 	Store      *Store
 	Source     Source
 	Worker     *SyncService
+	Records    *RecordService
 	generation string
 }
 
 func NewAPI(settings Settings, store *Store, source Source, worker *SyncService) (*API, error) {
 	generation, err := store.Generation()
-	return &API{settings, store, source, worker, generation}, err
+	return &API{settings, store, source, worker, NewRecordService(store, source), generation}, err
 }
 
 func (a *API) cursorContext() []string {
@@ -199,7 +200,16 @@ func (a *API) route(writer http.ResponseWriter, request *http.Request) (any, int
 	}
 	scope := ""
 	switch {
-	case path == "/api/ext/v1/me" || path == "/api/ext/v1/notes" ||
+	case path == "/api/ext/v1/notes":
+		switch method {
+		case "GET":
+			scope = "notes:read"
+		case "POST":
+			scope = "notes:write"
+		default:
+			return badMethod()
+		}
+	case path == "/api/ext/v1/me" ||
 		(strings.HasPrefix(path, "/api/ext/v1/notes/") && strings.Count(strings.TrimPrefix(path, "/api/ext/v1/notes/"), "/") == 0):
 		if method != "GET" {
 			return badMethod()
@@ -234,6 +244,13 @@ func (a *API) route(writer http.ResponseWriter, request *http.Request) (any, int
 		return map[string]any{"instance_id": a.Settings.Memos.InstanceID, "user": a.Settings.Memos.User,
 			"credential": access.Name, "scopes": access.Scopes, "timezone": a.Settings.Timezone, "api_version": "v1"}, 200, nil
 	case "/api/ext/v1/notes":
+		if method == "POST" {
+			var body CreateNote
+			if err := strictJSON(http.MaxBytesReader(writer, request.Body, 1024*1024), &body); err != nil {
+				return nil, 0, failure("INVALID_ARGUMENT", "Request parameters are invalid", 422, false)
+			}
+			return a.Records.Create(request.Context(), request.Header.Get("Idempotency-Key"), body)
+		}
 		return a.notes(request)
 	case "/api/ext/v1/sync":
 		if method == "GET" {

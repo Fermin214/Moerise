@@ -480,7 +480,7 @@ func TestConfigRejectsUnknownAndInvalidValues(t *testing.T) {
 		func(s *Settings) { s.Memos.BaseURL = "https://user:password@example.com" },
 		func(s *Settings) { s.Memos.User = "users/../other" },
 		func(s *Settings) { s.StateDir = s.IndexDir },
-		func(s *Settings) { s.AccessTokens[0].Scopes = []string{"notes:write"} },
+		func(s *Settings) { s.AccessTokens[0].Scopes = []string{"notes:delete"} },
 		func(s *Settings) { s.Sync.PollSeconds = 0 },
 	} {
 		var clone Settings

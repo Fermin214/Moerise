@@ -65,6 +65,10 @@ func wait(t *testing.T, label string, condition func() bool) {
 }
 
 func (h *harness) request(base, path, method, token string, body any) (map[string]any, int, error) {
+	return h.requestWithHeaders(base, path, method, token, body, nil)
+}
+
+func (h *harness) requestWithHeaders(base, path, method, token string, body any, headers map[string]string) (map[string]any, int, error) {
 	var input io.Reader
 	if body != nil {
 		data, err := json.Marshal(body)
@@ -80,6 +84,9 @@ func (h *harness) request(base, path, method, token string, body any) (map[strin
 	request.Header.Set("Content-Type", "application/json")
 	if token != "" {
 		request.Header.Set("Authorization", "Bearer "+token)
+	}
+	for key, value := range headers {
+		request.Header.Set(key, value)
 	}
 	response, err := h.client.Do(request)
 	if err != nil {
@@ -237,6 +244,11 @@ func (h *harness) allNotes(state string) []map[string]any {
 
 func newHarness(t *testing.T) *harness {
 	t.Helper()
+	return newHarnessWithUpstream(t, nil)
+}
+
+func newHarnessWithUpstream(t *testing.T, decorate func(string) string) *harness {
+	t.Helper()
 	root := t.TempDir()
 	name := "moerise-acceptance-" + randomToken()[:12]
 	memosListener, err := net.Listen("tcp", "127.0.0.1:0")
@@ -259,11 +271,14 @@ func newHarness(t *testing.T) *harness {
 	pat := h.call(h.memos, "/api/v1/"+user+"/personalAccessTokens", "POST", session["accessToken"].(string), map[string]any{"description": "Moerise acceptance", "expiresInDays": 0}, 200)["token"].(string)
 	s := moerise.DefaultSettings()
 	s.Memos.InstanceID, s.Memos.BaseURL, s.Memos.PublicURL = "acceptance-instance", h.memos, h.memos
+	if decorate != nil {
+		s.Memos.BaseURL = decorate(h.memos)
+	}
 	s.Memos.User, s.Memos.Token, s.Memos.PageSize = user, pat, 2
 	s.StateDir, s.IndexDir = filepath.Join(root, "state"), filepath.Join(root, "index")
 	s.Sync.PollSeconds, s.Sync.FullSeconds = 60, 300
 	h.reader, h.operator = randomToken(), randomToken()
-	s.AccessTokens = []moerise.AccessToken{{Name: "reader", Token: h.reader, Scopes: []string{"notes:read"}}, {Name: "operator", Token: h.operator, Scopes: []string{"notes:read", "sync:read", "sync:write"}}}
+	s.AccessTokens = []moerise.AccessToken{{Name: "reader", Token: h.reader, Scopes: []string{"notes:read"}}, {Name: "operator", Token: h.operator, Scopes: []string{"notes:read", "notes:write", "sync:read", "sync:write"}}}
 	s.CursorSecret = randomToken()
 	h.settings, h.upstream = s, pat
 	h.config = filepath.Join(root, "config.json")
