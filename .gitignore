@@ -1,0 +1,10 @@
+.local/
+.env
+.env.*
+!.env.example
+dist/
+build/
+/moerise
+/moerise.exe
+*.test
+coverage.out

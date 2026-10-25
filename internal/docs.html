@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <title>Moerise API</title>
+  <style>
+    :root{font-family:Georgia,"Noto Serif SC",serif;color:#18322d;background:#f2f4ef}
+    *{box-sizing:border-box}body{margin:0;background:radial-gradient(ellipse at top right,#dce9df,transparent 65%)}
+    main{max-width:1000px;margin:auto;padding:40px 24px}h1{font-size:36px;font-weight:500;margin:0 0 12px}
+    p{line-height:1.7}a{color:#17684e}.auth,details{background:#fff;border:1px solid #cfdbd2;border-radius:8px;padding:20px;margin:18px 0}
+    .auth{display:flex;gap:12px;align-items:center;flex-wrap:wrap}.auth label{flex:1;min-width:180px}
+    input,textarea,button{font:14px ui-monospace,monospace;border:1px solid #a9bdb0;border-radius:4px;padding:10px}
+    input,textarea{width:100%;background:#fbfcfa;color:#18322d}textarea{min-height:90px;resize:vertical}
+    button{background:#17684e;color:white;cursor:pointer}button:disabled{opacity:.5}
+    summary{cursor:pointer;font:15px ui-monospace,monospace;overflow-wrap:anywhere}.method{font-weight:bold;color:#17684e;margin-right:12px}
+    form{margin-top:20px}form label{display:block;margin:12px 0}label span{display:block;font-size:14px;margin-bottom:6px}
+    pre{background:#edf2ed;overflow:auto;max-height:480px;padding:16px;font:13px/1.6 ui-monospace,monospace;white-space:pre-wrap;overflow-wrap:anywhere}
+    .status{font-size:14px;color:#426454}footer{padding:16px 0;font-size:13px}
+    @media(max-width:600px){main{padding:24px 14px}.auth,details{padding:14px}h1{font-size:28px}}
+  </style>
+</head>
+<body>
+<main>
+  <h1>Moerise API <small id="version"></small></h1>
+  <p>使用独立的 Moerise Bearer 令牌调用接口。令牌仅保存在此页面内存中。</p>
+  <div class="auth">
+    <label><span>Bearer token</span><input id="token" type="password" autocomplete="off" spellcheck="false" placeholder="Moerise access token"></label>
+    <button id="authorize" type="button">Authorize</button><span class="status" id="auth-status"></span>
+  </div>
+  <p><a href="/openapi.json">OpenAPI JSON</a></p>
+  <div id="operations"></div>
+</main>
+<script>
+  "use strict";
+  let accessToken = "";
+  document.getElementById("authorize").addEventListener("click", () => {
+    accessToken = document.getElementById("token").value.trim();
+    document.getElementById("token").value = "";
+    document.getElementById("auth-status").textContent = accessToken ? "令牌已设置" : "令牌已清除";
+  });
+  function field(name, description, value, multiline) {
+    const label = document.createElement("label");
+    const text = document.createElement("span");
+    text.textContent = description || name;
+    const input = document.createElement(multiline ? "textarea" : "input");
+    input.name = name; input.value = value || ""; input.spellcheck = false;
+    label.append(text, input);
+    return {label, input};
+  }
+  async function load() {
+    const response = await fetch("/openapi.json");
+    if (!response.ok) throw new Error("Cannot load OpenAPI");
+    const spec = await response.json();
+    document.getElementById("version").textContent = spec.info.version;
+    for (const [path, methods] of Object.entries(spec.paths)) {
+      for (const [method, operation] of Object.entries(methods)) {
+        if (!["get", "post", "put", "patch", "delete"].includes(method)) continue;
+        const section = document.createElement("details"), summary = document.createElement("summary");
+        const verb = document.createElement("span"); verb.className = "method"; verb.textContent = method.toUpperCase();
+        summary.append(verb, document.createTextNode(path)); section.append(summary);
+        const form = document.createElement("form"), parameters = [];
+        for (const parameter of operation.parameters || []) {
+          const item = field(parameter.name, parameter.name + " (" + parameter.in + ")", String(parameter.schema.default ?? ""), false);
+          form.append(item.label); parameters.push({parameter, input:item.input});
+        }
+        let body;
+        if (operation.requestBody) {
+          const item = field("body", "JSON body", '{"mode":"full"}', true);
+          body = item.input; form.append(item.label);
+        }
+        const send = document.createElement("button"); send.type = "submit"; send.textContent = "执行请求";
+        const output = document.createElement("pre"); output.hidden = true;
+        form.append(send, output); section.append(form);
+        form.addEventListener("submit", async event => {
+          event.preventDefault(); send.disabled = true; output.hidden = false; output.textContent = "请求中...";
+          try {
+            let address = path;
+            const query = new URLSearchParams();
+            for (const {parameter, input} of parameters) {
+              if (parameter.in === "path") address = address.replace("{" + parameter.name + "}", encodeURIComponent(input.value));
+              else if (parameter.in === "query" && input.value !== "") query.set(parameter.name, input.value);
+            }
+            if (query.size) address += "?" + query.toString();
+            const headers = {}; if (accessToken) headers.Authorization = "Bearer " + accessToken;
+            const options = {method:method.toUpperCase(),headers};
+            if (body) { options.body = JSON.stringify(JSON.parse(body.value)); headers["Content-Type"] = "application/json"; }
+            const result = await fetch(address, options);
+            const text = await result.text();
+            let formatted = text; try { formatted = JSON.stringify(JSON.parse(text), null, 2); } catch {}
+            output.textContent = "HTTP " + result.status + "\n" + formatted;
+          } catch (error) { output.textContent = String(error); }
+          finally { send.disabled = false; }
+        });
+        document.getElementById("operations").append(section);
+      }
+    }
+  }
+  load().catch(error => { document.getElementById("operations").textContent = String(error); });
+</script>
+</body>
+</html>

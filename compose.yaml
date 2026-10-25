@@ -1,0 +1,49 @@
+name: moerise-local
+
+services:
+  memos:
+    profiles: [local]
+    image: neosmemo/memos:0.31.0@sha256:24c2707ddd8fbd2ceaa7a61ecab86a53cdcde640b24ce572b73da14b00b5785f
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${MEMOS_PORT:-5231}:5230"
+    volumes:
+      - memos-data:/var/opt/memos
+    networks: [local]
+    logging:
+      options:
+        max-size: "5m"
+        max-file: "2"
+
+  moerise:
+    image: moerise:${MOERISE_IMAGE_TAG:-0.2.0}
+    build: .
+    restart: unless-stopped
+    init: true
+    ports:
+      - "127.0.0.1:${MOERISE_PORT:-8787}:8787"
+    volumes:
+      - ./.local/config.json:/run/moerise/config.json:ro
+      - ./.local/backups:/backups
+      - state-data:/data/state
+      - index-data:/data/index
+    networks: [local]
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
+    read_only: true
+    tmpfs: ["/tmp:size=16m"]
+    mem_limit: 384m
+    cpus: 1.0
+    logging:
+      options:
+        max-size: "5m"
+        max-file: "2"
+
+networks:
+  local:
+    driver: bridge
+
+volumes:
+  memos-data:
+  state-data:
+  index-data:
