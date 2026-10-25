@@ -1,0 +1,9 @@
+{
+  "format": 1,
+  "app_version": "0.1.0",
+  "created_at": "2026-10-25T12:07:50.537528Z",
+  "instance_id": "legacy-instance",
+  "user": "users/owner",
+  "state_sha256": "86385c69be76a91392d935feab9a6e1681f0f81adb13fe0fd5b903cb5641f6fa",
+  "projection": "rebuild-from-memos"
+}

@@ -1,0 +1,126 @@
+# Moerise 产品与架构
+
+## 产品方向
+
+Moerise 是以轻量记录、回顾和思考探索为核心的个人笔记产品。先交付基于官方 Memos 的独立扩展服务，再逐步提供 Android 和 Web 体验，各入口统一使用 Moerise 品牌。
+
+主仓库承载核心服务、接口、部署配置和工程文档。Android 的技术底座、源码复用和仓库组织在客户端阶段确定。Web 初期可在主仓库开发。
+
+第一版面向单人自建部署，其他使用者通过各自配置部署。阶段范围与完成状态统一维护在[路线图](ROADMAP.md)。
+
+## 组件职责
+
+| 组件 | 职责 |
+| --- | --- |
+| 官方 Memos | 保存笔记原文和附件，执行原生权限，提供基础读写与同步 API |
+| Moerise 核心服务 | 同步与索引、身份边界、持久任务，以及后续回顾、检索、AI、地图计算和调度 |
+| 飞书应用机器人 | 后续接收记录与查询操作，展示结果并发送每日回顾 |
+| REST / MCP 入口 | 向客户端和 Agent 提供同一组业务能力；已实现 REST 范围见 API v1 |
+| Android / Web 客户端 | 后续提供编辑、阅读、探索和地图交互，复用核心服务的业务接口 |
+
+扩展部署中，Memos 是笔记的唯一权威数据源。Moerise 通过官方 API 访问原文，不修改 Memos 数据库。基础客户端可直接请求 Memos；消息和 Agent 入口所需的读写转接由 Moerise 适配层承担。
+
+回顾、检索、洞察、问答和地图计算由服务端共享。客户端负责呈现与交互，消息适配器负责平台收发、格式和回执。
+
+## 核心实现
+
+核心服务使用 Go 1.27+、标准库 `net/http` 和 SQLite，编译为单个二进制。SQLite 驱动为 `modernc.org/sqlite`，构建无需 cgo。HTTP API 与后台工作循环通过 goroutine 在同一进程运行，同一产品数据目录只允许一个写入进程。服务可原生运行，也可部署为 Linux 容器。
+
+| 源码 | 职责 |
+| --- | --- |
+| `internal/api.go`、`models.go`、`openapi.json` | REST 路由、访问范围、来源复查、分页与响应契约 |
+| `internal/memos.go` | Memos 版本与身份检查、官方 API 调用及笔记格式转换 |
+| `internal/sync.go` | 正常与归档扫描、增量追补、全量修复与任务调度 |
+| `internal/store.go`、`migrations/` | 数据库迁移、来源绑定、持久任务、退避、扫描暂存与投影 |
+| `internal/maintenance.go` | 在线状态备份、停止服务后恢复、索引重建与写入互斥 |
+| `internal/config.go`、`main.go` | 配置校验、服务与维护命令入口 |
+
+核心采用同一仓库内的模块化单体。新增回顾、检索和消息能力时，按业务职责拆分包，入口通过业务服务组合，不在 HTTP 或平台处理器中堆积业务逻辑。计算密集任务若超出进程资源预算，再通过明确的数据与任务协议拆出工作进程。
+
+```mermaid
+flowchart LR
+    Caller["API 调用方"] --> API["Moerise API"]
+    API -->|"身份和原文复查"| Memos["官方 Memos"]
+    Worker["同步工作循环"] -->|"正常与归档笔记"| Memos
+    API --> State["state.sqlite3"]
+    Worker --> State
+    API --> Index["index.sqlite3"]
+    Worker --> Index
+```
+
+### 数据与身份
+
+| 数据 | 存储 | 恢复方式 |
+| --- | --- | --- |
+| 原始笔记、附件、账号和 PAT 状态 | Memos | Memos 自身备份 |
+| 来源绑定、同步水位、持久任务和产品状态 | `state.sqlite3` | 扩展状态备份 |
+| 笔记投影、扫描暂存和索引代次 | `index.sqlite3` | 从 Memos 重建 |
+| 来源、入口凭据及运行参数 | 配置文件 | 配置备份 |
+
+后续的回顾历史、发送记录、入口绑定和人工调整属于产品状态；分块、向量、近邻和主题缓存属于可重建数据。重建索引不能清空产品历史或人工调整。
+
+SQLite 使用 WAL。迁移按编号执行并校验摘要，产品状态与投影分别迁移。两份数据库通过先发布投影、后推进水位的顺序保证中断后可重放。
+
+每个部署绑定一个 Memos 实例和一个账号，只索引并输出该账号本人创建的笔记。读取前复查来源版本、身份和原文。资源标识、访问 Scope 和失败行为见 [API v1](API-V1.md)。
+
+### 同步流程
+
+1. 检查 Memos 版本及 `/api/v1/auth/me` 返回的账号资源名。
+2. 分页读取 `NORMAL` 和 `ARCHIVED`，将结果写入扫描暂存表。增量条件从水位向前保留重叠时间。
+3. 全量扫描后，再追补扫描期间的变化，减小偏移分页漂移造成的遗漏。
+4. 对全量结果中缺失的既有笔记逐条复查，确认不可用后移除。
+5. 两种状态和全部分页均成功后，再检查来源身份、发布投影并推进水位。失败扫描丢弃暂存结果。
+6. 服务启动请求全量修复，运行期间轮询增量并定期全量比较，修复删除、归档及回溯时间修改。
+
+Memos 0.31.0 的时间排序字段为 `update_time`，CEL 筛选字段为 `updated_ts`，条件使用 `updated_ts >= timestamp("...")`。正常与归档需要分别列出；`show_deleted` 在该版本没有提供可依赖的删除变更流。笔记更新时间可被修改，单一最大时间水位无法覆盖回溯修改。依据为固定版本的[笔记协议](https://github.com/usememos/memos/blob/v0.31.0/proto/api/v1/memo_service.proto)与[服务实现](https://github.com/usememos/memos/blob/v0.31.0/server/api/v1/memo_service.go)。
+
+Memos 事件 Webhook 可在后续作为同步加速信号。0.31.0 的发送端限制回环和私有地址，使用进程内队列，缺少持久重试；接收端需验签并返回 `{"code":0}` 等 JSON 响应。轮询和全量修复始终承担补漏职责。依据见[事件生成](https://github.com/usememos/memos/blob/v0.31.0/server/api/v1/memo_service_webhooks.go)与[发送实现](https://github.com/usememos/memos/blob/v0.31.0/internal/webhook/webhook.go)。
+
+## 后续能力的架构约定
+
+### 共享接口与模型
+
+REST、MCP、飞书和客户端调用同一组业务服务，统一资源标识、来源引用、错误和流式事件。Memos 协议、模型协议和消息平台分别封装，业务层使用 Moerise 自己的数据结构。
+
+embedding 与 LLM 使用独立配置，协议、地址、凭据和模型名称均可替换。embedding 生成向量，服务端保存并检索；LLM 生成洞察和回答。配置中预留的模型及消息字段随功能阶段接入，第一阶段不执行这些调用。
+
+语义阶段先评估连续 float32 向量的内存精确检索，将索引和检索封装为可替换接口，限制批次、计算线程和模型并发。10000 个 1024 维向量的裸数据约为 39.1 MiB，投影与查询中间结果需额外内存。是否引入专用计算库、近似索引或独立向量数据库，以真实规模和延迟测量为依据。
+
+向量索引记录模型、维度、分块版本和内容摘要；笔记与查询必须使用同一向量空间。更换向量模型时建立并重建新索引，完成后切换；更换 LLM 无需重建向量。检索矩阵复用内存缓存，正文变化才重新生成向量。
+
+模型适配器先采用 OpenAI 兼容的 Embeddings 与 Chat Completions，按实际需要增加供应商协议及 Responses。提供商与模型网关由部署配置选择，业务代码只依赖适配层。对话能力与向量能力分别检查，不假设同一服务同时提供两者。
+
+外部模型凭据只由服务端模型适配器读取。模型调用、回顾发送和 AI 引用均沿用使用者的来源范围，输出前复查笔记。
+
+### 飞书与通知
+
+飞书是首个完整消息入口，使用应用机器人接收消息、返回结果和发送每日回顾。普通问答不自动保存笔记，记录操作返回 Memos 资源标识和原文链接。飞书身份绑定指定 Memos 账号，消息事件去重。
+
+| 入口 | 方向与用途 |
+| --- | --- |
+| 飞书应用机器人 | 双向交互，接收操作并发送结果或回顾 |
+| 飞书自定义机器人 Webhook | Moerise 向群发送回顾的可选方式 |
+| Memos 事件 Webhook | Memos 向 Moerise 提示笔记变化 |
+
+采用应用机器人时，同一机器人承担交互和推送。回顾选择、时区调度、持久发送队列和阅读状态归业务服务；渠道适配器只处理收发、分片、格式转义、限流与平台回执。
+
+平台能力依据：[自定义机器人](https://open.feishu.cn/document/client-docs/bot-v3/add-custom-bot?lang=zh-CN)、[接收消息](https://open.feishu.cn/document/server-docs/im-v1/message/events/receive)、[发送消息](https://open.feishu.cn/document/server-docs/im-v1/message/create)。
+
+### MCP 与客户端
+
+Memos 0.31.0 的[官方 MCP](https://github.com/usememos/memos/blob/v0.31.0/server/mcp/README.md)提供基于 Bearer token 的 Streamable HTTP 接口，覆盖基础笔记管理。扩展 MCP 聚焦回顾、检索、关联、洞察和主题等领域能力，复用业务服务。
+
+Memos 0.31.0 的 PAT 缺少读写 Scope；`readOnlyHint` 和客户端工具筛选只是调用方提示或限制。Moerise 的只读边界由服务端凭据检查落实，上游 PAT 保存在服务端。依据见[令牌协议](https://github.com/usememos/memos/blob/v0.31.0/proto/api/v1/user_service.proto)及[令牌创建实现](https://github.com/usememos/memos/blob/v0.31.0/server/api/v1/user_service_access_tokens.go)。
+
+外部 Agent 和客户端按各自支持的传输与身份协议接入。私人笔记入口需验证调用方身份，并执行来源范围检查；上游 PAT 不能作为外部调用方的身份凭据。工具名与后续接口目标见路线图。
+
+App 使用核心服务的回顾、检索、AI 和地图数据。采用 Memos 数据源时，基础笔记读写可直接请求 Memos，扩展服务故障时仍能进行基础操作。地图计算放在服务端，Android 或 Web 负责绘制、筛选与原文跳转；飞书可发送摘要及[网页入口](https://open.feishu.cn/document/common-capabilities/message-card/introduction-of-message-cards)。
+
+## 长期演进
+
+- 由 Moerise 逐步承载记录、阅读、回顾、发现和 AI 的完整体验，Memos 可在后台继续提供存储和同步。
+- 独立扩展稳定后，按需求将 Memos 与 Moerise 组合为统一自托管部署，简化配置、升级和恢复。
+- 探索 Android 无服务器时的正式笔记存储、附件和编辑管理；本地数据源、Memos 兼容、迁移与同步语义另行设计，多设备同步以使用者自建服务为方向。
+- 实际产品限制出现后，逐项评估底层职责替换，结合维护成本、数据迁移、兼容与恢复路径决定实现。
+
+运行与资源限制见[运行与恢复](OPERATIONS.md)，开发和验证入口见[开发指南](DEVELOPMENT.md)。

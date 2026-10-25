@@ -1,0 +1,54 @@
+{
+  "memos": {
+    "instance_id": "replace-with-a-unique-instance-id",
+    "base_url": "https://memos.example.com",
+    "public_url": "https://memos.example.com",
+    "user": "users/replace-with-your-resource-id",
+    "token": "replace-with-a-memos-personal-access-token",
+    "timeout_seconds": 10,
+    "page_size": 100,
+    "max_pages": 10000
+  },
+  "access_tokens": [
+    {
+      "name": "operator",
+      "token": "replace-with-an-independent-random-token-at-least-32-characters",
+      "scopes": ["notes:read", "sync:read", "sync:write"]
+    },
+    {
+      "name": "reader",
+      "token": "replace-with-another-random-token-at-least-32-characters",
+      "scopes": ["notes:read"]
+    }
+  ],
+  "cursor_secret": "replace-with-another-independent-random-secret-at-least-32-characters",
+  "timezone": "Asia/Hong_Kong",
+  "state_dir": "/data/state",
+  "index_dir": "/data/index",
+  "sync": {
+    "poll_seconds": 60,
+    "full_seconds": 21600,
+    "overlap_seconds": 300,
+    "retry_seconds": 5,
+    "lease_seconds": 300
+  },
+  "embedding": {
+    "protocol": "openai-compatible",
+    "base_url": null,
+    "api_key": null,
+    "model": null
+  },
+  "llm": {
+    "protocol": "openai-compatible",
+    "base_url": null,
+    "api_key": null,
+    "model": null
+  },
+  "channel": {
+    "kind": "feishu-app",
+    "app_id": null,
+    "app_secret": null,
+    "destination": null,
+    "webhook_url": null
+  }
+}
