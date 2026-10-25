@@ -1,6 +1,6 @@
 # Moerise 运行与恢复
 
-Moerise 支持 Go 二进制运行和容器部署，两者都需要可访问的 Memos 0.31.x 实例与对应账号的 PAT。以下命令在仓库根目录执行，使用 Bash；Windows 的二进制构建与运行见对应示例。
+Moerise 支持 Linux 原生二进制和 Docker Linux 容器部署，两者都需要可访问的 Memos 0.31.x 实例与对应账号的 PAT。以下命令在仓库根目录执行，使用 Bash。Windows、macOS 原生服务端支持见[路线图](ROADMAP.md#后续方向与开发输入)。
 
 ## 配置
 
@@ -22,27 +22,20 @@ Moerise 支持 Go 二进制运行和容器部署，两者都需要可访问的 M
 
 扩展令牌须各不相同，且与 Memos PAT 分开。分别用密码管理器生成至少 32 字符的随机令牌和分页密钥；安装了 OpenSSL 时也可使用 `openssl rand -hex 32`。Scope 说明见 [API v1](API-V1.md#资源与身份)。
 
+模板中的 `operator` 包含 `notes:read`、`notes:write`、`sync:read` 和 `sync:write`，可以创建私有笔记及管理同步；`reader` 仅包含 `notes:read`。只读凭据调用创建接口返回 403。创建请求需携带 `Idempotency-Key`；503 `WRITE_OUTCOME_UNKNOWN` 表示写入结果不明，只能使用同一键和请求体重试，完整规则见[创建笔记](API-V1.md#创建笔记)。
+
 服务绑定来源根地址和账号。更换来源或账号时使用新的 `instance_id` 和数据卷。根地址不包含账号密码、路径、查询参数或片段；Memos 请求直接连接来源，不读取环境中的 HTTP 代理设置。
 
 默认增量间隔为 60 秒，全量修复间隔为 6 小时，水位重叠为 5 分钟。`check-config` 只校验格式；来源连接、版本和账号在同步时检查。
 
 ## 二进制运行
 
-从源码构建需要 Go 1.27+，建议使用该系列的最新补丁版本。运行编译产物无需 Go 工具链或其他语言运行时。Linux 和 macOS：
+在 Linux 上从源码构建需要 Go 1.27+，建议使用该系列的最新补丁版本。运行编译产物无需 Go 工具链或其他语言运行时：
 
 ```bash
 CGO_ENABLED=0 go build -trimpath -o build/moerise .
 mkdir -p .local/backups
 cp config.example.json .local/config.json
-```
-
-Windows 使用 PowerShell：
-
-```powershell
-$env:CGO_ENABLED = '0'
-go build -trimpath -o build/moerise.exe .
-New-Item -ItemType Directory -Force .local/backups
-Copy-Item config.example.json .local/config.json
 ```
 
 按配置表填写 `.local/config.json`，并将 `state_dir`、`index_dir` 分别设为运行账号可写的目录，例如 `.local/state`、`.local/index`。相对路径以进程工作目录为基准。
@@ -52,7 +45,7 @@ Copy-Item config.example.json .local/config.json
 ./build/moerise serve --host 127.0.0.1
 ```
 
-Windows 将命令中的 `./build/moerise` 换为 `.\build\moerise.exe`。`serve` 通过 `--host` 和 `--port` 设置监听地址与端口，默认值分别为 `0.0.0.0` 和 `8787`。长期运行时使用操作系统的服务管理器，设置二进制路径、工作目录、配置路径和进程重启策略。
+`serve` 通过 `--host` 和 `--port` 设置监听地址与端口，默认值分别为 `0.0.0.0` 和 `8787`。长期运行时使用操作系统的服务管理器，设置二进制路径、工作目录、配置路径和进程重启策略。
 
 ## 容器部署
 
@@ -107,11 +100,13 @@ docker compose ps
 | 对象 | 内容 | 备份或恢复方式 |
 | --- | --- | --- |
 | Memos 数据 | 原文、附件、账号和令牌状态 | Memos 实例自身的完整数据备份 |
-| `state_dir/state.sqlite3` | 绑定、水位、持久任务及产品状态 | 扩展状态快照 |
+| `state_dir/state.sqlite3` | 绑定、水位、持久任务、笔记创建幂等记录及产品状态 | 扩展状态快照 |
 | `index_dir/index.sqlite3` | 笔记投影、扫描暂存和索引代次 | 从 Memos 重建 |
 | 配置文件 | 来源、访问令牌、时区和其他参数 | 独立配置备份 |
 
 数据库类型与同步顺序见[产品与架构](PRODUCT-ARCHITECTURE.md#数据与身份)。配置和备份按敏感数据保存；`.local/` 已排除 Git 和镜像构建上下文。自行选择其他目录时，将其排除版本管理。
+
+笔记创建幂等记录保存键、规范化内容摘要、分配的 `memoId` 和处理状态，不缓存笔记原文。记录用于重启后的结果复查和同 ID 重试，属于需备份的产品状态，不能作为索引清理。恢复早于创建操作的快照会丢失对应幂等记录，重放这些请求前需结合 Memos 原文核实结果。
 
 ## 备份与恢复
 
@@ -171,7 +166,7 @@ docker compose run --rm --no-deps -T moerise rebuild-index
 docker compose up -d --no-build moerise
 ```
 
-索引重建清理派生数据与相关同步进度，服务启动后重新扫描 Memos。产品历史、人工调整、Memos 原文和附件使用各自的持久存储。
+索引重建清理派生数据与相关同步进度，服务启动后重新扫描 Memos。笔记创建幂等记录保留在 `state.sqlite3`，重建后相同键仍沿用原分配的 `memoId`。产品历史、人工调整、Memos 原文和附件使用各自的持久存储。
 
 ## 升级与回滚
 

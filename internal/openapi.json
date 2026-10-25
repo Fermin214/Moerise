@@ -274,6 +274,278 @@
             "description": "Service Unavailable"
           }
         }
+      },
+      "post": {
+        "summary": "创建私有笔记",
+        "description": "要求 notes:write Scope。只接收 content 和 tags，固定为绑定账号创建 PRIVATE 笔记。规范化内容由原样正文和去重排序后的标签决定，省略 tags 与空数组等价。非空标签生成 #tag1 #tag2\\n\\n 前缀写入正文，供 Memos 解析；正文与前缀合计 UTF-8 不超过 65536 字节。首次成功 201，同键相同规范化内容重放成功 200，均直接返回 Note。返回前及每次重放均验证来源身份并从 Memos 复查作者与正文。幂等记录持久保存键、内容摘要、分配的 memoId 和处理状态，不缓存原文，重启与索引重建后保留。结果不明时返回 503 WRITE_OUTCOME_UNKNOWN，retryable=true；只用相同键和请求体重试，服务先复查持久分配的 memoId，必要时以同一 ID 创建，不生成重复 ID。已确认成功后来源笔记被删除返回 404 SOURCE_NOT_FOUND，不重建；来源故障不输出旧正文。",
+        "operationId": "create_note_api_ext_v1_notes_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "x-required-scopes": [
+          "notes:write"
+        ],
+        "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "description": "每次独立创建使用新键；重试使用相同键与请求体。仅允许 ASCII 字母、数字、点、下划线、冒号和连字符。",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "pattern": "^[A-Za-z0-9._:-]+$(?![\\s\\S])",
+              "title": "Idempotency Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateNoteRequest"
+              },
+              "example": {
+                "content": "记录一个想法。",
+                "tags": [
+                  "工作/灵感",
+                  "记录"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "同一幂等键和相同规范化内容重放成功；返回来源复查的最新 Note。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Note"
+                }
+              }
+            },
+            "headers": {
+              "X-Request-ID": {
+                "description": "请求标识。",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Cache-Control": {
+                "description": "禁止缓存业务响应。",
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                }
+              }
+            }
+          },
+          "201": {
+            "description": "首次创建成功；验证来源身份并复查作者与正文后返回 Note。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Note"
+                }
+              }
+            },
+            "headers": {
+              "X-Request-ID": {
+                "description": "请求标识。",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Cache-Control": {
+                "description": "禁止缓存业务响应。",
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "UNAUTHENTICATED：缺少或无效的 Bearer 凭据。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "headers": {
+              "X-Request-ID": {
+                "description": "请求标识。",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Cache-Control": {
+                "description": "禁止缓存业务响应。",
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "FORBIDDEN：凭据缺少 notes:write；只读凭据不能写入。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "headers": {
+              "X-Request-ID": {
+                "description": "请求标识。",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Cache-Control": {
+                "description": "禁止缓存业务响应。",
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "SOURCE_NOT_FOUND：已确认成功的来源笔记已删除，不重建。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "headers": {
+              "X-Request-ID": {
+                "description": "请求标识。",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Cache-Control": {
+                "description": "禁止缓存业务响应。",
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "IDEMPOTENCY_CONFLICT：同键不同规范化内容；WRITE_CONFLICT：来源资源冲突。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "headers": {
+              "X-Request-ID": {
+                "description": "请求标识。",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Cache-Control": {
+                "description": "禁止缓存业务响应。",
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "INVALID_ARGUMENT：幂等键、请求字段、标签或正文与前缀的 UTF-8 总字节数不符合约束。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "headers": {
+              "X-Request-ID": {
+                "description": "请求标识。",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Cache-Control": {
+                "description": "禁止缓存业务响应。",
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "INTERNAL：服务内部错误。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "headers": {
+              "X-Request-ID": {
+                "description": "请求标识。",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Cache-Control": {
+                "description": "禁止缓存业务响应。",
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "WRITE_OUTCOME_UNKNOWN：超时、5xx 或响应不可信等导致写入结果不明，retryable=true，只用相同键和请求体重试。来源连接、身份或协议故障沿用既有错误代码；来源故障不输出旧正文。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "headers": {
+              "X-Request-ID": {
+                "description": "请求标识。",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Cache-Control": {
+                "description": "禁止缓存业务响应。",
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                }
+              }
+            }
+          }
+        }
       }
     },
     "/api/ext/v1/notes/{memo_id}": {
@@ -703,6 +975,7 @@
               "type": "string",
               "enum": [
                 "notes:read",
+                "notes:write",
                 "sync:read",
                 "sync:write"
               ]
@@ -888,6 +1161,38 @@
           "job"
         ],
         "title": "JobResponse"
+      },
+      "CreateNoteRequest": {
+        "properties": {
+          "content": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "\\S",
+            "title": "Content",
+            "description": "必填且不能仅含空白，保留原正文。与生成的标签前缀合计 UTF-8 编码不超过 65536 字节，此限制由服务端校验。"
+          },
+          "tags": {
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 100,
+              "pattern": "^[\\p{L}\\p{Nd}_-]+(?:/[\\p{L}\\p{Nd}_-]+)*$(?![\\s\\S])",
+              "description": "每项 1 至 100 个 Unicode 字符，由 Unicode 字母、十进制数字、下划线或连字符组成的非空段用 / 分隔，不含 # 或空白，不接受上标等其他数字形式。"
+            },
+            "type": "array",
+            "maxItems": 20,
+            "title": "Tags",
+            "default": [],
+            "description": "输入最多 20 项；服务去重并按字符串升序排序，非空时生成 #tag1 #tag2\\n\\n 正文前缀，空数组不生成前缀。确认创建时检查请求标签是否完整保留，不完整时返回 WRITE_CONFLICT。响应 tags 以 Memos 对完整正文的解析结果为准，包含正文标签及层级标签的父级。"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "content"
+        ],
+        "title": "CreateNoteRequest",
+        "description": "仅接受 content 和 tags，不开放 creator、visibility、attachments、state；创建可见性固定 PRIVATE。"
       },
       "Note": {
         "properties": {

@@ -11,6 +11,7 @@ RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/moerise . \
 FROM scratch
 
 ENV MOERISE_CONFIG_FILE=/run/moerise/config.json
+COPY LICENSE /usr/share/licenses/moerise/LICENSE
 COPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 COPY --from=build /out/moerise /usr/local/bin/moerise
 COPY --from=build --chown=10001:10001 /out/data /data

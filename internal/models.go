@@ -85,6 +85,11 @@ type Note struct {
 	URL         string           `json:"url"`
 }
 
+type CreateNote struct {
+	Content string   `json:"content"`
+	Tags    []string `json:"tags"`
+}
+
 func (m Memo) Note(settings Settings) Note {
 	return Note{settings.Memos.InstanceID, m.Name, m.Creator, m.State, m.Visibility,
 		m.Content, m.Tags, m.Attachments, m.CreateTime, m.UpdateTime, m.SourceHash,

@@ -9,7 +9,7 @@
 - Memos 0.31.x：手动联调时使用独立测试实例和账号。
 - Docker Engine：运行真实 Memos 集成验收；日常构建和基础测试无需 Docker。
 
-Linux、macOS 和 Windows 使用同一套 Go 命令。服务构建无需 C 编译器；`go test -race` 需要 Go 支持的竞争检测平台与 C 工具链。容器部署见[运行与恢复](OPERATIONS.md#容器部署)。
+开发验证使用 Linux 或 Linux 容器，服务端支持 Linux 原生二进制和 Docker Linux 容器。服务构建无需 C 编译器；`go test -race` 需要 C 工具链。Windows、macOS 原生服务端支持见[路线图](ROADMAP.md#后续方向与开发输入)。容器部署见[运行与恢复](OPERATIONS.md#容器部署)。
 
 ## 安装依赖与运行
 
@@ -41,7 +41,7 @@ go vet ./...
 gofmt -l main.go internal tests
 ```
 
-格式检查应无输出，修正格式使用 `gofmt -w main.go internal tests`。基础测试使用 HTTP 模拟响应和临时数据库，无需 Memos、Docker、模型或真实凭据，覆盖分页中途失败、身份变化、任务合并与重启恢复、备份格式兼容、恢复损坏检查和写入互斥。
+格式检查应无输出，修正格式使用 `gofmt -w main.go internal tests`。基础测试使用 HTTP 模拟响应和临时数据库，无需 Memos、Docker、模型或真实凭据，覆盖分页中途失败、身份变化、任务合并与重启恢复、备份格式兼容、恢复损坏检查和写入互斥。记录测试补充并发幂等、请求与 Scope 边界、写入期间身份变化、不可信响应和跨作者资源冲突。
 
 支持竞争检测的环境还可执行：
 
@@ -60,8 +60,10 @@ go test -tags=integration ./tests -v -count=1
 - 凭据、只读范围、管理员 PAT 的作者隔离，以及读取时的原文复查。
 - 首次同步、分页游标、新增、修改、归档、删除和回溯时间修改。
 - 来源断连、服务重启后的任务恢复、在线备份、恢复互斥和索引重建。
+- 文本与标签记录、幂等重放与冲突、原文修改和删除，以及写入状态跨重启、索引重建和备份恢复。
+- 通过代理模拟上游写入成功后响应丢失、写入前返回 503，验证结果不明时先复查原资源、重发沿用同一资源标识，Memos 中只有一条笔记。
 
-CI 在 Linux、Windows 和 macOS 上执行基础检查，并在 Linux 上执行竞争检测、漏洞检查及真实 Memos 验收。漏洞检查也可单独运行：
+CI 在 Linux 上执行模块校验、格式检查、静态检查、基础测试、无 cgo 构建、竞争检测、漏洞检查及真实 Memos 验收。漏洞检查也可单独运行：
 
 ```bash
 go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
