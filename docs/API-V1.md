@@ -18,8 +18,8 @@ API 前缀为 `/api/ext/v1`。路由由 [api.go](../internal/api.go) 定义，�
 | `notes:write` | 创建私有笔记与重放创建请求 |
 | `sync:read` | 读取同步状态和任务结果 |
 | `sync:write` | 请求增量同步或全量修复 |
-| `reviews:read` | 读取已有每日批次和指定回顾批次 |
-| `reviews:write` | 获取或创建每日批次、换一组、记录打开与略过 |
+| `reviews:read` | 读取已有回顾批次及通知结果 |
+| `reviews:write` | 获取或创建每日批次、换一组、记录打开与略过、处理通知结果不明状态 |
 
 只读凭据不能创建笔记或触发同步，写入请求返回 403 `FORBIDDEN`。笔记创建支持基础附件；笔记修改和消息平台操作按路线图提供。
 
@@ -43,6 +43,9 @@ API 前缀为 `/api/ext/v1`。路由由 [api.go](../internal/api.go) 定义，�
 | POST | `/api/ext/v1/reviews/{batch_id}/items/{memo_id}/open` | `reviews:write` | 记录首次打开时间，200 |
 | POST | `/api/ext/v1/reviews/{batch_id}/items/{memo_id}/skip` | `reviews:write` | 记录首次略过时间，200 |
 | POST | `/hooks/feishu` | 飞书平台凭据与身份校验 | URL 验证或事件持久入队应答，200 |
+| GET | `/api/ext/v1/notifications` | `reviews:read` | 最近 100 条通知，可按 `status` 筛选 |
+| GET | `/api/ext/v1/notifications/{notification_id}` | `reviews:read` | 通知、发送尝试与结果确认记录 |
+| POST | `/api/ext/v1/notifications/{notification_id}/resolve` | `reviews:write` | 复查回执或人工确认结果不明的通知 |
 
 来源连接成功、全量同步完成且工作循环存活时，就绪检查返回 200；其他情况返回 503。存活检查适合区分进程状态与来源故障。
 
@@ -125,6 +128,12 @@ Content-Type: application/json
 
 幂等记录随产品状态备份，服务重启后继续使用，索引重建保留记录。恢复快照只能恢复其中已有的幂等记录；快照生成后创建的记录需结合 Memos 原文核实，不能将旧请求直接视为尚未写入。
 
+## 通知结果
+
+通知状态包括 `pending`、`running`、`unknown`、`sent`。列表和详情只返回产品状态与资源引用，不包含消息正文。发送开始前持久保存尝试；超时、响应不可信、中断和恢复旧快照均保留结果不明状态，不自动重发。
+
+结果确认请求包含 `decision`，为 `sent` 或 `not_sent`，可省略的 `receipt` 至多 256 字节。`sent` 携带回执时通过渠道验证对应通知；不带回执时保存人工确认。`not_sent` 只接受空回执，确认未送达后创建新发送 UUID。操作者来自扩展凭据名称，记录在 `resolutions`。冲突决定或无关回执返回 409 `NOTIFICATION_CONFLICT`。完整流程见[调度与发送队列](NOTIFICATIONS.md)。
+
 ## 飞书事件
 
 应用机器人回调入口为 `/hooks/feishu`，仅在应用凭据完整时启用；使用平台事件 Token 和可选 Encrypt Key 验证，不使用 Moerise Bearer 凭据。绑定使用者的单聊消息持久入队后返回 `{"code":0}`；URL 验证返回 `{"challenge":"..."}`。重复消息沿用同一记录操作，其他身份和群聊不进入业务。事件配置、命令及恢复语义见[飞书入口](FEISHU.md)。
@@ -193,10 +202,11 @@ Content-Type: application/json
 | --- | --- | --- |
 | 401 | `UNAUTHENTICATED` | 检查扩展 Bearer 凭据 |
 | 403 | `FORBIDDEN` | 检查凭据 Scope |
-| 404 | `SOURCE_NOT_FOUND`、`JOB_NOT_FOUND`、`REVIEW_NOT_FOUND`、`REVIEW_ITEM_NOT_FOUND`、`NOT_FOUND` | 移除失效资源或重新开始查询 |
+| 404 | `SOURCE_NOT_FOUND`、`JOB_NOT_FOUND`、`REVIEW_NOT_FOUND`、`REVIEW_ITEM_NOT_FOUND`、`NOTIFICATION_NOT_FOUND`、`NOT_FOUND` | 移除失效资源或重新开始查询 |
 | 405 | `METHOD_NOT_ALLOWED` | 检查方法和路由 |
 | 409 | `IDEMPOTENCY_CONFLICT` | 同一幂等键已对应其他规范化内容；独立创建使用新键 |
 | 409 | `WRITE_CONFLICT` | 检查来源资源冲突，不将冲突资源作为创建结果 |
+| 409 | `NOTIFICATION_CONFLICT` | 检查通知状态、回执或结果确认决定 |
 | 422 | `INVALID_ARGUMENT`、`INVALID_PAGE_TOKEN` | 修正参数，游标失效时重读第一页 |
 | 503 | `UPSTREAM_UNAVAILABLE`、`UPSTREAM_AUTH`、`IDENTITY_MISMATCH` | 检查来源连接与绑定 |
 | 503 | `UNSUPPORTED_UPSTREAM`、`UPSTREAM_PROTOCOL`、`UPSTREAM_REQUEST_REJECTED` | 检查 Memos 版本与适配层 |

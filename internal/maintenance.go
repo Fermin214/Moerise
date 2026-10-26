@@ -217,10 +217,17 @@ func Restore(settings Settings, source, safety string) error {
 	if err != nil {
 		return err
 	}
+	if err := migrate(db, "state"); err != nil {
+		db.Close()
+		return err
+	}
 	_, updateErr := db.Exec(`BEGIN IMMEDIATE;
 		UPDATE sync_state SET watermark = NULL, last_full = NULL, last_incremental = NULL,
 			source_ok = 0, index_generation = NULL;
 		DELETE FROM jobs WHERE kind = 'sync';
+		UPDATE notifications SET status = 'unknown', last_error = 'STATE_RESTORED'
+			WHERE status IN ('pending', 'running');
+		UPDATE notification_attempts SET outcome = 'unknown' WHERE outcome = 'running';
 		PRAGMA user_version = 0;
 		COMMIT;
 		PRAGMA wal_checkpoint(TRUNCATE);

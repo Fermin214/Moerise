@@ -54,6 +54,10 @@
     "destination": null,
     "webhook_url": null
   },
+  "notifications": {
+    "enabled": false,
+    "time": "09:00"
+  },
   "review": {
     "count": 3,
     "min_age_hours": 24,

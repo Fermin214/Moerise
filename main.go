@@ -141,11 +141,14 @@ func serve(settings moerise.Settings, address string) error {
 		feishuDone = make(chan error, 1)
 		go func() { feishuDone <- api.Feishu.Run(ctx) }()
 	}
+	notificationDone := make(chan error, 1)
+	go func() { notificationDone <- api.Notifications.Run(ctx) }()
 	go func() { serverDone <- server.ListenAndServe() }()
 	slog.Info("service started", "address", address, "version", moerise.Version)
 	var result error
 	workerExited := false
 	feishuExited := false
+	notificationExited := false
 	select {
 	case <-signalCtx.Done():
 	case err := <-workerDone:
@@ -162,6 +165,11 @@ func serve(settings moerise.Settings, address string) error {
 		if err != nil && !errors.Is(err, context.Canceled) {
 			result = errors.New("Feishu worker stopped")
 		}
+	case err := <-notificationDone:
+		notificationExited = true
+		if err != nil && !errors.Is(err, context.Canceled) {
+			result = errors.New("notification worker stopped")
+		}
 	}
 	cancel()
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -177,6 +185,9 @@ func serve(settings moerise.Settings, address string) error {
 	}
 	if feishuDone != nil && !feishuExited {
 		<-feishuDone
+	}
+	if !notificationExited {
+		<-notificationDone
 	}
 	return result
 }
