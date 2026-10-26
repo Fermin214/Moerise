@@ -147,6 +147,7 @@ func serve(settings moerise.Settings, address string) error {
 		}
 		defer provider.Close()
 		vectorWorker = moerise.NewVectorIndexService(store, source, provider)
+		api.Search.Provider = provider
 	}
 	server := &http.Server{Addr: address, Handler: api, ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout: 30 * time.Second, WriteTimeout: 120 * time.Second, IdleTimeout: 60 * time.Second,

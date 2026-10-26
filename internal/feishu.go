@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/hmac"
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -60,6 +61,7 @@ type FeishuService struct {
 	Source        Source
 	Records       *RecordService
 	Reviews       *ReviewService
+	Search        *SearchService
 	Client        FeishuPlatform
 	Notifications *NotificationService
 	wake          chan struct{}
@@ -70,7 +72,8 @@ func NewFeishuService(store *Store, source Source, records *RecordService, revie
 		return nil
 	}
 	return &FeishuService{Store: store, Source: source, Records: records, Reviews: reviews,
-		Client: NewFeishuClient(store.Settings.Channel), Notifications: notifications, wake: make(chan struct{}, 1)}
+		Search: NewSearchService(store, source, nil), Client: NewFeishuClient(store.Settings.Channel),
+		Notifications: notifications, wake: make(chan struct{}, 1)}
 }
 
 func (s *FeishuService) Wake() {
@@ -255,7 +258,7 @@ func (s *FeishuService) retry(id, status string, attempts int, code string) erro
 	return err
 }
 
-const feishuHelp = "可用操作：\n记录 正文（可含 #标签）\n查看 memos/资源标识\n回顾\n换一组\n打开 批次标识 memos/资源标识\n略过 批次标识 memos/资源标识\n发送图片或文件会保存为附件笔记。"
+const feishuHelp = "可用操作：\n记录 正文（可含 #标签）\n查看 memos/资源标识\n搜索 查询词（可加 #标签）\n回顾\n换一组\n打开 批次标识 memos/资源标识\n略过 批次标识 memos/资源标识\n发送图片或文件会保存为附件笔记。"
 
 func (s *FeishuService) execute(ctx context.Context, message feishuMessage) (string, string, error) {
 	key := "feishu:" + hashBytes([]byte(message.ID))
@@ -292,6 +295,26 @@ func (s *FeishuService) execute(ctx context.Context, message feishuMessage) (str
 		return "help", "", nil
 	}
 	switch fields[0] {
+	case "搜索":
+		request := SearchRequest{Query: strings.TrimSpace(strings.TrimPrefix(text, "搜索")), Limit: 5}
+		words := []string{}
+		for _, word := range strings.Fields(request.Query) {
+			if strings.HasPrefix(word, "#") {
+				request.Tags = append(request.Tags, strings.TrimPrefix(word, "#"))
+			} else {
+				words = append(words, word)
+			}
+		}
+		if len(words) > 0 {
+			request.Query = strings.Join(words, " ")
+		}
+		request, err := normalizeSearch(request)
+		if err != nil {
+			return "", "", err
+		}
+		body, _ := json.Marshal(request)
+		sealed, err := s.seal("search:"+message.ID, body)
+		return "search", message.ID + "." + base64.RawURLEncoding.EncodeToString(sealed), err
 	case "记录":
 		note, _, err := s.Records.Create(ctx, key, CreateNote{Content: strings.TrimSpace(strings.TrimPrefix(text, "记录"))})
 		return "saved", note.Name, err
@@ -329,6 +352,43 @@ func excerpt(content string, limit int) string {
 
 func (s *FeishuService) render(ctx context.Context, kind, resource string) (string, error) {
 	switch kind {
+	case "search":
+		id, encoded, ok := strings.Cut(resource, ".")
+		if !ok {
+			return "", upstreamError("CHANNEL_QUEUE_KEY", "Invalid encrypted search request")
+		}
+		sealed, err := base64.RawURLEncoding.Strict().DecodeString(encoded)
+		if err != nil {
+			return "", err
+		}
+		body, err := s.unseal("search:"+id, sealed)
+		if err != nil {
+			return "", err
+		}
+		var request SearchRequest
+		if err := json.Unmarshal(body, &request); err != nil {
+			return "", err
+		}
+		result, err := s.Search.Search(ctx, request)
+		if err != nil {
+			return "", err
+		}
+		var text strings.Builder
+		text.WriteString("搜索结果\n")
+		if !result.Semantic.Used {
+			text.WriteString("仅使用关键词与标签（" + result.Semantic.Reason + "）。\n")
+		}
+		if len(result.Results) == 0 {
+			text.WriteString("没有找到符合条件的笔记。")
+		}
+		for _, hit := range result.Results {
+			if len(hit.Matches) > 0 {
+				match := hit.Matches[0]
+				fmt.Fprintf(&text, "\n%s\n第 %d–%d 行\n%s\n%s\n", excerpt(match.Content, 300),
+					match.LineStart, match.LineEnd, hit.Note.Name, hit.Note.URL)
+			}
+		}
+		return text.String(), nil
 	case "help":
 		return feishuHelp, nil
 	case "error":

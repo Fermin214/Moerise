@@ -188,6 +188,10 @@ func NewStore(settings Settings) (*Store, error) {
 		store.Close()
 		return nil, err
 	}
+	if err := store.prepareSearchIndex(); err != nil {
+		store.Close()
+		return nil, err
+	}
 	return store, nil
 }
 
@@ -505,6 +509,9 @@ func (s *Store) put(tx *sql.Tx, memo Memo) (int, error) {
 		return 0, err
 	}
 	count, err := result.RowsAffected()
+	if err == nil && count > 0 {
+		err = replaceSearchMemo(tx, s.Settings, memo)
+	}
 	return int(count), err
 }
 

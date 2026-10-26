@@ -107,6 +107,40 @@ type CreateAttachment struct {
 	Content  []byte `json:"content"`
 }
 
+type SearchRequest struct {
+	Query string   `json:"query" jsonschema:"Search text, 1 to 256 Unicode characters"`
+	Tags  []string `json:"tags,omitempty" jsonschema:"Exact tags, all required"`
+	State string   `json:"state,omitempty" jsonschema:"NORMAL (default), ARCHIVED, or ALL"`
+	Limit int      `json:"limit,omitempty" jsonschema:"Maximum notes, default 10, range 1 to 20"`
+}
+
+type SearchMatch struct {
+	Ordinal   int      `json:"ordinal"`
+	ByteStart int      `json:"byte_start"`
+	ByteEnd   int      `json:"byte_end"`
+	LineStart int      `json:"line_start"`
+	LineEnd   int      `json:"line_end"`
+	Content   string   `json:"content"`
+	Signals   []string `json:"signals"`
+}
+
+type SearchHit struct {
+	Note    Note          `json:"note"`
+	Score   float64       `json:"score"`
+	Matches []SearchMatch `json:"matches"`
+}
+
+type SearchSemantic struct {
+	Used   bool   `json:"used"`
+	Reason string `json:"reason"`
+}
+
+type SearchResponse struct {
+	Query    string         `json:"query"`
+	Results  []SearchHit    `json:"results"`
+	Semantic SearchSemantic `json:"semantic"`
+}
+
 func (m Memo) Note(settings Settings) Note {
 	return Note{settings.Memos.InstanceID, m.Name, m.Creator, m.State, m.Visibility,
 		m.Content, m.Tags, m.Attachments, m.CreateTime, m.UpdateTime, m.SourceHash,

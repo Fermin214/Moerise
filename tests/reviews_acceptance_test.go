@@ -68,14 +68,14 @@ func TestReviewsAcrossRESTAndMCPAcceptance(t *testing.T) {
 		t.Fatal("MCP initialization failed")
 	}
 	tools := h.mcp(h.operator, "tools/list", map[string]any{})["tools"].([]any)
-	if len(tools) != 6 {
+	if len(tools) != 7 {
 		t.Fatalf("missing review tools: %v", tools)
 	}
 	for _, value := range tools {
 		tool := value.(map[string]any)
 		name := tool["name"].(string)
 		readonly := tool["annotations"].(map[string]any)["readOnlyHint"]
-		if readonly != (name == "get_review_batch" || name == "read_daily_review") {
+		if readonly != (name == "get_review_batch" || name == "read_daily_review" || name == "semantic_search") {
 			t.Fatalf("incorrect state-change hint: %v", tool)
 		}
 	}
@@ -83,7 +83,7 @@ func TestReviewsAcrossRESTAndMCPAcceptance(t *testing.T) {
 		t.Fatal("REST and MCP did not share their daily batch")
 	}
 	readerTools := h.mcp(h.reader, "tools/list", map[string]any{})["tools"].([]any)
-	if len(readerTools) != 2 {
+	if len(readerTools) != 3 {
 		t.Fatal("read-only principal was offered state-changing tools")
 	}
 	denied, denialStatus, denialErr := h.requestWithHeaders(h.base, "/mcp", "POST", h.reader,

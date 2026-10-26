@@ -5,6 +5,54 @@
     "version": "0.2.0"
   },
   "paths": {
+    "/api/ext/v1/search": {
+      "post": {
+        "summary": "中文混合搜索",
+        "operationId": "search_api_ext_v1_search_post",
+        "description": "要求 notes:read，REST、MCP 与飞书复用 SearchService，无需 LLM。关键词 BM25、标签匹配、正余弦语义各取前 100 片段，以 RRF k=60 融合后按笔记合并，笔记分数取最高片段分数，每条最多 3 片段，稳定排序。所有通道共用作者、状态及精确 AND 标签过滤。搜索前复查 Memos 版本与身份，返回前逐条读原文；修改、删除、作者越界或过滤变化的候选丢弃并修正投影，最后再查身份。来源故障使整请求失败，不返回缓存正文。非 POST 方法返回 405。",
+        "security": [{"HTTPBearer": []}],
+        "x-required-scopes": ["notes:read"],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {"$ref": "#/components/schemas/SearchRequest"},
+              "example": {"query": "整理灵感", "tags": ["工作/灵感"], "state": "NORMAL", "limit": 10}
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "搜索结果；关闭模型、索引未就绪或模型失败时返回关键词与标签结果及显式语义状态，取消不降级。",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/SearchResponse"}}}
+          },
+          "401": {
+            "description": "UNAUTHENTICATED",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}
+          },
+          "403": {
+            "description": "FORBIDDEN：要求 notes:read",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}
+          },
+          "405": {
+            "description": "METHOD_NOT_ALLOWED：仅支持 POST",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}
+          },
+          "422": {
+            "description": "INVALID_ARGUMENT：未知字段或参数不合法",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}
+          },
+          "500": {
+            "description": "INTERNAL",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}
+          },
+          "503": {
+            "description": "来源版本、身份或原文复查失败，沿用来源错误契约",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}
+          }
+        }
+      }
+    },
     "/health/live": {
       "get": {
         "summary": "Live",
@@ -1989,6 +2037,91 @@
   },
   "components": {
     "schemas": {
+      "SearchRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["query"],
+        "description": "仅接受 query、tags、state、limit。query 长度由服务端在 trim 后校验，未知字段返回 422。",
+        "properties": {
+          "query": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "\\S",
+            "description": "必填；trim 后非空，最多 256 个 Unicode 码点且最多 1024 个 UTF-8 字节。长度限制适用于 trim 后的值。",
+            "x-max-unicode-codepoints-after-trim": 256,
+            "x-max-utf8-bytes-after-trim": 1024
+          },
+          "tags": {
+            "type": "array",
+            "maxItems": 20,
+            "default": [],
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 100,
+              "pattern": "^[\\p{L}\\p{Nd}_-]+(?:/[\\p{L}\\p{Nd}_-]+)*$(?![\\s\\S])",
+              "description": "采用记录标签格式：每项 1 至 100 个 Unicode 码点，Unicode 字母、十进制数字、下划线或连字符组成非空段，以 / 分隔，不含 # 或空白。"
+            },
+            "description": "输入最多 20 项，服务去重并按字符串升序排序，对来源标签精确 AND 过滤；全部召回通道共用。"
+          },
+          "state": {"type": "string", "enum": ["NORMAL", "ARCHIVED", "ALL"], "default": "NORMAL"},
+          "limit": {"type": "integer", "minimum": 1, "maximum": 20, "default": 10}
+        }
+      },
+      "SearchResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["query", "results", "semantic"],
+        "properties": {
+          "query": {"type": "string", "minLength": 1, "maxLength": 256, "description": "trim 后的查询，UTF-8 最多 1024 字节。"},
+          "results": {
+            "type": "array",
+            "maxItems": 20,
+            "items": {"$ref": "#/components/schemas/SearchHit"},
+            "description": "稳定排序且不超过请求 limit；无命中为 []，来源变化后可少于 limit。"
+          },
+          "semantic": {"$ref": "#/components/schemas/SearchSemantic"}
+        }
+      },
+      "SearchHit": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["note", "score", "matches"],
+        "properties": {
+          "note": {"$ref": "#/components/schemas/Note"},
+          "score": {"type": "number", "description": "笔记最高片段的 RRF 融合分数，不是余弦值或置信度。"},
+          "matches": {"type": "array", "maxItems": 3, "items": {"$ref": "#/components/schemas/SearchMatch"}}
+        }
+      },
+      "SearchMatch": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["ordinal", "byte_start", "byte_end", "line_start", "line_end", "content", "signals"],
+        "description": "与 3.2 paragraph-v1-2048 分块一致；位置针对原始正文 UTF-8 字节，区间为 [byte_start, byte_end)，行号从 1 开始，末尾换行属于前一行。",
+        "properties": {
+            "ordinal": {"type": "integer", "minimum": 0, "description": "从 0 开始的笔记片段序号。"},
+          "byte_start": {"type": "integer", "minimum": 0},
+          "byte_end": {"type": "integer", "minimum": 0},
+          "line_start": {"type": "integer", "minimum": 1},
+          "line_end": {"type": "integer", "minimum": 1},
+          "content": {"type": "string", "description": "对应原始正文字节区间的片段。"},
+          "signals": {"type": "array", "items": {"type": "string", "enum": ["keyword", "semantic", "tag"]}}
+        }
+      },
+      "SearchSemantic": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["used", "reason"],
+        "properties": {
+          "used": {"type": "boolean"},
+          "reason": {"type": "string", "description": "used=true 时为空字符串；否则为 EMBEDDING_DISABLED、INDEX_NOT_READY 或具体模型错误代码。"}
+        },
+        "oneOf": [
+          {"properties": {"used": {"const": true}, "reason": {"const": ""}}},
+          {"properties": {"used": {"const": false}, "reason": {"minLength": 1}}}
+        ],
+        "description": "每个服务复用一个活动代次的内存 float32 缓存，仅在配置空间和投影修订一致时使用。关闭模型、索引未就绪或模型失败时降级，取消不降级。"
+      },
       "ErrorDetail": {
         "properties": {
           "code": {

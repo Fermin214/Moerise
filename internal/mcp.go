@@ -36,8 +36,8 @@ type reviewMarkArgs struct {
 	Name    string `json:"name" jsonschema:"Memos resource name, such as memos/abc"`
 }
 
-func addReviewTool[I any](server *mcp.Server, name, description string, readOnly bool,
-	call func(context.Context, I) (ReviewBatch, error)) {
+func addDomainTool[I, O any](server *mcp.Server, name, description string, readOnly bool,
+	call func(context.Context, I) (O, error)) {
 	destructive := false
 	mcp.AddTool(server, &mcp.Tool{Name: name, Description: description,
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: readOnly,
@@ -65,27 +65,33 @@ func (a *API) newMCPHandler() http.Handler {
 			return nil
 		}
 		server := mcp.NewServer(&mcp.Implementation{Name: "moerise", Version: Version}, nil)
+		if slices.Contains(access.Scopes, "notes:read") {
+			addDomainTool(server, "semantic_search", "按中文关键词、语义与标签检索本人笔记，返回命中位置并复查来源。", true,
+				func(ctx context.Context, args SearchRequest) (SearchResponse, error) {
+					return a.Search.Search(ctx, args)
+				})
+		}
 		if slices.Contains(access.Scopes, "reviews:read") {
-			addReviewTool(server, "get_review_batch", "读取已有回顾批次，复查来源原文与作者。", true,
+			addDomainTool(server, "get_review_batch", "读取已有回顾批次，复查来源原文与作者。", true,
 				func(ctx context.Context, args reviewBatchArgs) (ReviewBatch, error) {
 					return a.Reviews.Get(ctx, args.BatchID)
 				})
-			addReviewTool(server, "read_daily_review", "读取已有当日回顾；尚未创建时返回 REVIEW_NOT_FOUND。", true,
+			addDomainTool(server, "read_daily_review", "读取已有当日回顾；尚未创建时返回 REVIEW_NOT_FOUND。", true,
 				func(ctx context.Context, _ struct{}) (ReviewBatch, error) {
 					return a.Reviews.ReadDaily(ctx, time.Now())
 				})
 		}
 		if slices.Contains(access.Scopes, "reviews:write") {
-			addReviewTool(server, "get_daily_review", "获取当日回顾；首次调用会创建并持久保存批次及选中历史。", false,
+			addDomainTool(server, "get_daily_review", "获取当日回顾；首次调用会创建并持久保存批次及选中历史。", false,
 				func(ctx context.Context, _ struct{}) (ReviewBatch, error) {
 					return a.Reviews.Daily(ctx, time.Now())
 				})
-			addReviewTool(server, "replace_daily_review", "换一组并持久保存新批次；同日相同幂等键重试返回同一批次。", false,
+			addDomainTool(server, "replace_daily_review", "换一组并持久保存新批次；同日相同幂等键重试返回同一批次。", false,
 				func(ctx context.Context, args reviewReplaceArgs) (ReviewBatch, error) {
 					return a.Reviews.Replace(ctx, args.IdempotencyKey, time.Now())
 				})
 			for _, action := range []string{"open", "skip"} {
-				addReviewTool(server, action+"_review_memo", "持久记录回顾条目的 "+action+" 操作，保留首次发生时间。", false,
+				addDomainTool(server, action+"_review_memo", "持久记录回顾条目的 "+action+" 操作，保留首次发生时间。", false,
 					func(ctx context.Context, args reviewMarkArgs) (ReviewBatch, error) {
 						return a.Reviews.Mark(ctx, args.BatchID, args.Name, action, time.Now())
 					})
