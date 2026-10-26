@@ -66,6 +66,10 @@ func (a *API) newMCPHandler() http.Handler {
 		}
 		server := mcp.NewServer(&mcp.Implementation{Name: "moerise", Version: Version}, nil)
 		if slices.Contains(access.Scopes, "notes:read") {
+			addDomainTool(server, "get_related_memos", "从指定本人笔记寻找相关笔记，排除自身、合并重复片段并复查来源。", true,
+				func(ctx context.Context, args RelatedRequest) (RelatedResponse, error) {
+					return a.Search.Related(ctx, args)
+				})
 			addDomainTool(server, "semantic_search", "按中文关键词、语义与标签检索本人笔记，返回命中位置并复查来源。", true,
 				func(ctx context.Context, args SearchRequest) (SearchResponse, error) {
 					return a.Search.Search(ctx, args)

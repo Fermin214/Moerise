@@ -258,7 +258,7 @@ func (s *FeishuService) retry(id, status string, attempts int, code string) erro
 	return err
 }
 
-const feishuHelp = "可用操作：\n记录 正文（可含 #标签）\n查看 memos/资源标识\n搜索 查询词（可加 #标签）\n回顾\n换一组\n打开 批次标识 memos/资源标识\n略过 批次标识 memos/资源标识\n发送图片或文件会保存为附件笔记。"
+const feishuHelp = "可用操作：\n记录 正文（可含 #标签）\n查看 memos/资源标识\n搜索 查询词（可加 #标签）\n相关 memos/资源标识\n回顾\n换一组\n打开 批次标识 memos/资源标识\n略过 批次标识 memos/资源标识\n发送图片或文件会保存为附件笔记。"
 
 func (s *FeishuService) execute(ctx context.Context, message feishuMessage) (string, string, error) {
 	key := "feishu:" + hashBytes([]byte(message.ID))
@@ -295,6 +295,10 @@ func (s *FeishuService) execute(ctx context.Context, message feishuMessage) (str
 		return "help", "", nil
 	}
 	switch fields[0] {
+	case "相关":
+		if len(fields) == 2 && memoPattern.MatchString(fields[1]) {
+			return "related", fields[1], nil
+		}
 	case "搜索":
 		request := SearchRequest{Query: strings.TrimSpace(strings.TrimPrefix(text, "搜索")), Limit: 5}
 		words := []string{}
@@ -352,6 +356,16 @@ func excerpt(content string, limit int) string {
 
 func (s *FeishuService) render(ctx context.Context, kind, resource string) (string, error) {
 	switch kind {
+	case "related":
+		result, err := s.Search.Related(ctx, RelatedRequest{Name: resource, Limit: 5})
+		if errorCode(err) == "SOURCE_NOT_FOUND" {
+			return "笔记已删除或不可访问。", nil
+		}
+		if err != nil {
+			return "", err
+		}
+		return "相关笔记\n原笔记：" + result.Source.Name + "\n" + result.Source.URL + "\n" +
+			renderSearchResults(result.Results, result.Semantic), nil
 	case "search":
 		id, encoded, ok := strings.Cut(resource, ".")
 		if !ok {
@@ -373,22 +387,7 @@ func (s *FeishuService) render(ctx context.Context, kind, resource string) (stri
 		if err != nil {
 			return "", err
 		}
-		var text strings.Builder
-		text.WriteString("搜索结果\n")
-		if !result.Semantic.Used {
-			text.WriteString("仅使用关键词与标签（" + result.Semantic.Reason + "）。\n")
-		}
-		if len(result.Results) == 0 {
-			text.WriteString("没有找到符合条件的笔记。")
-		}
-		for _, hit := range result.Results {
-			if len(hit.Matches) > 0 {
-				match := hit.Matches[0]
-				fmt.Fprintf(&text, "\n%s\n第 %d–%d 行\n%s\n%s\n", excerpt(match.Content, 300),
-					match.LineStart, match.LineEnd, hit.Note.Name, hit.Note.URL)
-			}
-		}
-		return text.String(), nil
+		return "搜索结果\n" + renderSearchResults(result.Results, result.Semantic), nil
 	case "help":
 		return feishuHelp, nil
 	case "error":
@@ -421,6 +420,24 @@ func (s *FeishuService) render(ctx context.Context, kind, resource string) (stri
 	default:
 		return "", fmt.Errorf("invalid Feishu event result")
 	}
+}
+
+func renderSearchResults(results []SearchHit, semantic SearchSemantic) string {
+	var text strings.Builder
+	if !semantic.Used {
+		text.WriteString("仅使用关键词与标签（" + semantic.Reason + "）。\n")
+	}
+	if len(results) == 0 {
+		text.WriteString("没有找到符合条件的笔记。")
+	}
+	for _, hit := range results {
+		if len(hit.Matches) > 0 {
+			match := hit.Matches[0]
+			fmt.Fprintf(&text, "\n%s\n第 %d–%d 行\n%s\n%s\n", excerpt(match.Content, 300),
+				match.LineStart, match.LineEnd, hit.Note.Name, hit.Note.URL)
+		}
+	}
+	return text.String()
 }
 
 func renderReview(batch ReviewBatch, interactive bool) string {

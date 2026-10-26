@@ -57,7 +57,15 @@ func normalizeSearch(request SearchRequest) (SearchRequest, error) {
 	bad := failure("INVALID_ARGUMENT", "Invalid search parameters", 422, false)
 	request.Query = strings.TrimSpace(request.Query)
 	if request.Query == "" || !utf8.ValidString(request.Query) || len(request.Query) > 1024 ||
-		utf8.RuneCountInString(request.Query) > 256 || len(request.Tags) > 20 {
+		utf8.RuneCountInString(request.Query) > 256 {
+		return request, bad
+	}
+	return normalizeSearchOptions(request)
+}
+
+func normalizeSearchOptions(request SearchRequest) (SearchRequest, error) {
+	bad := failure("INVALID_ARGUMENT", "Invalid search parameters", 422, false)
+	if len(request.Tags) > 20 {
 		return request, bad
 	}
 	if request.Limit == 0 {
@@ -310,41 +318,67 @@ func (s *SearchService) Search(ctx context.Context, request SearchRequest) (Sear
 		return response, err
 	}
 	response.Semantic = status
+	response.Results, err = s.loadSearchHits(ctx, request, fuseSearch(keywords, tags, semantic), "", false)
+	if err != nil {
+		return SearchResponse{}, err
+	}
+	if err := s.verify(ctx); err != nil {
+		return SearchResponse{}, err
+	}
+	return response, nil
+}
+
+func (s *SearchService) liveSearchMemo(ctx context.Context, name string) (*Memo, error) {
+	fresh, err := s.Source.Get(ctx, name)
+	if err != nil {
+		if health := s.Store.SourceHealth(false, errorCode(err), ""); health != nil {
+			return nil, health
+		}
+		return nil, err
+	}
+	if fresh != nil && (fresh.Creator != s.Store.Settings.Memos.User || fresh.Name != name) {
+		fresh = nil
+	}
+	if err := s.Store.Refresh(name, fresh); err != nil {
+		return nil, err
+	}
+	return fresh, nil
+}
+
+func (s *SearchService) loadSearchHits(ctx context.Context, request SearchRequest, candidates []searchCandidate,
+	exclude string, deduplicate bool) ([]SearchHit, error) {
+	results := []SearchHit{}
 	checked, positions := map[string]bool{}, map[string]int{}
-	for _, item := range fuseSearch(keywords, tags, semantic) {
+	for _, item := range candidates {
 		if ctx.Err() != nil {
-			return SearchResponse{}, ctx.Err()
+			return nil, ctx.Err()
+		}
+		if item.name == exclude {
+			continue
 		}
 		if !checked[item.name] {
 			checked[item.name] = true
-			if len(response.Results) >= request.Limit {
+			if len(results) >= request.Limit {
 				continue
 			}
-			fresh, err := s.Source.Get(ctx, item.name)
+			fresh, err := s.liveSearchMemo(ctx, item.name)
 			if err != nil {
-				_ = s.Store.SourceHealth(false, errorCode(err), "")
-				return SearchResponse{}, err
-			}
-			if fresh != nil && (fresh.Creator != s.Store.Settings.Memos.User || fresh.Name != item.name) {
-				fresh = nil
-			}
-			if err := s.Store.Refresh(item.name, fresh); err != nil {
-				return SearchResponse{}, err
+				return nil, err
 			}
 			if fresh == nil || fresh.SourceHash != item.sourceHash ||
 				!searchAccepts(request, fresh.State, fresh.Tags) {
 				continue
 			}
-			positions[item.name] = len(response.Results)
-			response.Results = append(response.Results, SearchHit{Note: fresh.Note(s.Store.Settings),
+			positions[item.name] = len(results)
+			results = append(results, SearchHit{Note: fresh.Note(s.Store.Settings),
 				Score: item.score, Matches: []SearchMatch{}})
 		}
 		position, ok := positions[item.name]
 		if !ok {
 			continue
 		}
-		hit := &response.Results[position]
-		if len(hit.Matches) >= 3 || hit.Note.SourceHash != item.sourceHash {
+		hit := &results[position]
+		if hit.Note.SourceHash != item.sourceHash {
 			continue
 		}
 		chunk := item.chunk
@@ -352,11 +386,26 @@ func (s *SearchService) Search(ctx context.Context, request SearchRequest) (Sear
 			hit.Note.Content[chunk.ByteStart:chunk.ByteEnd] != chunk.Content {
 			continue
 		}
+		duplicate := false
+		if deduplicate {
+			for i := range hit.Matches {
+				match := &hit.Matches[i]
+				if match.Content == chunk.Content {
+					for _, signal := range item.signals {
+						if !slices.Contains(match.Signals, signal) {
+							match.Signals = append(match.Signals, signal)
+						}
+					}
+					duplicate = true
+					break
+				}
+			}
+		}
+		if duplicate || len(hit.Matches) >= 3 {
+			continue
+		}
 		hit.Matches = append(hit.Matches, SearchMatch{chunk.Ordinal, chunk.ByteStart, chunk.ByteEnd,
 			chunk.LineStart, chunk.LineEnd, chunk.Content, item.signals})
 	}
-	if err := s.verify(ctx); err != nil {
-		return SearchResponse{}, err
-	}
-	return response, nil
+	return results, nil
 }

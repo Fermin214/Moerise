@@ -170,6 +170,10 @@ func (s *Store) lexicalCandidates(ctx context.Context, request SearchRequest, ta
 		args = append(args, `"`+strings.Join(terms, `" OR "`)+`"`)
 		order = "bm25(search_fts), m.name, c.ordinal"
 	}
+	return s.rankedSearchCandidates(ctx, from, where, order, args)
+}
+
+func (s *Store) rankedSearchCandidates(ctx context.Context, from, where, order string, args []any) ([]searchCandidate, error) {
 	rows, err := s.index.QueryContext(ctx, `SELECT c.name, m.source_hash, c.ordinal,
 		c.byte_start, c.byte_end, c.line_start, c.line_end, c.content
 		FROM search_chunks c JOIN memos m USING (instance_id, user_name, name)`+from+

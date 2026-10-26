@@ -141,6 +141,19 @@ type SearchResponse struct {
 	Semantic SearchSemantic `json:"semantic"`
 }
 
+type RelatedRequest struct {
+	Name  string   `json:"name" jsonschema:"Source Memos resource name, such as memos/abc"`
+	Tags  []string `json:"tags,omitempty" jsonschema:"Exact candidate tags, all required"`
+	State string   `json:"state,omitempty" jsonschema:"Candidate state: NORMAL (default), ARCHIVED, or ALL"`
+	Limit int      `json:"limit,omitempty" jsonschema:"Maximum related notes, default 10, range 1 to 20"`
+}
+
+type RelatedResponse struct {
+	Source   Note           `json:"source"`
+	Results  []SearchHit    `json:"results"`
+	Semantic SearchSemantic `json:"semantic"`
+}
+
 func (m Memo) Note(settings Settings) Note {
 	return Note{settings.Memos.InstanceID, m.Name, m.Creator, m.State, m.Visibility,
 		m.Content, m.Tags, m.Attachments, m.CreateTime, m.UpdateTime, m.SourceHash,

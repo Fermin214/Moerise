@@ -2,7 +2,7 @@
 
 API 前缀为 `/api/ext/v1`。路由由 [api.go](../internal/api.go) 定义，字段模型见 [models.go](../internal/models.go)，完整字段契约见 [openapi.json](../internal/openapi.json)。服务通过 `/openapi.json` 提供同一契约，通过 `/docs` 提供交互文档。本文说明访问范围、分页、任务和错误语义。
 
-本版本提供笔记读取、创建、同步管理、中文混合检索，以及每日回顾 REST 和扩展 MCP。相关笔记、语义漫步与 AI 按[路线图](ROADMAP.md)接入。
+本版本提供笔记读取、创建、同步管理、中文混合检索、相关笔记，以及每日回顾 REST 和扩展 MCP。语义漫步与 AI 按[路线图](ROADMAP.md)接入。
 
 ## 资源与身份
 
@@ -14,7 +14,7 @@ API 前缀为 `/api/ext/v1`。路由由 [api.go](../internal/api.go) 定义，�
 
 | Scope | 允许操作 |
 | --- | --- |
-| `notes:read` | 读取身份、笔记列表和单条笔记，执行搜索 |
+| `notes:read` | 读取身份、笔记列表和单条笔记，执行搜索及查找相关笔记 |
 | `notes:write` | 创建私有笔记与重放创建请求 |
 | `sync:read` | 读取同步状态和任务结果 |
 | `sync:write` | 请求增量同步或全量修复 |
@@ -33,6 +33,7 @@ API 前缀为 `/api/ext/v1`。路由由 [api.go](../internal/api.go) 定义，�
 | GET | `/api/ext/v1/notes` | `notes:read` | 已索引笔记的分页结果，逐条复查来源 |
 | POST | `/api/ext/v1/notes` | `notes:write` | 首次成功 201；幂等重放成功 200，直接返回 `Note` |
 | GET | `/api/ext/v1/notes/{memo_id}` | `notes:read` | 直接复查并读取一条来源笔记 |
+| GET | `/api/ext/v1/notes/{memo_id}/related` | `notes:read` | 200，返回原笔记、相关结果与语义使用状态 |
 | POST | `/api/ext/v1/search` | `notes:read` | 200，返回混合搜索结果与语义使用状态 |
 | GET | `/api/ext/v1/sync` | `sync:read` | 水位、完整同步时间、来源状态、数量、任务统计与向量索引进度 |
 | POST | `/api/ext/v1/sync` | `sync:write` | 202，返回持久任务 |
@@ -112,6 +113,27 @@ Content-Type: application/json
 
 搜索前复查 Memos 版本与身份，返回前逐条读取候选原文；修改、删除、作者越界或不再满足过滤条件的候选丢弃并修正投影，最后再次复查身份。来源故障使整个请求失败，不输出缓存正文。分词、内存缓存、迁移与降级规则见[搜索](SEARCH.md)。
 
+## 相关笔记
+
+```http
+GET /api/ext/v1/notes/example/related?tags=园艺&tags=随记&state=NORMAL&limit=10
+Authorization: Bearer <reader-token>
+```
+
+`memo_id` 为原笔记 `memos/{id}` 的标识部分，资源名须匹配 `^memos/[a-zA-Z0-9_-]+$`。仅接受以下查询参数：
+
+| 参数 | 默认值与约束 |
+| --- | --- |
+| `tags` | `[]`；重复字段传数组，例如 `?tags=园艺&tags=随记`；输入最多 20 项，格式、去重排序和精确 AND 过滤同搜索 |
+| `state` | `NORMAL`；可选 `NORMAL`、`ARCHIVED`、`ALL`，仅允许出现一次 |
+| `limit` | 10；整数，1 至 20，仅允许出现一次 |
+
+未知参数、重复 `state`/`limit`、非法资源名或参数返回 422 `INVALID_ARGUMENT`；非 GET 方法返回 405 `METHOD_NOT_ALLOWED`。状态和显式标签只过滤候选，不过滤原笔记，因此可以从归档原笔记查找正常候选。
+
+响应 `RelatedResponse` 包含 `source: Note`、`results: SearchHit[]` 和 `semantic: SearchSemantic`；无相关结果时 `results=[]`。命中字段、字节区间、行号和分数含义复用搜索契约。关键词从全量原文提取，标签通道匹配共同标签，语义复用文档向量；不将原文截为搜索短查询，不调用查询模型或 LLM。语义降级原因限定为 `EMBEDDING_DISABLED`、`INDEX_NOT_READY`、`NO_SOURCE_VECTORS`，成功使用语义时 `used=true`、`reason=""`。算法见[相关笔记](SEARCH.md#相关笔记)。
+
+先验证来源版本与身份，再读取原笔记并修正投影；候选逐条原文复查同搜索。输出前再次读取原笔记、核实来源摘要与身份：原笔记消失或作者越界返回 404 `SOURCE_NOT_FOUND`，处理中改变返回 409 `SOURCE_CHANGED` 且 `retryable=true`。任意来源故障使整个请求失败，不输出原笔记或部分结果。
+
 ## 创建笔记
 
 ```http
@@ -185,6 +207,7 @@ Content-Type: application/json
 | 工具 | Scope | 状态变化 |
 | --- | --- | --- |
 | `semantic_search` | `notes:read` | 只读、幂等、非破坏；参数为 `SearchRequest`，结构化结果为 `SearchResponse` |
+| `get_related_memos` | `notes:read` | 只读、幂等、非破坏；参数为 `RelatedRequest`，结构化结果为 `RelatedResponse` |
 | `read_daily_review` | `reviews:read` | 读取已有当日批次 |
 | `get_review_batch` | `reviews:read` | 读取指定 `batch_id` |
 | `get_daily_review` | `reviews:write` | 首次获取时保存当日批次和选中历史 |
@@ -195,6 +218,8 @@ Content-Type: application/json
 会改变状态的工具均设置 `readOnlyHint=false`。工具提示只帮助客户端展示，服务端依据凭据 Scope 决定可见及可调用的工具。REST 与 MCP 以同一绑定账号共享批次、换组键与条目状态。
 
 `semantic_search` 仅对具备 `notes:read` 的凭据可见及可调用，设置 `readOnlyHint=true`、`idempotentHint=true`、`destructiveHint=false`。REST、MCP 和飞书复用 `SearchService`，搜索无需 LLM；来源复查引起的派生投影修正不改变产品记录。
+
+`get_related_memos` 使用相同 Scope 可见性及工具提示。`RelatedRequest` 为 JSON 对象，例如 `{"name":"memos/example","tags":["园艺"],"state":"NORMAL","limit":10}`；`name` 必填，格式与相关 REST 资源名一致，其他字段的默认值及约束同相关查询参数。未知字段或非法参数以 `isError=true` 和错误文本返回；业务错误文本为包含 `code`、`message`、`retryable` 的 JSON。成功结构化输出为 `RelatedResponse`。
 
 ## 同步任务
 
@@ -246,6 +271,7 @@ Content-Type: application/json
 | 409 | `IDEMPOTENCY_CONFLICT` | 同一幂等键已对应其他规范化内容；独立创建使用新键 |
 | 409 | `WRITE_CONFLICT` | 检查来源资源冲突，不将冲突资源作为创建结果 |
 | 409 | `NOTIFICATION_CONFLICT` | 检查通知状态、回执或结果确认决定 |
+| 409 | `SOURCE_CHANGED` | 相关笔记处理期间原笔记改变，`retryable=true`，重新请求 |
 | 422 | `INVALID_ARGUMENT`、`INVALID_PAGE_TOKEN` | 修正参数，游标失效时重读第一页 |
 | 503 | `UPSTREAM_UNAVAILABLE`、`UPSTREAM_AUTH`、`IDENTITY_MISMATCH` | 检查来源连接与绑定 |
 | 503 | `UNSUPPORTED_UPSTREAM`、`UPSTREAM_PROTOCOL`、`UPSTREAM_REQUEST_REJECTED` | 检查 Memos 版本与适配层 |

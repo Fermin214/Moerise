@@ -1,6 +1,6 @@
 # Moerise 搜索
 
-REST、扩展 MCP 和飞书通过同一个 `SearchService` 搜索绑定作者的笔记。搜索组合中文关键词、标签和可选语义，不依赖 LLM。相关笔记与语义漫步的范围见[路线图](ROADMAP.md)。
+REST、扩展 MCP 和飞书通过同一个 `SearchService` 搜索绑定作者的笔记并查找相关笔记。检索组合中文关键词、标签和可选语义，不依赖 LLM。语义漫步的范围见[路线图](ROADMAP.md)。
 
 ## 请求与结果
 
@@ -80,6 +80,28 @@ REST 使用 `POST /api/ext/v1/search`，要求 `notes:read` Scope，成功返回
 
 候选丢弃后结果可能少于 `limit`，甚至为空。任一步来源故障使整个请求失败，不返回部分缓存文本。REST 错误沿用 [API v1](API-V1.md#时间与错误) 的来源错误契约；MCP 与飞书执行相同来源检查。
 
+## 相关笔记
+
+REST 使用 `GET /api/ext/v1/notes/{memo_id}/related`，要求 `notes:read`。查询参数 `tags` 通过重复字段传入，最多 20 项，格式及精确 AND 规则同搜索；`state` 默认 `NORMAL`，可选 `ARCHIVED`、`ALL`；`limit` 默认 10，范围 1 至 20。未知参数、重复 `state`/`limit`、非法资源名或参数返回 422，非 GET 返回 405。原笔记不受候选状态或显式标签过滤，归档原笔记可以召回正常候选。
+
+响应 `RelatedResponse` 为 `source: Note`、`results: SearchHit[]`、`semantic: SearchSemantic`。无结果返回 `[]`；命中字段和来源位置复用搜索约定。
+
+### 召回与融合
+
+- 关键词从原文全量提取 3.3 词项，中文单字、双字及英文数字规则同上，不受短查询的 256 码点限制。词项编码前的 UTF-8 长度超过 128 字节时跳过；按出现频次降序、词项升序选择最多 64 个，安全引用后执行 BM25。
+- 标签通道以原笔记标签进行精确共同标签匹配，按共同标签数量降序、资源名和片段序号升序排列，不自动要求候选具备全部原笔记标签。请求显式 `tags` 作为独立的 AND 过滤，对所有通道生效。
+- 语义通道复用同一活动代次的文档向量，不调用查询模型、LLM 或额外 embedding。原笔记不同正文片段的向量分别 L2 归一化，再等权平均并归一化；相同正文片段只计一次。按候选片段的正余弦相似度排序。
+
+每通道先排除原笔记，再取前 100 片段；RRF k=60 先融合片段再按笔记合并，笔记取最高片段分。每笔记最多 3 个不同正文片段；相同正文合并 `signals`，保留最高分片段的位置。其余稳定排序规则同 3.3。
+
+语义状态复用 `SearchSemantic`：启用且可用时为 `used=true, reason=""`；关闭 embedding 为 `EMBEDDING_DISABLED`，索引空间或投影修订不匹配、活动索引未就绪为 `INDEX_NOT_READY`，原笔记无可用片段向量为 `NO_SOURCE_VECTORS`。降级后继续关键词与共同标签召回；取消不降级。
+
+### 来源一致性
+
+先复查来源版本与身份，再读取原笔记、修正其投影并召回候选。候选逐条原文复查与搜索一致，变化候选丢弃并修正投影。输出前再次读取原笔记、验证来源摘要与身份；原笔记消失或作者越界返回 404 `SOURCE_NOT_FOUND`，处理中改变返回 409 `SOURCE_CHANGED` 且 `retryable=true`。任何来源故障使整个请求失败，不返回原笔记或部分结果。
+
+相关笔记复用既有分块、关键词索引与活动向量缓存，不新增配置、迁移或产品状态。
+
 ## MCP 与飞书
 
 扩展 MCP 工具为 `semantic_search`，仅对具备 `notes:read` 的凭据可见及可调用。输入字段与 `SearchRequest`、结构化输出与 `SearchResponse` 一致；设置 `readOnlyHint=true`、`idempotentHint=true`、`destructiveHint=false`。工具语义为只读、幂等、非破坏，来源复查修正的仅是派生索引。
@@ -87,6 +109,10 @@ REST 使用 `POST /api/ext/v1/search`，要求 `notes:read` Scope，成功返回
 飞书支持 `搜索 查询词`、`搜索 #标签 查询词`，也可用 `搜索 #标签` 只搜标签。以 `#` 开头的独立词作为标签过滤；有其他查询词时从查询中移除标签词，纯标签输入则保留为非空查询。默认返回前 5 条正常笔记，展示片段、行位置、资源名和原文 URL；语义降级附简短提示。交互与事件恢复见[飞书入口](FEISHU.md)。
 
 搜索查询加密保存在飞书事件结果引用中，发送时重新搜索并复查来源。结果引用不保存用于直接发送的搜索正文，恢复发送时使用配套应用密钥解密查询。
+
+`get_related_memos` 要求 `notes:read`，使用 `readOnlyHint=true`、`idempotentHint=true`、`destructiveHint=false`。输入为 `RelatedRequest`：必填 `name: "memos/id"`，可选 `tags`、`state`、`limit`，默认值和约束同相关 REST；输入错误以 `isError=true` 和错误文本返回，业务错误沿用其他工具的 JSON 错误形状。结构化输出为 `RelatedResponse`。
+
+飞书命令为 `相关 memos/资源标识`，默认 5 条、`NORMAL`。发送时重新获取相关结果，复查原笔记及候选；展示原笔记资源名和 URL、结果片段、行号、资源名与 URL，以及语义降级原因。来源故障不发送原笔记或部分结果。
 
 ## 索引迁移与恢复
 

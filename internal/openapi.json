@@ -5,6 +5,82 @@
     "version": "0.2.0"
   },
   "paths": {
+    "/api/ext/v1/notes/{memo_id}/related": {
+      "get": {
+        "summary": "查找相关笔记",
+        "operationId": "related_api_ext_v1_notes_memo_id_related_get",
+        "description": "要求 notes:read。从全量原文提取 3.3 词项，按频次降序、词项升序取最多 64 个，编码前 UTF-8 超过 128 字节的词项排除，使用 BM25；标签通道精确匹配共同标签，按共同标签数降序、资源名及片段序号升序，不要求匹配全部原笔记标签。语义复用同一活动代次文档向量，原笔记不同正文片段各自 L2 归一化后等权平均并归一化，相同正文只计一次，候选按正余弦排序；无查询模型、LLM 或额外 embedding 调用。每通道排除自身后取前 100 片段，RRF k=60 先融合片段再合并笔记，笔记取最高片段分，每笔记最多 3 个不同正文片段，相同正文合并 signals 并保留最高分位置，稳定排序同搜索。state 与显式 tags 仅过滤候选。先验证来源版本与身份，再读原笔记并修正投影；候选逐条复查同搜索，变化则丢弃并修正投影；输出前再次读原笔记、核实来源摘要和身份。任意来源故障整请求失败，不输出原笔记或部分结果。未知参数、重复 state/limit 或非法资源名及参数返回 422；非 GET 返回 405。",
+        "security": [{"HTTPBearer": []}],
+        "x-required-scopes": ["notes:read"],
+        "parameters": [
+          {
+            "name": "memo_id",
+            "in": "path",
+            "required": true,
+            "description": "原笔记 memos/{id} 的标识部分，原笔记不受候选状态和标签过滤。",
+            "schema": {"type": "string", "minLength": 1, "pattern": "^[a-zA-Z0-9_-]+$"}
+          },
+          {
+            "name": "tags",
+            "in": "query",
+            "style": "form",
+            "explode": true,
+            "description": "重复字段传数组，例如 ?tags=园艺&tags=随记；最多 20 项，格式同搜索，去重排序后对全部候选通道精确 AND 过滤。",
+            "schema": {"$ref": "#/components/schemas/SearchRequest/properties/tags"}
+          },
+          {
+            "name": "state",
+            "in": "query",
+            "description": "候选状态，仅允许出现一次。",
+            "schema": {"$ref": "#/components/schemas/SearchRequest/properties/state"}
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "返回笔记数上限，仅允许出现一次。",
+            "schema": {"$ref": "#/components/schemas/SearchRequest/properties/limit"}
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "原笔记与相关结果；无命中 results=[]。语义关闭、索引未就绪或原笔记无可用向量时显式降级，取消不降级。",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/RelatedResponse"}}}
+          },
+          "401": {
+            "description": "UNAUTHENTICATED",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}
+          },
+          "403": {
+            "description": "FORBIDDEN：要求 notes:read",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}
+          },
+          "404": {
+            "description": "SOURCE_NOT_FOUND：原笔记消失或作者越界",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}
+          },
+          "405": {
+            "description": "METHOD_NOT_ALLOWED：仅支持 GET",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}
+          },
+          "409": {
+            "description": "SOURCE_CHANGED：处理中原笔记改变，error.retryable=true",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}
+          },
+          "422": {
+            "description": "INVALID_ARGUMENT：未知查询参数、重复 state/limit、非法资源名或参数",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}
+          },
+          "500": {
+            "description": "INTERNAL",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}
+          },
+          "503": {
+            "description": "来源版本、身份或原文复查失败，整请求失败，不返回原笔记或部分结果",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}
+          }
+        }
+      }
+    },
     "/api/ext/v1/search": {
       "post": {
         "summary": "中文混合搜索",
@@ -2037,6 +2113,47 @@
   },
   "components": {
     "schemas": {
+      "RelatedRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name"],
+        "description": "MCP get_related_memos 输入；要求 notes:read，readOnlyHint=true、idempotentHint=true、destructiveHint=false。未知字段或非法参数以 isError=true 和错误文本返回；业务错误文本为包含 code、message、retryable 的 JSON。",
+        "properties": {
+          "name": {
+            "type": "string",
+            "pattern": "^memos/[a-zA-Z0-9_-]+$",
+            "description": "必填原笔记资源名，例如 memos/example。"
+          },
+          "tags": {"$ref": "#/components/schemas/SearchRequest/properties/tags"},
+          "state": {"$ref": "#/components/schemas/SearchRequest/properties/state"},
+          "limit": {"$ref": "#/components/schemas/SearchRequest/properties/limit"}
+        }
+      },
+      "RelatedResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["source", "results", "semantic"],
+        "properties": {
+          "source": {
+            "$ref": "#/components/schemas/Note",
+            "description": "来源复查后的原笔记，输出前再次验证来源摘要与身份。"
+          },
+          "results": {
+            "type": "array",
+            "maxItems": 20,
+            "items": {"$ref": "#/components/schemas/SearchHit"},
+            "description": "排除原笔记，稳定排序且不超过请求 limit；无结果为 []。每笔记最多 3 个不同正文片段，相同正文合并 signals 并保留最高分位置；字段及位置契约同搜索。"
+          },
+          "semantic": {
+            "$ref": "#/components/schemas/SearchSemantic",
+            "description": "不调用查询模型。语义关闭为 EMBEDDING_DISABLED，索引空间或修订失配、未就绪为 INDEX_NOT_READY，原笔记无可用片段向量为 NO_SOURCE_VECTORS。",
+            "oneOf": [
+              {"properties": {"used": {"const": true}, "reason": {"const": ""}}},
+              {"properties": {"used": {"const": false}, "reason": {"enum": ["EMBEDDING_DISABLED", "INDEX_NOT_READY", "NO_SOURCE_VECTORS"]}}}
+            ]
+          }
+        }
+      },
       "SearchRequest": {
         "type": "object",
         "additionalProperties": false,
@@ -2114,13 +2231,13 @@
         "required": ["used", "reason"],
         "properties": {
           "used": {"type": "boolean"},
-          "reason": {"type": "string", "description": "used=true 时为空字符串；否则为 EMBEDDING_DISABLED、INDEX_NOT_READY 或具体模型错误代码。"}
+          "reason": {"type": "string", "description": "used=true 时为空字符串；否则为 EMBEDDING_DISABLED、INDEX_NOT_READY，搜索还可返回具体模型错误代码，相关笔记还可返回 NO_SOURCE_VECTORS。"}
         },
         "oneOf": [
           {"properties": {"used": {"const": true}, "reason": {"const": ""}}},
           {"properties": {"used": {"const": false}, "reason": {"minLength": 1}}}
         ],
-        "description": "每个服务复用一个活动代次的内存 float32 缓存，仅在配置空间和投影修订一致时使用。关闭模型、索引未就绪或模型失败时降级，取消不降级。"
+        "description": "每个服务复用一个活动代次的内存 float32 缓存，仅在配置空间和投影修订一致时使用。关闭模型、索引未就绪时降级；搜索还可因查询模型失败降级，相关笔记还可因原笔记无可用向量降级；取消不降级。"
       },
       "ErrorDetail": {
         "properties": {

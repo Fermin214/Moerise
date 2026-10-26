@@ -230,7 +230,14 @@ func (a *API) route(writer http.ResponseWriter, request *http.Request) (any, int
 		return map[string]string{"status": "degraded"}, 503, nil
 	}
 	scope := ""
+	isRelated := strings.HasPrefix(path, "/api/ext/v1/notes/") &&
+		strings.HasSuffix(strings.TrimPrefix(path, "/api/ext/v1/notes/"), "/related")
 	switch {
+	case isRelated:
+		if method != "GET" {
+			return badMethod()
+		}
+		scope = "notes:read"
 	case path == "/api/ext/v1/search":
 		if method != "POST" {
 			return badMethod()
@@ -271,6 +278,9 @@ func (a *API) route(writer http.ResponseWriter, request *http.Request) (any, int
 	access, err := a.authenticate(request, scope)
 	if err != nil {
 		return nil, 0, err
+	}
+	if isRelated {
+		return a.related(request)
 	}
 	switch path {
 	case "/api/ext/v1/search":
