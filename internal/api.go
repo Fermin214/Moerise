@@ -34,8 +34,9 @@ func NewAPI(settings Settings, store *Store, source Source, worker *SyncService)
 	api := &API{Settings: settings, Store: store, Source: source, Worker: worker,
 		Records: NewRecordService(store, source), Reviews: NewReviewService(store, source), generation: generation}
 	api.MCP = api.newMCPHandler()
-	api.Feishu = NewFeishuService(store, source, api.Records, api.Reviews)
 	api.Notifications = NewNotificationService(store, api.Reviews, nil)
+	api.Feishu = NewFeishuService(store, source, api.Records, api.Reviews, api.Notifications)
+	api.Notifications.Transport = NewFeishuDelivery(store, api.Reviews, api.Feishu)
 	return api, err
 }
 

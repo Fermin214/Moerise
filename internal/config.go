@@ -74,6 +74,7 @@ type ChannelConfig struct {
 	UserOpenID        *string `json:"user_open_id"`
 	Destination       *string `json:"destination"`
 	WebhookURL        *string `json:"webhook_url"`
+	WebhookSecret     *string `json:"webhook_secret"`
 }
 
 func configured(value *string) string {

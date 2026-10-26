@@ -51,22 +51,26 @@ type feishuMessage struct {
 type FeishuPlatform interface {
 	Reply(context.Context, string, string, string) (string, error)
 	Download(context.Context, string, string, string, string) (CreateAttachment, error)
+	SendText(context.Context, string, string, string) (string, error)
+	GetMessage(context.Context, string) (FeishuSentMessage, error)
 }
 
 type FeishuService struct {
-	Store   *Store
-	Source  Source
-	Records *RecordService
-	Reviews *ReviewService
-	Client  FeishuPlatform
-	wake    chan struct{}
+	Store         *Store
+	Source        Source
+	Records       *RecordService
+	Reviews       *ReviewService
+	Client        FeishuPlatform
+	Notifications *NotificationService
+	wake          chan struct{}
 }
 
-func NewFeishuService(store *Store, source Source, records *RecordService, reviews *ReviewService) *FeishuService {
+func NewFeishuService(store *Store, source Source, records *RecordService, reviews *ReviewService, notifications *NotificationService) *FeishuService {
 	if configured(store.Settings.Channel.AppID) == "" || store.Settings.Channel.Kind != "feishu-app" {
 		return nil
 	}
-	return &FeishuService{store, source, records, reviews, NewFeishuClient(store.Settings.Channel), make(chan struct{}, 1)}
+	return &FeishuService{Store: store, Source: source, Records: records, Reviews: reviews,
+		Client: NewFeishuClient(store.Settings.Channel), Notifications: notifications, wake: make(chan struct{}, 1)}
 }
 
 func (s *FeishuService) Wake() {
@@ -147,6 +151,31 @@ func (s *FeishuService) Run(ctx context.Context) error {
 		AND app_id = ? AND sender_open_id = ?`, configured(config.AppID), configured(config.UserOpenID)); err != nil {
 		return err
 	}
+	rows, err := s.Store.state.Query(`SELECT message_id FROM channel_events WHERE status = 'processed'
+		AND reply_status != 'queued' AND app_id = ? AND sender_open_id = ?`,
+		configured(config.AppID), configured(config.UserOpenID))
+	if err != nil {
+		return err
+	}
+	adopt := []string{}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return err
+		}
+		adopt = append(adopt, id)
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return err
+	}
+	for _, id := range adopt {
+		if _, err := s.Notifications.EnqueueReply(id); err != nil {
+			return err
+		}
+	}
 	ticker := time.NewTicker(500 * time.Millisecond)
 	defer ticker.Stop()
 	for {
@@ -171,15 +200,15 @@ func (s *FeishuService) Run(ctx context.Context) error {
 
 func (s *FeishuService) processOne(ctx context.Context) (bool, error) {
 	config := s.Store.Settings.Channel
-	var messageID, status, kind, resource, uuid string
+	var messageID, status, kind, resource string
 	var payload []byte
 	var attempts int
 	err := s.Store.state.QueryRow(`SELECT message_id, status, COALESCE(result_kind, ''),
-		COALESCE(resource_name, ''), reply_uuid, payload, attempts FROM channel_events
-		WHERE status IN ('pending', 'processed') AND reply_status != 'unknown' AND available_at <= ?
+		COALESCE(resource_name, ''), payload, attempts FROM channel_events
+		WHERE (status = 'pending' OR status = 'processed' AND reply_status = 'pending') AND available_at <= ?
 		AND app_id = ? AND sender_open_id = ? ORDER BY available_at, created_at LIMIT 1`,
 		nowSeconds(), configured(config.AppID), configured(config.UserOpenID)).
-		Scan(&messageID, &status, &kind, &resource, &uuid, &payload, &attempts)
+		Scan(&messageID, &status, &kind, &resource, &payload, &attempts)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}
@@ -204,36 +233,25 @@ func (s *FeishuService) processOne(ctx context.Context) (bool, error) {
 			if errors.As(err, &service) && !service.Retryable {
 				kind, resource = "error", service.Code
 			} else {
-				return true, s.retry(messageID, "pending", "pending", attempts, errorCode(err))
+				return true, s.retry(messageID, "pending", attempts, errorCode(err))
 			}
 		}
 		if _, err := s.Store.state.Exec(`UPDATE channel_events SET status = 'processed', result_kind = ?,
-			resource_name = ?, payload = NULL, last_error = NULL WHERE message_id = ?`, kind, resource, messageID); err != nil {
+			resource_name = ?, payload = NULL, attempts = attempts + 1,
+			last_error = CASE WHEN reply_status = 'unknown' THEN last_error ELSE NULL END
+			WHERE message_id = ?`, kind, resource, messageID); err != nil {
 			return false, err
 		}
 	}
-	text, err := s.render(ctx, kind, resource)
-	if err != nil {
-		return true, s.retry(messageID, "processed", "pending", attempts, errorCode(err))
-	}
-	receipt, err := s.Client.Reply(ctx, messageID, uuid, text)
-	if err != nil {
-		replyStatus := "pending"
-		if errorCode(err) == "SEND_OUTCOME_UNKNOWN" {
-			replyStatus = "unknown"
-		}
-		return true, s.retry(messageID, "processed", replyStatus, attempts, errorCode(err))
-	}
-	_, err = s.Store.state.Exec(`UPDATE channel_events SET status = 'succeeded', reply_status = 'sent',
-		receipt = ?, attempts = attempts + 1, last_error = NULL WHERE message_id = ?`, receipt, messageID)
+	_, err = s.Notifications.EnqueueReply(messageID)
 	return true, err
 }
 
-func (s *FeishuService) retry(id, status, replyStatus string, attempts int, code string) error {
+func (s *FeishuService) retry(id, status string, attempts int, code string) error {
 	slog.Warn("feishu event deferred", "message_id", id, "code", code)
-	_, err := s.Store.state.Exec(`UPDATE channel_events SET status = ?, reply_status = ?, attempts = attempts + 1,
+	_, err := s.Store.state.Exec(`UPDATE channel_events SET status = ?, attempts = attempts + 1,
 		available_at = ?, last_error = ? WHERE message_id = ?`,
-		status, replyStatus, nowSeconds()+float64(int64(1)<<min(attempts+1, 8)), code, id)
+		status, nowSeconds()+float64(int64(1)<<min(attempts+1, 8)), code, id)
 	return err
 }
 
@@ -339,13 +357,13 @@ func (s *FeishuService) render(ctx context.Context, kind, resource string) (stri
 		if err != nil {
 			return "", err
 		}
-		return renderReview(batch), nil
+		return renderReview(batch, true), nil
 	default:
 		return "", fmt.Errorf("invalid Feishu event result")
 	}
 }
 
-func renderReview(batch ReviewBatch) string {
+func renderReview(batch ReviewBatch, interactive bool) string {
 	var text strings.Builder
 	fmt.Fprintf(&text, "%s 每日回顾\n批次：%s\n", batch.Date, batch.ID)
 	if len(batch.Items) == 0 {
@@ -355,8 +373,10 @@ func renderReview(batch ReviewBatch) string {
 		if item.Unavailable {
 			continue
 		}
-		fmt.Fprintf(&text, "\n%s\n%s\n%s\n", excerpt(item.Note.Content, 300), item.Name, item.Note.URL)
+		fmt.Fprintf(&text, "\n%s\n%s\n%s\n%s\n", item.Note.CreateTime, excerpt(item.Note.Content, 300), item.Name, item.Note.URL)
 	}
-	text.WriteString("\n回复“换一组”，或使用“打开/略过 批次标识 memos/资源标识”。")
+	if interactive {
+		text.WriteString("\n回复“换一组”，或使用“打开/略过 批次标识 memos/资源标识”。")
+	}
 	return text.String()
 }

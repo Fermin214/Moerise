@@ -52,7 +52,8 @@
     "encrypt_key": null,
     "user_open_id": null,
     "destination": null,
-    "webhook_url": null
+    "webhook_url": null,
+    "webhook_secret": null
   },
   "notifications": {
     "enabled": false,

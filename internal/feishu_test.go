@@ -63,7 +63,8 @@ func TestFeishuCallbackAuthenticationAndEncryptedQueue(t *testing.T) {
 		t.Error("callback must not contact Memos before acknowledging its durable queue")
 		return 500, nil, nil
 	})
-	service := NewFeishuService(store, client, NewRecordService(store, client), NewReviewService(store, client))
+	reviews := NewReviewService(store, client)
+	service := NewFeishuService(store, client, NewRecordService(store, client), reviews, NewNotificationService(store, reviews, nil))
 	call := func(body []byte, sign bool) error {
 		t.Helper()
 		request := httptest.NewRequest("POST", "/hooks/feishu", bytes.NewReader(body))
@@ -140,6 +141,23 @@ func TestFeishuClientTokenResourcesAndReplyUncertainty(t *testing.T) {
 			} else {
 				_, _ = io.WriteString(w, `{"code":0,"data":{}}`)
 			}
+		case "/im/v1/messages":
+			var body map[string]string
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			if r.Method != "POST" || r.Header.Get("Authorization") != "Bearer tenant-token" ||
+				r.URL.Query().Get("receive_id_type") != "open_id" || body["receive_id"] != "ou_owner" ||
+				body["uuid"] != "push-uuid" || body["msg_type"] != "text" || body["content"] != `{"text":"daily review"}` {
+				t.Error("proactive message lost its destination, credentials or UUID")
+			}
+			writeJSON(w, 200, map[string]any{"code": 0, "data": map[string]string{"message_id": "om_push"}})
+		case "/im/v1/messages/om_push":
+			if r.Method != "GET" || r.Header.Get("Authorization") != "Bearer tenant-token" {
+				t.Error("receipt lookup was not authenticated")
+			}
+			writeJSON(w, 200, map[string]any{"code": 0, "data": map[string]any{"items": []any{map[string]any{
+				"message_id": "om_push", "sender": map[string]string{"id": "cli_test_app", "id_type": "app_id", "sender_type": "app"},
+				"body": map[string]string{"content": `{"text":"daily review"}`},
+			}}}})
 		default:
 			t.Errorf("unexpected Feishu request %s", r.URL.Path)
 			http.NotFound(w, r)
@@ -159,6 +177,14 @@ func TestFeishuClientTokenResourcesAndReplyUncertainty(t *testing.T) {
 	if _, err := client.Reply(context.Background(), "om_file", "stable-uuid", "saved"); errorCode(err) != "SEND_OUTCOME_UNKNOWN" {
 		t.Fatal("missing receipt was not treated as unknown")
 	}
+	if receipt, err := client.SendText(context.Background(), "ou_owner", "push-uuid", "daily review"); err != nil || receipt != "om_push" {
+		t.Fatalf("proactive send: receipt=%s err=%v", receipt, err)
+	}
+	if message, err := client.GetMessage(context.Background(), "om_push"); err != nil ||
+		message.SenderID != "cli_test_app" || message.SenderIDType != "app_id" ||
+		message.SenderType != "app" || message.Text != "daily review" || message.Deleted {
+		t.Fatalf("receipt lookup: %+v %v", message, err)
+	}
 	if tokenCalls != 1 {
 		t.Fatal("tenant token was not reused")
 	}
@@ -175,6 +201,14 @@ func (p *unknownFeishuReply) Download(context.Context, string, string, string, s
 	return CreateAttachment{}, failure("INVALID_ARGUMENT", "unexpected download", 422, false)
 }
 
+func (p *unknownFeishuReply) SendText(context.Context, string, string, string) (string, error) {
+	return "", failure("INVALID_ARGUMENT", "unexpected proactive send", 422, false)
+}
+
+func (p *unknownFeishuReply) GetMessage(context.Context, string) (FeishuSentMessage, error) {
+	return FeishuSentMessage{}, failure("INVALID_ARGUMENT", "unexpected receipt lookup", 422, false)
+}
+
 func TestUnknownFeishuReplyIsHeldWithoutRepeatingBusiness(t *testing.T) {
 	settings := feishuSettings(t)
 	store := testStore(t, settings)
@@ -182,7 +216,10 @@ func TestUnknownFeishuReplyIsHeldWithoutRepeatingBusiness(t *testing.T) {
 		t.Error("help message contacted Memos")
 		return 500, nil, nil
 	})
-	service := NewFeishuService(store, client, NewRecordService(store, client), NewReviewService(store, client))
+	reviews := NewReviewService(store, client)
+	notifications := NewNotificationService(store, reviews, nil)
+	service := NewFeishuService(store, client, NewRecordService(store, client), reviews, notifications)
+	notifications.Transport = NewFeishuDelivery(store, reviews, service)
 	platform := &unknownFeishuReply{}
 	service.Client = platform
 	body := testFeishuEvent(settings, "om_help", "ou_owner", "帮助")
@@ -192,6 +229,9 @@ func TestUnknownFeishuReplyIsHeldWithoutRepeatingBusiness(t *testing.T) {
 	}
 	if progress, err := service.processOne(context.Background()); err != nil || !progress {
 		t.Fatalf("event processing: progress=%v err=%v", progress, err)
+	}
+	if progress, err := notifications.Deliver(context.Background()); err != nil || !progress {
+		t.Fatalf("queued reply delivery: progress=%v err=%v", progress, err)
 	}
 	if _, err := store.state.Exec("UPDATE channel_events SET available_at = 0"); err != nil {
 		t.Fatal(err)

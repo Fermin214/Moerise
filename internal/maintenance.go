@@ -228,6 +228,8 @@ func Restore(settings Settings, source, safety string) error {
 		UPDATE notifications SET status = 'unknown', last_error = 'STATE_RESTORED'
 			WHERE status IN ('pending', 'running');
 		UPDATE notification_attempts SET outcome = 'unknown' WHERE outcome = 'running';
+		UPDATE channel_events SET reply_status = 'unknown', last_error = 'STATE_RESTORED'
+			WHERE status IN ('pending', 'processing', 'processed');
 		PRAGMA user_version = 0;
 		COMMIT;
 		PRAGMA wal_checkpoint(TRUNCATE);

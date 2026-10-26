@@ -96,7 +96,18 @@ func (c *FeishuClient) request(ctx context.Context, method, path string, body []
 func (c *FeishuClient) Reply(ctx context.Context, messageID, uuid, text string) (string, error) {
 	content, _ := json.Marshal(map[string]string{"text": text})
 	body, _ := json.Marshal(map[string]any{"msg_type": "text", "content": string(content), "uuid": uuid})
-	response, err := c.request(ctx, "POST", "/im/v1/messages/"+url.PathEscape(messageID)+"/reply", body)
+	return c.send(ctx, "/im/v1/messages/"+url.PathEscape(messageID)+"/reply", body)
+}
+
+func (c *FeishuClient) SendText(ctx context.Context, recipient, uuid, text string) (string, error) {
+	content, _ := json.Marshal(map[string]string{"text": text})
+	body, _ := json.Marshal(map[string]string{"receive_id": recipient, "msg_type": "text",
+		"content": string(content), "uuid": uuid})
+	return c.send(ctx, "/im/v1/messages?receive_id_type=open_id", body)
+}
+
+func (c *FeishuClient) send(ctx context.Context, path string, body []byte) (string, error) {
+	response, err := c.request(ctx, "POST", path, body)
 	if err != nil {
 		return "", err
 	}
@@ -117,6 +128,65 @@ func (c *FeishuClient) Reply(ctx context.Context, messageID, uuid, text string) 
 		return "", upstreamError("SEND_OUTCOME_UNKNOWN", "Feishu did not return a receipt")
 	}
 	return result.Data.MessageID, nil
+}
+
+type FeishuSentMessage struct {
+	ID           string
+	ParentID     string
+	SenderID     string
+	SenderIDType string
+	SenderType   string
+	Text         string
+	Deleted      bool
+}
+
+func (c *FeishuClient) GetMessage(ctx context.Context, id string) (FeishuSentMessage, error) {
+	if !feishuIDPattern.MatchString(id) {
+		return FeishuSentMessage{}, failure("INVALID_ARGUMENT", "Invalid Feishu message receipt", 422, false)
+	}
+	response, err := c.request(ctx, "GET", "/im/v1/messages/"+url.PathEscape(id), nil)
+	if err != nil {
+		return FeishuSentMessage{}, err
+	}
+	defer response.Body.Close()
+	var result struct {
+		Code *int `json:"code"`
+		Data struct {
+			Items []struct {
+				ID       string `json:"message_id"`
+				ParentID string `json:"parent_id"`
+				Deleted  bool   `json:"deleted"`
+				Sender   struct {
+					ID   string `json:"id"`
+					Type string `json:"sender_type"`
+					Kind string `json:"id_type"`
+				} `json:"sender"`
+				Body struct {
+					Content string `json:"content"`
+				} `json:"body"`
+			} `json:"items"`
+		} `json:"data"`
+	}
+	if json.NewDecoder(io.LimitReader(response.Body, 1024*1024)).Decode(&result) != nil || result.Code == nil {
+		return FeishuSentMessage{}, upstreamError("CHANNEL_PROTOCOL", "Invalid Feishu receipt response")
+	}
+	if *result.Code != 0 {
+		return FeishuSentMessage{}, upstreamError("CHANNEL_REJECTED", "Feishu rejected receipt lookup")
+	}
+	for _, item := range result.Data.Items {
+		if item.ID != id {
+			continue
+		}
+		var content struct {
+			Text string `json:"text"`
+		}
+		if json.Unmarshal([]byte(item.Body.Content), &content) != nil {
+			return FeishuSentMessage{}, upstreamError("CHANNEL_PROTOCOL", "Invalid Feishu message content")
+		}
+		return FeishuSentMessage{item.ID, item.ParentID, item.Sender.ID, item.Sender.Kind,
+			item.Sender.Type, content.Text, item.Deleted}, nil
+	}
+	return FeishuSentMessage{}, failure("NOTIFICATION_CONFLICT", "Feishu receipt was not found", 409, false)
 }
 
 func (c *FeishuClient) Download(ctx context.Context, messageID, key, kind, filename string) (CreateAttachment, error) {

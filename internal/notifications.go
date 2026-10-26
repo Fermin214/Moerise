@@ -175,6 +175,68 @@ func (s *NotificationService) enqueue(kind, logical, date string, batch, event *
 	return saved, err
 }
 
+func (s *NotificationService) EnqueueReply(messageID string) (string, error) {
+	settings := s.Store.Settings
+	channel := s.channelKey()
+	logical := "reply:" + messageID
+	id := derivedID(settings.CursorSecret, "notification", settings.Memos.InstanceID, settings.Memos.User, channel, logical)
+	err := transaction(s.Store.state, func(tx *sql.Tx) error {
+		var replyStatus, uuid, created string
+		var lastError *string
+		if err := tx.QueryRow(`SELECT reply_status, reply_uuid, created_at, last_error FROM channel_events
+			WHERE message_id = ? AND app_id = ? AND sender_open_id = ? AND status = 'processed'`,
+			messageID, configured(settings.Channel.AppID), configured(settings.Channel.UserOpenID)).
+			Scan(&replyStatus, &uuid, &created, &lastError); err != nil {
+			return err
+		}
+		location, err := time.LoadLocation(settings.Timezone)
+		if err != nil {
+			return err
+		}
+		at, err := time.Parse(time.RFC3339Nano, created)
+		if err != nil {
+			return err
+		}
+		status := "pending"
+		if replyStatus == "unknown" {
+			status = "unknown"
+		}
+		stamp := nowText()
+		if _, err := tx.Exec(`INSERT OR IGNORE INTO notifications
+			(id, instance_id, user_name, channel_key, logical_key, kind, local_date, source_event,
+			 status, platform_uuid, available_at, last_error, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, 'reply', ?, ?, ?, ?, ?, ?, ?, ?)`, id, settings.Memos.InstanceID,
+			settings.Memos.User, channel, logical, at.In(location).Format(time.DateOnly), messageID,
+			status, uuid, nowSeconds(), lastError, stamp, stamp); err != nil {
+			return err
+		}
+		item, err := scanNotification(tx.QueryRow("SELECT "+notificationColumns+` FROM notifications
+			WHERE instance_id = ? AND user_name = ? AND channel_key = ? AND logical_key = ?`,
+			settings.Memos.InstanceID, settings.Memos.User, channel, logical))
+		if err != nil {
+			return err
+		}
+		id = item.ID
+		return syncEventNotification(tx, item, item.Status, item.Receipt, item.LastError)
+	})
+	return id, err
+}
+
+func syncEventNotification(tx *sql.Tx, item Notification, status string, receipt, code any) error {
+	if item.SourceEvent == nil {
+		return nil
+	}
+	eventStatus, replyStatus := "processed", "queued"
+	if status == "sent" {
+		eventStatus, replyStatus = "succeeded", "sent"
+	} else if status == "unknown" {
+		replyStatus = "unknown"
+	}
+	_, err := tx.Exec(`UPDATE channel_events SET status = ?, reply_status = ?, receipt = ?, last_error = ?
+		WHERE message_id = ?`, eventStatus, replyStatus, receipt, code, *item.SourceEvent)
+	return err
+}
+
 const notificationColumns = `id, kind, local_date, batch_id, source_event, status, attempts, available_at,
 	receipt, last_error, created_at, updated_at, platform_uuid`
 
@@ -270,8 +332,13 @@ func (s *NotificationService) recover() error {
 			WHERE outcome = 'running'`, nowText()); err != nil {
 			return err
 		}
-		_, err := tx.Exec(`UPDATE notifications SET status = 'unknown', last_error = 'PROCESS_INTERRUPTED',
-			updated_at = ? WHERE status = 'running'`, nowText())
+		if _, err := tx.Exec(`UPDATE notifications SET status = 'unknown', last_error = 'PROCESS_INTERRUPTED',
+			updated_at = ? WHERE status = 'running'`, nowText()); err != nil {
+			return err
+		}
+		_, err := tx.Exec(`UPDATE channel_events SET reply_status = 'unknown', last_error = 'PROCESS_INTERRUPTED'
+			WHERE message_id IN (SELECT source_event FROM notifications
+				WHERE status = 'unknown' AND last_error = 'PROCESS_INTERRUPTED')`)
 		return err
 	})
 }
@@ -333,6 +400,9 @@ func (s *NotificationService) Deliver(ctx context.Context) (bool, error) {
 			WHERE id = ?`, stamp, outcome, savedReceipt, nullable(code), attemptID); err != nil {
 			return err
 		}
+		if err := syncEventNotification(tx, item, status, savedReceipt, nullable(code)); err != nil {
+			return err
+		}
 		_, err := tx.Exec(`UPDATE notifications SET status = ?, receipt = ?, last_error = ?,
 			available_at = ?, updated_at = ? WHERE id = ?`, status, savedReceipt, nullable(code),
 			nowSeconds()+float64(int64(1)<<min(item.Attempts, 8)), stamp, item.ID)
@@ -387,6 +457,9 @@ func (s *NotificationService) Resolve(ctx context.Context, id, decision, receipt
 		if _, err := tx.Exec(`INSERT INTO notification_resolutions
 			(id, notification_id, decision, receipt, resolved_by, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
 			newID(), id, decision, nullable(receipt), actor, nowText()); err != nil {
+			return err
+		}
+		if err := syncEventNotification(tx, detail.Notification, status, nullable(receipt), nil); err != nil {
 			return err
 		}
 		_, err := tx.Exec(`UPDATE notifications SET status = ?, platform_uuid = ?, receipt = ?,
