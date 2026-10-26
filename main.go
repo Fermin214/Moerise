@@ -27,7 +27,7 @@ func main() {
 
 func run(args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: moerise serve|check-config|backup|restore|rebuild-index|healthcheck|version")
+		return errors.New("usage: moerise serve|check-config|check-embedding|backup|restore|rebuild-index|healthcheck|version")
 	}
 	if args[0] == "version" {
 		fmt.Println(moerise.Version)
@@ -78,6 +78,18 @@ func run(args []string) error {
 	switch args[0] {
 	case "check-config":
 		return encode(map[string]string{"status": "valid", "instance_id": settings.Memos.InstanceID, "user": settings.Memos.User, "timezone": settings.Timezone})
+	case "check-embedding":
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer stop()
+		result, err := moerise.CheckEmbedding(ctx, settings.Embedding)
+		if err != nil {
+			var service *moerise.ServiceError
+			if errors.As(err, &service) {
+				return fmt.Errorf("%s: %w", service.Code, err)
+			}
+			return err
+		}
+		return encode(result)
 	case "serve":
 		return serve(settings, net.JoinHostPort(*host, strconv.Itoa(*port)))
 	case "backup":

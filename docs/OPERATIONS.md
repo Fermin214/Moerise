@@ -21,7 +21,8 @@ Moerise 支持 Linux 原生二进制和 Docker Linux 容器部署，两者都需
 | `review` | 每日回顾数量、过新排除、近期去重、主题上限与归档范围，详见[每日回顾](DAILY-REVIEW.md) |
 | `notifications` | 是否启用定时回顾及 `HH:MM` 时间，默认关闭、时间 `09:00`；使用顶层时区 |
 | `channel` | 飞书应用凭据、事件验证、绑定身份及推送渠道，详见[飞书入口](FEISHU.md) |
-| `embedding`、`llm` | 模型配置，调用随功能接入 |
+| `embedding` | 独立的向量模型配置，默认关闭；百炼配置与连接检查见[向量模型](EMBEDDING.md) |
+| `llm` | 独立的对话模型配置，调用随 AI 功能接入 |
 
 扩展令牌须各不相同，且与 Memos PAT 分开。分别用密码管理器生成至少 32 字符的随机令牌和分页密钥；安装了 OpenSSL 时也可使用 `openssl rand -hex 32`。Scope 说明见 [API v1](API-V1.md#资源与身份)。
 
@@ -99,6 +100,7 @@ docker compose ps
 | `/health/live` | 进程存活与服务版本 |
 | `/health/ready` | 来源健康、已有成功全量同步且工作循环存活时返回 200，否则 503 |
 | `/api/ext/v1/sync` | 使用 `sync:read` 凭据查看同步状态与错误代码 |
+| `moerise check-embedding` | 使用内置虚构文本检查向量模型连接、返回数量和维度；独立于 Memos 与数据库运行 |
 
 服务启动后执行全量同步。就绪检查返回 503 时，通过同步状态与服务日志检查来源连接、版本、账号及任务错误。请求方式与错误代码见 [API v1](API-V1.md)。
 
