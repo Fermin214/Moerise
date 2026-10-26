@@ -4,24 +4,36 @@
 
 ## 应用与配置
 
-在飞书开放平台创建企业自建应用并启用机器人，开放接收用户单聊消息、机器人发送消息、获取消息内容和读取消息资源文件所需的应用权限。发布应用版本，将使用者加入应用可用范围。事件订阅选择 HTTP 回调并订阅 `im.message.receive_v1`。
+需要启用机器人能力的飞书企业自建应用，以及以下应用身份权限（`tenant_access_token`）：
 
-配置 `channel`：
+| Scope | 权限名称 | 用途 |
+| --- | --- | --- |
+| `im:message.p2p_msg:readonly` | 读取用户发给机器人的单聊消息 | 接收记录、查询和回顾命令，以及图片和文件消息 |
+| `im:message:send_as_bot` | 以应用的身份发消息 | 回复命令和主动推送每日回顾 |
+| `im:message:readonly` | 获取单聊、群组消息 | 查询平台消息回执，下载消息中的图片和文件资源 |
 
-| 字段 | 用途 |
+应用须订阅 HTTP 回调事件 `im.message.receive_v1`，使用者须在应用可用范围内。权限或事件配置变更后需发布应用版本。
+
+在配置文件的 `channel` 中填写：
+
+| 字段 | 填写内容 |
 | --- | --- |
 | `kind` | `feishu-app` |
-| `app_id`、`app_secret` | 应用凭据，服务端换取并缓存租户访问令牌 |
+| `app_id` | App ID，形如 `cli_...` |
+| `app_secret` | 同一应用的 App Secret，至少 16 字符 |
 | `verification_token` | 事件订阅的 Verification Token，至少 16 字符 |
-| `encrypt_key` | 事件订阅的 Encrypt Key；配置后只接收加密事件并检查消息签名 |
-| `user_open_id` | 唯一允许交互的使用者 Open ID，形如 `ou_...` |
-| `destination` | 应用机器人推送目标；填写时必须与 `user_open_id` 相同 |
+| `user_open_id` | 使用者在该应用下的 Open ID，形如 `ou_...`；决定谁能操作笔记及接收推送 |
+| `encrypt_key` | 启用事件加密时填写对应 Encrypt Key，否则为 `null` |
+| `destination` | 为 `null` 时使用 `user_open_id`；填写时必须与其相同 |
+| `webhook_url`、`webhook_secret` | 应用机器人模式均为 `null` |
 
-四项应用凭据与身份字段须一起填写；全部留空时关闭应用机器人入口。`app_secret` 至少 16 字符，相关配置仅保存在服务端。回调地址为部署的 HTTPS 根地址加 `/hooks/feishu`。使用者 Open ID 取自该应用下的身份，不能用手机号、Union ID 或其他应用的 Open ID 替代。
+`app_id`、`app_secret`、`verification_token`、`user_open_id` 须同时填写为 JSON 字符串；全部为 `null` 时关闭应用机器人入口。凭据仅保存在服务端。`user_open_id` 不能用手机号、Union ID 或其他应用的 Open ID 替代。
+
+回调地址为 Moerise 的公网 HTTPS 根地址加 `/hooks/feishu`。服务启动后保存平台回调配置；域名变更后需更新地址并通过验证。
 
 服务先检查 Verification Token、应用标识、发送者和单聊类型；配置 Encrypt Key 时，额外验证 `X-Lark-*` 签名并解密事件。URL 验证回显经过 Token 校验的 `challenge`。其他发送者、机器人消息和群聊事件直接应答，不读写 Memos，也不发送私人内容。
 
-参考：[接收消息](https://open.feishu.cn/document/server-docs/im-v1/message/events/receive)、[发送消息](https://open.feishu.cn/document/server-docs/im-v1/message/create)、[回复消息](https://open.feishu.cn/document/server-docs/im-v1/message/reply)、[获取消息](https://open.feishu.cn/document/server-docs/im-v1/message/get)、[获取消息资源](https://open.feishu.cn/document/server-docs/im-v1/message-resource/get)。事件加密与签名按[官方 Go SDK](https://github.com/larksuite/oapi-sdk-go/tree/v3.12.2/event)的协议适配。
+参考：[接收消息](https://open.feishu.cn/document/server-docs/im-v1/message/events/receive)、[发送消息](https://open.feishu.cn/document/uAjLw4CM/ukTMukTMukTM/reference/im-v1/message/create)、[回复消息](https://open.feishu.cn/document/uAjLw4CM/ukTMukTMukTM/reference/im-v1/message/reply)、[获取消息](https://open.feishu.cn/document/uAjLw4CM/ukTMukTMukTM/reference/im-v1/message/get)、[获取消息资源](https://open.feishu.cn/document/uAjLw4CM/ukTMukTMukTM/reference/im-v1/message-resource/get)。事件加密与签名按[官方 Go SDK](https://github.com/larksuite/oapi-sdk-go/tree/v3.12.2/event)的协议适配。
 
 ## 交互
 
