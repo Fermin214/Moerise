@@ -59,4 +59,4 @@ docker compose up -d --build moerise
 
 ## 开源协议
 
-Moerise 使用 [MIT 协议](LICENSE)，Copyright (c) 2026 Fermin。
+Moerise 使用 [MIT 协议](LICENSE)，Copyright (c) 2026 Fermin214。

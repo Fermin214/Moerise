@@ -21,7 +21,7 @@ API 前缀为 `/api/ext/v1`。路由由 [api.go](../internal/api.go) 定义，�
 | `reviews:read` | 读取已有回顾批次及通知结果 |
 | `reviews:write` | 获取或创建每日批次、换一组、记录打开与略过、处理通知结果不明状态 |
 
-只读凭据不能创建笔记或触发同步，写入请求返回 403 `FORBIDDEN`。笔记创建支持基础附件；笔记修改和消息平台操作按路线图提供。
+只读凭据不能创建笔记或触发同步，写入请求返回 403 `FORBIDDEN`。笔记创建支持基础附件，修改笔记使用 Memos；消息平台操作见[飞书入口](FEISHU.md)。
 
 ## 路由
 
@@ -183,7 +183,7 @@ Content-Type: application/json
 
 ## 时间与错误
 
-接口时间使用带时区的 ISO 8601 字符串；`available_at` 和 `lease_until` 使用 Unix 秒。配置时区用于产品日期与后续调度。
+接口时间使用带时区的 ISO 8601 字符串；`available_at` 和 `lease_until` 使用 Unix 秒。配置时区用于产品日期与调度。
 
 错误结构统一为：
 
