@@ -23,6 +23,7 @@ type API struct {
 	Worker        *SyncService
 	Records       *RecordService
 	Reviews       *ReviewService
+	Search        *SearchService
 	MCP           http.Handler
 	Feishu        *FeishuService
 	Notifications *NotificationService
@@ -32,10 +33,14 @@ type API struct {
 func NewAPI(settings Settings, store *Store, source Source, worker *SyncService) (*API, error) {
 	generation, err := store.Generation()
 	api := &API{Settings: settings, Store: store, Source: source, Worker: worker,
-		Records: NewRecordService(store, source), Reviews: NewReviewService(store, source), generation: generation}
+		Records: NewRecordService(store, source), Reviews: NewReviewService(store, source),
+		Search: NewSearchService(store, source), generation: generation}
 	api.MCP = api.newMCPHandler()
 	api.Notifications = NewNotificationService(store, api.Reviews, nil)
 	api.Feishu = NewFeishuService(store, source, api.Records, api.Reviews, api.Notifications)
+	if api.Feishu != nil {
+		api.Feishu.Search = api.Search
+	}
 	api.Notifications.Transport = NewFeishuDelivery(store, api.Reviews, api.Feishu)
 	return api, err
 }
@@ -176,6 +181,11 @@ func (a *API) route(writer http.ResponseWriter, request *http.Request) (any, int
 	path, method := request.URL.Path, request.Method
 	if path == "/hooks/feishu" && a.Feishu != nil {
 		return a.Feishu.Receive(request)
+	}
+	if path == "/api/ext/v1/search" || path == "/api/ext/v1/search/index" ||
+		strings.HasPrefix(path, "/api/ext/v1/discovery/") ||
+		(strings.HasPrefix(path, "/api/ext/v1/notes/") && strings.HasSuffix(path, "/related")) {
+		return a.searchRoute(writer, request)
 	}
 	if path == "/api/ext/v1/notifications" || strings.HasPrefix(path, "/api/ext/v1/notifications/") {
 		return a.notificationRoute(writer, request)

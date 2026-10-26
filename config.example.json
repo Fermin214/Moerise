@@ -13,12 +13,23 @@
     {
       "name": "operator",
       "token": "replace-with-an-independent-random-token-at-least-32-characters",
-      "scopes": ["notes:read", "notes:write", "sync:read", "sync:write", "reviews:read", "reviews:write"]
+      "scopes": [
+        "notes:read",
+        "notes:write",
+        "sync:read",
+        "sync:write",
+        "reviews:read",
+        "reviews:write",
+        "discovery:write"
+      ]
     },
     {
       "name": "reader",
       "token": "replace-with-another-random-token-at-least-32-characters",
-      "scopes": ["notes:read", "reviews:read"]
+      "scopes": [
+        "notes:read",
+        "reviews:read"
+      ]
     }
   ],
   "cursor_secret": "replace-with-another-independent-random-secret-at-least-32-characters",
@@ -36,7 +47,11 @@
     "protocol": "openai-compatible",
     "base_url": null,
     "api_key": null,
-    "model": null
+    "model": null,
+    "dimensions": 0,
+    "batch_size": 16,
+    "timeout_seconds": 30,
+    "max_chunks": 20000
   },
   "llm": {
     "protocol": "openai-compatible",

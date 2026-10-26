@@ -60,6 +60,7 @@ type FeishuService struct {
 	Source        Source
 	Records       *RecordService
 	Reviews       *ReviewService
+	Search        *SearchService
 	Client        FeishuPlatform
 	Notifications *NotificationService
 	wake          chan struct{}
@@ -70,7 +71,7 @@ func NewFeishuService(store *Store, source Source, records *RecordService, revie
 		return nil
 	}
 	return &FeishuService{Store: store, Source: source, Records: records, Reviews: reviews,
-		Client: NewFeishuClient(store.Settings.Channel), Notifications: notifications, wake: make(chan struct{}, 1)}
+		Search: NewSearchService(store, source), Client: NewFeishuClient(store.Settings.Channel), Notifications: notifications, wake: make(chan struct{}, 1)}
 }
 
 func (s *FeishuService) Wake() {
@@ -255,7 +256,7 @@ func (s *FeishuService) retry(id, status string, attempts int, code string) erro
 	return err
 }
 
-const feishuHelp = "可用操作：\n记录 正文（可含 #标签）\n查看 memos/资源标识\n回顾\n换一组\n打开 批次标识 memos/资源标识\n略过 批次标识 memos/资源标识\n发送图片或文件会保存为附件笔记。"
+const feishuHelp = "可用操作：\n记录 正文（可含 #标签）\n查看 memos/资源标识\n搜索 问题或关键词\n相关 memos/资源标识\n漫步 memos/资源标识\n继续这个话题/换个角度 memos/资源标识 [路径]\n随机跳转 [memos/资源标识] [路径]\n回顾\n换一组\n打开 批次标识 memos/资源标识\n略过 批次标识 memos/资源标识\n发送图片或文件会保存为附件笔记。"
 
 func (s *FeishuService) execute(ctx context.Context, message feishuMessage) (string, string, error) {
 	key := "feishu:" + hashBytes([]byte(message.ID))
@@ -297,7 +298,42 @@ func (s *FeishuService) execute(ctx context.Context, message feishuMessage) (str
 		return "saved", note.Name, err
 	case "查看":
 		if len(fields) == 2 && memoPattern.MatchString(fields[1]) {
-			return "memo", fields[1], nil
+			_, err := s.Search.Open(ctx, fields[1])
+			return "memo", fields[1], err
+		}
+	case "搜索":
+		result, err := s.Search.Search(ctx, SearchRequest{Query: strings.TrimSpace(strings.TrimPrefix(text, "搜索")), Limit: 5})
+		if err != nil {
+			return "", "", err
+		}
+		return discoveryReferences(result.Results, nil, result.Warnings)
+	case "相关":
+		if len(fields) == 2 {
+			result, err := s.Search.Related(ctx, RelatedRequest{Name: fields[1], Limit: 5})
+			if err != nil {
+				return "", "", err
+			}
+			return discoveryReferences(result.Results, nil, result.Warnings)
+		}
+	case "漫步", "继续这个话题", "换个角度", "随机跳转":
+		if len(fields) <= 3 {
+			mode := map[string]string{"漫步": "continue", "继续这个话题": "continue", "换个角度": "angle", "随机跳转": "random"}[fields[0]]
+			request := WalkRequest{Mode: mode}
+			if len(fields) >= 2 {
+				request.Name = fields[1]
+			}
+			if len(fields) == 3 {
+				request.Path = strings.Split(fields[2], ",")
+			}
+			result, err := s.Search.Walk(ctx, request)
+			if err != nil {
+				return "", "", err
+			}
+			hits := []SearchHit{}
+			if result.Item != nil {
+				hits = append(hits, *result.Item)
+			}
+			return discoveryReferences(hits, result.Path, result.Warnings)
 		}
 	case "回顾":
 		if len(fields) == 1 {
@@ -358,6 +394,8 @@ func (s *FeishuService) render(ctx context.Context, kind, resource string) (stri
 			return "", err
 		}
 		return renderReview(batch, true), nil
+	case "discovery":
+		return s.renderDiscovery(ctx, resource)
 	default:
 		return "", fmt.Errorf("invalid Feishu event result")
 	}

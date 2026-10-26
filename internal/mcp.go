@@ -36,8 +36,8 @@ type reviewMarkArgs struct {
 	Name    string `json:"name" jsonschema:"Memos resource name, such as memos/abc"`
 }
 
-func addReviewTool[I any](server *mcp.Server, name, description string, readOnly bool,
-	call func(context.Context, I) (ReviewBatch, error)) {
+func addServiceTool[I, O any](server *mcp.Server, name, description string, readOnly bool,
+	call func(context.Context, I) (O, error)) {
 	destructive := false
 	mcp.AddTool(server, &mcp.Tool{Name: name, Description: description,
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: readOnly,
@@ -65,27 +65,40 @@ func (a *API) newMCPHandler() http.Handler {
 			return nil
 		}
 		server := mcp.NewServer(&mcp.Implementation{Name: "moerise", Version: Version}, nil)
+		if slices.Contains(access.Scopes, "notes:read") {
+			addServiceTool(server, "semantic_search", "混合中文关键词、语义与标签检索；返回原文位置与降级原因，不记录阅读。", true, a.Search.Search)
+			addServiceTool(server, "get_related_memos", "按语义寻找相关笔记，复查作者和原文；需配置 embedding。", true, a.Search.Related)
+			addServiceTool(server, "semantic_walk", "沿语义漫步：continue 继续话题，angle 换角度，random 随机跳转；path 去重，不改变阅读状态。", true, a.Search.Walk)
+		}
+		if slices.Contains(access.Scopes, "discovery:write") {
+			addServiceTool(server, "open_discovery_memo", "打开并持久记录最近阅读，供后续漫步降权；会改变产品状态。", false,
+				func(ctx context.Context, args struct {
+					Name string `json:"name"`
+				}) (Note, error) {
+					return a.Search.Open(ctx, args.Name)
+				})
+		}
 		if slices.Contains(access.Scopes, "reviews:read") {
-			addReviewTool(server, "get_review_batch", "读取已有回顾批次，复查来源原文与作者。", true,
+			addServiceTool(server, "get_review_batch", "读取已有回顾批次，复查来源原文与作者。", true,
 				func(ctx context.Context, args reviewBatchArgs) (ReviewBatch, error) {
 					return a.Reviews.Get(ctx, args.BatchID)
 				})
-			addReviewTool(server, "read_daily_review", "读取已有当日回顾；尚未创建时返回 REVIEW_NOT_FOUND。", true,
+			addServiceTool(server, "read_daily_review", "读取已有当日回顾；尚未创建时返回 REVIEW_NOT_FOUND。", true,
 				func(ctx context.Context, _ struct{}) (ReviewBatch, error) {
 					return a.Reviews.ReadDaily(ctx, time.Now())
 				})
 		}
 		if slices.Contains(access.Scopes, "reviews:write") {
-			addReviewTool(server, "get_daily_review", "获取当日回顾；首次调用会创建并持久保存批次及选中历史。", false,
+			addServiceTool(server, "get_daily_review", "获取当日回顾；首次调用会创建并持久保存批次及选中历史。", false,
 				func(ctx context.Context, _ struct{}) (ReviewBatch, error) {
 					return a.Reviews.Daily(ctx, time.Now())
 				})
-			addReviewTool(server, "replace_daily_review", "换一组并持久保存新批次；同日相同幂等键重试返回同一批次。", false,
+			addServiceTool(server, "replace_daily_review", "换一组并持久保存新批次；同日相同幂等键重试返回同一批次。", false,
 				func(ctx context.Context, args reviewReplaceArgs) (ReviewBatch, error) {
 					return a.Reviews.Replace(ctx, args.IdempotencyKey, time.Now())
 				})
 			for _, action := range []string{"open", "skip"} {
-				addReviewTool(server, action+"_review_memo", "持久记录回顾条目的 "+action+" 操作，保留首次发生时间。", false,
+				addServiceTool(server, action+"_review_memo", "持久记录回顾条目的 "+action+" 操作，保留首次发生时间。", false,
 					func(ctx context.Context, args reviewMarkArgs) (ReviewBatch, error) {
 						return a.Reviews.Mark(ctx, args.BatchID, args.Name, action, time.Now())
 					})

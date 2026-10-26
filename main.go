@@ -143,12 +143,15 @@ func serve(settings moerise.Settings, address string) error {
 	}
 	notificationDone := make(chan error, 1)
 	go func() { notificationDone <- api.Notifications.Run(ctx) }()
+	searchDone := make(chan error, 1)
+	go func() { searchDone <- api.Search.Run(ctx) }()
 	go func() { serverDone <- server.ListenAndServe() }()
 	slog.Info("service started", "address", address, "version", moerise.Version)
 	var result error
 	workerExited := false
 	feishuExited := false
 	notificationExited := false
+	searchExited := false
 	select {
 	case <-signalCtx.Done():
 	case err := <-workerDone:
@@ -170,6 +173,11 @@ func serve(settings moerise.Settings, address string) error {
 		if err != nil && !errors.Is(err, context.Canceled) {
 			result = errors.New("notification worker stopped")
 		}
+	case err := <-searchDone:
+		searchExited = true
+		if err != nil && !errors.Is(err, context.Canceled) {
+			result = errors.New("search worker stopped")
+		}
 	}
 	cancel()
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -188,6 +196,9 @@ func serve(settings moerise.Settings, address string) error {
 	}
 	if !notificationExited {
 		<-notificationDone
+	}
+	if !searchExited {
+		<-searchDone
 	}
 	return result
 }

@@ -16,7 +16,7 @@ import (
 	"time"
 )
 
-func testSettings(t *testing.T) Settings {
+func testSettings(t testing.TB) Settings {
 	t.Helper()
 	root := t.TempDir()
 	s := DefaultSettings()
@@ -30,7 +30,7 @@ func testSettings(t *testing.T) Settings {
 	return s
 }
 
-func testStore(t *testing.T, s Settings) *Store {
+func testStore(t testing.TB, s Settings) *Store {
 	t.Helper()
 	store, err := NewStore(s)
 	if err != nil {

@@ -18,7 +18,7 @@ import (
 	_ "time/tzdata"
 )
 
-const Version = "0.2.0"
+const Version = "0.3.0"
 
 type MemosConfig struct {
 	InstanceID     string  `json:"instance_id"`
@@ -65,6 +65,19 @@ type ProviderConfig struct {
 	Model    *string `json:"model"`
 }
 
+type EmbeddingConfig struct {
+	Protocol       string  `json:"protocol"`
+	BaseURL        *string `json:"base_url"`
+	APIKey         *string `json:"api_key"`
+	Model          *string `json:"model"`
+	Dimensions     int     `json:"dimensions"`
+	BatchSize      int     `json:"batch_size"`
+	TimeoutSeconds int     `json:"timeout_seconds"`
+	MaxChunks      int     `json:"max_chunks"`
+}
+
+func (c EmbeddingConfig) Enabled() bool { return configured(c.Model) != "" }
+
 type ChannelConfig struct {
 	Kind              string  `json:"kind"`
 	AppID             *string `json:"app_id"`
@@ -94,7 +107,7 @@ type Settings struct {
 	Sync          SyncConfig         `json:"sync"`
 	Review        ReviewConfig       `json:"review"`
 	Notifications NotificationConfig `json:"notifications"`
-	Embedding     ProviderConfig     `json:"embedding"`
+	Embedding     EmbeddingConfig    `json:"embedding"`
 	LLM           ProviderConfig     `json:"llm"`
 	Channel       ChannelConfig      `json:"channel"`
 }
@@ -106,7 +119,7 @@ func DefaultSettings() Settings {
 		Sync:          SyncConfig{60, 21600, 300, 5, 300},
 		Review:        ReviewConfig{Count: 3, MinAgeHours: 24, RecentDays: 30, TopicLimit: 1},
 		Notifications: NotificationConfig{Time: "09:00"},
-		Embedding:     ProviderConfig{Protocol: "openai-compatible"},
+		Embedding:     EmbeddingConfig{Protocol: "openai-compatible", BatchSize: 16, TimeoutSeconds: 30, MaxChunks: 20000},
 		LLM:           ProviderConfig{Protocol: "openai-compatible"},
 		Channel:       ChannelConfig{Kind: "feishu-app"},
 	}
@@ -226,7 +239,7 @@ func (s *Settings) Validate() error {
 			return bad("access_tokens")
 		}
 		for _, scope := range access.Scopes {
-			if !slices.Contains([]string{"notes:read", "notes:write", "sync:read", "sync:write", "reviews:read", "reviews:write"}, scope) {
+			if !slices.Contains([]string{"notes:read", "notes:write", "sync:read", "sync:write", "reviews:read", "reviews:write", "discovery:write"}, scope) {
 				return bad("access_tokens.scopes")
 			}
 		}
@@ -255,6 +268,9 @@ func (s *Settings) Validate() error {
 		s.Sync.RetrySeconds < 1 || s.Sync.RetrySeconds > 3600 ||
 		s.Sync.LeaseSeconds < 10 || s.Sync.LeaseSeconds > 3600 {
 		return bad("sync")
+	}
+	if err := s.Embedding.validate(); err != nil {
+		return err
 	}
 	if s.Channel.Kind != "feishu-app" && s.Channel.Kind != "feishu-webhook" {
 		return bad("channel.kind")
@@ -294,6 +310,26 @@ func (s *Settings) Validate() error {
 			webhook.User != nil || webhook.Fragment != "" {
 			return bad("channel.webhook_url")
 		}
+	}
+	return nil
+}
+
+func (c EmbeddingConfig) validate() error {
+	bad := func() error { return errors.New("invalid configuration at embedding") }
+	if c.Protocol != "openai-compatible" || c.Dimensions < 0 || c.Dimensions > 4096 ||
+		c.BatchSize < 1 || c.BatchSize > 64 || c.TimeoutSeconds < 1 || c.TimeoutSeconds > 90 ||
+		c.MaxChunks < 1 || c.MaxChunks > 100000 {
+		return bad()
+	}
+	if c.Enabled() {
+		address, err := url.Parse(configured(c.BaseURL))
+		if err != nil || address.Hostname() == "" || (address.Scheme != "http" && address.Scheme != "https") ||
+			address.User != nil || address.RawQuery != "" || address.ForceQuery || address.Fragment != "" ||
+			len(configured(c.Model)) > 200 || strings.ContainsAny(configured(c.APIKey), "\r\n") {
+			return bad()
+		}
+	} else if configured(c.BaseURL) != "" || configured(c.APIKey) != "" || c.Dimensions != 0 {
+		return bad()
 	}
 	return nil
 }

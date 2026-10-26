@@ -352,6 +352,17 @@ func TestFeishuEventsWithRealMemosAcceptance(t *testing.T) {
 	}
 	send(event("om_query", "ou_owner", "text", map[string]string{"text": "查看 " + name}))
 	wait(t, "Feishu source query", func() bool { return strings.Contains(platform.reply("om_query"), "#飞书 测试正文") })
+	send(event("om_search", "ou_owner", "text", map[string]string{"text": "搜索 测试正文"}))
+	wait(t, "Feishu Chinese search", func() bool { return strings.Contains(platform.reply("om_search"), name) })
+	if !strings.Contains(platform.reply("om_search"), "本次使用关键词检索") {
+		t.Fatal("Feishu did not explain embedding-disabled fallback")
+	}
+	send(event("om_walk", "ou_owner", "text", map[string]string{"text": "随机跳转 " + name}))
+	wait(t, "Feishu random discovery", func() bool { return strings.Contains(platform.reply("om_walk"), fileName) })
+	send(event("om_foreign_search", "ou_other", "text", map[string]string{"text": "搜索 测试正文"}))
+	if platform.reply("om_foreign_search") != "" {
+		t.Fatal("foreign identity received search results")
+	}
 	send(event("om_review", "ou_owner", "text", map[string]string{"text": "回顾"}))
 	wait(t, "Feishu shared review", func() bool { return platform.reply("om_review") != "" })
 	batch := h.call(server.URL, "/api/ext/v1/reviews/daily", "GET", h.operator, nil, 200)

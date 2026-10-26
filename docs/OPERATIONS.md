@@ -21,11 +21,12 @@ Moerise 支持 Linux 原生二进制和 Docker Linux 容器部署，两者都需
 | `review` | 每日回顾数量、过新排除、近期去重、主题上限与归档范围，详见[每日回顾](DAILY-REVIEW.md) |
 | `notifications` | 是否启用定时回顾及 `HH:MM` 时间，默认关闭、时间 `09:00`；使用顶层时区 |
 | `channel` | 飞书应用凭据、事件验证、绑定身份及推送渠道，详见[飞书入口](FEISHU.md) |
-| `embedding`、`llm` | 模型配置，调用随功能接入 |
+| `embedding` | 独立的 OpenAI 兼容 Embeddings 配置、维度、批次、超时与分块上限，见[检索与发现](SEARCH.md#模型与索引)；不填模型时关闭语义能力 |
+| `llm` | 为阶段 4 保留的模型配置，尚不调用 |
 
 扩展令牌须各不相同，且与 Memos PAT 分开。分别用密码管理器生成至少 32 字符的随机令牌和分页密钥；安装了 OpenSSL 时也可使用 `openssl rand -hex 32`。Scope 说明见 [API v1](API-V1.md#资源与身份)。
 
-模板中的 `operator` 包含笔记、同步和回顾的读写 Scope，`reader` 包含 `notes:read`、`reviews:read`。只读凭据不能创建笔记、每日批次或保存打开、略过记录。笔记创建请求需携带 `Idempotency-Key`；503 `WRITE_OUTCOME_UNKNOWN` 表示写入结果不明，只能使用同一键和请求体重试，完整规则见[创建笔记](API-V1.md#创建笔记)。
+模板中的 `operator` 包含笔记、同步和回顾的读写 Scope 及 `discovery:write`，`reader` 包含 `notes:read`、`reviews:read`。只读凭据可搜索及漫步，不能创建笔记、每日批次或保存打开、略过记录。笔记创建请求需携带 `Idempotency-Key`；503 `WRITE_OUTCOME_UNKNOWN` 表示写入结果不明，只能使用同一键和请求体重试，完整规则见[创建笔记](API-V1.md#创建笔记)。
 
 扩展 MCP 使用相同的 Moerise 令牌，连接服务的 `/mcp`；具体工具和语义见 [API v1](API-V1.md#每日回顾与-mcp)。
 
@@ -98,6 +99,7 @@ docker compose ps
 | `/docs`、`/openapi.json` | 交互式 API 文档与 OpenAPI 定义 |
 | `/health/live` | 进程存活与服务版本 |
 | `/health/ready` | 来源健康、已有成功全量同步且工作循环存活时返回 200，否则 503 |
+| `/api/ext/v1/search/index` | 用 `notes:read` 查看独立的语义索引状态、待处理数、维度与最近错误 |
 | `/api/ext/v1/sync` | 使用 `sync:read` 凭据查看同步状态与错误代码 |
 
 服务启动后执行全量同步。就绪检查返回 503 时，通过同步状态与服务日志检查来源连接、版本、账号及任务错误。请求方式与错误代码见 [API v1](API-V1.md)。

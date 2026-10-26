@@ -107,6 +107,69 @@ type CreateAttachment struct {
 	Content  []byte `json:"content"`
 }
 
+type SearchRequest struct {
+	Query           string   `json:"query" jsonschema:"Search text, at most 500 Unicode code points"`
+	Mode            string   `json:"mode,omitempty" jsonschema:"hybrid (default), keyword, or semantic"`
+	Limit           int      `json:"limit,omitempty" jsonschema:"Result count from 1 to 20; defaults to 10"`
+	Tags            []string `json:"tags,omitempty" jsonschema:"Require all tags, including their child tags"`
+	IncludeArchived bool     `json:"include_archived,omitempty"`
+}
+
+type SearchSnippet struct {
+	Text       string `json:"text"`
+	StartRune  int    `json:"start_rune"`
+	EndRune    int    `json:"end_rune"`
+	SourceHash string `json:"source_hash"`
+}
+
+type SearchHit struct {
+	Note       Note          `json:"note"`
+	Snippet    SearchSnippet `json:"snippet"`
+	Score      float64       `json:"score"`
+	Signals    []string      `json:"signals"`
+	Similarity *float64      `json:"similarity,omitempty"`
+}
+
+type SearchResponse struct {
+	Results  []SearchHit `json:"results"`
+	Mode     string      `json:"mode"`
+	Warnings []string    `json:"warnings"`
+}
+
+type RelatedRequest struct {
+	Name            string `json:"name" jsonschema:"Source resource, such as memos/abc"`
+	Limit           int    `json:"limit,omitempty"`
+	IncludeArchived bool   `json:"include_archived,omitempty"`
+}
+
+type WalkRequest struct {
+	Name            string   `json:"name,omitempty" jsonschema:"Current memo; optional for a random start"`
+	Mode            string   `json:"mode,omitempty" jsonschema:"continue (default), angle, or random"`
+	Path            []string `json:"path,omitempty" jsonschema:"Already visited resource names, at most 100"`
+	IncludeArchived bool     `json:"include_archived,omitempty"`
+}
+
+type WalkResponse struct {
+	Mode      string     `json:"mode"`
+	Item      *SearchHit `json:"item"`
+	Path      []string   `json:"path"`
+	Exhausted bool       `json:"exhausted"`
+	Warnings  []string   `json:"warnings"`
+}
+
+type SearchIndexStatus struct {
+	Enabled      bool    `json:"enabled"`
+	SpaceID      string  `json:"space_id,omitempty"`
+	Model        string  `json:"model,omitempty"`
+	Dimensions   int     `json:"dimensions"`
+	ChunkVersion string  `json:"chunk_version"`
+	Status       string  `json:"status"`
+	Chunks       int     `json:"chunks"`
+	PendingMemos int     `json:"pending_memos"`
+	VectorBytes  int64   `json:"vector_bytes"`
+	LastError    *string `json:"last_error"`
+}
+
 func (m Memo) Note(settings Settings) Note {
 	return Note{settings.Memos.InstanceID, m.Name, m.Creator, m.State, m.Visibility,
 		m.Content, m.Tags, m.Attachments, m.CreateTime, m.UpdateTime, m.SourceHash,

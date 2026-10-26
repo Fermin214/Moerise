@@ -2,7 +2,7 @@
 
 API 前缀为 `/api/ext/v1`。路由由 [api.go](../internal/api.go) 定义，字段模型见 [models.go](../internal/models.go)，完整字段契约见 [openapi.json](../internal/openapi.json)。服务通过 `/openapi.json` 提供同一契约，通过 `/docs` 提供交互文档。本文说明访问范围、分页、任务和错误语义。
 
-本版本提供笔记读取、创建、同步管理，以及每日回顾 REST 和扩展 MCP。检索与 AI 按[路线图](ROADMAP.md)接入。
+本版本提供笔记读取、创建、同步管理、每日回顾、混合检索与发现 REST 和扩展 MCP。AI 按[路线图](ROADMAP.md)接入。
 
 ## 资源与身份
 
@@ -14,12 +14,13 @@ API 前缀为 `/api/ext/v1`。路由由 [api.go](../internal/api.go) 定义，�
 
 | Scope | 允许操作 |
 | --- | --- |
-| `notes:read` | 读取身份、笔记列表和单条笔记 |
+| `notes:read` | 读取身份、笔记列表和单条笔记，搜索、相关笔记、漫步和索引状态 |
 | `notes:write` | 创建私有笔记与重放创建请求 |
 | `sync:read` | 读取同步状态和任务结果 |
 | `sync:write` | 请求增量同步或全量修复 |
 | `reviews:read` | 读取已有回顾批次及通知结果 |
 | `reviews:write` | 获取或创建每日批次、换一组、记录打开与略过、处理通知结果不明状态 |
+| `discovery:write` | 打开发现结果并更新最近阅读，返回复查后的原文 |
 
 只读凭据不能创建笔记或触发同步，写入请求返回 403 `FORBIDDEN`。笔记创建支持基础附件，修改笔记使用 Memos；消息平台操作见[飞书入口](FEISHU.md)。
 
@@ -33,6 +34,11 @@ API 前缀为 `/api/ext/v1`。路由由 [api.go](../internal/api.go) 定义，�
 | GET | `/api/ext/v1/notes` | `notes:read` | 已索引笔记的分页结果，逐条复查来源 |
 | POST | `/api/ext/v1/notes` | `notes:write` | 首次成功 201；幂等重放成功 200，直接返回 `Note` |
 | GET | `/api/ext/v1/notes/{memo_id}` | `notes:read` | 直接复查并读取一条来源笔记 |
+| POST | `/api/ext/v1/search` | `notes:read` | 中文关键词、语义与标签混合结果及降级原因 |
+| GET | `/api/ext/v1/search/index` | `notes:read` | 当前模型、维度、分块、进度与错误 |
+| GET | `/api/ext/v1/notes/{memo_id}/related` | `notes:read` | 相关笔记；查询参数为 `limit`、`include_archived` |
+| POST | `/api/ext/v1/discovery/walk` | `notes:read` | 按 `continue`、`angle` 或 `random` 选择下一条，并返回路径 |
+| POST | `/api/ext/v1/discovery/open` | `discovery:write` | 复查原文并保存最近阅读，返回 `Note` |
 | GET | `/api/ext/v1/sync` | `sync:read` | 水位、完整同步时间、来源状态、数量与任务统计 |
 | POST | `/api/ext/v1/sync` | `sync:write` | 202，返回持久任务 |
 | GET | `/api/ext/v1/jobs/{job_id}` | `sync:read` | 持久任务与执行结果 |
@@ -138,6 +144,14 @@ Content-Type: application/json
 
 应用机器人回调入口为 `/hooks/feishu`，仅在应用凭据完整时启用；使用平台事件 Token 和可选 Encrypt Key 验证，不使用 Moerise Bearer 凭据。绑定使用者的单聊消息持久入队后返回 `{"code":0}`；URL 验证返回 `{"challenge":"..."}`。重复消息沿用同一记录操作，其他身份和群聊不进入业务。事件配置、命令及恢复语义见[飞书入口](FEISHU.md)。
 
+## 检索与发现
+
+`POST /api/ext/v1/search` 接收 `query`、`mode`（`hybrid`、`keyword`、`semantic`）、`limit`、`tags` 与 `include_archived`；查询或标签至少提供一个，语义模式要求查询。默认最多 10 条，可设置 1 至 20，标签须全部匹配并包含子标签。结果包含 `results`、实际 `mode` 与 `warnings`。每条命中返回新鲜 `note`、片段、排名信号及可选的余弦相似度；片段起止位置按 Unicode 码点计，末端不包含，`source_hash` 对应本次原文版本。
+
+混合模式在模型关闭、构建中或模型故障时使用关键词并给出原因；显式语义、相关及非随机漫步要求可用索引，来源故障始终返回错误。`POST /api/ext/v1/discovery/walk` 使用 `name`、`mode`、`path`、`include_archived`，路径最多 100 个资源，由调用方随下一步传回；返回 `item`、新 `path` 与 `exhausted`。漫步不记录阅读，`POST /api/ext/v1/discovery/open` 以 `{"name":"memos/id"}` 显式记录。
+
+MCP 只读工具 `semantic_search`、`get_related_memos`、`semantic_walk` 使用 `notes:read`，参数对应同名业务请求；相关工具使用 `name`、`limit`、`include_archived`。`open_discovery_memo` 使用 `discovery:write` 并标记 `readOnlyHint=false`。模型配置、排序、降级、错误和本地验收见[检索与发现](SEARCH.md)。
+
 ## 每日回顾与 MCP
 
 回顾 POST 请求体为 `{}`。日期由服务端按配置时区计算，不接受调用方覆盖日期或规则。获取或创建回顾会保存批次和选中历史，因此需要写 Scope；只读 Scope 只能读取已经生成的批次。换组键采用笔记创建相同的字符和长度限制，范围为账号、日期、时区和规则版本。
@@ -200,6 +214,8 @@ Content-Type: application/json
 
 | HTTP 状态 | 常见错误代码 | 处理 |
 | --- | --- | --- |
+| 429 | `SEARCH_BUSY` | 检索并发已达上限，稍后重试 |
+| 503 | `EMBEDDING_DISABLED`、`SEARCH_NOT_READY`、`EMBEDDING_UNAVAILABLE`、`EMBEDDING_PROTOCOL`、`EMBEDDING_CAPACITY` | 检查模型配置、索引进度或容量；混合搜索可通过 `warnings` 告知关键词降级 |
 | 401 | `UNAUTHENTICATED` | 检查扩展 Bearer 凭据 |
 | 403 | `FORBIDDEN` | 检查凭据 Scope |
 | 404 | `SOURCE_NOT_FOUND`、`JOB_NOT_FOUND`、`REVIEW_NOT_FOUND`、`REVIEW_ITEM_NOT_FOUND`、`NOTIFICATION_NOT_FOUND`、`NOT_FOUND` | 移除失效资源或重新开始查询 |

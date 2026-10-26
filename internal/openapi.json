@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Moerise API",
-    "version": "0.2.0"
+    "version": "0.3.0"
   },
   "paths": {
     "/health/live": {
@@ -1985,6 +1985,540 @@
           }
         }
       }
+    },
+    "/api/ext/v1/search": {
+      "post": {
+        "summary": "Search keywords, embeddings and tags; hybrid explicitly reports keyword fallback",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "x-required-scopes": [
+          "notes:read"
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SearchResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Service error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Service error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Service error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Service error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Service error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Service error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Service error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SearchRequest"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/ext/v1/search/index": {
+      "get": {
+        "summary": "Read configured embedding index progress and capacity",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "x-required-scopes": [
+          "notes:read"
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SearchIndexStatus"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Service error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Service error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Service error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Service error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Service error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Service error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Service error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/ext/v1/notes/{memo_id}/related": {
+      "get": {
+        "summary": "Find related notes using the configured embedding space",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "x-required-scopes": [
+          "notes:read"
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SearchResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Service error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Service error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Service error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Service error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Service error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Service error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Service error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "memo_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[a-zA-Z0-9_-]+$"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 20,
+              "default": 10
+            }
+          },
+          {
+            "name": "include_archived",
+            "in": "query",
+            "schema": {
+              "type": "boolean",
+              "default": false
+            }
+          }
+        ]
+      }
+    },
+    "/api/ext/v1/discovery/walk": {
+      "post": {
+        "summary": "Continue a topic, change angle or randomly jump; path excludes visited notes",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "x-required-scopes": [
+          "notes:read"
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WalkResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Service error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Service error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Service error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Service error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Service error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Service error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Service error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WalkRequest"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/ext/v1/discovery/open": {
+      "post": {
+        "summary": "Open a live note and persist recent reading for walk ranking",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "x-required-scopes": [
+          "discovery:write"
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Note"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Service error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Service error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Service error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Service error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Service error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Service error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Service error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DiscoveryOpenRequest"
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -2876,6 +3410,292 @@
             "default": ""
           }
         }
+      },
+      "SearchRequest": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "maxLength": 500,
+            "default": ""
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "hybrid",
+              "keyword",
+              "semantic"
+            ],
+            "default": "hybrid"
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 20,
+            "default": 10,
+            "description": "0 or omitted uses the default of 10"
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^[\\p{L}\\p{Nd}_-]+(/[\\p{L}\\p{Nd}_-]+)*$",
+              "maxLength": 100
+            },
+            "maxItems": 10
+          },
+          "include_archived": {
+            "type": "boolean",
+            "default": false
+          }
+        },
+        "required": [],
+        "additionalProperties": false,
+        "description": "Provide query or tags. Semantic mode requires a nonempty query. At most 20 results; sources are verified before returning."
+      },
+      "SearchSnippet": {
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string"
+          },
+          "start_rune": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "end_rune": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "source_hash": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "text",
+          "start_rune",
+          "end_rune",
+          "source_hash"
+        ],
+        "additionalProperties": false,
+        "description": "Unicode code point offsets in the fresh note content; end is exclusive."
+      },
+      "SearchHit": {
+        "type": "object",
+        "properties": {
+          "note": {
+            "$ref": "#/components/schemas/Note"
+          },
+          "snippet": {
+            "$ref": "#/components/schemas/SearchSnippet"
+          },
+          "score": {
+            "type": "number"
+          },
+          "signals": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "similarity": {
+            "type": "number",
+            "minimum": -1,
+            "maximum": 1
+          }
+        },
+        "required": [
+          "note",
+          "snippet",
+          "score",
+          "signals"
+        ],
+        "additionalProperties": false
+      },
+      "SearchResponse": {
+        "type": "object",
+        "properties": {
+          "results": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SearchHit"
+            }
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "hybrid",
+              "keyword",
+              "semantic"
+            ]
+          },
+          "warnings": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "results",
+          "mode",
+          "warnings"
+        ],
+        "additionalProperties": false
+      },
+      "WalkRequest": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "pattern": "^memos/[a-zA-Z0-9_-]+$"
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "continue",
+              "angle",
+              "random"
+            ],
+            "default": "continue"
+          },
+          "path": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^memos/[a-zA-Z0-9_-]+$"
+            },
+            "maxItems": 100
+          },
+          "include_archived": {
+            "type": "boolean",
+            "default": false
+          }
+        },
+        "required": [],
+        "additionalProperties": false,
+        "description": "name is required except for random starts. Path is carried by the caller; walking does not mark a note as opened."
+      },
+      "WalkResponse": {
+        "type": "object",
+        "properties": {
+          "mode": {
+            "type": "string",
+            "enum": [
+              "continue",
+              "angle",
+              "random"
+            ]
+          },
+          "item": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SearchHit"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "path": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^memos/[a-zA-Z0-9_-]+$"
+            },
+            "maxItems": 100
+          },
+          "exhausted": {
+            "type": "boolean"
+          },
+          "warnings": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "mode",
+          "item",
+          "path",
+          "exhausted",
+          "warnings"
+        ],
+        "additionalProperties": false
+      },
+      "DiscoveryOpenRequest": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "pattern": "^memos/[a-zA-Z0-9_-]+$"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "additionalProperties": false
+      },
+      "SearchIndexStatus": {
+        "type": "object",
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "space_id": {
+            "type": "string"
+          },
+          "model": {
+            "type": "string"
+          },
+          "dimensions": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 4096
+          },
+          "chunk_version": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "disabled",
+              "pending",
+              "building",
+              "active"
+            ]
+          },
+          "chunks": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "pending_memos": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "vector_bytes": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "last_error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "enabled",
+          "dimensions",
+          "chunk_version",
+          "status",
+          "chunks",
+          "pending_memos",
+          "vector_bytes",
+          "last_error"
+        ],
+        "additionalProperties": false
       }
     },
     "securitySchemes": {

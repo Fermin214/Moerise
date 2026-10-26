@@ -13,7 +13,7 @@ Moerise 是以轻量记录、回顾和思考探索为核心的个人笔记产品
 | 组件 | 职责 |
 | --- | --- |
 | 官方 Memos | 保存笔记原文和附件，执行原生权限，提供基础读写与同步 API |
-| Moerise 核心服务 | 同步与索引、笔记创建、身份边界、持久幂等与任务、回顾及调度；后续增加检索、AI 和地图计算 |
+| Moerise 核心服务 | 同步与索引、笔记创建、身份边界、持久幂等与任务、回顾及调度、混合检索和发现；后续增加 AI 和地图计算 |
 | 飞书应用机器人 | 接收绑定身份的记录、查询与回顾操作，回复结果并主动推送每日回顾 |
 | REST / MCP 入口 | 向客户端和 Agent 提供同一组业务能力；已实现范围见 API v1 |
 | Android / Web 客户端 | 后续提供编辑、阅读、探索和地图交互，复用核心服务的业务接口 |
@@ -24,7 +24,7 @@ Moerise 是以轻量记录、回顾和思考探索为核心的个人笔记产品
 
 ### 总体架构
 
-下图展示各入口、核心服务、存储和外部模型的关系。Android、Web、语义检索、AI 和 Telegram 属于后续阶段，具体范围见[路线图](ROADMAP.md)。
+下图展示各入口、核心服务、存储和外部模型的关系。Android、Web、AI 和 Telegram 属于后续阶段，具体范围见[路线图](ROADMAP.md)。
 
 ```mermaid
 flowchart LR
@@ -34,10 +34,10 @@ flowchart LR
     Android -->|"回顾、语义、问答"| Sidecar
     Web -->|"同一组扩展 API"| Sidecar
     Agents["REST / MCP 使用者"] --> Sidecar
-    FeishuBot["飞书应用机器人"] -->|"记录、查询、回顾"| Sidecar
+    FeishuBot["飞书应用机器人"] -->|"记录、查询、回顾、发现"| Sidecar
     Sidecar --> Notify["通知适配器"]
     Sidecar --> SQLite["SQLite：索引与产品状态"]
-    Sidecar --> Embedding["外部 Embedding API（后续）"]
+    Sidecar --> Embedding["独立配置的 Embedding API"]
     Sidecar --> LLM["可配置 LLM API（后续）"]
     Notify --> FeishuBot
     Notify -.-> FeishuWebhook["飞书群 Webhook：可选推送方式"]
@@ -57,6 +57,8 @@ flowchart LR
 | `internal/reviews_api.go`、`mcp.go` | 回顾 REST 与扩展 MCP 入口、Scope 检查和状态变化提示 |
 | `internal/feishu.go`、`feishu_client.go`、`feishu_crypto.go`、`feishu_delivery.go` | 飞书回调校验、加密事件队列、应用与 Webhook 收发、回执复查及共享业务调用 |
 | `internal/notifications.go`、`notifications_api.go` | 当地日期调度、持久发送队列、发送尝试、回执复查及结果确认 |
+| `internal/embedding.go`、`search_index.go`、`vectors.go` | 独立模型协议、保留位置的分块、增量与模型切换、连续向量缓存和精确近邻 |
+| `internal/search.go`、`discovery.go`、`search_api.go`、`feishu_discovery.go` | 中文混合检索、相关笔记、路径漫步、显式阅读及 REST/MCP/飞书复用 |
 | `internal/sync.go` | 正常与归档扫描、增量追补、全量修复与任务调度 |
 | `internal/store.go`、`migrations/` | 数据库迁移、来源绑定、持久任务、退避、扫描暂存与投影 |
 | `internal/maintenance.go` | 在线状态备份、停止服务后恢复、索引重建与写入互斥 |
@@ -126,9 +128,9 @@ Memos 事件 Webhook 可在后续作为同步加速信号。0.31.0 的发送端�
 
 REST、MCP、飞书和客户端调用同一组业务服务，统一资源标识、来源引用、错误和流式事件。Memos 协议、模型协议和消息平台分别封装，业务层使用 Moerise 自己的数据结构。
 
-embedding 与 LLM 使用独立配置，协议、地址、凭据和模型名称均可替换。embedding 生成向量，服务端保存并检索；LLM 生成洞察和回答。模型配置字段随相应功能接入。
+embedding 与 LLM 使用独立配置，协议、地址、凭据和模型名称均可替换。embedding 已接通 OpenAI 兼容接口，生成向量后由服务端保存并检索；LLM 生成洞察和回答的能力在阶段 4 接入。模型、维度、重建与资源限制见[检索与发现](SEARCH.md)。
 
-语义阶段先评估连续 float32 向量的内存精确检索，将索引和检索封装为可替换接口，限制批次、计算线程和模型并发。10000 个 1024 维向量的裸数据约为 39.1 MiB，投影与查询中间结果需额外内存。是否引入专用计算库、近似索引或独立向量数据库，以真实规模和延迟测量为依据。
+语义检索使用连续 float32 向量进行内存精确检索，模型及近邻计算各有可替换接口。模型并发为 1，检索并发为 2，裸向量限制为 96 MiB，并限制索引批次与分块数。10000 个 1024 维向量的裸数据约为 39.1 MiB，投影与查询中间结果需额外内存。是否引入专用计算库、近似索引或独立向量数据库，以真实规模和延迟测量为依据。
 
 向量索引记录模型、维度、分块版本和内容摘要；笔记与查询必须使用同一向量空间。更换向量模型时建立并重建新索引，完成后切换；更换 LLM 无需重建向量。检索矩阵复用内存缓存，正文变化才重新生成向量。
 
