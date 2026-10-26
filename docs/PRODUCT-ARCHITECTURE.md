@@ -32,6 +32,7 @@ Moerise 是以轻量记录、回顾和思考探索为核心的个人笔记产品
 | `internal/memos.go` | Memos 版本与身份检查、官方 API 调用及笔记格式转换 |
 | `internal/records.go`、`attachments.go` | 文本、标签和附件记录、持久幂等、写入结果复查与恢复 |
 | `internal/reviews.go` | 规则选择、固定每日批次、换组与打开和略过历史 |
+| `internal/reviews_api.go`、`mcp.go` | 回顾 REST 与扩展 MCP 入口、Scope 检查和状态变化提示 |
 | `internal/sync.go` | 正常与归档扫描、增量追补、全量修复与任务调度 |
 | `internal/store.go`、`migrations/` | 数据库迁移、来源绑定、持久任务、退避、扫描暂存与投影 |
 | `internal/maintenance.go` | 在线状态备份、停止服务后恢复、索引重建与写入互斥 |
@@ -125,7 +126,7 @@ embedding 与 LLM 使用独立配置，协议、地址、凭据和模型名称�
 
 ### MCP 与客户端
 
-Memos 0.31.0 的[官方 MCP](https://github.com/usememos/memos/blob/v0.31.0/server/mcp/README.md)提供基于 Bearer token 的 Streamable HTTP 接口，覆盖基础笔记管理。扩展 MCP 聚焦回顾、检索、关联、洞察和主题等领域能力，复用业务服务。
+Memos 0.31.0 的[官方 MCP](https://github.com/usememos/memos/blob/v0.31.0/server/mcp/README.md)提供基于 Bearer token 的 Streamable HTTP 接口，覆盖基础笔记管理。扩展 MCP 位于 `/mcp`，通过官方 Go MCP SDK 提供无会话 HTTP 传输，聚焦回顾、检索、关联、洞察和主题等领域能力，复用业务服务。回顾工具按 Scope 分为读取与状态变更两组，具体工具见 API v1。
 
 Memos 0.31.0 的 PAT 缺少读写 Scope；`readOnlyHint` 和客户端工具筛选只是调用方提示或限制。Moerise 的只读边界由服务端凭据检查落实，上游 PAT 保存在服务端。依据见[令牌协议](https://github.com/usememos/memos/blob/v0.31.0/proto/api/v1/user_service.proto)及[令牌创建实现](https://github.com/usememos/memos/blob/v0.31.0/server/api/v1/user_service_access_tokens.go)。
 

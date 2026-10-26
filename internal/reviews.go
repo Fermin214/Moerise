@@ -55,6 +55,28 @@ func (s *ReviewService) Daily(ctx context.Context, at time.Time) (ReviewBatch, e
 	return s.batch(ctx, at, "")
 }
 
+func (s *ReviewService) ReadDaily(ctx context.Context, at time.Time) (ReviewBatch, error) {
+	if err := s.verify(ctx); err != nil {
+		return ReviewBatch{}, err
+	}
+	location, err := time.LoadLocation(s.Store.Settings.Timezone)
+	if err != nil {
+		return ReviewBatch{}, err
+	}
+	instance, user := s.binding()
+	var id string
+	err = s.Store.state.QueryRow(`SELECT id FROM review_batches WHERE instance_id = ? AND user_name = ?
+		AND local_date = ? AND timezone = ? AND rule_version = ? ORDER BY sequence DESC LIMIT 1`,
+		instance, user, at.In(location).Format(time.DateOnly), s.Store.Settings.Timezone, s.ruleVersion()).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ReviewBatch{}, failure("REVIEW_NOT_FOUND", "No daily review has been created", 404, false)
+	}
+	if err != nil {
+		return ReviewBatch{}, err
+	}
+	return s.load(ctx, id)
+}
+
 func (s *ReviewService) Replace(ctx context.Context, key string, at time.Time) (ReviewBatch, error) {
 	if !idempotencyPattern.MatchString(key) {
 		return ReviewBatch{}, failure("INVALID_ARGUMENT", "A valid Idempotency-Key is required", 422, false)
