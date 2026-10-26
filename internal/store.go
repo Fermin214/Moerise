@@ -24,6 +24,7 @@ type Store struct {
 	state    *sql.DB
 	index    *sql.DB
 	reviewMu sync.Mutex
+	vectorMu sync.Mutex
 }
 
 func openDB(path string, readonly bool) (*sql.DB, error) {
@@ -254,7 +255,7 @@ func (s *Store) bind() error {
 		if _, err := tx.Exec("DELETE FROM scan_memos"); err != nil {
 			return err
 		}
-		_, err := tx.Exec("INSERT OR IGNORE INTO projection_meta VALUES (?, ?)", instance, newID())
+		_, err := tx.Exec("INSERT OR IGNORE INTO projection_meta (instance_id, generation) VALUES (?, ?)", instance, newID())
 		return err
 	}); err != nil {
 		return err
@@ -304,16 +305,21 @@ func (s *Store) Status() (SyncStatus, error) {
 	if err != nil {
 		return result, err
 	}
-	defer rows.Close()
 	for rows.Next() {
 		var state string
 		var count int
 		if err := rows.Scan(&state, &count); err != nil {
+			rows.Close()
 			return result, err
 		}
 		result.Counts[state] = count
 	}
-	return result, rows.Err()
+	err = rows.Err()
+	rows.Close()
+	if err == nil && s.Settings.Embedding.Enabled {
+		result.VectorIndex, err = s.VectorStatus()
+	}
+	return result, err
 }
 
 func (s *Store) SourceHealth(ok bool, code, version string) error {
@@ -540,6 +546,11 @@ func (s *Store) Publish(run string, absent map[string]bool) (map[string]any, err
 				return err
 			}
 		}
+		if changed > 0 || len(absent) > 0 {
+			if err := s.advanceProjection(tx); err != nil {
+				return err
+			}
+		}
 		_, err = tx.Exec("DELETE FROM scan_memos WHERE run_id = ?", run)
 		return err
 	})
@@ -549,12 +560,27 @@ func (s *Store) Publish(run string, absent map[string]bool) (map[string]any, err
 func (s *Store) Refresh(name string, memo *Memo) error {
 	return transaction(s.index, func(tx *sql.Tx) error {
 		if memo == nil {
-			_, err := tx.Exec("DELETE FROM memos WHERE instance_id = ? AND user_name = ? AND name = ?", s.Settings.Memos.InstanceID, s.Settings.Memos.User, name)
+			result, err := tx.Exec("DELETE FROM memos WHERE instance_id = ? AND user_name = ? AND name = ?", s.Settings.Memos.InstanceID, s.Settings.Memos.User, name)
+			if err != nil {
+				return err
+			}
+			count, err := result.RowsAffected()
+			if err != nil || count == 0 {
+				return err
+			}
+			return s.advanceProjection(tx)
+		}
+		count, err := s.put(tx, *memo)
+		if err != nil || count == 0 {
 			return err
 		}
-		_, err := s.put(tx, *memo)
-		return err
+		return s.advanceProjection(tx)
 	})
+}
+
+func (s *Store) advanceProjection(tx *sql.Tx) error {
+	_, err := tx.Exec("UPDATE projection_meta SET revision = revision + 1 WHERE instance_id = ?", s.Settings.Memos.InstanceID)
+	return err
 }
 
 func (s *Store) Advance(watermark string, full bool) error {

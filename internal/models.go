@@ -135,17 +135,18 @@ type JobCount struct {
 }
 
 type SyncStatus struct {
-	InstanceID      string         `json:"instance_id"`
-	Watermark       *string        `json:"watermark"`
-	LastIncremental *string        `json:"last_incremental"`
-	LastFull        *string        `json:"last_full"`
-	SourceOK        bool           `json:"source_ok"`
-	IndexGeneration string         `json:"index_generation"`
-	UpstreamVersion *string        `json:"upstream_version"`
-	LastError       *string        `json:"last_error"`
-	UpdatedAt       string         `json:"updated_at"`
-	Counts          map[string]int `json:"counts"`
-	Jobs            []JobCount     `json:"jobs"`
+	InstanceID      string             `json:"instance_id"`
+	Watermark       *string            `json:"watermark"`
+	LastIncremental *string            `json:"last_incremental"`
+	LastFull        *string            `json:"last_full"`
+	SourceOK        bool               `json:"source_ok"`
+	IndexGeneration string             `json:"index_generation"`
+	UpstreamVersion *string            `json:"upstream_version"`
+	LastError       *string            `json:"last_error"`
+	UpdatedAt       string             `json:"updated_at"`
+	Counts          map[string]int     `json:"counts"`
+	Jobs            []JobCount         `json:"jobs"`
+	VectorIndex     *VectorIndexStatus `json:"vector_index,omitempty"`
 }
 
 func decodeMemo(data []byte) (Memo, error) {

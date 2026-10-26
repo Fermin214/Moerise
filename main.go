@@ -27,7 +27,7 @@ func main() {
 
 func run(args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: moerise serve|check-config|backup|restore|rebuild-index|healthcheck|version")
+		return errors.New("usage: moerise serve|check-config|check-embedding|backup|restore|rebuild-index|healthcheck|version")
 	}
 	if args[0] == "version" {
 		fmt.Println(moerise.Version)
@@ -78,6 +78,18 @@ func run(args []string) error {
 	switch args[0] {
 	case "check-config":
 		return encode(map[string]string{"status": "valid", "instance_id": settings.Memos.InstanceID, "user": settings.Memos.User, "timezone": settings.Timezone})
+	case "check-embedding":
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer stop()
+		result, err := moerise.CheckEmbedding(ctx, settings.Embedding)
+		if err != nil {
+			var service *moerise.ServiceError
+			if errors.As(err, &service) {
+				return fmt.Errorf("%s: %w", service.Code, err)
+			}
+			return err
+		}
+		return encode(result)
 	case "serve":
 		return serve(settings, net.JoinHostPort(*host, strconv.Itoa(*port)))
 	case "backup":
@@ -127,6 +139,15 @@ func serve(settings moerise.Settings, address string) error {
 	if err != nil {
 		return err
 	}
+	var vectorWorker *moerise.VectorIndexService
+	if settings.Embedding.Enabled {
+		provider, err := moerise.NewEmbeddingProvider(settings.Embedding)
+		if err != nil {
+			return err
+		}
+		defer provider.Close()
+		vectorWorker = moerise.NewVectorIndexService(store, source, provider)
+	}
 	server := &http.Server{Addr: address, Handler: api, ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout: 30 * time.Second, WriteTimeout: 120 * time.Second, IdleTimeout: 60 * time.Second,
 		ErrorLog: slog.NewLogLogger(slog.Default().Handler(), slog.LevelError)}
@@ -136,6 +157,11 @@ func serve(settings moerise.Settings, address string) error {
 	defer cancel()
 	workerDone, serverDone := make(chan error, 1), make(chan error, 1)
 	go func() { workerDone <- worker.Run(ctx) }()
+	var vectorDone chan error
+	if vectorWorker != nil {
+		vectorDone = make(chan error, 1)
+		go func() { vectorDone <- vectorWorker.Run(ctx) }()
+	}
 	var feishuDone chan error
 	if api.Feishu != nil {
 		feishuDone = make(chan error, 1)
@@ -149,6 +175,7 @@ func serve(settings moerise.Settings, address string) error {
 	workerExited := false
 	feishuExited := false
 	notificationExited := false
+	vectorExited := false
 	select {
 	case <-signalCtx.Done():
 	case err := <-workerDone:
@@ -170,6 +197,11 @@ func serve(settings moerise.Settings, address string) error {
 		if err != nil && !errors.Is(err, context.Canceled) {
 			result = errors.New("notification worker stopped")
 		}
+	case err := <-vectorDone:
+		vectorExited = true
+		if err != nil && !errors.Is(err, context.Canceled) {
+			result = errors.New("vector index worker stopped")
+		}
 	}
 	cancel()
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -188,6 +220,9 @@ func serve(settings moerise.Settings, address string) error {
 	}
 	if !notificationExited {
 		<-notificationDone
+	}
+	if vectorDone != nil && !vectorExited {
+		<-vectorDone
 	}
 	return result
 }

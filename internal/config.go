@@ -65,6 +65,21 @@ type ProviderConfig struct {
 	Model    *string `json:"model"`
 }
 
+type EmbeddingConfig struct {
+	Enabled          bool    `json:"enabled"`
+	Provider         string  `json:"provider"`
+	Protocol         string  `json:"protocol"`
+	BaseURL          *string `json:"base_url"`
+	APIKey           *string `json:"api_key"`
+	Model            *string `json:"model"`
+	Dimensions       int     `json:"dimensions"`
+	BatchSize        int     `json:"batch_size"`
+	TimeoutSeconds   float64 `json:"timeout_seconds"`
+	MaxConcurrency   int     `json:"max_concurrency"`
+	MaxRetries       int     `json:"max_retries"`
+	QueryInstruction *string `json:"query_instruction"`
+}
+
 type ChannelConfig struct {
 	Kind              string  `json:"kind"`
 	AppID             *string `json:"app_id"`
@@ -94,21 +109,23 @@ type Settings struct {
 	Sync          SyncConfig         `json:"sync"`
 	Review        ReviewConfig       `json:"review"`
 	Notifications NotificationConfig `json:"notifications"`
-	Embedding     ProviderConfig     `json:"embedding"`
+	Embedding     EmbeddingConfig    `json:"embedding"`
 	LLM           ProviderConfig     `json:"llm"`
 	Channel       ChannelConfig      `json:"channel"`
 }
 
 func DefaultSettings() Settings {
+	embeddingModel := "qwen3.7-text-embedding"
 	return Settings{
 		Memos:    MemosConfig{TimeoutSeconds: 10, PageSize: 100, MaxPages: 10000},
 		Timezone: "Asia/Hong_Kong", StateDir: "/data/state", IndexDir: "/data/index",
 		Sync:          SyncConfig{60, 21600, 300, 5, 300},
 		Review:        ReviewConfig{Count: 3, MinAgeHours: 24, RecentDays: 30, TopicLimit: 1},
 		Notifications: NotificationConfig{Time: "09:00"},
-		Embedding:     ProviderConfig{Protocol: "openai-compatible"},
-		LLM:           ProviderConfig{Protocol: "openai-compatible"},
-		Channel:       ChannelConfig{Kind: "feishu-app"},
+		Embedding: EmbeddingConfig{Provider: "bailian", Protocol: "dashscope", Model: &embeddingModel,
+			Dimensions: 1024, BatchSize: 20, TimeoutSeconds: 30, MaxConcurrency: 2, MaxRetries: 2},
+		LLM:     ProviderConfig{Protocol: "openai-compatible"},
+		Channel: ChannelConfig{Kind: "feishu-app"},
 	}
 }
 
@@ -295,5 +312,5 @@ func (s *Settings) Validate() error {
 			return bad("channel.webhook_url")
 		}
 	}
-	return nil
+	return s.Embedding.Validate()
 }

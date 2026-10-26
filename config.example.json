@@ -33,10 +33,18 @@
     "lease_seconds": 300
   },
   "embedding": {
-    "protocol": "openai-compatible",
+    "enabled": false,
+    "provider": "bailian",
+    "protocol": "dashscope",
     "base_url": null,
     "api_key": null,
-    "model": null
+    "model": "qwen3.7-text-embedding",
+    "dimensions": 1024,
+    "batch_size": 20,
+    "timeout_seconds": 30,
+    "max_concurrency": 2,
+    "max_retries": 2,
+    "query_instruction": null
   },
   "llm": {
     "protocol": "openai-compatible",
