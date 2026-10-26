@@ -45,6 +45,14 @@ type SyncConfig struct {
 	LeaseSeconds   int `json:"lease_seconds"`
 }
 
+type ReviewConfig struct {
+	Count           int  `json:"count"`
+	MinAgeHours     int  `json:"min_age_hours"`
+	RecentDays      int  `json:"recent_days"`
+	TopicLimit      int  `json:"topic_limit"`
+	IncludeArchived bool `json:"include_archived"`
+}
+
 type ProviderConfig struct {
 	Protocol string  `json:"protocol"`
 	BaseURL  *string `json:"base_url"`
@@ -68,6 +76,7 @@ type Settings struct {
 	StateDir     string         `json:"state_dir"`
 	IndexDir     string         `json:"index_dir"`
 	Sync         SyncConfig     `json:"sync"`
+	Review       ReviewConfig   `json:"review"`
 	Embedding    ProviderConfig `json:"embedding"`
 	LLM          ProviderConfig `json:"llm"`
 	Channel      ChannelConfig  `json:"channel"`
@@ -78,6 +87,7 @@ func DefaultSettings() Settings {
 		Memos:    MemosConfig{TimeoutSeconds: 10, PageSize: 100, MaxPages: 10000},
 		Timezone: "Asia/Hong_Kong", StateDir: "/data/state", IndexDir: "/data/index",
 		Sync:      SyncConfig{60, 21600, 300, 5, 300},
+		Review:    ReviewConfig{Count: 3, MinAgeHours: 24, RecentDays: 30, TopicLimit: 1},
 		Embedding: ProviderConfig{Protocol: "openai-compatible"},
 		LLM:       ProviderConfig{Protocol: "openai-compatible"},
 		Channel:   ChannelConfig{Kind: "feishu-app"},
@@ -230,6 +240,11 @@ func (s *Settings) Validate() error {
 	}
 	if s.Channel.Kind != "feishu-app" && s.Channel.Kind != "feishu-webhook" {
 		return bad("channel.kind")
+	}
+	if s.Review.Count < 1 || s.Review.Count > 20 || s.Review.MinAgeHours < 0 ||
+		s.Review.MinAgeHours > 87600 || s.Review.RecentDays < 1 || s.Review.RecentDays > 3650 ||
+		s.Review.TopicLimit < 1 || s.Review.TopicLimit > s.Review.Count {
+		return bad("review")
 	}
 	return nil
 }

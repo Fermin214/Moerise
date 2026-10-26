@@ -50,5 +50,12 @@
     "app_secret": null,
     "destination": null,
     "webhook_url": null
+  },
+  "review": {
+    "count": 3,
+    "min_age_hours": 24,
+    "recent_days": 30,
+    "topic_limit": 1,
+    "include_archived": false
   }
 }

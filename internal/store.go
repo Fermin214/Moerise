@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	_ "modernc.org/sqlite"
 )
@@ -22,6 +23,7 @@ type Store struct {
 	Settings Settings
 	state    *sql.DB
 	index    *sql.DB
+	reviewMu sync.Mutex
 }
 
 func openDB(path string, readonly bool) (*sql.DB, error) {
@@ -171,7 +173,7 @@ func NewStore(settings Settings) (*Store, error) {
 		state.Close()
 		return nil, err
 	}
-	store := &Store{settings, state, index}
+	store := &Store{Settings: settings, state: state, index: index}
 	for _, migration := range []struct {
 		db   *sql.DB
 		kind string

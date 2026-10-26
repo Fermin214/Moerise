@@ -47,6 +47,7 @@ docker compose up -d --build moerise
 | --- | --- |
 | [运行与恢复](docs/OPERATIONS.md) | 配置、部署、备份、恢复和版本回滚 |
 | [API v1](docs/API-V1.md) | 访问范围、笔记创建与幂等重试、分页、同步任务和错误处理 |
+| [每日回顾](docs/DAILY-REVIEW.md) | 选择参数、固定批次、近期去重与记录恢复 |
 | [开发指南](docs/DEVELOPMENT.md) | 贡献代码所需的环境、工具、运行和验证方法 |
 | [产品与架构](docs/PRODUCT-ARCHITECTURE.md) | 产品方向、模块职责、数据边界和技术依据 |
 | [路线图](docs/ROADMAP.md) | 已完成阶段、后续功能和通过条件 |
