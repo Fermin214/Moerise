@@ -18,6 +18,7 @@ Moerise 支持 Linux 原生二进制和 Docker Linux 容器部署，两者都需
 | `timezone` | IANA 时区名，用于产品日期与调度，按部署设置；默认 `Asia/Hong_Kong` |
 | `state_dir`、`index_dir` | 不同的可写持久目录，默认 `/data/state`、`/data/index` |
 | `sync` | 增量轮询、全量修复、重叠时间、退避及任务租约 |
+| `review` | 每日回顾数量、过新排除、近期去重、主题上限与归档范围，详见[每日回顾](DAILY-REVIEW.md) |
 | `embedding`、`llm`、`channel` | 后续模型和消息能力的配置，字段预留，调用随功能接入 |
 
 扩展令牌须各不相同，且与 Memos PAT 分开。分别用密码管理器生成至少 32 字符的随机令牌和分页密钥；安装了 OpenSSL 时也可使用 `openssl rand -hex 32`。Scope 说明见 [API v1](API-V1.md#资源与身份)。

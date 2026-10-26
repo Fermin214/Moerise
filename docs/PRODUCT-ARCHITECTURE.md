@@ -31,6 +31,7 @@ Moerise 是以轻量记录、回顾和思考探索为核心的个人笔记产品
 | `internal/api.go`、`models.go`、`openapi.json` | REST 路由、访问范围、来源复查、分页与响应契约 |
 | `internal/memos.go` | Memos 版本与身份检查、官方 API 调用及笔记格式转换 |
 | `internal/records.go`、`attachments.go` | 文本、标签和附件记录、持久幂等、写入结果复查与恢复 |
+| `internal/reviews.go` | 规则选择、固定每日批次、换组与打开和略过历史 |
 | `internal/sync.go` | 正常与归档扫描、增量追补、全量修复与任务调度 |
 | `internal/store.go`、`migrations/` | 数据库迁移、来源绑定、持久任务、退避、扫描暂存与投影 |
 | `internal/maintenance.go` | 在线状态备份、停止服务后恢复、索引重建与写入互斥 |
