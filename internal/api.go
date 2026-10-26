@@ -22,12 +22,17 @@ type API struct {
 	Source     Source
 	Worker     *SyncService
 	Records    *RecordService
+	Reviews    *ReviewService
+	MCP        http.Handler
 	generation string
 }
 
 func NewAPI(settings Settings, store *Store, source Source, worker *SyncService) (*API, error) {
 	generation, err := store.Generation()
-	return &API{settings, store, source, worker, NewRecordService(store, source), generation}, err
+	api := &API{Settings: settings, Store: store, Source: source, Worker: worker,
+		Records: NewRecordService(store, source), Reviews: NewReviewService(store, source), generation: generation}
+	api.MCP = api.newMCPHandler()
+	return api, err
 }
 
 func (a *API) cursorContext() []string {
@@ -85,7 +90,7 @@ func (a *API) authenticate(request *http.Request, scope string) (*AccessToken, e
 	if matched == nil {
 		return nil, failure("UNAUTHENTICATED", "Invalid Bearer token", 401, false)
 	}
-	if !slices.Contains(matched.Scopes, scope) {
+	if scope != "" && !slices.Contains(matched.Scopes, scope) {
 		return nil, failure("FORBIDDEN", "This token does not permit this operation", 403, false)
 	}
 	return matched, nil
@@ -164,6 +169,16 @@ func (a *API) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 
 func (a *API) route(writer http.ResponseWriter, request *http.Request) (any, int, error) {
 	path, method := request.URL.Path, request.Method
+	if path == "/mcp" {
+		if _, err := a.authenticate(request, ""); err != nil {
+			return nil, 0, err
+		}
+		a.MCP.ServeHTTP(privateMCPResponse{writer}, request)
+		return nil, 0, nil
+	}
+	if path == "/api/ext/v1/reviews" || strings.HasPrefix(path, "/api/ext/v1/reviews/") {
+		return a.reviewRoute(writer, request)
+	}
 	badMethod := func() (any, int, error) {
 		return nil, 0, failure("METHOD_NOT_ALLOWED", "Method Not Allowed", 405, false)
 	}

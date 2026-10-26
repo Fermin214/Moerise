@@ -2,7 +2,7 @@
 
 API 前缀为 `/api/ext/v1`。路由由 [api.go](../internal/api.go) 定义，字段模型见 [models.go](../internal/models.go)，完整字段契约见 [openapi.json](../internal/openapi.json)。服务通过 `/openapi.json` 提供同一契约，通过 `/docs` 提供交互文档。本文说明访问范围、分页、任务和错误语义。
 
-本版本提供笔记读取、创建与同步管理。回顾、检索、AI 和扩展 MCP 按[路线图](ROADMAP.md)接入。
+本版本提供笔记读取、创建、同步管理，以及每日回顾 REST 和扩展 MCP。检索与 AI 按[路线图](ROADMAP.md)接入。
 
 ## 资源与身份
 
@@ -18,6 +18,8 @@ API 前缀为 `/api/ext/v1`。路由由 [api.go](../internal/api.go) 定义，�
 | `notes:write` | 创建私有笔记与重放创建请求 |
 | `sync:read` | 读取同步状态和任务结果 |
 | `sync:write` | 请求增量同步或全量修复 |
+| `reviews:read` | 读取已有每日批次和指定回顾批次 |
+| `reviews:write` | 获取或创建每日批次、换一组、记录打开与略过 |
 
 只读凭据不能创建笔记或触发同步，写入请求返回 403 `FORBIDDEN`。笔记创建支持基础附件；笔记修改和消息平台操作按路线图提供。
 
@@ -34,6 +36,12 @@ API 前缀为 `/api/ext/v1`。路由由 [api.go](../internal/api.go) 定义，�
 | GET | `/api/ext/v1/sync` | `sync:read` | 水位、完整同步时间、来源状态、数量与任务统计 |
 | POST | `/api/ext/v1/sync` | `sync:write` | 202，返回持久任务 |
 | GET | `/api/ext/v1/jobs/{job_id}` | `sync:read` | 持久任务与执行结果 |
+| GET | `/api/ext/v1/reviews/daily` | `reviews:read` | 读取已有当日批次；尚未创建时返回 404 |
+| POST | `/api/ext/v1/reviews/daily` | `reviews:write` | 获取或创建固定当日批次，200 |
+| POST | `/api/ext/v1/reviews/daily/replace` | `reviews:write` | 换一组，必填 `Idempotency-Key`，200 |
+| GET | `/api/ext/v1/reviews/{batch_id}` | `reviews:read` | 读取指定批次，200 |
+| POST | `/api/ext/v1/reviews/{batch_id}/items/{memo_id}/open` | `reviews:write` | 记录首次打开时间，200 |
+| POST | `/api/ext/v1/reviews/{batch_id}/items/{memo_id}/skip` | `reviews:write` | 记录首次略过时间，200 |
 
 来源连接成功、全量同步完成且工作循环存活时，就绪检查返回 200；其他情况返回 503。存活检查适合区分进程状态与来源故障。
 
@@ -116,6 +124,25 @@ Content-Type: application/json
 
 幂等记录随产品状态备份，服务重启后继续使用，索引重建保留记录。恢复快照只能恢复其中已有的幂等记录；快照生成后创建的记录需结合 Memos 原文核实，不能将旧请求直接视为尚未写入。
 
+## 每日回顾与 MCP
+
+回顾 POST 请求体为 `{}`。日期由服务端按配置时区计算，不接受调用方覆盖日期或规则。获取或创建回顾会保存批次和选中历史，因此需要写 Scope；只读 Scope 只能读取已经生成的批次。换组键采用笔记创建相同的字符和长度限制，范围为账号、日期、时区和规则版本。
+
+响应直接返回 `ReviewBatch`，含 `id`、`date`、`timezone`、`rule_version`、`sequence`、`created_at` 和有序 `items`。条目含 `name`、`selected_source_hash`、`selected_at`、独立的 `opened_at` 与 `skipped_at`、`unavailable`，以及可用时的最新 `note`。来源删除或作者变化时保留条目位置，`unavailable=true` 并省略 `note`。打开或略过不在批次中的资源返回 404 `REVIEW_ITEM_NOT_FOUND`。选择、参数和恢复规则见[每日回顾](DAILY-REVIEW.md)。
+
+扩展 MCP 位于 `/mcp`，使用官方 Go MCP SDK 的无会话 Streamable HTTP 传输，返回 JSON。客户端对该 URL 发送 MCP 请求，使用与 REST 相同的 Moerise Bearer 凭据；请求体上限为 64 KiB。协议初始化、请求头和错误按 MCP 协议处理，业务错误使用工具结果的 `isError` 及包含 `code`、`message`、`retryable` 的 JSON 文本。MCP GET、DELETE 不提供事件流或会话管理。含跨站来源的请求受到同源检查。
+
+| 工具 | Scope | 状态变化 |
+| --- | --- | --- |
+| `read_daily_review` | `reviews:read` | 读取已有当日批次 |
+| `get_review_batch` | `reviews:read` | 读取指定 `batch_id` |
+| `get_daily_review` | `reviews:write` | 首次获取时保存当日批次和选中历史 |
+| `replace_daily_review` | `reviews:write` | 使用 `idempotency_key` 创建新批次 |
+| `open_review_memo` | `reviews:write` | 保存 `batch_id`、`name` 对应条目的首次打开时间 |
+| `skip_review_memo` | `reviews:write` | 保存 `batch_id`、`name` 对应条目的首次略过时间 |
+
+会改变状态的工具均设置 `readOnlyHint=false`。工具提示只帮助客户端展示，服务端依据凭据 Scope 决定可见及可调用的工具。REST 与 MCP 以同一绑定账号共享批次、换组键与条目状态。
+
 ## 同步任务
 
 ```http
@@ -161,7 +188,7 @@ Content-Type: application/json
 | --- | --- | --- |
 | 401 | `UNAUTHENTICATED` | 检查扩展 Bearer 凭据 |
 | 403 | `FORBIDDEN` | 检查凭据 Scope |
-| 404 | `SOURCE_NOT_FOUND`、`JOB_NOT_FOUND`、`NOT_FOUND` | 移除失效资源或重新开始查询 |
+| 404 | `SOURCE_NOT_FOUND`、`JOB_NOT_FOUND`、`REVIEW_NOT_FOUND`、`REVIEW_ITEM_NOT_FOUND`、`NOT_FOUND` | 移除失效资源或重新开始查询 |
 | 405 | `METHOD_NOT_ALLOWED` | 检查方法和路由 |
 | 409 | `IDEMPOTENCY_CONFLICT` | 同一幂等键已对应其他规范化内容；独立创建使用新键 |
 | 409 | `WRITE_CONFLICT` | 检查来源资源冲突，不将冲突资源作为创建结果 |
