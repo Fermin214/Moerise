@@ -108,6 +108,13 @@ func TestRecordRejectsInvalidRequestsBeforeSourceAccess(t *testing.T) {
 		{"key", `{"content":"private","tags":["a #public"]}`, 1, 422},
 		{"key", `{"content":"private","tags":["v\u00b2"]}`, 1, 422},
 		{"key", `{"content":"private","tags":null}`, 1, 422},
+		{"key", `{"content":"private","attachments":null}`, 1, 422},
+		{"key", `{"content":"private","attachments":[{"filename":"a.txt","type":"text/plain","content":null}]}`, 1, 422},
+		{"key", `{"content":"private","attachments":[{"filename":"a.txt","type":"text/plain","content":[1,2]}]}`, 1, 422},
+		{"key", `{"content":"private","attachments":[{"filename":"../a.txt","type":"text/plain","content":"YQ=="}]}`, 1, 422},
+		{"key", `{"content":"private","attachments":[{"filename":"a.txt","type":"text/plain","content":""}]}`, 1, 422},
+		{"key", `{"content":"private","attachments":[{"filename":"a.txt","type":"text/plain","content":"not base64"}]}`, 1, 422},
+		{"key", `{"content":"private","attachments":[{"filename":"a.txt","type":"text/plain; charset=utf-8","content":"YQ=="}]}`, 1, 422},
 		{"key", `{"content":" "}`, 1, 422},
 		{"key", `{"content":"` + strings.Repeat("x", 65536) + `","tags":["a"]}`, 1, 422},
 	} {

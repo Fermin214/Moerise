@@ -120,7 +120,7 @@ func rejectNull(value any, kind reflect.Type) error {
 		if object, ok := value.(map[string]any); ok {
 			for i := range kind.NumField() {
 				field := kind.Field(i)
-				if child, exists := object[field.Tag.Get("json")]; exists {
+				if child, exists := object[strings.Split(field.Tag.Get("json"), ",")[0]]; exists {
 					if err := rejectNull(child, field.Type); err != nil {
 						return err
 					}
@@ -129,6 +129,11 @@ func rejectNull(value any, kind reflect.Type) error {
 		}
 	}
 	if kind.Kind() == reflect.Slice {
+		if kind.Elem().Kind() == reflect.Uint8 {
+			if _, ok := value.(string); !ok {
+				return errors.New("binary content must be a base64 string")
+			}
+		}
 		if list, ok := value.([]any); ok {
 			for _, child := range list {
 				if err := rejectNull(child, kind.Elem()); err != nil {

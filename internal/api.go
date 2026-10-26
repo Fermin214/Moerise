@@ -246,7 +246,7 @@ func (a *API) route(writer http.ResponseWriter, request *http.Request) (any, int
 	case "/api/ext/v1/notes":
 		if method == "POST" {
 			var body CreateNote
-			if err := strictJSON(http.MaxBytesReader(writer, request.Body, 1024*1024), &body); err != nil {
+			if err := strictJSON(http.MaxBytesReader(writer, request.Body, 12*1024*1024), &body); err != nil {
 				return nil, 0, failure("INVALID_ARGUMENT", "Request parameters are invalid", 422, false)
 			}
 			return a.Records.Create(request.Context(), request.Header.Get("Idempotency-Key"), body)

@@ -19,7 +19,7 @@ API 前缀为 `/api/ext/v1`。路由由 [api.go](../internal/api.go) 定义，�
 | `sync:read` | 读取同步状态和任务结果 |
 | `sync:write` | 请求增量同步或全量修复 |
 
-只读凭据不能创建笔记或触发同步，写入请求返回 403 `FORBIDDEN`。笔记修改、附件上传和消息平台操作在后续接口中提供。
+只读凭据不能创建笔记或触发同步，写入请求返回 403 `FORBIDDEN`。笔记创建支持基础附件；笔记修改和消息平台操作按路线图提供。
 
 ## 路由
 
@@ -86,7 +86,25 @@ Content-Type: application/json
 
 服务将标签去重并按字符串升序排序。规范化内容由原样保留的 `content` 和去重排序后的 `tags` 决定；省略 `tags` 与 `tags:[]` 等价，标签顺序或重复项的差异不构成内容冲突。非空标签生成 `#tag1 #tag2\n\n` 前缀并写入正文，使 Memos 按正文解析标签；空标签不生成前缀。原始正文与生成前缀合计的 UTF-8 编码长度不能超过 65536 字节。正文自身包含的标签也由 Memos 解析，层级标签还会包含父级，例如 `parent/child` 同时返回 `parent`。响应的 `tags` 以来源复查结果为准。
 
-只接受 `content` 和 `tags`，其他字段返回 422 `INVALID_ARGUMENT`。笔记固定创建为 `PRIVATE`，作者为绑定账号；`creator`、`visibility`、`attachments` 和 `state` 均不能通过该接口指定。
+还可提供 `attachments` 数组，其他字段返回 422 `INVALID_ARGUMENT`。笔记固定创建为 `PRIVATE`，作者为绑定账号；`creator`、`visibility` 和 `state` 不能指定。
+
+### 基础附件
+
+`attachments` 为有序数组，最多 10 项，省略与 `[]` 等价。文件解码后的总大小至多 8 MiB，请求 JSON 至多 12 MiB，每项包含：
+
+| 字段 | 含义 |
+| --- | --- |
+| `filename` | 非空文件名，UTF-8 至多 255 字节；不含路径分隔符、控制字符或两端空白，不能为 `.` 或 `..` |
+| `type` | 小写 MIME 类型，不带参数，例如 `text/plain`、`image/png` |
+| `content` | 非空文件字节的标准 Base64 编码 |
+
+```json
+{"content":"附上资料。","tags":["资料"],"attachments":[{"filename":"hello.txt","type":"text/plain","content":"aGVsbG8="}]}
+```
+
+服务先创建私有笔记，再通过 Memos 官方附件 API 上传并关联文件。每个位置的附件分配持久资源标识；相同幂等键的文件名、类型、字节或顺序变化返回 409 `IDEMPOTENCY_CONFLICT`。产品状态只保存摘要和资源标识，文件字节保存在 Memos。Memos 处理图片时可能剥离元数据，文件大小以来源结果为准。
+
+部分上传失败或结果不明返回 503 `WRITE_OUTCOME_UNKNOWN`，笔记与已上传文件仍可在 Memos 中打开。使用原键及完整请求体重试，服务先复查原笔记与附件，仅补齐缺失文件；全部关联成功后才确认整次创建成功。重启、索引重建及恢复产品状态后继续使用原资源标识。已经复查确认的部分笔记被删除后返回 404，不重建。成功请求的重放读取来源的新状态，不恢复使用者随后删除的附件。
 
 ### 幂等与来源复查
 

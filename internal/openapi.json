@@ -277,7 +277,7 @@
       },
       "post": {
         "summary": "创建私有笔记",
-        "description": "要求 notes:write Scope。只接收 content 和 tags，固定为绑定账号创建 PRIVATE 笔记。规范化内容由原样正文和去重排序后的标签决定，省略 tags 与空数组等价。非空标签生成 #tag1 #tag2\\n\\n 前缀写入正文，供 Memos 解析；正文与前缀合计 UTF-8 不超过 65536 字节。首次成功 201，同键相同规范化内容重放成功 200，均直接返回 Note。返回前及每次重放均验证来源身份并从 Memos 复查作者与正文。幂等记录持久保存键、内容摘要、分配的 memoId 和处理状态，不缓存原文，重启与索引重建后保留。结果不明时返回 503 WRITE_OUTCOME_UNKNOWN，retryable=true；只用相同键和请求体重试，服务先复查持久分配的 memoId，必要时以同一 ID 创建，不生成重复 ID。已确认成功后来源笔记被删除返回 404 SOURCE_NOT_FOUND，不重建；来源故障不输出旧正文。",
+        "description": "要求 notes:write Scope。接收 content、tags 和可选 attachments，固定为绑定账号创建 PRIVATE 笔记。规范化内容由原样正文和去重排序后的标签决定，省略 tags 与空数组等价。非空标签生成 #tag1 #tag2\\n\\n 前缀写入正文，供 Memos 解析；正文与前缀合计 UTF-8 不超过 65536 字节。首次成功 201，同键相同规范化内容重放成功 200，均直接返回 Note。返回前及每次重放均验证来源身份并从 Memos 复查作者与正文。幂等记录持久保存键、内容摘要、分配的 memoId 和处理状态，不缓存原文，重启与索引重建后保留。结果不明时返回 503 WRITE_OUTCOME_UNKNOWN，retryable=true；只用相同键和请求体重试，服务先复查持久分配的 memoId，必要时以同一 ID 创建，不生成重复 ID。已确认成功后来源笔记被删除返回 404 SOURCE_NOT_FOUND，不重建；来源故障不输出旧正文。 附件通过官方 API 上传并关联同一笔记。附件资源标识持久保存，部分失败或响应丢失后使用原键和完整请求体重试，只补齐缺失附件。已确认存在的部分笔记被删除后不重建。请求 JSON 上限 12 MiB。",
         "operationId": "create_note_api_ext_v1_notes_post",
         "security": [
           {
@@ -1184,6 +1184,15 @@
             "title": "Tags",
             "default": [],
             "description": "输入最多 20 项；服务去重并按字符串升序排序，非空时生成 #tag1 #tag2\\n\\n 正文前缀，空数组不生成前缀。确认创建时检查请求标签是否完整保留，不完整时返回 WRITE_CONFLICT。响应 tags 以 Memos 对完整正文的解析结果为准，包含正文标签及层级标签的父级。"
+          },
+          "attachments": {
+            "type": "array",
+            "maxItems": 10,
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/CreateAttachmentRequest"
+            },
+            "description": "有序附件列表，合计解码后不超过 8 MiB；省略与空数组等价。"
           }
         },
         "additionalProperties": false,
@@ -1447,6 +1456,32 @@
               "ready",
               "degraded"
             ]
+          }
+        }
+      },
+      "CreateAttachmentRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "filename",
+          "type",
+          "content"
+        ],
+        "properties": {
+          "filename": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 255,
+            "description": "UTF-8 长度至多 255 字节，不含路径分隔符、控制字符或两端空白。"
+          },
+          "type": {
+            "type": "string",
+            "description": "小写 MIME 类型，不带参数，例如 text/plain。"
+          },
+          "content": {
+            "type": "string",
+            "contentEncoding": "base64",
+            "description": "非空文件字节的标准 Base64 编码。"
           }
         }
       }
