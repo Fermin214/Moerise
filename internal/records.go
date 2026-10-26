@@ -3,9 +3,11 @@ package moerise
 import (
 	"context"
 	"database/sql"
+	"mime"
 	"regexp"
 	"slices"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -13,9 +15,10 @@ var idempotencyPattern = regexp.MustCompile(`^[a-zA-Z0-9._:-]{1,128}$`)
 var tagPattern = regexp.MustCompile(`^[\p{L}\p{Nd}_-]+(/[\p{L}\p{Nd}_-]+)*$`)
 
 type noteWrite struct {
-	Name   string
-	Status string
-	New    bool
+	Name          string
+	Status        string
+	New           bool
+	SourceCreated bool
 }
 
 func prepareNote(input CreateNote) (string, string, error) {
@@ -40,7 +43,37 @@ func prepareNote(input CreateNote) (string, string, error) {
 	if len(content) > 65536 {
 		return "", "", failure("INVALID_ARGUMENT", "Content including tags exceeds 65536 UTF-8 bytes", 422, false)
 	}
-	return content, hashBytes(canonicalJSON(CreateNote{Content: input.Content, Tags: tags})), nil
+	if len(input.Attachments) > 10 {
+		return "", "", failure("INVALID_ARGUMENT", "At most 10 attachments are allowed", 422, false)
+	}
+	total := 0
+	for _, attachment := range input.Attachments {
+		mediaType, parameters, err := mime.ParseMediaType(attachment.Type)
+		if attachment.Filename == "" || len(attachment.Filename) > 255 ||
+			strings.ContainsAny(attachment.Filename, "/\\\x00\r\n") ||
+			strings.ContainsFunc(attachment.Filename, unicode.IsControl) ||
+			strings.TrimSpace(attachment.Filename) != attachment.Filename ||
+			attachment.Filename == "." || attachment.Filename == ".." ||
+			err != nil || len(parameters) != 0 || mediaType != attachment.Type ||
+			!strings.Contains(mediaType, "/") || len(attachment.Content) == 0 {
+			return "", "", failure("INVALID_ARGUMENT", "Invalid attachment filename, MIME type or content", 422, false)
+		}
+		total += len(attachment.Content)
+	}
+	if total > 8*1024*1024 {
+		return "", "", failure("INVALID_ARGUMENT", "Attachments exceed 8 MiB in total", 422, false)
+	}
+	// Hash file digests rather than retaining their bytes in product state.
+	payload := map[string]any{"content": input.Content, "tags": tags}
+	if len(input.Attachments) > 0 {
+		files := []map[string]string{}
+		for _, attachment := range input.Attachments {
+			files = append(files, map[string]string{"filename": attachment.Filename, "type": attachment.Type,
+				"sha256": hashBytes(attachment.Content)})
+		}
+		payload["attachments"] = files
+	}
+	return content, hashBytes(canonicalJSON(payload)), nil
 }
 
 func (s *Store) reserveNote(key, hash string) (noteWrite, error) {
@@ -60,9 +93,9 @@ func (s *Store) reserveNote(key, hash string) (noteWrite, error) {
 		}
 		result.New = changed == 1
 		var savedHash string
-		if err := tx.QueryRow(`SELECT memo_name, status, request_hash FROM note_writes
+		if err := tx.QueryRow(`SELECT memo_name, status, request_hash, source_created FROM note_writes
 			WHERE instance_id = ? AND user_name = ? AND idempotency_key = ?`,
-			s.Settings.Memos.InstanceID, s.Settings.Memos.User, key).Scan(&result.Name, &result.Status, &savedHash); err != nil {
+			s.Settings.Memos.InstanceID, s.Settings.Memos.User, key).Scan(&result.Name, &result.Status, &savedHash, &result.SourceCreated); err != nil {
 			return err
 		}
 		if savedHash != hash {
@@ -142,8 +175,11 @@ func (s *RecordService) Create(ctx context.Context, key string, input CreateNote
 		}
 		return s.finish(ctx, key, memo, 200)
 	}
+	if memo == nil && write.SourceCreated {
+		return Note{}, 0, failure("SOURCE_NOT_FOUND", "The partially recorded memo was deleted", 404, false)
+	}
 	if memo != nil {
-		return s.reconcile(ctx, key, memo, content, input.Tags, 200)
+		return s.reconcile(ctx, key, memo, content, input, 200)
 	}
 	// Persist uncertainty before the network call so a crash cannot lose a sent write.
 	if err := s.Store.updateNoteWrite(key, "unknown", ""); err != nil {
@@ -178,7 +214,7 @@ func (s *RecordService) Create(ctx context.Context, key string, input CreateNote
 		}
 		return s.unknown(key, "SOURCE_NOT_FOUND")
 	}
-	return s.reconcile(ctx, key, memo, content, input.Tags, status)
+	return s.reconcile(ctx, key, memo, content, input, status)
 }
 
 func (s *RecordService) unknown(key, code string) (Note, int, error) {
@@ -188,13 +224,29 @@ func (s *RecordService) unknown(key, code string) (Note, int, error) {
 	return Note{}, 0, upstreamError("WRITE_OUTCOME_UNKNOWN", "Write outcome is unknown; retry the same request with the same Idempotency-Key")
 }
 
-func (s *RecordService) reconcile(ctx context.Context, key string, memo *Memo, content string, tags []string, status int) (Note, int, error) {
+func (s *RecordService) reconcile(ctx context.Context, key string, memo *Memo, content string, input CreateNote, status int) (Note, int, error) {
 	if memo.Content != content || memo.Visibility != "PRIVATE" {
 		return Note{}, 0, failure("WRITE_CONFLICT", "The reserved Memos resource differs from this request", 409, false)
 	}
-	for _, tag := range tags {
+	for _, tag := range input.Tags {
 		if !slices.Contains(memo.Tags, tag) {
 			return Note{}, 0, failure("WRITE_CONFLICT", "Memos did not preserve the requested tags; inspect the source memo", 409, false)
+		}
+	}
+	if len(input.Attachments) > 0 {
+		if _, err := s.Store.state.Exec(`UPDATE note_writes SET source_created = 1 WHERE
+			instance_id = ? AND user_name = ? AND idempotency_key = ?`,
+			s.Store.Settings.Memos.InstanceID, s.Store.Settings.Memos.User, key); err != nil {
+			return Note{}, 0, err
+		}
+		var err error
+		memo, err = s.attach(ctx, key, memo, input.Attachments)
+		if err != nil {
+			if errorCode(err) == "WRITE_CONFLICT" || errorCode(err) == "IDENTITY_MISMATCH" ||
+				errorCode(err) == "SOURCE_NOT_FOUND" {
+				return Note{}, 0, err
+			}
+			return s.unknown(key, errorCode(err))
 		}
 	}
 	return s.finish(ctx, key, memo, status)

@@ -86,8 +86,15 @@ type Note struct {
 }
 
 type CreateNote struct {
-	Content string   `json:"content"`
-	Tags    []string `json:"tags"`
+	Content     string             `json:"content"`
+	Tags        []string           `json:"tags"`
+	Attachments []CreateAttachment `json:"attachments,omitempty"`
+}
+
+type CreateAttachment struct {
+	Filename string `json:"filename"`
+	Type     string `json:"type"`
+	Content  []byte `json:"content"`
 }
 
 func (m Memo) Note(settings Settings) Note {

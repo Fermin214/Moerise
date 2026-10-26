@@ -30,7 +30,7 @@ Moerise 是以轻量记录、回顾和思考探索为核心的个人笔记产品
 | --- | --- |
 | `internal/api.go`、`models.go`、`openapi.json` | REST 路由、访问范围、来源复查、分页与响应契约 |
 | `internal/memos.go` | Memos 版本与身份检查、官方 API 调用及笔记格式转换 |
-| `internal/records.go` | 文本与标签记录、持久幂等、写入结果复查与恢复 |
+| `internal/records.go`、`attachments.go` | 文本、标签和附件记录、持久幂等、写入结果复查与恢复 |
 | `internal/sync.go` | 正常与归档扫描、增量追补、全量修复与任务调度 |
 | `internal/store.go`、`migrations/` | 数据库迁移、来源绑定、持久任务、退避、扫描暂存与投影 |
 | `internal/maintenance.go` | 在线状态备份、停止服务后恢复、索引重建与写入互斥 |
@@ -68,14 +68,16 @@ SQLite 使用 WAL。迁移按编号执行并校验摘要，产品状态与投影
 
 ### 笔记创建流程
 
-`POST /api/ext/v1/notes` 要求 `notes:write` Scope 与必填 `Idempotency-Key`，只接收 `content` 和可省略的 `tags`。键为 1 至 128 个 ASCII 字母、数字或 `._:-`。正文必填且非空白；标签输入最多 20 项，每项 1 至 100 个 Unicode 字符，由 Unicode 字母、十进制数字、下划线和连字符组成的非空段以 `/` 分隔，不含 `#` 或空白。
+`POST /api/ext/v1/notes` 要求 `notes:write` Scope 与必填 `Idempotency-Key`，接收 `content`、可省略的 `tags` 和 `attachments`。键为 1 至 128 个 ASCII 字母、数字或 `._:-`。正文必填且非空白；标签输入最多 20 项，每项 1 至 100 个 Unicode 字符，由 Unicode 字母、十进制数字、下划线和连字符组成的非空段以 `/` 分隔，不含 `#` 或空白。附件有序，最多 10 个，合计至多 8 MiB，通过 Base64 传入。
 
 1. 检查凭据、请求头与字段，标签去重并按字符串升序排序。非空标签生成 `#tag1 #tag2\n\n` 前缀，与原正文合计 UTF-8 编码不超过 65536 字节；空标签不添加前缀。
 2. 以原正文和规范化标签计算内容摘要，将幂等键、摘要、分配的 `memoId` 和处理状态持久写入产品数据库。同键不同规范化内容返回 409 `IDEMPOTENCY_CONFLICT`。
-3. 验证来源身份，通过官方 API 为绑定账号创建 `PRIVATE` 笔记，将标签前缀写入正文供 Memos 解析。接口不开放 `creator`、`visibility`、`attachments` 或 `state`。
+3. 验证来源身份，通过官方 API 为绑定账号创建 `PRIVATE` 笔记，将标签前缀写入正文供 Memos 解析。接口不开放 `creator`、`visibility` 或 `state`。附件按位置持久分配资源标识，通过官方 API 上传并关联已复查作者的笔记，每次上传前再次检查来源身份与父笔记。
 4. 超时、5xx、响应不可信等结果不明时返回 503 `WRITE_OUTCOME_UNKNOWN`，`retryable=true`。调用方只用相同键和请求体重试；服务先复查持久分配的 `memoId`，必要时才以同一 ID 创建，避免生成重复 ID。来源资源冲突返回 409 `WRITE_CONFLICT`。
 5. 确认创建时检查请求标签是否在 Memos 中完整保留；不完整时返回 409 `WRITE_CONFLICT`。返回前验证来源身份并复查作者与正文，首次请求成功返回 201 和 `Note`。同键相同规范化内容重放时再次复查来源，成功返回 200 和最新 `Note`；来源故障不输出旧正文。
 6. 已确认成功的来源笔记被删除后，重放返回 404 `SOURCE_NOT_FOUND`，不重建笔记。
+
+附件失败后使用同一请求继续，复查已分配的附件资源并只补齐缺失项。正文与全部附件关联成功后才确认整次写入；部分成功后的父笔记已删除时不重建。产品数据库只保存请求摘要、附件标识和父笔记确认状态，不存文件字节。
 
 ### 同步流程
 
