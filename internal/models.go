@@ -1,6 +1,7 @@
 package moerise
 
 import (
+	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
@@ -8,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -43,6 +45,14 @@ func newID() string {
 	}
 	data[6] = (data[6] & 0x0f) | 0x40
 	data[8] = (data[8] & 0x3f) | 0x80
+	return fmt.Sprintf("%x-%x-%x-%x-%x", data[:4], data[4:6], data[6:8], data[8:10], data[10:])
+}
+
+func derivedID(secret string, parts ...string) string {
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write([]byte(strings.Join(parts, "\x00")))
+	data := mac.Sum(nil)[:16]
+	data[6], data[8] = data[6]&0x0f|0x80, data[8]&0x3f|0x80
 	return fmt.Sprintf("%x-%x-%x-%x-%x", data[:4], data[4:6], data[6:8], data[8:10], data[10:])
 }
 

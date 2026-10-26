@@ -14,18 +14,21 @@ Moerise 支持 Linux 原生二进制和 Docker Linux 容器部署，两者都需
 | `memos.user` | PAT 所属账号的 `users/{id}` 资源名，取自 `/api/v1/auth/me` |
 | `memos.token` | 该账号的 Memos PAT，至少 16 字符 |
 | `access_tokens` | Moerise 独立访问令牌列表，每项有名称、令牌和 Scope；令牌至少 32 字符 |
-| `cursor_secret` | 独立随机分页密钥，至少 32 字符 |
+| `cursor_secret` | 独立随机密钥，至少 32 字符，用于分页签名及按来源和幂等键派生新资源标识；随配置备份 |
 | `timezone` | IANA 时区名，用于产品日期与调度，按部署设置；默认 `Asia/Hong_Kong` |
 | `state_dir`、`index_dir` | 不同的可写持久目录，默认 `/data/state`、`/data/index` |
 | `sync` | 增量轮询、全量修复、重叠时间、退避及任务租约 |
 | `review` | 每日回顾数量、过新排除、近期去重、主题上限与归档范围，详见[每日回顾](DAILY-REVIEW.md) |
-| `embedding`、`llm`、`channel` | 后续模型和消息能力的配置，字段预留，调用随功能接入 |
+| `channel` | 飞书应用凭据、事件验证、绑定身份及推送渠道，详见[飞书入口](FEISHU.md) |
+| `embedding`、`llm` | 模型配置，调用随功能接入 |
 
 扩展令牌须各不相同，且与 Memos PAT 分开。分别用密码管理器生成至少 32 字符的随机令牌和分页密钥；安装了 OpenSSL 时也可使用 `openssl rand -hex 32`。Scope 说明见 [API v1](API-V1.md#资源与身份)。
 
 模板中的 `operator` 包含笔记、同步和回顾的读写 Scope，`reader` 包含 `notes:read`、`reviews:read`。只读凭据不能创建笔记、每日批次或保存打开、略过记录。笔记创建请求需携带 `Idempotency-Key`；503 `WRITE_OUTCOME_UNKNOWN` 表示写入结果不明，只能使用同一键和请求体重试，完整规则见[创建笔记](API-V1.md#创建笔记)。
 
 扩展 MCP 使用相同的 Moerise 令牌，连接服务的 `/mcp`；具体工具和语义见 [API v1](API-V1.md#每日回顾与-mcp)。
+
+飞书应用回调和后台事件处理随 `serve` 启动。待处理事件加密暂存于产品数据库，业务完成后删除密文；配置备份须包含原应用 Secret 和独立密钥。恢复快照前结合 Memos 核实快照之后的写入；已有幂等记录保留资源标识，新记录按配置密钥和幂等键派生标识。事件回复的结果不明状态与笔记写入结果分别保存。
 
 服务绑定来源根地址和账号。更换来源或账号时使用新的 `instance_id` 和数据卷。根地址不包含账号密码、路径、查询参数或片段；Memos 请求直接连接来源，不读取环境中的 HTTP 代理设置。
 

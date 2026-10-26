@@ -61,11 +61,21 @@ type ProviderConfig struct {
 }
 
 type ChannelConfig struct {
-	Kind        string  `json:"kind"`
-	AppID       *string `json:"app_id"`
-	AppSecret   *string `json:"app_secret"`
-	Destination *string `json:"destination"`
-	WebhookURL  *string `json:"webhook_url"`
+	Kind              string  `json:"kind"`
+	AppID             *string `json:"app_id"`
+	AppSecret         *string `json:"app_secret"`
+	VerificationToken *string `json:"verification_token"`
+	EncryptKey        *string `json:"encrypt_key"`
+	UserOpenID        *string `json:"user_open_id"`
+	Destination       *string `json:"destination"`
+	WebhookURL        *string `json:"webhook_url"`
+}
+
+func configured(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return strings.TrimSpace(*value)
 }
 
 type Settings struct {
@@ -240,6 +250,18 @@ func (s *Settings) Validate() error {
 	}
 	if s.Channel.Kind != "feishu-app" && s.Channel.Kind != "feishu-webhook" {
 		return bad("channel.kind")
+	}
+	channel := s.Channel
+	appFields := []string{configured(channel.AppID), configured(channel.AppSecret),
+		configured(channel.VerificationToken), configured(channel.UserOpenID)}
+	appEnabled := slices.ContainsFunc(appFields, func(value string) bool { return value != "" }) || configured(channel.EncryptKey) != ""
+	if appEnabled {
+		if channel.Kind != "feishu-app" || slices.Contains(appFields, "") ||
+			len(configured(channel.AppSecret)) < 16 || len(configured(channel.VerificationToken)) < 16 ||
+			!strings.HasPrefix(configured(channel.UserOpenID), "ou_") ||
+			(configured(channel.Destination) != "" && configured(channel.Destination) != configured(channel.UserOpenID)) {
+			return bad("channel application credentials or identity")
+		}
 	}
 	if s.Review.Count < 1 || s.Review.Count > 20 || s.Review.MinAgeHours < 0 ||
 		s.Review.MinAgeHours > 87600 || s.Review.RecentDays < 1 || s.Review.RecentDays > 3650 ||

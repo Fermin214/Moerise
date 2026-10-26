@@ -1587,6 +1587,71 @@
           }
         }
       }
+    },
+    "/hooks/feishu": {
+      "post": {
+        "summary": "Receive authenticated Feishu application events",
+        "description": "Application token, application identity and optional encryption signature verification; only the configured user in p2p chats enters the encrypted durable queue. Disabled when application credentials are not configured.",
+        "security": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "URL verification challenge or event acknowledgement",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "type": "object",
+                      "required": [
+                        "challenge"
+                      ],
+                      "properties": {
+                        "challenge": {
+                          "type": "string"
+                        }
+                      }
+                    },
+                    {
+                      "type": "object",
+                      "required": [
+                        "code"
+                      ],
+                      "properties": {
+                        "code": {
+                          "type": "integer",
+                          "const": 0
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Invalid platform authentication"
+          },
+          "409": {
+            "description": "Message payload changed"
+          },
+          "422": {
+            "description": "Invalid event"
+          },
+          "500": {
+            "description": "Event could not be persisted"
+          }
+        }
+      }
     }
   },
   "components": {

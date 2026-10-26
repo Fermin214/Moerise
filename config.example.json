@@ -48,6 +48,9 @@
     "kind": "feishu-app",
     "app_id": null,
     "app_secret": null,
+    "verification_token": null,
+    "encrypt_key": null,
+    "user_open_id": null,
     "destination": null,
     "webhook_url": null
   },
