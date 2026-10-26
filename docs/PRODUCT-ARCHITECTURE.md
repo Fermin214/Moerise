@@ -14,7 +14,7 @@ Moerise 是以轻量记录、回顾和思考探索为核心的个人笔记产品
 | --- | --- |
 | 官方 Memos | 保存笔记原文和附件，执行原生权限，提供基础读写与同步 API |
 | Moerise 核心服务 | 同步与索引、笔记创建、身份边界、持久幂等与任务，以及后续回顾、检索、AI、地图计算和调度 |
-| 飞书应用机器人 | 接收绑定身份的记录、查询与回顾操作，展示结果；主动推送按路线图接入 |
+| 飞书应用机器人 | 接收绑定身份的记录、查询与回顾操作，回复结果并主动推送每日回顾 |
 | REST / MCP 入口 | 向客户端和 Agent 提供同一组业务能力；已实现 REST 范围见 API v1 |
 | Android / Web 客户端 | 后续提供编辑、阅读、探索和地图交互，复用核心服务的业务接口 |
 
@@ -33,7 +33,7 @@ Moerise 是以轻量记录、回顾和思考探索为核心的个人笔记产品
 | `internal/records.go`、`attachments.go` | 文本、标签和附件记录、持久幂等、写入结果复查与恢复 |
 | `internal/reviews.go` | 规则选择、固定每日批次、换组与打开和略过历史 |
 | `internal/reviews_api.go`、`mcp.go` | 回顾 REST 与扩展 MCP 入口、Scope 检查和状态变化提示 |
-| `internal/feishu.go`、`feishu_client.go`、`feishu_crypto.go` | 飞书回调校验、加密事件队列、平台收发与共享业务调用 |
+| `internal/feishu.go`、`feishu_client.go`、`feishu_crypto.go`、`feishu_delivery.go` | 飞书回调校验、加密事件队列、应用与 Webhook 收发、回执复查及共享业务调用 |
 | `internal/notifications.go`、`notifications_api.go` | 当地日期调度、持久发送队列、发送尝试、回执复查及结果确认 |
 | `internal/sync.go` | 正常与归档扫描、增量追补、全量修复与任务调度 |
 | `internal/store.go`、`migrations/` | 数据库迁移、来源绑定、持久任务、退避、扫描暂存与投影 |
