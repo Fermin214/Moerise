@@ -83,7 +83,7 @@ func (s *Store) reserveNote(key, hash string) (noteWrite, error) {
 		inserted, err := tx.Exec(`INSERT OR IGNORE INTO note_writes
 			(instance_id, user_name, idempotency_key, request_hash, memo_name, status, created_at, updated_at)
 			VALUES (?, ?, ?, ?, ?, 'pending', ?, ?)`, s.Settings.Memos.InstanceID, s.Settings.Memos.User,
-			key, hash, "memos/"+newID(), stamp, stamp)
+			key, hash, "memos/"+derivedID(s.Settings.CursorSecret, "memo", s.Settings.Memos.InstanceID, s.Settings.Memos.User, key), stamp, stamp)
 		if err != nil {
 			return err
 		}

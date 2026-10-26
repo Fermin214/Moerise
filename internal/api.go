@@ -24,6 +24,7 @@ type API struct {
 	Records    *RecordService
 	Reviews    *ReviewService
 	MCP        http.Handler
+	Feishu     *FeishuService
 	generation string
 }
 
@@ -32,6 +33,7 @@ func NewAPI(settings Settings, store *Store, source Source, worker *SyncService)
 	api := &API{Settings: settings, Store: store, Source: source, Worker: worker,
 		Records: NewRecordService(store, source), Reviews: NewReviewService(store, source), generation: generation}
 	api.MCP = api.newMCPHandler()
+	api.Feishu = NewFeishuService(store, source, api.Records, api.Reviews)
 	return api, err
 }
 
@@ -169,6 +171,9 @@ func (a *API) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 
 func (a *API) route(writer http.ResponseWriter, request *http.Request) (any, int, error) {
 	path, method := request.URL.Path, request.Method
+	if path == "/hooks/feishu" && a.Feishu != nil {
+		return a.Feishu.Receive(request)
+	}
 	if path == "/mcp" {
 		if _, err := a.authenticate(request, ""); err != nil {
 			return nil, 0, err

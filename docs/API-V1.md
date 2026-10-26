@@ -42,6 +42,7 @@ API 前缀为 `/api/ext/v1`。路由由 [api.go](../internal/api.go) 定义，�
 | GET | `/api/ext/v1/reviews/{batch_id}` | `reviews:read` | 读取指定批次，200 |
 | POST | `/api/ext/v1/reviews/{batch_id}/items/{memo_id}/open` | `reviews:write` | 记录首次打开时间，200 |
 | POST | `/api/ext/v1/reviews/{batch_id}/items/{memo_id}/skip` | `reviews:write` | 记录首次略过时间，200 |
+| POST | `/hooks/feishu` | 飞书平台凭据与身份校验 | URL 验证或事件持久入队应答，200 |
 
 来源连接成功、全量同步完成且工作循环存活时，就绪检查返回 200；其他情况返回 503。存活检查适合区分进程状态与来源故障。
 
@@ -123,6 +124,10 @@ Content-Type: application/json
 已确认成功的来源笔记被删除后，同键重放返回 404 `SOURCE_NOT_FOUND`，不重建笔记。POST 返回笔记前及每次重放均验证来源身份，并从 Memos 复查作者与正文。身份或来源故障时返回错误，不输出旧正文；幂等记录不作为正文缓存。来源连接与身份错误沿用下表中的 503 错误。
 
 幂等记录随产品状态备份，服务重启后继续使用，索引重建保留记录。恢复快照只能恢复其中已有的幂等记录；快照生成后创建的记录需结合 Memos 原文核实，不能将旧请求直接视为尚未写入。
+
+## 飞书事件
+
+应用机器人回调入口为 `/hooks/feishu`，仅在应用凭据完整时启用；使用平台事件 Token 和可选 Encrypt Key 验证，不使用 Moerise Bearer 凭据。绑定使用者的单聊消息持久入队后返回 `{"code":0}`；URL 验证返回 `{"challenge":"..."}`。重复消息沿用同一记录操作，其他身份和群聊不进入业务。事件配置、命令及恢复语义见[飞书入口](FEISHU.md)。
 
 ## 每日回顾与 MCP
 

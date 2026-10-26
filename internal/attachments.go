@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -43,7 +44,8 @@ func (s *RecordService) attachmentName(key string, position int) (string, error)
 	settings := s.Store.Settings
 	_, err := s.Store.state.Exec(`INSERT OR IGNORE INTO attachment_writes
 		(instance_id, user_name, idempotency_key, position, attachment_name) VALUES (?, ?, ?, ?, ?)`,
-		settings.Memos.InstanceID, settings.Memos.User, key, position, "attachments/"+newID())
+		settings.Memos.InstanceID, settings.Memos.User, key, position,
+		"attachments/"+derivedID(settings.CursorSecret, "attachment", settings.Memos.InstanceID, settings.Memos.User, key, strconv.Itoa(position)))
 	if err != nil {
 		return "", err
 	}
