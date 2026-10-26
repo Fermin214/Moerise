@@ -2482,6 +2482,9 @@
             },
             "type": "array",
             "title": "Jobs"
+          },
+          "vector_index": {
+            "$ref": "#/components/schemas/VectorIndexStatus"
           }
         },
         "additionalProperties": false,
@@ -2500,6 +2503,34 @@
           "jobs"
         ],
         "title": "SyncStatus"
+      },
+      "VectorGeneration": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "space_hash", "model", "dimensions", "chunk_version", "projection_revision", "notes", "chunks", "completed_chunks", "last_error"],
+        "properties": {
+          "id": {"type": "string"},
+          "space_hash": {"type": "string"},
+          "model": {"type": "string"},
+          "dimensions": {"type": "integer"},
+          "chunk_version": {"type": "string"},
+          "projection_revision": {"type": "integer"},
+          "notes": {"type": "integer"},
+          "chunks": {"type": "integer"},
+          "completed_chunks": {"type": "integer"},
+          "last_error": {"type": ["string", "null"]}
+        }
+      },
+      "VectorIndexStatus": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["projection_revision", "ready", "active", "building"],
+        "properties": {
+          "projection_revision": {"type": "integer"},
+          "ready": {"type": "boolean"},
+          "active": {"anyOf": [{"$ref": "#/components/schemas/VectorGeneration"}, {"type": "null"}]},
+          "building": {"anyOf": [{"$ref": "#/components/schemas/VectorGeneration"}, {"type": "null"}]}
+        }
       },
       "Liveness": {
         "type": "object",

@@ -139,6 +139,15 @@ func serve(settings moerise.Settings, address string) error {
 	if err != nil {
 		return err
 	}
+	var vectorWorker *moerise.VectorIndexService
+	if settings.Embedding.Enabled {
+		provider, err := moerise.NewEmbeddingProvider(settings.Embedding)
+		if err != nil {
+			return err
+		}
+		defer provider.Close()
+		vectorWorker = moerise.NewVectorIndexService(store, source, provider)
+	}
 	server := &http.Server{Addr: address, Handler: api, ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout: 30 * time.Second, WriteTimeout: 120 * time.Second, IdleTimeout: 60 * time.Second,
 		ErrorLog: slog.NewLogLogger(slog.Default().Handler(), slog.LevelError)}
@@ -148,6 +157,11 @@ func serve(settings moerise.Settings, address string) error {
 	defer cancel()
 	workerDone, serverDone := make(chan error, 1), make(chan error, 1)
 	go func() { workerDone <- worker.Run(ctx) }()
+	var vectorDone chan error
+	if vectorWorker != nil {
+		vectorDone = make(chan error, 1)
+		go func() { vectorDone <- vectorWorker.Run(ctx) }()
+	}
 	var feishuDone chan error
 	if api.Feishu != nil {
 		feishuDone = make(chan error, 1)
@@ -161,6 +175,7 @@ func serve(settings moerise.Settings, address string) error {
 	workerExited := false
 	feishuExited := false
 	notificationExited := false
+	vectorExited := false
 	select {
 	case <-signalCtx.Done():
 	case err := <-workerDone:
@@ -182,6 +197,11 @@ func serve(settings moerise.Settings, address string) error {
 		if err != nil && !errors.Is(err, context.Canceled) {
 			result = errors.New("notification worker stopped")
 		}
+	case err := <-vectorDone:
+		vectorExited = true
+		if err != nil && !errors.Is(err, context.Canceled) {
+			result = errors.New("vector index worker stopped")
+		}
 	}
 	cancel()
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -200,6 +220,9 @@ func serve(settings moerise.Settings, address string) error {
 	}
 	if !notificationExited {
 		<-notificationDone
+	}
+	if vectorDone != nil && !vectorExited {
+		<-vectorDone
 	}
 	return result
 }

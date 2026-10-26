@@ -179,7 +179,7 @@ docker compose run --rm --no-deps -T moerise rebuild-index
 docker compose up -d --no-build moerise
 ```
 
-索引重建清理派生数据与相关同步进度，服务启动后重新扫描 Memos。笔记创建幂等记录保留在 `state.sqlite3`，重建后相同键仍沿用原分配的 `memoId`。产品历史、人工调整、Memos 原文和附件使用各自的持久存储。
+索引重建清理投影、分块、向量、构建进度与相关同步进度，服务启动后重新扫描 Memos；启用 `embedding` 时自动分批构建向量索引。笔记创建幂等记录保留在 `state.sqlite3`，重建后相同键仍沿用原分配的 `memoId`。回顾历史、阅读和通知状态同样保留。索引进度通过 `GET /api/ext/v1/sync` 的 `vector_index` 查看，详见[向量索引](EMBEDDING.md#分块与向量索引)。
 
 ## 升级与回滚
 

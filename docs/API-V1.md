@@ -33,7 +33,7 @@ API 前缀为 `/api/ext/v1`。路由由 [api.go](../internal/api.go) 定义，�
 | GET | `/api/ext/v1/notes` | `notes:read` | 已索引笔记的分页结果，逐条复查来源 |
 | POST | `/api/ext/v1/notes` | `notes:write` | 首次成功 201；幂等重放成功 200，直接返回 `Note` |
 | GET | `/api/ext/v1/notes/{memo_id}` | `notes:read` | 直接复查并读取一条来源笔记 |
-| GET | `/api/ext/v1/sync` | `sync:read` | 水位、完整同步时间、来源状态、数量与任务统计 |
+| GET | `/api/ext/v1/sync` | `sync:read` | 水位、完整同步时间、来源状态、数量、任务统计与向量索引进度 |
 | POST | `/api/ext/v1/sync` | `sync:write` | 202，返回持久任务 |
 | GET | `/api/ext/v1/jobs/{job_id}` | `sync:read` | 持久任务与执行结果 |
 | GET | `/api/ext/v1/reviews/daily` | `reviews:read` | 读取已有当日批次；尚未创建时返回 404 |
@@ -48,6 +48,8 @@ API 前缀为 `/api/ext/v1`。路由由 [api.go](../internal/api.go) 定义，�
 | POST | `/api/ext/v1/notifications/{notification_id}/resolve` | `reviews:write` | 复查回执或人工确认结果不明的通知 |
 
 来源连接成功、全量同步完成且工作循环存活时，就绪检查返回 200；其他情况返回 503。存活检查适合区分进程状态与来源故障。
+
+启用 `embedding` 时，同步状态包含 `vector_index`，关闭时省略。`active` 是已发布代次，`building` 是构建中的代次，无对应代次时为 `null`；两者包含模型、维度、分块版本、向量空间摘要、投影修订号，以及笔记数、片段数、已完成片段数和最近错误代码。`projection_revision` 随投影变化递增；`ready=true` 表示已发布代次与配置和投影修订一致，不表示来源连接或查询可用。向量索引构建和模型故障不影响基础就绪检查。构建与恢复规则见[向量索引](EMBEDDING.md#分块与向量索引)。
 
 ## 笔记与分页
 
