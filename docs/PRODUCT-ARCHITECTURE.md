@@ -34,6 +34,7 @@ Moerise 是以轻量记录、回顾和思考探索为核心的个人笔记产品
 | `internal/reviews.go` | 规则选择、固定每日批次、换组与打开和略过历史 |
 | `internal/reviews_api.go`、`mcp.go` | 回顾 REST 与扩展 MCP 入口、Scope 检查和状态变化提示 |
 | `internal/feishu.go`、`feishu_client.go`、`feishu_crypto.go` | 飞书回调校验、加密事件队列、平台收发与共享业务调用 |
+| `internal/notifications.go`、`notifications_api.go` | 当地日期调度、持久发送队列、发送尝试、回执复查及结果确认 |
 | `internal/sync.go` | 正常与归档扫描、增量追补、全量修复与任务调度 |
 | `internal/store.go`、`migrations/` | 数据库迁移、来源绑定、持久任务、退避、扫描暂存与投影 |
 | `internal/maintenance.go` | 在线状态备份、停止服务后恢复、索引重建与写入互斥 |

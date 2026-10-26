@@ -17,15 +17,16 @@ import (
 )
 
 type API struct {
-	Settings   Settings
-	Store      *Store
-	Source     Source
-	Worker     *SyncService
-	Records    *RecordService
-	Reviews    *ReviewService
-	MCP        http.Handler
-	Feishu     *FeishuService
-	generation string
+	Settings      Settings
+	Store         *Store
+	Source        Source
+	Worker        *SyncService
+	Records       *RecordService
+	Reviews       *ReviewService
+	MCP           http.Handler
+	Feishu        *FeishuService
+	Notifications *NotificationService
+	generation    string
 }
 
 func NewAPI(settings Settings, store *Store, source Source, worker *SyncService) (*API, error) {
@@ -34,6 +35,7 @@ func NewAPI(settings Settings, store *Store, source Source, worker *SyncService)
 		Records: NewRecordService(store, source), Reviews: NewReviewService(store, source), generation: generation}
 	api.MCP = api.newMCPHandler()
 	api.Feishu = NewFeishuService(store, source, api.Records, api.Reviews)
+	api.Notifications = NewNotificationService(store, api.Reviews, nil)
 	return api, err
 }
 
@@ -173,6 +175,9 @@ func (a *API) route(writer http.ResponseWriter, request *http.Request) (any, int
 	path, method := request.URL.Path, request.Method
 	if path == "/hooks/feishu" && a.Feishu != nil {
 		return a.Feishu.Receive(request)
+	}
+	if path == "/api/ext/v1/notifications" || strings.HasPrefix(path, "/api/ext/v1/notifications/") {
+		return a.notificationRoute(writer, request)
 	}
 	if path == "/mcp" {
 		if _, err := a.authenticate(request, ""); err != nil {

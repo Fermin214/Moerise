@@ -53,6 +53,11 @@ type ReviewConfig struct {
 	IncludeArchived bool `json:"include_archived"`
 }
 
+type NotificationConfig struct {
+	Enabled bool   `json:"enabled"`
+	Time    string `json:"time"`
+}
+
 type ProviderConfig struct {
 	Protocol string  `json:"protocol"`
 	BaseURL  *string `json:"base_url"`
@@ -79,28 +84,30 @@ func configured(value *string) string {
 }
 
 type Settings struct {
-	Memos        MemosConfig    `json:"memos"`
-	AccessTokens []AccessToken  `json:"access_tokens"`
-	CursorSecret string         `json:"cursor_secret"`
-	Timezone     string         `json:"timezone"`
-	StateDir     string         `json:"state_dir"`
-	IndexDir     string         `json:"index_dir"`
-	Sync         SyncConfig     `json:"sync"`
-	Review       ReviewConfig   `json:"review"`
-	Embedding    ProviderConfig `json:"embedding"`
-	LLM          ProviderConfig `json:"llm"`
-	Channel      ChannelConfig  `json:"channel"`
+	Memos         MemosConfig        `json:"memos"`
+	AccessTokens  []AccessToken      `json:"access_tokens"`
+	CursorSecret  string             `json:"cursor_secret"`
+	Timezone      string             `json:"timezone"`
+	StateDir      string             `json:"state_dir"`
+	IndexDir      string             `json:"index_dir"`
+	Sync          SyncConfig         `json:"sync"`
+	Review        ReviewConfig       `json:"review"`
+	Notifications NotificationConfig `json:"notifications"`
+	Embedding     ProviderConfig     `json:"embedding"`
+	LLM           ProviderConfig     `json:"llm"`
+	Channel       ChannelConfig      `json:"channel"`
 }
 
 func DefaultSettings() Settings {
 	return Settings{
 		Memos:    MemosConfig{TimeoutSeconds: 10, PageSize: 100, MaxPages: 10000},
 		Timezone: "Asia/Hong_Kong", StateDir: "/data/state", IndexDir: "/data/index",
-		Sync:      SyncConfig{60, 21600, 300, 5, 300},
-		Review:    ReviewConfig{Count: 3, MinAgeHours: 24, RecentDays: 30, TopicLimit: 1},
-		Embedding: ProviderConfig{Protocol: "openai-compatible"},
-		LLM:       ProviderConfig{Protocol: "openai-compatible"},
-		Channel:   ChannelConfig{Kind: "feishu-app"},
+		Sync:          SyncConfig{60, 21600, 300, 5, 300},
+		Review:        ReviewConfig{Count: 3, MinAgeHours: 24, RecentDays: 30, TopicLimit: 1},
+		Notifications: NotificationConfig{Time: "09:00"},
+		Embedding:     ProviderConfig{Protocol: "openai-compatible"},
+		LLM:           ProviderConfig{Protocol: "openai-compatible"},
+		Channel:       ChannelConfig{Kind: "feishu-app"},
 	}
 }
 
@@ -267,6 +274,25 @@ func (s *Settings) Validate() error {
 		s.Review.MinAgeHours > 87600 || s.Review.RecentDays < 1 || s.Review.RecentDays > 3650 ||
 		s.Review.TopicLimit < 1 || s.Review.TopicLimit > s.Review.Count {
 		return bad("review")
+	}
+	if len(s.Notifications.Time) != 5 {
+		return bad("notifications.time")
+	}
+	if _, err := time.Parse("15:04", s.Notifications.Time); err != nil {
+		return bad("notifications.time")
+	}
+	if s.Notifications.Enabled && channel.Kind == "feishu-app" && !appEnabled {
+		return bad("notifications require channel application credentials")
+	}
+	if s.Notifications.Enabled && channel.Kind == "feishu-webhook" && configured(channel.WebhookURL) == "" {
+		return bad("notifications require channel.webhook_url")
+	}
+	if address := configured(channel.WebhookURL); address != "" {
+		webhook, err := url.Parse(address)
+		if err != nil || webhook.Host == "" || (webhook.Scheme != "http" && webhook.Scheme != "https") ||
+			webhook.User != nil || webhook.Fragment != "" {
+			return bad("channel.webhook_url")
+		}
 	}
 	return nil
 }
