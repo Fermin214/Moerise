@@ -27,7 +27,7 @@ func main() {
 
 func run(args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: moerise serve|check-config|check-embedding|backup|restore|rebuild-index|healthcheck|version")
+		return errors.New("usage: moerise serve|check-config|check-embedding|check-llm|backup|restore|rebuild-index|healthcheck|version")
 	}
 	if args[0] == "version" {
 		fmt.Println(moerise.Version)
@@ -82,6 +82,18 @@ func run(args []string) error {
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer stop()
 		result, err := moerise.CheckEmbedding(ctx, settings.Embedding)
+		if err != nil {
+			var service *moerise.ServiceError
+			if errors.As(err, &service) {
+				return fmt.Errorf("%s: %w", service.Code, err)
+			}
+			return err
+		}
+		return encode(result)
+	case "check-llm":
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer stop()
+		result, err := moerise.CheckLLM(ctx, settings.LLM)
 		if err != nil {
 			var service *moerise.ServiceError
 			if errors.As(err, &service) {

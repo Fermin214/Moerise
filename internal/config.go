@@ -58,11 +58,17 @@ type NotificationConfig struct {
 	Time    string `json:"time"`
 }
 
-type ProviderConfig struct {
-	Protocol string  `json:"protocol"`
-	BaseURL  *string `json:"base_url"`
-	APIKey   *string `json:"api_key"`
-	Model    *string `json:"model"`
+type LLMConfig struct {
+	Enabled         bool    `json:"enabled"`
+	Protocol        string  `json:"protocol"`
+	BaseURL         *string `json:"base_url"`
+	APIKey          *string `json:"api_key"`
+	Model           *string `json:"model"`
+	TimeoutSeconds  float64 `json:"timeout_seconds"`
+	MaxConcurrency  int     `json:"max_concurrency"`
+	MaxRetries      int     `json:"max_retries"`
+	MaxOutputTokens int     `json:"max_output_tokens"`
+	ContextBytes    int     `json:"context_bytes"`
 }
 
 type EmbeddingConfig struct {
@@ -110,7 +116,7 @@ type Settings struct {
 	Review        ReviewConfig       `json:"review"`
 	Notifications NotificationConfig `json:"notifications"`
 	Embedding     EmbeddingConfig    `json:"embedding"`
-	LLM           ProviderConfig     `json:"llm"`
+	LLM           LLMConfig          `json:"llm"`
 	Channel       ChannelConfig      `json:"channel"`
 }
 
@@ -124,7 +130,8 @@ func DefaultSettings() Settings {
 		Notifications: NotificationConfig{Time: "09:00"},
 		Embedding: EmbeddingConfig{Provider: "bailian", Protocol: "dashscope", Model: &embeddingModel,
 			Dimensions: 1024, BatchSize: 20, TimeoutSeconds: 30, MaxConcurrency: 2, MaxRetries: 2},
-		LLM:     ProviderConfig{Protocol: "openai-compatible"},
+		LLM: LLMConfig{Protocol: "openai-compatible", TimeoutSeconds: 90, MaxConcurrency: 2,
+			MaxRetries: 2, MaxOutputTokens: 2048, ContextBytes: 24000},
 		Channel: ChannelConfig{Kind: "feishu-app"},
 	}
 }
@@ -312,5 +319,8 @@ func (s *Settings) Validate() error {
 			return bad("channel.webhook_url")
 		}
 	}
-	return s.Embedding.Validate()
+	if err := s.Embedding.Validate(); err != nil {
+		return err
+	}
+	return s.LLM.Validate()
 }

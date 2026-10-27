@@ -47,10 +47,16 @@
     "query_instruction": null
   },
   "llm": {
+    "enabled": false,
     "protocol": "openai-compatible",
     "base_url": null,
     "api_key": null,
-    "model": null
+    "model": null,
+    "timeout_seconds": 90,
+    "max_concurrency": 2,
+    "max_retries": 2,
+    "max_output_tokens": 2048,
+    "context_bytes": 24000
   },
   "channel": {
     "kind": "feishu-app",

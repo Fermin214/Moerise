@@ -6,6 +6,8 @@ Moerise 是基于 Memos 的自托管笔记扩展服务，提供笔记同步、�
 
 百炼向量模型的配置、分块与向量索引、文档与查询向量调用及独立连接检查见[向量模型](docs/EMBEDDING.md)。
 
+独立的 LLM 配置、OpenAI 与 Anthropic 协议、调用控制与虚构文本连接检查见 [AI](docs/AI.md)。
+
 ## 可以使用的功能
 
 - 同步 Memos 0.31.x 中本人创建的正常与归档笔记，修复修改、归档和删除带来的索引变化。
@@ -60,6 +62,7 @@ docker compose up -d --build moerise
 | [飞书入口](docs/FEISHU.md) | 应用配置、身份绑定、交互命令与事件恢复 |
 | [调度与发送队列](docs/NOTIFICATIONS.md) | 时区调度、发送尝试、结果不明处理与快照恢复 |
 | [向量模型](docs/EMBEDDING.md) | 百炼模型配置、连接检查、分批调用与错误处理 |
+| [AI](docs/AI.md) | LLM 配置、流式连接检查、调用控制与故障处理 |
 | [搜索](docs/SEARCH.md) | 中文短查询、相关笔记、标签过滤、混合排名与来源复查 |
 | [语义检索与发现验收](docs/STAGE3-ACCEPTANCE.md) | 实模型效果、相关与漫步路径、资源测量和默认配置依据 |
 | [开发指南](docs/DEVELOPMENT.md) | 贡献代码所需的环境、工具、运行和验证方法 |
