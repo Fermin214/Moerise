@@ -108,8 +108,14 @@ docker compose exec -T moerise moerise check-llm
 
 `AIService.Insight` 接受一个笔记资源名和可选的问题、标签、状态及日期条件。原笔记与最多三条相关历史组成上下文；没有相关历史时，只分析指定笔记。结果分为原文事实 `fact`、模型解释 `interpretation` 与追问 `question`，解释不能冒充原文事实。事实与解释必须带证据 ID；关联多条笔记的文字须由涉及各方的引用支撑。
 
-业务结果 `AIResult` 包含 `kind`、`status`、`completed`、`statements`、`references`、`omitted`、`missing`、`semantic`、`model`、`usage` 和 `metrics`。`status` 为 `answered` 或 `insufficient`，后者说明具体缺少的记录或信息；`completed=true` 只在格式、引用、模型结束信号及最终来源复查均成功后返回。没有可用证据时直接返回不足结果，不调用模型。洞察不会自动保存为笔记。
+业务结果 `AIResult` 包含 `kind`、`status`、`completed`、`statements`、`references`、`used_sources`、`omitted`、`missing`、`semantic`、`model`、`usage` 和 `metrics`。`status` 为 `answered` 或 `insufficient`，后者说明具体缺少的记录或信息；`completed=true` 只在格式、引用、模型结束信号及最终来源复查均成功后返回。没有可用证据时直接返回不足结果，不调用模型。洞察不会自动保存为笔记。
 
 模型内部使用逐行 JSON 组织内容，业务层按完整条目验证类型、长度和引用，再复查来源并交付 `content` 事件；未完成的 JSON 不会作为正文输出。`references` 事件提供服务器生成的引用元数据，`complete` 事件提供完整业务结果。模型失败、取消、格式错误、虚构引用或来源变化均终止生成；已交付的条目不能视作完整结果，失败请求没有成功完成事件。
 
 输入总预算涵盖提示词、问题、证据元数据与 JSON 转义。模型输出中的笔记指令不产生额外检索或写入操作。指标记录检索耗时、从请求开始到首条有效内容的延迟、生成耗时和总耗时，单位为毫秒；没有生成内容时首条延迟为 `null`。
+
+## 多条笔记洞察
+
+向 `AIService.Insight` 提供两至二十个不同资源名时，结果 `kind=multi`。上下文只包括选定来源，按共同点、差异和联系组织事实与解释。每条关联解释至少引用两个不同资源，不能用同一笔记的两个片段替代双方证据。相同正文保留各自来源，但不能当作独立佐证；说法相反时列明原文差异，不据此推断原因。
+
+`references` 是提供给模型的片段，`used_sources` 是输出条目实际引用的资源名，`omitted` 是未完整纳入的来源。选定来源因筛选或预算完全未进入上下文时，结果使用 `insufficient` 并列明缺少的来源；对其余来源的有据分析仍可使用。部分片段被省略时，通过 `omitted` 标明范围。

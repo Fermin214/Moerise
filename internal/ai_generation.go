@@ -24,17 +24,18 @@ type AIMetrics struct {
 }
 
 type AIResult struct {
-	Kind       string         `json:"kind"`
-	Status     string         `json:"status"`
-	Completed  bool           `json:"completed"`
-	Statements []AIStatement  `json:"statements"`
-	References []Evidence     `json:"references"`
-	Omitted    []string       `json:"omitted"`
-	Missing    []string       `json:"missing"`
-	Semantic   SearchSemantic `json:"semantic"`
-	Model      string         `json:"model"`
-	Usage      LLMUsage       `json:"usage"`
-	Metrics    AIMetrics      `json:"metrics"`
+	Kind        string         `json:"kind"`
+	Status      string         `json:"status"`
+	Completed   bool           `json:"completed"`
+	Statements  []AIStatement  `json:"statements"`
+	References  []Evidence     `json:"references"`
+	UsedSources []string       `json:"used_sources"`
+	Omitted     []string       `json:"omitted"`
+	Missing     []string       `json:"missing"`
+	Semantic    SearchSemantic `json:"semantic"`
+	Model       string         `json:"model"`
+	Usage       LLMUsage       `json:"usage"`
+	Metrics     AIMetrics      `json:"metrics"`
 }
 
 type AIEvent struct {
@@ -65,21 +66,29 @@ const aiPrompt = `你是笔记分析助手。仅使用用户 JSON 中 evidence �
 事实与解释必须引用提供的证据 ID；问题可以没有引用。只能使用已提供的 ID，不自报来源、偏移或链接。
 引用要直接支撑对应文字；比较或关联多条笔记时引用双方，不能仅凭相似度认定矛盾或观点变化。
 mode=single：先梳理指定笔记，再写有证据的历史关联及追问；没有历史时只分析指定笔记。
+mode=multi：比较选定笔记的共同点、差异和联系，每条关联解释必须引用至少两个不同笔记。
+相同正文不能当作两份独立事实的佐证；相互矛盾时分别列明原文说法，不擅自选一方或推断原因。
+mode=multi 且只提供了一条笔记或未覆盖全部 requested_sources 时，可列出已有事实，并以 insufficient 说明缺失。
 通常输出 2 至 4 条事实、1 至 2 条解释及 1 至 2 个问题；证据不支持的项目省略。
 truncated=true 表示部分片段因预算或过滤未提供，不能推断其内容，涉及全量覆盖的问题应说明缺失。`
 
 type aiPromptData struct {
 	Mode      string     `json:"mode"`
 	Question  string     `json:"question"`
+	Requested int        `json:"requested_sources"`
 	Evidence  []Evidence `json:"evidence"`
 	Truncated bool       `json:"truncated"`
 }
 
 func (s *AIService) Insight(ctx context.Context, request AIRequest, emit func(AIEvent) error) (AIResult, error) {
-	if len(request.Names) != 1 || request.Timeline {
-		return AIResult{}, failure("INVALID_ARGUMENT", "Single insight requires one source", 422, false)
+	if len(request.Names) == 0 || len(request.Names) > 20 || request.Timeline {
+		return AIResult{}, failure("INVALID_ARGUMENT", "Insight requires one to twenty sources", 422, false)
 	}
-	return s.generate(ctx, "single", request, emit)
+	kind := "single"
+	if len(request.Names) > 1 {
+		kind = "multi"
+	}
+	return s.generate(ctx, kind, request, emit)
 }
 
 func (s *AIService) generate(ctx context.Context, kind string, request AIRequest, emit func(AIEvent) error) (AIResult, error) {
@@ -93,7 +102,7 @@ func (s *AIService) generate(ctx context.Context, kind string, request AIRequest
 	ctx, cancel := context.WithTimeout(ctx, time.Duration(config.TimeoutSeconds*float64(time.Second)))
 	defer cancel()
 	start := time.Now()
-	input := aiPromptData{Mode: kind, Question: strings.TrimSpace(request.Question), Evidence: []Evidence{}}
+	input := aiPromptData{Mode: kind, Question: strings.TrimSpace(request.Question), Requested: len(request.Names), Evidence: []Evidence{}}
 	empty, _ := json.Marshal(input)
 	// Evidence budgets include escaped JSON metadata; reserve the prompt and envelope first.
 	budget := config.ContextBytes - len(aiPrompt) - len(empty) + 2 - 16
@@ -106,7 +115,7 @@ func (s *AIService) generate(ctx context.Context, kind string, request AIRequest
 		return AIResult{}, err
 	}
 	result := AIResult{Kind: kind, Statements: []AIStatement{}, References: collected.Items,
-		Omitted: collected.Omitted, Missing: []string{}, Semantic: collected.Semantic}
+		UsedSources: []string{}, Omitted: collected.Omitted, Missing: []string{}, Semantic: collected.Semantic}
 	if result.References == nil {
 		result.References, result.Omitted = []Evidence{}, []string{}
 	}
@@ -143,7 +152,7 @@ func (s *AIService) generate(ctx context.Context, kind string, request AIRequest
 	if err := evidence.Verify(ctx, result.References); err != nil {
 		return AIResult{}, err
 	}
-	parser := aiOutputParser{evidence: result.References, accept: func(item AIStatement) error {
+	parser := aiOutputParser{evidence: result.References, multi: kind == "multi", accept: func(item AIStatement) error {
 		if err := evidence.Verify(ctx, result.References); err != nil {
 			return err
 		}
@@ -168,6 +177,27 @@ func (s *AIService) generate(ctx context.Context, kind string, request AIRequest
 		return AIResult{}, err
 	}
 	result.Status, result.Missing, result.Completed = parser.status, parser.missing, true
+	cited := map[string]bool{}
+	for _, statement := range result.Statements {
+		for _, id := range statement.Citations {
+			cited[id] = true
+		}
+	}
+	included := map[string]bool{}
+	for _, reference := range result.References {
+		included[reference.Name] = true
+		if cited[reference.ID] && !slices.Contains(result.UsedSources, reference.Name) {
+			result.UsedSources = append(result.UsedSources, reference.Name)
+		}
+	}
+	if kind == "multi" {
+		for _, name := range request.Names {
+			if !included[name] {
+				result.Status = "insufficient"
+				result.Missing = append(result.Missing, "选定来源未纳入分析："+name)
+			}
+		}
+	}
 	result.Model, result.Usage = completion.Model, completion.Usage
 	result.Metrics.GenerationMS = time.Since(generation).Milliseconds()
 	result.Metrics.TotalMS = time.Since(start).Milliseconds()
@@ -179,6 +209,7 @@ func (s *AIService) generate(ctx context.Context, kind string, request AIRequest
 
 type aiOutputParser struct {
 	evidence []Evidence
+	multi    bool
 	accept   func(AIStatement) error
 	pending  string
 	count    int
@@ -260,6 +291,17 @@ func (p *aiOutputParser) line(line string) error {
 	}
 	if err := ValidateCitations(record.Citations, p.evidence); err != nil {
 		return failure("INVALID_CITATION", "LLM cited unavailable evidence", 503, false)
+	}
+	if p.multi && record.Type == "interpretation" {
+		sources := map[string]bool{}
+		for _, item := range p.evidence {
+			if seen[item.ID] {
+				sources[item.Name] = true
+			}
+		}
+		if len(sources) < 2 {
+			return failure("INVALID_CITATION", "Cross-note interpretation requires distinct sources", 503, false)
+		}
 	}
 	if record.Type == "fact" {
 		p.facts++
