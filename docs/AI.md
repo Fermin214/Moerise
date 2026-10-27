@@ -135,3 +135,7 @@ docker compose exec -T moerise moerise check-llm
 `timeline` 是有序时间段数组；非时间线结果返回空数组。每段包含 `id`、`from`、`until`、`representative_names`、`statement_indexes`、`empty`、`missing_reason` 和 `semantic`。`statement_indexes` 从 0 开始，指向完整结果中的事实或解释；跨时间段的对比可以被多个时间段引用。没有证据的时间段保留 `empty=true`，不编造活动或转折。`NO_MATCHING_EVIDENCE` 表示没有匹配片段，`CONTEXT_BUDGET` 表示该段证据因预算未进入上下文；后者同时使结果标为证据不足。
 
 创建时间决定笔记所在时间段，修改时间单独保留，正文提及的日期仅作为正文事实。模型可以比较不同记录中的说法，不能仅凭创建时间先后、相似度或一处编辑推断观点演变及因果；涉及变化的解释至少引用两条不同笔记。
+
+## 效果案例
+
+固定语料保存在 `tests/testdata/stage4-cases.json`：34 条虚构中文工程和园艺笔记，创建时间跨 2023 至 2026 年，其中两条归档。40 个案例分别覆盖单条洞察、多条比较、普通问答、主题时间线和证据不足，每类八例。案例预先列明期望来源、结论要点、禁止的推断和逐项核对要求；包含同文副本、矛盾记录、误导指令、计划与实测区分、日期筛选及超出上下文预算的长笔记。
