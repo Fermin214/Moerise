@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"slices"
 	"strings"
+	"time"
 	"unicode"
 	"unicode/utf8"
 )
@@ -136,6 +137,20 @@ func searchFilter(settings Settings, request SearchRequest) (string, []any) {
 	for _, tag := range request.Tags {
 		where += " AND EXISTS (SELECT 1 FROM json_each(m.payload_json, '$.tags') WHERE value = ?)"
 		args = append(args, tag)
+	}
+	for _, bound := range []struct {
+		value *time.Time
+		op    string
+	}{{request.createdFrom, ">="}, {request.createdUntil, "<"}} {
+		if bound.value == nil {
+			continue
+		}
+		// The adapter stores UTC timestamps with six fractional digits. Keep
+		// fractions separate: julianday rounds sub-millisecond boundaries.
+		where += " AND (julianday(substr(json_extract(m.payload_json, '$.create_time'), 1, 19)), " +
+			"CAST(substr(json_extract(m.payload_json, '$.create_time'), 21, 6) AS INTEGER)) " + bound.op + " (julianday(?), ?)"
+		args = append(args, bound.value.UTC().Truncate(time.Second).Format(time.RFC3339),
+			(bound.value.Nanosecond()+999)/1000)
 	}
 	return where, args
 }
