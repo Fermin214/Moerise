@@ -61,9 +61,27 @@ LLM 通过独立的协议适配器生成内容，支持 OpenAI Chat Completions�
 docker compose exec -T moerise moerise check-llm
 ```
 
-命令使用内置虚构文本，实际读取流式响应，独立于 Memos 和数据库运行。成功输出协议、模型、完成原因、用量和耗时，不输出生成正文或凭据。供应商未提供的用量字段为 `null`。失败返回非零退出码与错误代码。
+命令使用内置虚构文本，实际读取流式响应，独立于 Memos 和数据库运行。成功输出协议、模型、完成原因、用量和耗时，不输出生成正文或凭据。供应商未提供且无法由已报告字段计算的用量字段为 `null`。失败返回非零退出码与错误代码。
 
 从 Linux 容器连接宿主机网关时，地址应填写容器可访问的宿主机地址，例如 Docker Desktop 的 `http://host.docker.internal:3425/v1`。连接检查与向量模型检查相互独立。
+
+## 用量
+
+连接检查和业务结果使用相同的 `LLMUsage`，五个字段均存在，无法取得的值为 `null`，供应商明确报告零时为 `0`。
+
+| 字段 | 含义 |
+| --- | --- |
+| `input_tokens` | 总输入 token，包含已报告的缓存读取和缓存写入 |
+| `output_tokens` | 输出 token |
+| `total_tokens` | 输入与输出总量 |
+| `cached_tokens` | 缓存读取的输入 token |
+| `cache_creation_tokens` | 缓存写入的输入 token |
+
+Anthropic 原生 `input_tokens` 只表示未缓存的输入。适配器将其与已报告的 `cache_read_input_tokens`、`cache_creation_input_tokens` 相加，映射为总输入；缓存读写分别保留到 `cached_tokens`、`cache_creation_tokens`，不能再次加入总量。例如原生输入 11、缓存读 7、缓存写 5、输出 3，归一化后输入为 23、总量为 26；没有缓存字段的输入 25、输出 1，仍为输入 25、总量 26，两个缓存字段为 `null`。
+
+Messages 的 JSON 和 SSE 使用相同换算。流式事件保留原生字段的最新累计值，省略或 `null` 不覆盖先前计数，不对重复快照逐次求和。缺少原生输入时，总输入保持 `null`，已知的缓存读写仍分别返回。供应商明确报告的 `total_tokens` 优先保留；未报告时，输入和输出齐全则按归一化计数计算。非负计数的求和若超出 int64，无法表示的派生汇总返回 `null`，仍保留已报告的总量与可表示的分项。
+
+Chat Completions 和 Responses 沿用供应商报告的总输入与总量；未报告缓存写入时，`cache_creation_tokens=null`。
 
 ## 调用和故障
 
@@ -135,6 +153,10 @@ docker compose exec -T moerise moerise check-llm
 `timeline` 是有序时间段数组；非时间线结果返回空数组。每段包含 `id`、`from`、`until`、`representative_names`、`statement_indexes`、`empty`、`missing_reason` 和 `semantic`。`statement_indexes` 从 0 开始，指向完整结果中的事实或解释；跨时间段的对比可以被多个时间段引用。没有证据的时间段保留 `empty=true`，不编造活动或转折。`NO_MATCHING_EVIDENCE` 表示没有匹配片段，`CONTEXT_BUDGET` 表示该段证据因预算未进入上下文；后者同时使结果标为证据不足。
 
 创建时间决定笔记所在时间段，修改时间单独保留，正文提及的日期仅作为正文事实。模型可以比较不同记录中的说法，不能仅凭创建时间先后、相似度或一处编辑推断观点演变及因果；涉及变化的解释至少引用两条不同笔记。
+
+多条洞察与时间线的每条解释均须引用至少两条不同笔记；只有单一可用来源时只输出原文事实和追问，缺失原因列入 `missing`。提示词与解析校验采用相同规则，模型违反引用要求时请求失败。
+
+正文相同仅说明记录内容相同，不能推断来源版本、创建或修改时间相同。比较实验观察时须保留批次与环境差异，只有原文明示共同条件时才能按这些条件对照。
 
 ## 效果案例
 

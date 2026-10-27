@@ -183,6 +183,8 @@ Authorization: Bearer <reader-token>
 
 完整 JSON 直接返回 `AIResult`，包含 `kind`、`status`、`completed`、`statements`、`references`、`used_sources`、`omitted`、`missing`、`timeline`、`semantic`、`model`、`usage` 和 `metrics`。`statements` 的 `kind` 区分事实、解释与问题；`citations` 仅使用服务器分配的 `E1`、`E2` 等 ID。`references` 为提供给模型的复查证据，`used_sources` 为输出实际引用的来源名，两者不能混用。每条证据含来源摘要、UTF-8 半开字节范围、从 1 开始的行号、原文、原文链接及创建和修改时间。
 
+`usage` 固定返回 `input_tokens`、`output_tokens`、`total_tokens`、`cached_tokens`、`cache_creation_tokens`，未知值为 `null`，已报告的零为 `0`。输入统计统一为总输入：Anthropic 将原生未缓存输入与已报告的缓存读写相加；缓存读、写分别映射为 `cached_tokens`、`cache_creation_tokens`，均已包含在总输入中，不可重复相加。原生输入 11、读 7、写 5、输出 3 对应输入 23、总量 26；没有缓存字段的输入 25、输出 1 仍对应总量 26，缓存字段保留 `null`。JSON、SSE 的 `complete.result` 与 MCP 采用相同用量结构。流式累计快照按字段更新，重复事件不会重复计入缓存；缺少原生输入时不推算完整输入。供应商明确报告的 `total_tokens` 优先保留；Anthropic 未报告时，在输入与输出齐全的情况下计算总量。求和溢出的派生汇总为 `null`，已报告的总量与可表示的分项保留。字段换算见 [AI 用量](AI.md#用量)。
+
 `omitted` 说明因过滤或预算未完整纳入的来源；`missing` 说明缺少的证据。证据不足仍可完整成功，返回 `completed=true`、`status=insufficient` 及可用证据；模型不可用则返回错误，不能替换为成功回答。生成结果不会自动保存为笔记。
 
 `timeline` 在所有结果中均为数组，非时间线结果为 `[]`。每段含 `id`、`from`、`until`、`representative_names`、`statement_indexes`、`empty`、`semantic`，以及可选的 `missing_reason`。时间段依据创建时间，采用包含下界、不包含上界的范围；`statement_indexes` 从 0 开始，指向顶层 `statements`。没有证据的段保留，代表来源和陈述下标留空；`missing_reason` 区分 `NO_MATCHING_EVIDENCE` 与 `CONTEXT_BUDGET`。修改时间和正文提及的日期不会替代笔记创建时间。

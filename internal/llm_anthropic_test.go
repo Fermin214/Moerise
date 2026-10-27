@@ -16,7 +16,7 @@ import (
 	"time"
 )
 
-const anthropicTestJSON = `{"type":"message","role":"assistant","model":"test-model","content":[{"type":"text","text":"Hello"},{"type":"text","text":"!"}],"stop_reason":"end_turn","usage":{"input_tokens":11,"output_tokens":3,"cache_read_input_tokens":7}}`
+const anthropicTestJSON = `{"type":"message","role":"assistant","model":"test-model","content":[{"type":"text","text":"Hello"},{"type":"text","text":"!"}],"stop_reason":"end_turn","usage":{"input_tokens":11,"output_tokens":3,"cache_read_input_tokens":7,"cache_creation_input_tokens":5}}`
 
 func anthropicTestConfig(base string) LLMConfig {
 	key, model := "test-key", "test-model"
@@ -61,7 +61,7 @@ func anthropicTestFinish(reason, usage string) string {
 }
 
 func anthropicTestStream() string {
-	return anthropicTestStart(`{"input_tokens":11,"output_tokens":1,"cache_read_input_tokens":7}`) +
+	return anthropicTestStart(`{"input_tokens":11,"output_tokens":1,"cache_read_input_tokens":7,"cache_creation_input_tokens":5}`) +
 		anthropicTestEvent("ping", `{"type":"ping"}`) +
 		anthropicTestBlock(0, "Hello") + anthropicTestBlock(1, "!") +
 		anthropicTestFinish("end_turn", `{"output_tokens":3}`)
@@ -130,12 +130,18 @@ func TestAnthropicLLMRequest(t *testing.T) {
 			if stream && received.String() != result.Content {
 				t.Fatalf("callback=%q result=%q", received.String(), result.Content)
 			}
-			if result.Usage.InputTokens == nil || *result.Usage.InputTokens != 11 ||
+			if result.Usage.InputTokens == nil || *result.Usage.InputTokens != 23 ||
 				result.Usage.OutputTokens == nil || *result.Usage.OutputTokens != 3 ||
-				result.Usage.TotalTokens == nil || *result.Usage.TotalTokens != 14 ||
-				result.Usage.CachedTokens == nil || *result.Usage.CachedTokens != 7 {
+				result.Usage.TotalTokens == nil || *result.Usage.TotalTokens != 26 ||
+				result.Usage.CachedTokens == nil || *result.Usage.CachedTokens != 7 ||
+				result.Usage.CacheCreationTokens == nil || *result.Usage.CacheCreationTokens != 5 {
 				t.Fatalf("usage=%+v", result.Usage)
 			}
+			usageJSON, err := json.Marshal(result.Usage)
+			if err != nil {
+				t.Fatal(err)
+			}
+			aiAPIValidateJSON(t, aiAPISchema(t, "LLMUsage"), usageJSON)
 		})
 	}
 }
@@ -150,9 +156,37 @@ func TestAnthropicLLMUsage(t *testing.T) {
 		{name: "null", usage: `null`},
 		{name: "output only", usage: `{"output_tokens":3}`, want: LLMUsage{OutputTokens: anthropicTestInt(3)}},
 		{name: "zero", usage: `{"input_tokens":0,"output_tokens":0}`, want: LLMUsage{InputTokens: anthropicTestInt(0), OutputTokens: anthropicTestInt(0), TotalTokens: anthropicTestInt(0)}},
+		{name: "no cache", usage: `{"input_tokens":25,"output_tokens":1}`,
+			want: LLMUsage{InputTokens: anthropicTestInt(25), OutputTokens: anthropicTestInt(1), TotalTokens: anthropicTestInt(26)}},
+		{name: "cache read", usage: `{"input_tokens":11,"output_tokens":3,"cache_read_input_tokens":7}`,
+			want: LLMUsage{InputTokens: anthropicTestInt(18), OutputTokens: anthropicTestInt(3), TotalTokens: anthropicTestInt(21), CachedTokens: anthropicTestInt(7)}},
+		{name: "cache write", usage: `{"input_tokens":11,"output_tokens":3,"cache_creation_input_tokens":5}`,
+			want: LLMUsage{InputTokens: anthropicTestInt(16), OutputTokens: anthropicTestInt(3), TotalTokens: anthropicTestInt(19), CacheCreationTokens: anthropicTestInt(5)}},
+		{name: "cache read and write", usage: `{"input_tokens":11,"output_tokens":3,"cache_read_input_tokens":7,"cache_creation_input_tokens":5}`,
+			want: LLMUsage{InputTokens: anthropicTestInt(23), OutputTokens: anthropicTestInt(3), TotalTokens: anthropicTestInt(26),
+				CachedTokens: anthropicTestInt(7), CacheCreationTokens: anthropicTestInt(5)}},
+		{name: "reported zero cache", usage: `{"input_tokens":11,"output_tokens":3,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}`,
+			want: LLMUsage{InputTokens: anthropicTestInt(11), OutputTokens: anthropicTestInt(3), TotalTokens: anthropicTestInt(14),
+				CachedTokens: anthropicTestInt(0), CacheCreationTokens: anthropicTestInt(0)}},
+		{name: "cache without raw input", usage: `{"output_tokens":3,"cache_read_input_tokens":7,"cache_creation_input_tokens":5}`,
+			want: LLMUsage{OutputTokens: anthropicTestInt(3), CachedTokens: anthropicTestInt(7), CacheCreationTokens: anthropicTestInt(5)}},
 		{name: "raw total", usage: `{"total_tokens":17}`, want: LLMUsage{TotalTokens: anthropicTestInt(17)}},
+		{name: "reported total takes precedence", usage: `{"input_tokens":11,"output_tokens":3,"cache_read_input_tokens":7,"cache_creation_input_tokens":5,"total_tokens":99}`,
+			want: LLMUsage{InputTokens: anthropicTestInt(23), OutputTokens: anthropicTestInt(3), TotalTokens: anthropicTestInt(99),
+				CachedTokens: anthropicTestInt(7), CacheCreationTokens: anthropicTestInt(5)}},
 		{name: "overflow", usage: `{"input_tokens":9223372036854775807,"output_tokens":1}`,
 			want: LLMUsage{InputTokens: anthropicTestInt(math.MaxInt64), OutputTokens: anthropicTestInt(1)}},
+		{name: "cache sum at limit", usage: `{"input_tokens":9223372036854775795,"output_tokens":0,"cache_read_input_tokens":7,"cache_creation_input_tokens":5}`,
+			want: LLMUsage{InputTokens: anthropicTestInt(math.MaxInt64), OutputTokens: anthropicTestInt(0), TotalTokens: anthropicTestInt(math.MaxInt64),
+				CachedTokens: anthropicTestInt(7), CacheCreationTokens: anthropicTestInt(5)}},
+		{name: "cache read overflow", usage: `{"input_tokens":9223372036854775807,"output_tokens":3,"cache_read_input_tokens":1}`,
+			want: LLMUsage{OutputTokens: anthropicTestInt(3), CachedTokens: anthropicTestInt(1)}},
+		{name: "cache overflow preserves reported total", usage: `{"input_tokens":9223372036854775807,"output_tokens":3,"cache_read_input_tokens":1,"total_tokens":17}`,
+			want: LLMUsage{OutputTokens: anthropicTestInt(3), TotalTokens: anthropicTestInt(17), CachedTokens: anthropicTestInt(1)}},
+		{name: "cache write overflow", usage: `{"input_tokens":9223372036854775806,"output_tokens":3,"cache_read_input_tokens":1,"cache_creation_input_tokens":1}`,
+			want: LLMUsage{OutputTokens: anthropicTestInt(3), CachedTokens: anthropicTestInt(1), CacheCreationTokens: anthropicTestInt(1)}},
+		{name: "cached total overflow", usage: `{"input_tokens":9223372036854775806,"output_tokens":1,"cache_read_input_tokens":1}`,
+			want: LLMUsage{InputTokens: anthropicTestInt(math.MaxInt64), OutputTokens: anthropicTestInt(1), CachedTokens: anthropicTestInt(1)}},
 		{name: "negative input", usage: `{"input_tokens":-1}`, code: "LLM_PROTOCOL"},
 		{name: "negative output", usage: `{"output_tokens":-1}`, code: "LLM_PROTOCOL"},
 		{name: "negative cache", usage: `{"cache_read_input_tokens":-1}`, code: "LLM_PROTOCOL"},
@@ -161,31 +195,49 @@ func TestAnthropicLLMUsage(t *testing.T) {
 		{name: "fraction", usage: `{"input_tokens":1.5}`, code: "LLM_PROTOCOL"},
 		{name: "integer overflow", usage: `{"input_tokens":9223372036854775808}`, code: "LLM_PROTOCOL"},
 	} {
-		t.Run(test.name, func(t *testing.T) {
-			wire := `{"type":"message","role":"assistant","model":"test-model","content":[{"type":"text","text":"OK"}],"stop_reason":"end_turn"`
-			if test.usage != "" {
-				wire += `,"usage":` + test.usage
-			}
-			wire += `}`
-			result, err := readAnthropicLLMJSON(strings.NewReader(wire))
-			if test.code != "" {
-				if errorCode(err) != test.code {
-					t.Fatalf("error=%v", err)
+		for _, format := range []string{"JSON", "SSE"} {
+			t.Run(test.name+"/"+format, func(t *testing.T) {
+				var result LLMResult
+				var err error
+				if format == "JSON" {
+					wire := `{"type":"message","role":"assistant","model":"test-model","content":[{"type":"text","text":"OK"}],"stop_reason":"end_turn"`
+					if test.usage != "" {
+						wire += `,"usage":` + test.usage
+					}
+					result, err = readAnthropicLLMJSON(strings.NewReader(wire + `}`))
+				} else {
+					wire := anthropicTestStart(test.usage) + anthropicTestBlock(0, "OK") + anthropicTestFinish("end_turn", "")
+					result, _, err = readAnthropicLLMStream(context.Background(), strings.NewReader(wire), func(string) error { return nil })
 				}
-			} else if err != nil || !reflect.DeepEqual(result.Usage, test.want) {
-				t.Fatalf("usage=%+v want=%+v err=%v", result.Usage, test.want, err)
-			}
-		})
+				if test.code != "" {
+					if errorCode(err) != test.code {
+						t.Fatalf("error=%v", err)
+					}
+				} else if err != nil || !reflect.DeepEqual(result.Usage, test.want) {
+					t.Fatalf("usage=%+v want=%+v err=%v", result.Usage, test.want, err)
+				}
+			})
+		}
 	}
-	// Missing fields in cumulative updates do not erase values from message_start.
-	stream := anthropicTestStart(`{"input_tokens":11,"cache_read_input_tokens":7,"total_tokens":99}`) +
-		anthropicTestBlock(0, "OK") +
-		anthropicTestEvent("message_delta", `{"type":"message_delta","delta":{},"usage":{"output_tokens":2}}`) +
-		anthropicTestFinish("end_turn", `{"input_tokens":null,"output_tokens":3}`)
-	result, _, err := readAnthropicLLMStream(context.Background(), strings.NewReader(stream), func(string) error { return nil })
-	if err != nil || !reflect.DeepEqual(result.Usage, LLMUsage{InputTokens: anthropicTestInt(11),
-		OutputTokens: anthropicTestInt(3), TotalTokens: anthropicTestInt(99), CachedTokens: anthropicTestInt(7)}) {
-		t.Fatalf("merged usage=%+v err=%v", result.Usage, err)
+	for _, test := range []struct {
+		start string
+		total int64
+	}{
+		{`{"input_tokens":11}`, 26},
+		{`{"input_tokens":11,"cache_read_input_tokens":7,"cache_creation_input_tokens":5,"total_tokens":99}`, 99},
+		{`{"input_tokens":9,"cache_read_input_tokens":2,"cache_creation_input_tokens":1}`, 26},
+	} {
+		// Snapshots replace native fields; absent and null fields retain earlier reports.
+		stream := anthropicTestStart(test.start) + anthropicTestBlock(0, "OK") +
+			anthropicTestEvent("message_delta", `{"type":"message_delta","delta":{},"usage":{"output_tokens":2,"input_tokens":11,"cache_read_input_tokens":7,"cache_creation_input_tokens":5}}`) +
+			anthropicTestEvent("message_delta", `{"type":"message_delta","delta":{},"usage":{"output_tokens":2,"cache_read_input_tokens":7,"cache_creation_input_tokens":5}}`) +
+			anthropicTestFinish("end_turn", `{"input_tokens":null,"output_tokens":3,"cache_read_input_tokens":null,"cache_creation_input_tokens":null}`)
+		result, _, err := readAnthropicLLMStream(context.Background(), strings.NewReader(stream), func(string) error { return nil })
+		if err != nil || !reflect.DeepEqual(result.Usage, LLMUsage{InputTokens: anthropicTestInt(23),
+			OutputTokens: anthropicTestInt(3), TotalTokens: anthropicTestInt(test.total),
+			CachedTokens: anthropicTestInt(7), CacheCreationTokens: anthropicTestInt(5)}) {
+			t.Fatalf("merged usage=%+v err=%v", result.Usage, err)
+		}
 	}
 }
 

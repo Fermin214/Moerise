@@ -75,6 +75,13 @@ mode=timeline：按 periods 的创建时间段梳理早期与后期的记录、�
 通常输出 2 至 4 条事实、1 至 2 条解释及 1 至 2 个问题；证据不支持的项目省略。
 truncated=true 表示部分片段因预算或过滤未提供，不能推断其内容，涉及全量覆盖的问题应说明缺失。`
 
+const aiComparisonPrompt = `
+本请求是多笔记比较或时间线。每一条 type=interpretation 都必须同时引用至少两条不同笔记的证据 ID。
+即使只是解释缺失信息，也必须遵守这项引用规则。只有一条可用笔记时，省略全部 interpretation。
+正文相同不表示来源哈希、创建时间或修改时间相同；不要把正文副本的元数据说成完全相同。
+只有原文明示同一批次、环境或对照条件时，才能将记录称为同批次或可直接比较的实验。
+fact 仍只能转述原文支持的事实；不能把单来源推断改称 fact。证据不足的原因可写入最后 result 的 missing。`
+
 type aiPromptData struct {
 	Mode      string        `json:"mode"`
 	Question  string        `json:"question"`
@@ -106,6 +113,10 @@ func (s *AIService) generate(ctx context.Context, kind string, request AIRequest
 	ctx, cancel := context.WithTimeout(ctx, time.Duration(config.TimeoutSeconds*float64(time.Second)))
 	defer cancel()
 	start := time.Now()
+	prompt := aiPrompt
+	if kind == "multi" || kind == "timeline" {
+		prompt += aiComparisonPrompt
+	}
 	input := aiPromptData{Mode: kind, Question: strings.TrimSpace(request.Question), Requested: len(request.Names), Evidence: []Evidence{}}
 	if kind == "timeline" {
 		var err error
@@ -119,7 +130,7 @@ func (s *AIService) generate(ctx context.Context, kind string, request AIRequest
 	}
 	empty, _ := json.Marshal(input)
 	// Evidence budgets include escaped JSON metadata; reserve the prompt and envelope first.
-	budget := config.ContextBytes - len(aiPrompt) - len(empty) + 2 - 16
+	budget := config.ContextBytes - len(prompt) - len(empty) + 2 - 16
 	if budget < 2 {
 		return AIResult{}, failure("LLM_CONTEXT_LIMIT", "LLM context cannot hold the prompt and evidence", 422, false)
 	}
@@ -177,7 +188,7 @@ func (s *AIService) generate(ctx context.Context, kind string, request AIRequest
 	}
 	input.Evidence, input.Truncated = result.References, len(result.Omitted) > 0
 	payload, _ := json.Marshal(input)
-	if len(aiPrompt)+len(payload) > config.ContextBytes {
+	if len(prompt)+len(payload) > config.ContextBytes {
 		return AIResult{}, failure("LLM_CONTEXT_LIMIT", "LLM context exceeds the configured byte limit", 422, false)
 	}
 	if err := verify(); err != nil {
@@ -196,7 +207,7 @@ func (s *AIService) generate(ctx context.Context, kind string, request AIRequest
 	}}
 	generation := time.Now()
 	completion, err := s.Provider.Generate(ctx, []LLMMessage{
-		{Role: "system", Content: aiPrompt}, {Role: "user", Content: string(payload)},
+		{Role: "system", Content: prompt}, {Role: "user", Content: string(payload)},
 	}, parser.write)
 	if err != nil {
 		return AIResult{}, err

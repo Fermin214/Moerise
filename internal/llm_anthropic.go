@@ -176,7 +176,7 @@ type anthropicUsage struct {
 	CacheCreationTokens *int64 `json:"cache_creation_input_tokens"`
 }
 
-func (u anthropicUsage) merge(result *LLMUsage) error {
+func (u anthropicUsage) merge(result *anthropicUsage) error {
 	for _, value := range []*int64{u.InputTokens, u.OutputTokens, u.TotalTokens, u.CacheReadTokens, u.CacheCreationTokens} {
 		if value != nil && *value < 0 {
 			return llmProtocolError()
@@ -192,17 +192,36 @@ func (u anthropicUsage) merge(result *LLMUsage) error {
 		result.TotalTokens = u.TotalTokens
 	}
 	if u.CacheReadTokens != nil {
-		result.CachedTokens = u.CacheReadTokens
+		result.CacheReadTokens = u.CacheReadTokens
+	}
+	if u.CacheCreationTokens != nil {
+		result.CacheCreationTokens = u.CacheCreationTokens
 	}
 	return nil
 }
 
-func anthropicTotal(usage *LLMUsage) {
-	if usage.TotalTokens == nil && usage.InputTokens != nil && usage.OutputTokens != nil &&
-		*usage.InputTokens <= math.MaxInt64-*usage.OutputTokens {
-		total := *usage.InputTokens + *usage.OutputTokens
-		usage.TotalTokens = &total
+func (u anthropicUsage) normalized() LLMUsage {
+	result := LLMUsage{OutputTokens: u.OutputTokens, TotalTokens: u.TotalTokens,
+		CachedTokens: u.CacheReadTokens, CacheCreationTokens: u.CacheCreationTokens}
+	if u.InputTokens != nil {
+		input := *u.InputTokens
+		// Native input excludes cache reads and writes; merge snapshots before summing.
+		for _, cached := range []*int64{u.CacheReadTokens, u.CacheCreationTokens} {
+			if cached != nil {
+				if input > math.MaxInt64-*cached {
+					return result
+				}
+				input += *cached
+			}
+		}
+		result.InputTokens = &input
 	}
+	if result.TotalTokens == nil && result.InputTokens != nil && result.OutputTokens != nil &&
+		*result.InputTokens <= math.MaxInt64-*result.OutputTokens {
+		total := *result.InputTokens + *result.OutputTokens
+		result.TotalTokens = &total
+	}
+	return result
 }
 
 type anthropicBlock struct {
@@ -267,12 +286,13 @@ func readAnthropicLLMJSON(reader io.Reader) (LLMResult, error) {
 		return LLMResult{}, llmProtocolError()
 	}
 	result := LLMResult{Content: content.String(), Model: response.Model, FinishReason: "end_turn"}
+	var usage anthropicUsage
 	if response.Usage != nil {
-		if err := response.Usage.merge(&result.Usage); err != nil {
+		if err := response.Usage.merge(&usage); err != nil {
 			return LLMResult{}, err
 		}
 	}
-	anthropicTotal(&result.Usage)
+	result.Usage = usage.normalized()
 	return result, nil
 }
 
@@ -313,6 +333,7 @@ func readAnthropicLLMStream(ctx context.Context, reader io.Reader, callback func
 	scanner := bufio.NewScanner(limited)
 	scanner.Buffer(make([]byte, 4096), llmEventBytes+1)
 	var result LLMResult
+	var usage anthropicUsage
 	var content strings.Builder
 	var data []byte
 	name, eventSize := "", 0
@@ -361,7 +382,7 @@ func readAnthropicLLMStream(ctx context.Context, reader io.Reader, callback func
 			}
 			started, result.Model = true, message.Model
 			if message.Usage != nil {
-				if err := message.Usage.merge(&result.Usage); err != nil {
+				if err := message.Usage.merge(&usage); err != nil {
 					return false, err
 				}
 			}
@@ -406,7 +427,7 @@ func readAnthropicLLMStream(ctx context.Context, reader io.Reader, callback func
 				finished, result.FinishReason = true, "end_turn"
 			}
 			if event.Usage != nil {
-				if err := event.Usage.merge(&result.Usage); err != nil {
+				if err := event.Usage.merge(&usage); err != nil {
 					return false, err
 				}
 			}
@@ -414,7 +435,7 @@ func readAnthropicLLMStream(ctx context.Context, reader io.Reader, callback func
 			if !started || open || !finished || strings.TrimSpace(content.String()) == "" {
 				return false, llmProtocolError()
 			}
-			anthropicTotal(&result.Usage)
+			result.Usage = usage.normalized()
 			return true, nil
 		default:
 			return false, llmProtocolError()

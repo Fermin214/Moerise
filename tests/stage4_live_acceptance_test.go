@@ -736,7 +736,7 @@ func stage4Validate(row *stage4Run, sources map[string]moerise.Note) {
 		if result.Semantic.Used || result.Semantic.Reason == "" {
 			fail("invalid retrieval degradation with embedding disabled")
 		}
-		for _, tokens := range []*int64{result.Usage.InputTokens, result.Usage.OutputTokens, result.Usage.TotalTokens, result.Usage.CachedTokens} {
+		for _, tokens := range []*int64{result.Usage.InputTokens, result.Usage.OutputTokens, result.Usage.TotalTokens, result.Usage.CachedTokens, result.Usage.CacheCreationTokens} {
 			if tokens != nil && *tokens < 0 {
 				fail("negative token usage")
 			}
