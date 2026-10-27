@@ -151,6 +151,14 @@ func serve(settings moerise.Settings, address string) error {
 	if err != nil {
 		return err
 	}
+	if settings.LLM.Enabled {
+		provider, err := moerise.NewLLMProvider(settings.LLM)
+		if err != nil {
+			return err
+		}
+		defer provider.Close()
+		api.AI.Provider = provider
+	}
 	var vectorWorker *moerise.VectorIndexService
 	if settings.Embedding.Enabled {
 		provider, err := moerise.NewEmbeddingProvider(settings.Embedding)

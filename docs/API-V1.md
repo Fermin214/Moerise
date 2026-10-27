@@ -2,7 +2,7 @@
 
 API 前缀为 `/api/ext/v1`。路由由 [api.go](../internal/api.go) 定义，字段模型见 [models.go](../internal/models.go)，完整字段契约见 [openapi.json](../internal/openapi.json)。服务通过 `/openapi.json` 提供同一契约，通过 `/docs` 提供交互文档。本文说明访问范围、分页、任务和错误语义。
 
-本版本提供笔记读取、创建、同步管理、中文混合检索、相关笔记、语义漫步，以及每日回顾 REST 和扩展 MCP。AI 按[路线图](ROADMAP.md)接入。
+本版本提供笔记读取、创建、同步管理、中文混合检索、相关笔记、语义漫步、每日回顾，以及带引用的 AI 洞察与问答 REST 和扩展 MCP。
 
 ## 资源与身份
 
@@ -21,6 +21,9 @@ API 前缀为 `/api/ext/v1`。路由由 [api.go](../internal/api.go) 定义，�
 | `reviews:read` | 读取已有回顾批次及通知结果 |
 | `reviews:write` | 获取或创建每日批次、换一组、记录打开与略过、处理通知结果不明状态 |
 | `discovery:write` | 显式打开笔记并更新发现阅读记录 |
+| `ai:generate` | 允许调用模型生成洞察、回答及主题时间线；必须同时具有 `notes:read` |
+
+`ai:generate` 明确允许模型耗用。已有凭据不会自动获得该 Scope；只有 `notes:read` 或只有 `ai:generate` 都不能调用 AI 接口，MCP 也不会展示这三个 AI 工具。AI 工具只读、不保存生成结果，但每次请求可能重新调用模型，不保证幂等。
 
 只读凭据不能创建笔记或触发同步，写入请求返回 403 `FORBIDDEN`。笔记创建支持基础附件，修改笔记使用 Memos；消息平台操作见[飞书入口](FEISHU.md)。
 
@@ -39,6 +42,8 @@ API 前缀为 `/api/ext/v1`。路由由 [api.go](../internal/api.go) 定义，�
 | GET | `/api/ext/v1/search/index` | `notes:read` | 向量索引代次与就绪状态，结构同同步状态的 `vector_index` |
 | POST | `/api/ext/v1/discovery/walk` | `notes:read` | 200，返回一个漫步结果及后续路径 |
 | POST | `/api/ext/v1/discovery/open` | `discovery:write` | 200，返回复查后的 `Note` 并更新最近阅读 |
+| POST | `/api/ext/v1/insights` | `notes:read` + `ai:generate` | 单条或多条笔记洞察，完整 `AIResult` 或 SSE |
+| POST | `/api/ext/v1/answers` | `notes:read` + `ai:generate` | 基于笔记的回答；`timeline=true` 选择主题时间线，完整 `AIResult` 或 SSE |
 | GET | `/api/ext/v1/sync` | `sync:read` | 水位、完整同步时间、来源状态、数量、任务统计与向量索引进度 |
 | POST | `/api/ext/v1/sync` | `sync:write` | 202，返回持久任务 |
 | GET | `/api/ext/v1/jobs/{job_id}` | `sync:read` | 持久任务与执行结果 |
@@ -148,6 +153,53 @@ Authorization: Bearer <reader-token>
 
 先验证来源版本与身份，再读取原笔记并修正投影；候选逐条原文复查同搜索。输出前再次读取原笔记、核实来源摘要与身份：原笔记消失或作者越界返回 404 `SOURCE_NOT_FOUND`，处理中改变返回 409 `SOURCE_CHANGED` 且 `retryable=true`。任意来源故障使整个请求失败，不输出原笔记或部分结果。
 
+## AI 洞察与问答
+
+洞察和问答分别使用 `POST /api/ext/v1/insights`、`POST /api/ext/v1/answers`，共享 [AIRequest](../internal/ai_models.go)，请求体最多 64 KiB。参数放在 JSON 对象中，拒绝未知字段、重复键、大小写变体、显式 `null`、多个 JSON 值和查询参数。
+
+```json
+{
+  "question": "园艺记录里有哪些已经尝试过的方法？",
+  "tags": ["园艺"],
+  "state": "NORMAL",
+  "from": "2020-01-01T00:00:00Z",
+  "until": "2025-01-01T00:00:00Z",
+  "timeline": false,
+  "stream": false
+}
+```
+
+| 参数 | 默认值 | 约束 |
+| --- | --- | --- |
+| `names` | `[]` | 洞察必填，1 至 20 个唯一 `memos/{id}`；问答使用检索，不能指定非空 `names` |
+| `question` | 空字符串 | 问答必填；trim 后非空，最多 256 个 Unicode 码点、1024 个 UTF-8 字节；洞察可省略，非空时采用相同边界 |
+| `tags` | `[]` | 最多 20 项，格式同搜索，精确 AND 过滤 |
+| `state` | `NORMAL` | `NORMAL`、`ARCHIVED` 或 `ALL`；归档笔记须显式选择 |
+| `from`、`until` | 空字符串 | 非空须为带时区 RFC3339；按笔记 `create_time` 比较，范围为 `[from, until)`，同时提供时须 `from < until` |
+| `timeline` | `false` | 仅问答支持；`true` 由共享服务选择主题时间线 |
+| `stream` | `false` | REST 为 `true` 时启用 SSE；MCP 始终返回完整结果 |
+
+洞察单条模式以选定笔记为必需来源，可补充最多三条相关历史；多条模式严格使用选定资源。状态、标签与日期过滤作用于全部证据，包括选定来源。普通问答复用共享混合搜索，不增加来源访问范围。
+
+完整 JSON 直接返回 `AIResult`，包含 `kind`、`status`、`completed`、`statements`、`references`、`used_sources`、`omitted`、`missing`、`timeline`、`semantic`、`model`、`usage` 和 `metrics`。`statements` 的 `kind` 区分事实、解释与问题；`citations` 仅使用服务器分配的 `E1`、`E2` 等 ID。`references` 为提供给模型的复查证据，`used_sources` 为输出实际引用的来源名，两者不能混用。每条证据含来源摘要、UTF-8 半开字节范围、从 1 开始的行号、原文、原文链接及创建和修改时间。
+
+`omitted` 说明因过滤或预算未完整纳入的来源；`missing` 说明缺少的证据。证据不足仍可完整成功，返回 `completed=true`、`status=insufficient` 及可用证据；模型不可用则返回错误，不能替换为成功回答。生成结果不会自动保存为笔记。
+
+`timeline` 在所有结果中均为数组，非时间线结果为 `[]`。每段含 `id`、`from`、`until`、`representative_names`、`statement_indexes`、`empty`、`semantic`，以及可选的 `missing_reason`。时间段依据创建时间，采用包含下界、不包含上界的范围；`statement_indexes` 从 0 开始，指向顶层 `statements`。没有证据的段保留，代表来源和陈述下标留空；`missing_reason` 区分 `NO_MATCHING_EVIDENCE` 与 `CONTEXT_BUDGET`。修改时间和正文提及的日期不会替代笔记创建时间。
+
+### SSE 完成与取消
+
+`stream=true` 时使用 `Content-Type: text/event-stream`。鉴权、参数、模型关闭及首次引用输出前的来源错误保持普通 HTTP 错误响应；SSE 开始后 HTTP 状态为 200，业务失败通过 `error` 事件终止。每个事件的 `data` 是单个 JSON 对象，`type` 与事件名相同。
+
+| 事件 | 数据 | 语义 |
+| --- | --- | --- |
+| `references` | `{"type":"references","references":[...]}` | 正文前的服务器证据，可以为空数组 |
+| `content` | `{"type":"content","content":{"kind":"fact","text":"...","citations":["E1"]}}` | 已通过引用和来源复查的完整陈述 |
+| `complete` | `{"type":"complete","result":{...}}` | 仅在共享服务完整成功返回后发送，`result.completed=true` |
+| `error` | `{"type":"error","completed":false,"error":{"code":"LLM_UNAVAILABLE","message":"AI generation failed","retryable":false,"request_id":"uuid"}}` | 异常终止，已有内容不可当作成功结果保存 |
+
+正文交付后发生业务错误时，错误事件的 `retryable=false`，客户端不得自动重放已交付正文。正常 EOF、连接中断或只有 `references`、`content` 都不能代替 `complete`。客户端断开会将取消传给检索及模型；写入和 flush 失败也终止生成。错误消息由接口固定生成，不回显原始模型或来源错误正文。
+
 ## 创建笔记
 
 ```http
@@ -223,6 +275,9 @@ Content-Type: application/json
 | `semantic_search` | `notes:read` | 只读、幂等、非破坏；参数为 `SearchRequest`，结构化结果为 `SearchResponse` |
 | `get_related_memos` | `notes:read` | 只读、幂等、非破坏；参数为 `RelatedRequest`，结构化结果为 `RelatedResponse` |
 | `semantic_walk` | `notes:read` | 只读、幂等、非破坏；参数为 `WalkRequest`，结构化结果为 `WalkResponse`，随机模式可返回不同笔记 |
+| `analyze_memos` | `notes:read` + `ai:generate` | 对选定笔记生成洞察，返回 `AIResult`；只读、非幂等、非破坏 |
+| `ask_memos` | `notes:read` + `ai:generate` | 基于检索证据回答问题，返回 `AIResult`；只读、非幂等、非破坏 |
+| `get_topic_timeline` | `notes:read` + `ai:generate` | 强制 `timeline=true` 调用问答，返回 `AIResult`；只读、非幂等、非破坏 |
 | `open_discovery_memo` | `discovery:write` | 参数为 `{"name":"memos/id"}`，返回 `Note` 并更新最近阅读时间 |
 | `read_daily_review` | `reviews:read` | 读取已有当日批次 |
 | `get_review_batch` | `reviews:read` | 读取指定 `batch_id` |
@@ -232,6 +287,8 @@ Content-Type: application/json
 | `skip_review_memo` | `reviews:write` | 保存 `batch_id`、`name` 对应条目的首次略过时间 |
 
 会改变状态的工具均设置 `readOnlyHint=false`。工具提示只帮助客户端展示，服务端依据凭据 Scope 决定可见及可调用的工具。REST 与 MCP 以同一绑定账号共享批次、换组键与条目状态。
+
+三个 AI 工具使用 `AIRequest`，始终返回完整结构化 `AIResult` 和相同内容的 JSON 文本；`stream` 不启用 MCP 内容流。均设置 `readOnlyHint=true`、`idempotentHint=false`、`destructiveHint=false`，描述中明确模型耗用。原有工具的 Scope、可见性及幂等提示保持各自契约。MCP 的 64 KiB 限额覆盖整个 JSON-RPC 请求，而不只是工具参数；取消请求传入共享服务。
 
 `semantic_search` 仅对具备 `notes:read` 的凭据可见及可调用，设置 `readOnlyHint=true`、`idempotentHint=true`、`destructiveHint=false`。REST、MCP 和飞书复用 `SearchService`，搜索无需 LLM；来源复查引起的派生投影修正不改变产品记录。
 
@@ -287,11 +344,16 @@ Content-Type: application/json
 | 409 | `IDEMPOTENCY_CONFLICT` | 同一幂等键已对应其他规范化内容；独立创建使用新键 |
 | 409 | `WRITE_CONFLICT` | 检查来源资源冲突，不将冲突资源作为创建结果 |
 | 409 | `NOTIFICATION_CONFLICT` | 检查通知状态、回执或结果确认决定 |
-| 409 | `SOURCE_CHANGED` | 相关笔记处理期间原笔记改变，`retryable=true`，重新请求 |
+| 409 | `SOURCE_CHANGED` | 来源复查时原文改变；按响应 `retryable` 处理，AI 正文交付后的失败不可自动重放 |
 | 422 | `INVALID_ARGUMENT`、`INVALID_PAGE_TOKEN` | 修正参数，游标失效时重读第一页 |
 | 503 | `UPSTREAM_UNAVAILABLE`、`UPSTREAM_AUTH`、`IDENTITY_MISMATCH` | 检查来源连接与绑定 |
 | 503 | `UNSUPPORTED_UPSTREAM`、`UPSTREAM_PROTOCOL`、`UPSTREAM_REQUEST_REJECTED` | 检查 Memos 版本与适配层 |
 | 503 | `WRITE_OUTCOME_UNKNOWN` | `retryable=true`，仅用相同幂等键与请求体重试 |
+| 422 | `LLM_CONTEXT_LIMIT`、`EVIDENCE_BUDGET_EXCEEDED`、`INSUFFICIENT_EVIDENCE` | 减少请求范围或调整上下文预算 |
+| 499 | `LLM_CANCELED` | 请求已取消 |
+| 503 | `LLM_DISABLED`、`LLM_AUTH`、`LLM_UNAVAILABLE`、`LLM_RATE_LIMITED` | 检查模型启用状态、凭据及用量；仅按 `retryable` 处理完整新请求 |
+| 503 | `LLM_REJECTED`、`LLM_PROTOCOL`、`LLM_OUTPUT_LIMIT`、`INVALID_CITATION` | 生成未完整成功，已有片段不可当作成功结果 |
+| 504 | `LLM_TIMEOUT` | 请求已超时 |
 | 500 | `INTERNAL` | 通过请求标识和服务日志定位 |
 
 业务响应携带 `X-Request-ID` 和 `Cache-Control: no-store`。日志记录任务标识与错误代码，省略笔记正文、请求凭据和模型密钥。

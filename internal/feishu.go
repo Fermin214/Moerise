@@ -62,6 +62,7 @@ type FeishuService struct {
 	Records       *RecordService
 	Reviews       *ReviewService
 	Search        *SearchService
+	AI            *AIService
 	Client        FeishuPlatform
 	Notifications *NotificationService
 	wake          chan struct{}
