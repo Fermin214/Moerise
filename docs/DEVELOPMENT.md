@@ -151,6 +151,23 @@ python3 scripts/benchmark-search.py --docker-image golang:1.27.3-bookworm \
 
 语义漫步集成验收覆盖 REST、MCP 的 Scope 与相同路径结果、显式阅读共享，以及飞书回调、持久队列和发送。专项测试补充来源中途变化、随机读取请求数量、路径边界与阅读记录的重建及备份恢复。
 
+## AI 评测
+
+`TestStage4LiveAcceptance` 采用配置中的 `llm`，创建独立 Memos、账号、状态、索引与服务进程，导入 `tests/testdata/stage4-cases.json` 中的固定虚构语料。笔记创建时间、修改时间及归档状态通过官方 API 设置并读回核对。向量模型关闭，检索明确返回关键词和标签降级；来源请求按 125 毫秒间隔发送，间隔计入端到端延迟。
+
+```bash
+MOERISE_STAGE4_CONFIG="$PWD/.local/config.json" \
+MOERISE_STAGE4_OUTPUT="$PWD/.local/stage4-live.json" \
+MOERISE_STAGE4_CONCURRENCY=true \
+go test -tags=integration ./tests -run '^TestStage4LiveAcceptance$' -v -count=1 -timeout=30m
+```
+
+测试校验数据集摘要。时间线案例通过问题、标签和日期筛选召回，期望来源写在 `expected.sources`，不使用洞察接口的 `names` 参数。`MOERISE_STAGE4_CASES` 可指定逗号分隔的案例 ID；`MOERISE_STAGE4_CONCURRENCY=false` 跳过附加并发测量，`true` 使用同一案例分别执行并发 1、2、4。
+
+每个请求解析完整 SSE，检查来源版本、原文字节与行号、引用归属、实际使用来源、时间段和完成结构。报告逐例落盘，包含原始事件、完整业务结果、期望要点、检索与首段及总延迟、供应商用量、服务进程 CPU 与 RSS。供应商缺少的用量为 `null`；缓存用量与输入缓存命中分别按供应商字段记录。报告拒绝覆盖旧文件。逐项内容核对须结合原文判断事实、遗漏、错引和无依据结论，字符串命中与模型自评不能替代这项核对。
+
+`TestAISelectedSourceAcrossRESTMCPAndFeishuAcceptance` 与 `TestAICachedDeliveryRebuildAndRestoreWithRealMemosAcceptance` 采用真实 Memos、可控模型和飞书平台模拟器，覆盖跨入口结果、Scope、重投、已完成生成缓存、索引重建、Store 重开、快照恢复、回执确认和来源修改后的发送限制。
+
 ## 接口与提交
 
 API 字段定义位于 `internal/models.go`，路由位于 `api.go`，内嵌契约为 `openapi.json`。接口变化同步修改契约与 [API v1](API-V1.md)；数据库结构变化新增编号迁移，禁止改写已应用的 SQL。
