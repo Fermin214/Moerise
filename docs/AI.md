@@ -108,7 +108,7 @@ docker compose exec -T moerise moerise check-llm
 
 `AIService.Insight` 接受一个笔记资源名和可选的问题、标签、状态及日期条件。原笔记与最多三条相关历史组成上下文；没有相关历史时，只分析指定笔记。结果分为原文事实 `fact`、模型解释 `interpretation` 与追问 `question`，解释不能冒充原文事实。事实与解释必须带证据 ID；关联多条笔记的文字须由涉及各方的引用支撑。
 
-业务结果 `AIResult` 包含 `kind`、`status`、`completed`、`statements`、`references`、`used_sources`、`omitted`、`missing`、`semantic`、`model`、`usage` 和 `metrics`。`status` 为 `answered` 或 `insufficient`，后者说明具体缺少的记录或信息；`completed=true` 只在格式、引用、模型结束信号及最终来源复查均成功后返回。没有可用证据时直接返回不足结果，不调用模型。洞察不会自动保存为笔记。
+业务结果 `AIResult` 包含 `kind`、`status`、`completed`、`statements`、`references`、`used_sources`、`omitted`、`missing`、`timeline`、`semantic`、`model`、`usage` 和 `metrics`。`status` 为 `answered` 或 `insufficient`，后者说明具体缺少的记录或信息；`completed=true` 只在格式、引用、模型结束信号及最终来源复查均成功后返回。没有可用证据时直接返回不足结果，不调用模型。洞察不会自动保存为笔记。
 
 模型内部使用逐行 JSON 组织内容，业务层按完整条目验证类型、长度和引用，再复查来源并交付 `content` 事件；未完成的 JSON 不会作为正文输出。`references` 事件提供服务器生成的引用元数据，`complete` 事件提供完整业务结果。模型失败、取消、格式错误、虚构引用或来源变化均终止生成；已交付的条目不能视作完整结果，失败请求没有成功完成事件。
 
@@ -125,3 +125,13 @@ docker compose exec -T moerise moerise check-llm
 `AIService.Answer` 接受必填 `question` 及可选的 `tags`、`state`、`from`、`until`，不接受显式笔记列表。问题去除首尾空白后最多 256 个 Unicode 码点及 1024 个 UTF-8 字节，筛选边界与证据收集一致。共享混合检索提供复查后的片段，结果 `kind=answer`，使用与洞察相同的事实、解释、引用和完成结构。
 
 有依据的答复使用 `status=answered`。未找到来源或检索片段缺少所问细节时使用 `status=insufficient`，通过 `references`、已有事实和 `missing` 展示可用记录与缺失信息。推断单列为解释，不能用模型常识补写未记录的事实。`LLM_DISABLED`、模型故障与来源故障返回各自错误，不转换为证据不足。普通问答不创建笔记。
+
+## 主题时间线
+
+问答请求设置 `timeline=true` 时，结果 `kind=timeline`。服务先确定创建时间范围，再逐段调用共享混合检索，每段最多三条代表笔记，分别保留关键词、标签与语义召回。分段先于候选和笔记上限，避免大量近期结果挤掉早期记录。证据预算按时间段分配，并预留合并后引用 ID 的大小。
+
+显式 `from`、`until` 沿用创建时间半开区间。未指定的端点取符合状态、标签和日期筛选的投影中最早或最晚创建时间所在年份的边界。跨度约一至五年时按日历年分段；更长或不足一年的范围按四段划分，少于四天的范围保留一段。分段时间统一为 UTC。
+
+`timeline` 是有序时间段数组；非时间线结果返回空数组。每段包含 `id`、`from`、`until`、`representative_names`、`statement_indexes`、`empty`、`missing_reason` 和 `semantic`。`statement_indexes` 从 0 开始，指向完整结果中的事实或解释；跨时间段的对比可以被多个时间段引用。没有证据的时间段保留 `empty=true`，不编造活动或转折。`NO_MATCHING_EVIDENCE` 表示没有匹配片段，`CONTEXT_BUDGET` 表示该段证据因预算未进入上下文；后者同时使结果标为证据不足。
+
+创建时间决定笔记所在时间段，修改时间单独保留，正文提及的日期仅作为正文事实。模型可以比较不同记录中的说法，不能仅凭创建时间先后、相似度或一处编辑推断观点演变及因果；涉及变化的解释至少引用两条不同笔记。

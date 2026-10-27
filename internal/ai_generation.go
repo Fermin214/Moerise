@@ -24,18 +24,19 @@ type AIMetrics struct {
 }
 
 type AIResult struct {
-	Kind        string         `json:"kind"`
-	Status      string         `json:"status"`
-	Completed   bool           `json:"completed"`
-	Statements  []AIStatement  `json:"statements"`
-	References  []Evidence     `json:"references"`
-	UsedSources []string       `json:"used_sources"`
-	Omitted     []string       `json:"omitted"`
-	Missing     []string       `json:"missing"`
-	Semantic    SearchSemantic `json:"semantic"`
-	Model       string         `json:"model"`
-	Usage       LLMUsage       `json:"usage"`
-	Metrics     AIMetrics      `json:"metrics"`
+	Kind        string             `json:"kind"`
+	Status      string             `json:"status"`
+	Completed   bool               `json:"completed"`
+	Statements  []AIStatement      `json:"statements"`
+	References  []Evidence         `json:"references"`
+	UsedSources []string           `json:"used_sources"`
+	Omitted     []string           `json:"omitted"`
+	Missing     []string           `json:"missing"`
+	Timeline    []AITimelinePeriod `json:"timeline"`
+	Semantic    SearchSemantic     `json:"semantic"`
+	Model       string             `json:"model"`
+	Usage       LLMUsage           `json:"usage"`
+	Metrics     AIMetrics          `json:"metrics"`
 }
 
 type AIEvent struct {
@@ -70,15 +71,17 @@ mode=multi：比较选定笔记的共同点、差异和联系，每条关联解�
 相同正文不能当作两份独立事实的佐证；相互矛盾时分别列明原文说法，不擅自选一方或推断原因。
 mode=multi 且只提供了一条笔记或未覆盖全部 requested_sources 时，可列出已有事实，并以 insufficient 说明缺失。
 mode=answer：直接回答 question，只把原文支持的部分作为事实；推断单独列为解释。所问细节没有记录时返回 insufficient，展示已知事实并具体说明缺少什么，不能凭常识补成笔记事实。
+mode=timeline：按 periods 的创建时间段梳理早期与后期的记录、代表笔记和观点差异。create_time 是记录创建时间，update_time 仅是编辑时间；正文提及的日期必须明确标成正文日期，不能替代创建时间。空时间段留空，不编造转折、连续经历或因果。有关变化的解释必须引用至少两条不同笔记，并说明对比依据。
 通常输出 2 至 4 条事实、1 至 2 条解释及 1 至 2 个问题；证据不支持的项目省略。
 truncated=true 表示部分片段因预算或过滤未提供，不能推断其内容，涉及全量覆盖的问题应说明缺失。`
 
 type aiPromptData struct {
-	Mode      string     `json:"mode"`
-	Question  string     `json:"question"`
-	Requested int        `json:"requested_sources"`
-	Evidence  []Evidence `json:"evidence"`
-	Truncated bool       `json:"truncated"`
+	Mode      string        `json:"mode"`
+	Question  string        `json:"question"`
+	Requested int           `json:"requested_sources"`
+	Evidence  []Evidence    `json:"evidence"`
+	Truncated bool          `json:"truncated"`
+	Periods   []AITimeRange `json:"periods,omitempty"`
 }
 
 func (s *AIService) Insight(ctx context.Context, request AIRequest, emit func(AIEvent) error) (AIResult, error) {
@@ -104,6 +107,16 @@ func (s *AIService) generate(ctx context.Context, kind string, request AIRequest
 	defer cancel()
 	start := time.Now()
 	input := aiPromptData{Mode: kind, Question: strings.TrimSpace(request.Question), Requested: len(request.Names), Evidence: []Evidence{}}
+	if kind == "timeline" {
+		var err error
+		input.Periods, err = s.timelineRanges(ctx, request)
+		if err != nil {
+			if ctx.Err() != nil {
+				return AIResult{}, llmContextError(ctx)
+			}
+			return AIResult{}, err
+		}
+	}
 	empty, _ := json.Marshal(input)
 	// Evidence budgets include escaped JSON metadata; reserve the prompt and envelope first.
 	budget := config.ContextBytes - len(aiPrompt) - len(empty) + 2 - 16
@@ -111,17 +124,34 @@ func (s *AIService) generate(ctx context.Context, kind string, request AIRequest
 		return AIResult{}, failure("LLM_CONTEXT_LIMIT", "LLM context cannot hold the prompt and evidence", 422, false)
 	}
 	evidence := NewEvidenceService(s.Search, budget)
-	collected, err := evidence.Collect(ctx, request)
+	var collected EvidenceSet
+	periods := []AITimelinePeriod{}
+	var err error
+	if kind == "timeline" {
+		collected, periods, err = evidence.collectTimeline(ctx, request, input.Periods)
+	} else {
+		collected, err = evidence.Collect(ctx, request)
+	}
 	if err != nil && errorCode(err) != "INSUFFICIENT_EVIDENCE" {
+		if ctx.Err() != nil {
+			return AIResult{}, llmContextError(ctx)
+		}
 		return AIResult{}, err
 	}
 	result := AIResult{Kind: kind, Statements: []AIStatement{}, References: collected.Items,
-		UsedSources: []string{}, Omitted: collected.Omitted, Missing: []string{}, Semantic: collected.Semantic}
+		UsedSources: []string{}, Omitted: collected.Omitted, Missing: []string{}, Timeline: periods, Semantic: collected.Semantic}
 	if result.References == nil {
 		result.References, result.Omitted = []Evidence{}, []string{}
 	}
 	result.Metrics.RetrievalMS = time.Since(start).Milliseconds()
-	if err := evidence.Verify(ctx, result.References); err != nil {
+	verify := func() error {
+		err := evidence.Verify(ctx, result.References)
+		if ctx.Err() != nil {
+			return llmContextError(ctx)
+		}
+		return err
+	}
+	if err := verify(); err != nil {
 		return AIResult{}, err
 	}
 	send := func(event AIEvent) error {
@@ -150,11 +180,11 @@ func (s *AIService) generate(ctx context.Context, kind string, request AIRequest
 	if len(aiPrompt)+len(payload) > config.ContextBytes {
 		return AIResult{}, failure("LLM_CONTEXT_LIMIT", "LLM context exceeds the configured byte limit", 422, false)
 	}
-	if err := evidence.Verify(ctx, result.References); err != nil {
+	if err := verify(); err != nil {
 		return AIResult{}, err
 	}
-	parser := aiOutputParser{evidence: result.References, multi: kind == "multi", accept: func(item AIStatement) error {
-		if err := evidence.Verify(ctx, result.References); err != nil {
+	parser := aiOutputParser{evidence: result.References, multi: kind == "multi" || kind == "timeline", accept: func(item AIStatement) error {
+		if err := verify(); err != nil {
 			return err
 		}
 		if result.Metrics.FirstContentMS == nil {
@@ -174,7 +204,7 @@ func (s *AIService) generate(ctx context.Context, kind string, request AIRequest
 	if err := parser.finish(); err != nil {
 		return AIResult{}, err
 	}
-	if err := evidence.Verify(ctx, result.References); err != nil {
+	if err := verify(); err != nil {
 		return AIResult{}, err
 	}
 	result.Status, result.Missing, result.Completed = parser.status, parser.missing, true
@@ -197,6 +227,13 @@ func (s *AIService) generate(ctx context.Context, kind string, request AIRequest
 				result.Status = "insufficient"
 				result.Missing = append(result.Missing, "选定来源未纳入分析："+name)
 			}
+		}
+	}
+	assignTimelineStatements(&result)
+	for _, period := range result.Timeline {
+		if period.MissingReason == "CONTEXT_BUDGET" {
+			result.Status = "insufficient"
+			result.Missing = append(result.Missing, "时间段未纳入证据："+period.From+" 至 "+period.Until)
 		}
 	}
 	result.Model, result.Usage = completion.Model, completion.Usage
