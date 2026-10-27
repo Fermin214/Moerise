@@ -5,6 +5,61 @@
     "version": "0.2.0"
   },
   "paths": {
+    "/api/ext/v1/search/index": {
+      "get": {
+        "summary": "读取向量索引进度",
+        "description": "结构与同步状态的 vector_index 相同；关闭模型时 ready=false，active/building 可为空。",
+        "security": [{"HTTPBearer": []}],
+        "x-required-scopes": ["notes:read"],
+        "responses": {
+          "200": {"description": "向量索引状态", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/VectorIndexStatus"}}}},
+          "401": {"description": "UNAUTHENTICATED"},
+          "403": {"description": "FORBIDDEN"},
+          "405": {"description": "METHOD_NOT_ALLOWED"},
+          "500": {"description": "INTERNAL"}
+        }
+      }
+    },
+    "/api/ext/v1/discovery/walk": {
+      "post": {
+        "summary": "语义漫步或随机跳转",
+        "description": "继续话题、换角度或随机选择一个笔记，排除路径资源并降低最近七天显式阅读的优先级。只读，不登记阅读。语义模式复用文档向量，关闭模型或向量未就绪时返回明确错误；随机模式不依赖模型。输出前复查来源身份和原文，原笔记中途改变返回 SOURCE_CHANGED。",
+        "security": [{"HTTPBearer": []}],
+        "x-required-scopes": ["notes:read"],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/WalkRequest"}}}},
+        "responses": {
+          "200": {"description": "漫步结果；达到路径上限或候选用尽时 item=null、exhausted=true", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/WalkResponse"}}}},
+          "401": {"description": "UNAUTHENTICATED"},
+          "403": {"description": "FORBIDDEN"},
+          "404": {"description": "SOURCE_NOT_FOUND"},
+          "405": {"description": "METHOD_NOT_ALLOWED"},
+          "409": {"description": "SOURCE_CHANGED"},
+          "422": {"description": "INVALID_ARGUMENT"},
+          "503": {"description": "来源故障、模型关闭或索引未就绪"}
+        }
+      }
+    },
+    "/api/ext/v1/discovery/open": {
+      "post": {
+        "summary": "打开笔记并记录最近阅读",
+        "description": "复查来源身份和作者后，以实例、账号、资源名更新发现阅读时间；记录保存在产品数据库并纳入备份。",
+        "security": [{"HTTPBearer": []}],
+        "x-required-scopes": ["discovery:write"],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {
+          "type": "object", "additionalProperties": false, "required": ["name"],
+          "properties": {"name": {"type": "string", "pattern": "^memos/[a-zA-Z0-9_-]+$"}}
+        }}}},
+        "responses": {
+          "200": {"description": "复查后的原文", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Note"}}}},
+          "401": {"description": "UNAUTHENTICATED"},
+          "403": {"description": "FORBIDDEN"},
+          "404": {"description": "SOURCE_NOT_FOUND"},
+          "405": {"description": "METHOD_NOT_ALLOWED"},
+          "422": {"description": "INVALID_ARGUMENT"},
+          "503": {"description": "来源不可用"}
+        }
+      }
+    },
     "/api/ext/v1/notes/{memo_id}/related": {
       "get": {
         "summary": "查找相关笔记",
@@ -99,7 +154,7 @@
         },
         "responses": {
           "200": {
-            "description": "搜索结果；关闭模型、索引未就绪或模型失败时返回关键词与标签结果及显式语义状态，取消不降级。",
+            "description": "搜索结果；hybrid 模式在模型关闭、索引未就绪或模型失败时返回关键词与标签结果及显式语义状态；keyword 不调用模型，semantic 不降级，取消不降级。",
             "content": {"application/json": {"schema": {"$ref": "#/components/schemas/SearchResponse"}}}
           },
           "401": {
@@ -123,7 +178,7 @@
             "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}
           },
           "503": {
-            "description": "来源版本、身份或原文复查失败，沿用来源错误契约",
+            "description": "来源版本、身份或原文复查失败，或 semantic 模式下模型关闭、索引未就绪或查询模型失败；错误代码说明具体原因",
             "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}
           }
         }
@@ -2154,12 +2209,35 @@
           }
         }
       },
+      "WalkRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "name": {"type": "string", "pattern": "^memos/[a-zA-Z0-9_-]+$", "description": "起点资源；continue/angle 必填，random 可省略。"},
+          "mode": {"type": "string", "enum": ["continue", "angle", "random"], "default": "continue"},
+          "path": {"type": "array", "maxItems": 100, "default": [], "items": {"type": "string", "pattern": "^memos/[a-zA-Z0-9_-]+$"}},
+          "include_archived": {"type": "boolean", "default": false}
+        }
+      },
+      "WalkResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["mode", "item", "path", "exhausted", "warnings"],
+        "properties": {
+          "mode": {"type": "string", "enum": ["continue", "angle", "random"]},
+          "item": {"anyOf": [{"$ref": "#/components/schemas/SearchHit"}, {"type": "null"}]},
+          "path": {"type": "array", "maxItems": 100, "items": {"type": "string"}},
+          "exhausted": {"type": "boolean"},
+          "warnings": {"type": "array", "items": {"type": "string"}}
+        }
+      },
       "SearchRequest": {
         "type": "object",
         "additionalProperties": false,
         "required": ["query"],
-        "description": "仅接受 query、tags、state、limit。query 长度由服务端在 trim 后校验，未知字段返回 422。",
+        "description": "接受 query、mode、tags、state、limit。query 长度由服务端在 trim 后校验，未知字段返回 422。",
         "properties": {
+          "mode": {"type": "string", "enum": ["hybrid", "keyword", "semantic"], "default": "hybrid", "description": "keyword 不调用模型；semantic 要求模型和完整索引，失败返回错误；hybrid 可显式降级。"},
           "query": {
             "type": "string",
             "minLength": 1,
@@ -2188,8 +2266,9 @@
       "SearchResponse": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["query", "results", "semantic"],
+        "required": ["query", "mode", "results", "semantic"],
         "properties": {
+          "mode": {"type": "string", "enum": ["hybrid", "keyword", "semantic"], "description": "实际执行的模式；hybrid 降级后为 keyword。"},
           "query": {"type": "string", "minLength": 1, "maxLength": 256, "description": "trim 后的查询，UTF-8 最多 1024 字节。"},
           "results": {
             "type": "array",
@@ -2206,7 +2285,7 @@
         "required": ["note", "score", "matches"],
         "properties": {
           "note": {"$ref": "#/components/schemas/Note"},
-          "score": {"type": "number", "description": "笔记最高片段的 RRF 融合分数，不是余弦值或置信度。"},
+          "score": {"type": "number", "description": "搜索及相关笔记使用最高片段 RRF 分数；漫步使用余弦与话题、最近阅读加权分数。不是置信度。"},
           "matches": {"type": "array", "maxItems": 3, "items": {"$ref": "#/components/schemas/SearchMatch"}}
         }
       },
@@ -2222,7 +2301,7 @@
           "line_start": {"type": "integer", "minimum": 1},
           "line_end": {"type": "integer", "minimum": 1},
           "content": {"type": "string", "description": "对应原始正文字节区间的片段。"},
-          "signals": {"type": "array", "items": {"type": "string", "enum": ["keyword", "semantic", "tag"]}}
+          "signals": {"type": "array", "items": {"type": "string", "enum": ["keyword", "semantic", "tag", "random", "recent_read"]}}
         }
       },
       "SearchSemantic": {
@@ -2231,7 +2310,7 @@
         "required": ["used", "reason"],
         "properties": {
           "used": {"type": "boolean"},
-          "reason": {"type": "string", "description": "used=true 时为空字符串；否则为 EMBEDDING_DISABLED、INDEX_NOT_READY，搜索还可返回具体模型错误代码，相关笔记还可返回 NO_SOURCE_VECTORS。"}
+          "reason": {"type": "string", "description": "used=true 时为空字符串；否则为 EMBEDDING_DISABLED、INDEX_NOT_READY，关键词模式使用 KEYWORD_MODE，搜索还可返回具体模型错误代码，相关笔记还可返回 NO_SOURCE_VECTORS。"}
         },
         "oneOf": [
           {"properties": {"used": {"const": true}, "reason": {"const": ""}}},

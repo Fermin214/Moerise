@@ -13,7 +13,7 @@
     {
       "name": "operator",
       "token": "replace-with-an-independent-random-token-at-least-32-characters",
-      "scopes": ["notes:read", "notes:write", "sync:read", "sync:write", "reviews:read", "reviews:write"]
+      "scopes": ["notes:read", "notes:write", "sync:read", "sync:write", "reviews:read", "reviews:write", "discovery:write"]
     },
     {
       "name": "reader",

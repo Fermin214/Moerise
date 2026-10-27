@@ -109,6 +109,7 @@ type CreateAttachment struct {
 
 type SearchRequest struct {
 	Query string   `json:"query" jsonschema:"Search text, 1 to 256 Unicode characters"`
+	Mode  string   `json:"mode,omitempty" jsonschema:"hybrid (default), keyword, or semantic"`
 	Tags  []string `json:"tags,omitempty" jsonschema:"Exact tags, all required"`
 	State string   `json:"state,omitempty" jsonschema:"NORMAL (default), ARCHIVED, or ALL"`
 	Limit int      `json:"limit,omitempty" jsonschema:"Maximum notes, default 10, range 1 to 20"`
@@ -137,6 +138,7 @@ type SearchSemantic struct {
 
 type SearchResponse struct {
 	Query    string         `json:"query"`
+	Mode     string         `json:"mode"`
 	Results  []SearchHit    `json:"results"`
 	Semantic SearchSemantic `json:"semantic"`
 }
@@ -152,6 +154,21 @@ type RelatedResponse struct {
 	Source   Note           `json:"source"`
 	Results  []SearchHit    `json:"results"`
 	Semantic SearchSemantic `json:"semantic"`
+}
+
+type WalkRequest struct {
+	Name            string   `json:"name,omitempty" jsonschema:"Source memo; optional for a random start"`
+	Mode            string   `json:"mode,omitempty" jsonschema:"continue (default), angle, or random"`
+	Path            []string `json:"path,omitempty" jsonschema:"Visited memo resources, at most 100"`
+	IncludeArchived bool     `json:"include_archived,omitempty"`
+}
+
+type WalkResponse struct {
+	Mode      string     `json:"mode"`
+	Item      *SearchHit `json:"item"`
+	Path      []string   `json:"path"`
+	Exhausted bool       `json:"exhausted"`
+	Warnings  []string   `json:"warnings"`
 }
 
 func (m Memo) Note(settings Settings) Note {

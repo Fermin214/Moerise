@@ -243,6 +243,19 @@ func (a *API) route(writer http.ResponseWriter, request *http.Request) (any, int
 			return badMethod()
 		}
 		scope = "notes:read"
+	case path == "/api/ext/v1/search/index":
+		if method != "GET" {
+			return badMethod()
+		}
+		scope = "notes:read"
+	case path == "/api/ext/v1/discovery/walk" || path == "/api/ext/v1/discovery/open":
+		if method != "POST" {
+			return badMethod()
+		}
+		scope = "notes:read"
+		if path == "/api/ext/v1/discovery/open" {
+			scope = "discovery:write"
+		}
 	case path == "/api/ext/v1/notes":
 		switch method {
 		case "GET":
@@ -283,6 +296,11 @@ func (a *API) route(writer http.ResponseWriter, request *http.Request) (any, int
 		return a.related(request)
 	}
 	switch path {
+	case "/api/ext/v1/search/index":
+		result, err := a.Store.VectorStatus()
+		return result, 200, err
+	case "/api/ext/v1/discovery/walk", "/api/ext/v1/discovery/open":
+		return a.discoveryRoute(writer, request)
 	case "/api/ext/v1/search":
 		var body SearchRequest
 		if err := strictJSON(http.MaxBytesReader(writer, request.Body, 65536), &body); err != nil {

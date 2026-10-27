@@ -26,7 +26,7 @@ Moerise 支持 Linux 原生二进制和 Docker Linux 容器部署，两者都需
 
 扩展令牌须各不相同，且与 Memos PAT 分开。分别用密码管理器生成至少 32 字符的随机令牌和分页密钥；安装了 OpenSSL 时也可使用 `openssl rand -hex 32`。Scope 说明见 [API v1](API-V1.md#资源与身份)。
 
-模板中的 `operator` 包含笔记、同步和回顾的读写 Scope，`reader` 包含 `notes:read`、`reviews:read`。只读凭据不能创建笔记、每日批次或保存打开、略过记录。笔记创建请求需携带 `Idempotency-Key`；503 `WRITE_OUTCOME_UNKNOWN` 表示写入结果不明，只能使用同一键和请求体重试，完整规则见[创建笔记](API-V1.md#创建笔记)。
+模板中的 `operator` 包含笔记、同步、回顾的读写 Scope 和 `discovery:write`，`reader` 包含 `notes:read`、`reviews:read`。只读凭据不能创建笔记、每日批次或保存打开、略过记录。笔记创建请求需携带 `Idempotency-Key`；503 `WRITE_OUTCOME_UNKNOWN` 表示写入结果不明，只能使用同一键和请求体重试，完整规则见[创建笔记](API-V1.md#创建笔记)。
 
 扩展 MCP 使用相同的 Moerise 令牌，连接服务的 `/mcp`；具体工具和语义见 [API v1](API-V1.md#每日回顾与-mcp)。
 

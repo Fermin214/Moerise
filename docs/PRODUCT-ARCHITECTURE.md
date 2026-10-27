@@ -56,6 +56,7 @@ flowchart LR
 | `internal/reviews.go` | 规则选择、固定每日批次、换组与打开和略过历史 |
 | `internal/reviews_api.go`、`mcp.go` | 回顾 REST 与扩展 MCP 入口、Scope 检查和状态变化提示 |
 | `internal/search.go`、`search_index.go` | 共享混合检索、中文关键词索引、排名融合、向量缓存与结果来源复查 |
+| `internal/discovery.go`、`discovery_api.go`、`feishu_discovery.go` | 语义漫步、路径去重、显式阅读历史与跨入口适配 |
 | `internal/feishu.go`、`feishu_client.go`、`feishu_crypto.go`、`feishu_delivery.go` | 飞书回调校验、加密事件队列、应用与 Webhook 收发、回执复查及共享业务调用 |
 | `internal/notifications.go`、`notifications_api.go` | 当地日期调度、持久发送队列、发送尝试、回执复查及结果确认 |
 | `internal/sync.go` | 正常与归档扫描、增量追补、全量修复与任务调度 |
@@ -87,7 +88,7 @@ flowchart LR
 | 笔记投影、扫描暂存、片段、关键词 FTS5、向量和索引代次 | `index.sqlite3` | 从 Memos 重建 |
 | 来源、入口凭据及运行参数 | 配置文件 | 配置备份 |
 
-回顾历史、渠道事件、发送记录、入口绑定和人工调整属于产品状态；分块、向量、近邻和主题缓存属于可重建数据。重建索引不能清空产品历史或人工调整。
+回顾历史、发现阅读记录、渠道事件、发送记录、入口绑定和人工调整属于产品状态；分块、向量、近邻和主题缓存属于可重建数据。重建索引不能清空产品历史或人工调整。
 
 笔记创建幂等记录保存幂等键、规范化内容摘要、分配的 `memoId` 和处理状态，服务重启及索引重建均保留。产品状态不缓存笔记原文，正文只从 Memos 获取。
 

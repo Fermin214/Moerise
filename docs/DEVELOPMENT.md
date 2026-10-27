@@ -96,6 +96,20 @@ CI 在 Linux 上执行模块校验、格式检查、静态检查、基础测试�
 go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
 ```
 
+## 检索评测
+
+`scripts/evaluate-search.py` 通过相同 API 比较 `keyword`、`semantic`、`hybrid`。准备问题集，例如 `[{"query":"如何减少遗忘","expected":["memos/id"],"tags":[],"state":"NORMAL"}]`，然后运行：
+
+```bash
+python3 scripts/evaluate-search.py --questions .local/search-questions.json
+```
+
+脚本从配置中选择具备 `notes:read` 的凭据，读取索引状态，记录 Hit@5、MRR@5、中位延迟和 P95；无期望资源的问题仅记录结果。错误或模式降级返回非零退出码；报告文件拒绝覆盖既有文件，不保存笔记正文或凭据。合成向量仅用于协议验证，真实模型效果需使用实际问题和人工标注。
+
+`BenchmarkSemanticCache10000x1024` 测量活动向量矩阵预热后的精确召回；构建与预热不计入查询耗时，可用 `go test ./internal -run '^$' -bench BenchmarkSemanticCache10000x1024 -benchmem` 执行。部署机器的首次索引、端到端延迟及内存占用单独测量。
+
+语义漫步集成验收覆盖 REST、MCP 的 Scope 与相同路径结果、显式阅读共享，以及飞书回调、持久队列和发送。专项测试补充来源中途变化、随机读取请求数量、路径边界与阅读记录的重建及备份恢复。
+
 ## 接口与提交
 
 API 字段定义位于 `internal/models.go`，路由位于 `api.go`，内嵌契约为 `openapi.json`。接口变化同步修改契约与 [API v1](API-V1.md)；数据库结构变化新增编号迁移，禁止改写已应用的 SQL。

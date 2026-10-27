@@ -258,7 +258,7 @@ func (s *FeishuService) retry(id, status string, attempts int, code string) erro
 	return err
 }
 
-const feishuHelp = "可用操作：\n记录 正文（可含 #标签）\n查看 memos/资源标识\n搜索 查询词（可加 #标签）\n相关 memos/资源标识\n回顾\n换一组\n打开 批次标识 memos/资源标识\n略过 批次标识 memos/资源标识\n发送图片或文件会保存为附件笔记。"
+const feishuHelp = "可用操作：\n记录 正文（可含 #标签）\n查看 memos/资源标识\n搜索 查询词（可加 #标签）\n相关 memos/资源标识\n漫步/继续这个话题/换个角度 memos/资源标识 [路径]\n随机跳转 [memos/资源标识] [路径]\n回顾\n换一组\n打开 批次标识 memos/资源标识\n略过 批次标识 memos/资源标识\n发送图片或文件会保存为附件笔记。"
 
 func (s *FeishuService) execute(ctx context.Context, message feishuMessage) (string, string, error) {
 	key := "feishu:" + hashBytes([]byte(message.ID))
@@ -295,6 +295,24 @@ func (s *FeishuService) execute(ctx context.Context, message feishuMessage) (str
 		return "help", "", nil
 	}
 	switch fields[0] {
+	case "漫步", "继续这个话题", "换个角度", "随机跳转":
+		if len(fields) <= 3 {
+			request := WalkRequest{Mode: map[string]string{"漫步": "continue", "继续这个话题": "continue",
+				"换个角度": "angle", "随机跳转": "random"}[fields[0]]}
+			if len(fields) >= 2 {
+				request.Name = fields[1]
+			}
+			if len(fields) == 3 {
+				request.Path = strings.Split(fields[2], ",")
+			}
+			request, err := normalizeWalk(request)
+			if err != nil {
+				return "", "", err
+			}
+			body, _ := json.Marshal(request)
+			sealed, err := s.seal("walk:"+message.ID, body)
+			return "walk", message.ID + "." + base64.RawURLEncoding.EncodeToString(sealed), err
+		}
 	case "相关":
 		if len(fields) == 2 && memoPattern.MatchString(fields[1]) {
 			return "related", fields[1], nil
@@ -324,7 +342,8 @@ func (s *FeishuService) execute(ctx context.Context, message feishuMessage) (str
 		return "saved", note.Name, err
 	case "查看":
 		if len(fields) == 2 && memoPattern.MatchString(fields[1]) {
-			return "memo", fields[1], nil
+			_, err := s.Search.Open(ctx, fields[1])
+			return "memo", fields[1], err
 		}
 	case "回顾":
 		if len(fields) == 1 {
@@ -356,6 +375,8 @@ func excerpt(content string, limit int) string {
 
 func (s *FeishuService) render(ctx context.Context, kind, resource string) (string, error) {
 	switch kind {
+	case "walk":
+		return s.renderWalk(ctx, resource)
 	case "related":
 		result, err := s.Search.Related(ctx, RelatedRequest{Name: resource, Limit: 5})
 		if errorCode(err) == "SOURCE_NOT_FOUND" {

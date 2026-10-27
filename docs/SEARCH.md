@@ -1,6 +1,6 @@
 # Moerise 搜索
 
-REST、扩展 MCP 和飞书通过同一个 `SearchService` 搜索绑定作者的笔记并查找相关笔记。检索组合中文关键词、标签和可选语义，不依赖 LLM。语义漫步的范围见[路线图](ROADMAP.md)。
+REST、扩展 MCP 和飞书通过同一个 `SearchService` 搜索绑定作者的笔记、查找相关笔记并进行漫步。检索组合中文关键词、标签和可选语义，不依赖 LLM。
 
 ## 请求与结果
 
@@ -18,13 +18,14 @@ REST 使用 `POST /api/ext/v1/search`，要求 `notes:read` Scope，成功返回
 | 字段 | 规则 |
 | --- | --- |
 | `query` | 必填字符串；trim 后非空，同时满足最多 256 个 Unicode 码点、1024 个 UTF-8 字节 |
+| `mode` | 默认 `hybrid`；可选 `keyword`、`semantic` |
 | `tags` | 可选字符串数组，默认 `[]`；输入最多 20 项，去重后按字符串升序排序 |
 | `state` | 默认 `NORMAL`；接受 `NORMAL`、`ARCHIVED`、`ALL` |
 | `limit` | 默认 10；整数，1 至 20 |
 
 标签格式与记录一致：每项 1 至 100 个 Unicode 码点，Unicode 字母、十进制数字、下划线或连字符组成非空段，段间用 `/` 分隔；不含 `#`、空白、空段或上标等其他数字形式。标签按来源标签集合精确匹配，多个标签使用 AND，不作前缀或模糊匹配。作者、状态和标签条件对全部召回通道共同生效。`ALL` 仅包含绑定作者的正常与归档笔记。
 
-`SearchResponse` 包含 trim 后的 `query`、有序 `results` 和 `semantic`。无命中时 `results` 为 `[]`。每个 `SearchHit` 包含：
+`SearchResponse` 包含 trim 后的 `query`、实际执行的 `mode`、有序 `results` 和 `semantic`。无命中时 `results` 为 `[]`。每个 `SearchHit` 包含：
 
 | 字段 | 含义 |
 | --- | --- |
@@ -65,11 +66,14 @@ REST 使用 `POST /api/ext/v1/search`，要求 `notes:read` Scope，成功返回
 | 条件 | used | reason |
 | --- | --- | --- |
 | 使用语义通道 | `true` | `""` |
+| 显式 `keyword` 模式 | `false` | `KEYWORD_MODE` |
 | 关闭 embedding | `false` | `EMBEDDING_DISABLED` |
 | 活动索引未就绪或与配置、投影修订不一致 | `false` | `INDEX_NOT_READY` |
 | 查询模型调用失败 | `false` | 具体模型错误代码，例如 `EMBEDDING_AUTH`、`EMBEDDING_RATE_LIMITED`、`EMBEDDING_UNAVAILABLE`、`EMBEDDING_PROTOCOL` |
 
-关闭模型、索引未就绪或模型失败时，关键词与标签通道继续工作，成功响应显式说明语义状态。请求取消直接结束，不转为关键词降级成功。来源故障不属于语义降级。
+`hybrid` 为默认模式，使用全部通道，语义不可用时返回 `mode=keyword` 及明确原因；`keyword` 只使用关键词和标签，不调用模型；`semantic` 只使用语义通道，模型关闭、索引未就绪或查询失败返回 503 和对应原因，不返回关键词结果。三种模式共用来源复查、状态和标签过滤。
+
+混合模式下关闭模型、索引未就绪或模型失败时，关键词与标签通道继续工作，成功响应显式说明语义状态。请求取消直接结束，不转为关键词降级成功。来源故障不属于语义降级。
 
 ## 来源复查
 
@@ -102,6 +106,33 @@ REST 使用 `GET /api/ext/v1/notes/{memo_id}/related`，要求 `notes:read`。�
 
 相关笔记复用既有分块、关键词索引与活动向量缓存，不新增配置、迁移或产品状态。
 
+## 语义漫步
+
+`POST /api/ext/v1/discovery/walk` 使用 `notes:read`，接受以下字段；未知字段或非法参数返回 422：
+
+```json
+{"name":"memos/start","mode":"angle","path":["memos/previous","memos/start"],"include_archived":false}
+```
+
+| 字段 | 规则 |
+| --- | --- |
+| `name` | 起点资源名；`continue`、`angle` 必填，`random` 可省略 |
+| `mode` | 默认 `continue`；可选 `angle`、`random` |
+| `path` | 已访问资源名数组，输入至多 100 项；去重并排除起点及路径资源 |
+| `include_archived` | 默认 `false`；为 `true` 时允许归档候选 |
+
+`continue` 和 `angle` 复用相关笔记的文档向量聚合及正余弦候选，每次最多考察前 100 个片段。`continue` 对共同顶层标签加 0.2；`angle` 对共同顶层标签减 0.3，对其他主题加 0.15。无共同标签时按语义相关度选择。无需查询模型或 LLM；模型关闭、索引未就绪或起点无向量分别返回 503 `EMBEDDING_DISABLED`、`INDEX_NOT_READY`、`NO_SOURCE_VECTORS`。
+
+`random` 从排除路径后的投影抽样至多 100 条，无需模型，基础分数为 0.5。最近七天通过发现打开接口或回顾显式打开的资源减 0.4；展示、召回、推送或漫步本身不记录阅读。同分随机候选保持抽样顺序。
+
+成功返回 `WalkResponse`：`mode`、一个 `item: SearchHit | null`、后续 `path`、`exhausted` 和 `warnings`。调用方应原样传回路径。达到 100 项或候选范围用尽时返回 `item=null`、`exhausted=true`；候选用尽不等于全部笔记已读。漫步的 `score` 为语义或随机基础分与话题、阅读权重之和，片段 `signals` 还可包含 `random`、`recent_read`。
+
+来源复查规则与相关笔记一致：开始和结束验证身份，逐条读取候选；起点输出前再次复查，改变返回可重试的 409 `SOURCE_CHANGED`，消失或作者越界返回 404 `SOURCE_NOT_FOUND`。来源故障使整请求失败。
+
+`POST /api/ext/v1/discovery/open` 接受 `{"name":"memos/id"}`，要求 `discovery:write`。成功复查来源后返回 `Note`，更新产品数据库 `discovery_reads.opened_at`。显式打开与回顾打开共同参与最近阅读降权，点击 Memos 链接不自动登记。记录仅含绑定、资源名和时间，随产品状态备份；索引重建保留阅读记录。
+
+`GET /api/ext/v1/search/index` 使用 `notes:read`，返回与同步状态 `vector_index` 相同的 `projection_revision`、`ready`、`active`、`building`。模型关闭时 `ready=false`，不用申请同步管理 Scope 即可检查检索索引。
+
 ## MCP 与飞书
 
 扩展 MCP 工具为 `semantic_search`，仅对具备 `notes:read` 的凭据可见及可调用。输入字段与 `SearchRequest`、结构化输出与 `SearchResponse` 一致；设置 `readOnlyHint=true`、`idempotentHint=true`、`destructiveHint=false`。工具语义为只读、幂等、非破坏，来源复查修正的仅是派生索引。
@@ -113,6 +144,8 @@ REST 使用 `GET /api/ext/v1/notes/{memo_id}/related`，要求 `notes:read`。�
 `get_related_memos` 要求 `notes:read`，使用 `readOnlyHint=true`、`idempotentHint=true`、`destructiveHint=false`。输入为 `RelatedRequest`：必填 `name: "memos/id"`，可选 `tags`、`state`、`limit`，默认值和约束同相关 REST；输入错误以 `isError=true` 和错误文本返回，业务错误沿用其他工具的 JSON 错误形状。结构化输出为 `RelatedResponse`。
 
 飞书命令为 `相关 memos/资源标识`，默认 5 条、`NORMAL`。发送时重新获取相关结果，复查原笔记及候选；展示原笔记资源名和 URL、结果片段、行号、资源名与 URL，以及语义降级原因。来源故障不发送原笔记或部分结果。
+
+MCP `semantic_walk` 使用 `WalkRequest`，要求 `notes:read`，工具提示为只读、幂等、非破坏；幂等提示表示不改变产品状态，随机模式的结果可变化。`open_discovery_memo` 要求 `discovery:write`，参数为 `name`，设置 `readOnlyHint=false`。飞书支持“漫步”“继续这个话题”“换个角度”“随机跳转”和“查看”，命令与路径传递见[飞书入口](FEISHU.md#漫步与阅读)。
 
 ## 索引迁移与恢复
 

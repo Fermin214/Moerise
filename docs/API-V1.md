@@ -2,7 +2,7 @@
 
 API 前缀为 `/api/ext/v1`。路由由 [api.go](../internal/api.go) 定义，字段模型见 [models.go](../internal/models.go)，完整字段契约见 [openapi.json](../internal/openapi.json)。服务通过 `/openapi.json` 提供同一契约，通过 `/docs` 提供交互文档。本文说明访问范围、分页、任务和错误语义。
 
-本版本提供笔记读取、创建、同步管理、中文混合检索、相关笔记，以及每日回顾 REST 和扩展 MCP。语义漫步与 AI 按[路线图](ROADMAP.md)接入。
+本版本提供笔记读取、创建、同步管理、中文混合检索、相关笔记、语义漫步，以及每日回顾 REST 和扩展 MCP。AI 按[路线图](ROADMAP.md)接入。
 
 ## 资源与身份
 
@@ -14,12 +14,13 @@ API 前缀为 `/api/ext/v1`。路由由 [api.go](../internal/api.go) 定义，�
 
 | Scope | 允许操作 |
 | --- | --- |
-| `notes:read` | 读取身份、笔记列表和单条笔记，执行搜索及查找相关笔记 |
+| `notes:read` | 读取身份、笔记列表和单条笔记，执行搜索、查找相关笔记及漫步 |
 | `notes:write` | 创建私有笔记与重放创建请求 |
 | `sync:read` | 读取同步状态和任务结果 |
 | `sync:write` | 请求增量同步或全量修复 |
 | `reviews:read` | 读取已有回顾批次及通知结果 |
 | `reviews:write` | 获取或创建每日批次、换一组、记录打开与略过、处理通知结果不明状态 |
+| `discovery:write` | 显式打开笔记并更新发现阅读记录 |
 
 只读凭据不能创建笔记或触发同步，写入请求返回 403 `FORBIDDEN`。笔记创建支持基础附件，修改笔记使用 Memos；消息平台操作见[飞书入口](FEISHU.md)。
 
@@ -35,6 +36,9 @@ API 前缀为 `/api/ext/v1`。路由由 [api.go](../internal/api.go) 定义，�
 | GET | `/api/ext/v1/notes/{memo_id}` | `notes:read` | 直接复查并读取一条来源笔记 |
 | GET | `/api/ext/v1/notes/{memo_id}/related` | `notes:read` | 200，返回原笔记、相关结果与语义使用状态 |
 | POST | `/api/ext/v1/search` | `notes:read` | 200，返回混合搜索结果与语义使用状态 |
+| GET | `/api/ext/v1/search/index` | `notes:read` | 向量索引代次与就绪状态，结构同同步状态的 `vector_index` |
+| POST | `/api/ext/v1/discovery/walk` | `notes:read` | 200，返回一个漫步结果及后续路径 |
+| POST | `/api/ext/v1/discovery/open` | `discovery:write` | 200，返回复查后的 `Note` 并更新最近阅读 |
 | GET | `/api/ext/v1/sync` | `sync:read` | 水位、完整同步时间、来源状态、数量、任务统计与向量索引进度 |
 | POST | `/api/ext/v1/sync` | `sync:write` | 202，返回持久任务 |
 | GET | `/api/ext/v1/jobs/{job_id}` | `sync:read` | 持久任务与执行结果 |
@@ -95,6 +99,7 @@ Content-Type: application/json
 | 字段 | 必填 | 默认值与约束 |
 | --- | --- | --- |
 | `query` | 是 | 字符串，trim 后非空，最多 256 个 Unicode 码点且最多 1024 个 UTF-8 字节 |
+| `mode` | 否 | 默认 `hybrid`，可选 `keyword`、`semantic`；语义模式不可用时返回错误 |
 | `tags` | 否 | `[]`；输入最多 20 项，采用创建笔记的标签格式，去重排序，精确 AND 过滤 |
 | `state` | 否 | `NORMAL`；可选 `NORMAL`、`ARCHIVED`、`ALL` |
 | `limit` | 否 | 10；整数，1 至 20 |
@@ -104,6 +109,7 @@ Content-Type: application/json
 | 字段 | 类型 | 含义 |
 | --- | --- | --- |
 | `query` | string | trim 后的查询 |
+| `mode` | string | 实际模式；混合模式语义降级后为 `keyword` |
 | `results` | `SearchHit[]` | 排名后的笔记，无命中时为 `[]` |
 | `semantic` | object | `used: bool`、`reason: string`；使用语义时 reason 为空字符串，否则为 `EMBEDDING_DISABLED`、`INDEX_NOT_READY` 或具体模型错误代码 |
 
@@ -112,6 +118,14 @@ Content-Type: application/json
 关键词 BM25、标签匹配和正余弦语义分别取前 100 个片段，按 RRF（k=60）融合后再按笔记合并，笔记分数取最高片段分数，每条最多返回 3 个片段，排序稳定。模型关闭、索引未就绪或模型失败时降级为关键词与标签搜索；请求取消不降级。`score` 是融合排名分数，不是余弦值或置信度。
 
 搜索前复查 Memos 版本与身份，返回前逐条读取候选原文；修改、删除、作者越界或不再满足过滤条件的候选丢弃并修正投影，最后再次复查身份。来源故障使整个请求失败，不输出缓存正文。分词、内存缓存、迁移与降级规则见[搜索](SEARCH.md)。
+
+显式 `keyword` 模式不调用模型，语义原因为 `KEYWORD_MODE`；`semantic` 模式不使用关键词通道，模型关闭、未就绪或失败时返回 503 和明确原因。默认 `hybrid` 保留自动降级行为。
+
+## 语义漫步
+
+`POST /api/ext/v1/discovery/walk` 接受 `name`、`mode`、`path`、`include_archived`；默认 `continue`，`angle` 换角度，`random` 随机选择且允许省略起点。路径输入最多 100 项，返回一个 `item`、后续 `path`、`mode`、`exhausted`、`warnings`。漫步只读，使用 `notes:read`；模型关闭或向量未就绪时只有随机模式可用。起点变化、来源故障及最近阅读加权规则见[语义漫步](SEARCH.md#语义漫步)。
+
+`POST /api/ext/v1/discovery/open` 接受 `{"name":"memos/id"}`，要求 `discovery:write`，复查原文后更新发现阅读时间并返回 `Note`。阅读记录在 REST、MCP 与飞书间共享，随产品状态备份。未知字段与非法参数返回 422，非 POST 返回 405。
 
 ## 相关笔记
 
@@ -208,6 +222,8 @@ Content-Type: application/json
 | --- | --- | --- |
 | `semantic_search` | `notes:read` | 只读、幂等、非破坏；参数为 `SearchRequest`，结构化结果为 `SearchResponse` |
 | `get_related_memos` | `notes:read` | 只读、幂等、非破坏；参数为 `RelatedRequest`，结构化结果为 `RelatedResponse` |
+| `semantic_walk` | `notes:read` | 只读、幂等、非破坏；参数为 `WalkRequest`，结构化结果为 `WalkResponse`，随机模式可返回不同笔记 |
+| `open_discovery_memo` | `discovery:write` | 参数为 `{"name":"memos/id"}`，返回 `Note` 并更新最近阅读时间 |
 | `read_daily_review` | `reviews:read` | 读取已有当日批次 |
 | `get_review_batch` | `reviews:read` | 读取指定 `batch_id` |
 | `get_daily_review` | `reviews:write` | 首次获取时保存当日批次和选中历史 |

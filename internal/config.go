@@ -243,7 +243,7 @@ func (s *Settings) Validate() error {
 			return bad("access_tokens")
 		}
 		for _, scope := range access.Scopes {
-			if !slices.Contains([]string{"notes:read", "notes:write", "sync:read", "sync:write", "reviews:read", "reviews:write"}, scope) {
+			if !slices.Contains([]string{"notes:read", "notes:write", "sync:read", "sync:write", "reviews:read", "reviews:write", "discovery:write"}, scope) {
 				return bad("access_tokens.scopes")
 			}
 		}

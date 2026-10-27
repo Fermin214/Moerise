@@ -60,6 +60,12 @@ func normalizeSearch(request SearchRequest) (SearchRequest, error) {
 		utf8.RuneCountInString(request.Query) > 256 {
 		return request, bad
 	}
+	if request.Mode == "" {
+		request.Mode = "hybrid"
+	}
+	if !slices.Contains([]string{"keyword", "semantic", "hybrid"}, request.Mode) {
+		return request, bad
+	}
 	return normalizeSearchOptions(request)
 }
 
@@ -298,26 +304,39 @@ func (s *SearchService) verify(ctx context.Context) error {
 
 func (s *SearchService) Search(ctx context.Context, request SearchRequest) (SearchResponse, error) {
 	request, err := normalizeSearch(request)
-	response := SearchResponse{Query: request.Query, Results: []SearchHit{}}
+	response := SearchResponse{Query: request.Query, Mode: request.Mode, Results: []SearchHit{}}
 	if err != nil {
 		return response, err
 	}
 	if err := s.verify(ctx); err != nil {
 		return response, err
 	}
-	keywords, err := s.Store.lexicalCandidates(ctx, request, false)
-	if err != nil {
-		return response, err
+	var keywords, tags, semantic []searchCandidate
+	if request.Mode != "semantic" {
+		keywords, err = s.Store.lexicalCandidates(ctx, request, false)
+		if err != nil {
+			return response, err
+		}
+		tags, err = s.Store.lexicalCandidates(ctx, request, true)
+		if err != nil {
+			return response, err
+		}
 	}
-	tags, err := s.Store.lexicalCandidates(ctx, request, true)
-	if err != nil {
-		return response, err
+	if request.Mode == "keyword" {
+		response.Semantic = SearchSemantic{Reason: "KEYWORD_MODE"}
+	} else {
+		semantic, response.Semantic, err = s.semanticCandidates(ctx, request)
+		if err != nil {
+			return response, err
+		}
+		if !response.Semantic.Used {
+			if request.Mode == "semantic" {
+				reason := response.Semantic.Reason
+				return response, failure(reason, "Semantic search unavailable: "+reason, 503, reason != "EMBEDDING_DISABLED")
+			}
+			response.Mode = "keyword"
+		}
 	}
-	semantic, status, err := s.semanticCandidates(ctx, request)
-	if err != nil {
-		return response, err
-	}
-	response.Semantic = status
 	response.Results, err = s.loadSearchHits(ctx, request, fuseSearch(keywords, tags, semantic), "", false)
 	if err != nil {
 		return SearchResponse{}, err

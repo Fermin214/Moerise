@@ -66,6 +66,8 @@ func (a *API) newMCPHandler() http.Handler {
 		}
 		server := mcp.NewServer(&mcp.Implementation{Name: "moerise", Version: Version}, nil)
 		if slices.Contains(access.Scopes, "notes:read") {
+			addDomainTool(server, "semantic_walk", "沿语义继续话题、换角度或随机跳转；按路径去重，不记录阅读。", true,
+				a.Search.Walk)
 			addDomainTool(server, "get_related_memos", "从指定本人笔记寻找相关笔记，排除自身、合并重复片段并复查来源。", true,
 				func(ctx context.Context, args RelatedRequest) (RelatedResponse, error) {
 					return a.Search.Related(ctx, args)
@@ -73,6 +75,14 @@ func (a *API) newMCPHandler() http.Handler {
 			addDomainTool(server, "semantic_search", "按中文关键词、语义与标签检索本人笔记，返回命中位置并复查来源。", true,
 				func(ctx context.Context, args SearchRequest) (SearchResponse, error) {
 					return a.Search.Search(ctx, args)
+				})
+		}
+		if slices.Contains(access.Scopes, "discovery:write") {
+			addDomainTool(server, "open_discovery_memo", "打开笔记并更新最近阅读，供漫步降权；会改变产品状态。", false,
+				func(ctx context.Context, args struct {
+					Name string `json:"name"`
+				}) (Note, error) {
+					return a.Search.Open(ctx, args.Name)
 				})
 		}
 		if slices.Contains(access.Scopes, "reviews:read") {
