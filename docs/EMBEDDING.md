@@ -44,6 +44,8 @@ Moerise 通过独立的提供商接口生成文本向量。百炼适配使用 Da
 
 供应商与模型支持范围的依据见[百炼文本向量接口](https://help.aliyun.com/zh/model-studio/text-embedding-synchronous-api)。其他供应商及通用协议适配见路线图的[后续方向](ROADMAP.md#后续方向与开发输入)。
 
+批量 20、并发 2 的默认值经过真实模型与一万片段基准测量。批量 20 减少索引请求及持久化批次；同一模型客户端默认最多同时执行两个批次，超过上限的请求等待。`max_concurrency` 限制模型批次，不限制整个 REST 服务的请求数。效果、资源和部署建议见[语义检索与发现验收](STAGE3-ACCEPTANCE.md#配置结论)。
+
 ## 连接检查
 
 原生二进制：
@@ -60,7 +62,7 @@ docker compose exec -T moerise moerise check-embedding
 
 命令使用两个内置虚构文档和一个示例查询，独立于 Memos 与数据库运行。成功时输出 JSON，包含提供商、协议、模型、维度、文档与查询向量数量、总 Token 用量和耗时；退出码为 0。失败时返回非零退出码和错误，不输出 API Key、文本或向量数值。检查会产生少量模型用量。
 
-`check-config` 只校验本地配置结构，`check-embedding` 通过实际模型请求检查连接和返回格式。检索效果使用路线图 3.6 的真实问题验证。
+`check-config` 只校验本地配置结构，`check-embedding` 通过实际模型请求检查连接和返回格式。固定问题集的效果数据与真实供应商验收见[语义检索与发现验收](STAGE3-ACCEPTANCE.md)和[开发指南](DEVELOPMENT.md#检索评测)。
 
 ## 调用与返回
 

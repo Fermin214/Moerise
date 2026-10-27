@@ -106,7 +106,32 @@ python3 scripts/evaluate-search.py --questions .local/search-questions.json
 
 脚本从配置中选择具备 `notes:read` 的凭据，读取索引状态，记录 Hit@5、MRR@5、中位延迟和 P95；无期望资源的问题仅记录结果。错误或模式降级返回非零退出码；报告文件拒绝覆盖既有文件，不保存笔记正文或凭据。合成向量仅用于协议验证，真实模型效果需使用实际问题和人工标注。
 
-`BenchmarkSemanticCache10000x1024` 测量活动向量矩阵预热后的精确召回；构建与预热不计入查询耗时，可用 `go test ./internal -run '^$' -bench BenchmarkSemanticCache10000x1024 -benchmem` 执行。部署机器的首次索引、端到端延迟及内存占用单独测量。
+固定工程语料的实模型验收通过 `TestStage3LiveAcceptance` 执行。问题与期望章节保存在 `tests/testdata/stage3-questions.json`，Git 历史需包含其中指定的语料提交。它只采用配置中的 `embedding` 参数，自动创建独立 Memos、账号、产品状态、索引和服务进程，导入 67 条工程笔记；不连接配置中的 Memos。执行环境为 Linux，需可用的 Git、Docker CLI 与 Docker Engine，并能访问百炼：
+
+```bash
+MOERISE_STAGE3_CONFIG="$PWD/.local/config.json" \
+MOERISE_STAGE3_OUTPUT="$PWD/.local/stage3-live.json" \
+go test -tags=integration ./tests -run '^TestStage3LiveAcceptance$' -v -count=1 -timeout=15m
+```
+
+复现验收报告时，将配置设为 1024 维、批量 20、模型并发 2。验收记录三种检索模式的 20 题命中、相关与漫步路径、首次索引、批量 20/10 对照、查询并发 1/2/4，以及服务进程的 RSS、峰值 RSS 和 CPU 时间。请求间隔控制来源流量，间隔不计入延迟；模型实际并发不能超过配置。报告仅保存公共工程语料的章节引用、摘要与检索结果，不保存凭据、向量或笔记正文，拒绝覆盖既有报告。调用真实供应商会产生模型用量；未设置 `MOERISE_STAGE3_CONFIG` 时该验收自动跳过。
+
+一万条、1024 维向量的本地计算与索引基准使用：
+
+```bash
+python3 scripts/benchmark-search.py --output .local/search-benchmark.json
+```
+
+Windows 或 macOS 主机可使用 Linux Go 容器：
+
+```bash
+python3 scripts/benchmark-search.py --docker-image golang:1.27.3-bookworm \
+  --output .local/search-benchmark.json
+```
+
+工具默认 `GOMAXPROCS=2`，分进程测量首次索引批量 5/20、应用缓存冷启动、热候选扫描，以及 1/2/4 路语义和混合 Search 服务调用。可用 `--cpu` 调整运行线程，用可重复的 `--phase` 选择场景。数据库位于临时目录，结束后自动清理；JSON 保留工作负载、源码摘要、原始基准输出和 RSS 等指标。
+
+`BenchmarkSemanticCache10000x1024` 的构建与预热不计入查询耗时，可用 `go test ./internal -run '^$' -bench '^BenchmarkSemanticCache10000x1024$' -benchmem` 单独执行。合成向量基准使用进程内模型与来源，不含远端模型和 Memos 网络成本；应用缓存冷启动不清理操作系统文件缓存。实测数据与配置结论见[语义检索与发现验收](STAGE3-ACCEPTANCE.md)。
 
 语义漫步集成验收覆盖 REST、MCP 的 Scope 与相同路径结果、显式阅读共享，以及飞书回调、持久队列和发送。专项测试补充来源中途变化、随机读取请求数量、路径边界与阅读记录的重建及备份恢复。
 

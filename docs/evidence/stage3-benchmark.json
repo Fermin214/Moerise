@@ -1,0 +1,220 @@
+{
+  "schema_version": 1,
+  "created_at": "2026-10-27T14:46:31.04919+08:00",
+  "status": "passed",
+  "environment": {
+    "runner": "docker-linux",
+    "docker_image": "golang:1.27.3-bookworm",
+    "gomaxprocs": 2
+  },
+  "workload": {
+    "notes": 10000,
+    "chunks": 10000,
+    "dimensions": 1024,
+    "vector_type": "dense positive float32, deterministic per unique short note",
+    "embedding": "in-process synthetic; no network, quota, retry or provider semaphore",
+    "source": "in-process Memos HTTP transport fixture; no network latency",
+    "index": "projection-to-publication, empty vector cache; projection import excluded",
+    "cold": "new application matrix cache per query; OS filesystem pages may be warm",
+    "warm": "candidate scan with one shared published matrix",
+    "service": "semantic/hybrid, ten results, live source rereads, 1/2/4 workers",
+    "latency": "per-operation p50/p95; service worker queue wait excluded",
+    "memory": "RSS/HWM cover process and fixture; HWM accumulates within each phase process"
+  },
+  "benchmark_sha256": "226c5308ff061514d724db8a9c3014d58595c4f1b8ef2ca1d590103c419c651f",
+  "phases": [
+    {
+      "name": "compile",
+      "wall_seconds_including_setup": 8.64,
+      "exit_code": 0,
+      "stdout": ""
+    },
+    {
+      "name": "index-batch5",
+      "wall_seconds_including_setup": 40.722,
+      "exit_code": 0,
+      "stdout": "goos: linux\ngoarch: amd64\npkg: moerise/internal\ncpu: AMD Ryzen 7 7840H w/ Radeon 780M Graphics      \nBenchmarkVectorIndex10000x1024/batch5-2         \t       1\t26253101803 ns/op\t       380.9 chunks/s\t 123541400 index-files-bytes\t      2000 model-batches/op\t  40792064 process-RSS-bytes\t  43458560 process-peak-RSS-bytes\t365082056 B/op\t 5065916 allocs/op\nPASS\n",
+      "rows": [
+        {
+          "name": "BenchmarkVectorIndex10000x1024/batch5-2",
+          "iterations": 1,
+          "metrics": {
+            "ns/op": 26253101803.0,
+            "chunks/s": 380.9,
+            "index-files-bytes": 123541400.0,
+            "model-batches/op": 2000.0,
+            "process-RSS-bytes": 40792064.0,
+            "process-peak-RSS-bytes": 43458560.0,
+            "B/op": 365082056.0,
+            "allocs/op": 5065916.0
+          }
+        }
+      ]
+    },
+    {
+      "name": "cold",
+      "wall_seconds_including_setup": 26.836,
+      "exit_code": 0,
+      "stdout": "goos: linux\ngoarch: amd64\npkg: moerise/internal\ncpu: AMD Ryzen 7 7840H w/ Radeon 780M Graphics      \nBenchmarkSemanticCold10000x1024-2   \t      10\t 158854247 ns/op\t       155.1 p50-ms\t       197.4 p95-ms\t 112087040 process-RSS-bytes\t 125407232 process-peak-RSS-bytes\t157917498 B/op\t  210720 allocs/op\nPASS\n",
+      "rows": [
+        {
+          "name": "BenchmarkSemanticCold10000x1024-2",
+          "iterations": 10,
+          "metrics": {
+            "ns/op": 158854247.0,
+            "p50-ms": 155.1,
+            "p95-ms": 197.4,
+            "process-RSS-bytes": 112087040.0,
+            "process-peak-RSS-bytes": 125407232.0,
+            "B/op": 157917498.0,
+            "allocs/op": 210720.0
+          }
+        }
+      ]
+    },
+    {
+      "name": "warm",
+      "wall_seconds_including_setup": 23.865,
+      "exit_code": 0,
+      "stdout": "goos: linux\ngoarch: amd64\npkg: moerise/internal\ncpu: AMD Ryzen 7 7840H w/ Radeon 780M Graphics      \nBenchmarkSemanticCache10000x1024-2   \t     100\t  13633140 ns/op\t3004.44 MB/s\t  44941736 matrix-retained-heap-bytes\t  40960000 matrix-vector-bytes\t        13.52 p50-ms\t        16.47 p95-ms\t 145985536 process-RSS-bytes\t 145985536 process-peak-RSS-bytes\t 5659121 B/op\t     131 allocs/op\nPASS\n",
+      "rows": [
+        {
+          "name": "BenchmarkSemanticCache10000x1024-2",
+          "iterations": 100,
+          "metrics": {
+            "ns/op": 13633140.0,
+            "MB/s": 3004.44,
+            "matrix-retained-heap-bytes": 44941736.0,
+            "matrix-vector-bytes": 40960000.0,
+            "p50-ms": 13.52,
+            "p95-ms": 16.47,
+            "process-RSS-bytes": 145985536.0,
+            "process-peak-RSS-bytes": 145985536.0,
+            "B/op": 5659121.0,
+            "allocs/op": 131.0
+          }
+        }
+      ]
+    },
+    {
+      "name": "service",
+      "wall_seconds_including_setup": 34.725,
+      "exit_code": 0,
+      "stdout": "goos: linux\ngoarch: amd64\npkg: moerise/internal\ncpu: AMD Ryzen 7 7840H w/ Radeon 780M Graphics      \nBenchmarkSearch10000x1024/semantic/workers1-2         \t      50\t  19648099 ns/op\t        19.11 p50-ms\t        22.19 p95-ms\t 138260480 process-RSS-bytes\t 138260480 process-peak-RSS-bytes\t        50.90 queries/s\t 5925161 B/op\t    3932 allocs/op\nBenchmarkSearch10000x1024/semantic/workers2-2         \t      50\t   9911819 ns/op\t        18.39 p50-ms\t        25.82 p95-ms\t 154632192 process-RSS-bytes\t 156663808 process-peak-RSS-bytes\t       100.9 queries/s\t 5925075 B/op\t    3932 allocs/op\nBenchmarkSearch10000x1024/semantic/workers4-2         \t      50\t   9566601 ns/op\t        34.52 p50-ms\t        61.44 p95-ms\t 146817024 process-RSS-bytes\t 156663808 process-peak-RSS-bytes\t       104.5 queries/s\t 5925906 B/op\t    3945 allocs/op\nBenchmarkSearch10000x1024/hybrid/workers1-2           \t      50\t  68807935 ns/op\t        68.06 p50-ms\t        74.46 p95-ms\t 146710528 process-RSS-bytes\t 156663808 process-peak-RSS-bytes\t        14.53 queries/s\t 6047487 B/op\t    4939 allocs/op\nBenchmarkSearch10000x1024/hybrid/workers2-2           \t      50\t  60825659 ns/op\t       120.4 p50-ms\t       130.4 p95-ms\t 152969216 process-RSS-bytes\t 156663808 process-peak-RSS-bytes\t        16.44 queries/s\t 6048704 B/op\t    4967 allocs/op\nBenchmarkSearch10000x1024/hybrid/workers4-2           \t      50\t  60545716 ns/op\t       236.7 p50-ms\t       357.6 p95-ms\t 145604608 process-RSS-bytes\t 156663808 process-peak-RSS-bytes\t        16.52 queries/s\t 6049101 B/op\t    4975 allocs/op\nPASS\n",
+      "rows": [
+        {
+          "name": "BenchmarkSearch10000x1024/semantic/workers1-2",
+          "iterations": 50,
+          "metrics": {
+            "ns/op": 19648099.0,
+            "p50-ms": 19.11,
+            "p95-ms": 22.19,
+            "process-RSS-bytes": 138260480.0,
+            "process-peak-RSS-bytes": 138260480.0,
+            "queries/s": 50.9,
+            "B/op": 5925161.0,
+            "allocs/op": 3932.0
+          }
+        },
+        {
+          "name": "BenchmarkSearch10000x1024/semantic/workers2-2",
+          "iterations": 50,
+          "metrics": {
+            "ns/op": 9911819.0,
+            "p50-ms": 18.39,
+            "p95-ms": 25.82,
+            "process-RSS-bytes": 154632192.0,
+            "process-peak-RSS-bytes": 156663808.0,
+            "queries/s": 100.9,
+            "B/op": 5925075.0,
+            "allocs/op": 3932.0
+          }
+        },
+        {
+          "name": "BenchmarkSearch10000x1024/semantic/workers4-2",
+          "iterations": 50,
+          "metrics": {
+            "ns/op": 9566601.0,
+            "p50-ms": 34.52,
+            "p95-ms": 61.44,
+            "process-RSS-bytes": 146817024.0,
+            "process-peak-RSS-bytes": 156663808.0,
+            "queries/s": 104.5,
+            "B/op": 5925906.0,
+            "allocs/op": 3945.0
+          }
+        },
+        {
+          "name": "BenchmarkSearch10000x1024/hybrid/workers1-2",
+          "iterations": 50,
+          "metrics": {
+            "ns/op": 68807935.0,
+            "p50-ms": 68.06,
+            "p95-ms": 74.46,
+            "process-RSS-bytes": 146710528.0,
+            "process-peak-RSS-bytes": 156663808.0,
+            "queries/s": 14.53,
+            "B/op": 6047487.0,
+            "allocs/op": 4939.0
+          }
+        },
+        {
+          "name": "BenchmarkSearch10000x1024/hybrid/workers2-2",
+          "iterations": 50,
+          "metrics": {
+            "ns/op": 60825659.0,
+            "p50-ms": 120.4,
+            "p95-ms": 130.4,
+            "process-RSS-bytes": 152969216.0,
+            "process-peak-RSS-bytes": 156663808.0,
+            "queries/s": 16.44,
+            "B/op": 6048704.0,
+            "allocs/op": 4967.0
+          }
+        },
+        {
+          "name": "BenchmarkSearch10000x1024/hybrid/workers4-2",
+          "iterations": 50,
+          "metrics": {
+            "ns/op": 60545716.0,
+            "p50-ms": 236.7,
+            "p95-ms": 357.6,
+            "process-RSS-bytes": 145604608.0,
+            "process-peak-RSS-bytes": 156663808.0,
+            "queries/s": 16.52,
+            "B/op": 6049101.0,
+            "allocs/op": 4975.0
+          }
+        }
+      ]
+    },
+    {
+      "name": "index-batch20",
+      "capture": "separate docker go test invocation before the report runner",
+      "exit_code": 0,
+      "stdout": "goos: linux\ngoarch: amd64\npkg: moerise/internal\ncpu: AMD Ryzen 7 7840H w/ Radeon 780M Graphics\nBenchmarkVectorIndex10000x1024/batch20-2                1 8667676016 ns/op 1154 chunks/s 122574744 index-files-bytes 500.0 model-batches/op 42082304 process-RSS-bytes 45973504 process-peak-RSS-bytes 319087304 B/op 4213703 allocs/op\nPASS\nok moerise/internal 23.101s",
+      "rows": [
+        {
+          "name": "BenchmarkVectorIndex10000x1024/batch20-2",
+          "iterations": 1,
+          "metrics": {
+            "ns/op": 8667676016,
+            "chunks/s": 1154,
+            "index-files-bytes": 122574744,
+            "model-batches/op": 500,
+            "process-RSS-bytes": 42082304,
+            "process-peak-RSS-bytes": 45973504,
+            "B/op": 319087304,
+            "allocs/op": 4213703
+          }
+        }
+      ]
+    }
+  ],
+  "source_head": "86d9173f2b350dee13538156b56745f9bf2e9110",
+  "equivalent_benchmark_source": {
+    "sha256": "f0165b80be42b1e19187ff278849cb45cd7d83723e71e4c66ee4a9cafa3cadd3",
+    "added_statement": "settings.Embedding.Dimensions = 1024",
+    "inherited_dimensions": 1024
+  }
+}

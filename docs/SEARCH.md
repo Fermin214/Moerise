@@ -156,3 +156,5 @@ MCP `semantic_walk` 使用 `WalkRequest`，要求 `notes:read`，工具提示为
 ## 验证
 
 基础验证包括 `go test ./...`、`go vet ./...`、`gofmt -l main.go internal tests` 和支持竞争检测环境中的 `go test -race ./...`。真实 Memos 隔离集成通过 `go test -tags=integration ./tests -v -count=1` 执行，结合模型与飞书模拟服务覆盖中文短查询、语义改写、标签、跨入口结果、来源修改删除、故障和重启。检查项目与环境见[开发指南](DEVELOPMENT.md)。
+
+固定工程语料的 20 题实模型评测、相关和漫步路径，以及一万条、1024 维向量的冷启动、热扫描和并发资源测量见[语义检索与发现验收](STAGE3-ACCEPTANCE.md)。复现入口为 `TestStage3LiveAcceptance` 和 `scripts/benchmark-search.py`。
