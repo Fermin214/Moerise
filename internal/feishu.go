@@ -150,6 +150,9 @@ func (s *FeishuService) Receive(request *http.Request) (any, int, error) {
 }
 
 func (s *FeishuService) Run(ctx context.Context) error {
+	if err := s.recoverAI(); err != nil {
+		return err
+	}
 	config := s.Store.Settings.Channel
 	if _, err := s.Store.state.Exec(`UPDATE channel_events SET status = 'pending' WHERE status = 'processing'
 		AND app_id = ? AND sender_open_id = ?`, configured(config.AppID), configured(config.UserOpenID)); err != nil {
@@ -176,7 +179,7 @@ func (s *FeishuService) Run(ctx context.Context) error {
 		return err
 	}
 	for _, id := range adopt {
-		if _, err := s.Notifications.EnqueueReply(id); err != nil {
+		if err := s.enqueueReply(id); err != nil {
 			return err
 		}
 	}
@@ -247,8 +250,7 @@ func (s *FeishuService) processOne(ctx context.Context) (bool, error) {
 			return false, err
 		}
 	}
-	_, err = s.Notifications.EnqueueReply(messageID)
-	return true, err
+	return true, s.enqueueReply(messageID)
 }
 
 func (s *FeishuService) retry(id, status string, attempts int, code string) error {
@@ -259,7 +261,7 @@ func (s *FeishuService) retry(id, status string, attempts int, code string) erro
 	return err
 }
 
-const feishuHelp = "可用操作：\n记录 正文（可含 #标签）\n查看 memos/资源标识\n搜索 查询词（可加 #标签）\n相关 memos/资源标识\n漫步/继续这个话题/换个角度 memos/资源标识 [路径]\n随机跳转 [memos/资源标识] [路径]\n回顾\n换一组\n打开 批次标识 memos/资源标识\n略过 批次标识 memos/资源标识\n发送图片或文件会保存为附件笔记。"
+const feishuHelp = "可用操作：\n记录 正文（可含 #标签）\n查看 memos/资源标识\n搜索 查询词（可加 #标签）\n相关 memos/资源标识\n洞察 memos/资源标识[,memos/资源标识]\n问答 问题 [#标签]\n历程 主题 [#标签]\n漫步/继续这个话题/换个角度 memos/资源标识 [路径]\n随机跳转 [memos/资源标识] [路径]\n回顾\n换一组\n打开 批次标识 memos/资源标识\n略过 批次标识 memos/资源标识\n发送图片或文件会保存为附件笔记。"
 
 func (s *FeishuService) execute(ctx context.Context, message feishuMessage) (string, string, error) {
 	key := "feishu:" + hashBytes([]byte(message.ID))
@@ -296,6 +298,8 @@ func (s *FeishuService) execute(ctx context.Context, message feishuMessage) (str
 		return "help", "", nil
 	}
 	switch fields[0] {
+	case "洞察", "问答", "历程":
+		return s.executeAI(ctx, message.ID, text)
 	case "漫步", "继续这个话题", "换个角度", "随机跳转":
 		if len(fields) <= 3 {
 			request := WalkRequest{Mode: map[string]string{"漫步": "continue", "继续这个话题": "continue",

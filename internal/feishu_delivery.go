@@ -41,6 +41,9 @@ func (s *FeishuDelivery) Send(ctx context.Context, item Notification) (string, e
 			configured(settings.Channel.AppID), configured(settings.Channel.UserOpenID)).Scan(&kind, &resource); err != nil {
 			return "", err
 		}
+		if kind == "ai" {
+			return s.Events.sendAIPart(ctx, item)
+		}
 		text, err := s.Events.render(ctx, kind, resource)
 		if err != nil {
 			return "", err
@@ -77,7 +80,18 @@ func (s *FeishuDelivery) Check(ctx context.Context, item Notification, receipt s
 		return false, nil
 	}
 	if item.Kind == "reply" {
-		return item.SourceEvent != nil && message.ParentID == *item.SourceEvent, nil
+		if item.SourceEvent == nil || message.ParentID != *item.SourceEvent {
+			return false, nil
+		}
+		var ai bool
+		if err := s.Store.state.QueryRow(`SELECT EXISTS (
+			SELECT 1 FROM feishu_ai_parts WHERE notification_id = ?)`, item.ID).Scan(&ai); err != nil {
+			return false, err
+		}
+		if ai {
+			return s.Events.checkAIPart(item, message)
+		}
+		return true, nil
 	}
 	return item.BatchID != nil && strings.Contains(message.Text, "批次："+*item.BatchID) &&
 		strings.HasPrefix(message.Text, item.Date+" 每日回顾"), nil
