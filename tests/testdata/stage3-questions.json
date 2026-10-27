@@ -1,0 +1,97 @@
+{
+  "source_revision": "86d9173f2b350dee13538156b56745f9bf2e9110",
+  "sources": [
+    "docs/OPERATIONS.md",
+    "docs/API-V1.md",
+    "docs/DAILY-REVIEW.md",
+    "docs/FEISHU.md",
+    "docs/NOTIFICATIONS.md",
+    "docs/EMBEDDING.md",
+    "docs/SEARCH.md",
+    "docs/PRODUCT-ARCHITECTURE.md"
+  ],
+  "questions": [
+    {
+      "query": "重新建立搜索索引会不会把我的阅读记录弄没？",
+      "expected": ["docs/OPERATIONS.md#重建索引", "docs/SEARCH.md#索引迁移与恢复"]
+    },
+    {
+      "query": "只想备份那些不能从 Memos 找回的数据，具体要保存什么？",
+      "expected": ["docs/OPERATIONS.md#存储与备份范围", "docs/PRODUCT-ARCHITECTURE.md#数据与身份"]
+    },
+    {
+      "query": "线上状态坏了，怎样用快照替换现有数据？",
+      "expected": ["docs/OPERATIONS.md#恢复产品状态"]
+    },
+    {
+      "query": "请求超时后再次保存，怎么避免出现两条一样的笔记？",
+      "expected": ["docs/API-V1.md#幂等与来源复查", "docs/PRODUCT-ARCHITECTURE.md#笔记创建流程"]
+    },
+    {
+      "query": "机器人说发送结果不明，为什么不能直接重发？",
+      "expected": ["docs/NOTIFICATIONS.md#状态与尝试", "docs/NOTIFICATIONS.md#查询与处理", "docs/FEISHU.md#事件与恢复"]
+    },
+    {
+      "query": "我想每天早上九点收到旧笔记，需要配置哪里？",
+      "expected": ["docs/FEISHU.md#定时回顾", "docs/NOTIFICATIONS.md#日期与配置"]
+    },
+    {
+      "query": "怎么避免回顾刚写的笔记和最近已经看过的内容？",
+      "expected": ["docs/DAILY-REVIEW.md#选择规则"]
+    },
+    {
+      "query": "同一天反复点击回顾会一直换内容吗？",
+      "expected": ["docs/DAILY-REVIEW.md#批次与记录"]
+    },
+    {
+      "query": "没有向量模型能不能继续用笔记搜索？",
+      "expected": ["docs/SEARCH.md#语义缓存与降级"]
+    },
+    {
+      "query": "只要关键词不要调用模型该怎么查？",
+      "expected": ["docs/SEARCH.md#请求与结果", "docs/SEARCH.md#语义缓存与降级", "docs/API-V1.md#搜索"]
+    },
+    {
+      "query": "为什么管理员令牌也看不到别人的笔记？",
+      "expected": ["docs/API-V1.md#资源与身份", "docs/PRODUCT-ARCHITECTURE.md#数据与身份"]
+    },
+    {
+      "query": "我只记得意思，表达跟原文不一样，应该用哪种检索？",
+      "expected": ["docs/SEARCH.md#语义缓存与降级", "docs/API-V1.md#搜索", "docs/SEARCH.md#请求与结果"]
+    },
+    {
+      "query": "找一条笔记的相似内容会再调用查询模型吗？",
+      "expected": ["docs/SEARCH.md#召回与融合", "docs/SEARCH.md#相关笔记", "docs/PRODUCT-ARCHITECTURE.md#相关笔记"]
+    },
+    {
+      "query": "长笔记的命中结果怎么定位回原文具体几行？",
+      "expected": ["docs/EMBEDDING.md#分块与向量索引", "docs/SEARCH.md#请求与结果"]
+    },
+    {
+      "query": "换向量模型时，旧索引要不要先删掉？",
+      "expected": ["docs/EMBEDDING.md#分块与向量索引"]
+    },
+    {
+      "query": "模型鉴权失败能靠自动重试恢复吗？",
+      "expected": ["docs/EMBEDDING.md#故障处理"]
+    },
+    {
+      "query": "飞书里怎样沿着正在看的内容探索，同时不重复走过的笔记？",
+      "expected": ["docs/FEISHU.md#漫步与阅读", "docs/SEARCH.md#语义漫步"]
+    },
+    {
+      "query": "想跳到别的主题而不是一直读同类笔记，该用哪个操作？",
+      "expected": ["docs/SEARCH.md#语义漫步", "docs/FEISHU.md#交互", "docs/FEISHU.md#漫步与阅读"]
+    },
+    {
+      "query": "只是展示给我的内容也会算读过吗？",
+      "expected": ["docs/SEARCH.md#语义漫步", "docs/FEISHU.md#漫步与阅读", "docs/DAILY-REVIEW.md#批次与记录"]
+    },
+    {
+      "query": "搜索时原文刚被删除或改给别的作者，会不会还返回旧内容？",
+      "expected": ["docs/SEARCH.md#来源复查", "docs/SEARCH.md#来源一致性"]
+    }
+  ],
+  "minimum_hit_at_5": 0.85,
+  "minimum_mrr_at_5": 0.6
+}

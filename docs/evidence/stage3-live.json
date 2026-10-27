@@ -1,0 +1,1401 @@
+{
+  "after_search_resources": {
+    "rss_kib": 29584,
+    "peak_rss_kib": 29584,
+    "cpu_seconds": 1.03
+  },
+  "batch_10_first_index": {
+    "chunks": 69,
+    "document_calls": 7,
+    "elapsed_ms": 7661.304575,
+    "resources": {
+      "rss_kib": 27936,
+      "peak_rss_kib": 27936,
+      "cpu_seconds": 0.22
+    }
+  },
+  "batch_size": 20,
+  "cpu_count": 16,
+  "dimensions": 1024,
+  "discovery": [
+    {
+      "kind": "related",
+      "refs": [
+        "docs/OPERATIONS.md#恢复产品状态",
+        "docs/OPERATIONS.md#运行检查",
+        "docs/OPERATIONS.md#升级与回滚",
+        "docs/OPERATIONS.md#备份产品状态",
+        "docs/OPERATIONS.md#容器部署"
+      ],
+      "seed": "docs/OPERATIONS.md#重建索引"
+    },
+    {
+      "kind": "continue",
+      "refs": [
+        "docs/OPERATIONS.md#重建索引",
+        "docs/OPERATIONS.md#恢复产品状态",
+        "docs/OPERATIONS.md#备份产品状态",
+        "docs/OPERATIONS.md#备份与恢复"
+      ],
+      "seed": "docs/OPERATIONS.md#重建索引"
+    },
+    {
+      "kind": "angle",
+      "refs": [
+        "docs/OPERATIONS.md#重建索引",
+        "docs/SEARCH.md#索引迁移与恢复",
+        "docs/PRODUCT-ARCHITECTURE.md#数据与身份",
+        "docs/OPERATIONS.md#存储与备份范围"
+      ],
+      "seed": "docs/OPERATIONS.md#重建索引"
+    },
+    {
+      "kind": "random",
+      "refs": [
+        "docs/OPERATIONS.md#重建索引",
+        "docs/PRODUCT-ARCHITECTURE.md#笔记创建流程",
+        "docs/SEARCH.md#中文关键词与排名",
+        "docs/EMBEDDING.md#百炼配置"
+      ],
+      "seed": "docs/OPERATIONS.md#重建索引"
+    },
+    {
+      "kind": "related",
+      "refs": [
+        "docs/DAILY-REVIEW.md#批次与记录",
+        "docs/DAILY-REVIEW.md#恢复",
+        "docs/API-V1.md#每日回顾与 MCP",
+        "docs/SEARCH.md#相关笔记",
+        "docs/API-V1.md#相关笔记"
+      ],
+      "seed": "docs/DAILY-REVIEW.md#选择规则"
+    },
+    {
+      "kind": "continue",
+      "refs": [
+        "docs/DAILY-REVIEW.md#选择规则",
+        "docs/DAILY-REVIEW.md#批次与记录",
+        "docs/DAILY-REVIEW.md#恢复",
+        "docs/OPERATIONS.md#恢复产品状态"
+      ],
+      "seed": "docs/DAILY-REVIEW.md#选择规则"
+    },
+    {
+      "kind": "angle",
+      "refs": [
+        "docs/DAILY-REVIEW.md#选择规则",
+        "docs/API-V1.md#每日回顾与 MCP",
+        "docs/SEARCH.md#相关笔记",
+        "docs/API-V1.md#相关笔记"
+      ],
+      "seed": "docs/DAILY-REVIEW.md#选择规则"
+    },
+    {
+      "kind": "random",
+      "refs": [
+        "docs/DAILY-REVIEW.md#选择规则",
+        "docs/OPERATIONS.md#备份产品状态",
+        "docs/SEARCH.md#MCP 与飞书",
+        "docs/OPERATIONS.md#运行检查"
+      ],
+      "seed": "docs/DAILY-REVIEW.md#选择规则"
+    }
+  ],
+  "first_index": {
+    "chunks": 69,
+    "elapsed_ms": 6046.765334,
+    "model_usage": {
+      "document_calls": 4,
+      "query_calls": 0,
+      "errors": 0,
+      "max_in_flight": 1
+    },
+    "resources": {
+      "rss_kib": 27508,
+      "peak_rss_kib": 28084,
+      "cpu_seconds": 0.19
+    }
+  },
+  "go_version": "go1.27.3",
+  "goarch": "amd64",
+  "max_concurrency": 2,
+  "model": "qwen3.7-text-embedding",
+  "model_usage": {
+    "document_calls": 11,
+    "query_calls": 68,
+    "errors": 0,
+    "max_in_flight": 2
+  },
+  "notes": [
+    {
+      "ref": "docs/OPERATIONS.md#配置",
+      "sha256": "d17f6a626c30303df0016b2b0e932fd4eeea9d8c657398499fad637d91094895"
+    },
+    {
+      "ref": "docs/OPERATIONS.md#二进制运行",
+      "sha256": "607adc71d89417a987642d3d2f6e5cb5767e3ce5cbfe61aaf77c29624d0835b6"
+    },
+    {
+      "ref": "docs/OPERATIONS.md#容器部署",
+      "sha256": "fd146ffb5497c2ac1079f4afb89e659662a46c3b0dee1a314b3fcefd4c3085d9"
+    },
+    {
+      "ref": "docs/OPERATIONS.md#运行检查",
+      "sha256": "3fe4d97465f1e76b0cf37667fd874d3cceeace4c5a48ec6ab8419a8d865bcf87"
+    },
+    {
+      "ref": "docs/OPERATIONS.md#存储与备份范围",
+      "sha256": "df83892eb375b146ed7514b8dcaed28b0d30483a3713cf7a02b30c9f58effd60"
+    },
+    {
+      "ref": "docs/OPERATIONS.md#备份与恢复",
+      "sha256": "13e849d61ed6fef97199c0201deb99087e677f4bab1607001683279812cf45b6"
+    },
+    {
+      "ref": "docs/OPERATIONS.md#备份产品状态",
+      "sha256": "15054443021ee306d1886f58a863dc0600e450d9b5df603173c59e2e90c867f9"
+    },
+    {
+      "ref": "docs/OPERATIONS.md#恢复产品状态",
+      "sha256": "38d8248f5f6c2f150374238853b203b5cdcb86aae4d740a1ad603cce62748296"
+    },
+    {
+      "ref": "docs/OPERATIONS.md#重建索引",
+      "sha256": "40727360175c935757bb48cb159b1fb6e1120f8187ff5ccc14b0355a5d7f45cb"
+    },
+    {
+      "ref": "docs/OPERATIONS.md#升级与回滚",
+      "sha256": "330fdfe2f82848e3b8c4c2830c2f2bc39f27d353999d24c7e3544abe5a54c4e6"
+    },
+    {
+      "ref": "docs/API-V1.md#资源与身份",
+      "sha256": "a26910870ef51407ff8725fcac2cc2ddc1d4cc1104ad291072c3bb5c08cdf4dc"
+    },
+    {
+      "ref": "docs/API-V1.md#路由",
+      "sha256": "993351120527b02d1e852f18424b68558df492075353eac10f677ba734598ae7"
+    },
+    {
+      "ref": "docs/API-V1.md#笔记与分页",
+      "sha256": "351742ba14268dbc1d8f565caf8749f8978730dfd3b79209f798e51df0a6e943"
+    },
+    {
+      "ref": "docs/API-V1.md#搜索",
+      "sha256": "4550a0cbf2346cbc8024d0634efd433339e32bf83c597c2d10529f7f33b316d0"
+    },
+    {
+      "ref": "docs/API-V1.md#语义漫步",
+      "sha256": "a3ced68d4cbda800a2b202e8f9081755028e008dd8cbf92d340af4840f5ea326"
+    },
+    {
+      "ref": "docs/API-V1.md#相关笔记",
+      "sha256": "64e627bc8cef014437c85ebd3c7f073642cd024a0a2db78660fed73d5bb6d484"
+    },
+    {
+      "ref": "docs/API-V1.md#创建笔记",
+      "sha256": "2b929b35d520ed0ed08d4de1c61634cd474f5310cd51a03a8f9f9bfdd945afa1"
+    },
+    {
+      "ref": "docs/API-V1.md#基础附件",
+      "sha256": "b827179fa21321bcf7976765494faa977b0634454b9118f55db08f8b3139e0ff"
+    },
+    {
+      "ref": "docs/API-V1.md#幂等与来源复查",
+      "sha256": "5b244b077377b7095bce120252de807281b09a7d84b29ebd7f9527b7febfebf0"
+    },
+    {
+      "ref": "docs/API-V1.md#通知结果",
+      "sha256": "720afe52f5cbbca13109f730cfd46d363bf278dfdc0fba44d0f82559feb0d37f"
+    },
+    {
+      "ref": "docs/API-V1.md#飞书事件",
+      "sha256": "fac8be14690ab98fc434b4ec2f4125216ae95a862c01e6c960ec91e1c45604d8"
+    },
+    {
+      "ref": "docs/API-V1.md#每日回顾与 MCP",
+      "sha256": "59f8af3601cdaa739b718e07f5aabb5070a4cef90cd01f6a263d460ab1c0d19e"
+    },
+    {
+      "ref": "docs/API-V1.md#同步任务",
+      "sha256": "95904a88fd2e18ae540d5ff8dd9a54b353c041f33c89675a1c517540dbc4e1dc"
+    },
+    {
+      "ref": "docs/API-V1.md#时间与错误",
+      "sha256": "f1d88f2bee82fe98c13f9884b73507bbe44140a29c57eb31346c7a9c82930bcc"
+    },
+    {
+      "ref": "docs/DAILY-REVIEW.md#选择规则",
+      "sha256": "cfd300fd57b2af94169d3a4ff2d848bbe5d583bd413cf0d9697ea544cd29d9e0"
+    },
+    {
+      "ref": "docs/DAILY-REVIEW.md#批次与记录",
+      "sha256": "2d7f2317bae7df9203e618e4a5fa85e3875cef16acb59780207dae0557bef973"
+    },
+    {
+      "ref": "docs/DAILY-REVIEW.md#恢复",
+      "sha256": "f74a118831125cdb90ce63d8e4e8b2d230832899a580914ba246c4d282efb31f"
+    },
+    {
+      "ref": "docs/FEISHU.md#应用与配置",
+      "sha256": "98ff1dbdc814748b02eae729424d66888a258799f83987570221ea34d4581261"
+    },
+    {
+      "ref": "docs/FEISHU.md#交互",
+      "sha256": "b98ac5408234cc02c05504ba43e792b4f48916be491c069986b93e5f23f353d5"
+    },
+    {
+      "ref": "docs/FEISHU.md#搜索回复",
+      "sha256": "185abfd44e64f84ab0d5824da63c96f1eaa12298f38c023b0fdd99c74545d284"
+    },
+    {
+      "ref": "docs/FEISHU.md#相关笔记回复",
+      "sha256": "8f85848c464ed325e33d6751a2bc65f93fd425d7b5fc3c0e4ab92455e8d5db16"
+    },
+    {
+      "ref": "docs/FEISHU.md#漫步与阅读",
+      "sha256": "60eace91aae1d457b52e24781cf99ad809c6b5de50eafcf93bb95df3172bdca6"
+    },
+    {
+      "ref": "docs/FEISHU.md#定时回顾",
+      "sha256": "4b1d25982a9de34bc75c651c07fd380c818ae6efaca21dfc3f3e2405f766666d"
+    },
+    {
+      "ref": "docs/FEISHU.md#自定义机器人 Webhook",
+      "sha256": "023307c6fef3e315f0b964802432325fe31fba74975671db9c7afd38fa1fde5b"
+    },
+    {
+      "ref": "docs/FEISHU.md#事件与恢复",
+      "sha256": "6a65a8c50cc4b164f2f4e0d1cef631658af47c9e5849d6847b69523c75973361"
+    },
+    {
+      "ref": "docs/NOTIFICATIONS.md#日期与配置",
+      "sha256": "b36745fd7f513f1054b9668dcf1ce9277b736f5a6ea12959379be0f9ef8a95df"
+    },
+    {
+      "ref": "docs/NOTIFICATIONS.md#状态与尝试",
+      "sha256": "a57ab23e64ee0c11ec55827b0b3d757a5739c022cbe6b20be176d0f57581208f"
+    },
+    {
+      "ref": "docs/NOTIFICATIONS.md#查询与处理",
+      "sha256": "0764ff8ab0d3d41a7f038120184895ed4c854ea9f2f56a7334248076e8369034"
+    },
+    {
+      "ref": "docs/EMBEDDING.md#百炼配置",
+      "sha256": "e797e1f7d29bd44bddb9199cd1a3d50b0a996decd7d16634778bb40e754cc866"
+    },
+    {
+      "ref": "docs/EMBEDDING.md#连接检查",
+      "sha256": "064f81877c1f3994a08f6895679a6c02a4f211798d82f3f3d386cde33e10f658"
+    },
+    {
+      "ref": "docs/EMBEDDING.md#调用与返回",
+      "sha256": "b49ac249de0395ef5cc675b02d139a36ee84b70835ea11c79a498585f7c6a13d"
+    },
+    {
+      "ref": "docs/EMBEDDING.md#故障处理",
+      "sha256": "f42d27bacefa554a8fb9d9291ed93dab14418af870cba94290e8dd654f514167"
+    },
+    {
+      "ref": "docs/EMBEDDING.md#分块与向量索引",
+      "sha256": "cfc7ab302eb4260f235654dd3d5c16d26f12557b989645e8b84517da38725cd2"
+    },
+    {
+      "ref": "docs/SEARCH.md#请求与结果",
+      "sha256": "8e49a7f81d5cad84b80a831fa58712b1e294b820b61b43bbc445860affa02820"
+    },
+    {
+      "ref": "docs/SEARCH.md#中文关键词与排名",
+      "sha256": "23ea6ee62b459ebc16eb9cb7dce4b08b7dedc925120a52276608ae421bd95817"
+    },
+    {
+      "ref": "docs/SEARCH.md#语义缓存与降级",
+      "sha256": "0ff1e12288737c2395b9424b57db16ecbb7c74e49e73eb1e1f953f33b804a1c2"
+    },
+    {
+      "ref": "docs/SEARCH.md#来源复查",
+      "sha256": "e29c6aac4369976e2f5a0c5be8287887c64a1d7e1a24fec7245ad3181a3a6493"
+    },
+    {
+      "ref": "docs/SEARCH.md#相关笔记",
+      "sha256": "2ecb7d697983684b31becc30db308c42182688c771d64e5fc0056c33511caec6"
+    },
+    {
+      "ref": "docs/SEARCH.md#召回与融合",
+      "sha256": "1e01e7800f122f193842b6aef33b4ef6eba7dc8a01794a9116f7616cff78c73e"
+    },
+    {
+      "ref": "docs/SEARCH.md#来源一致性",
+      "sha256": "068109f6c5369dc30802190f953968a080459bdd812b4780e9b836b9b27606b5"
+    },
+    {
+      "ref": "docs/SEARCH.md#语义漫步",
+      "sha256": "7bab4807e9326c8a53189b96c4b048f5efe381f2a0e9f77f03559fae601dc619"
+    },
+    {
+      "ref": "docs/SEARCH.md#MCP 与飞书",
+      "sha256": "bf0bd7b60289967ee5ee9002a76a651d195340a95a34e4f69a3c382d03860813"
+    },
+    {
+      "ref": "docs/SEARCH.md#索引迁移与恢复",
+      "sha256": "f987b7698f57ab5ee095b89ca874a097172087cacc6ed2bb4ebf9d62c340cb48"
+    },
+    {
+      "ref": "docs/SEARCH.md#验证",
+      "sha256": "2c40bcac122778255adc0f26777c722be741a64257ee8daf2089473ee0badb07"
+    },
+    {
+      "ref": "docs/PRODUCT-ARCHITECTURE.md#产品方向",
+      "sha256": "3a487c4ceaf1abfe1ea0a743d2fe49ac0daa1dd7ecc5e7aead279e272e2465f0"
+    },
+    {
+      "ref": "docs/PRODUCT-ARCHITECTURE.md#组件职责",
+      "sha256": "58a380b452a6d83c491c1fb85e76a42676193201d4bd34593de567827ed87596"
+    },
+    {
+      "ref": "docs/PRODUCT-ARCHITECTURE.md#总体架构",
+      "sha256": "e4be09221cdbd3e14e20c6f5f5a556722f752a987b9df3a33a2ce24b553cdb4e"
+    },
+    {
+      "ref": "docs/PRODUCT-ARCHITECTURE.md#核心实现",
+      "sha256": "4a104da958bce28c68e5080f7086be455e2ab51c1fd56bf715002d2638b97cba"
+    },
+    {
+      "ref": "docs/PRODUCT-ARCHITECTURE.md#数据与身份",
+      "sha256": "7c4ca42e9af33aeb3b34caffcc59111046bd807597cdc09b14430ce3a7e5cf86"
+    },
+    {
+      "ref": "docs/PRODUCT-ARCHITECTURE.md#笔记创建流程",
+      "sha256": "ea41d92fdd4f4ad3eed10cf23a180979eabf8e76bd03aeed50663bb3a2619f55"
+    },
+    {
+      "ref": "docs/PRODUCT-ARCHITECTURE.md#同步流程",
+      "sha256": "60dc5565e9419f6a578fb1b848b6416a1e0bd97d37f236a2ca437c13debf4994"
+    },
+    {
+      "ref": "docs/PRODUCT-ARCHITECTURE.md#混合搜索",
+      "sha256": "46fd1624e03415eddf421ebd90b8e9ef2c7b9a96122603e2120527b102a83792"
+    },
+    {
+      "ref": "docs/PRODUCT-ARCHITECTURE.md#相关笔记",
+      "sha256": "566a8befa185c649c2b4603292cd67f0aa960adf62628165c56e1686e58594f2"
+    },
+    {
+      "ref": "docs/PRODUCT-ARCHITECTURE.md#共享接口与模型",
+      "sha256": "705abd0b1eb8bb9e876aa479741c24359e68090ac01788e2cc02e84d922a1959"
+    },
+    {
+      "ref": "docs/PRODUCT-ARCHITECTURE.md#飞书与通知",
+      "sha256": "8a8fa97cc7773378fa1389b731455c16fed9bc0a8b6d1448d0cde8d5875d5071"
+    },
+    {
+      "ref": "docs/PRODUCT-ARCHITECTURE.md#MCP 与客户端",
+      "sha256": "6c7f9bad400b83d236acff74916a15f87bc238bc00bc0710e05b1e299272f13e"
+    },
+    {
+      "ref": "docs/PRODUCT-ARCHITECTURE.md#长期演进",
+      "sha256": "cbeee85eab6775d54c437407daf204b3c15c66cd8b3843d0f09ac62dd8c54208"
+    }
+  ],
+  "query_concurrency": [
+    {
+      "in_flight_queries": 1,
+      "resources": {
+        "rss_kib": 31108,
+        "peak_rss_kib": 31108,
+        "cpu_seconds": 1.32
+      },
+      "summary": {
+        "queries": 4,
+        "hit_at_5": 1,
+        "mrr_at_5": 0.875,
+        "median_ms": 170.2671545,
+        "p95_ms": 177.124681,
+        "errors": 0
+      }
+    },
+    {
+      "in_flight_queries": 2,
+      "resources": {
+        "rss_kib": 31124,
+        "peak_rss_kib": 31124,
+        "cpu_seconds": 1.41
+      },
+      "summary": {
+        "queries": 8,
+        "hit_at_5": 1,
+        "mrr_at_5": 0.875,
+        "median_ms": 157.489263,
+        "p95_ms": 173.026139,
+        "errors": 0
+      }
+    },
+    {
+      "in_flight_queries": 4,
+      "resources": {
+        "rss_kib": 31048,
+        "peak_rss_kib": 31048,
+        "cpu_seconds": 1.59
+      },
+      "summary": {
+        "queries": 16,
+        "hit_at_5": 1,
+        "mrr_at_5": 0.90625,
+        "median_ms": 246.607965,
+        "p95_ms": 396.861201,
+        "errors": 0
+      }
+    }
+  ],
+  "questions": [
+    {
+      "query": "重新建立搜索索引会不会把我的阅读记录弄没？",
+      "expected": [
+        "docs/OPERATIONS.md#重建索引",
+        "docs/SEARCH.md#索引迁移与恢复"
+      ]
+    },
+    {
+      "query": "只想备份那些不能从 Memos 找回的数据，具体要保存什么？",
+      "expected": [
+        "docs/OPERATIONS.md#存储与备份范围",
+        "docs/PRODUCT-ARCHITECTURE.md#数据与身份"
+      ]
+    },
+    {
+      "query": "线上状态坏了，怎样用快照替换现有数据？",
+      "expected": [
+        "docs/OPERATIONS.md#恢复产品状态"
+      ]
+    },
+    {
+      "query": "请求超时后再次保存，怎么避免出现两条一样的笔记？",
+      "expected": [
+        "docs/API-V1.md#幂等与来源复查",
+        "docs/PRODUCT-ARCHITECTURE.md#笔记创建流程"
+      ]
+    },
+    {
+      "query": "机器人说发送结果不明，为什么不能直接重发？",
+      "expected": [
+        "docs/NOTIFICATIONS.md#状态与尝试",
+        "docs/NOTIFICATIONS.md#查询与处理",
+        "docs/FEISHU.md#事件与恢复"
+      ]
+    },
+    {
+      "query": "我想每天早上九点收到旧笔记，需要配置哪里？",
+      "expected": [
+        "docs/FEISHU.md#定时回顾",
+        "docs/NOTIFICATIONS.md#日期与配置"
+      ]
+    },
+    {
+      "query": "怎么避免回顾刚写的笔记和最近已经看过的内容？",
+      "expected": [
+        "docs/DAILY-REVIEW.md#选择规则"
+      ]
+    },
+    {
+      "query": "同一天反复点击回顾会一直换内容吗？",
+      "expected": [
+        "docs/DAILY-REVIEW.md#批次与记录"
+      ]
+    },
+    {
+      "query": "没有向量模型能不能继续用笔记搜索？",
+      "expected": [
+        "docs/SEARCH.md#语义缓存与降级"
+      ]
+    },
+    {
+      "query": "只要关键词不要调用模型该怎么查？",
+      "expected": [
+        "docs/SEARCH.md#请求与结果",
+        "docs/SEARCH.md#语义缓存与降级",
+        "docs/API-V1.md#搜索"
+      ]
+    },
+    {
+      "query": "为什么管理员令牌也看不到别人的笔记？",
+      "expected": [
+        "docs/API-V1.md#资源与身份",
+        "docs/PRODUCT-ARCHITECTURE.md#数据与身份"
+      ]
+    },
+    {
+      "query": "我只记得意思，表达跟原文不一样，应该用哪种检索？",
+      "expected": [
+        "docs/SEARCH.md#语义缓存与降级",
+        "docs/API-V1.md#搜索",
+        "docs/SEARCH.md#请求与结果"
+      ]
+    },
+    {
+      "query": "找一条笔记的相似内容会再调用查询模型吗？",
+      "expected": [
+        "docs/SEARCH.md#召回与融合",
+        "docs/SEARCH.md#相关笔记",
+        "docs/PRODUCT-ARCHITECTURE.md#相关笔记"
+      ]
+    },
+    {
+      "query": "长笔记的命中结果怎么定位回原文具体几行？",
+      "expected": [
+        "docs/EMBEDDING.md#分块与向量索引",
+        "docs/SEARCH.md#请求与结果"
+      ]
+    },
+    {
+      "query": "换向量模型时，旧索引要不要先删掉？",
+      "expected": [
+        "docs/EMBEDDING.md#分块与向量索引"
+      ]
+    },
+    {
+      "query": "模型鉴权失败能靠自动重试恢复吗？",
+      "expected": [
+        "docs/EMBEDDING.md#故障处理"
+      ]
+    },
+    {
+      "query": "飞书里怎样沿着正在看的内容探索，同时不重复走过的笔记？",
+      "expected": [
+        "docs/FEISHU.md#漫步与阅读",
+        "docs/SEARCH.md#语义漫步"
+      ]
+    },
+    {
+      "query": "想跳到别的主题而不是一直读同类笔记，该用哪个操作？",
+      "expected": [
+        "docs/SEARCH.md#语义漫步",
+        "docs/FEISHU.md#交互",
+        "docs/FEISHU.md#漫步与阅读"
+      ]
+    },
+    {
+      "query": "只是展示给我的内容也会算读过吗？",
+      "expected": [
+        "docs/SEARCH.md#语义漫步",
+        "docs/FEISHU.md#漫步与阅读",
+        "docs/DAILY-REVIEW.md#批次与记录"
+      ]
+    },
+    {
+      "query": "搜索时原文刚被删除或改给别的作者，会不会还返回旧内容？",
+      "expected": [
+        "docs/SEARCH.md#来源复查",
+        "docs/SEARCH.md#来源一致性"
+      ]
+    }
+  ],
+  "results": [
+    {
+      "question": 1,
+      "mode": "keyword",
+      "refs": [
+        "docs/SEARCH.md#语义漫步",
+        "docs/NOTIFICATIONS.md#状态与尝试",
+        "docs/FEISHU.md#漫步与阅读",
+        "docs/API-V1.md#语义漫步",
+        "docs/PRODUCT-ARCHITECTURE.md#数据与身份"
+      ],
+      "rank": 0,
+      "latency_ms": 20.400977
+    },
+    {
+      "question": 1,
+      "mode": "semantic",
+      "refs": [
+        "docs/SEARCH.md#索引迁移与恢复",
+        "docs/DAILY-REVIEW.md#恢复",
+        "docs/OPERATIONS.md#重建索引",
+        "docs/PRODUCT-ARCHITECTURE.md#数据与身份",
+        "docs/SEARCH.md#来源一致性"
+      ],
+      "rank": 1,
+      "latency_ms": 220.73621
+    },
+    {
+      "question": 1,
+      "mode": "hybrid",
+      "refs": [
+        "docs/FEISHU.md#漫步与阅读",
+        "docs/PRODUCT-ARCHITECTURE.md#数据与身份",
+        "docs/SEARCH.md#语义漫步",
+        "docs/EMBEDDING.md#分块与向量索引",
+        "docs/OPERATIONS.md#重建索引"
+      ],
+      "rank": 5,
+      "latency_ms": 159.754049
+    },
+    {
+      "question": 2,
+      "mode": "keyword",
+      "refs": [
+        "docs/OPERATIONS.md#存储与备份范围",
+        "docs/PRODUCT-ARCHITECTURE.md#共享接口与模型",
+        "docs/PRODUCT-ARCHITECTURE.md#MCP 与客户端",
+        "docs/API-V1.md#笔记与分页",
+        "docs/PRODUCT-ARCHITECTURE.md#数据与身份"
+      ],
+      "rank": 1,
+      "latency_ms": 20.467377
+    },
+    {
+      "question": 2,
+      "mode": "semantic",
+      "refs": [
+        "docs/OPERATIONS.md#存储与备份范围",
+        "docs/PRODUCT-ARCHITECTURE.md#数据与身份",
+        "docs/OPERATIONS.md#备份与恢复",
+        "docs/PRODUCT-ARCHITECTURE.md#同步流程",
+        "docs/PRODUCT-ARCHITECTURE.md#长期演进"
+      ],
+      "rank": 1,
+      "latency_ms": 165.707041
+    },
+    {
+      "question": 2,
+      "mode": "hybrid",
+      "refs": [
+        "docs/OPERATIONS.md#存储与备份范围",
+        "docs/PRODUCT-ARCHITECTURE.md#数据与身份",
+        "docs/PRODUCT-ARCHITECTURE.md#MCP 与客户端",
+        "docs/OPERATIONS.md#备份产品状态",
+        "docs/OPERATIONS.md#配置"
+      ],
+      "rank": 1,
+      "latency_ms": 223.918659
+    },
+    {
+      "question": 3,
+      "mode": "keyword",
+      "refs": [
+        "docs/EMBEDDING.md#分块与向量索引",
+        "docs/PRODUCT-ARCHITECTURE.md#长期演进",
+        "docs/OPERATIONS.md#配置",
+        "docs/OPERATIONS.md#备份产品状态",
+        "docs/OPERATIONS.md#存储与备份范围"
+      ],
+      "rank": 0,
+      "latency_ms": 25.007181
+    },
+    {
+      "question": 3,
+      "mode": "semantic",
+      "refs": [
+        "docs/OPERATIONS.md#备份产品状态",
+        "docs/OPERATIONS.md#恢复产品状态",
+        "docs/DAILY-REVIEW.md#恢复",
+        "docs/OPERATIONS.md#备份与恢复",
+        "docs/OPERATIONS.md#存储与备份范围"
+      ],
+      "rank": 2,
+      "latency_ms": 159.26586600000002
+    },
+    {
+      "question": 3,
+      "mode": "hybrid",
+      "refs": [
+        "docs/OPERATIONS.md#备份产品状态",
+        "docs/OPERATIONS.md#恢复产品状态",
+        "docs/DAILY-REVIEW.md#恢复",
+        "docs/OPERATIONS.md#存储与备份范围",
+        "docs/EMBEDDING.md#分块与向量索引"
+      ],
+      "rank": 2,
+      "latency_ms": 160.482575
+    },
+    {
+      "question": 4,
+      "mode": "keyword",
+      "refs": [
+        "docs/EMBEDDING.md#故障处理",
+        "docs/PRODUCT-ARCHITECTURE.md#笔记创建流程",
+        "docs/DAILY-REVIEW.md#批次与记录",
+        "docs/API-V1.md#搜索",
+        "docs/API-V1.md#相关笔记"
+      ],
+      "rank": 2,
+      "latency_ms": 20.098437
+    },
+    {
+      "question": 4,
+      "mode": "semantic",
+      "refs": [
+        "docs/API-V1.md#幂等与来源复查",
+        "docs/DAILY-REVIEW.md#批次与记录",
+        "docs/PRODUCT-ARCHITECTURE.md#笔记创建流程",
+        "docs/API-V1.md#创建笔记",
+        "docs/SEARCH.md#来源一致性"
+      ],
+      "rank": 1,
+      "latency_ms": 144.09570599999998
+    },
+    {
+      "question": 4,
+      "mode": "hybrid",
+      "refs": [
+        "docs/DAILY-REVIEW.md#批次与记录",
+        "docs/PRODUCT-ARCHITECTURE.md#笔记创建流程",
+        "docs/FEISHU.md#事件与恢复",
+        "docs/API-V1.md#相关笔记",
+        "docs/API-V1.md#幂等与来源复查"
+      ],
+      "rank": 2,
+      "latency_ms": 197.96254299999998
+    },
+    {
+      "question": 5,
+      "mode": "keyword",
+      "refs": [
+        "docs/NOTIFICATIONS.md#状态与尝试",
+        "docs/PRODUCT-ARCHITECTURE.md#飞书与通知",
+        "docs/FEISHU.md#定时回顾",
+        "docs/API-V1.md#通知结果",
+        "docs/FEISHU.md#自定义机器人 Webhook"
+      ],
+      "rank": 1,
+      "latency_ms": 23.481179
+    },
+    {
+      "question": 5,
+      "mode": "semantic",
+      "refs": [
+        "docs/NOTIFICATIONS.md#状态与尝试",
+        "docs/NOTIFICATIONS.md#查询与处理",
+        "docs/API-V1.md#通知结果",
+        "docs/EMBEDDING.md#故障处理",
+        "docs/FEISHU.md#定时回顾"
+      ],
+      "rank": 1,
+      "latency_ms": 250.58500700000002
+    },
+    {
+      "question": 5,
+      "mode": "hybrid",
+      "refs": [
+        "docs/NOTIFICATIONS.md#状态与尝试",
+        "docs/API-V1.md#通知结果",
+        "docs/PRODUCT-ARCHITECTURE.md#飞书与通知",
+        "docs/FEISHU.md#定时回顾",
+        "docs/NOTIFICATIONS.md#查询与处理"
+      ],
+      "rank": 1,
+      "latency_ms": 169.289559
+    },
+    {
+      "question": 6,
+      "mode": "keyword",
+      "refs": [
+        "docs/FEISHU.md#事件与恢复",
+        "docs/OPERATIONS.md#容器部署",
+        "docs/OPERATIONS.md#备份产品状态",
+        "docs/OPERATIONS.md#二进制运行",
+        "docs/OPERATIONS.md#升级与回滚"
+      ],
+      "rank": 0,
+      "latency_ms": 18.408250000000002
+    },
+    {
+      "question": 6,
+      "mode": "semantic",
+      "refs": [
+        "docs/NOTIFICATIONS.md#日期与配置",
+        "docs/FEISHU.md#定时回顾",
+        "docs/DAILY-REVIEW.md#选择规则",
+        "docs/DAILY-REVIEW.md#批次与记录",
+        "docs/API-V1.md#每日回顾与 MCP"
+      ],
+      "rank": 1,
+      "latency_ms": 161.97752200000002
+    },
+    {
+      "question": 6,
+      "mode": "hybrid",
+      "refs": [
+        "docs/PRODUCT-ARCHITECTURE.md#同步流程",
+        "docs/API-V1.md#每日回顾与 MCP",
+        "docs/API-V1.md#笔记与分页",
+        "docs/NOTIFICATIONS.md#日期与配置",
+        "docs/OPERATIONS.md#配置"
+      ],
+      "rank": 4,
+      "latency_ms": 202.970995
+    },
+    {
+      "question": 7,
+      "mode": "keyword",
+      "refs": [
+        "docs/DAILY-REVIEW.md#选择规则",
+        "docs/PRODUCT-ARCHITECTURE.md#笔记创建流程",
+        "docs/FEISHU.md#漫步与阅读",
+        "docs/API-V1.md#路由",
+        "docs/FEISHU.md#定时回顾"
+      ],
+      "rank": 1,
+      "latency_ms": 21.461983
+    },
+    {
+      "question": 7,
+      "mode": "semantic",
+      "refs": [
+        "docs/DAILY-REVIEW.md#选择规则",
+        "docs/DAILY-REVIEW.md#批次与记录",
+        "docs/PRODUCT-ARCHITECTURE.md#相关笔记",
+        "docs/FEISHU.md#定时回顾",
+        "docs/FEISHU.md#漫步与阅读"
+      ],
+      "rank": 1,
+      "latency_ms": 162.749813
+    },
+    {
+      "question": 7,
+      "mode": "hybrid",
+      "refs": [
+        "docs/DAILY-REVIEW.md#选择规则",
+        "docs/FEISHU.md#漫步与阅读",
+        "docs/FEISHU.md#定时回顾",
+        "docs/API-V1.md#每日回顾与 MCP",
+        "docs/DAILY-REVIEW.md#批次与记录"
+      ],
+      "rank": 1,
+      "latency_ms": 167.113982
+    },
+    {
+      "question": 8,
+      "mode": "keyword",
+      "refs": [
+        "docs/FEISHU.md#定时回顾",
+        "docs/DAILY-REVIEW.md#批次与记录",
+        "docs/API-V1.md#每日回顾与 MCP",
+        "docs/DAILY-REVIEW.md#恢复",
+        "docs/API-V1.md#幂等与来源复查"
+      ],
+      "rank": 2,
+      "latency_ms": 20.729378999999998
+    },
+    {
+      "question": 8,
+      "mode": "semantic",
+      "refs": [
+        "docs/DAILY-REVIEW.md#选择规则",
+        "docs/DAILY-REVIEW.md#批次与记录",
+        "docs/DAILY-REVIEW.md#恢复",
+        "docs/API-V1.md#每日回顾与 MCP",
+        "docs/FEISHU.md#漫步与阅读"
+      ],
+      "rank": 2,
+      "latency_ms": 165.06275
+    },
+    {
+      "question": 8,
+      "mode": "hybrid",
+      "refs": [
+        "docs/DAILY-REVIEW.md#批次与记录",
+        "docs/FEISHU.md#定时回顾",
+        "docs/DAILY-REVIEW.md#恢复",
+        "docs/API-V1.md#每日回顾与 MCP",
+        "docs/API-V1.md#幂等与来源复查"
+      ],
+      "rank": 1,
+      "latency_ms": 154.537602
+    },
+    {
+      "question": 9,
+      "mode": "keyword",
+      "refs": [
+        "docs/SEARCH.md#语义缓存与降级",
+        "docs/FEISHU.md#事件与恢复",
+        "docs/PRODUCT-ARCHITECTURE.md#共享接口与模型",
+        "docs/EMBEDDING.md#连接检查",
+        "docs/FEISHU.md#漫步与阅读"
+      ],
+      "rank": 1,
+      "latency_ms": 19.206801
+    },
+    {
+      "question": 9,
+      "mode": "semantic",
+      "refs": [
+        "docs/PRODUCT-ARCHITECTURE.md#混合搜索",
+        "docs/SEARCH.md#召回与融合",
+        "docs/PRODUCT-ARCHITECTURE.md#共享接口与模型",
+        "docs/API-V1.md#搜索",
+        "docs/SEARCH.md#语义漫步"
+      ],
+      "rank": 0,
+      "latency_ms": 202.869505
+    },
+    {
+      "question": 9,
+      "mode": "hybrid",
+      "refs": [
+        "docs/PRODUCT-ARCHITECTURE.md#共享接口与模型",
+        "docs/SEARCH.md#语义缓存与降级",
+        "docs/EMBEDDING.md#分块与向量索引",
+        "docs/FEISHU.md#漫步与阅读",
+        "docs/SEARCH.md#召回与融合"
+      ],
+      "rank": 2,
+      "latency_ms": 155.38713800000002
+    },
+    {
+      "question": 10,
+      "mode": "keyword",
+      "refs": [
+        "docs/SEARCH.md#语义缓存与降级",
+        "docs/API-V1.md#搜索",
+        "docs/SEARCH.md#索引迁移与恢复",
+        "docs/PRODUCT-ARCHITECTURE.md#混合搜索",
+        "docs/SEARCH.md#召回与融合"
+      ],
+      "rank": 1,
+      "latency_ms": 20.576495
+    },
+    {
+      "question": 10,
+      "mode": "semantic",
+      "refs": [
+        "docs/SEARCH.md#语义缓存与降级",
+        "docs/PRODUCT-ARCHITECTURE.md#混合搜索",
+        "docs/API-V1.md#搜索",
+        "docs/SEARCH.md#召回与融合",
+        "docs/SEARCH.md#中文关键词与排名"
+      ],
+      "rank": 1,
+      "latency_ms": 176.85348000000002
+    },
+    {
+      "question": 10,
+      "mode": "hybrid",
+      "refs": [
+        "docs/SEARCH.md#语义缓存与降级",
+        "docs/API-V1.md#搜索",
+        "docs/PRODUCT-ARCHITECTURE.md#混合搜索",
+        "docs/SEARCH.md#召回与融合",
+        "docs/SEARCH.md#中文关键词与排名"
+      ],
+      "rank": 1,
+      "latency_ms": 156.51807200000002
+    },
+    {
+      "question": 11,
+      "mode": "keyword",
+      "refs": [
+        "docs/API-V1.md#资源与身份",
+        "docs/OPERATIONS.md#存储与备份范围",
+        "docs/PRODUCT-ARCHITECTURE.md#MCP 与客户端",
+        "docs/OPERATIONS.md#配置",
+        "docs/DAILY-REVIEW.md#选择规则"
+      ],
+      "rank": 1,
+      "latency_ms": 20.236473
+    },
+    {
+      "question": 11,
+      "mode": "semantic",
+      "refs": [
+        "docs/API-V1.md#资源与身份",
+        "docs/API-V1.md#笔记与分页",
+        "docs/PRODUCT-ARCHITECTURE.md#MCP 与客户端",
+        "docs/API-V1.md#创建笔记",
+        "docs/PRODUCT-ARCHITECTURE.md#笔记创建流程"
+      ],
+      "rank": 1,
+      "latency_ms": 165.297875
+    },
+    {
+      "question": 11,
+      "mode": "hybrid",
+      "refs": [
+        "docs/API-V1.md#资源与身份",
+        "docs/PRODUCT-ARCHITECTURE.md#MCP 与客户端",
+        "docs/OPERATIONS.md#配置",
+        "docs/DAILY-REVIEW.md#选择规则",
+        "docs/OPERATIONS.md#存储与备份范围"
+      ],
+      "rank": 1,
+      "latency_ms": 166.33308599999998
+    },
+    {
+      "question": 12,
+      "mode": "keyword",
+      "refs": [
+        "docs/SEARCH.md#中文关键词与排名",
+        "docs/SEARCH.md#语义缓存与降级",
+        "docs/EMBEDDING.md#故障处理",
+        "docs/PRODUCT-ARCHITECTURE.md#组件职责",
+        "docs/SEARCH.md#来源一致性"
+      ],
+      "rank": 2,
+      "latency_ms": 18.656435
+    },
+    {
+      "question": 12,
+      "mode": "semantic",
+      "refs": [
+        "docs/API-V1.md#搜索",
+        "docs/SEARCH.md#召回与融合",
+        "docs/SEARCH.md#语义缓存与降级",
+        "docs/PRODUCT-ARCHITECTURE.md#混合搜索",
+        "docs/SEARCH.md#请求与结果"
+      ],
+      "rank": 1,
+      "latency_ms": 159.63744599999998
+    },
+    {
+      "question": 12,
+      "mode": "hybrid",
+      "refs": [
+        "docs/SEARCH.md#语义缓存与降级",
+        "docs/SEARCH.md#中文关键词与排名",
+        "docs/SEARCH.md#召回与融合",
+        "docs/SEARCH.md#来源一致性",
+        "docs/SEARCH.md#来源复查"
+      ],
+      "rank": 1,
+      "latency_ms": 168.98216399999998
+    },
+    {
+      "question": 13,
+      "mode": "keyword",
+      "refs": [
+        "docs/FEISHU.md#漫步与阅读",
+        "docs/SEARCH.md#召回与融合",
+        "docs/SEARCH.md#中文关键词与排名",
+        "docs/API-V1.md#相关笔记",
+        "docs/API-V1.md#路由"
+      ],
+      "rank": 2,
+      "latency_ms": 21.231628
+    },
+    {
+      "question": 13,
+      "mode": "semantic",
+      "refs": [
+        "docs/PRODUCT-ARCHITECTURE.md#相关笔记",
+        "docs/SEARCH.md#来源一致性",
+        "docs/FEISHU.md#相关笔记回复",
+        "docs/API-V1.md#相关笔记",
+        "docs/SEARCH.md#相关笔记"
+      ],
+      "rank": 1,
+      "latency_ms": 137.494912
+    },
+    {
+      "question": 13,
+      "mode": "hybrid",
+      "refs": [
+        "docs/SEARCH.md#召回与融合",
+        "docs/API-V1.md#相关笔记",
+        "docs/PRODUCT-ARCHITECTURE.md#相关笔记",
+        "docs/SEARCH.md#语义漫步",
+        "docs/FEISHU.md#漫步与阅读"
+      ],
+      "rank": 1,
+      "latency_ms": 253.37206099999997
+    },
+    {
+      "question": 14,
+      "mode": "keyword",
+      "refs": [
+        "docs/API-V1.md#搜索",
+        "docs/API-V1.md#路由",
+        "docs/SEARCH.md#来源一致性",
+        "docs/SEARCH.md#请求与结果",
+        "docs/API-V1.md#时间与错误"
+      ],
+      "rank": 4,
+      "latency_ms": 22.354902
+    },
+    {
+      "question": 14,
+      "mode": "semantic",
+      "refs": [
+        "docs/FEISHU.md#相关笔记回复",
+        "docs/FEISHU.md#搜索回复",
+        "docs/SEARCH.md#来源一致性",
+        "docs/FEISHU.md#交互",
+        "docs/SEARCH.md#请求与结果"
+      ],
+      "rank": 5,
+      "latency_ms": 199.60979
+    },
+    {
+      "question": 14,
+      "mode": "hybrid",
+      "refs": [
+        "docs/SEARCH.md#来源一致性",
+        "docs/FEISHU.md#搜索回复",
+        "docs/SEARCH.md#请求与结果",
+        "docs/API-V1.md#搜索",
+        "docs/API-V1.md#相关笔记"
+      ],
+      "rank": 3,
+      "latency_ms": 158.227923
+    },
+    {
+      "question": 15,
+      "mode": "keyword",
+      "refs": [
+        "docs/PRODUCT-ARCHITECTURE.md#共享接口与模型",
+        "docs/EMBEDDING.md#连接检查",
+        "docs/EMBEDDING.md#调用与返回",
+        "docs/EMBEDDING.md#故障处理",
+        "docs/SEARCH.md#语义缓存与降级"
+      ],
+      "rank": 0,
+      "latency_ms": 17.938441
+    },
+    {
+      "question": 15,
+      "mode": "semantic",
+      "refs": [
+        "docs/EMBEDDING.md#分块与向量索引",
+        "docs/PRODUCT-ARCHITECTURE.md#共享接口与模型",
+        "docs/OPERATIONS.md#重建索引",
+        "docs/SEARCH.md#索引迁移与恢复",
+        "docs/API-V1.md#路由"
+      ],
+      "rank": 1,
+      "latency_ms": 166.930723
+    },
+    {
+      "question": 15,
+      "mode": "hybrid",
+      "refs": [
+        "docs/PRODUCT-ARCHITECTURE.md#共享接口与模型",
+        "docs/EMBEDDING.md#分块与向量索引",
+        "docs/EMBEDDING.md#调用与返回",
+        "docs/SEARCH.md#语义缓存与降级",
+        "docs/EMBEDDING.md#百炼配置"
+      ],
+      "rank": 2,
+      "latency_ms": 155.08407599999998
+    },
+    {
+      "question": 16,
+      "mode": "keyword",
+      "refs": [
+        "docs/EMBEDDING.md#故障处理",
+        "docs/API-V1.md#通知结果",
+        "docs/EMBEDDING.md#调用与返回",
+        "docs/FEISHU.md#事件与恢复",
+        "docs/EMBEDDING.md#分块与向量索引"
+      ],
+      "rank": 1,
+      "latency_ms": 18.79703
+    },
+    {
+      "question": 16,
+      "mode": "semantic",
+      "refs": [
+        "docs/EMBEDDING.md#故障处理",
+        "docs/API-V1.md#时间与错误",
+        "docs/OPERATIONS.md#运行检查",
+        "docs/API-V1.md#幂等与来源复查",
+        "docs/NOTIFICATIONS.md#状态与尝试"
+      ],
+      "rank": 1,
+      "latency_ms": 142.28779
+    },
+    {
+      "question": 16,
+      "mode": "hybrid",
+      "refs": [
+        "docs/EMBEDDING.md#故障处理",
+        "docs/FEISHU.md#事件与恢复",
+        "docs/NOTIFICATIONS.md#状态与尝试",
+        "docs/EMBEDDING.md#分块与向量索引",
+        "docs/SEARCH.md#语义缓存与降级"
+      ],
+      "rank": 1,
+      "latency_ms": 167.080489
+    },
+    {
+      "question": 17,
+      "mode": "keyword",
+      "refs": [
+        "docs/PRODUCT-ARCHITECTURE.md#笔记创建流程",
+        "docs/DAILY-REVIEW.md#批次与记录",
+        "docs/DAILY-REVIEW.md#选择规则",
+        "docs/SEARCH.md#语义缓存与降级",
+        "docs/NOTIFICATIONS.md#状态与尝试"
+      ],
+      "rank": 0,
+      "latency_ms": 22.650062
+    },
+    {
+      "question": 17,
+      "mode": "semantic",
+      "refs": [
+        "docs/FEISHU.md#漫步与阅读",
+        "docs/SEARCH.md#MCP 与飞书",
+        "docs/FEISHU.md#交互",
+        "docs/SEARCH.md#语义漫步",
+        "docs/FEISHU.md#搜索回复"
+      ],
+      "rank": 1,
+      "latency_ms": 153.272777
+    },
+    {
+      "question": 17,
+      "mode": "hybrid",
+      "refs": [
+        "docs/DAILY-REVIEW.md#批次与记录",
+        "docs/DAILY-REVIEW.md#选择规则",
+        "docs/FEISHU.md#定时回顾",
+        "docs/FEISHU.md#搜索回复",
+        "docs/FEISHU.md#交互"
+      ],
+      "rank": 0,
+      "latency_ms": 241.889544
+    },
+    {
+      "question": 18,
+      "mode": "keyword",
+      "refs": [
+        "docs/FEISHU.md#自定义机器人 Webhook",
+        "docs/FEISHU.md#交互",
+        "docs/DAILY-REVIEW.md#选择规则",
+        "docs/PRODUCT-ARCHITECTURE.md#MCP 与客户端",
+        "docs/SEARCH.md#请求与结果"
+      ],
+      "rank": 2,
+      "latency_ms": 20.411063
+    },
+    {
+      "question": 18,
+      "mode": "semantic",
+      "refs": [
+        "docs/FEISHU.md#漫步与阅读",
+        "docs/FEISHU.md#交互",
+        "docs/SEARCH.md#语义漫步",
+        "docs/DAILY-REVIEW.md#选择规则",
+        "docs/SEARCH.md#MCP 与飞书"
+      ],
+      "rank": 1,
+      "latency_ms": 159.985602
+    },
+    {
+      "question": 18,
+      "mode": "hybrid",
+      "refs": [
+        "docs/FEISHU.md#交互",
+        "docs/DAILY-REVIEW.md#选择规则",
+        "docs/SEARCH.md#语义漫步",
+        "docs/SEARCH.md#请求与结果",
+        "docs/API-V1.md#搜索"
+      ],
+      "rank": 1,
+      "latency_ms": 168.312384
+    },
+    {
+      "question": 19,
+      "mode": "keyword",
+      "refs": [
+        "docs/PRODUCT-ARCHITECTURE.md#MCP 与客户端",
+        "docs/PRODUCT-ARCHITECTURE.md#共享接口与模型",
+        "docs/PRODUCT-ARCHITECTURE.md#总体架构",
+        "docs/SEARCH.md#语义缓存与降级",
+        "docs/API-V1.md#幂等与来源复查"
+      ],
+      "rank": 0,
+      "latency_ms": 23.695183
+    },
+    {
+      "question": 19,
+      "mode": "semantic",
+      "refs": [
+        "docs/DAILY-REVIEW.md#批次与记录",
+        "docs/DAILY-REVIEW.md#选择规则",
+        "docs/FEISHU.md#漫步与阅读",
+        "docs/API-V1.md#笔记与分页",
+        "docs/SEARCH.md#语义漫步"
+      ],
+      "rank": 1,
+      "latency_ms": 148.98093200000002
+    },
+    {
+      "question": 19,
+      "mode": "hybrid",
+      "refs": [
+        "docs/PRODUCT-ARCHITECTURE.md#MCP 与客户端",
+        "docs/FEISHU.md#漫步与阅读",
+        "docs/FEISHU.md#定时回顾",
+        "docs/SEARCH.md#语义漫步",
+        "docs/API-V1.md#幂等与来源复查"
+      ],
+      "rank": 2,
+      "latency_ms": 181.61517999999998
+    },
+    {
+      "question": 20,
+      "mode": "keyword",
+      "refs": [
+        "docs/API-V1.md#幂等与来源复查",
+        "docs/DAILY-REVIEW.md#批次与记录",
+        "docs/FEISHU.md#漫步与阅读",
+        "docs/PRODUCT-ARCHITECTURE.md#笔记创建流程",
+        "docs/FEISHU.md#定时回顾"
+      ],
+      "rank": 0,
+      "latency_ms": 20.326173999999998
+    },
+    {
+      "question": 20,
+      "mode": "semantic",
+      "refs": [
+        "docs/SEARCH.md#来源一致性",
+        "docs/SEARCH.md#来源复查",
+        "docs/API-V1.md#幂等与来源复查",
+        "docs/FEISHU.md#相关笔记回复",
+        "docs/SEARCH.md#语义缓存与降级"
+      ],
+      "rank": 1,
+      "latency_ms": 178.094381
+    },
+    {
+      "question": 20,
+      "mode": "hybrid",
+      "refs": [
+        "docs/API-V1.md#幂等与来源复查",
+        "docs/DAILY-REVIEW.md#批次与记录",
+        "docs/SEARCH.md#来源复查",
+        "docs/FEISHU.md#漫步与阅读",
+        "docs/SEARCH.md#来源一致性"
+      ],
+      "rank": 3,
+      "latency_ms": 174.690195
+    }
+  ],
+  "source_revision": "86d9173f2b350dee13538156b56745f9bf2e9110",
+  "started_at": "2026-10-27T06:50:16Z",
+  "summary": {
+    "hybrid": {
+      "queries": 20,
+      "hit_at_5": 0.95,
+      "mrr_at_5": 0.6808333333333334,
+      "median_ms": 167.71318300000001,
+      "p95_ms": 241.889544,
+      "errors": 0
+    },
+    "keyword": {
+      "queries": 20,
+      "hit_at_5": 0.65,
+      "mrr_at_5": 0.4875,
+      "median_ms": 20.43922,
+      "p95_ms": 23.695183,
+      "errors": 0
+    },
+    "semantic": {
+      "queries": 20,
+      "hit_at_5": 0.95,
+      "mrr_at_5": 0.86,
+      "median_ms": 163.90628149999998,
+      "p95_ms": 220.73621,
+      "errors": 0
+    }
+  }
+}

@@ -61,6 +61,7 @@ docker compose up -d --build moerise
 | [调度与发送队列](docs/NOTIFICATIONS.md) | 时区调度、发送尝试、结果不明处理与快照恢复 |
 | [向量模型](docs/EMBEDDING.md) | 百炼模型配置、连接检查、分批调用与错误处理 |
 | [搜索](docs/SEARCH.md) | 中文短查询、相关笔记、标签过滤、混合排名与来源复查 |
+| [语义检索与发现验收](docs/STAGE3-ACCEPTANCE.md) | 实模型效果、相关与漫步路径、资源测量和默认配置依据 |
 | [开发指南](docs/DEVELOPMENT.md) | 贡献代码所需的环境、工具、运行和验证方法 |
 | [产品与架构](docs/PRODUCT-ARCHITECTURE.md) | 产品方向、模块职责、数据边界和技术依据 |
 | [路线图](docs/ROADMAP.md) | 已完成阶段、后续功能和通过条件 |
