@@ -119,3 +119,9 @@ docker compose exec -T moerise moerise check-llm
 向 `AIService.Insight` 提供两至二十个不同资源名时，结果 `kind=multi`。上下文只包括选定来源，按共同点、差异和联系组织事实与解释。每条关联解释至少引用两个不同资源，不能用同一笔记的两个片段替代双方证据。相同正文保留各自来源，但不能当作独立佐证；说法相反时列明原文差异，不据此推断原因。
 
 `references` 是提供给模型的片段，`used_sources` 是输出条目实际引用的资源名，`omitted` 是未完整纳入的来源。选定来源因筛选或预算完全未进入上下文时，结果使用 `insufficient` 并列明缺少的来源；对其余来源的有据分析仍可使用。部分片段被省略时，通过 `omitted` 标明范围。
+
+## 笔记问答
+
+`AIService.Answer` 接受必填 `question` 及可选的 `tags`、`state`、`from`、`until`，不接受显式笔记列表。问题去除首尾空白后最多 256 个 Unicode 码点及 1024 个 UTF-8 字节，筛选边界与证据收集一致。共享混合检索提供复查后的片段，结果 `kind=answer`，使用与洞察相同的事实、解释、引用和完成结构。
+
+有依据的答复使用 `status=answered`。未找到来源或检索片段缺少所问细节时使用 `status=insufficient`，通过 `references`、已有事实和 `missing` 展示可用记录与缺失信息。推断单列为解释，不能用模型常识补写未记录的事实。`LLM_DISABLED`、模型故障与来源故障返回各自错误，不转换为证据不足。普通问答不创建笔记。
