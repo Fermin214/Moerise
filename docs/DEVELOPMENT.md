@@ -168,6 +168,20 @@ go test -tags=integration ./tests -run '^TestStage4LiveAcceptance$' -v -count=1 
 
 `TestAISelectedSourceAcrossRESTMCPAndFeishuAcceptance` 与 `TestAICachedDeliveryRebuildAndRestoreWithRealMemosAcceptance` 采用真实 Memos、可控模型和飞书平台模拟器，覆盖跨入口结果、Scope、重投、已完成生成缓存、索引重建、Store 重开、快照恢复、回执确认和来源修改后的发送限制。
 
+多次执行的结果使用标准库脚本汇总：
+
+```bash
+python3 scripts/summarize-ai.py \
+  --dataset tests/testdata/stage4-cases.json \
+  --reports .local/stage4-live.json \
+  --reviews .local/stage4-review.json \
+  --output .local/stage4-summary.json
+```
+
+`--reports` 和 `--reviews` 均可指定多个文件。脚本核对固定问题、筛选、期望、来源快照与片段，保留每次尝试及原报告摘要，为每例选择时间上最后一个完整有效结果；后续失败仍单独记录。旧时间线请求仅在已知数据摘要之间按 `names` 契约修正兼容。供应商缺失用量保留 `null`，中位数采用标准中位数，P95 使用 nearest-rank。
+
+审阅文件可为数组或包含 `reviews` 的对象，每条使用 `id`、`source_report`、`verdict` 和 `notes`。`source_report` 绑定报告文件名，可用 `result_sha256` 进一步绑定完整原始 `AIResult` 的规范 JSON 指纹；重新生成的结果须匹配对应审阅。汇总中的 `complete` 表示完整执行覆盖，内容评价另存 `agent_review`，人工评分栏独立保留。汇总拒绝覆盖已有文件。逐例结果与测量说明见 [AI 效果与工程验证](STAGE4-ACCEPTANCE.md)。
+
 ## 接口与提交
 
 API 字段定义位于 `internal/models.go`，路由位于 `api.go`，内嵌契约为 `openapi.json`。接口变化同步修改契约与 [API v1](API-V1.md)；数据库结构变化新增编号迁移，禁止改写已应用的 SQL。

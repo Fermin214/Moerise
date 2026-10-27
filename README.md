@@ -64,6 +64,7 @@ docker compose up -d --build moerise
 | [调度与发送队列](docs/NOTIFICATIONS.md) | 时区调度、发送尝试、结果不明处理与快照恢复 |
 | [向量模型](docs/EMBEDDING.md) | 百炼模型配置、连接检查、分批调用与错误处理 |
 | [AI](docs/AI.md) | 三种 LLM 协议、洞察、问答、时间线、引用与故障处理 |
+| [AI 效果与工程验证](docs/STAGE4-ACCEPTANCE.md) | 固定案例、内容差异、真实模型延迟与用量、跨入口及恢复流程 |
 | [搜索](docs/SEARCH.md) | 中文短查询、相关笔记、标签过滤、混合排名与来源复查 |
 | [语义检索与发现验收](docs/STAGE3-ACCEPTANCE.md) | 实模型效果、相关与漫步路径、资源测量和默认配置依据 |
 | [开发指南](docs/DEVELOPMENT.md) | 贡献代码所需的环境、工具、运行和验证方法 |
