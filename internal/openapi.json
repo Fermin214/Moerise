@@ -5,6 +5,185 @@
     "version": "0.2.0"
   },
   "paths": {
+    "/api/ext/v1/search/index": {
+      "get": {
+        "summary": "读取向量索引进度",
+        "description": "结构与同步状态的 vector_index 相同；关闭模型时 ready=false，active/building 可为空。",
+        "security": [{"HTTPBearer": []}],
+        "x-required-scopes": ["notes:read"],
+        "responses": {
+          "200": {"description": "向量索引状态", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/VectorIndexStatus"}}}},
+          "401": {"description": "UNAUTHENTICATED"},
+          "403": {"description": "FORBIDDEN"},
+          "405": {"description": "METHOD_NOT_ALLOWED"},
+          "500": {"description": "INTERNAL"}
+        }
+      }
+    },
+    "/api/ext/v1/discovery/walk": {
+      "post": {
+        "summary": "语义漫步或随机跳转",
+        "description": "继续话题、换角度或随机选择一个笔记，排除路径资源并降低最近七天显式阅读的优先级。只读，不登记阅读。语义模式复用文档向量，关闭模型或向量未就绪时返回明确错误；随机模式不依赖模型。输出前复查来源身份和原文，原笔记中途改变返回 SOURCE_CHANGED。",
+        "security": [{"HTTPBearer": []}],
+        "x-required-scopes": ["notes:read"],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/WalkRequest"}}}},
+        "responses": {
+          "200": {"description": "漫步结果；达到路径上限或候选用尽时 item=null、exhausted=true", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/WalkResponse"}}}},
+          "401": {"description": "UNAUTHENTICATED"},
+          "403": {"description": "FORBIDDEN"},
+          "404": {"description": "SOURCE_NOT_FOUND"},
+          "405": {"description": "METHOD_NOT_ALLOWED"},
+          "409": {"description": "SOURCE_CHANGED"},
+          "422": {"description": "INVALID_ARGUMENT"},
+          "503": {"description": "来源故障、模型关闭或索引未就绪"}
+        }
+      }
+    },
+    "/api/ext/v1/discovery/open": {
+      "post": {
+        "summary": "打开笔记并记录最近阅读",
+        "description": "复查来源身份和作者后，以实例、账号、资源名更新发现阅读时间；记录保存在产品数据库并纳入备份。",
+        "security": [{"HTTPBearer": []}],
+        "x-required-scopes": ["discovery:write"],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {
+          "type": "object", "additionalProperties": false, "required": ["name"],
+          "properties": {"name": {"type": "string", "pattern": "^memos/[a-zA-Z0-9_-]+$"}}
+        }}}},
+        "responses": {
+          "200": {"description": "复查后的原文", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Note"}}}},
+          "401": {"description": "UNAUTHENTICATED"},
+          "403": {"description": "FORBIDDEN"},
+          "404": {"description": "SOURCE_NOT_FOUND"},
+          "405": {"description": "METHOD_NOT_ALLOWED"},
+          "422": {"description": "INVALID_ARGUMENT"},
+          "503": {"description": "来源不可用"}
+        }
+      }
+    },
+    "/api/ext/v1/notes/{memo_id}/related": {
+      "get": {
+        "summary": "查找相关笔记",
+        "operationId": "related_api_ext_v1_notes_memo_id_related_get",
+        "description": "要求 notes:read。从全量原文提取 3.3 词项，按频次降序、词项升序取最多 64 个，编码前 UTF-8 超过 128 字节的词项排除，使用 BM25；标签通道精确匹配共同标签，按共同标签数降序、资源名及片段序号升序，不要求匹配全部原笔记标签。语义复用同一活动代次文档向量，原笔记不同正文片段各自 L2 归一化后等权平均并归一化，相同正文只计一次，候选按正余弦排序；无查询模型、LLM 或额外 embedding 调用。每通道排除自身后取前 100 片段，RRF k=60 先融合片段再合并笔记，笔记取最高片段分，每笔记最多 3 个不同正文片段，相同正文合并 signals 并保留最高分位置，稳定排序同搜索。state 与显式 tags 仅过滤候选。先验证来源版本与身份，再读原笔记并修正投影；候选逐条复查同搜索，变化则丢弃并修正投影；输出前再次读原笔记、核实来源摘要和身份。任意来源故障整请求失败，不输出原笔记或部分结果。未知参数、重复 state/limit 或非法资源名及参数返回 422；非 GET 返回 405。",
+        "security": [{"HTTPBearer": []}],
+        "x-required-scopes": ["notes:read"],
+        "parameters": [
+          {
+            "name": "memo_id",
+            "in": "path",
+            "required": true,
+            "description": "原笔记 memos/{id} 的标识部分，原笔记不受候选状态和标签过滤。",
+            "schema": {"type": "string", "minLength": 1, "pattern": "^[a-zA-Z0-9_-]+$"}
+          },
+          {
+            "name": "tags",
+            "in": "query",
+            "style": "form",
+            "explode": true,
+            "description": "重复字段传数组，例如 ?tags=园艺&tags=随记；最多 20 项，格式同搜索，去重排序后对全部候选通道精确 AND 过滤。",
+            "schema": {"$ref": "#/components/schemas/SearchRequest/properties/tags"}
+          },
+          {
+            "name": "state",
+            "in": "query",
+            "description": "候选状态，仅允许出现一次。",
+            "schema": {"$ref": "#/components/schemas/SearchRequest/properties/state"}
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "返回笔记数上限，仅允许出现一次。",
+            "schema": {"$ref": "#/components/schemas/SearchRequest/properties/limit"}
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "原笔记与相关结果；无命中 results=[]。语义关闭、索引未就绪或原笔记无可用向量时显式降级，取消不降级。",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/RelatedResponse"}}}
+          },
+          "401": {
+            "description": "UNAUTHENTICATED",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}
+          },
+          "403": {
+            "description": "FORBIDDEN：要求 notes:read",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}
+          },
+          "404": {
+            "description": "SOURCE_NOT_FOUND：原笔记消失或作者越界",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}
+          },
+          "405": {
+            "description": "METHOD_NOT_ALLOWED：仅支持 GET",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}
+          },
+          "409": {
+            "description": "SOURCE_CHANGED：处理中原笔记改变，error.retryable=true",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}
+          },
+          "422": {
+            "description": "INVALID_ARGUMENT：未知查询参数、重复 state/limit、非法资源名或参数",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}
+          },
+          "500": {
+            "description": "INTERNAL",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}
+          },
+          "503": {
+            "description": "来源版本、身份或原文复查失败，整请求失败，不返回原笔记或部分结果",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}
+          }
+        }
+      }
+    },
+    "/api/ext/v1/search": {
+      "post": {
+        "summary": "中文混合搜索",
+        "operationId": "search_api_ext_v1_search_post",
+        "description": "要求 notes:read，REST、MCP 与飞书复用 SearchService，无需 LLM。关键词 BM25、标签匹配、正余弦语义各取前 100 片段，以 RRF k=60 融合后按笔记合并，笔记分数取最高片段分数，每条最多 3 片段，稳定排序。所有通道共用作者、状态及精确 AND 标签过滤。搜索前复查 Memos 版本与身份，返回前逐条读原文；修改、删除、作者越界或过滤变化的候选丢弃并修正投影，最后再查身份。来源故障使整请求失败，不返回缓存正文。非 POST 方法返回 405。",
+        "security": [{"HTTPBearer": []}],
+        "x-required-scopes": ["notes:read"],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {"$ref": "#/components/schemas/SearchRequest"},
+              "example": {"query": "整理灵感", "tags": ["工作/灵感"], "state": "NORMAL", "limit": 10}
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "搜索结果；hybrid 模式在模型关闭、索引未就绪或模型失败时返回关键词与标签结果及显式语义状态；keyword 不调用模型，semantic 不降级，取消不降级。",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/SearchResponse"}}}
+          },
+          "401": {
+            "description": "UNAUTHENTICATED",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}
+          },
+          "403": {
+            "description": "FORBIDDEN：要求 notes:read",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}
+          },
+          "405": {
+            "description": "METHOD_NOT_ALLOWED：仅支持 POST",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}
+          },
+          "422": {
+            "description": "INVALID_ARGUMENT：未知字段或参数不合法",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}
+          },
+          "500": {
+            "description": "INTERNAL",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}
+          },
+          "503": {
+            "description": "来源版本、身份或原文复查失败，或 semantic 模式下模型关闭、索引未就绪或查询模型失败；错误代码说明具体原因",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}
+          }
+        }
+      }
+    },
     "/health/live": {
       "get": {
         "summary": "Live",
@@ -1989,6 +2168,156 @@
   },
   "components": {
     "schemas": {
+      "RelatedRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name"],
+        "description": "MCP get_related_memos 输入；要求 notes:read，readOnlyHint=true、idempotentHint=true、destructiveHint=false。未知字段或非法参数以 isError=true 和错误文本返回；业务错误文本为包含 code、message、retryable 的 JSON。",
+        "properties": {
+          "name": {
+            "type": "string",
+            "pattern": "^memos/[a-zA-Z0-9_-]+$",
+            "description": "必填原笔记资源名，例如 memos/example。"
+          },
+          "tags": {"$ref": "#/components/schemas/SearchRequest/properties/tags"},
+          "state": {"$ref": "#/components/schemas/SearchRequest/properties/state"},
+          "limit": {"$ref": "#/components/schemas/SearchRequest/properties/limit"}
+        }
+      },
+      "RelatedResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["source", "results", "semantic"],
+        "properties": {
+          "source": {
+            "$ref": "#/components/schemas/Note",
+            "description": "来源复查后的原笔记，输出前再次验证来源摘要与身份。"
+          },
+          "results": {
+            "type": "array",
+            "maxItems": 20,
+            "items": {"$ref": "#/components/schemas/SearchHit"},
+            "description": "排除原笔记，稳定排序且不超过请求 limit；无结果为 []。每笔记最多 3 个不同正文片段，相同正文合并 signals 并保留最高分位置；字段及位置契约同搜索。"
+          },
+          "semantic": {
+            "$ref": "#/components/schemas/SearchSemantic",
+            "description": "不调用查询模型。语义关闭为 EMBEDDING_DISABLED，索引空间或修订失配、未就绪为 INDEX_NOT_READY，原笔记无可用片段向量为 NO_SOURCE_VECTORS。",
+            "oneOf": [
+              {"properties": {"used": {"const": true}, "reason": {"const": ""}}},
+              {"properties": {"used": {"const": false}, "reason": {"enum": ["EMBEDDING_DISABLED", "INDEX_NOT_READY", "NO_SOURCE_VECTORS"]}}}
+            ]
+          }
+        }
+      },
+      "WalkRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "name": {"type": "string", "pattern": "^memos/[a-zA-Z0-9_-]+$", "description": "起点资源；continue/angle 必填，random 可省略。"},
+          "mode": {"type": "string", "enum": ["continue", "angle", "random"], "default": "continue"},
+          "path": {"type": "array", "maxItems": 100, "default": [], "items": {"type": "string", "pattern": "^memos/[a-zA-Z0-9_-]+$"}},
+          "include_archived": {"type": "boolean", "default": false}
+        }
+      },
+      "WalkResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["mode", "item", "path", "exhausted", "warnings"],
+        "properties": {
+          "mode": {"type": "string", "enum": ["continue", "angle", "random"]},
+          "item": {"anyOf": [{"$ref": "#/components/schemas/SearchHit"}, {"type": "null"}]},
+          "path": {"type": "array", "maxItems": 100, "items": {"type": "string"}},
+          "exhausted": {"type": "boolean"},
+          "warnings": {"type": "array", "items": {"type": "string"}}
+        }
+      },
+      "SearchRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["query"],
+        "description": "接受 query、mode、tags、state、limit。query 长度由服务端在 trim 后校验，未知字段返回 422。",
+        "properties": {
+          "mode": {"type": "string", "enum": ["hybrid", "keyword", "semantic"], "default": "hybrid", "description": "keyword 不调用模型；semantic 要求模型和完整索引，失败返回错误；hybrid 可显式降级。"},
+          "query": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "\\S",
+            "description": "必填；trim 后非空，最多 256 个 Unicode 码点且最多 1024 个 UTF-8 字节。长度限制适用于 trim 后的值。",
+            "x-max-unicode-codepoints-after-trim": 256,
+            "x-max-utf8-bytes-after-trim": 1024
+          },
+          "tags": {
+            "type": "array",
+            "maxItems": 20,
+            "default": [],
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 100,
+              "pattern": "^[\\p{L}\\p{Nd}_-]+(?:/[\\p{L}\\p{Nd}_-]+)*$(?![\\s\\S])",
+              "description": "采用记录标签格式：每项 1 至 100 个 Unicode 码点，Unicode 字母、十进制数字、下划线或连字符组成非空段，以 / 分隔，不含 # 或空白。"
+            },
+            "description": "输入最多 20 项，服务去重并按字符串升序排序，对来源标签精确 AND 过滤；全部召回通道共用。"
+          },
+          "state": {"type": "string", "enum": ["NORMAL", "ARCHIVED", "ALL"], "default": "NORMAL"},
+          "limit": {"type": "integer", "minimum": 1, "maximum": 20, "default": 10}
+        }
+      },
+      "SearchResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["query", "mode", "results", "semantic"],
+        "properties": {
+          "mode": {"type": "string", "enum": ["hybrid", "keyword", "semantic"], "description": "实际执行的模式；hybrid 降级后为 keyword。"},
+          "query": {"type": "string", "minLength": 1, "maxLength": 256, "description": "trim 后的查询，UTF-8 最多 1024 字节。"},
+          "results": {
+            "type": "array",
+            "maxItems": 20,
+            "items": {"$ref": "#/components/schemas/SearchHit"},
+            "description": "稳定排序且不超过请求 limit；无命中为 []，来源变化后可少于 limit。"
+          },
+          "semantic": {"$ref": "#/components/schemas/SearchSemantic"}
+        }
+      },
+      "SearchHit": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["note", "score", "matches"],
+        "properties": {
+          "note": {"$ref": "#/components/schemas/Note"},
+          "score": {"type": "number", "description": "搜索及相关笔记使用最高片段 RRF 分数；漫步使用余弦与话题、最近阅读加权分数。不是置信度。"},
+          "matches": {"type": "array", "maxItems": 3, "items": {"$ref": "#/components/schemas/SearchMatch"}}
+        }
+      },
+      "SearchMatch": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["ordinal", "byte_start", "byte_end", "line_start", "line_end", "content", "signals"],
+        "description": "与 3.2 paragraph-v1-2048 分块一致；位置针对原始正文 UTF-8 字节，区间为 [byte_start, byte_end)，行号从 1 开始，末尾换行属于前一行。",
+        "properties": {
+            "ordinal": {"type": "integer", "minimum": 0, "description": "从 0 开始的笔记片段序号。"},
+          "byte_start": {"type": "integer", "minimum": 0},
+          "byte_end": {"type": "integer", "minimum": 0},
+          "line_start": {"type": "integer", "minimum": 1},
+          "line_end": {"type": "integer", "minimum": 1},
+          "content": {"type": "string", "description": "对应原始正文字节区间的片段。"},
+          "signals": {"type": "array", "items": {"type": "string", "enum": ["keyword", "semantic", "tag", "random", "recent_read"]}}
+        }
+      },
+      "SearchSemantic": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["used", "reason"],
+        "properties": {
+          "used": {"type": "boolean"},
+          "reason": {"type": "string", "description": "used=true 时为空字符串；否则为 EMBEDDING_DISABLED、INDEX_NOT_READY，关键词模式使用 KEYWORD_MODE，搜索还可返回具体模型错误代码，相关笔记还可返回 NO_SOURCE_VECTORS。"}
+        },
+        "oneOf": [
+          {"properties": {"used": {"const": true}, "reason": {"const": ""}}},
+          {"properties": {"used": {"const": false}, "reason": {"minLength": 1}}}
+        ],
+        "description": "每个服务复用一个活动代次的内存 float32 缓存，仅在配置空间和投影修订一致时使用。关闭模型、索引未就绪时降级；搜索还可因查询模型失败降级，相关笔记还可因原笔记无可用向量降级；取消不降级。"
+      },
       "ErrorDetail": {
         "properties": {
           "code": {

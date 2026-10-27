@@ -2,7 +2,7 @@
 
 API 前缀为 `/api/ext/v1`。路由由 [api.go](../internal/api.go) 定义，字段模型见 [models.go](../internal/models.go)，完整字段契约见 [openapi.json](../internal/openapi.json)。服务通过 `/openapi.json` 提供同一契约，通过 `/docs` 提供交互文档。本文说明访问范围、分页、任务和错误语义。
 
-本版本提供笔记读取、创建、同步管理，以及每日回顾 REST 和扩展 MCP。检索与 AI 按[路线图](ROADMAP.md)接入。
+本版本提供笔记读取、创建、同步管理、中文混合检索、相关笔记、语义漫步，以及每日回顾 REST 和扩展 MCP。AI 按[路线图](ROADMAP.md)接入。
 
 ## 资源与身份
 
@@ -14,12 +14,13 @@ API 前缀为 `/api/ext/v1`。路由由 [api.go](../internal/api.go) 定义，�
 
 | Scope | 允许操作 |
 | --- | --- |
-| `notes:read` | 读取身份、笔记列表和单条笔记 |
+| `notes:read` | 读取身份、笔记列表和单条笔记，执行搜索、查找相关笔记及漫步 |
 | `notes:write` | 创建私有笔记与重放创建请求 |
 | `sync:read` | 读取同步状态和任务结果 |
 | `sync:write` | 请求增量同步或全量修复 |
 | `reviews:read` | 读取已有回顾批次及通知结果 |
 | `reviews:write` | 获取或创建每日批次、换一组、记录打开与略过、处理通知结果不明状态 |
+| `discovery:write` | 显式打开笔记并更新发现阅读记录 |
 
 只读凭据不能创建笔记或触发同步，写入请求返回 403 `FORBIDDEN`。笔记创建支持基础附件，修改笔记使用 Memos；消息平台操作见[飞书入口](FEISHU.md)。
 
@@ -33,6 +34,11 @@ API 前缀为 `/api/ext/v1`。路由由 [api.go](../internal/api.go) 定义，�
 | GET | `/api/ext/v1/notes` | `notes:read` | 已索引笔记的分页结果，逐条复查来源 |
 | POST | `/api/ext/v1/notes` | `notes:write` | 首次成功 201；幂等重放成功 200，直接返回 `Note` |
 | GET | `/api/ext/v1/notes/{memo_id}` | `notes:read` | 直接复查并读取一条来源笔记 |
+| GET | `/api/ext/v1/notes/{memo_id}/related` | `notes:read` | 200，返回原笔记、相关结果与语义使用状态 |
+| POST | `/api/ext/v1/search` | `notes:read` | 200，返回混合搜索结果与语义使用状态 |
+| GET | `/api/ext/v1/search/index` | `notes:read` | 向量索引代次与就绪状态，结构同同步状态的 `vector_index` |
+| POST | `/api/ext/v1/discovery/walk` | `notes:read` | 200，返回一个漫步结果及后续路径 |
+| POST | `/api/ext/v1/discovery/open` | `discovery:write` | 200，返回复查后的 `Note` 并更新最近阅读 |
 | GET | `/api/ext/v1/sync` | `sync:read` | 水位、完整同步时间、来源状态、数量、任务统计与向量索引进度 |
 | POST | `/api/ext/v1/sync` | `sync:write` | 202，返回持久任务 |
 | GET | `/api/ext/v1/jobs/{job_id}` | `sync:read` | 持久任务与执行结果 |
@@ -77,6 +83,70 @@ Authorization: Bearer <reader-token>
 附件数组沿用 Memos 返回的附件元数据。`source_hash` 包含正文、状态、标签、附件和关系等来源信息；正文摘要单独保存在索引中，供后续向量任务判断正文变化。
 
 来源身份或版本无法验证、Memos 连接失败时，读取接口返回 503。接口不使用旧缓存正文替代来源复查。
+
+## 搜索
+
+```http
+POST /api/ext/v1/search
+Authorization: Bearer <reader-token>
+Content-Type: application/json
+
+{"query":"如何整理灵感","tags":["工作/灵感"],"state":"NORMAL","limit":10}
+```
+
+`SearchRequest` 仅接受以下字段；未知字段及参数不合法返回 422 `INVALID_ARGUMENT`，非 POST 方法返回 405 `METHOD_NOT_ALLOWED`。
+
+| 字段 | 必填 | 默认值与约束 |
+| --- | --- | --- |
+| `query` | 是 | 字符串，trim 后非空，最多 256 个 Unicode 码点且最多 1024 个 UTF-8 字节 |
+| `mode` | 否 | 默认 `hybrid`，可选 `keyword`、`semantic`；语义模式不可用时返回错误 |
+| `tags` | 否 | `[]`；输入最多 20 项，采用创建笔记的标签格式，去重排序，精确 AND 过滤 |
+| `state` | 否 | `NORMAL`；可选 `NORMAL`、`ARCHIVED`、`ALL` |
+| `limit` | 否 | 10；整数，1 至 20 |
+
+所有召回通道共用作者、状态和标签过滤。响应为 `SearchResponse`：
+
+| 字段 | 类型 | 含义 |
+| --- | --- | --- |
+| `query` | string | trim 后的查询 |
+| `mode` | string | 实际模式；混合模式语义降级后为 `keyword` |
+| `results` | `SearchHit[]` | 排名后的笔记，无命中时为 `[]` |
+| `semantic` | object | `used: bool`、`reason: string`；使用语义时 reason 为空字符串，否则为 `EMBEDDING_DISABLED`、`INDEX_NOT_READY` 或具体模型错误代码 |
+
+每个 `SearchHit` 包含 `note: Note`、`score: number` 和最多 3 项的 `matches: SearchMatch[]`。每个片段含 `ordinal: int`、`byte_start: int`、`byte_end: int`、`line_start: int`、`line_end: int`、`content: string` 和 `signals: string[]`；signals 仅包含 `keyword`、`semantic`、`tag`。字节位置对应原始正文 UTF-8 编码，使用从 0 开始的半开区间；行号从 1 开始，分块与 3.2 一致。`note` 使用来源复查后的正文和原文 URL。
+
+关键词 BM25、标签匹配和正余弦语义分别取前 100 个片段，按 RRF（k=60）融合后再按笔记合并，笔记分数取最高片段分数，每条最多返回 3 个片段，排序稳定。模型关闭、索引未就绪或模型失败时降级为关键词与标签搜索；请求取消不降级。`score` 是融合排名分数，不是余弦值或置信度。
+
+搜索前复查 Memos 版本与身份，返回前逐条读取候选原文；修改、删除、作者越界或不再满足过滤条件的候选丢弃并修正投影，最后再次复查身份。来源故障使整个请求失败，不输出缓存正文。分词、内存缓存、迁移与降级规则见[搜索](SEARCH.md)。
+
+显式 `keyword` 模式不调用模型，语义原因为 `KEYWORD_MODE`；`semantic` 模式不使用关键词通道，模型关闭、未就绪或失败时返回 503 和明确原因。默认 `hybrid` 保留自动降级行为。
+
+## 语义漫步
+
+`POST /api/ext/v1/discovery/walk` 接受 `name`、`mode`、`path`、`include_archived`；默认 `continue`，`angle` 换角度，`random` 随机选择且允许省略起点。路径输入最多 100 项，返回一个 `item`、后续 `path`、`mode`、`exhausted`、`warnings`。漫步只读，使用 `notes:read`；模型关闭或向量未就绪时只有随机模式可用。起点变化、来源故障及最近阅读加权规则见[语义漫步](SEARCH.md#语义漫步)。
+
+`POST /api/ext/v1/discovery/open` 接受 `{"name":"memos/id"}`，要求 `discovery:write`，复查原文后更新发现阅读时间并返回 `Note`。阅读记录在 REST、MCP 与飞书间共享，随产品状态备份。未知字段与非法参数返回 422，非 POST 返回 405。
+
+## 相关笔记
+
+```http
+GET /api/ext/v1/notes/example/related?tags=园艺&tags=随记&state=NORMAL&limit=10
+Authorization: Bearer <reader-token>
+```
+
+`memo_id` 为原笔记 `memos/{id}` 的标识部分，资源名须匹配 `^memos/[a-zA-Z0-9_-]+$`。仅接受以下查询参数：
+
+| 参数 | 默认值与约束 |
+| --- | --- |
+| `tags` | `[]`；重复字段传数组，例如 `?tags=园艺&tags=随记`；输入最多 20 项，格式、去重排序和精确 AND 过滤同搜索 |
+| `state` | `NORMAL`；可选 `NORMAL`、`ARCHIVED`、`ALL`，仅允许出现一次 |
+| `limit` | 10；整数，1 至 20，仅允许出现一次 |
+
+未知参数、重复 `state`/`limit`、非法资源名或参数返回 422 `INVALID_ARGUMENT`；非 GET 方法返回 405 `METHOD_NOT_ALLOWED`。状态和显式标签只过滤候选，不过滤原笔记，因此可以从归档原笔记查找正常候选。
+
+响应 `RelatedResponse` 包含 `source: Note`、`results: SearchHit[]` 和 `semantic: SearchSemantic`；无相关结果时 `results=[]`。命中字段、字节区间、行号和分数含义复用搜索契约。关键词从全量原文提取，标签通道匹配共同标签，语义复用文档向量；不将原文截为搜索短查询，不调用查询模型或 LLM。语义降级原因限定为 `EMBEDDING_DISABLED`、`INDEX_NOT_READY`、`NO_SOURCE_VECTORS`，成功使用语义时 `used=true`、`reason=""`。算法见[相关笔记](SEARCH.md#相关笔记)。
+
+先验证来源版本与身份，再读取原笔记并修正投影；候选逐条原文复查同搜索。输出前再次读取原笔记、核实来源摘要与身份：原笔记消失或作者越界返回 404 `SOURCE_NOT_FOUND`，处理中改变返回 409 `SOURCE_CHANGED` 且 `retryable=true`。任意来源故障使整个请求失败，不输出原笔记或部分结果。
 
 ## 创建笔记
 
@@ -150,6 +220,10 @@ Content-Type: application/json
 
 | 工具 | Scope | 状态变化 |
 | --- | --- | --- |
+| `semantic_search` | `notes:read` | 只读、幂等、非破坏；参数为 `SearchRequest`，结构化结果为 `SearchResponse` |
+| `get_related_memos` | `notes:read` | 只读、幂等、非破坏；参数为 `RelatedRequest`，结构化结果为 `RelatedResponse` |
+| `semantic_walk` | `notes:read` | 只读、幂等、非破坏；参数为 `WalkRequest`，结构化结果为 `WalkResponse`，随机模式可返回不同笔记 |
+| `open_discovery_memo` | `discovery:write` | 参数为 `{"name":"memos/id"}`，返回 `Note` 并更新最近阅读时间 |
 | `read_daily_review` | `reviews:read` | 读取已有当日批次 |
 | `get_review_batch` | `reviews:read` | 读取指定 `batch_id` |
 | `get_daily_review` | `reviews:write` | 首次获取时保存当日批次和选中历史 |
@@ -158,6 +232,10 @@ Content-Type: application/json
 | `skip_review_memo` | `reviews:write` | 保存 `batch_id`、`name` 对应条目的首次略过时间 |
 
 会改变状态的工具均设置 `readOnlyHint=false`。工具提示只帮助客户端展示，服务端依据凭据 Scope 决定可见及可调用的工具。REST 与 MCP 以同一绑定账号共享批次、换组键与条目状态。
+
+`semantic_search` 仅对具备 `notes:read` 的凭据可见及可调用，设置 `readOnlyHint=true`、`idempotentHint=true`、`destructiveHint=false`。REST、MCP 和飞书复用 `SearchService`，搜索无需 LLM；来源复查引起的派生投影修正不改变产品记录。
+
+`get_related_memos` 使用相同 Scope 可见性及工具提示。`RelatedRequest` 为 JSON 对象，例如 `{"name":"memos/example","tags":["园艺"],"state":"NORMAL","limit":10}`；`name` 必填，格式与相关 REST 资源名一致，其他字段的默认值及约束同相关查询参数。未知字段或非法参数以 `isError=true` 和错误文本返回；业务错误文本为包含 `code`、`message`、`retryable` 的 JSON。成功结构化输出为 `RelatedResponse`。
 
 ## 同步任务
 
@@ -209,6 +287,7 @@ Content-Type: application/json
 | 409 | `IDEMPOTENCY_CONFLICT` | 同一幂等键已对应其他规范化内容；独立创建使用新键 |
 | 409 | `WRITE_CONFLICT` | 检查来源资源冲突，不将冲突资源作为创建结果 |
 | 409 | `NOTIFICATION_CONFLICT` | 检查通知状态、回执或结果确认决定 |
+| 409 | `SOURCE_CHANGED` | 相关笔记处理期间原笔记改变，`retryable=true`，重新请求 |
 | 422 | `INVALID_ARGUMENT`、`INVALID_PAGE_TOKEN` | 修正参数，游标失效时重读第一页 |
 | 503 | `UPSTREAM_UNAVAILABLE`、`UPSTREAM_AUTH`、`IDENTITY_MISMATCH` | 检查来源连接与绑定 |
 | 503 | `UNSUPPORTED_UPSTREAM`、`UPSTREAM_PROTOCOL`、`UPSTREAM_REQUEST_REJECTED` | 检查 Memos 版本与适配层 |

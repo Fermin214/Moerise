@@ -23,6 +23,7 @@ type API struct {
 	Worker        *SyncService
 	Records       *RecordService
 	Reviews       *ReviewService
+	Search        *SearchService
 	MCP           http.Handler
 	Feishu        *FeishuService
 	Notifications *NotificationService
@@ -33,9 +34,13 @@ func NewAPI(settings Settings, store *Store, source Source, worker *SyncService)
 	generation, err := store.Generation()
 	api := &API{Settings: settings, Store: store, Source: source, Worker: worker,
 		Records: NewRecordService(store, source), Reviews: NewReviewService(store, source), generation: generation}
+	api.Search = NewSearchService(store, source, nil)
 	api.MCP = api.newMCPHandler()
 	api.Notifications = NewNotificationService(store, api.Reviews, nil)
 	api.Feishu = NewFeishuService(store, source, api.Records, api.Reviews, api.Notifications)
+	if api.Feishu != nil {
+		api.Feishu.Search = api.Search
+	}
 	api.Notifications.Transport = NewFeishuDelivery(store, api.Reviews, api.Feishu)
 	return api, err
 }
@@ -225,7 +230,32 @@ func (a *API) route(writer http.ResponseWriter, request *http.Request) (any, int
 		return map[string]string{"status": "degraded"}, 503, nil
 	}
 	scope := ""
+	isRelated := strings.HasPrefix(path, "/api/ext/v1/notes/") &&
+		strings.HasSuffix(strings.TrimPrefix(path, "/api/ext/v1/notes/"), "/related")
 	switch {
+	case isRelated:
+		if method != "GET" {
+			return badMethod()
+		}
+		scope = "notes:read"
+	case path == "/api/ext/v1/search":
+		if method != "POST" {
+			return badMethod()
+		}
+		scope = "notes:read"
+	case path == "/api/ext/v1/search/index":
+		if method != "GET" {
+			return badMethod()
+		}
+		scope = "notes:read"
+	case path == "/api/ext/v1/discovery/walk" || path == "/api/ext/v1/discovery/open":
+		if method != "POST" {
+			return badMethod()
+		}
+		scope = "notes:read"
+		if path == "/api/ext/v1/discovery/open" {
+			scope = "discovery:write"
+		}
 	case path == "/api/ext/v1/notes":
 		switch method {
 		case "GET":
@@ -262,7 +292,22 @@ func (a *API) route(writer http.ResponseWriter, request *http.Request) (any, int
 	if err != nil {
 		return nil, 0, err
 	}
+	if isRelated {
+		return a.related(request)
+	}
 	switch path {
+	case "/api/ext/v1/search/index":
+		result, err := a.Store.VectorStatus()
+		return result, 200, err
+	case "/api/ext/v1/discovery/walk", "/api/ext/v1/discovery/open":
+		return a.discoveryRoute(writer, request)
+	case "/api/ext/v1/search":
+		var body SearchRequest
+		if err := strictJSON(http.MaxBytesReader(writer, request.Body, 65536), &body); err != nil {
+			return nil, 0, failure("INVALID_ARGUMENT", "Invalid search parameters", 422, false)
+		}
+		result, err := a.Search.Search(request.Context(), body)
+		return result, 200, err
 	case "/api/ext/v1/me":
 		if err := a.verifySource(request.Context()); err != nil {
 			return nil, 0, err

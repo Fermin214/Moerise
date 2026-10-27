@@ -107,6 +107,70 @@ type CreateAttachment struct {
 	Content  []byte `json:"content"`
 }
 
+type SearchRequest struct {
+	Query string   `json:"query" jsonschema:"Search text, 1 to 256 Unicode characters"`
+	Mode  string   `json:"mode,omitempty" jsonschema:"hybrid (default), keyword, or semantic"`
+	Tags  []string `json:"tags,omitempty" jsonschema:"Exact tags, all required"`
+	State string   `json:"state,omitempty" jsonschema:"NORMAL (default), ARCHIVED, or ALL"`
+	Limit int      `json:"limit,omitempty" jsonschema:"Maximum notes, default 10, range 1 to 20"`
+}
+
+type SearchMatch struct {
+	Ordinal   int      `json:"ordinal"`
+	ByteStart int      `json:"byte_start"`
+	ByteEnd   int      `json:"byte_end"`
+	LineStart int      `json:"line_start"`
+	LineEnd   int      `json:"line_end"`
+	Content   string   `json:"content"`
+	Signals   []string `json:"signals"`
+}
+
+type SearchHit struct {
+	Note    Note          `json:"note"`
+	Score   float64       `json:"score"`
+	Matches []SearchMatch `json:"matches"`
+}
+
+type SearchSemantic struct {
+	Used   bool   `json:"used"`
+	Reason string `json:"reason"`
+}
+
+type SearchResponse struct {
+	Query    string         `json:"query"`
+	Mode     string         `json:"mode"`
+	Results  []SearchHit    `json:"results"`
+	Semantic SearchSemantic `json:"semantic"`
+}
+
+type RelatedRequest struct {
+	Name  string   `json:"name" jsonschema:"Source Memos resource name, such as memos/abc"`
+	Tags  []string `json:"tags,omitempty" jsonschema:"Exact candidate tags, all required"`
+	State string   `json:"state,omitempty" jsonschema:"Candidate state: NORMAL (default), ARCHIVED, or ALL"`
+	Limit int      `json:"limit,omitempty" jsonschema:"Maximum related notes, default 10, range 1 to 20"`
+}
+
+type RelatedResponse struct {
+	Source   Note           `json:"source"`
+	Results  []SearchHit    `json:"results"`
+	Semantic SearchSemantic `json:"semantic"`
+}
+
+type WalkRequest struct {
+	Name            string   `json:"name,omitempty" jsonschema:"Source memo; optional for a random start"`
+	Mode            string   `json:"mode,omitempty" jsonschema:"continue (default), angle, or random"`
+	Path            []string `json:"path,omitempty" jsonschema:"Visited memo resources, at most 100"`
+	IncludeArchived bool     `json:"include_archived,omitempty"`
+}
+
+type WalkResponse struct {
+	Mode      string     `json:"mode"`
+	Item      *SearchHit `json:"item"`
+	Path      []string   `json:"path"`
+	Exhausted bool       `json:"exhausted"`
+	Warnings  []string   `json:"warnings"`
+}
+
 func (m Memo) Note(settings Settings) Note {
 	return Note{settings.Memos.InstanceID, m.Name, m.Creator, m.State, m.Visibility,
 		m.Content, m.Tags, m.Attachments, m.CreateTime, m.UpdateTime, m.SourceHash,
