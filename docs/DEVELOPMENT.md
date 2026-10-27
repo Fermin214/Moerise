@@ -51,6 +51,22 @@ gofmt -l main.go internal tests
 
 模型实调配置与命令见[向量模型](EMBEDDING.md#连接检查)。`check-embedding` 使用内置虚构文本；基础测试与 CI 无需真实模型凭据。
 
+LLM 适配验证 Chat Completions、Responses 和 Anthropic Messages 的原生请求、完整 JSON 与流式 SSE、完成标记、用量、限流与故障重试、取消、并发等待、输出后失败不重放和敏感错误清理。命令流程验证 `check-llm` 真实读取流式响应、旧配置默认关闭，且不创建产品数据库。协议失败与流中断需用可控 HTTP 服务触发，真实模型连接检查不能稳定覆盖这些边界。模型配置与实调方法见 [AI](AI.md)。
+
+证据流程验证指定来源与相关历史的边界、同文多来源、精确标签、状态及创建时间半开区间，以及过滤先于召回上限。专项测试覆盖转义后的 JSON 预算、UTF-8 裁切、微秒日期边界、无效引用和收集后来源变化；这些边界无法通过不稳定的模型输出可靠触发。证据字段和省略规则见 [AI](AI.md#证据与引用)。
+
+洞察流程使用可控模型验证事实、解释、追问与引用的映射，检查输入总预算和完整条目输出。失败路径覆盖虚构引用、无引用事实、缺少结束记录、输出后的模型故障、回调取消，以及输出前和完成前的来源修改、删除与作者变化；这些情况均不能产生成功完成事件。
+
+多条洞察检查只使用选定来源、相同正文的独立资源标识、跨笔记解释引用双方、实际使用来源，以及选定来源被过滤时返回证据不足。
+
+问答流程验证问题和标签、状态、日期筛选传入共享检索，区分有据回答、部分证据不足、零命中及模型不可用；零命中不调用模型，普通问答不新增来源笔记。
+
+时间线流程使用超过单次笔记上限的近期记录验证早期来源仍被召回，检查空时间段、半开区间、创建与修改及正文日期的区别、跨段引用索引和合并后的总预算。因预算丢失整个时间段时，结果必须指出缺失并使用证据不足状态。
+
+AI 入口验证 `notes:read` 与 `ai:generate` 的组合权限、严格 JSON 边界、REST 完整结果和 SSE、MCP 可见性与非幂等提示。SSE 验证引用、内容、完成和错误事件的结构，以及业务失败、短写、flush 失败和客户端断开时的取消传播。生产启动路径共享同一模型提供商和并发限制，关闭模型时接口返回固定错误。
+
+飞书 AI 流程验证明确命令与普通聊天、记录的分离，生成结果先落库、事件重投和重启复用结果、生成中断终止、长结果按序分片，以及独立回执和结果不明处理。每片发送前复查来源，失效后只发送固定提示；状态恢复通过新增迁移与既有快照恢复流程验证。
+
 向量索引流程测试覆盖分批持久化、模型失败、重启续建、归档及正文增量更新、删除清理、向量空间切换、构建期间投影变化、取消，以及索引重建和状态恢复。分块来源位置、UTF-8 边界、来源复查和错误向量的专项测试用于覆盖完整流程难以稳定触发的边界。真实 Memos 验收搭配 DashScope 模拟服务，验证服务进程自动构建、状态接口、故障恢复、空间替换和产品状态保留。
 
 混合搜索验证覆盖请求 trim 后的 Unicode 码点与 UTF-8 字节边界、标签格式及精确 AND、默认状态和数量、未知字段 422、非 POST 405、Scope，以及 MCP 只读、幂等、非破坏提示。排名检查涵盖中文单字与双字短查询、英文数字整词、FTS 词项安全引用、三通道各前 100 片段、RRF k=60、笔记最高片段分数、最多 3 个片段和稳定排序。协议与分块位置见[搜索](SEARCH.md)。
@@ -134,6 +150,37 @@ python3 scripts/benchmark-search.py --docker-image golang:1.27.3-bookworm \
 `BenchmarkSemanticCache10000x1024` 的构建与预热不计入查询耗时，可用 `go test ./internal -run '^$' -bench '^BenchmarkSemanticCache10000x1024$' -benchmem` 单独执行。合成向量基准使用进程内模型与来源，不含远端模型和 Memos 网络成本；应用缓存冷启动不清理操作系统文件缓存。实测数据与配置结论见[语义检索与发现验收](STAGE3-ACCEPTANCE.md)。
 
 语义漫步集成验收覆盖 REST、MCP 的 Scope 与相同路径结果、显式阅读共享，以及飞书回调、持久队列和发送。专项测试补充来源中途变化、随机读取请求数量、路径边界与阅读记录的重建及备份恢复。
+
+## AI 评测
+
+`TestStage4LiveAcceptance` 采用配置中的 `llm`，创建独立 Memos、账号、状态、索引与服务进程，导入 `tests/testdata/stage4-cases.json` 中的固定虚构语料。笔记创建时间、修改时间及归档状态通过官方 API 设置并读回核对。向量模型关闭，检索明确返回关键词和标签降级；来源请求按 125 毫秒间隔发送，间隔计入端到端延迟。
+
+```bash
+MOERISE_STAGE4_CONFIG="$PWD/.local/config.json" \
+MOERISE_STAGE4_OUTPUT="$PWD/.local/stage4-live.json" \
+MOERISE_STAGE4_CONCURRENCY=true \
+go test -tags=integration ./tests -run '^TestStage4LiveAcceptance$' -v -count=1 -timeout=30m
+```
+
+测试校验数据集摘要。时间线案例通过问题、标签和日期筛选召回，期望来源写在 `expected.sources`，不使用洞察接口的 `names` 参数。`MOERISE_STAGE4_CASES` 可指定逗号分隔的案例 ID；`MOERISE_STAGE4_CONCURRENCY=false` 跳过附加并发测量，`true` 使用同一案例分别执行并发 1、2、4。
+
+每个请求解析完整 SSE，检查来源版本、原文字节与行号、引用归属、实际使用来源、时间段和完成结构。报告逐例落盘，包含原始事件、完整业务结果、期望要点、检索与首段及总延迟、供应商用量、服务进程 CPU 与 RSS。供应商缺少的用量为 `null`；缓存用量与输入缓存命中分别按供应商字段记录。报告拒绝覆盖旧文件。逐项内容核对须结合原文判断事实、遗漏、错引和无依据结论，字符串命中与模型自评不能替代这项核对。
+
+`TestAISelectedSourceAcrossRESTMCPAndFeishuAcceptance` 与 `TestAICachedDeliveryRebuildAndRestoreWithRealMemosAcceptance` 采用真实 Memos、可控模型和飞书平台模拟器，覆盖跨入口结果、Scope、重投、已完成生成缓存、索引重建、Store 重开、快照恢复、回执确认和来源修改后的发送限制。
+
+多次执行的结果使用标准库脚本汇总：
+
+```bash
+python3 scripts/summarize-ai.py \
+  --dataset tests/testdata/stage4-cases.json \
+  --reports .local/stage4-live.json \
+  --reviews .local/stage4-review.json \
+  --output .local/stage4-summary.json
+```
+
+`--reports` 和 `--reviews` 均可指定多个文件。脚本核对固定问题、筛选、期望、来源快照与片段，保留每次尝试及原报告摘要，为每例选择时间上最后一个完整有效结果；后续失败仍单独记录。旧时间线请求仅在已知数据摘要之间按 `names` 契约修正兼容。供应商缺失用量保留 `null`，中位数采用标准中位数，P95 使用 nearest-rank。
+
+审阅文件可为数组或包含 `reviews` 的对象，每条使用 `id`、`source_report`、`verdict` 和 `notes`。`source_report` 绑定报告文件名，可用 `result_sha256` 进一步绑定完整原始 `AIResult` 的规范 JSON 指纹；重新生成的结果须匹配对应审阅。汇总中的 `complete` 表示完整执行覆盖，内容评价另存 `agent_review`，人工评分栏独立保留。汇总拒绝覆盖已有文件。逐例结果与测量说明见 [AI 效果与工程验证](STAGE4-ACCEPTANCE.md)。
 
 ## 接口与提交
 

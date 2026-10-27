@@ -24,6 +24,7 @@ type API struct {
 	Records       *RecordService
 	Reviews       *ReviewService
 	Search        *SearchService
+	AI            *AIService
 	MCP           http.Handler
 	Feishu        *FeishuService
 	Notifications *NotificationService
@@ -35,11 +36,13 @@ func NewAPI(settings Settings, store *Store, source Source, worker *SyncService)
 	api := &API{Settings: settings, Store: store, Source: source, Worker: worker,
 		Records: NewRecordService(store, source), Reviews: NewReviewService(store, source), generation: generation}
 	api.Search = NewSearchService(store, source, nil)
+	api.AI = NewAIService(api.Search, nil)
 	api.MCP = api.newMCPHandler()
 	api.Notifications = NewNotificationService(store, api.Reviews, nil)
 	api.Feishu = NewFeishuService(store, source, api.Records, api.Reviews, api.Notifications)
 	if api.Feishu != nil {
 		api.Feishu.Search = api.Search
+		api.Feishu.AI = api.AI
 	}
 	api.Notifications.Transport = NewFeishuDelivery(store, api.Reviews, api.Feishu)
 	return api, err
@@ -194,6 +197,9 @@ func (a *API) route(writer http.ResponseWriter, request *http.Request) (any, int
 	}
 	if path == "/api/ext/v1/reviews" || strings.HasPrefix(path, "/api/ext/v1/reviews/") {
 		return a.reviewRoute(writer, request)
+	}
+	if path == "/api/ext/v1/insights" || path == "/api/ext/v1/answers" {
+		return a.aiRoute(writer, request)
 	}
 	badMethod := func() (any, int, error) {
 		return nil, 0, failure("METHOD_NOT_ALLOWED", "Method Not Allowed", 405, false)

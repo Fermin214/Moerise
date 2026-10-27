@@ -113,6 +113,9 @@ type SearchRequest struct {
 	Tags  []string `json:"tags,omitempty" jsonschema:"Exact tags, all required"`
 	State string   `json:"state,omitempty" jsonschema:"NORMAL (default), ARCHIVED, or ALL"`
 	Limit int      `json:"limit,omitempty" jsonschema:"Maximum notes, default 10, range 1 to 20"`
+
+	createdFrom  *time.Time
+	createdUntil *time.Time
 }
 
 type SearchMatch struct {

@@ -1,6 +1,7 @@
 package moerise
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -58,6 +59,32 @@ func addDomainTool[I, O any](server *mcp.Server, name, description string, readO
 		})
 }
 
+func (a *API) addAITool(server *mcp.Server, name, description string, insight, timeline bool) {
+	destructive := false
+	mcp.AddTool(server, &mcp.Tool{Name: name, Description: description,
+		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true, IdempotentHint: false, DestructiveHint: &destructive}},
+		func(ctx context.Context, call *mcp.CallToolRequest, _ AIRequest) (*mcp.CallToolResult, any, error) {
+			request, err := readAIRequest(bytes.NewReader(call.Params.Arguments))
+			if err == nil {
+				request.Stream = false
+				request.Timeline = request.Timeline || timeline
+				var result AIResult
+				result, err = a.invokeAI(ctx, insight, request, nil)
+				if err == nil && !result.Completed {
+					err = aiOutputError()
+				}
+				if err == nil {
+					return &mcp.CallToolResult{StructuredContent: result}, result, nil
+				}
+			}
+			service := aiPublicError(err)
+			body, _ := json.Marshal(map[string]any{"error": map[string]any{
+				"code": service.Code, "message": service.Message, "retryable": service.Retryable,
+			}})
+			return &mcp.CallToolResult{IsError: true, Content: []mcp.Content{&mcp.TextContent{Text: string(body)}}}, nil, nil
+		})
+}
+
 func (a *API) newMCPHandler() http.Handler {
 	return mcp.NewStreamableHTTPHandler(func(request *http.Request) *mcp.Server {
 		access, err := a.authenticate(request, "")
@@ -65,6 +92,11 @@ func (a *API) newMCPHandler() http.Handler {
 			return nil
 		}
 		server := mcp.NewServer(&mcp.Implementation{Name: "moerise", Version: Version}, nil)
+		if slices.Contains(access.Scopes, "notes:read") && slices.Contains(access.Scopes, "ai:generate") {
+			a.addAITool(server, "analyze_memos", "分析明确选定的本人笔记并返回可核对的引用；调用模型并产生用量，不保存分析结果。", true, false)
+			a.addAITool(server, "ask_memos", "根据本人笔记回答问题并返回引用及证据缺口；调用模型并产生用量，不保存回答。", false, false)
+			a.addAITool(server, "get_topic_timeline", "根据本人笔记生成主题时间线，区分记录时间与事件时间；调用模型并产生用量，不保存结果。", false, true)
+		}
 		if slices.Contains(access.Scopes, "notes:read") {
 			addDomainTool(server, "semantic_walk", "沿语义继续话题、换角度或随机跳转；按路径去重，不记录阅读。", true,
 				a.Search.Walk)

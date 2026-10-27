@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"time"
 	"unicode/utf8"
 )
 
@@ -29,11 +30,12 @@ func (r *SearchRequest) UnmarshalJSON(data []byte) error {
 }
 
 type searchVector struct {
-	candidate searchCandidate
-	state     string
-	tags      []string
-	vector    []float32
-	norm      float64
+	candidate  searchCandidate
+	state      string
+	tags       []string
+	createTime string
+	vector     []float32
+	norm       float64
 }
 
 type searchMatrix struct {
@@ -163,6 +165,7 @@ func (s *SearchService) vectors(ctx context.Context) (*searchMatrix, error) {
 				return failure("EMBEDDING_PROTOCOL", "Invalid stored search vector", 503, false)
 			}
 			entry.state, entry.tags = memo.State, memo.Tags
+			entry.createTime = memo.CreateTime
 			matrix.entries = append(matrix.entries, entry)
 		}
 		return rows.Err()
@@ -185,6 +188,15 @@ func searchAccepts(request SearchRequest, state string, tags []string) bool {
 		}
 	}
 	return true
+}
+
+func searchDateAccepts(request SearchRequest, createTime string) bool {
+	if request.createdFrom == nil && request.createdUntil == nil {
+		return true
+	}
+	created, err := time.Parse(time.RFC3339Nano, createTime)
+	return err == nil && (request.createdFrom == nil || !created.Before(*request.createdFrom)) &&
+		(request.createdUntil == nil || created.Before(*request.createdUntil))
 }
 
 func (s *SearchService) semanticCandidates(ctx context.Context, request SearchRequest) ([]searchCandidate, SearchSemantic, error) {
@@ -232,7 +244,7 @@ func (s *SearchService) semanticCandidates(ctx context.Context, request SearchRe
 		if i%256 == 0 && ctx.Err() != nil {
 			return nil, SearchSemantic{}, ctx.Err()
 		}
-		if !searchAccepts(request, entry.state, entry.tags) {
+		if !searchAccepts(request, entry.state, entry.tags) || !searchDateAccepts(request, entry.createTime) {
 			continue
 		}
 		dot := float64(0)
@@ -385,7 +397,7 @@ func (s *SearchService) loadSearchHits(ctx context.Context, request SearchReques
 				return nil, err
 			}
 			if fresh == nil || fresh.SourceHash != item.sourceHash ||
-				!searchAccepts(request, fresh.State, fresh.Tags) {
+				!searchAccepts(request, fresh.State, fresh.Tags) || !searchDateAccepts(request, fresh.CreateTime) {
 				continue
 			}
 			positions[item.name] = len(results)

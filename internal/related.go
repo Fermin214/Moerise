@@ -138,7 +138,8 @@ func (s *SearchService) relatedSemanticCandidates(ctx context.Context, seed Memo
 		if i%256 == 0 && ctx.Err() != nil {
 			return nil, SearchSemantic{}, ctx.Err()
 		}
-		if entry.candidate.name == seed.Name || !searchAccepts(request, entry.state, entry.tags) {
+		if entry.candidate.name == seed.Name || !searchAccepts(request, entry.state, entry.tags) ||
+			!searchDateAccepts(request, entry.createTime) {
 			continue
 		}
 		dot := float64(0)
