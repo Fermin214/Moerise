@@ -75,11 +75,8 @@ func (s *NotificationService) channelKey() string {
 		configured(channel.UserOpenID), destination, configured(channel.WebhookURL)}))
 }
 
-// Schedule advances one local date at a time; persisted dates survive downtime and DST.
+// Schedule fixes today's batch independently of delivery and processes each due slot once.
 func (s *NotificationService) Schedule(ctx context.Context, at time.Time) (int, error) {
-	if !s.Store.Settings.Notifications.Enabled {
-		return 0, nil
-	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	settings := s.Store.Settings
@@ -89,48 +86,63 @@ func (s *NotificationService) Schedule(ctx context.Context, at time.Time) (int, 
 	}
 	instance, user, channel := settings.Memos.InstanceID, settings.Memos.User, s.channelKey()
 	today := at.In(location).Format(time.DateOnly)
-	day, _ := time.Parse(time.DateOnly, today)
-	if _, err := s.Store.state.Exec(`INSERT OR IGNORE INTO notification_schedules
-		(instance_id, user_name, channel_key, timezone, last_date) VALUES (?, ?, ?, ?, ?)`,
-		instance, user, channel, settings.Timezone, day.AddDate(0, 0, -1).Format(time.DateOnly)); err != nil {
-		return 0, err
+	var batch ReviewBatch
+	var batchID string
+	err = s.Store.state.QueryRow(`SELECT id FROM review_batches
+		WHERE instance_id = ? AND user_name = ? AND timezone = ? AND local_date = ?
+		ORDER BY created_at DESC, sequence DESC LIMIT 1`,
+		instance, user, settings.Timezone, today).Scan(&batchID)
+	loaded := false
+	if errors.Is(err, sql.ErrNoRows) {
+		batch, err = s.Reviews.Daily(ctx, at)
+		batchID, loaded = batch.ID, true
 	}
-	var last string
-	if err := s.Store.state.QueryRow(`SELECT last_date FROM notification_schedules WHERE instance_id = ?
-		AND user_name = ? AND channel_key = ? AND timezone = ?`, instance, user, channel, settings.Timezone).Scan(&last); err != nil {
-		return 0, err
-	}
-	previous, err := time.Parse(time.DateOnly, last)
 	if err != nil {
 		return 0, err
 	}
+	if !settings.Notifications.Enabled {
+		return 0, nil
+	}
 	created := 0
-	// Bound work per tick without discarding older dates.
-	for range 7 {
-		date := previous.AddDate(0, 0, 1).Format(time.DateOnly)
-		if date > today {
-			break
-		}
-		moment, err := scheduledMoment(date, settings.Notifications.Time, location)
+	for ordinal, clock := range settings.Notifications.Clocks() {
+		moment, err := scheduledMoment(today, clock, location)
 		if err != nil {
 			return created, err
 		}
 		if moment.After(at) {
-			break
+			continue
 		}
-		batch, err := s.Reviews.Daily(ctx, moment)
-		if err != nil {
+		var done bool
+		if err := s.Store.state.QueryRow(`SELECT EXISTS (SELECT 1 FROM review_schedule_slots
+			WHERE instance_id = ? AND user_name = ? AND channel_key = ? AND timezone = ?
+			AND local_date = ? AND (clock = ? OR (clock = '' AND ? = 0)))`,
+			instance, user, channel, settings.Timezone, today, clock, ordinal).Scan(&done); err != nil {
 			return created, err
 		}
-		if _, err := s.enqueue("review", date+":"+batch.ID, date, &batch.ID, nil); err != nil {
+		if done {
+			continue
+		}
+		if !loaded {
+			batch, err = s.Reviews.Get(ctx, batchID)
+			if err != nil {
+				return created, err
+			}
+			loaded = true
+		}
+		available := slices.ContainsFunc(batch.Items, func(item ReviewItem) bool {
+			return !item.Unavailable && item.Note != nil
+		})
+		if available {
+			if _, err := s.enqueue("review", today+":"+clock, today, &batch.ID, nil); err != nil {
+				return created, err
+			}
+			created++
+		}
+		if _, err := s.Store.state.Exec(`INSERT OR IGNORE INTO review_schedule_slots
+			(instance_id, user_name, channel_key, timezone, local_date, clock) VALUES (?, ?, ?, ?, ?, ?)`,
+			instance, user, channel, settings.Timezone, today, clock); err != nil {
 			return created, err
 		}
-		if _, err := s.Store.state.Exec(`UPDATE notification_schedules SET last_date = ? WHERE instance_id = ?
-			AND user_name = ? AND channel_key = ? AND timezone = ?`, date, instance, user, channel, settings.Timezone); err != nil {
-			return created, err
-		}
-		created++
-		previous, _ = time.Parse(time.DateOnly, date)
 	}
 	return created, nil
 }

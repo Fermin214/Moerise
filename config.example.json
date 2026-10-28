@@ -76,13 +76,12 @@
   },
   "notifications": {
     "enabled": false,
-    "time": "09:00"
+    "times": ["09:00"]
   },
   "review": {
     "count": 3,
-    "min_age_hours": 24,
-    "recent_days": 30,
-    "topic_limit": 1,
+    "min_age_hours": 72,
+    "recent_days": 7,
     "include_archived": false
   }
 }

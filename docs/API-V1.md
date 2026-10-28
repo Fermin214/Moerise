@@ -266,7 +266,9 @@ Content-Type: application/json
 
 ## 每日回顾与 MCP
 
-回顾 POST 请求体为 `{}`。日期由服务端按配置时区计算，不接受调用方覆盖日期或规则。获取或创建回顾会保存批次和选中历史，因此需要写 Scope；只读 Scope 只能读取已经生成的批次。换组键采用笔记创建相同的字符和长度限制，范围为账号、日期、时区和规则版本。
+回顾 POST 请求体为 `{}`。日期由服务端按配置时区计算，不接受调用方覆盖日期或规则。Core 独立生成并固定当地日结果，关闭推送也会生成；重复读取、重启、规则修改和增加发送时段沿用该批次。获取或创建回顾会保存批次和选中历史，因此需要写 Scope；只读 Scope 只能读取已经生成的批次。
+
+显式换组仅由 REST 提供，换组键采用笔记创建相同的字符和长度限制，范围为账号、日期和时区；相同键始终读取同一批次。MCP 和飞书文字不提供换组入口。
 
 响应直接返回 `ReviewBatch`，含 `id`、`date`、`timezone`、`rule_version`、`sequence`、`created_at` 和有序 `items`。条目含 `name`、`selected_source_hash`、`selected_at`、独立的 `opened_at` 与 `skipped_at`、`unavailable`，以及可用时的最新 `note`。来源删除或作者变化时保留条目位置，`unavailable=true` 并省略 `note`。打开或略过不在批次中的资源返回 404 `REVIEW_ITEM_NOT_FOUND`。选择、参数和恢复规则见[每日回顾](DAILY-REVIEW.md)。
 

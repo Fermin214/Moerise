@@ -4,8 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"slices"
-	"strings"
+	"math/rand/v2"
 	"time"
 )
 
@@ -39,7 +38,7 @@ func NewReviewService(store *Store, source Source) *ReviewService {
 }
 
 func (s *ReviewService) ruleVersion() string {
-	return "rules-v1-" + hashBytes(canonicalJSON(s.Store.Settings.Review))[:16]
+	return "random-v1"
 }
 
 func (s *ReviewService) binding() (string, string) {
@@ -66,8 +65,8 @@ func (s *ReviewService) ReadDaily(ctx context.Context, at time.Time) (ReviewBatc
 	instance, user := s.binding()
 	var id string
 	err = s.Store.state.QueryRow(`SELECT id FROM review_batches WHERE instance_id = ? AND user_name = ?
-		AND local_date = ? AND timezone = ? AND rule_version = ? ORDER BY sequence DESC LIMIT 1`,
-		instance, user, at.In(location).Format(time.DateOnly), s.Store.Settings.Timezone, s.ruleVersion()).Scan(&id)
+		AND local_date = ? AND timezone = ? ORDER BY created_at DESC, sequence DESC LIMIT 1`,
+		instance, user, at.In(location).Format(time.DateOnly), s.Store.Settings.Timezone).Scan(&id)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ReviewBatch{}, failure("REVIEW_NOT_FOUND", "No daily review has been created", 404, false)
 	}
@@ -98,13 +97,13 @@ func (s *ReviewService) batch(ctx context.Context, at time.Time, key string) (Re
 	date, rule := at.In(location).Format(time.DateOnly), s.ruleVersion()
 	instance, user := s.binding()
 	query := `SELECT id FROM review_batches WHERE instance_id = ? AND user_name = ?
-		AND local_date = ? AND timezone = ? AND rule_version = ?`
-	args := []any{instance, user, date, settings.Timezone, rule}
+		AND local_date = ? AND timezone = ?`
+	args := []any{instance, user, date, settings.Timezone}
 	if key != "" {
 		query += " AND request_key = ?"
 		args = append(args, key)
 	}
-	query += " ORDER BY sequence DESC LIMIT 1"
+	query += " ORDER BY created_at DESC, sequence DESC LIMIT 1"
 	var id string
 	err = s.Store.state.QueryRow(query, args...).Scan(&id)
 	if err == nil {
@@ -113,7 +112,14 @@ func (s *ReviewService) batch(ctx context.Context, at time.Time, key string) (Re
 	if !errors.Is(err, sql.ErrNoRows) {
 		return ReviewBatch{}, err
 	}
-	candidates, err := s.selectMemos(ctx, at, location, date, rule)
+	state, err := s.Store.Status()
+	if err != nil {
+		return ReviewBatch{}, err
+	}
+	if state.LastFull == nil {
+		return ReviewBatch{}, upstreamError("INDEX_NOT_READY", "Daily review requires the first complete synchronization")
+	}
+	candidates, err := s.selectMemos(ctx, at, location)
 	if err != nil {
 		return ReviewBatch{}, err
 	}
@@ -158,14 +164,7 @@ func (s *ReviewService) batch(ctx context.Context, at time.Time, key string) (Re
 	return s.load(ctx, id)
 }
 
-type reviewCandidate struct {
-	memo        Memo
-	last        string
-	anniversary bool
-	order       string
-}
-
-func (s *ReviewService) selectMemos(ctx context.Context, at time.Time, location *time.Location, date, rule string) ([]Memo, error) {
+func (s *ReviewService) selectMemos(ctx context.Context, at time.Time, location *time.Location) ([]Memo, error) {
 	instance, user := s.binding()
 	rows, err := s.Store.state.Query(`SELECT i.memo_name, MAX(b.local_date) FROM review_items i
 		JOIN review_batches b ON b.id = i.batch_id WHERE b.instance_id = ? AND b.user_name = ?
@@ -193,7 +192,7 @@ func (s *ReviewService) selectMemos(ctx context.Context, at time.Time, location 
 	}
 	rules := s.Store.Settings.Review
 	recent := at.In(location).AddDate(0, 0, 1-rules.RecentDays).Format(time.DateOnly)
-	candidates := []reviewCandidate{}
+	candidates := []Memo{}
 	for rows.Next() {
 		var data []byte
 		if err := rows.Scan(&data); err != nil {
@@ -206,67 +205,35 @@ func (s *ReviewService) selectMemos(ctx context.Context, at time.Time, location 
 			return nil, err
 		}
 		last := history[memo.Name]
-		created, err := time.Parse(time.RFC3339Nano, memo.CreateTime)
-		if err != nil {
-			rows.Close()
-			return nil, err
-		}
-		if !s.eligible(memo, at) || (last != "" && last >= recent) {
+		if !s.eligible(memo, at) || (rules.RecentDays > 0 && last != "" && last >= recent) {
 			continue
 		}
-		local := created.In(location)
-		anniversary := local.Year() < at.In(location).Year() && local.Month() == at.In(location).Month() && local.Day() == at.In(location).Day()
-		candidates = append(candidates, reviewCandidate{memo, last, anniversary, hashBytes([]byte(date + rule + memo.Name))})
+		candidates = append(candidates, memo)
 	}
 	err = rows.Err()
 	rows.Close()
 	if err != nil {
 		return nil, err
 	}
-	slices.SortFunc(candidates, func(a, b reviewCandidate) int {
-		if a.last != b.last {
-			return strings.Compare(a.last, b.last)
-		}
-		if a.anniversary != b.anniversary {
-			if a.anniversary {
-				return -1
-			}
-			return 1
-		}
-		return strings.Compare(a.order, b.order)
+	rand.Shuffle(len(candidates), func(i, j int) {
+		candidates[i], candidates[j] = candidates[j], candidates[i]
 	})
-	selected, topics := []Memo{}, map[string]int{}
+	selected := []Memo{}
 	for _, candidate := range candidates {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		memo, err := s.Source.Get(ctx, candidate.memo.Name)
+		memo, err := s.Source.Get(ctx, candidate.Name)
 		if err != nil {
 			return nil, err
 		}
-		if err := s.Store.Refresh(candidate.memo.Name, memo); err != nil {
+		if err := s.Store.Refresh(candidate.Name, memo); err != nil {
 			return nil, err
 		}
 		if memo == nil || !s.eligible(*memo, at) {
 			continue
 		}
-		roots := map[string]bool{}
-		for _, tag := range memo.Tags {
-			roots[strings.SplitN(tag, "/", 2)[0]] = true
-		}
-		allowed := true
-		for root := range roots {
-			if topics[root] >= rules.TopicLimit {
-				allowed = false
-			}
-		}
-		if !allowed {
-			continue
-		}
 		selected = append(selected, *memo)
-		for root := range roots {
-			topics[root]++
-		}
 		if len(selected) == rules.Count {
 			break
 		}

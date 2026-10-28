@@ -54,8 +54,9 @@ type ReviewConfig struct {
 }
 
 type NotificationConfig struct {
-	Enabled bool   `json:"enabled"`
-	Time    string `json:"time"`
+	Enabled bool     `json:"enabled"`
+	Time    string   `json:"time"`
+	Times   []string `json:"times,omitempty"`
 }
 
 type LLMConfig struct {
@@ -126,7 +127,7 @@ func DefaultSettings() Settings {
 		Memos:    MemosConfig{TimeoutSeconds: 10, PageSize: 100, MaxPages: 10000},
 		Timezone: "Asia/Hong_Kong", StateDir: "/data/state", IndexDir: "/data/index",
 		Sync:          SyncConfig{60, 21600, 300, 5, 300},
-		Review:        ReviewConfig{Count: 3, MinAgeHours: 24, RecentDays: 30, TopicLimit: 1},
+		Review:        ReviewConfig{Count: 3, MinAgeHours: 72, RecentDays: 7},
 		Notifications: NotificationConfig{Time: "09:00"},
 		Embedding: EmbeddingConfig{Provider: "bailian", Protocol: "dashscope", Model: &embeddingModel,
 			Dimensions: 1024, BatchSize: 20, TimeoutSeconds: 30, MaxConcurrency: 2, MaxRetries: 2},
@@ -200,11 +201,16 @@ func rejectNull(value any, kind reflect.Type) error {
 func LoadSettings(path string) (Settings, error) {
 	settings := DefaultSettings()
 	content, err := os.ReadFile(path)
-	if err != nil {
+	if err != nil && !(errors.Is(err, os.ErrNotExist) && os.Getenv("MOERISE_MEMOS_BASE_URL") != "") {
 		return settings, errors.New("cannot read the configuration file")
 	}
-	if err := strictJSON(bytes.NewReader(content), &settings); err != nil {
-		return settings, errors.New("invalid configuration structure")
+	if len(content) != 0 {
+		if err := strictJSON(bytes.NewReader(content), &settings); err != nil {
+			return settings, errors.New("invalid configuration structure")
+		}
+	}
+	if err := settings.loadEnvironment(); err != nil {
+		return settings, err
 	}
 	return settings, settings.Validate()
 }
@@ -296,15 +302,21 @@ func (s *Settings) Validate() error {
 		}
 	}
 	if s.Review.Count < 1 || s.Review.Count > 20 || s.Review.MinAgeHours < 0 ||
-		s.Review.MinAgeHours > 87600 || s.Review.RecentDays < 1 || s.Review.RecentDays > 3650 ||
-		s.Review.TopicLimit < 1 || s.Review.TopicLimit > s.Review.Count {
+		s.Review.MinAgeHours > 87600 || s.Review.RecentDays < 0 || s.Review.RecentDays > 3650 {
 		return bad("review")
 	}
-	if len(s.Notifications.Time) != 5 {
-		return bad("notifications.time")
+	if len(s.Notifications.Clocks()) > 24 {
+		return bad("notifications.times")
 	}
-	if _, err := time.Parse("15:04", s.Notifications.Time); err != nil {
-		return bad("notifications.time")
+	clocks := map[string]bool{}
+	for _, clock := range s.Notifications.Clocks() {
+		if len(clock) != 5 {
+			return bad("notifications.times")
+		}
+		if _, err := time.Parse("15:04", clock); err != nil || clocks[clock] {
+			return bad("notifications.times")
+		}
+		clocks[clock] = true
 	}
 	if s.Notifications.Enabled && channel.Kind == "feishu-app" && !appEnabled {
 		return bad("notifications require channel application credentials")
