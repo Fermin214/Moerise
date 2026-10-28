@@ -2,7 +2,7 @@
 
 Moerise 是基于 Memos 的开源自托管笔记产品，支持记录、阅读、回顾和思考。Moerise Core 提供笔记同步、文字与附件记录、每日回顾、飞书记录与定时推送，以及备份恢复。Memos 保存笔记原文与附件，并负责编辑和删除。
 
-产品按 **Core → 飞书 → 完整 Web 与一体化 Compose → Android** 交付。首个完整产品版本计划包含 Web 笔记管理、每日回顾、随机语义漫步、自然聊天式洞察与连续追问、二维认知地图、浏览器设置和通用模型配置。具体范围见[产品需求](docs/PRD.md)，实施顺序见[路线图](docs/ROADMAP.md)。
+服务提供 REST、只读 MCP 和飞书入口，完整 Web 与 Android 客户端尚未实现。产品行为见[产品需求](docs/PRD.md)，后续开发安排见[路线图](docs/ROADMAP.md)。
 
 Core 已提供中文混合检索、相关笔记与语义漫步接口，见[搜索](docs/SEARCH.md)。百炼向量接入及索引构建见[向量模型](docs/EMBEDDING.md)，LLM 协议、带引用的分析、问答和主题时间线见 [AI](docs/AI.md)。
 
@@ -69,7 +69,7 @@ docker compose up -d --build moerise
 | [搜索](docs/SEARCH.md) | 中文短查询、相关笔记、标签过滤、混合排名与来源复查 |
 | [开发指南](docs/DEVELOPMENT.md) | 贡献代码所需的环境、工具、运行和验证方法 |
 | [产品与架构](docs/PRODUCT-ARCHITECTURE.md) | 产品方向、模块职责、数据边界和技术依据 |
-| [路线图](docs/ROADMAP.md) | 四个产品阶段、可复用工程基础、交付任务和完成标准 |
+| [路线图](docs/ROADMAP.md) | 可用能力、产品阶段与后续开发任务 |
 
 ## 开源协议
 

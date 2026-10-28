@@ -42,7 +42,7 @@ Moerise 支持 Linux 原生二进制和 Docker Linux 容器部署，两者都需
 
 ### 环境参数
 
-环境变量使用以下对应关系；空值保留 JSON 或内置默认值。`MOERISE_ACCESS_TOKEN` 非空时以单个 `environment` 凭据替换 JSON 令牌列表，供原生接口使用全部既有 Scope；MCP 的工具集合始终只读。
+环境变量使用以下对应关系；空值保留 JSON 或内置默认值。`MOERISE_ACCESS_TOKEN` 非空时以单个 `environment` 凭据替换 JSON 令牌列表，包含全部支持的 Scope；MCP 的工具集合始终只读。
 
 | 环境变量 | 配置 |
 | --- | --- |
@@ -53,14 +53,14 @@ Moerise 支持 Linux 原生二进制和 Docker Linux 容器部署，两者都需
 | `MOERISE_REVIEW_COUNT`、`MOERISE_REVIEW_MIN_AGE_HOURS`、`MOERISE_REVIEW_RECENT_DAYS` | 回顾条数、等待小时、排除天数 |
 | `MOERISE_REVIEW_INCLUDE_ARCHIVED` | 是否包含归档，`true` 或 `false` |
 | `MOERISE_NOTIFICATIONS_ENABLED`、`MOERISE_NOTIFICATIONS_TIMES` | 推送开关、逗号分隔时段，例如 `09:00,18:00` |
-| `MOERISE_NOTIFICATIONS_TIME` | 兼容单时段；配置了 `times` 时以列表为准 |
+| `MOERISE_NOTIFICATIONS_TIME` | 单时段时间；配置了 `times` 时以列表为准 |
 | `MOERISE_CHANNEL_KIND` | `feishu-app` 或 `feishu-webhook` |
 | `MOERISE_FEISHU_APP_ID`、`MOERISE_FEISHU_APP_SECRET` | 应用凭据 |
 | `MOERISE_FEISHU_VERIFICATION_TOKEN`、`MOERISE_FEISHU_ENCRYPT_KEY` | 回调校验及可选加密 |
 | `MOERISE_FEISHU_USER_OPEN_ID` | 专用私聊身份与主动推送接收者 |
 | `MOERISE_FEISHU_WEBHOOK_URL`、`MOERISE_FEISHU_WEBHOOK_SECRET` | 自定义机器人地址与可选签名密钥 |
 
-只通过环境运行二进制时，填写全部必要来源、鉴权及密钥变量即可省略 JSON 文件。Compose 兼容 JSON 部署，保留 `.local/config.json` 挂载；采用环境配置时先复制模板创建此文件，再由 `.env` 覆盖必要值。浏览器设置属于 Web 阶段。
+只通过环境运行二进制时，填写全部必要来源、鉴权及密钥变量即可省略 JSON 文件。Compose 挂载 `.local/config.json`；采用环境配置时先复制模板创建此文件，再由 `.env` 覆盖必要值。服务不支持浏览器设置，修改配置后需重启。
 
 ## 二进制运行
 
@@ -190,7 +190,7 @@ docker compose up -d --no-build moerise
 
 ### 重建索引
 
-原生部署停止服务后执行，再通过原有方式启动：
+原生部署停止服务后执行，再通过服务管理器或 `serve` 命令启动：
 
 ```bash
 ./build/moerise rebuild-index
@@ -211,6 +211,6 @@ docker compose up -d --no-build moerise
 1. 升级前备份产品状态、配置和 Memos 数据，记录对应的源码提交或镜像摘要。
 2. 停止服务，切换到目标代码或镜像。源码部署重新构建目标版本二进制；使用随附 Compose 构建时执行 `docker compose build moerise`。
 3. 以同一配置和数据目录启动服务，检查就绪状态及同步结果。
-4. 回滚时停止服务，切换到目标版本；需要旧数据库结构时，恢复与该版本匹配的状态备份，再启动并检查。
+4. 回滚时停止服务，切换到目标版本；数据库结构不匹配时，恢复该版本对应的状态备份，再启动并检查。
 
 源码改动可使用 `git revert <提交>` 生成反向提交。数据库迁移不会随 Git 操作逆向执行；数据恢复也不会切换代码或镜像。已应用的迁移必须保持原样，结构变更使用新的编号迁移。
