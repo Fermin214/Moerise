@@ -130,7 +130,7 @@ Content-Type: application/json
 
 `POST /api/ext/v1/discovery/walk` 接受 `name`、`mode`、`path`、`include_archived`；默认 `continue`，`angle` 换角度，`random` 随机选择且允许省略起点。路径输入最多 100 项，返回一个 `item`、后续 `path`、`mode`、`exhausted`、`warnings`。漫步只读，使用 `notes:read`；模型关闭或向量未就绪时只有随机模式可用。起点变化、来源故障及最近阅读加权规则见[语义漫步](SEARCH.md#语义漫步)。
 
-`POST /api/ext/v1/discovery/open` 接受 `{"name":"memos/id"}`，要求 `discovery:write`，复查原文后更新发现阅读时间并返回 `Note`。阅读记录在 REST、MCP 与飞书间共享，随产品状态备份。未知字段与非法参数返回 422，非 POST 返回 405。
+`POST /api/ext/v1/discovery/open` 接受 `{"name":"memos/id"}`，要求 `discovery:write`，复查原文后更新发现阅读时间并返回 `Note`。阅读记录随产品状态备份，供 REST、MCP 与飞书的漫步选取使用；外部 MCP 不提供写入阅读记录的工具。未知字段与非法参数返回 422，非 POST 返回 405。
 
 ## 相关笔记
 
@@ -272,23 +272,22 @@ Content-Type: application/json
 
 扩展 MCP 位于 `/mcp`，使用官方 Go MCP SDK 的无会话 Streamable HTTP 传输，返回 JSON。客户端对该 URL 发送 MCP 请求，使用与 REST 相同的 Moerise Bearer 凭据；请求体上限为 64 KiB。协议初始化、请求头和错误按 MCP 协议处理，业务错误使用工具结果的 `isError` 及包含 `code`、`message`、`retryable` 的 JSON 文本。MCP GET、DELETE 不提供事件流或会话管理。含跨站来源的请求受到同源检查。
 
-| 工具 | Scope | 状态变化 |
+| 工具 | Scope | 行为 |
 | --- | --- | --- |
+| `get_memo` | `notes:read` | 读取 `name` 指定的本人笔记，返回最新 `Note` 全文与附件 |
+| `list_memos` | `notes:read` | 按 `state`、`page_size`、`page_token` 分页读取，返回 `notes` 和 `next_page_token` |
 | `semantic_search` | `notes:read` | 只读、幂等、非破坏；参数为 `SearchRequest`，结构化结果为 `SearchResponse` |
 | `get_related_memos` | `notes:read` | 只读、幂等、非破坏；参数为 `RelatedRequest`，结构化结果为 `RelatedResponse` |
 | `semantic_walk` | `notes:read` | 只读、幂等、非破坏；参数为 `WalkRequest`，结构化结果为 `WalkResponse`，随机模式可返回不同笔记 |
 | `analyze_memos` | `notes:read` + `ai:generate` | 对选定笔记生成洞察，返回 `AIResult`；只读、非幂等、非破坏 |
 | `ask_memos` | `notes:read` + `ai:generate` | 基于检索证据回答问题，返回 `AIResult`；只读、非幂等、非破坏 |
 | `get_topic_timeline` | `notes:read` + `ai:generate` | 强制 `timeline=true` 调用问答，返回 `AIResult`；只读、非幂等、非破坏 |
-| `open_discovery_memo` | `discovery:write` | 参数为 `{"name":"memos/id"}`，返回 `Note` 并更新最近阅读时间 |
-| `read_daily_review` | `reviews:read` | 读取已有当日批次 |
+| `read_daily_review` | `reviews:read` | 读取已有当日批次；不存在时返回 `REVIEW_NOT_FOUND`，不创建批次 |
 | `get_review_batch` | `reviews:read` | 读取指定 `batch_id` |
-| `get_daily_review` | `reviews:write` | 首次获取时保存当日批次和选中历史 |
-| `replace_daily_review` | `reviews:write` | 使用 `idempotency_key` 创建新批次 |
-| `open_review_memo` | `reviews:write` | 保存 `batch_id`、`name` 对应条目的首次打开时间 |
-| `skip_review_memo` | `reviews:write` | 保存 `batch_id`、`name` 对应条目的首次略过时间 |
 
-会改变状态的工具均设置 `readOnlyHint=false`。工具提示只帮助客户端展示，服务端依据凭据 Scope 决定可见及可调用的工具。REST 与 MCP 以同一绑定账号共享批次、换组键与条目状态。
+外部 MCP 仅提供只读工具。即使令牌拥有 `notes:write`、`reviews:write` 或 `discovery:write`，也不能通过工具发现或直接调用创建笔记、创建或更换回顾、记录打开或略过、更新阅读历史。`get_daily_review`、`replace_daily_review`、`open_review_memo`、`skip_review_memo` 和 `open_discovery_memo` 均不注册为 MCP 工具。服务端按读取 Scope 注册工具，`readOnlyHint` 只用于展示提示。原生 REST 入口负责产品状态写入，MCP 可以读取这些入口产生的回顾与条目状态。
+
+`get_memo` 接受 `{"name":"memos/example"}`，读取前验证来源账户，返回前获取 Memos 原文；不存在或不属于绑定作者时返回 `SOURCE_NOT_FOUND`。`list_memos` 接受可省略的 `state`（默认 `NORMAL`，也支持 `ARCHIVED`）、`page_size`（默认 20，范围 1—100）、`page_token`。它复用 REST 笔记列表的分页与原文复查，同一实例、作者、索引代次及状态下的游标可在 REST 与 MCP 间互用；无效游标返回 `INVALID_PAGE_TOKEN`。来源故障使获取和列表请求失败，不返回缓存正文。两个工具均只读、幂等、非破坏，不更新阅读历史。
 
 三个 AI 工具使用 `AIRequest`，始终返回完整结构化 `AIResult` 和相同内容的 JSON 文本；`stream` 不启用 MCP 内容流。均设置 `readOnlyHint=true`、`idempotentHint=false`、`destructiveHint=false`，描述中明确模型耗用。原有工具的 Scope、可见性及幂等提示保持各自契约。MCP 的 64 KiB 限额覆盖整个 JSON-RPC 请求，而不只是工具参数；取消请求传入共享服务。
 

@@ -6,7 +6,9 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"net/url"
 	"slices"
+	"strconv"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -28,21 +30,22 @@ type reviewBatchArgs struct {
 	BatchID string `json:"batch_id" jsonschema:"Review batch UUID"`
 }
 
-type reviewReplaceArgs struct {
-	IdempotencyKey string `json:"idempotency_key" jsonschema:"Stable key reused for retries of the same replacement"`
+type memoArgs struct {
+	Name string `json:"name" jsonschema:"Memos resource name, such as memos/abc"`
 }
 
-type reviewMarkArgs struct {
-	BatchID string `json:"batch_id" jsonschema:"Review batch UUID"`
-	Name    string `json:"name" jsonschema:"Memos resource name, such as memos/abc"`
+type listMemosArgs struct {
+	State     string `json:"state,omitempty" jsonschema:"NORMAL (default) or ARCHIVED"`
+	PageSize  *int   `json:"page_size,omitempty" jsonschema:"Maximum notes per page, default 20, range 1 to 100"`
+	PageToken string `json:"page_token,omitempty" jsonschema:"Opaque next_page_token from a previous notes page"`
 }
 
-func addDomainTool[I, O any](server *mcp.Server, name, description string, readOnly bool,
+func addDomainTool[I, O any](server *mcp.Server, name, description string,
 	call func(context.Context, I) (O, error)) {
 	destructive := false
 	mcp.AddTool(server, &mcp.Tool{Name: name, Description: description,
-		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: readOnly,
-			IdempotentHint: readOnly || name == "open_review_memo" || name == "skip_review_memo", DestructiveHint: &destructive}},
+		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true,
+			IdempotentHint: true, DestructiveHint: &destructive}},
 		func(ctx context.Context, _ *mcp.CallToolRequest, args I) (*mcp.CallToolResult, any, error) {
 			batch, err := call(ctx, args)
 			if err == nil {
@@ -98,50 +101,56 @@ func (a *API) newMCPHandler() http.Handler {
 			a.addAITool(server, "get_topic_timeline", "根据本人笔记生成主题时间线，区分记录时间与事件时间；调用模型并产生用量，不保存结果。", false, true)
 		}
 		if slices.Contains(access.Scopes, "notes:read") {
-			addDomainTool(server, "semantic_walk", "沿语义继续话题、换角度或随机跳转；按路径去重，不记录阅读。", true,
+			addDomainTool(server, "get_memo", "读取指定本人笔记的最新全文与附件，不记录阅读。",
+				func(ctx context.Context, args memoArgs) (Note, error) {
+					if !memoPattern.MatchString(args.Name) {
+						return Note{}, failure("INVALID_RESOURCE", "Invalid memo resource name", 422, false)
+					}
+					if err := a.verifySource(ctx); err != nil {
+						return Note{}, err
+					}
+					memo, err := a.liveMemo(ctx, args.Name)
+					if err != nil {
+						return Note{}, err
+					}
+					if memo == nil {
+						return Note{}, failure("SOURCE_NOT_FOUND", "Memo is unavailable", 404, false)
+					}
+					return memo.Note(a.Settings), nil
+				})
+			addDomainTool(server, "list_memos", "分页读取本人笔记，默认正常状态；复用笔记 REST 接口的分页游标，不记录阅读。",
+				func(ctx context.Context, args listMemosArgs) (any, error) {
+					query := url.Values{"state": {args.State}, "page_token": {args.PageToken}}
+					if args.PageSize != nil {
+						query.Set("page_size", strconv.Itoa(*args.PageSize))
+					}
+					request, err := http.NewRequestWithContext(ctx, http.MethodGet, "/api/ext/v1/notes?"+query.Encode(), nil)
+					if err != nil {
+						return nil, err
+					}
+					result, _, err := a.notes(request)
+					return result, err
+				})
+			addDomainTool(server, "semantic_walk", "沿语义继续话题、换角度或随机跳转；按路径去重，不记录阅读。",
 				a.Search.Walk)
-			addDomainTool(server, "get_related_memos", "从指定本人笔记寻找相关笔记，排除自身、合并重复片段并复查来源。", true,
+			addDomainTool(server, "get_related_memos", "从指定本人笔记寻找相关笔记，排除自身、合并重复片段并复查来源。",
 				func(ctx context.Context, args RelatedRequest) (RelatedResponse, error) {
 					return a.Search.Related(ctx, args)
 				})
-			addDomainTool(server, "semantic_search", "按中文关键词、语义与标签检索本人笔记，返回命中位置并复查来源。", true,
+			addDomainTool(server, "semantic_search", "按中文关键词、语义与标签检索本人笔记，返回命中位置并复查来源。",
 				func(ctx context.Context, args SearchRequest) (SearchResponse, error) {
 					return a.Search.Search(ctx, args)
 				})
 		}
-		if slices.Contains(access.Scopes, "discovery:write") {
-			addDomainTool(server, "open_discovery_memo", "打开笔记并更新最近阅读，供漫步降权；会改变产品状态。", false,
-				func(ctx context.Context, args struct {
-					Name string `json:"name"`
-				}) (Note, error) {
-					return a.Search.Open(ctx, args.Name)
-				})
-		}
 		if slices.Contains(access.Scopes, "reviews:read") {
-			addDomainTool(server, "get_review_batch", "读取已有回顾批次，复查来源原文与作者。", true,
+			addDomainTool(server, "get_review_batch", "读取已有回顾批次，复查来源原文与作者。",
 				func(ctx context.Context, args reviewBatchArgs) (ReviewBatch, error) {
 					return a.Reviews.Get(ctx, args.BatchID)
 				})
-			addDomainTool(server, "read_daily_review", "读取已有当日回顾；尚未创建时返回 REVIEW_NOT_FOUND。", true,
+			addDomainTool(server, "read_daily_review", "读取已有当日回顾；尚未创建时返回 REVIEW_NOT_FOUND。",
 				func(ctx context.Context, _ struct{}) (ReviewBatch, error) {
 					return a.Reviews.ReadDaily(ctx, time.Now())
 				})
-		}
-		if slices.Contains(access.Scopes, "reviews:write") {
-			addDomainTool(server, "get_daily_review", "获取当日回顾；首次调用会创建并持久保存批次及选中历史。", false,
-				func(ctx context.Context, _ struct{}) (ReviewBatch, error) {
-					return a.Reviews.Daily(ctx, time.Now())
-				})
-			addDomainTool(server, "replace_daily_review", "换一组并持久保存新批次；同日相同幂等键重试返回同一批次。", false,
-				func(ctx context.Context, args reviewReplaceArgs) (ReviewBatch, error) {
-					return a.Reviews.Replace(ctx, args.IdempotencyKey, time.Now())
-				})
-			for _, action := range []string{"open", "skip"} {
-				addDomainTool(server, action+"_review_memo", "持久记录回顾条目的 "+action+" 操作，保留首次发生时间。", false,
-					func(ctx context.Context, args reviewMarkArgs) (ReviewBatch, error) {
-						return a.Reviews.Mark(ctx, args.BatchID, args.Name, action, time.Now())
-					})
-			}
 		}
 		return server
 	}, &mcp.StreamableHTTPOptions{Stateless: true, JSONResponse: true, MaxRequestBodyBytes: 65536,

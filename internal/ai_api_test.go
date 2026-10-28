@@ -412,7 +412,7 @@ func TestAIAPIMCPVisibilityAndResults(t *testing.T) {
 	for _, test := range []struct {
 		token string
 		count int
-	}{{strings.Repeat("r", 40), 3}, {strings.Repeat("o", 40), 3}, {strings.Repeat("a", 40), 0}, {strings.Repeat("g", 40), 6}} {
+	}{{strings.Repeat("r", 40), 5}, {strings.Repeat("o", 40), 5}, {strings.Repeat("a", 40), 0}, {strings.Repeat("g", 40), 8}} {
 		result := aiMCPCall(t, api, test.token, "tools/list", map[string]any{})["result"].(map[string]any)
 		tools := result["tools"].([]any)
 		if len(tools) != test.count {
