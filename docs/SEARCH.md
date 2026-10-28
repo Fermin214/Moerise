@@ -1,6 +1,6 @@
 # Moerise 搜索
 
-REST、扩展 MCP 和飞书通过同一个 `SearchService` 搜索绑定作者的笔记、查找相关笔记并进行漫步。检索组合中文关键词、标签和可选语义，不依赖 LLM。
+REST 和扩展 MCP 通过同一个 `SearchService` 搜索绑定作者的笔记、查找相关笔记并进行漫步。检索组合中文关键词、标签和可选语义，不依赖 LLM。
 
 ## 请求与结果
 
@@ -30,7 +30,7 @@ REST 使用 `POST /api/ext/v1/search`，要求 `notes:read` Scope，成功返回
 | 字段 | 含义 |
 | --- | --- |
 | `note` | 来源复查后的完整 `Note`，含资源名、作者、状态、标签、正文和原文 `url` |
-| `score` | 融合后该笔记最高片段的数值分数，不是概率或置信度 |
+| `score` | 融合后该笔记最高片段的数值分数，不能用作概率或置信度 |
 | `matches` | 最多 3 个命中片段 |
 
 每个 `SearchMatch` 包含以下字段：
@@ -43,7 +43,7 @@ REST 使用 `POST /api/ext/v1/search`，要求 `notes:read` Scope，成功返回
 | `content` | 字符串，对应原始正文区间的片段 |
 | `signals` | 字符串数组，取值为 `keyword`、`semantic`、`tag`，表示参与命中的召回通道 |
 
-片段沿用 3.2 的 `paragraph-v1-2048` 分块：短正文整条处理，长正文按段落、换行和码点切分，不拆开 UTF-8 字符；末尾换行属于前一行。完整规则见[分块与向量索引](EMBEDDING.md#分块与向量索引)。命中位置针对原始正文，不针对分词后的文本。
+片段沿用 3.2 的 `paragraph-v1-2048` 分块：短正文整条处理，长正文按段落、换行和码点切分，不拆开 UTF-8 字符；末尾换行属于前一行。完整规则见[分块与向量索引](EMBEDDING.md#分块与向量索引)。命中位置以原始正文为准，分词不改变位置。
 
 ## 中文关键词与排名
 
@@ -82,7 +82,7 @@ REST 使用 `POST /api/ext/v1/search`，要求 `notes:read` Scope，成功返回
 3. 返回前逐条从 Memos 读取候选原文，检查作者、状态、标签和来源摘要。发生修改、删除、作者越界或过滤条件变化的候选丢弃，同时修正投影，后续请求使用修正后的索引。
 4. 输出前再次验证来源身份，全部检查成功后才返回结果。
 
-候选丢弃后结果可能少于 `limit`，甚至为空。任一步来源故障使整个请求失败，不返回部分缓存文本。REST 错误沿用 [API v1](API-V1.md#时间与错误) 的来源错误契约；MCP 与飞书执行相同来源检查。
+候选丢弃后结果可能少于 `limit`，甚至为空。任一步来源故障使整个请求失败，不返回部分缓存文本。REST 错误沿用 [API v1](API-V1.md#时间与错误) 的来源错误契约；MCP 与飞书发送队列中的搜索回复执行相同来源检查。
 
 ## 相关笔记
 
@@ -125,7 +125,7 @@ REST 使用 `GET /api/ext/v1/notes/{memo_id}/related`，要求 `notes:read`。�
 
 `random` 从排除路径后的投影抽样至多 100 条，无需模型，基础分数为 0.5。最近七天通过发现打开接口或回顾显式打开的资源减 0.4；展示、召回、推送或漫步本身不记录阅读。同分随机候选保持抽样顺序。
 
-成功返回 `WalkResponse`：`mode`、一个 `item: SearchHit | null`、后续 `path`、`exhausted` 和 `warnings`。调用方应原样传回路径。达到 100 项或候选范围用尽时返回 `item=null`、`exhausted=true`；候选用尽不等于全部笔记已读。漫步的 `score` 为语义或随机基础分与话题、阅读权重之和，片段 `signals` 还可包含 `random`、`recent_read`。
+成功返回 `WalkResponse`：`mode`、一个 `item: SearchHit | null`、后续 `path`、`exhausted` 和 `warnings`。调用方应原样传回路径。达到 100 项或候选范围用尽时返回 `item=null`、`exhausted=true`；该状态只描述路径或候选范围，范围之外仍可能有未读笔记。漫步的 `score` 为语义或随机基础分与话题、阅读权重之和，片段 `signals` 还可包含 `random`、`recent_read`。
 
 来源复查规则与相关笔记一致：开始和结束验证身份，逐条读取候选；起点输出前再次复查，改变返回可重试的 409 `SOURCE_CHANGED`，消失或作者越界返回 404 `SOURCE_NOT_FOUND`。来源故障使整请求失败。
 
@@ -137,15 +137,15 @@ REST 使用 `GET /api/ext/v1/notes/{memo_id}/related`，要求 `notes:read`。�
 
 扩展 MCP 工具为 `semantic_search`，仅对具备 `notes:read` 的凭据可见及可调用。输入字段与 `SearchRequest`、结构化输出与 `SearchResponse` 一致；设置 `readOnlyHint=true`、`idempotentHint=true`、`destructiveHint=false`。工具语义为只读、幂等、非破坏，来源复查修正的仅是派生索引。
 
-飞书支持 `搜索 查询词`、`搜索 #标签 查询词`，也可用 `搜索 #标签` 只搜标签。以 `#` 开头的独立词作为标签过滤；有其他查询词时从查询中移除标签词，纯标签输入则保留为非空查询。默认返回前 5 条正常笔记，展示片段、行位置、资源名和原文 URL；语义降级附简短提示。交互与事件恢复见[飞书入口](FEISHU.md)。
+飞书文字全部原样记录为笔记，`搜索 查询词`、`搜索 #标签 查询词` 和 `搜索 #标签` 也按正文保存，不执行搜索。记录与事件恢复见[飞书入口](FEISHU.md)。
 
-搜索查询加密保存在飞书事件结果引用中，发送时重新搜索并复查来源。结果引用不保存用于直接发送的搜索正文，恢复发送时使用配套应用密钥解密查询。
+飞书发送队列中的搜索回复使用事件结果引用里加密保存的查询，发送时重新搜索并复查来源，展示片段、行位置、资源名和原文 URL；语义降级附简短提示。结果引用不保存用于直接发送的搜索正文，恢复发送时使用配套应用密钥解密查询。
 
 `get_related_memos` 要求 `notes:read`，使用 `readOnlyHint=true`、`idempotentHint=true`、`destructiveHint=false`。输入为 `RelatedRequest`：必填 `name: "memos/id"`，可选 `tags`、`state`、`limit`，默认值和约束同相关 REST；输入错误以 `isError=true` 和错误文本返回，业务错误沿用其他工具的 JSON 错误形状。结构化输出为 `RelatedResponse`。
 
-飞书命令为 `相关 memos/资源标识`，默认 5 条、`NORMAL`。发送时重新获取相关结果，复查原笔记及候选；展示原笔记资源名和 URL、结果片段、行号、资源名与 URL，以及语义降级原因。来源故障不发送原笔记或部分结果。
+飞书中的 `相关 memos/资源标识` 按正文保存，不执行相关查询。发送队列中的相关笔记回复默认取 5 条、`NORMAL`，发送时重新获取相关结果，复查原笔记及候选；展示原笔记资源名和 URL、结果片段、行号、资源名与 URL，以及语义降级原因。来源故障不发送原笔记或部分结果。
 
-MCP `semantic_walk` 使用 `WalkRequest`，要求 `notes:read`，工具提示为只读、幂等、非破坏；幂等提示表示不改变产品状态，随机模式的结果可变化。`open_discovery_memo` 要求 `discovery:write`，参数为 `name`，设置 `readOnlyHint=false`。飞书支持“漫步”“继续这个话题”“换个角度”“随机跳转”和“查看”，命令与路径传递见[飞书入口](FEISHU.md#漫步与阅读)。
+MCP `semantic_walk` 使用 `WalkRequest`，要求 `notes:read`，工具提示为只读、幂等、非破坏；调用不改变产品状态，随机模式的结果可变化。外部 MCP 不注册 `open_discovery_memo`，阅读记录通过要求 `discovery:write` 的 REST 接口更新，参数为 `name`。飞书中的“漫步”“继续这个话题”“换个角度”“随机跳转”和“查看”全部按正文记录，不执行漫步或更新阅读状态，见[飞书入口](FEISHU.md#私聊记录)。
 
 ## 索引迁移与恢复
 
@@ -157,4 +157,4 @@ MCP `semantic_walk` 使用 `WalkRequest`，要求 `notes:read`，工具提示为
 
 基础验证包括 `go test ./...`、`go vet ./...`、`gofmt -l main.go internal tests` 和支持竞争检测环境中的 `go test -race ./...`。真实 Memos 隔离集成通过 `go test -tags=integration ./tests -v -count=1` 执行，结合模型与飞书模拟服务覆盖中文短查询、语义改写、标签、跨入口结果、来源修改删除、故障和重启。检查项目与环境见[开发指南](DEVELOPMENT.md)。
 
-固定工程语料的 20 题实模型评测、相关和漫步路径，以及一万条、1024 维向量的冷启动、热扫描和并发资源测量见[语义检索与发现验收](STAGE3-ACCEPTANCE.md)。复现入口为 `TestStage3LiveAcceptance` 和 `scripts/benchmark-search.py`。
+实模型评测与本地性能测量的入口为 `TestStage3LiveAcceptance` 和 `scripts/benchmark-search.py`，配置及执行方式见[开发指南](DEVELOPMENT.md#检索评测)。

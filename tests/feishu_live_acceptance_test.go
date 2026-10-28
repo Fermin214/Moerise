@@ -5,7 +5,6 @@ package acceptance
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -131,8 +130,14 @@ func TestFeishuLiveReviewAcceptance(t *testing.T) {
 			}
 			if kind == "feishu-app" {
 				client := moerise.NewFeishuClient(settings.Channel)
-				byPosition := make(map[int]string)
+				ordered := first
 				for _, item := range sent {
+					if item.ID != first[0].ID {
+						ordered = append(ordered, item)
+					}
+				}
+				var joined strings.Builder
+				for _, item := range ordered {
 					if item.Receipt == nil {
 						t.Fatal("application send has no platform receipt")
 					}
@@ -140,27 +145,7 @@ func TestFeishuLiveReviewAcceptance(t *testing.T) {
 					if err != nil {
 						t.Fatal(err)
 					}
-					_, text, ok := strings.Cut(message.Text, "\n\n")
-					if !ok {
-						t.Fatal("platform text has no full review body")
-					}
-					lines := strings.SplitN(message.Text, "\n", 4)
-					var position int
-					if len(lines) < 3 {
-						t.Fatal("platform text has no fragment position")
-					}
-					if _, err := fmt.Sscanf(lines[2], "第 %d 片", &position); err != nil {
-						t.Fatal(err)
-					}
-					byPosition[position] = text
-				}
-				var joined strings.Builder
-				for position := 1; joined.Len() < len(body); position++ {
-					text := byPosition[position]
-					if text == "" {
-						t.Fatal("platform text is missing or out of order")
-					}
-					joined.WriteString(text)
+					joined.WriteString(message.Text)
 				}
 				if joined.String() != body {
 					t.Fatal("platform full content differs from the source note")

@@ -170,7 +170,7 @@ func TestFeishuReviewFullTextQueueResumeAndUnknown(t *testing.T) {
 	store := reviews.Store
 	store.Settings.Channel = feishuSettings(t).Channel
 	store.Settings.Notifications.Enabled = true
-	content := strings.Repeat("长文🙂 <&> \"原文\"\\\n", 4000) + "最终正文"
+	content := strings.Repeat("长文🙂 <&> \"原文\"\\\n", 4000) + "最终正文\nhttps://example.com/user-link"
 	for _, raw := range memos {
 		raw["content"] = content
 	}
@@ -226,11 +226,7 @@ func TestFeishuReviewFullTextQueueResumeAndUnknown(t *testing.T) {
 		if !utf8.ValidString(text) || !reviewTextFits(text) {
 			t.Fatal("invalid UTF-8 or oversized request")
 		}
-		_, body, ok := strings.Cut(text, "\n\n")
-		if !ok {
-			t.Fatal("missing full-note header")
-		}
-		joined.WriteString(body)
+		joined.WriteString(text)
 	}
 	if joined.String() != content {
 		t.Fatal("long note was truncated, repeated or reordered")
@@ -345,11 +341,10 @@ func TestFeishuWebhookFullTextIgnoresAttachments(t *testing.T) {
 	}
 	var joined strings.Builder
 	for _, text := range texts {
-		_, body, found := strings.Cut(text, "\n\n")
-		if !found || strings.Contains(text, "/file/") || strings.Contains(text, "report.pdf") {
+		if strings.Contains(text, "/file/") || strings.Contains(text, "report.pdf") {
 			t.Fatal("Webhook emitted an attachment or attachment link")
 		}
-		joined.WriteString(body)
+		joined.WriteString(text)
 	}
 	if len(texts) < 2 || joined.String() != content {
 		t.Fatal("Webhook truncated or repeated the full note")
@@ -360,8 +355,8 @@ func TestFeishuReviewSourceChangeCancelsOldPartsAndContinues(t *testing.T) {
 	store := reviews.Store
 	store.Settings.Channel = feishuSettings(t).Channel
 	store.Settings.Notifications.Enabled = true
-	for _, raw := range memos {
-		raw["content"] = strings.Repeat("完整正文🙂\n", 3000)
+	for name, raw := range memos {
+		raw["content"] = name + "\n" + strings.Repeat("完整正文🙂\n", 3000)
 	}
 	platform := &reviewDeliveryPlatform{}
 	events := NewFeishuService(store, reviews.Source, nil, reviews, nil)
@@ -389,26 +384,15 @@ func TestFeishuReviewSourceChangeCancelsOldPartsAndContinues(t *testing.T) {
 			break
 		}
 	}
-	notices, otherNotes := 0, map[string]bool{}
-	for _, text := range platform.texts {
-		if strings.Contains(text, "笔记在推送期间发生了修改") {
-			notices++
-			if !strings.Contains(text, store.Settings.Memos.PublicURL+"/"+changed) {
-				t.Fatal("source change notice lacks usable original note link")
-			}
-		} else if strings.Contains(text, changed) {
-			if text != platform.texts[0] {
-				t.Fatal("old fragments continued after the source changed")
-			}
-		}
-		for _, entry := range batch.Items[1:] {
-			if strings.Contains(text, entry.Name) {
-				otherNotes[entry.Name] = true
-			}
-		}
+	var expected strings.Builder
+	for _, entry := range batch.Items[1:] {
+		expected.WriteString(entry.Note.Content)
+	}
+	if strings.Join(platform.texts[1:], "") != expected.String() {
+		t.Fatal("source change sent stale text or a notice, or blocked other notes")
 	}
 	pending, _ := queue.List("pending")
-	if notices != 1 || len(otherNotes) != 2 || len(pending) != 0 {
-		t.Fatalf("source change blocked delivery: notices=%d other=%d pending=%d", notices, len(otherNotes), len(pending))
+	if len(pending) != 0 {
+		t.Fatalf("source change left %d pending parts", len(pending))
 	}
 }

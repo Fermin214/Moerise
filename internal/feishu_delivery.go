@@ -91,17 +91,14 @@ func (s *FeishuDelivery) Check(ctx context.Context, item Notification, receipt s
 	if err != nil {
 		return false, err
 	}
-	if part.Kind == "empty" {
+	if part.Kind != "text" {
 		return false, nil
-	}
-	if part.Kind == "source_changed" {
-		return s.sourceChangedText(item, part) == message.Text, nil
 	}
 	note, err := s.reviewNote(ctx, part)
 	if err != nil {
 		return false, err
 	}
-	text, err := s.reviewPartText(item, part, note)
+	text, err := reviewPartText(part, note)
 	return err == nil && text == message.Text, err
 }
 

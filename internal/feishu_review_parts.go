@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -38,16 +37,8 @@ func reviewTextFits(text string) bool {
 	return len(body) <= feishuReviewBytes
 }
 
-func reviewPartHeader(date string, note Note, position int) string {
-	return fmt.Sprintf("%s 每日回顾\n记录于 %s\n第 %d 片\n%s\n\n",
-		date, note.CreateTime, position+1, note.URL)
-}
-
-func reviewTextEnd(content, header string) (int, error) {
-	if !reviewTextFits(header) {
-		return 0, failure("CHANNEL_MESSAGE_SIZE", "Review metadata exceeds the message limit", 422, false)
-	}
-	if len(content) <= feishuReviewBytes && reviewTextFits(header+content) {
+func reviewTextEnd(content string) (int, error) {
+	if len(content) <= feishuReviewBytes && reviewTextFits(content) {
 		return len(content), nil
 	}
 	low, high := 0, min(len(content), feishuReviewBytes)
@@ -57,7 +48,7 @@ func reviewTextEnd(content, header string) (int, error) {
 		for end > 0 && end < len(content) && !utf8.RuneStart(content[end]) {
 			end--
 		}
-		if reviewTextFits(header + content[:end]) {
+		if reviewTextFits(content[:end]) {
 			low = mid
 		} else {
 			high = mid - 1
@@ -93,8 +84,7 @@ func (s *FeishuDelivery) prepareReview(ctx context.Context, item Notification) (
 		note := *entry.Note
 		start := 0
 		for {
-			header := reviewPartHeader(batch.Date, note, len(parts))
-			length, err := reviewTextEnd(note.Content[start:], header)
+			length, err := reviewTextEnd(note.Content[start:])
 			if err != nil {
 				return part, err
 			}
@@ -166,31 +156,19 @@ func (s *FeishuDelivery) reviewNote(ctx context.Context, part feishuReviewPart) 
 	return memo.Note(s.Store.Settings), nil
 }
 
-func (s *FeishuDelivery) reviewPartText(item Notification, part feishuReviewPart, note Note) (string, error) {
-	header := reviewPartHeader(item.Date, note, part.Position)
+func reviewPartText(part feishuReviewPart, note Note) (string, error) {
 	if part.Start < 0 || part.End < part.Start || part.End > len(note.Content) {
 		return "", upstreamError("CHANNEL_PROTOCOL", "Invalid saved review text range")
 	}
-	return header + note.Content[part.Start:part.End], nil
+	return note.Content[part.Start:part.End], nil
 }
 
-func (s *FeishuDelivery) sourceChangedText(item Notification, part feishuReviewPart) string {
-	return fmt.Sprintf("%s 每日回顾\n第 %d 片\n\n笔记在推送期间发生了修改，请打开最新原文：\n%s/%s",
-		item.Date, part.Position+1,
-		strings.TrimRight(s.Store.Settings.Memos.PublicURL, "/"), part.Name)
-}
-
-func (s *FeishuDelivery) cancelChangedReview(item Notification, part feishuReviewPart) error {
-	return transaction(s.Store.state, func(tx *sql.Tx) error {
-		if _, err := tx.Exec(`UPDATE feishu_review_parts SET kind = 'source_changed'
-			WHERE notification_id = ?`, item.ID); err != nil {
-			return err
-		}
-		_, err := tx.Exec(`UPDATE feishu_review_parts SET kind = 'empty'
-			WHERE root_id = ? AND memo_name = ? AND position > ? AND notification_id IN
-			(SELECT id FROM notifications WHERE status = 'pending')`, part.Root, part.Name, part.Position)
-		return err
-	})
+func (s *FeishuDelivery) skipReviewNote(part feishuReviewPart) error {
+	_, err := s.Store.state.Exec(`UPDATE feishu_review_parts SET kind = 'empty'
+		WHERE root_id = ? AND memo_name = ? AND position >= ? AND notification_id IN
+		(SELECT id FROM notifications WHERE status IN ('pending', 'running'))`,
+		part.Root, part.Name, part.Position)
+	return err
 }
 
 func (s *FeishuDelivery) sendReviewText(ctx context.Context, item Notification, text string) (string, error) {
@@ -208,7 +186,7 @@ func (s *FeishuDelivery) sendReviewPart(ctx context.Context, item Notification) 
 	if err != nil {
 		return "", err
 	}
-	if part.Kind == "empty" {
+	if part.Kind != "text" {
 		return "empty:" + item.ID, nil
 	}
 	if part.Position != 0 {
@@ -222,23 +200,17 @@ func (s *FeishuDelivery) sendReviewPart(ctx context.Context, item Notification) 
 			return "", upstreamError("CHANNEL_PART_PENDING", "Previous review part is not confirmed")
 		}
 	}
-	if part.Kind == "source_changed" {
-		return s.sendReviewText(ctx, item, s.sourceChangedText(item, part))
-	}
 	note, err := s.reviewNote(ctx, part)
 	if err != nil {
-		if errorCode(err) == "SOURCE_NOT_FOUND" {
-			return "empty:" + item.ID, nil
-		}
-		if errorCode(err) == "SOURCE_CHANGED" {
-			if err := s.cancelChangedReview(item, part); err != nil {
+		if errorCode(err) == "SOURCE_NOT_FOUND" || errorCode(err) == "SOURCE_CHANGED" {
+			if err := s.skipReviewNote(part); err != nil {
 				return "", err
 			}
-			return s.sendReviewText(ctx, item, s.sourceChangedText(item, part))
+			return "empty:" + item.ID, nil
 		}
 		return "", err
 	}
-	text, err := s.reviewPartText(item, part, note)
+	text, err := reviewPartText(part, note)
 	if err != nil {
 		return "", err
 	}
