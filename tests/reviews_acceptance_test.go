@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -40,20 +41,22 @@ func (h *harness) reviewTool(name string, arguments any) map[string]any {
 
 func TestReviewsAcrossRESTAndMCPAcceptance(t *testing.T) {
 	h := newHarness(t)
+	for i := range 6 {
+		h.record(fmt.Sprintf("review-%d", i), h.operator, map[string]string{"content": fmt.Sprintf("review %d", i)}, 201)
+	}
 	h.stop()
+	// Prepare source notes before starting the daily review's product state.
+	h.settings.StateDir = filepath.Join(h.root, "review-state")
+	h.settings.IndexDir = filepath.Join(h.root, "review-index")
 	h.settings.Review.MinAgeHours = 0
 	h.settings.AccessTokens[0].Scopes = append(h.settings.AccessTokens[0].Scopes, "reviews:read")
-	h.settings.AccessTokens[1].Scopes = append(h.settings.AccessTokens[1].Scopes, "reviews:read", "reviews:write")
+	h.settings.AccessTokens[1].Scopes = append(h.settings.AccessTokens[1].Scopes, "reviews:read", "reviews:write", "discovery:write")
 	data, _ := json.Marshal(h.settings)
 	if err := os.WriteFile(h.config, data, 0600); err != nil {
 		t.Fatal(err)
 	}
 	h.start()
 	h.ready()
-	for i := range 6 {
-		h.record(fmt.Sprintf("review-%d", i), h.operator, map[string]string{"content": fmt.Sprintf("review %d", i)}, 201)
-	}
-	requireRecordError(t, h.call(h.base, "/api/ext/v1/reviews/daily", "GET", h.reader, nil, 404), "REVIEW_NOT_FOUND")
 	requireRecordError(t, h.call(h.base, "/api/ext/v1/reviews/daily", "POST", h.reader, map[string]any{}, 403), "FORBIDDEN")
 	batch := h.call(h.base, "/api/ext/v1/reviews/daily", "POST", h.operator, map[string]any{}, 200)
 	id := batch["id"].(string)
@@ -67,51 +70,71 @@ func TestReviewsAcrossRESTAndMCPAcceptance(t *testing.T) {
 	if initialize["protocolVersion"] == nil {
 		t.Fatal("MCP initialization failed")
 	}
-	tools := h.mcp(h.operator, "tools/list", map[string]any{})["tools"].([]any)
-	if len(tools) != 9 {
-		t.Fatalf("missing review tools: %v", tools)
-	}
-	for _, value := range tools {
-		tool := value.(map[string]any)
-		name := tool["name"].(string)
-		readonly := tool["annotations"].(map[string]any)["readOnlyHint"]
-		if readonly != (name == "get_review_batch" || name == "read_daily_review" || name == "semantic_search" || name == "get_related_memos" || name == "semantic_walk") {
-			t.Fatalf("incorrect state-change hint: %v", tool)
+	wantTools := []string{"get_memo", "list_memos", "get_review_batch", "read_daily_review",
+		"semantic_search", "get_related_memos", "semantic_walk"}
+	slices.Sort(wantTools)
+	for _, token := range []string{h.reader, h.operator} {
+		tools := h.mcp(token, "tools/list", map[string]any{})["tools"].([]any)
+		names := []string{}
+		for _, value := range tools {
+			tool := value.(map[string]any)
+			names = append(names, tool["name"].(string))
+			hints := tool["annotations"].(map[string]any)
+			if hints["readOnlyHint"] != true || hints["idempotentHint"] != true || hints["destructiveHint"] != false {
+				t.Fatalf("incorrect read-only hints: %v", tool)
+			}
+		}
+		slices.Sort(names)
+		if !slices.Equal(names, wantTools) {
+			t.Fatalf("incorrect MCP tools: %v", names)
+		}
+		for _, tool := range []string{"get_daily_review", "replace_daily_review", "open_review_memo",
+			"skip_review_memo", "open_discovery_memo", "mark_memo_read"} {
+			denied, status, err := h.requestWithHeaders(h.base, "/mcp", "POST", token,
+				map[string]any{"jsonrpc": "2.0", "id": "denied", "method": "tools/call",
+					"params": map[string]any{"name": tool, "arguments": map[string]any{}}},
+				map[string]string{"Accept": "application/json, text/event-stream", "MCP-Protocol-Version": "2025-11-25"})
+			rpcError, _ := denied["error"].(map[string]any)
+			message, _ := rpcError["message"].(string)
+			if err != nil || status != 200 || rpcError["code"] != float64(-32602) || !strings.Contains(message, "unknown tool") {
+				t.Fatalf("MCP accepted product write %s: %v status=%d err=%v", tool, denied, status, err)
+			}
 		}
 	}
-	if got := h.reviewTool("get_daily_review", map[string]any{}); got["id"] != id {
+	if got := h.reviewTool("read_daily_review", map[string]any{}); got["id"] != id {
 		t.Fatal("REST and MCP did not share their daily batch")
-	}
-	readerTools := h.mcp(h.reader, "tools/list", map[string]any{})["tools"].([]any)
-	if len(readerTools) != 5 {
-		t.Fatal("read-only principal was offered state-changing tools")
-	}
-	denied, denialStatus, denialErr := h.requestWithHeaders(h.base, "/mcp", "POST", h.reader,
-		map[string]any{"jsonrpc": "2.0", "id": "denied", "method": "tools/call",
-			"params": map[string]any{"name": "get_daily_review", "arguments": map[string]any{}}},
-		map[string]string{"Accept": "application/json, text/event-stream", "MCP-Protocol-Version": "2025-11-25"})
-	result, _ := denied["result"].(map[string]any)
-	if denialErr != nil || denialStatus != 200 || denied["error"] == nil && result["isError"] != true {
-		t.Fatal("read-only principal changed review state through MCP")
 	}
 	item := batch["items"].([]any)[0].(map[string]any)
 	name := item["name"].(string)
-	h.reviewTool("open_review_memo", map[string]string{"batch_id": id, "name": name})
+	if got := h.reviewTool("get_memo", map[string]string{"name": name}); got["name"] != name {
+		t.Fatalf("MCP did not fetch the selected note: %v", got)
+	}
+	if got := h.reviewTool("list_memos", map[string]any{"page_size": 1}); len(got["notes"].([]any)) != 1 || got["next_page_token"] == "" {
+		t.Fatalf("MCP did not paginate notes: %v", got)
+	}
 	path := "/api/ext/v1/reviews/" + id
+	h.call(h.base, path+"/items/"+strings.TrimPrefix(name, "memos/")+"/open", "POST", h.operator, map[string]any{}, 200)
 	fresh := h.call(h.base, path, "GET", h.reader, nil, 200)
 	if fresh["items"].([]any)[0].(map[string]any)["opened_at"] == nil {
-		t.Fatal("MCP open was not visible over REST")
+		t.Fatal("REST open was not persisted")
 	}
 	h.call(h.base, path+"/items/"+strings.TrimPrefix(name, "memos/")+"/skip", "POST", h.operator, map[string]any{}, 200)
 	fresh = h.reviewTool("get_review_batch", map[string]string{"batch_id": id})
 	if fresh["items"].([]any)[0].(map[string]any)["skipped_at"] == nil {
 		t.Fatal("REST skip was not visible over MCP")
 	}
-	replacement := h.reviewTool("replace_daily_review", map[string]string{"idempotency_key": "shared-replacement"})
+	replacement, status, err := h.requestWithHeaders(h.base, "/api/ext/v1/reviews/daily/replace", "POST", h.operator, map[string]any{},
+		map[string]string{"Idempotency-Key": "shared-replacement"})
+	if err != nil || status != 200 {
+		t.Fatalf("REST replacement: %v status=%d err=%v", replacement, status, err)
+	}
 	rest, status, err := h.requestWithHeaders(h.base, "/api/ext/v1/reviews/daily/replace", "POST", h.operator, map[string]any{},
 		map[string]string{"Idempotency-Key": "shared-replacement"})
 	if err != nil || status != 200 || rest["id"] != replacement["id"] {
-		t.Fatalf("cross-entry replacement replay: %v status=%d err=%v", rest, status, err)
+		t.Fatalf("REST replacement replay: %v status=%d err=%v", rest, status, err)
+	}
+	if got := h.reviewTool("read_daily_review", map[string]any{}); got["id"] != replacement["id"] {
+		t.Fatal("MCP did not read the REST replacement")
 	}
 	seen := map[string]bool{}
 	for _, value := range batch["items"].([]any) {
@@ -134,7 +157,7 @@ func TestReviewsAcrossRESTAndMCPAcceptance(t *testing.T) {
 		}
 		h.start()
 		h.ready()
-		if got := h.reviewTool("get_daily_review", map[string]any{}); got["id"] != replacement["id"] {
+		if got := h.reviewTool("read_daily_review", map[string]any{}); got["id"] != replacement["id"] {
 			t.Fatalf("%s changed batch identity", operation)
 		}
 		got := h.call(h.base, path, "GET", h.reader, nil, 200)["items"].([]any)[0].(map[string]any)
