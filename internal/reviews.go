@@ -33,6 +33,9 @@ type ReviewService struct {
 	Source Source
 }
 
+// Batches append in creation order; timestamps vary in precision and sequences reset per rule.
+const reviewBatchOrder = " ORDER BY rowid DESC LIMIT 1"
+
 func NewReviewService(store *Store, source Source) *ReviewService {
 	return &ReviewService{Store: store, Source: source}
 }
@@ -65,7 +68,7 @@ func (s *ReviewService) ReadDaily(ctx context.Context, at time.Time) (ReviewBatc
 	instance, user := s.binding()
 	var id string
 	err = s.Store.state.QueryRow(`SELECT id FROM review_batches WHERE instance_id = ? AND user_name = ?
-		AND local_date = ? AND timezone = ? ORDER BY created_at DESC, sequence DESC LIMIT 1`,
+		AND local_date = ? AND timezone = ?`+reviewBatchOrder,
 		instance, user, at.In(location).Format(time.DateOnly), s.Store.Settings.Timezone).Scan(&id)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ReviewBatch{}, failure("REVIEW_NOT_FOUND", "No daily review has been created", 404, false)
@@ -103,7 +106,7 @@ func (s *ReviewService) batch(ctx context.Context, at time.Time, key string) (Re
 		query += " AND request_key = ?"
 		args = append(args, key)
 	}
-	query += " ORDER BY created_at DESC, sequence DESC LIMIT 1"
+	query += reviewBatchOrder
 	var id string
 	err = s.Store.state.QueryRow(query, args...).Scan(&id)
 	if err == nil {

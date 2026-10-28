@@ -293,12 +293,19 @@ func (s *Settings) Validate() error {
 	appFields := []string{configured(channel.AppID), configured(channel.AppSecret),
 		configured(channel.VerificationToken), configured(channel.UserOpenID)}
 	appEnabled := slices.ContainsFunc(appFields, func(value string) bool { return value != "" }) || configured(channel.EncryptKey) != ""
-	if appEnabled {
-		if channel.Kind != "feishu-app" || slices.Contains(appFields, "") ||
+	if appEnabled && channel.Kind == "feishu-app" {
+		if slices.Contains(appFields, "") ||
 			len(configured(channel.AppSecret)) < 16 || len(configured(channel.VerificationToken)) < 16 ||
 			!strings.HasPrefix(configured(channel.UserOpenID), "ou_") ||
 			(configured(channel.Destination) != "" && configured(channel.Destination) != configured(channel.UserOpenID)) {
 			return bad("channel application credentials or identity")
+		}
+	}
+	if appEnabled && channel.Kind == "feishu-webhook" {
+		if configured(channel.AppID) == "" || len(configured(channel.AppSecret)) < 16 ||
+			configured(channel.VerificationToken) != "" || configured(channel.UserOpenID) != "" ||
+			configured(channel.EncryptKey) != "" || configured(channel.Destination) != "" {
+			return bad("channel Webhook image upload credentials")
 		}
 	}
 	if s.Review.Count < 1 || s.Review.Count > 20 || s.Review.MinAgeHours < 0 ||

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"strconv"
 	"strings"
+	"time"
 	"unicode/utf8"
 )
 
@@ -16,16 +17,17 @@ const feishuReviewBytes = 18 * 1024
 
 type feishuReviewPart struct {
 	Root, Kind, Name, Version string
+	Attachment, ImageKey      string
 	Position, Start, End      int
 }
 
 func (s *FeishuDelivery) reviewPart(id string) (feishuReviewPart, error) {
 	var part feishuReviewPart
 	err := s.Store.state.QueryRow(`SELECT root_id, position, kind, memo_name, source_version,
-		byte_start, byte_end
+		byte_start, byte_end, attachment_name, COALESCE(image_key, '')
 		FROM feishu_review_parts WHERE notification_id = ?`, id).
 		Scan(&part.Root, &part.Position, &part.Kind, &part.Name, &part.Version,
-			&part.Start, &part.End)
+			&part.Start, &part.End, &part.Attachment, &part.ImageKey)
 	return part, err
 }
 
@@ -78,12 +80,13 @@ func (s *FeishuDelivery) prepareReview(ctx context.Context, item Notification) (
 	}
 	parts := []feishuReviewPart{}
 	for _, entry := range batch.Items {
-		if entry.Unavailable || entry.Note == nil || strings.TrimSpace(entry.Note.Content) == "" {
+		if entry.Unavailable || entry.Note == nil {
 			continue
 		}
 		note := *entry.Note
+		before := len(parts)
 		start := 0
-		for {
+		for start < len(note.Content) && strings.TrimSpace(note.Content) != "" {
 			length, err := reviewTextEnd(note.Content[start:])
 			if err != nil {
 				return part, err
@@ -95,9 +98,26 @@ func (s *FeishuDelivery) prepareReview(ctx context.Context, item Notification) (
 				break
 			}
 		}
+		for _, attachment := range note.Attachments {
+			kind, _ := attachment["type"].(string)
+			name, _ := attachment["name"].(string)
+			if strings.HasPrefix(kind, "image/") && attachmentPattern.MatchString(name) {
+				parts = append(parts, feishuReviewPart{Root: item.ID, Kind: "image", Name: note.Name,
+					Version: note.SourceHash, Position: len(parts), Attachment: name})
+			}
+		}
+		if len(parts) != before {
+			parts = append(parts, feishuReviewPart{Root: item.ID, Kind: "footer", Name: note.Name,
+				Version: note.SourceHash})
+		}
 	}
 	if len(parts) == 0 {
 		parts = append(parts, feishuReviewPart{Root: item.ID, Kind: "empty"})
+	} else {
+		parts = append([]feishuReviewPart{{Root: item.ID, Kind: "header"}}, parts...)
+	}
+	for i := range parts {
+		parts[i].Position = i
 	}
 	err = transaction(s.Store.state, func(tx *sql.Tx) error {
 		var exists bool
@@ -124,9 +144,9 @@ func (s *FeishuDelivery) prepareReview(ctx context.Context, item Notification) (
 			}
 			if _, err := tx.Exec(`INSERT INTO feishu_review_parts
 				(notification_id, root_id, position, kind, memo_name, source_version,
-				byte_start, byte_end) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+				byte_start, byte_end, attachment_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 				id, item.ID, i, candidate.Kind, candidate.Name, candidate.Version,
-				candidate.Start, candidate.End); err != nil {
+				candidate.Start, candidate.End, candidate.Attachment); err != nil {
 				return err
 			}
 		}
@@ -163,6 +183,26 @@ func reviewPartText(part feishuReviewPart, note Note) (string, error) {
 	return note.Content[part.Start:part.End], nil
 }
 
+func (s *FeishuDelivery) reviewFooter(note Note) (string, error) {
+	created, err := time.Parse(time.RFC3339Nano, note.CreateTime)
+	if err != nil {
+		return "", upstreamError("UPSTREAM_PROTOCOL", "Invalid source creation time")
+	}
+	location, err := time.LoadLocation(s.Store.Settings.Timezone)
+	if err != nil {
+		return "", err
+	}
+	tags := make([]string, 0, len(note.Tags))
+	for _, tag := range note.Tags {
+		tags = append(tags, "#"+tag)
+	}
+	footer := "创建于" + created.In(location).Format(time.DateOnly)
+	if len(tags) != 0 {
+		footer = strings.Join(tags, " ") + "  " + footer
+	}
+	return footer, nil
+}
+
 func (s *FeishuDelivery) skipReviewNote(part feishuReviewPart) error {
 	_, err := s.Store.state.Exec(`UPDATE feishu_review_parts SET kind = 'empty'
 		WHERE root_id = ? AND memo_name = ? AND position >= ? AND notification_id IN
@@ -186,7 +226,7 @@ func (s *FeishuDelivery) sendReviewPart(ctx context.Context, item Notification) 
 	if err != nil {
 		return "", err
 	}
-	if part.Kind != "text" {
+	if part.Kind == "empty" {
 		return "empty:" + item.ID, nil
 	}
 	if part.Position != 0 {
@@ -200,6 +240,19 @@ func (s *FeishuDelivery) sendReviewPart(ctx context.Context, item Notification) 
 			return "", upstreamError("CHANNEL_PART_PENDING", "Previous review part is not confirmed")
 		}
 	}
+	if part.Kind == "header" {
+		ready, err := s.reviewHeaderReady(ctx, part.Root)
+		if err != nil {
+			return "", err
+		}
+		if !ready {
+			return "empty:" + item.ID, nil
+		}
+		return s.sendReviewText(ctx, item, "「今日回顾」")
+	}
+	if part.Kind != "text" && part.Kind != "image" && part.Kind != "footer" {
+		return "empty:" + item.ID, nil
+	}
 	note, err := s.reviewNote(ctx, part)
 	if err != nil {
 		if errorCode(err) == "SOURCE_NOT_FOUND" || errorCode(err) == "SOURCE_CHANGED" {
@@ -210,9 +263,157 @@ func (s *FeishuDelivery) sendReviewPart(ctx context.Context, item Notification) 
 		}
 		return "", err
 	}
+	if part.Kind == "image" {
+		receipt, err := s.sendReviewImage(ctx, item, part, note)
+		if errorCode(err) == "SOURCE_NOT_FOUND" || errorCode(err) == "CHANNEL_IMAGE_SIZE" || errorCode(err) == "CHANNEL_IMAGE_UNSUPPORTED" {
+			return "empty:" + item.ID, nil
+		}
+		return receipt, err
+	}
+	if part.Kind == "footer" {
+		var delivered bool
+		if err := s.Store.state.QueryRow(`SELECT EXISTS (
+			SELECT 1 FROM feishu_review_parts p JOIN notifications n ON n.id = p.notification_id
+			WHERE p.root_id = ? AND p.memo_name = ? AND p.kind IN ('text', 'image')
+			AND n.status = 'sent' AND n.receipt NOT LIKE 'empty:%')`, part.Root, part.Name).Scan(&delivered); err != nil {
+			return "", err
+		}
+		if !delivered {
+			return "empty:" + item.ID, nil
+		}
+		footer, err := s.reviewFooter(note)
+		if err != nil {
+			return "", err
+		}
+		return s.sendReviewText(ctx, item, footer)
+	}
 	text, err := reviewPartText(part, note)
 	if err != nil {
 		return "", err
 	}
 	return s.sendReviewText(ctx, item, text)
+}
+
+// Check for actual content before emitting the standalone title.
+func (s *FeishuDelivery) reviewHeaderReady(ctx context.Context, root string) (bool, error) {
+	rows, err := s.Store.state.Query(`SELECT notification_id FROM feishu_review_parts
+		WHERE root_id = ? AND kind IN ('text', 'image') ORDER BY position`, root)
+	if err != nil {
+		return false, err
+	}
+	ids := []string{}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return false, err
+		}
+		ids = append(ids, id)
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return false, err
+	}
+	for _, id := range ids {
+		part, err := s.reviewPart(id)
+		if err != nil {
+			return false, err
+		}
+		note, err := s.reviewNote(ctx, part)
+		if errorCode(err) == "SOURCE_NOT_FOUND" || errorCode(err) == "SOURCE_CHANGED" {
+			if err := s.skipReviewNote(part); err != nil {
+				return false, err
+			}
+			continue
+		}
+		if err != nil {
+			return false, err
+		}
+		if part.Kind == "text" {
+			return true, nil
+		}
+		key, err := s.reviewImageKey(ctx, id, part, note)
+		if err != nil {
+			switch errorCode(err) {
+			case "SOURCE_NOT_FOUND", "CHANNEL_IMAGE_SIZE", "CHANNEL_IMAGE_UNSUPPORTED":
+			default:
+				return false, err
+			}
+		}
+		if key != "" {
+			return true, nil
+		}
+		if _, err := s.Store.state.Exec(`UPDATE feishu_review_parts SET kind = 'empty' WHERE notification_id = ?`, id); err != nil {
+			return false, err
+		}
+	}
+	return false, nil
+}
+
+type feishuImagePlatform interface {
+	UploadImage(context.Context, CreateAttachment) (string, error)
+	SendImage(context.Context, string, string, string) (string, error)
+}
+
+func (s *FeishuDelivery) imageClient() feishuImagePlatform {
+	if s.Events != nil {
+		if client, ok := s.Events.Client.(feishuImagePlatform); ok {
+			return client
+		}
+	}
+	return s.images
+}
+
+func (s *FeishuDelivery) sendReviewImage(ctx context.Context, item Notification, part feishuReviewPart, note Note) (string, error) {
+	key, err := s.reviewImageKey(ctx, item.ID, part, note)
+	if err != nil {
+		return "", err
+	}
+	if key == "" {
+		return "empty:" + item.ID, nil
+	}
+	if s.Store.Settings.Channel.Kind == "feishu-webhook" {
+		return s.webhookMessage(ctx, item.ID, "image", map[string]string{"image_key": key})
+	}
+	return s.imageClient().SendImage(ctx, configured(s.Store.Settings.Channel.UserOpenID), item.PlatformUUID, key)
+}
+
+func (s *FeishuDelivery) reviewImageKey(ctx context.Context, id string, part feishuReviewPart, note Note) (string, error) {
+	if configured(s.Store.Settings.Channel.AppID) == "" {
+		return "", nil
+	}
+	client := s.imageClient()
+	key := part.ImageKey
+	if key == "" {
+		var attachment map[string]any
+		for _, candidate := range note.Attachments {
+			if candidate["name"] == part.Attachment {
+				attachment = candidate
+				break
+			}
+		}
+		if attachment == nil {
+			return "", failure("SOURCE_NOT_FOUND", "Review image is unavailable", 404, false)
+		}
+		source, ok := s.Reviews.Source.(interface {
+			DownloadAttachment(context.Context, map[string]any) (CreateAttachment, error)
+		})
+		if !ok {
+			return "", upstreamError("UPSTREAM_PROTOCOL", "Source cannot download images")
+		}
+		image, err := source.DownloadAttachment(ctx, attachment)
+		if err != nil {
+			return "", err
+		}
+		key, err = client.UploadImage(ctx, image)
+		if err != nil {
+			return "", err
+		}
+		if _, err := s.Store.state.Exec(`UPDATE feishu_review_parts SET image_key = ? WHERE notification_id = ?`,
+			key, id); err != nil {
+			return "", err
+		}
+	}
+	return key, nil
 }

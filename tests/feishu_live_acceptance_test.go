@@ -3,8 +3,13 @@
 package acceptance
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"image"
+	"image/color"
+	"image/draw"
+	"image/png"
 	"os"
 	"path/filepath"
 	"strings"
@@ -38,9 +43,19 @@ func TestFeishuLiveReviewAcceptance(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { store.Close() }()
-	body := "Moerise 纯文字全文验证\n" + strings.Repeat("全文🙂 <>&\"\\\n", 450) + "全文结束。"
+	body := "今天整理了一点想法：先把事情记下来，再留些时间回看。\n文字保持原样，图片直接呈现。🙂\n#回顾"
+	picture := image.NewRGBA(image.Rect(0, 0, 320, 180))
+	draw.Draw(picture, picture.Bounds(), image.NewUniform(color.RGBA{R: 40, G: 130, B: 170, A: 255}), image.Point{}, draw.Src)
+	var pictureData bytes.Buffer
+	if err := png.Encode(&pictureData, picture); err != nil {
+		t.Fatal(err)
+	}
 	note, _, err := moerise.NewRecordService(store, source).Create(ctx, "feishu-live-review", moerise.CreateNote{
-		Content: body})
+		Content: body, Attachments: []moerise.CreateAttachment{
+			{Filename: "first.png", Type: "image/png", Content: pictureData.Bytes()},
+			{Filename: "second.png", Type: "image/png", Content: pictureData.Bytes()},
+			{Filename: "file.txt", Type: "text/plain", Content: []byte("ordinary attachment")},
+		}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -70,7 +85,6 @@ func TestFeishuLiveReviewAcceptance(t *testing.T) {
 			settings.Channel.Kind = kind
 			if kind == "feishu-webhook" {
 				settings.Channel.WebhookURL, settings.Channel.WebhookSecret = &webhook.URL, &webhook.Secret
-				settings.Channel.AppID, settings.Channel.AppSecret = nil, nil
 				settings.Channel.VerificationToken, settings.Channel.EncryptKey = nil, nil
 				settings.Channel.UserOpenID, settings.Channel.Destination = nil, nil
 			}
@@ -125,19 +139,24 @@ func TestFeishuLiveReviewAcceptance(t *testing.T) {
 			}
 			pending, _ := queue.List("pending")
 			sent, err := queue.List("sent")
-			if err != nil || len(pending) != 0 || len(sent) != 2 {
+			if err != nil || len(pending) != 0 || len(sent) != 5 {
 				t.Fatalf("%s incomplete review: pending=%d sent=%d err=%v", kind, len(pending), len(sent), err)
 			}
 			if kind == "feishu-app" {
 				client := moerise.NewFeishuClient(settings.Channel)
+				// List returns newest first; the first fragment precedes the resumed fragments.
 				ordered := first
-				for _, item := range sent {
-					if item.ID != first[0].ID {
-						ordered = append(ordered, item)
+				for i := len(sent) - 1; i >= 0; i-- {
+					if sent[i].ID != first[0].ID {
+						ordered = append(ordered, sent[i])
 					}
 				}
 				var joined strings.Builder
-				for _, item := range ordered {
+				images, titles, footers := 0, 0, 0
+				created, _ := time.Parse(time.RFC3339Nano, note.CreateTime)
+				location, _ := time.LoadLocation(settings.Timezone)
+				footer := "#回顾  创建于" + created.In(location).Format(time.DateOnly)
+				for i, item := range ordered {
 					if item.Receipt == nil {
 						t.Fatal("application send has no platform receipt")
 					}
@@ -145,13 +164,38 @@ func TestFeishuLiveReviewAcceptance(t *testing.T) {
 					if err != nil {
 						t.Fatal(err)
 					}
-					joined.WriteString(message.Text)
+					if message.ImageKey != "" {
+						file, err := client.Download(ctx, message.ID, message.ImageKey, "image", "")
+						if err != nil {
+							t.Fatal(err)
+						}
+						decoded, _, err := image.Decode(bytes.NewReader(file.Content))
+						if err != nil || decoded.Bounds() != picture.Bounds() {
+							t.Fatalf("platform image cannot be read at original dimensions: %v", err)
+						}
+						images++
+					} else if message.Text == "「今日回顾」" {
+						titles++
+						if i != 0 {
+							t.Fatal("title was not the first standalone message")
+						}
+					} else if message.Text == footer {
+						footers++
+						if i != len(ordered)-1 {
+							t.Fatal("note metadata was not the last message")
+						}
+					} else {
+						joined.WriteString(message.Text)
+					}
 				}
 				if joined.String() != body {
 					t.Fatal("platform full content differs from the source note")
 				}
+				if images != 2 || titles != 1 || footers != 1 {
+					t.Fatalf("platform layout: images=%d titles=%d footers=%d", images, titles, footers)
+				}
 			}
-			t.Logf("PASS %s: %d confirmed fragments, restart resumes without duplicate slot", kind, len(sent))
+			t.Logf("PASS %s: one standalone title, original body, two images and a tags/date footer; restart resumes without duplicate slot", kind)
 		})
 	}
 }

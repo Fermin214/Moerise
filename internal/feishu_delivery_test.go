@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -94,12 +95,13 @@ func TestFeishuPushRechecksSourcesAndReceiptIdentity(t *testing.T) {
 	reviews, memos := reviewFixture(t, 6)
 	store := reviews.Store
 	store.Settings.Channel = feishuSettings(t).Channel
+	store.Settings.Notifications.Enabled = true
 	ctx := context.Background()
 	batch, err := reviews.Daily(ctx, time.Date(2026, 10, 26, 2, 0, 0, 0, time.UTC))
 	if err != nil {
 		t.Fatal(err)
 	}
-	platform := &deliveryPlatform{}
+	platform := &reviewDeliveryPlatform{}
 	events := NewFeishuService(store, reviews.Source, NewRecordService(store, reviews.Source), reviews, nil)
 	events.Client = platform
 	delivery := NewFeishuDelivery(store, reviews, events)
@@ -108,29 +110,38 @@ func TestFeishuPushRechecksSourcesAndReceiptIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	detail, err := queue.Detail(id)
-	if err != nil {
-		t.Fatal(err)
-	}
-	item := detail.Notification
 	edited, deleted := batch.Items[0].Name, batch.Items[1].Name
 	memos[edited]["content"] = "fresh source content"
 	delete(memos, deleted)
-	if _, err := delivery.Send(ctx, item); err != nil || !strings.Contains(platform.text, "fresh source content") ||
+	if sent, err := queue.Deliver(ctx); err != nil || !sent || platform.text != "「今日回顾」" {
+		t.Fatalf("review header: %s %v", platform.text, err)
+	}
+	if sent, err := queue.Deliver(ctx); err != nil || !sent || !strings.Contains(platform.text, "fresh source content") ||
 		strings.Contains(platform.text, deleted) || platform.recipient != "ou_owner" {
 		t.Fatalf("push leaked stale content or used a different identity: %s %v", platform.text, err)
 	}
-	platform.message = FeishuSentMessage{ID: "om_push", Text: platform.text, SenderType: "app",
-		SenderIDType: "app_id", SenderID: "cli_test_app"}
-	if found, err := delivery.Check(ctx, item, "om_push"); err != nil || !found {
+	var bodyID string
+	if err := store.state.QueryRow(`SELECT notification_id FROM feishu_review_parts
+		WHERE root_id = ? AND kind = 'text' ORDER BY position LIMIT 1`, id).Scan(&bodyID); err != nil {
+		t.Fatal(err)
+	}
+	detail, err := queue.Detail(bodyID)
+	if err != nil || detail.Notification.Receipt == nil {
+		t.Fatalf("body receipt: %+v %v", detail, err)
+	}
+	item, receipt := detail.Notification, *detail.Notification.Receipt
+	if found, err := delivery.Check(ctx, item, receipt); err != nil || !found {
 		t.Fatalf("matching platform receipt was rejected: %v", err)
 	}
-	platform.message.SenderID = "cli_foreign"
-	if found, _ := delivery.Check(ctx, item, "om_push"); found {
+	message := platform.messages[receipt]
+	message.SenderID = "cli_foreign"
+	platform.messages[receipt] = message
+	if found, _ := delivery.Check(ctx, item, receipt); found {
 		t.Fatal("a different application's receipt was accepted")
 	}
-	platform.message.SenderID, platform.message.Deleted = "cli_test_app", true
-	if found, _ := delivery.Check(ctx, item, "om_push"); found {
+	message.SenderID, message.Deleted = "cli_test_app", true
+	platform.messages[receipt] = message
+	if found, _ := delivery.Check(ctx, item, receipt); found {
 		t.Fatal("a deleted platform message was accepted")
 	}
 	platform.text = ""
@@ -153,10 +164,18 @@ type reviewDeliveryPlatform struct {
 	deliveryPlatform
 	texts, uuids []string
 	fail         string
+	messages     map[string]FeishuSentMessage
 }
 
-func (p *reviewDeliveryPlatform) SendText(_ context.Context, _, uuid, text string) (string, error) {
+func (p *reviewDeliveryPlatform) SendText(_ context.Context, recipient, uuid, text string) (string, error) {
+	p.text, p.recipient = text, recipient
 	p.texts, p.uuids = append(p.texts, text), append(p.uuids, uuid)
+	if p.messages == nil {
+		p.messages = map[string]FeishuSentMessage{}
+	}
+	p.messages["om_"+uuid] = FeishuSentMessage{ID: "om_" + uuid, Text: text,
+		SenderType: "app", SenderIDType: "app_id", SenderID: "cli_test_app",
+		ChatID: "oc_owner", CreateTime: time.Now()}
 	if p.fail != "" {
 		code := p.fail
 		p.fail = ""
@@ -165,14 +184,24 @@ func (p *reviewDeliveryPlatform) SendText(_ context.Context, _, uuid, text strin
 	return "om_" + uuid, nil
 }
 
+func (p *reviewDeliveryPlatform) GetMessage(ctx context.Context, id string) (FeishuSentMessage, error) {
+	if message, ok := p.messages[id]; ok {
+		return message, nil
+	}
+	return p.deliveryPlatform.GetMessage(ctx, id)
+}
+
 func TestFeishuReviewFullTextQueueResumeAndUnknown(t *testing.T) {
 	reviews, memos := reviewFixture(t, 1)
 	store := reviews.Store
 	store.Settings.Channel = feishuSettings(t).Channel
 	store.Settings.Notifications.Enabled = true
+	store.Settings.Timezone = "America/Los_Angeles"
 	content := strings.Repeat("长文🙂 <&> \"原文\"\\\n", 4000) + "最终正文\nhttps://example.com/user-link"
 	for _, raw := range memos {
 		raw["content"] = content
+		raw["createTime"] = "2020-01-01T00:30:00Z"
+		raw["updateTime"] = "2020-01-01T00:30:00Z"
 	}
 	platform := &reviewDeliveryPlatform{}
 	events := NewFeishuService(store, reviews.Source, nil, reviews, nil)
@@ -188,8 +217,8 @@ func TestFeishuReviewFullTextQueueResumeAndUnknown(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if sent, err := queue.Deliver(ctx); err != nil || !sent {
-		t.Fatalf("first part: %v", err)
+	if sent, err := queue.Deliver(ctx); err != nil || !sent || len(platform.texts) != 1 || platform.texts[0] != "「今日回顾」" {
+		t.Fatalf("standalone header: %+v %v", platform.texts, err)
 	}
 	platform.fail = "SEND_OUTCOME_UNKNOWN"
 	if sent, err := queue.Deliver(ctx); err != nil || !sent {
@@ -207,9 +236,7 @@ func TestFeishuReviewFullTextQueueResumeAndUnknown(t *testing.T) {
 	if sent, err := queue.Deliver(ctx); err != nil || sent || len(platform.texts) != 2 {
 		t.Fatalf("unknown predecessor released later parts: %v", err)
 	}
-	platform.message = FeishuSentMessage{ID: "om_unknown", Text: platform.texts[1],
-		SenderType: "app", SenderIDType: "app_id", SenderID: "cli_test_app"}
-	if _, err := queue.Resolve(ctx, unknown[0].ID, "sent", "om_unknown", "test"); err != nil {
+	if _, err := queue.Resolve(ctx, unknown[0].ID, "sent", "om_"+unknown[0].PlatformUUID, "test"); err != nil {
 		t.Fatal(err)
 	}
 	for range 100 {
@@ -221,14 +248,16 @@ func TestFeishuReviewFullTextQueueResumeAndUnknown(t *testing.T) {
 			break
 		}
 	}
-	var joined strings.Builder
 	for _, text := range platform.texts {
 		if !utf8.ValidString(text) || !reviewTextFits(text) {
 			t.Fatal("invalid UTF-8 or oversized request")
 		}
-		joined.WriteString(text)
 	}
-	if joined.String() != content {
+	if len(platform.texts) < 4 || platform.texts[0] != "「今日回顾」" ||
+		platform.texts[len(platform.texts)-1] != "#topic-0/child  创建于2019-12-31" {
+		t.Fatal("missing standalone header or source creation date in configured timezone")
+	}
+	if strings.Join(platform.texts[1:len(platform.texts)-1], "") != content {
 		t.Fatal("long note was truncated, repeated or reordered")
 	}
 	seen := map[string]bool{}
@@ -294,9 +323,12 @@ func TestFeishuWebhookFullTextIgnoresAttachments(t *testing.T) {
 	store := reviews.Store
 	store.Settings.Channel.Kind = "feishu-webhook"
 	store.Settings.Notifications.Enabled = true
+	store.Settings.Timezone = "Asia/Hong_Kong"
 	content := strings.Repeat("Webhook 全文🙂 \"<&>\"\\\n", 2000)
 	for _, raw := range memos {
 		raw["content"] = content
+		raw["tags"] = []string{}
+		raw["createTime"] = "2019-12-31T18:30:00Z"
 		raw["attachments"] = []any{
 			map[string]any{"name": "attachments/image1", "filename": "first.png", "type": "image/png"},
 			map[string]any{"name": "attachments/file1", "filename": "report.pdf", "type": "application/pdf"},
@@ -339,14 +371,15 @@ func TestFeishuWebhookFullTextIgnoresAttachments(t *testing.T) {
 			break
 		}
 	}
-	var joined strings.Builder
 	for _, text := range texts {
 		if strings.Contains(text, "/file/") || strings.Contains(text, "report.pdf") {
 			t.Fatal("Webhook emitted an attachment or attachment link")
 		}
-		joined.WriteString(text)
 	}
-	if len(texts) < 2 || joined.String() != content {
+	if len(texts) < 4 || texts[0] != "「今日回顾」" || texts[len(texts)-1] != "创建于2020-01-01" {
+		t.Fatal("Webhook header or untagged creation-date footer did not match")
+	}
+	if strings.Join(texts[1:len(texts)-1], "") != content {
 		t.Fatal("Webhook truncated or repeated the full note")
 	}
 }
@@ -371,7 +404,15 @@ func TestFeishuReviewSourceChangeCancelsOldPartsAndContinues(t *testing.T) {
 		t.Fatal(err)
 	}
 	if sent, err := queue.Deliver(ctx); err != nil || !sent {
-		t.Fatalf("first fragment: %v", err)
+		t.Fatalf("header: %v", err)
+	}
+	if sent, err := queue.Deliver(ctx); err != nil || !sent {
+		t.Fatalf("first body fragment: %v", err)
+	}
+	if len(platform.texts) != 2 || platform.texts[0] != "「今日回顾」" ||
+		platform.texts[1] == "" || !strings.HasPrefix(batch.Items[0].Note.Content, platform.texts[1]) ||
+		platform.texts[1] == batch.Items[0].Note.Content {
+		t.Fatal("source change must follow the header and a partial body")
 	}
 	changed := batch.Items[0].Name
 	memos[changed]["content"] = "修改后的新正文"
@@ -384,15 +425,89 @@ func TestFeishuReviewSourceChangeCancelsOldPartsAndContinues(t *testing.T) {
 			break
 		}
 	}
-	var expected strings.Builder
+	remaining := platform.texts[2:]
 	for _, entry := range batch.Items[1:] {
-		expected.WriteString(entry.Note.Content)
+		footer := "#" + entry.Note.Tags[0] + "  创建于2020-01-01"
+		end := slices.Index(remaining, footer)
+		if end < 0 || strings.Join(remaining[:end], "") != entry.Note.Content {
+			t.Fatal("source change sent stale text or a notice, or blocked another note's body and footer")
+		}
+		remaining = remaining[end+1:]
 	}
-	if strings.Join(platform.texts[1:], "") != expected.String() {
-		t.Fatal("source change sent stale text or a notice, or blocked other notes")
+	if len(remaining) != 0 {
+		t.Fatalf("unexpected messages after the remaining notes: %+v", remaining)
 	}
 	pending, _ := queue.List("pending")
 	if len(pending) != 0 {
 		t.Fatalf("source change left %d pending parts", len(pending))
+	}
+}
+
+func TestFeishuReviewReceiptsCannotCrossNotifications(t *testing.T) {
+	reviews, _ := reviewFixture(t, 1)
+	store := reviews.Store
+	store.Settings.Channel = feishuSettings(t).Channel
+	store.Settings.Notifications.Enabled = true
+	platform := &reviewDeliveryPlatform{}
+	events := NewFeishuService(store, reviews.Source, nil, reviews, nil)
+	events.Client = platform
+	transport := NewFeishuDelivery(store, reviews, events)
+	queue := NewNotificationService(store, reviews, transport)
+	ctx := context.Background()
+	batch, err := reviews.Daily(ctx, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := queue.enqueue("review", "morning", batch.Date, &batch.ID, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range 10 {
+		sent, err := queue.Deliver(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !sent {
+			break
+		}
+	}
+	if pending, err := queue.List("pending"); err != nil || len(pending) != 0 {
+		t.Fatalf("first review still owns pending body or footer parts: %+v %v", pending, err)
+	}
+	sent, err := queue.Detail(first)
+	if err != nil || sent.Notification.Receipt == nil {
+		t.Fatalf("first review receipt: %+v %v", sent, err)
+	}
+	second, err := queue.enqueue("review", "evening", batch.Date, &batch.ID, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	platform.fail = "SEND_OUTCOME_UNKNOWN"
+	if _, err := queue.Deliver(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if unknown, err := queue.List("unknown"); err != nil || len(unknown) != 1 || unknown[0].ID != second {
+		t.Fatalf("unknown outcome targeted a different notification: %+v %v", unknown, err)
+	}
+	if _, err := queue.Resolve(ctx, second, "sent", *sent.Notification.Receipt, "test"); errorCode(err) != "NOTIFICATION_CONFLICT" {
+		t.Fatalf("another notification's receipt was accepted: %v", err)
+	}
+	unknown, _ := queue.Detail(second)
+	valid := platform.messages["om_"+unknown.Notification.PlatformUUID]
+	for _, scenario := range []string{"old", "other-chat"} {
+		message := valid
+		message.ID = "om_unbound"
+		if scenario == "old" {
+			message.CreateTime = time.Now().Add(-time.Minute)
+		} else {
+			message.ChatID = "oc_foreign"
+		}
+		platform.messages[message.ID] = message
+		if _, err := queue.Resolve(ctx, second, "sent", message.ID, "test"); errorCode(err) != "NOTIFICATION_CONFLICT" {
+			t.Fatalf("%s receipt was accepted: %v", scenario, err)
+		}
+	}
+	if _, err := queue.Resolve(ctx, second, "sent", valid.ID, "test"); err != nil {
+		t.Fatalf("the actual receipt was rejected: %v", err)
 	}
 }
