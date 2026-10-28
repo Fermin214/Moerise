@@ -3,6 +3,8 @@ package moerise
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
@@ -43,7 +45,7 @@ func notificationFixture(t *testing.T) (*NotificationService, *notificationPlatf
 	return NewNotificationService(reviews.Store, reviews, platform), platform
 }
 
-func TestNotificationDatesCatchupAndIndependentOpenState(t *testing.T) {
+func TestNotificationDatesAndIndependentOpenState(t *testing.T) {
 	service, _ := notificationFixture(t)
 	ctx := context.Background()
 	before := time.Date(2026, 10, 26, 0, 0, 0, 0, time.UTC)
@@ -57,11 +59,11 @@ func TestNotificationDatesCatchupAndIndependentOpenState(t *testing.T) {
 	if count, err := service.Schedule(ctx, at.Add(time.Hour)); err != nil || count != 0 {
 		t.Fatal("same date created another notification")
 	}
-	if count, err := service.Schedule(ctx, at.AddDate(0, 0, 2)); err != nil || count != 2 {
-		t.Fatalf("missed local dates were not recovered: count=%d err=%v", count, err)
+	if count, err := service.Schedule(ctx, at.AddDate(0, 0, 2)); err != nil || count != 1 {
+		t.Fatalf("restart should schedule today without old daily pushes: count=%d err=%v", count, err)
 	}
 	items, err := service.List("")
-	if err != nil || len(items) != 3 {
+	if err != nil || len(items) != 2 {
 		t.Fatalf("wrong persisted queue: %v %v", items, err)
 	}
 	dates := map[string]bool{}
@@ -118,6 +120,73 @@ func TestNotificationDSTGapAndRepeatedHour(t *testing.T) {
 				t.Fatalf("repeated local hour duplicated a task: %d %v", count, err)
 			}
 		})
+	}
+}
+
+func TestDailyReviewWithoutPushAndMultipleSlots(t *testing.T) {
+	service, platform := notificationFixture(t)
+	ctx := context.Background()
+	at := time.Date(2026, 10, 28, 2, 0, 0, 0, time.UTC)
+	service.Store.Settings.Notifications.Enabled = false
+	if count, err := service.Schedule(ctx, at); err != nil || count != 0 {
+		t.Fatalf("daily generation without push: %d %v", count, err)
+	}
+	first, err := service.Reviews.ReadDaily(ctx, at)
+	if err != nil || len(first.Items) != 3 || platform.calls != 0 {
+		t.Fatalf("disabled push should still expose today's review: %+v %v", first, err)
+	}
+	service.Store.Settings.Notifications.Enabled = true
+	service.Store.Settings.Notifications.Times = []string{"09:00", "12:00"}
+	if count, err := service.Schedule(ctx, at); err != nil || count != 1 {
+		t.Fatalf("first due slot: %d %v", count, err)
+	}
+	service.Store.Settings.Review.Count = 1
+	service.Store.Settings.Review.IncludeArchived = true
+	service.Store.Settings.Notifications.Times = []string{"09:00", "10:00", "12:00"}
+	if count, err := service.Schedule(ctx, at.Add(3*time.Hour)); err != nil || count != 2 {
+		t.Fatalf("added and later slots: %d %v", count, err)
+	}
+	notifications, err := service.List("")
+	if err != nil || len(notifications) != 3 {
+		t.Fatalf("slot queue: %+v %v", notifications, err)
+	}
+	for _, item := range notifications {
+		if item.BatchID == nil || *item.BatchID != first.ID {
+			t.Fatal("a different time or changed rule resampled today's batch")
+		}
+	}
+	restarted := NewNotificationService(service.Store, service.Reviews, platform)
+	if count, err := restarted.Schedule(ctx, at.Add(4*time.Hour)); err != nil || count != 0 {
+		t.Fatalf("restart duplicated a processed slot: %d %v", count, err)
+	}
+}
+
+func TestEmptyReviewSlotsAreSilentAndSourceFailureRetries(t *testing.T) {
+	reviews, _ := reviewFixture(t, 0)
+	reviews.Store.Settings.Notifications.Enabled = true
+	service := NewNotificationService(reviews.Store, reviews, &notificationPlatform{})
+	ctx := context.Background()
+	at := time.Date(2026, 10, 28, 2, 0, 0, 0, time.UTC)
+	if count, err := service.Schedule(ctx, at); err != nil || count != 0 {
+		t.Fatalf("empty pool: %d %v", count, err)
+	}
+	items, err := service.List("")
+	if err != nil || len(items) != 0 {
+		t.Fatal("empty review created a platform notification")
+	}
+	var slots int
+	if err := reviews.Store.state.QueryRow("SELECT COUNT(*) FROM review_schedule_slots").Scan(&slots); err != nil || slots != 1 {
+		t.Fatalf("empty slot was not marked processed: %d %v", slots, err)
+	}
+	client := reviews.Source.(*MemosClient)
+	client.client.Transport = roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return nil, fmt.Errorf("offline")
+	})
+	if _, err := service.Schedule(ctx, at.AddDate(0, 0, 1)); err == nil {
+		t.Fatal("source failure was treated as an empty pool")
+	}
+	if err := reviews.Store.state.QueryRow("SELECT COUNT(*) FROM review_schedule_slots").Scan(&slots); err != nil || slots != 1 {
+		t.Fatal("failed source lookup consumed the next slot")
 	}
 }
 

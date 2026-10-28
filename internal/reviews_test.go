@@ -30,6 +30,9 @@ func reviewFixture(t *testing.T, count int) (*ReviewService, map[string]map[stri
 			t.Fatal(err)
 		}
 	}
+	if _, err := store.state.Exec("UPDATE sync_state SET last_full = ?", nowText()); err != nil {
+		t.Fatal(err)
+	}
 	client := fakeClient(settings, func(request *http.Request) (int, any, error) {
 		if status, body, ok := identityResponse(request); ok {
 			return status, body, nil
@@ -53,13 +56,11 @@ func TestReviewBatchesHistoryAndRecovery(t *testing.T) {
 	seen := map[string]bool{}
 	check := func(batch ReviewBatch) {
 		t.Helper()
-		topics := map[string]bool{}
 		for _, item := range batch.Items {
-			topic := strings.Split(item.Note.Tags[0], "/")[0]
-			if seen[item.Name] || topics[topic] || item.Note.Creator != service.Store.Settings.Memos.User {
-				t.Fatal("review repeated a recent memo or exceeded a topic limit")
+			if seen[item.Name] || item.Note.Creator != service.Store.Settings.Memos.User {
+				t.Fatal("review repeated a recent memo or crossed the author boundary")
 			}
-			seen[item.Name], topics[topic] = true, true
+			seen[item.Name] = true
 		}
 	}
 	check(first)
@@ -164,8 +165,8 @@ func TestReviewRulesDatesAndSourceBoundary(t *testing.T) {
 	}
 	service.Store.Settings.Review.IncludeArchived = true
 	changed, err := service.Daily(ctx, at)
-	if err != nil || changed.RuleVersion == batch.RuleVersion {
-		t.Fatal("changed rules reused another rule's batch")
+	if err != nil || changed.ID != batch.ID {
+		t.Fatal("changing rules replaced a fixed daily batch")
 	}
 	client := service.Source.(*MemosClient)
 	client.client.Transport = roundTripFunc(func(*http.Request) (*http.Response, error) {
@@ -174,6 +175,34 @@ func TestReviewRulesDatesAndSourceBoundary(t *testing.T) {
 	failed, err := service.Get(ctx, batch.ID)
 	if err == nil || len(failed.Items) != 0 {
 		t.Fatal("source outage exposed review content")
+	}
+}
+
+func TestRandomReviewHasNoTopicQuotaAndRespectsAge(t *testing.T) {
+	service, memos := reviewFixture(t, 5)
+	at := time.Date(2026, 10, 28, 12, 0, 0, 0, time.UTC)
+	for name, raw := range memos {
+		raw["tags"] = []string{"shared/topic"}
+		raw["createTime"] = at.Add(-72 * time.Hour).Format(time.RFC3339)
+		memo, _ := normalizeMemo(raw)
+		if err := service.Store.Refresh(name, &memo); err != nil {
+			t.Fatal(err)
+		}
+	}
+	memos["memos/review-00"]["createTime"] = at.Add(-72*time.Hour + time.Second).Format(time.RFC3339)
+	memo, _ := normalizeMemo(memos["memos/review-00"])
+	if err := service.Store.Refresh(memo.Name, &memo); err != nil {
+		t.Fatal(err)
+	}
+	service.Store.Settings.Review.Count = 10
+	batch, err := service.Daily(context.Background(), at)
+	if err != nil || len(batch.Items) != 4 {
+		t.Fatalf("age or hidden quota reduced the candidate pool: %+v %v", batch, err)
+	}
+	for _, item := range batch.Items {
+		if item.Name == "memos/review-00" {
+			t.Fatal("a note younger than 72 hours was selected")
+		}
 	}
 }
 

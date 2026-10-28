@@ -4,7 +4,7 @@ Moerise 支持 Linux 原生二进制和 Docker Linux 容器部署，两者都需
 
 ## 配置
 
-配置模板为 `config.example.json`。服务默认读取 `.local/config.json`，也可通过 `MOERISE_CONFIG_FILE` 或命令参数 `--config` 指定文件路径，参数优先。各字段直接读取 JSON 值，不进行环境变量替换。
+配置模板为 `config.example.json` 和 `.env.example`。服务默认读取 `.local/config.json`，也可通过 `MOERISE_CONFIG_FILE` 或命令参数 `--config` 指定路径，参数优先。配置按内置默认值、JSON、非空 `MOERISE_*` 环境变量的顺序覆盖，JSON 字符串不进行变量替换。Compose 自动将可选的 `.env` 传给 Core；二进制运行时由进程环境传入。
 
 | 配置 | 含义与要求 |
 | --- | --- |
@@ -18,8 +18,8 @@ Moerise 支持 Linux 原生二进制和 Docker Linux 容器部署，两者都需
 | `timezone` | IANA 时区名，用于产品日期与调度，按部署设置；默认 `Asia/Hong_Kong` |
 | `state_dir`、`index_dir` | 不同的可写持久目录，默认 `/data/state`、`/data/index` |
 | `sync` | 增量轮询、全量修复、重叠时间、退避及任务租约 |
-| `review` | 每日回顾数量、过新排除、近期去重、主题上限与归档范围，详见[每日回顾](DAILY-REVIEW.md) |
-| `notifications` | 是否启用定时回顾及 `HH:MM` 时间，默认关闭、时间 `09:00`；使用顶层时区 |
+| `review` | 随机回顾数量、等待期、近期排除期与归档范围，默认 3 条、72 小时、7 天，详见[每日回顾](DAILY-REVIEW.md) |
+| `notifications` | 主动推送开关和 `times` 时段列表，默认关闭、每天 `09:00` 一次；使用顶层时区 |
 | `channel` | 飞书应用凭据、事件验证、绑定身份及推送渠道，详见[飞书入口](FEISHU.md) |
 | `embedding` | 独立的向量模型配置，默认关闭；百炼配置与连接检查见[向量模型](EMBEDDING.md) |
 | `llm` | 独立的对话模型配置，默认关闭；协议、限额与连接检查见 [AI](AI.md) |
@@ -32,11 +32,33 @@ Moerise 支持 Linux 原生二进制和 Docker Linux 容器部署，两者都需
 
 飞书应用回调和后台事件处理随 `serve` 启动。待处理事件加密暂存于产品数据库，业务完成后删除密文；配置备份须包含原应用 Secret 和独立密钥。恢复快照前结合 Memos 核实快照之后的写入；已有幂等记录保留资源标识，新记录按配置密钥和幂等键派生标识。事件回复的结果不明状态与笔记写入结果分别保存。
 
-调度记录已处理的当地日期，停机后补建缺失任务。飞书回复和定时回顾共用持久发送队列；关闭定时回顾不影响回复。发送结果不明时通过通知 API 查看尝试并复查或确认结果，操作方式见[调度与发送队列](NOTIFICATIONS.md)。恢复产品状态快照将等待及执行中的通知、未完成事件的回复标为 `unknown`，避免把快照之后可能已送达的消息重新发送。
+调度记录已处理的日期和时段，恢复运行后处理当天到期时段，不补建往日推送。关闭推送仍生成当天回顾。发送结果不明时通过通知 API 查看并确认，见[调度与发送队列](NOTIFICATIONS.md)。恢复产品状态快照将等待及执行中的通知、未完成事件的回复标为 `unknown`。
 
 服务绑定来源根地址和账号。更换来源或账号时使用新的 `instance_id` 和数据卷。根地址不包含账号密码、路径、查询参数或片段；Memos 请求直接连接来源，不读取环境中的 HTTP 代理设置。
 
 默认增量间隔为 60 秒，全量修复间隔为 6 小时，水位重叠为 5 分钟。`check-config` 只校验格式；来源连接、版本和账号在同步时检查。
+
+### 环境参数
+
+环境变量使用以下对应关系；空值保留 JSON 或内置默认值。`MOERISE_ACCESS_TOKEN` 非空时以单个 `environment` 凭据替换 JSON 令牌列表，供原生接口使用全部既有 Scope；MCP 的工具集合始终只读。
+
+| 环境变量 | 配置 |
+| --- | --- |
+| `MOERISE_MEMOS_INSTANCE_ID`、`MOERISE_MEMOS_BASE_URL`、`MOERISE_MEMOS_PUBLIC_URL` | `memos.instance_id`、`base_url`、`public_url` |
+| `MOERISE_MEMOS_USER`、`MOERISE_MEMOS_TOKEN` | `memos.user`、`token` |
+| `MOERISE_ACCESS_TOKEN`、`MOERISE_CURSOR_SECRET` | 机器接口令牌、分页及幂等密钥 |
+| `MOERISE_TIMEZONE`、`MOERISE_STATE_DIR`、`MOERISE_INDEX_DIR` | 时区、状态目录、索引目录 |
+| `MOERISE_REVIEW_COUNT`、`MOERISE_REVIEW_MIN_AGE_HOURS`、`MOERISE_REVIEW_RECENT_DAYS` | 回顾条数、等待小时、排除天数 |
+| `MOERISE_REVIEW_INCLUDE_ARCHIVED` | 是否包含归档，`true` 或 `false` |
+| `MOERISE_NOTIFICATIONS_ENABLED`、`MOERISE_NOTIFICATIONS_TIMES` | 推送开关、逗号分隔时段，例如 `09:00,18:00` |
+| `MOERISE_NOTIFICATIONS_TIME` | 兼容单时段；配置了 `times` 时以列表为准 |
+| `MOERISE_CHANNEL_KIND` | `feishu-app` 或 `feishu-webhook` |
+| `MOERISE_FEISHU_APP_ID`、`MOERISE_FEISHU_APP_SECRET` | 应用凭据 |
+| `MOERISE_FEISHU_VERIFICATION_TOKEN`、`MOERISE_FEISHU_ENCRYPT_KEY` | 回调校验及可选加密 |
+| `MOERISE_FEISHU_USER_OPEN_ID` | 专用私聊身份与主动推送接收者 |
+| `MOERISE_FEISHU_WEBHOOK_URL`、`MOERISE_FEISHU_WEBHOOK_SECRET` | 自定义机器人地址与可选签名密钥 |
+
+只通过环境运行二进制时，填写全部必要来源、鉴权及密钥变量即可省略 JSON 文件。Compose 兼容 JSON 部署，保留 `.local/config.json` 挂载；采用环境配置时先复制模板创建此文件，再由 `.env` 覆盖必要值。浏览器设置属于 Web 阶段。
 
 ## 二进制运行
 
