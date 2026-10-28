@@ -120,7 +120,8 @@ func (s *FeishuService) Receive(request *http.Request) (any, int, error) {
 	}
 	payload, _ := json.Marshal(message)
 	hash := hashBytes(payload)
-	sealed, err := s.seal(message.ID, payload)
+	queued, _ := json.Marshal(queuedFeishuMessage{feishuMessage: message, VerbatimText: true})
+	sealed, err := s.seal(message.ID, queued)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -228,7 +229,7 @@ func (s *FeishuService) processOne(ctx context.Context) (bool, error) {
 		}
 		var body []byte
 		body, err = s.unseal(messageID, payload)
-		var message feishuMessage
+		var message queuedFeishuMessage
 		if err == nil {
 			err = json.Unmarshal(body, &message)
 		}
@@ -238,7 +239,7 @@ func (s *FeishuService) processOne(ctx context.Context) (bool, error) {
 			if savedErr == nil {
 				kind, resource = "ai", messageID
 			} else if errors.Is(savedErr, sql.ErrNoRows) {
-				kind, resource, err = s.execute(ctx, message)
+				kind, resource, err = s.executeQueued(ctx, message)
 			} else {
 				err = savedErr
 			}

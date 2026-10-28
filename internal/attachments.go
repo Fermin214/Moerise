@@ -3,6 +3,7 @@ package moerise
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -27,6 +28,39 @@ func (m *MemosClient) GetAttachment(ctx context.Context, name string) (map[strin
 		return nil, nil
 	}
 	return raw, err
+}
+
+func (m *MemosClient) DownloadAttachment(ctx context.Context, attachment map[string]any) (CreateAttachment, error) {
+	name, _ := attachment["name"].(string)
+	filename, _ := attachment["filename"].(string)
+	kind, _ := attachment["type"].(string)
+	if !attachmentPattern.MatchString(name) || filename == "" {
+		return CreateAttachment{}, upstreamError("UPSTREAM_PROTOCOL", "Invalid Memos image resource")
+	}
+	request, err := http.NewRequestWithContext(ctx, "GET", m.config.BaseURL+"/file/"+name+"/"+url.PathEscape(filename), nil)
+	if err != nil {
+		return CreateAttachment{}, err
+	}
+	request.Header.Set("Authorization", "Bearer "+m.config.Token)
+	response, err := m.client.Do(request)
+	if err != nil {
+		return CreateAttachment{}, upstreamError("UPSTREAM_UNAVAILABLE", "Memos image download failed")
+	}
+	defer response.Body.Close()
+	if response.StatusCode == 404 {
+		return CreateAttachment{}, failure("SOURCE_NOT_FOUND", "Memos image is unavailable", 404, false)
+	}
+	if response.StatusCode != 200 {
+		return CreateAttachment{}, upstreamError("UPSTREAM_UNAVAILABLE", "Memos image download failed")
+	}
+	data, err := io.ReadAll(io.LimitReader(response.Body, 10*1024*1024+1))
+	if err != nil {
+		return CreateAttachment{}, upstreamError("UPSTREAM_UNAVAILABLE", "Memos image download failed")
+	}
+	if len(data) == 0 || len(data) > 10*1024*1024 {
+		return CreateAttachment{}, failure("CHANNEL_IMAGE_SIZE", "Image must contain 1 byte to 10 MiB", 422, false)
+	}
+	return CreateAttachment{Filename: filename, Type: kind, Content: data}, nil
 }
 
 func (m *MemosClient) UploadAttachment(ctx context.Context, name, memo string, input CreateAttachment) error {

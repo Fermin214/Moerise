@@ -20,13 +20,14 @@ type FeishuDelivery struct {
 	Reviews *ReviewService
 	Events  *FeishuService
 	http    *http.Client
+	images  feishuImagePlatform
 }
 
 func NewFeishuDelivery(store *Store, reviews *ReviewService, events *FeishuService) NotificationTransport {
 	if events == nil && (store.Settings.Channel.Kind != "feishu-webhook" || configured(store.Settings.Channel.WebhookURL) == "") {
 		return nil
 	}
-	return &FeishuDelivery{Store: store, Reviews: reviews, Events: events,
+	return &FeishuDelivery{Store: store, Reviews: reviews, Events: events, images: NewFeishuClient(store.Settings.Channel),
 		http: &http.Client{Timeout: 15 * time.Second,
 			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}
 }
@@ -62,6 +63,16 @@ func (s *FeishuDelivery) Check(ctx context.Context, item Notification, receipt s
 	if s.Store.Settings.Channel.Kind == "feishu-webhook" || s.Events == nil {
 		return false, failure("CHANNEL_RECEIPT_UNSUPPORTED", "Webhook outcomes require operator confirmation without a receipt", 422, false)
 	}
+	var used bool
+	if err := s.Store.state.QueryRow(`SELECT EXISTS (
+		SELECT 1 FROM notifications WHERE receipt = ? AND id <> ?
+		UNION ALL SELECT 1 FROM notification_attempts WHERE receipt = ? AND notification_id <> ?)`,
+		receipt, item.ID, receipt, item.ID).Scan(&used); err != nil {
+		return false, err
+	}
+	if used {
+		return false, nil
+	}
 	message, err := s.Events.Client.GetMessage(ctx, receipt)
 	if err != nil {
 		return false, err
@@ -69,6 +80,27 @@ func (s *FeishuDelivery) Check(ctx context.Context, item Notification, receipt s
 	if message.ID != receipt || message.Deleted || message.SenderType != "app" ||
 		message.SenderIDType != "app_id" || message.SenderID != configured(s.Store.Settings.Channel.AppID) {
 		return false, nil
+	}
+	// Platform timestamps have millisecond precision; compare with the first send attempt.
+	var started *string
+	if err := s.Store.state.QueryRow(`SELECT MIN(started_at) FROM notification_attempts WHERE notification_id = ?`,
+		item.ID).Scan(&started); err != nil {
+		return false, err
+	}
+	if started != nil && !message.CreateTime.IsZero() {
+		at, err := time.Parse(time.RFC3339Nano, *started)
+		if err != nil {
+			return false, err
+		}
+		if message.CreateTime.Before(at.Add(-5*time.Second).Truncate(time.Millisecond)) || message.CreateTime.After(time.Now().Add(time.Minute)) {
+			return false, nil
+		}
+	}
+	if message.ChatID != "" {
+		matches, err := s.receiptChatMatches(ctx, item, message.ChatID)
+		if err != nil || !matches {
+			return false, err
+		}
 	}
 	if item.Kind == "reply" {
 		if item.SourceEvent == nil || message.ParentID != *item.SourceEvent {
@@ -91,20 +123,63 @@ func (s *FeishuDelivery) Check(ctx context.Context, item Notification, receipt s
 	if err != nil {
 		return false, err
 	}
-	if part.Kind != "text" {
+	if part.Kind == "header" {
+		return message.Text == "「今日回顾」", nil
+	}
+	if part.Kind == "image" {
+		return part.ImageKey != "" && part.ImageKey == message.ImageKey, nil
+	}
+	if part.Kind != "text" && part.Kind != "footer" {
 		return false, nil
 	}
 	note, err := s.reviewNote(ctx, part)
 	if err != nil {
 		return false, err
 	}
-	text, err := reviewPartText(part, note)
+	var text string
+	if part.Kind == "footer" {
+		text, err = s.reviewFooter(note)
+	} else {
+		text, err = reviewPartText(part, note)
+	}
 	return err == nil && text == message.Text, err
 }
 
+func (s *FeishuDelivery) receiptChatMatches(ctx context.Context, item Notification, chat string) (bool, error) {
+	settings := s.Store.Settings
+	var reference string
+	err := s.Store.state.QueryRow(`SELECT message_id FROM channel_events
+		WHERE app_id = ? AND sender_open_id = ? LIMIT 1`,
+		configured(settings.Channel.AppID), configured(settings.Channel.UserOpenID)).Scan(&reference)
+	if errors.Is(err, sql.ErrNoRows) {
+		err = s.Store.state.QueryRow(`SELECT a.receipt FROM notification_attempts a
+			JOIN notifications n ON n.id = a.notification_id
+			WHERE n.instance_id = ? AND n.user_name = ? AND n.channel_key = ?
+			AND n.id <> ? AND a.outcome = 'sent' AND a.receipt IS NOT NULL
+			AND a.receipt NOT LIKE 'empty:%' ORDER BY a.started_at DESC LIMIT 1`,
+			settings.Memos.InstanceID, settings.Memos.User,
+			NewNotificationService(s.Store, s.Reviews, nil).channelKey(), item.ID).Scan(&reference)
+	}
+	if errors.Is(err, sql.ErrNoRows) {
+		return true, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	message, err := s.Events.Client.GetMessage(ctx, reference)
+	if err != nil {
+		return false, err
+	}
+	return message.ID == reference && message.ChatID != "" && message.ChatID == chat, nil
+}
+
 func (s *FeishuDelivery) webhook(ctx context.Context, id, text string) (string, error) {
+	return s.webhookMessage(ctx, id, "text", map[string]string{"text": text})
+}
+
+func (s *FeishuDelivery) webhookMessage(ctx context.Context, id, kind string, content map[string]string) (string, error) {
 	config := s.Store.Settings.Channel
-	body := map[string]any{"msg_type": "text", "content": map[string]string{"text": text}}
+	body := map[string]any{"msg_type": kind, "content": content}
 	if secret := configured(config.WebhookSecret); secret != "" {
 		stamp := strconv.FormatInt(time.Now().Unix(), 10)
 		mac := hmac.New(sha256.New, []byte(stamp+"\n"+secret))

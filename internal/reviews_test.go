@@ -231,3 +231,53 @@ func TestConcurrentDailyReadsShareOneBatch(t *testing.T) {
 		id = actual
 	}
 }
+
+func TestReviewLatestBatchAcrossTimestampPrecisionAndRules(t *testing.T) {
+	service, _ := reviewFixture(t, 15)
+	ctx := context.Background()
+	at := time.Date(2026, 10, 28, 2, 0, 0, 0, time.UTC)
+	legacy, err := service.Daily(ctx, at)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Store.state.Exec(`UPDATE review_batches
+		SET rule_version = 'legacy-rules', sequence = 40, request_key = 'legacy-replace' WHERE id = ?`,
+		legacy.ID); err != nil {
+		t.Fatal(err)
+	}
+	replacements := []ReviewBatch{}
+	for i, offset := range []time.Duration{500 * time.Millisecond, 510 * time.Millisecond, 510 * time.Millisecond} {
+		key := fmt.Sprintf("same-second-%d", i)
+		batch, err := service.Replace(ctx, key, at.Add(offset))
+		if err != nil || batch.Sequence != i+1 {
+			t.Fatalf("replacement under new rules: %+v %v", batch, err)
+		}
+		replacements = append(replacements, batch)
+		for _, read := range []struct {
+			name string
+			call func(context.Context, time.Time) (ReviewBatch, error)
+		}{{"ReadDaily", service.ReadDaily}, {"Daily", service.Daily}} {
+			latest, err := read.call(ctx, at.Add(time.Second))
+			if err != nil || latest.ID != batch.ID {
+				t.Fatalf("%s did not return the latest replacement: %+v %v", read.name, latest, err)
+			}
+		}
+	}
+	for _, replay := range []struct {
+		key string
+		id  string
+	}{{"legacy-replace", legacy.ID}, {"same-second-0", replacements[0].ID}} {
+		batch, err := service.Replace(ctx, replay.key, at.Add(time.Minute))
+		if err != nil || batch.ID != replay.id {
+			t.Fatalf("replacement replay changed across rules or newer batches: %+v %v", batch, err)
+		}
+	}
+	latest, err := service.ReadDaily(ctx, at)
+	if err != nil || latest.ID != replacements[len(replacements)-1].ID {
+		t.Fatalf("replaying an earlier replacement changed the daily result: %+v %v", latest, err)
+	}
+	var count int
+	if err := service.Store.state.QueryRow("SELECT COUNT(*) FROM review_batches").Scan(&count); err != nil || count != 4 {
+		t.Fatalf("daily reads or replacement replays created batches: %d %v", count, err)
+	}
+}

@@ -32,6 +32,7 @@ type feishuPlatform struct {
 	destinations map[string]string
 	dropNextSend bool
 	pushCalls    int
+	sentAt       map[string]time.Time
 }
 
 func (p *feishuPlatform) Reply(_ context.Context, messageID, uuid, text string) (string, error) {
@@ -76,8 +77,10 @@ func (p *feishuPlatform) SendText(_ context.Context, recipient, uuid, text strin
 	defer p.mu.Unlock()
 	if p.pushes == nil {
 		p.pushes, p.destinations = map[string]string{}, map[string]string{}
+		p.sentAt = map[string]time.Time{}
 	}
 	p.pushes[uuid], p.destinations[uuid] = text, recipient
+	p.sentAt[uuid] = time.Now()
 	p.pushCalls++
 	if p.dropNextSend {
 		p.dropNextSend = false
@@ -89,9 +92,11 @@ func (p *feishuPlatform) SendText(_ context.Context, recipient, uuid, text strin
 func (p *feishuPlatform) GetMessage(_ context.Context, receipt string) (moerise.FeishuSentMessage, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	message := moerise.FeishuSentMessage{ID: receipt, SenderType: "app", SenderIDType: "app_id", SenderID: "cli_acceptance"}
+	message := moerise.FeishuSentMessage{ID: receipt, SenderType: "app", SenderIDType: "app_id",
+		SenderID: "cli_acceptance", ChatID: "oc_owner"}
 	if strings.HasPrefix(receipt, "push_") {
 		message.Text = p.pushes[strings.TrimPrefix(receipt, "push_")]
+		message.CreateTime = p.sentAt[strings.TrimPrefix(receipt, "push_")]
 	} else if strings.HasPrefix(receipt, "receipt_") {
 		message.ParentID = strings.TrimPrefix(receipt, "receipt_")
 		message.Text = p.replies[message.ParentID]
@@ -190,8 +195,7 @@ func TestFeishuProactiveReviewWithRealMemosAcceptance(t *testing.T) {
 		t.Fatalf("proactive send: progress=%v err=%v", progress, err)
 	}
 	receipt, text, recipient, calls := platform.lastPush()
-	if calls != 1 || recipient != "ou_owner" || !strings.Contains(text, batch.ID) ||
-		!strings.Contains(text, "edited before push") || strings.Contains(text, deleted) {
+	if calls != 1 || recipient != "ou_owner" || text != "「今日回顾」" {
 		t.Fatalf("push destination or live content: recipient=%s text=%s calls=%d", recipient, text, calls)
 	}
 	detail, err := api.Notifications.Detail(notification.ID)
@@ -209,6 +213,42 @@ func TestFeishuProactiveReviewWithRealMemosAcceptance(t *testing.T) {
 		map[string]string{"decision": "sent", "receipt": receipt}, 200)
 	if resolved["notification"].(map[string]any)["receipt"] != receipt {
 		t.Fatal("verified platform receipt was not saved")
+	}
+	for range 10 {
+		progress, err := api.Notifications.Deliver(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !progress {
+			break
+		}
+	}
+	sent, err := api.Notifications.List("sent")
+	waiting, waitingErr := api.Notifications.List("pending")
+	unknown, unknownErr := api.Notifications.List("unknown")
+	if err != nil || waitingErr != nil || unknownErr != nil || len(sent) != 5 || len(waiting) != 0 || len(unknown) != 0 {
+		t.Fatalf("review fragments did not finish: sent=%d pending=%d unknown=%d", len(sent), len(waiting), len(unknown))
+	}
+	expected := batch.Items[2].Note.Content
+	platform.mu.Lock()
+	header, editedBody, otherBody, footers := 0, 0, 0, 0
+	for _, body := range platform.pushes {
+		switch {
+		case body == "「今日回顾」":
+			header++
+		case body == "edited before push":
+			editedBody++
+		case body == expected:
+			otherBody++
+		case strings.HasPrefix(body, "创建于"):
+			footers++
+		default:
+			t.Errorf("unexpected review message: %q", body)
+		}
+	}
+	platform.mu.Unlock()
+	if header != 1 || editedBody != 1 || otherBody != 1 || footers != 2 {
+		t.Fatalf("review layout: titles=%d edited=%d other=%d footers=%d", header, editedBody, otherBody, footers)
 	}
 	batch, err = api.Reviews.Get(ctx, batch.ID)
 	if err != nil {

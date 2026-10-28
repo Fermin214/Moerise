@@ -29,11 +29,11 @@ func (p *notificationPlatform) Send(_ context.Context, item Notification) (strin
 	case "crash":
 		panic("interrupted after durable send attempt")
 	}
-	return "platform-receipt", nil
+	return "platform-receipt:" + item.ID, nil
 }
 
-func (p *notificationPlatform) Check(_ context.Context, _ Notification, receipt string) (bool, error) {
-	return receipt == "platform-receipt", nil
+func (p *notificationPlatform) Check(_ context.Context, item Notification, receipt string) (bool, error) {
+	return receipt == "platform-receipt:"+item.ID, nil
 }
 
 func notificationFixture(t *testing.T) (*NotificationService, *notificationPlatform) {
@@ -161,6 +161,34 @@ func TestDailyReviewWithoutPushAndMultipleSlots(t *testing.T) {
 	}
 }
 
+func TestScheduleUsesLatestReplacementWithinSecond(t *testing.T) {
+	service, _ := notificationFixture(t)
+	ctx := context.Background()
+	at := time.Date(2026, 10, 28, 2, 0, 0, 0, time.UTC)
+	legacy, err := service.Reviews.Daily(ctx, at)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Store.state.Exec(`UPDATE review_batches
+		SET rule_version = 'legacy-rules', sequence = 40 WHERE id = ?`, legacy.ID); err != nil {
+		t.Fatal(err)
+	}
+	var latest ReviewBatch
+	for i, offset := range []time.Duration{500 * time.Millisecond, 510 * time.Millisecond} {
+		latest, err = service.Reviews.Replace(ctx, fmt.Sprintf("scheduled-replace-%d", i), at.Add(offset))
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if count, err := service.Schedule(ctx, at.Add(time.Second)); err != nil || count != 1 {
+		t.Fatalf("schedule replacement: %d %v", count, err)
+	}
+	items, err := service.List("")
+	if err != nil || len(items) != 1 || items[0].BatchID == nil || *items[0].BatchID != latest.ID {
+		t.Fatalf("scheduled an earlier batch: %+v %v", items, err)
+	}
+}
+
 func TestEmptyReviewSlotsAreSilentAndSourceFailureRetries(t *testing.T) {
 	reviews, _ := reviewFixture(t, 0)
 	reviews.Store.Settings.Notifications.Enabled = true
@@ -245,7 +273,7 @@ func TestNotificationAttemptsUnknownResolutionAndRestart(t *testing.T) {
 		t.Fatal("interrupted attempt was blindly returned to pending")
 	}
 	platform.mode = ""
-	if _, err := service.Resolve(ctx, unknown[0].ID, "sent", "platform-receipt", "operator"); err != nil {
+	if _, err := service.Resolve(ctx, unknown[0].ID, "sent", "platform-receipt:"+unknown[0].ID, "operator"); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -314,10 +342,11 @@ func TestNotificationHTTPScopesAndReceiptResolution(t *testing.T) {
 	call("GET", "/api/ext/v1/notifications?status=unknown", "", 0, 200)
 	call("GET", "/api/ext/v1/notifications?status=pending%7Crunning", "", 0, 422)
 	path := "/api/ext/v1/notifications/" + id + "/resolve"
-	call("POST", path, `{"decision":"sent","receipt":"platform-receipt"}`, 0, 403)
+	resolution := fmt.Sprintf(`{"decision":"sent","receipt":"platform-receipt:%s"}`, id)
+	call("POST", path, resolution, 0, 403)
 	call("POST", path, `{"decision":"sent","receipt":"unrelated"}`, 1, 409)
 	call("POST", path, `{"decision":"not_sent","receipt":"unrelated"}`, 1, 422)
-	response := call("POST", path, `{"decision":"sent","receipt":"platform-receipt"}`, 1, 200)
+	response := call("POST", path, resolution, 1, 200)
 	var detail NotificationDetail
 	if json.Unmarshal(response.Body.Bytes(), &detail) != nil || detail.Notification.Status != "sent" ||
 		len(detail.Resolutions) != 1 || detail.Resolutions[0].ResolvedBy != "operator" {

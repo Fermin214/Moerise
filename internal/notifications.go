@@ -89,8 +89,7 @@ func (s *NotificationService) Schedule(ctx context.Context, at time.Time) (int, 
 	var batch ReviewBatch
 	var batchID string
 	err = s.Store.state.QueryRow(`SELECT id FROM review_batches
-		WHERE instance_id = ? AND user_name = ? AND timezone = ? AND local_date = ?
-		ORDER BY created_at DESC, sequence DESC LIMIT 1`,
+		WHERE instance_id = ? AND user_name = ? AND timezone = ? AND local_date = ?`+reviewBatchOrder,
 		instance, user, settings.Timezone, today).Scan(&batchID)
 	loaded := false
 	if errors.Is(err, sql.ErrNoRows) {
@@ -466,6 +465,18 @@ func (s *NotificationService) Resolve(ctx context.Context, id, decision, receipt
 		receipt = ""
 	}
 	err = transaction(s.Store.state, func(tx *sql.Tx) error {
+		if receipt != "" {
+			var used bool
+			if err := tx.QueryRow(`SELECT EXISTS (
+				SELECT 1 FROM notifications WHERE receipt = ? AND id <> ?
+				UNION ALL SELECT 1 FROM notification_attempts WHERE receipt = ? AND notification_id <> ?)`,
+				receipt, id, receipt, id).Scan(&used); err != nil {
+				return err
+			}
+			if used {
+				return failure("NOTIFICATION_CONFLICT", "Receipt already belongs to another notification", 409, false)
+			}
+		}
 		if _, err := tx.Exec(`INSERT INTO notification_resolutions
 			(id, notification_id, decision, receipt, resolved_by, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
 			newID(), id, decision, nullable(receipt), actor, nowText()); err != nil {

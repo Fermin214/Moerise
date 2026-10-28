@@ -6,8 +6,10 @@ import (
 	"encoding/json"
 	"io"
 	"mime"
+	"mime/multipart"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -106,6 +108,72 @@ func (c *FeishuClient) SendText(ctx context.Context, recipient, uuid, text strin
 	return c.send(ctx, "/im/v1/messages?receive_id_type=open_id", body)
 }
 
+func (c *FeishuClient) UploadImage(ctx context.Context, image CreateAttachment) (string, error) {
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	if err := writer.WriteField("image_type", "message"); err != nil {
+		return "", err
+	}
+	file, err := writer.CreateFormFile("image", image.Filename)
+	if err != nil {
+		return "", err
+	}
+	if _, err := file.Write(image.Content); err != nil {
+		return "", err
+	}
+	if err := writer.Close(); err != nil {
+		return "", err
+	}
+	token, err := c.tenantToken(ctx)
+	if err != nil {
+		return "", err
+	}
+	request, err := http.NewRequestWithContext(ctx, "POST", c.baseURL+"/im/v1/images", &body)
+	if err != nil {
+		return "", err
+	}
+	request.Header.Set("Authorization", "Bearer "+token)
+	request.Header.Set("Content-Type", writer.FormDataContentType())
+	response, err := c.http.Do(request)
+	if err != nil {
+		// Uploading a resource does not deliver a message and can be retried.
+		return "", upstreamError("CHANNEL_UNAVAILABLE", "Feishu image upload must be retried")
+	}
+	defer response.Body.Close()
+	if response.StatusCode == 401 {
+		c.mu.Lock()
+		c.token, c.expires = "", time.Time{}
+		c.mu.Unlock()
+	}
+	if response.StatusCode >= 500 || response.StatusCode == 429 {
+		return "", upstreamError("CHANNEL_UNAVAILABLE", "Feishu image upload must be retried")
+	}
+	var result struct {
+		Code *int `json:"code"`
+		Data struct {
+			ImageKey string `json:"image_key"`
+		} `json:"data"`
+	}
+	if json.NewDecoder(io.LimitReader(response.Body, 65536)).Decode(&result) != nil || result.Code == nil {
+		return "", upstreamError("CHANNEL_PROTOCOL", "Invalid Feishu image upload response")
+	}
+	switch *result.Code {
+	case 234006, 234010, 234011, 234039:
+		return "", failure("CHANNEL_IMAGE_UNSUPPORTED", "Feishu cannot display this image", 422, false)
+	}
+	if response.StatusCode != 200 || *result.Code != 0 || result.Data.ImageKey == "" {
+		return "", upstreamError("CHANNEL_REJECTED", "Feishu rejected the image upload")
+	}
+	return result.Data.ImageKey, nil
+}
+
+func (c *FeishuClient) SendImage(ctx context.Context, recipient, uuid, key string) (string, error) {
+	content, _ := json.Marshal(map[string]string{"image_key": key})
+	body, _ := json.Marshal(map[string]string{"receive_id": recipient, "msg_type": "image",
+		"content": string(content), "uuid": uuid})
+	return c.send(ctx, "/im/v1/messages?receive_id_type=open_id", body)
+}
+
 func (c *FeishuClient) send(ctx context.Context, path string, body []byte) (string, error) {
 	response, err := c.request(ctx, "POST", path, body)
 	if err != nil {
@@ -138,6 +206,9 @@ type FeishuSentMessage struct {
 	SenderType   string
 	Text         string
 	Deleted      bool
+	ImageKey     string
+	ChatID       string
+	CreateTime   time.Time
 }
 
 func (c *FeishuClient) GetMessage(ctx context.Context, id string) (FeishuSentMessage, error) {
@@ -156,6 +227,8 @@ func (c *FeishuClient) GetMessage(ctx context.Context, id string) (FeishuSentMes
 				ID       string `json:"message_id"`
 				ParentID string `json:"parent_id"`
 				Deleted  bool   `json:"deleted"`
+				ChatID   string `json:"chat_id"`
+				Created  string `json:"create_time"`
 				Sender   struct {
 					ID   string `json:"id"`
 					Type string `json:"sender_type"`
@@ -178,13 +251,19 @@ func (c *FeishuClient) GetMessage(ctx context.Context, id string) (FeishuSentMes
 			continue
 		}
 		var content struct {
-			Text string `json:"text"`
+			Text     string `json:"text"`
+			ImageKey string `json:"image_key"`
 		}
 		if json.Unmarshal([]byte(item.Body.Content), &content) != nil {
 			return FeishuSentMessage{}, upstreamError("CHANNEL_PROTOCOL", "Invalid Feishu message content")
 		}
-		return FeishuSentMessage{item.ID, item.ParentID, item.Sender.ID, item.Sender.Kind,
-			item.Sender.Type, content.Text, item.Deleted}, nil
+		message := FeishuSentMessage{ID: item.ID, ParentID: item.ParentID, SenderID: item.Sender.ID,
+			SenderIDType: item.Sender.Kind, SenderType: item.Sender.Type, Text: content.Text,
+			Deleted: item.Deleted, ImageKey: content.ImageKey, ChatID: item.ChatID}
+		if millis, err := strconv.ParseInt(item.Created, 10, 64); err == nil {
+			message.CreateTime = time.UnixMilli(millis)
+		}
+		return message, nil
 	}
 	return FeishuSentMessage{}, failure("NOTIFICATION_CONFLICT", "Feishu receipt was not found", 409, false)
 }
