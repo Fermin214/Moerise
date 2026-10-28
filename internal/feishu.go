@@ -233,7 +233,15 @@ func (s *FeishuService) processOne(ctx context.Context) (bool, error) {
 			err = json.Unmarshal(body, &message)
 		}
 		if err == nil {
-			kind, resource, err = s.execute(ctx, message)
+			// Resume generations already persisted before the text recording entrypoint.
+			_, savedErr := s.aiGeneration(messageID)
+			if savedErr == nil {
+				kind, resource = "ai", messageID
+			} else if errors.Is(savedErr, sql.ErrNoRows) {
+				kind, resource, err = s.execute(ctx, message)
+			} else {
+				err = savedErr
+			}
 		}
 		if err != nil {
 			var service *ServiceError
@@ -261,7 +269,7 @@ func (s *FeishuService) retry(id, status string, attempts int, code string) erro
 	return err
 }
 
-const feishuHelp = "可用操作：\n记录 正文（可含 #标签）\n查看 memos/资源标识\n搜索 查询词（可加 #标签）\n相关 memos/资源标识\n洞察 memos/资源标识[,memos/资源标识]\n问答 问题 [#标签]\n历程 主题 [#标签]\n漫步/继续这个话题/换个角度 memos/资源标识 [路径]\n随机跳转 [memos/资源标识] [路径]\n回顾\n换一组\n打开 批次标识 memos/资源标识\n略过 批次标识 memos/资源标识\n发送图片或文件会保存为附件笔记。"
+const feishuHelp = "直接发送文字或图片即可记录笔记，也支持文件消息。"
 
 func (s *FeishuService) execute(ctx context.Context, message feishuMessage) (string, string, error) {
 	key := "feishu:" + hashBytes([]byte(message.ID))
@@ -292,82 +300,8 @@ func (s *FeishuService) execute(ctx context.Context, message feishuMessage) (str
 	if message.Type != "text" {
 		return "help", "", nil
 	}
-	text := strings.TrimSpace(content.Text)
-	fields := strings.Fields(text)
-	if len(fields) == 0 {
-		return "help", "", nil
-	}
-	switch fields[0] {
-	case "洞察", "问答", "历程":
-		return s.executeAI(ctx, message.ID, text)
-	case "漫步", "继续这个话题", "换个角度", "随机跳转":
-		if len(fields) <= 3 {
-			request := WalkRequest{Mode: map[string]string{"漫步": "continue", "继续这个话题": "continue",
-				"换个角度": "angle", "随机跳转": "random"}[fields[0]]}
-			if len(fields) >= 2 {
-				request.Name = fields[1]
-			}
-			if len(fields) == 3 {
-				request.Path = strings.Split(fields[2], ",")
-			}
-			request, err := normalizeWalk(request)
-			if err != nil {
-				return "", "", err
-			}
-			body, _ := json.Marshal(request)
-			sealed, err := s.seal("walk:"+message.ID, body)
-			return "walk", message.ID + "." + base64.RawURLEncoding.EncodeToString(sealed), err
-		}
-	case "相关":
-		if len(fields) == 2 && memoPattern.MatchString(fields[1]) {
-			return "related", fields[1], nil
-		}
-	case "搜索":
-		request := SearchRequest{Query: strings.TrimSpace(strings.TrimPrefix(text, "搜索")), Limit: 5}
-		words := []string{}
-		for _, word := range strings.Fields(request.Query) {
-			if strings.HasPrefix(word, "#") {
-				request.Tags = append(request.Tags, strings.TrimPrefix(word, "#"))
-			} else {
-				words = append(words, word)
-			}
-		}
-		if len(words) > 0 {
-			request.Query = strings.Join(words, " ")
-		}
-		request, err := normalizeSearch(request)
-		if err != nil {
-			return "", "", err
-		}
-		body, _ := json.Marshal(request)
-		sealed, err := s.seal("search:"+message.ID, body)
-		return "search", message.ID + "." + base64.RawURLEncoding.EncodeToString(sealed), err
-	case "记录":
-		note, _, err := s.Records.Create(ctx, key, CreateNote{Content: strings.TrimSpace(strings.TrimPrefix(text, "记录"))})
-		return "saved", note.Name, err
-	case "查看":
-		if len(fields) == 2 && memoPattern.MatchString(fields[1]) {
-			_, err := s.Search.Open(ctx, fields[1])
-			return "memo", fields[1], err
-		}
-	case "回顾":
-		if len(fields) == 1 {
-			batch, err := s.Reviews.Daily(ctx, time.Now())
-			return "review", batch.ID, err
-		}
-	case "换一组":
-		if len(fields) == 1 {
-			batch, err := s.Reviews.Replace(ctx, key, time.Now())
-			return "review", batch.ID, err
-		}
-	case "打开", "略过":
-		if len(fields) == 3 {
-			action := map[string]string{"打开": "open", "略过": "skip"}[fields[0]]
-			batch, err := s.Reviews.Mark(ctx, fields[1], fields[2], action, time.Now())
-			return "review", batch.ID, err
-		}
-	}
-	return "help", "", nil
+	note, _, err := s.Records.Create(ctx, key, CreateNote{Content: content.Text})
+	return "saved", note.Name, err
 }
 
 func excerpt(content string, limit int) string {

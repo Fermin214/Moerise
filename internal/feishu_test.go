@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -76,7 +77,7 @@ func TestFeishuCallbackAuthenticationAndEncryptedQueue(t *testing.T) {
 		_, _, err := service.Receive(request)
 		return err
 	}
-	plain := testFeishuEvent(settings, "om_private", "ou_owner", "记录 private incoming text")
+	plain := testFeishuEvent(settings, "om_private", "ou_owner", "private incoming text")
 	encrypted := encryptedFeishuEvent(settings, plain)
 	if errorCode(call(plain, false)) != "UNAUTHENTICATED" || errorCode(call(encrypted, false)) != "UNAUTHENTICATED" {
 		t.Fatal("unsigned or unencrypted events bypassed verification")
@@ -90,6 +91,27 @@ func TestFeishuCallbackAuthenticationAndEncryptedQueue(t *testing.T) {
 	foreign := encryptedFeishuEvent(settings, testFeishuEvent(settings, "om_foreign", "ou_other", "查看 memos/private"))
 	if err := call(foreign, true); err != nil {
 		t.Fatal(err)
+	}
+	for _, boundary := range []string{"group", "bot", "app"} {
+		var event feishuEvent
+		_ = json.Unmarshal(testFeishuEvent(settings, "om_"+boundary, "ou_owner", "private"), &event)
+		switch boundary {
+		case "group":
+			event.Event.Message.Chat = "group"
+		case "bot":
+			event.Event.Sender.Type = "app"
+		case "app":
+			event.Header.AppID = "cli_other"
+		}
+		body, _ := json.Marshal(event)
+		err := call(encryptedFeishuEvent(settings, body), true)
+		if boundary == "app" && errorCode(err) != "UNAUTHENTICATED" || boundary != "app" && err != nil {
+			t.Fatalf("%s boundary: %v", boundary, err)
+		}
+	}
+	changed := encryptedFeishuEvent(settings, testFeishuEvent(settings, "om_private", "ou_owner", "changed text"))
+	if errorCode(call(changed, true)) != "IDEMPOTENCY_CONFLICT" {
+		t.Fatal("changed content reused the same message identifier")
 	}
 	var count int
 	if err := store.state.QueryRow("SELECT COUNT(*) FROM channel_events").Scan(&count); err != nil || count != 1 {
@@ -223,6 +245,10 @@ func TestUnknownFeishuReplyIsHeldWithoutRepeatingBusiness(t *testing.T) {
 	platform := &unknownFeishuReply{}
 	service.Client = platform
 	body := testFeishuEvent(settings, "om_help", "ou_owner", "帮助")
+	var event feishuEvent
+	_ = json.Unmarshal(body, &event)
+	event.Event.Message.Type = "sticker"
+	body, _ = json.Marshal(event)
 	request := httptest.NewRequest("POST", "/hooks/feishu", bytes.NewReader(body))
 	if _, _, err := service.Receive(request); err != nil {
 		t.Fatal(err)
@@ -244,5 +270,89 @@ func TestUnknownFeishuReplyIsHeldWithoutRepeatingBusiness(t *testing.T) {
 	if err := store.state.QueryRow("SELECT status, reply_status, payload FROM channel_events").
 		Scan(&status, &replyStatus, &payload); err != nil || status != "processed" || replyStatus != "unknown" || len(payload) != 0 {
 		t.Fatal("unknown reply or removal of processed private content was not durable")
+	}
+}
+
+func TestFeishuPrivateTextRecordsVerbatim(t *testing.T) {
+	settings := feishuSettings(t)
+	store := testStore(t, settings)
+	memos := map[string]map[string]any{}
+	posts := 0
+	client := fakeClient(settings, func(request *http.Request) (int, any, error) {
+		if status, body, ok := identityResponse(request); ok {
+			return status, body, nil
+		}
+		if request.Method == "POST" && request.URL.Path == "/api/v1/memos" {
+			var body map[string]string
+			_ = json.NewDecoder(request.Body).Decode(&body)
+			id := request.URL.Query().Get("memoId")
+			memos["memos/"+id] = rawMemo(id, body["content"])
+			posts++
+			return 200, memos["memos/"+id], nil
+		}
+		if memo := memos[strings.TrimPrefix(request.URL.Path, "/api/v1/")]; memo != nil {
+			return 200, memo, nil
+		}
+		return 404, nil, nil
+	})
+	reviews := NewReviewService(store, client)
+	notifications := NewNotificationService(store, reviews, nil)
+	service := NewFeishuService(store, client, NewRecordService(store, client), reviews, notifications)
+	platform := &feishuAIPlatform{messages: map[string]FeishuSentMessage{}}
+	service.Client = platform
+	notifications.Transport = NewFeishuDelivery(store, reviews, service)
+	for i, text := range []string{
+		"  \t普通文字 #标签\n\n第二段\r\n末尾空白 \t\n",
+		"记录 #原文 正文",
+		"查看 memos/private", "搜索 #标签 正文", "相关 memos/private",
+		"洞察 memos/private", "问答 今天想什么 #标签", "历程 想法变化",
+		"漫步 memos/private", "继续这个话题 memos/private", "换个角度 memos/private", "随机跳转",
+		"回顾", "换一组", "打开 batch memos/private", "略过 batch memos/private", "帮助",
+	} {
+		id := fmt.Sprintf("om_text_%d", i)
+		body := testFeishuEvent(settings, id, "ou_owner", text)
+		for range 2 {
+			if _, _, err := service.Receive(httptest.NewRequest("POST", "/hooks/feishu", bytes.NewReader(body))); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if progress, err := service.processOne(context.Background()); err != nil || !progress {
+			t.Fatalf("record %q: progress=%t err=%v", text, progress, err)
+		}
+		deliverFeishuAI(t, service)
+		var name string
+		if err := store.state.QueryRow("SELECT resource_name FROM channel_events WHERE message_id = ?", id).Scan(&name); err != nil {
+			t.Fatal(err)
+		}
+		if memos[name]["content"] != text || posts != i+1 {
+			t.Fatalf("text changed or duplicated: got=%q want=%q posts=%d", memos[name]["content"], text, posts)
+		}
+		if platform.texts[i] != "已保存\n"+name+"\n"+settings.Memos.PublicURL+"/"+name {
+			t.Fatalf("unexpected recording feedback: %q", platform.texts[i])
+		}
+		if _, _, err := service.Receive(httptest.NewRequest("POST", "/hooks/feishu", bytes.NewReader(body))); err != nil {
+			t.Fatal(err)
+		}
+		if progress, err := service.processOne(context.Background()); err != nil || progress {
+			t.Fatalf("completed event repeated: %t %v", progress, err)
+		}
+	}
+	var generations, batches int
+	if err := store.state.QueryRow("SELECT COUNT(*) FROM feishu_ai_generations").Scan(&generations); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.state.QueryRow("SELECT COUNT(*) FROM review_batches").Scan(&batches); err != nil {
+		t.Fatal(err)
+	}
+	if generations != 0 || batches != 0 {
+		t.Fatal("recorded text triggered AI or review selection")
+	}
+	for _, text := range []string{"", " \t\r\n", strings.Repeat("文", 21846)} {
+		before := posts
+		_, _, err := service.execute(context.Background(), feishuMessage{ID: "om_invalid", Type: "text",
+			Content: string(canonicalJSON(map[string]string{"text": text}))})
+		if errorCode(err) != "INVALID_ARGUMENT" || posts != before {
+			t.Fatalf("invalid text reached source: %v posts=%d", err, posts)
+		}
 	}
 }

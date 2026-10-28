@@ -5,12 +5,13 @@ import (
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"strconv"
-	"strings"
 	"time"
 )
 
@@ -25,8 +26,9 @@ func NewFeishuDelivery(store *Store, reviews *ReviewService, events *FeishuServi
 	if events == nil && (store.Settings.Channel.Kind != "feishu-webhook" || configured(store.Settings.Channel.WebhookURL) == "") {
 		return nil
 	}
-	return &FeishuDelivery{store, reviews, events, &http.Client{Timeout: 15 * time.Second,
-		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}
+	return &FeishuDelivery{Store: store, Reviews: reviews, Events: events,
+		http: &http.Client{Timeout: 15 * time.Second,
+			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}
 }
 
 func (s *FeishuDelivery) Send(ctx context.Context, item Notification) (string, error) {
@@ -53,22 +55,11 @@ func (s *FeishuDelivery) Send(ctx context.Context, item Notification) (string, e
 	if item.BatchID == nil {
 		return "", failure("INVALID_ARGUMENT", "Review notification has no batch", 422, false)
 	}
-	batch, err := s.Reviews.Get(ctx, *item.BatchID)
-	if err != nil {
-		return "", err
-	}
-	text := renderReview(batch, s.Store.Settings.Channel.Kind != "feishu-webhook")
-	if s.Store.Settings.Channel.Kind == "feishu-webhook" {
-		return s.webhook(ctx, item.ID, text)
-	}
-	if s.Events == nil {
-		return "", upstreamError("CHANNEL_UNAVAILABLE", "Feishu application is unavailable")
-	}
-	return s.Events.Client.SendText(ctx, configured(s.Store.Settings.Channel.UserOpenID), item.PlatformUUID, text)
+	return s.sendReviewPart(ctx, item)
 }
 
 func (s *FeishuDelivery) Check(ctx context.Context, item Notification, receipt string) (bool, error) {
-	if s.Events == nil {
+	if s.Store.Settings.Channel.Kind == "feishu-webhook" || s.Events == nil {
 		return false, failure("CHANNEL_RECEIPT_UNSUPPORTED", "Webhook outcomes require operator confirmation without a receipt", 422, false)
 	}
 	message, err := s.Events.Client.GetMessage(ctx, receipt)
@@ -93,8 +84,25 @@ func (s *FeishuDelivery) Check(ctx context.Context, item Notification, receipt s
 		}
 		return true, nil
 	}
-	return item.BatchID != nil && strings.Contains(message.Text, "批次："+*item.BatchID) &&
-		strings.HasPrefix(message.Text, item.Date+" 每日回顾"), nil
+	part, err := s.reviewPart(item.ID)
+	if errors.Is(err, sql.ErrNoRows) || item.BatchID == nil {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if part.Kind == "empty" {
+		return false, nil
+	}
+	if part.Kind == "source_changed" {
+		return s.sourceChangedText(item, part) == message.Text, nil
+	}
+	note, err := s.reviewNote(ctx, part)
+	if err != nil {
+		return false, err
+	}
+	text, err := s.reviewPartText(item, part, note)
+	return err == nil && text == message.Text, err
 }
 
 func (s *FeishuDelivery) webhook(ctx context.Context, id, text string) (string, error) {
@@ -106,6 +114,9 @@ func (s *FeishuDelivery) webhook(ctx context.Context, id, text string) (string, 
 		body["timestamp"], body["sign"] = stamp, base64.StdEncoding.EncodeToString(mac.Sum(nil))
 	}
 	data, _ := json.Marshal(body)
+	if len(data) > 20*1024 {
+		return "", failure("CHANNEL_MESSAGE_SIZE", "Webhook message exceeds 20 KiB", 422, false)
+	}
 	request, err := http.NewRequestWithContext(ctx, "POST", configured(config.WebhookURL), bytes.NewReader(data))
 	if err != nil {
 		return "", failure("CHANNEL_PROTOCOL", "Invalid Webhook URL", 422, false)

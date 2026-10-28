@@ -3,9 +3,7 @@
 package acceptance
 
 import (
-	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -309,57 +307,11 @@ func TestSearchAcceptance(t *testing.T) {
 		t.Fatalf("restart did not retain the search index: old=%s new=%s document calls=%d/%d",
 			active.Active.ID, restarted.Active.ID, beforeDocuments, documentCalls.Load())
 	}
-	h.stop()
-
-	settings := h.settings
-	appID, secret, verification, owner := "cli_acceptance", strings.Repeat("s", 32), strings.Repeat("v", 32), "ou_owner"
-	settings.Channel.AppID, settings.Channel.AppSecret = &appID, &secret
-	settings.Channel.VerificationToken, settings.Channel.UserOpenID = &verification, &owner
-	if err := settings.Validate(); err != nil {
-		t.Fatal(err)
-	}
-	source := moerise.NewMemosClient(settings.Memos)
-	defer source.Close()
-	store, err := moerise.NewStore(settings)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer store.Close()
-	provider, err := moerise.NewEmbeddingProvider(settings.Embedding)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer provider.Close()
-	api, err := moerise.NewAPI(settings, store, source, moerise.NewSyncService(store, source))
-	if err != nil {
-		t.Fatal(err)
-	}
-	api.Search.Provider = provider
-	if api.Feishu == nil || api.Feishu.Search != api.Search {
-		t.Fatal("Feishu does not share the API search service")
-	}
-	platform := &feishuPlatform{replies: map[string]string{}, uuids: map[string]string{}}
-	api.Feishu.Client = platform
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan error, 1)
-	go func() { done <- api.Feishu.Run(ctx) }()
-	defer func() {
-		cancel()
-		if err := <-done; err != nil && !errors.Is(err, context.Canceled) {
-			t.Errorf("Feishu worker stopped: %v", err)
-		}
-	}()
-	server := httptest.NewServer(api)
-	defer server.Close()
 	mcpSearch := func(request moerise.SearchRequest) moerise.SearchResponse {
 		t.Helper()
-		raw, code, err := h.requestWithHeaders(server.URL, "/mcp", "POST", h.reader,
-			map[string]any{"jsonrpc": "2.0", "id": "search", "method": "tools/call",
-				"params": map[string]any{"name": "semantic_search", "arguments": request}},
-			map[string]string{"Accept": "application/json, text/event-stream", "MCP-Protocol-Version": "2025-11-25"})
-		result, ok := raw["result"].(map[string]any)
-		if err != nil || code != 200 || raw["error"] != nil || !ok || result["isError"] == true {
-			t.Fatalf("MCP search failed: code=%d err=%v response=%v", code, err, raw)
+		result := h.mcp(h.reader, "tools/call", map[string]any{"name": "semantic_search", "arguments": request})
+		if result["isError"] == true {
+			t.Fatalf("MCP search failed: %v", result)
 		}
 		content, ok := result["structuredContent"].(map[string]any)
 		if !ok {
@@ -371,66 +323,9 @@ func TestSearchAcceptance(t *testing.T) {
 		{Query: semanticQuery}, {Query: "月港", Tags: []string{"随记", "庭院"}, Limit: 5},
 		{Query: "琥珀", State: "ARCHIVED"},
 	} {
-		if rest, mcp := search(server.URL, request), mcpSearch(request); !reflect.DeepEqual(rest, mcp) {
+		if rest, mcp := search(h.base, request), mcpSearch(request); !reflect.DeepEqual(rest, mcp) {
 			t.Fatalf("REST/MCP search differs: REST=%+v MCP=%+v", rest, mcp)
 		}
 	}
-	for i, scenario := range []struct {
-		command string
-		request moerise.SearchRequest
-	}{
-		{"搜索 月", moerise.SearchRequest{Query: "月", Limit: 5}},
-		{"搜索 #庭院 月", moerise.SearchRequest{Query: "月", Tags: []string{"庭院"}, Limit: 5}},
-		{"搜索 " + semanticQuery, moerise.SearchRequest{Query: semanticQuery, Limit: 5}},
-	} {
-		id := fmt.Sprintf("om_search_%d", i)
-		expected := search(server.URL, scenario.request)
-		if i == 0 && len(expected.Results) != 5 {
-			t.Fatal("Feishu default limit fixture has fewer than five results")
-		}
-		if i == 2 {
-			requireNames(expected, semanticName)
-			requireSemantic(expected, true, "")
-		}
-		content, _ := json.Marshal(map[string]string{"text": scenario.command})
-		event := map[string]any{
-			"header": map[string]string{"event_id": "event_" + id, "event_type": "im.message.receive_v1",
-				"app_id": appID, "token": verification},
-			"event": map[string]any{
-				"sender": map[string]any{"sender_type": "user", "sender_id": map[string]string{"open_id": owner}},
-				"message": map[string]string{"message_id": id, "message_type": "text", "chat_type": "p2p",
-					"content": string(content)},
-			},
-		}
-		h.call(server.URL, "/hooks/feishu", "POST", "", event, 200)
-		wait(t, "queued Feishu search reply", func() bool {
-			pending, err := api.Notifications.List("pending")
-			for _, item := range pending {
-				if item.SourceEvent != nil && *item.SourceEvent == id {
-					return err == nil
-				}
-			}
-			return false
-		})
-		if progress, err := api.Notifications.Deliver(ctx); err != nil || !progress {
-			t.Fatalf("Feishu search delivery: progress=%v err=%v", progress, err)
-		}
-		reply := platform.reply(id)
-		if strings.Count(reply, "\nmemos/") != len(expected.Results) ||
-			strings.Contains(reply, "仅使用关键词与标签") {
-			t.Fatalf("Feishu result resources differ from REST: %s", reply)
-		}
-		position := -1
-		for _, hit := range expected.Results {
-			match := hit.Matches[0]
-			next := strings.Index(reply, "\n"+hit.Note.Name+"\n")
-			if next <= position || !strings.Contains(reply, hit.Note.URL) ||
-				!strings.Contains(reply, match.Content) ||
-				!strings.Contains(reply, fmt.Sprintf("第 %d–%d 行", match.LineStart, match.LineEnd)) {
-				t.Fatalf("Feishu search lost REST order, snippet, position, or URL: %s", reply)
-			}
-			position = next
-		}
-	}
-	t.Log("PASS persistent restart, REST/MCP parity, and Feishu callback/queue/delivery search parity")
+	t.Log("PASS persistent restart and REST/MCP search parity")
 }
