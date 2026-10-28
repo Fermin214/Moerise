@@ -2,7 +2,7 @@
 
 API 前缀为 `/api/ext/v1`。路由由 [api.go](../internal/api.go) 定义，字段模型见 [models.go](../internal/models.go)，完整字段契约见 [openapi.json](../internal/openapi.json)。服务通过 `/openapi.json` 提供同一契约，通过 `/docs` 提供交互文档。本文说明访问范围、分页、任务和错误语义。
 
-本版本提供笔记读取、创建、同步管理、中文混合检索、相关笔记、语义漫步、每日回顾，以及带引用的 AI 洞察与问答 REST 和扩展 MCP。
+REST 提供笔记读取、创建、同步管理、中文混合检索、相关笔记、语义漫步、每日回顾，以及带引用的 AI 洞察与问答。扩展 MCP 提供其中的只读工具。
 
 ## 资源与身份
 
@@ -23,7 +23,7 @@ API 前缀为 `/api/ext/v1`。路由由 [api.go](../internal/api.go) 定义，�
 | `discovery:write` | 显式打开笔记并更新发现阅读记录 |
 | `ai:generate` | 允许调用模型生成洞察、回答及主题时间线；必须同时具有 `notes:read` |
 
-`ai:generate` 明确允许模型耗用。已有凭据不会自动获得该 Scope；只有 `notes:read` 或只有 `ai:generate` 都不能调用 AI 接口，MCP 也不会展示这三个 AI 工具。AI 工具只读、不保存生成结果，但每次请求可能重新调用模型，不保证幂等。
+`ai:generate` 允许调用模型并产生用量。已有凭据不会自动获得该 Scope；调用 AI 接口须同时具备 `notes:read` 和 `ai:generate`，MCP 也只向同时具备两者的凭据展示这三个 AI 工具。AI 工具只读，不保存生成结果，不做幂等去重；重复请求可能再次调用模型。
 
 只读凭据不能创建笔记或触发同步，写入请求返回 403 `FORBIDDEN`。笔记创建支持基础附件，修改笔记使用 Memos；消息平台操作见[飞书入口](FEISHU.md)。
 
@@ -60,7 +60,7 @@ API 前缀为 `/api/ext/v1`。路由由 [api.go](../internal/api.go) 定义，�
 
 来源连接成功、全量同步完成且工作循环存活时，就绪检查返回 200；其他情况返回 503。存活检查适合区分进程状态与来源故障。
 
-启用 `embedding` 时，同步状态包含 `vector_index`，关闭时省略。`active` 是已发布代次，`building` 是构建中的代次，无对应代次时为 `null`；两者包含模型、维度、分块版本、向量空间摘要、投影修订号，以及笔记数、片段数、已完成片段数和最近错误代码。`projection_revision` 随投影变化递增；`ready=true` 表示已发布代次与配置和投影修订一致，不表示来源连接或查询可用。向量索引构建和模型故障不影响基础就绪检查。构建与恢复规则见[向量索引](EMBEDDING.md#分块与向量索引)。
+启用 `embedding` 时，同步状态包含 `vector_index`，关闭时省略。`active` 是已发布代次，`building` 是构建中的代次，无对应代次时为 `null`；两者包含模型、维度、分块版本、向量空间摘要、投影修订号，以及笔记数、片段数、已完成片段数和最近错误代码。`projection_revision` 随投影变化递增；`ready=true` 表示已发布代次与配置和投影修订一致，来源连接和查询是否可用需单独检查。向量索引构建和模型故障不影响基础就绪检查。构建与恢复规则见[向量索引](EMBEDDING.md#分块与向量索引)。
 
 ## 笔记与分页
 
@@ -120,7 +120,7 @@ Content-Type: application/json
 
 每个 `SearchHit` 包含 `note: Note`、`score: number` 和最多 3 项的 `matches: SearchMatch[]`。每个片段含 `ordinal: int`、`byte_start: int`、`byte_end: int`、`line_start: int`、`line_end: int`、`content: string` 和 `signals: string[]`；signals 仅包含 `keyword`、`semantic`、`tag`。字节位置对应原始正文 UTF-8 编码，使用从 0 开始的半开区间；行号从 1 开始，分块与 3.2 一致。`note` 使用来源复查后的正文和原文 URL。
 
-关键词 BM25、标签匹配和正余弦语义分别取前 100 个片段，按 RRF（k=60）融合后再按笔记合并，笔记分数取最高片段分数，每条最多返回 3 个片段，排序稳定。模型关闭、索引未就绪或模型失败时降级为关键词与标签搜索；请求取消不降级。`score` 是融合排名分数，不是余弦值或置信度。
+关键词 BM25、标签匹配和正余弦语义分别取前 100 个片段，按 RRF（k=60）融合后再按笔记合并，笔记分数取最高片段分数，每条最多返回 3 个片段，排序稳定。模型关闭、索引未就绪或模型失败时降级为关键词与标签搜索；请求取消不降级。`score` 用于融合排名，不能用作余弦值或置信度。
 
 搜索前复查 Memos 版本与身份，返回前逐条读取候选原文；修改、删除、作者越界或不再满足过滤条件的候选丢弃并修正投影，最后再次复查身份。来源故障使整个请求失败，不输出缓存正文。分词、内存缓存、迁移与降级规则见[搜索](SEARCH.md)。
 
@@ -262,7 +262,7 @@ Content-Type: application/json
 
 ## 飞书事件
 
-应用机器人回调入口为 `/hooks/feishu`，仅在应用凭据完整时启用；使用平台事件 Token 和可选 Encrypt Key 验证，不使用 Moerise Bearer 凭据。绑定使用者的单聊消息持久入队后返回 `{"code":0}`；URL 验证返回 `{"challenge":"..."}`。重复消息沿用同一记录操作，其他身份和群聊不进入业务。事件配置、命令及恢复语义见[飞书入口](FEISHU.md)。
+应用机器人回调入口为 `/hooks/feishu`，仅在应用凭据完整时启用；使用平台事件 Token 和可选 Encrypt Key 验证，不使用 Moerise Bearer 凭据。绑定使用者的单聊消息持久入队后返回 `{"code":0}`；URL 验证返回 `{"challenge":"..."}`。文字消息全部原样记录为笔记，不解析命令。重复消息沿用同一记录操作，其他身份和群聊不进入业务。事件配置、记录方式及恢复语义见[飞书入口](FEISHU.md)。
 
 ## 每日回顾与 MCP
 
@@ -287,13 +287,13 @@ Content-Type: application/json
 | `read_daily_review` | `reviews:read` | 读取已有当日批次；不存在时返回 `REVIEW_NOT_FOUND`，不创建批次 |
 | `get_review_batch` | `reviews:read` | 读取指定 `batch_id` |
 
-外部 MCP 仅提供只读工具。即使令牌拥有 `notes:write`、`reviews:write` 或 `discovery:write`，也不能通过工具发现或直接调用创建笔记、创建或更换回顾、记录打开或略过、更新阅读历史。`get_daily_review`、`replace_daily_review`、`open_review_memo`、`skip_review_memo` 和 `open_discovery_memo` 均不注册为 MCP 工具。服务端按读取 Scope 注册工具，`readOnlyHint` 只用于展示提示。原生 REST 入口负责产品状态写入，MCP 可以读取这些入口产生的回顾与条目状态。
+外部 MCP 仅提供只读工具，不支持创建笔记、创建或更换回顾、记录打开或略过、更新阅读历史。令牌中的 `notes:write`、`reviews:write` 和 `discovery:write` 不增加 MCP 工具。`get_daily_review`、`replace_daily_review`、`open_review_memo`、`skip_review_memo` 和 `open_discovery_memo` 均不注册，工具发现和直接调用都不可用。服务端按读取 Scope 注册工具，`readOnlyHint` 只用于展示提示。原生 REST 入口负责产品状态写入，MCP 可以读取这些入口产生的回顾与条目状态。
 
 `get_memo` 接受 `{"name":"memos/example"}`，读取前验证来源账户，返回前获取 Memos 原文；不存在或不属于绑定作者时返回 `SOURCE_NOT_FOUND`。`list_memos` 接受可省略的 `state`（默认 `NORMAL`，也支持 `ARCHIVED`）、`page_size`（默认 20，范围 1—100）、`page_token`。它复用 REST 笔记列表的分页与原文复查，同一实例、作者、索引代次及状态下的游标可在 REST 与 MCP 间互用；无效游标返回 `INVALID_PAGE_TOKEN`。来源故障使获取和列表请求失败，不返回缓存正文。两个工具均只读、幂等、非破坏，不更新阅读历史。
 
-三个 AI 工具使用 `AIRequest`，始终返回完整结构化 `AIResult` 和相同内容的 JSON 文本；`stream` 不启用 MCP 内容流。均设置 `readOnlyHint=true`、`idempotentHint=false`、`destructiveHint=false`，描述中明确模型耗用。原有工具的 Scope、可见性及幂等提示保持各自契约。MCP 的 64 KiB 限额覆盖整个 JSON-RPC 请求，而不只是工具参数；取消请求传入共享服务。
+三个 AI 工具使用 `AIRequest`，始终返回完整结构化 `AIResult` 和相同内容的 JSON 文本；`stream` 不启用 MCP 内容流。均设置 `readOnlyHint=true`、`idempotentHint=false`、`destructiveHint=false`，描述中说明会调用模型并产生用量。其他工具的 Scope、可见性及幂等提示保持各自契约。MCP 的 64 KiB 限额覆盖整个 JSON-RPC 请求，包含工具参数和协议字段；取消请求传入共享服务。
 
-`semantic_search` 仅对具备 `notes:read` 的凭据可见及可调用，设置 `readOnlyHint=true`、`idempotentHint=true`、`destructiveHint=false`。REST、MCP 和飞书复用 `SearchService`，搜索无需 LLM；来源复查引起的派生投影修正不改变产品记录。
+`semantic_search` 仅对具备 `notes:read` 的凭据可见及可调用，设置 `readOnlyHint=true`、`idempotentHint=true`、`destructiveHint=false`。REST 和 MCP 复用 `SearchService`，搜索无需 LLM；来源复查引起的派生投影修正不改变产品记录。
 
 `get_related_memos` 使用相同 Scope 可见性及工具提示。`RelatedRequest` 为 JSON 对象，例如 `{"name":"memos/example","tags":["园艺"],"state":"NORMAL","limit":10}`；`name` 必填，格式与相关 REST 资源名一致，其他字段的默认值及约束同相关查询参数。未知字段或非法参数以 `isError=true` 和错误文本返回；业务错误文本为包含 `code`、`message`、`retryable` 的 JSON。成功结构化输出为 `RelatedResponse`。
 

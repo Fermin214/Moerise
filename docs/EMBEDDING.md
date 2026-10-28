@@ -27,7 +27,7 @@ Moerise 通过独立的提供商接口生成文本向量。百炼适配使用 Da
 }
 ```
 
-`base_url` 是包含 `/api/v1` 的 DashScope 基地址，例如北京公共端点 `https://dashscope.aliyuncs.com/api/v1` 或业务空间专属地址。适配器添加 `/services/embeddings/text-embedding/text-embedding`。OpenAI 兼容接口的 `/compatible-mode/v1` 地址不用于此适配器。配置值直接从 JSON 读取，不进行环境变量替换。
+`base_url` 是包含 `/api/v1` 的 DashScope 基地址，例如北京公共端点 `https://dashscope.aliyuncs.com/api/v1` 或业务空间专属地址。适配器添加 `/services/embeddings/text-embedding/text-embedding`，不支持 OpenAI 兼容接口的 `/compatible-mode/v1` 地址。配置值直接从 JSON 读取，不替换环境变量。
 
 | 字段 | 含义与范围 |
 | --- | --- |
@@ -44,7 +44,7 @@ Moerise 通过独立的提供商接口生成文本向量。百炼适配使用 Da
 
 供应商与模型支持范围的依据见[百炼文本向量接口](https://help.aliyun.com/zh/model-studio/text-embedding-synchronous-api)。其他供应商及通用协议适配见路线图的[后续方向](ROADMAP.md#后续方向与开发输入)。
 
-批量 20、并发 2 的默认值经过真实模型与一万片段基准测量。批量 20 减少索引请求及持久化批次；同一模型客户端默认最多同时执行两个批次，超过上限的请求等待。`max_concurrency` 限制模型批次，不限制整个 REST 服务的请求数。效果、资源和部署建议见[语义检索与发现验收](STAGE3-ACCEPTANCE.md#配置结论)。
+默认每批 20 条文本，同一模型客户端最多同时执行两个批次，超过上限的请求等待。`max_concurrency` 限制模型批次，不限制整个 REST 服务的请求数。
 
 ## 连接检查
 
@@ -62,13 +62,13 @@ docker compose exec -T moerise moerise check-embedding
 
 命令使用两个内置虚构文档和一个示例查询，独立于 Memos 与数据库运行。成功时输出 JSON，包含提供商、协议、模型、维度、文档与查询向量数量、总 Token 用量和耗时；退出码为 0。失败时返回非零退出码和错误，不输出 API Key、文本或向量数值。检查会产生少量模型用量。
 
-`check-config` 只校验本地配置结构，`check-embedding` 通过实际模型请求检查连接和返回格式。固定问题集的效果数据与真实供应商验收见[语义检索与发现验收](STAGE3-ACCEPTANCE.md)和[开发指南](DEVELOPMENT.md#检索评测)。
+`check-config` 只校验本地配置结构，`check-embedding` 通过实际模型请求检查连接和返回格式。检索评测的执行方式见[开发指南](DEVELOPMENT.md#检索评测)。
 
 ## 调用与返回
 
 业务服务通过 `EmbeddingProvider` 提交文档或查询文本，不直接处理 DashScope 请求结构。每次调用接受 1 至 1000 条非空 UTF-8 文本，每条最多 65536 字节；超过批次大小时顺序分批，输入不截断。查询按 `text_type=query` 发送，入库文档按 `text_type=document` 发送；两者使用同一模型和维度。
 
-适配器显式请求 `output_type=dense` 和 `dimension`，按返回的 `text_index` 恢复输入顺序，将向量转为 float32，并汇总 Token 用量。返回数量、位置、维度、数值或用量不符合契约时整次调用失败；不返回部分向量。向量保留供应商数值，不额外归一化。
+适配器显式请求 `output_type=dense` 和 `dimension`，按返回的 `text_index` 恢复输入顺序，将向量转为 float32，并汇总 Token 用量。返回数量、位置、维度、数值或用量不符合契约时整次调用失败，不返回部分向量。向量保留供应商数值，不额外归一化。
 
 模型连接使用标准 HTTP 代理环境设置，拒绝自动跟随重定向。Memos 连接仍直接访问来源，两者的配置与传输分开。
 
@@ -79,8 +79,8 @@ docker compose exec -T moerise moerise check-embedding
 | `EMBEDDING_DISABLED` | 将 `embedding.enabled` 设为 `true` 并填写模型配置 |
 | `EMBEDDING_AUTH` | 检查 API Key、业务空间、地域与模型访问权限；不自动重试 |
 | `EMBEDDING_REJECTED` | 检查接口地址、模型及请求参数；不自动重试 |
-| `EMBEDDING_RATE_LIMITED` | 429 限流；按 `Retry-After` 与指数等待进行有限重试 |
-| `EMBEDDING_UNAVAILABLE` | 网络、响应读取或 5xx 故障；进行有限重试 |
+| `EMBEDDING_RATE_LIMITED` | 429 限流；按 `Retry-After` 与指数退避有限重试 |
+| `EMBEDDING_UNAVAILABLE` | 网络、响应读取或 5xx 故障；有限重试 |
 | `EMBEDDING_PROTOCOL` | 返回数量、位置、维度、数值或用量错误；不自动重试 |
 
 等待与请求受同一次调用的总超时限制。取消或达到超时后结束调用；供应商错误正文不进入错误输出。

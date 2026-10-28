@@ -132,11 +132,10 @@ func TestFeishuFullReviewDeliveryWithRealMemosAcceptance(t *testing.T) {
 	}
 	var joined strings.Builder
 	for _, text := range platform.texts {
-		_, body, found := strings.Cut(text, "\n\n")
-		if !found || strings.Contains(text, "/file/") || strings.Contains(text, "first.png") {
-			t.Fatal("missing full review header")
+		if strings.Contains(text, "/file/") || strings.Contains(text, "first.png") {
+			t.Fatal("review emitted an attachment or attachment link")
 		}
-		joined.WriteString(body)
+		joined.WriteString(text)
 	}
 	if len(platform.texts) < 3 || joined.String() != content {
 		t.Fatal("full Memos body was truncated, repeated or reordered")
