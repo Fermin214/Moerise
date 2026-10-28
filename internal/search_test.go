@@ -2,6 +2,7 @@ package moerise
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -269,12 +270,13 @@ func TestSearchRESTScopeValidationAndEncryptedFeishuRequest(t *testing.T) {
 			t.Fatalf("search %s: status=%d body=%s", test.body, response.Code, response.Body.String())
 		}
 	}
-	message := feishuMessage{ID: "om_search", Type: "text",
-		Content: string(canonicalJSON(map[string]string{"text": "搜索 #植物 阳台花"}))}
-	kind, reference, err := api.Feishu.execute(context.Background(), message)
-	if err != nil || kind != "search" || strings.Contains(reference, "阳台") || strings.Contains(reference, "植物") {
-		t.Fatal("search query persisted in plaintext")
+	// A saved search reply can still be delivered without a text command entrypoint.
+	sealed, err := api.Feishu.seal("search:om_search",
+		canonicalJSON(SearchRequest{Query: "阳台花", Tags: []string{"植物"}, Limit: 5}))
+	if err != nil {
+		t.Fatal(err)
 	}
+	kind, reference := "search", "om_search."+base64.RawURLEncoding.EncodeToString(sealed)
 	text, err := api.Feishu.render(context.Background(), kind, reference)
 	if err != nil || !strings.Contains(text, "搜索结果") {
 		t.Fatalf("encrypted search could not be replayed: %s %v", text, err)

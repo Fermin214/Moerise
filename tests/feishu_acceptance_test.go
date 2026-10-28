@@ -3,10 +3,15 @@
 package acceptance
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"image"
+	"image/png"
+	"io"
+	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
@@ -45,7 +50,11 @@ func (p *feishuPlatform) Download(_ context.Context, _, _, kind, filename string
 	defer p.mu.Unlock()
 	p.downloads++
 	if kind == "image" {
-		filename = "image.txt"
+		var data bytes.Buffer
+		if err := png.Encode(&data, image.NewRGBA(image.Rect(0, 0, 1, 1))); err != nil {
+			return moerise.CreateAttachment{}, err
+		}
+		return moerise.CreateAttachment{Filename: "image.png", Type: "image/png", Content: data.Bytes()}, nil
 	}
 	return moerise.CreateAttachment{Filename: filename, Type: "text/plain", Content: []byte("Feishu attachment")}, nil
 }
@@ -143,6 +152,20 @@ func TestFeishuProactiveReviewWithRealMemosAcceptance(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	if _, err := store.Enqueue("full", true); err != nil {
+		t.Fatal(err)
+	}
+	job, err := store.Claim()
+	if err != nil || job == nil {
+		t.Fatalf("claim initial sync: %+v %v", job, err)
+	}
+	synced, err := api.Worker.Sync(ctx, *job)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Complete(job.ID, synced); err != nil {
+		t.Fatal(err)
+	}
 	now := time.Now()
 	shared, err := api.Reviews.Daily(ctx, now)
 	if err != nil || len(shared.Items) != 3 {
@@ -196,46 +219,8 @@ func TestFeishuProactiveReviewWithRealMemosAcceptance(t *testing.T) {
 			t.Fatal("sending a review changed reading history")
 		}
 	}
-	command := func(id, text string) {
-		t.Helper()
-		content, _ := json.Marshal(map[string]string{"text": text})
-		event := map[string]any{
-			"header": map[string]string{"event_id": "event_" + id, "event_type": "im.message.receive_v1",
-				"app_id": *settings.Channel.AppID, "token": *settings.Channel.VerificationToken},
-			"event": map[string]any{
-				"sender":  map[string]any{"sender_type": "user", "sender_id": map[string]string{"open_id": "ou_owner"}},
-				"message": map[string]string{"message_id": id, "message_type": "text", "chat_type": "p2p", "content": string(content)},
-			},
-		}
-		h.call(server.URL, "/hooks/feishu", "POST", "", event, 200)
-		h.call(server.URL, "/hooks/feishu", "POST", "", event, 200)
-		wait(t, "queued Feishu action reply", func() bool {
-			items, err := api.Notifications.List("pending")
-			for _, item := range items {
-				if item.SourceEvent != nil && *item.SourceEvent == id {
-					return err == nil
-				}
-			}
-			return false
-		})
-		if progress, err := api.Notifications.Deliver(ctx); err != nil || !progress || platform.reply(id) == "" {
-			t.Fatalf("action reply: progress=%v err=%v", progress, err)
-		}
-	}
-	command("om_push_open", "打开 "+batch.ID+" "+edited)
-	command("om_push_skip", "略过 "+batch.ID+" "+edited)
-	read := h.call(server.URL, "/api/ext/v1/reviews/"+batch.ID, "GET", h.reader, nil, 200)
-	first := read["items"].([]any)[0].(map[string]any)
-	if first["opened_at"] == nil || first["skipped_at"] == nil {
-		t.Fatal("push interaction did not share REST reading history")
-	}
-	command("om_push_replace", "换一组")
-	replacement := h.call(server.URL, "/api/ext/v1/reviews/daily", "GET", h.reader, nil, 200)
-	if replacement["id"] == batch.ID || !strings.Contains(platform.reply("om_push_replace"), replacement["id"].(string)) {
-		t.Fatal("push replacement did not share the next fixed batch")
-	}
 	if count, err := api.Notifications.Schedule(ctx, now); err != nil || count != 0 {
-		t.Fatal("interactive replacement duplicated the scheduled notification")
+		t.Fatal("repeated scheduling duplicated the notification")
 	}
 }
 
@@ -317,7 +302,8 @@ func TestFeishuEventsWithRealMemosAcceptance(t *testing.T) {
 		t.Helper()
 		h.call(server.URL, "/hooks/feishu", "POST", "", body, 200)
 	}
-	record := event("om_record", "ou_owner", "text", map[string]string{"text": "记录 #飞书 测试正文"})
+	text := " \t#飞书 测试正文\n\n第二段\r\n末尾空白 \t\n"
+	record := event("om_record", "ou_owner", "text", map[string]string{"text": text})
 	send(record)
 	send(record)
 	send(event("om_foreign", "ou_other", "text", map[string]string{"text": "记录 foreign"}))
@@ -335,7 +321,7 @@ func TestFeishuEventsWithRealMemosAcceptance(t *testing.T) {
 	}
 	name := lines[1]
 	note := h.call(h.memos, "/api/v1/"+name, "GET", h.upstream, nil, 200)
-	if note["content"] != "#飞书 测试正文" || note["creator"] != settings.Memos.User {
+	if note["content"] != text || note["creator"] != settings.Memos.User {
 		t.Fatalf("Feishu text or tags were not saved in Memos: %v", note)
 	}
 	h.requireSourceRecords(name)
@@ -350,30 +336,54 @@ func TestFeishuEventsWithRealMemosAcceptance(t *testing.T) {
 	if len(fileNote["attachments"].([]any)) != 1 {
 		t.Fatal("Feishu file was not linked in Memos")
 	}
-	send(event("om_query", "ou_owner", "text", map[string]string{"text": "查看 " + name}))
-	wait(t, "Feishu source query", func() bool { return strings.Contains(platform.reply("om_query"), "#飞书 测试正文") })
-	send(event("om_review", "ou_owner", "text", map[string]string{"text": "回顾"}))
-	wait(t, "Feishu shared review", func() bool { return platform.reply("om_review") != "" })
-	batch := h.call(server.URL, "/api/ext/v1/reviews/daily", "GET", h.operator, nil, 200)
-	id := batch["id"].(string)
-	if !strings.Contains(platform.reply("om_review"), id) {
-		t.Fatal("Feishu and REST did not share their review batch")
+	imageEvent := event("om_image", "ou_owner", "image", map[string]string{"image_key": "img_123"})
+	send(imageEvent)
+	send(imageEvent)
+	wait(t, "Feishu image capture", func() bool { return platform.reply("om_image") != "" })
+	imageName := strings.Split(platform.reply("om_image"), "\n")[1]
+	imageNote := h.call(h.memos, "/api/v1/"+imageName, "GET", h.upstream, nil, 200)
+	attachments := imageNote["attachments"].([]any)
+	if len(attachments) != 1 {
+		t.Fatal("Feishu image was not linked once in Memos")
 	}
-	open := event("om_open", "ou_owner", "text", map[string]string{"text": "打开 " + id + " " + name})
-	send(open)
-	wait(t, "Feishu open action", func() bool { return platform.reply("om_open") != "" })
-	read := h.call(server.URL, "/api/ext/v1/reviews/"+id, "GET", h.reader, nil, 200)
-	found := false
-	for _, value := range read["items"].([]any) {
-		item := value.(map[string]any)
-		if item["name"] == name && item["opened_at"] != nil {
-			found = true
+	attachment := attachments[0].(map[string]any)
+	if attachment["type"] != "image/png" || attachment["memo"] != imageName {
+		t.Fatalf("image metadata or parent changed: %v", attachment)
+	}
+	request, _ := http.NewRequest("GET", h.memos+"/file/"+attachment["name"].(string)+"/image.png", nil)
+	request.Header.Set("Authorization", "Bearer "+h.upstream)
+	response, err := h.client.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := io.ReadAll(response.Body)
+	response.Body.Close()
+	if _, decodeErr := png.Decode(bytes.NewReader(data)); err != nil || response.StatusCode != 200 || decodeErr != nil {
+		t.Fatalf("saved image cannot be read: status=%d read=%v decode=%v", response.StatusCode, err, decodeErr)
+	}
+	names := []string{name, fileName, imageName}
+	for i, command := range []string{"记录 #原样 内容", "查看 " + name, "搜索 测试", "洞察 " + name, "问答 测试", "回顾", "换一组"} {
+		id := fmt.Sprintf("om_literal_%d", i)
+		send(event(id, "ou_owner", "text", map[string]string{"text": command}))
+		wait(t, "literal former command capture", func() bool { return platform.reply(id) != "" })
+		saved := strings.Split(platform.reply(id), "\n")
+		if len(saved) != 3 || saved[0] != "已保存" {
+			t.Fatalf("former command intercepted text: %q", platform.reply(id))
 		}
+		note := h.call(h.memos, "/api/v1/"+saved[1], "GET", h.upstream, nil, 200)
+		if note["content"] != command {
+			t.Fatalf("former command changed text: got=%q want=%q", note["content"], command)
+		}
+		names = append(names, saved[1])
 	}
-	if !found {
-		t.Fatal("Feishu open action was not shared with REST")
-	}
+	send(imageEvent)
 	stop()
+	platform.mu.Lock()
+	downloads := platform.downloads
+	platform.mu.Unlock()
+	if downloads != 2 {
+		t.Fatalf("duplicate event downloaded attachments again: %d", downloads)
+	}
 	if err := moerise.Restore(settings, snapshot, filepath.Join(h.root, "before-feishu-restore")); err != nil {
 		t.Fatal(err)
 	}
@@ -386,5 +396,5 @@ func TestFeishuEventsWithRealMemosAcceptance(t *testing.T) {
 	if platform.replyCount() != before {
 		t.Fatal("restoring an old incoming event snapshot resent its completed reply")
 	}
-	h.requireSourceRecords(name, fileName)
+	h.requireSourceRecords(names...)
 }

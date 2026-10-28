@@ -5,7 +5,6 @@ package acceptance
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"net/http/httptest"
 	"reflect"
 	"slices"
@@ -55,9 +54,6 @@ func TestDiscoveryAcrossEntrypointsAcceptance(t *testing.T) {
 	settings.Embedding.Enabled, settings.Embedding.Dimensions = true, 256
 	address, key := "http://embedding.test/api/v1", strings.Repeat("k", 32)
 	settings.Embedding.BaseURL, settings.Embedding.APIKey = &address, &key
-	app, secret, verification, owner := "cli_acceptance", strings.Repeat("s", 32), strings.Repeat("v", 32), "ou_owner"
-	settings.Channel.AppID, settings.Channel.AppSecret = &app, &secret
-	settings.Channel.VerificationToken, settings.Channel.UserOpenID = &verification, &owner
 	if err := settings.Validate(); err != nil {
 		t.Fatal(err)
 	}
@@ -162,8 +158,16 @@ func TestDiscoveryAcrossEntrypointsAcceptance(t *testing.T) {
 				t.Fatal("MCP walk did not preserve its read-only annotation")
 			}
 		}
-		if !visible["semantic_walk"] || visible["open_discovery_memo"] != (token == h.operator) {
+		if !visible["semantic_walk"] || visible["open_discovery_memo"] {
 			t.Fatalf("incorrect discovery tool scopes: %v", visible)
+		}
+		denied, code, err := h.requestWithHeaders(server.URL, "/mcp", "POST", token,
+			map[string]any{"jsonrpc": "2.0", "id": "removed-open", "method": "tools/call",
+				"params": map[string]any{"name": "open_discovery_memo", "arguments": map[string]string{"name": angle}}},
+			map[string]string{"Accept": "application/json, text/event-stream", "MCP-Protocol-Version": "2025-11-25"})
+		deniedResult, _ := denied["result"].(map[string]any)
+		if err != nil || code != 200 || denied["error"] == nil && deniedResult["isError"] != true {
+			t.Fatalf("MCP exposed the removed reading tool: status=%d err=%v response=%v", code, err, denied)
 		}
 	}
 	result := mcp(h.reader, "tools/call", map[string]any{"name": "semantic_walk", "arguments": map[string]string{"name": seed}})
@@ -172,67 +176,18 @@ func TestDiscoveryAcrossEntrypointsAcceptance(t *testing.T) {
 	if json.Unmarshal(data, &fromMCP) != nil || !reflect.DeepEqual(fromMCP, afterOpen) {
 		t.Fatalf("REST/MCP discovery differs: %s", data)
 	}
-	result = mcp(h.operator, "tools/call", map[string]any{"name": "open_discovery_memo", "arguments": map[string]string{"name": angle}})
-	if result["isError"] == true {
-		t.Fatalf("MCP explicit open failed: %v", result)
-	}
-	platform := &feishuPlatform{replies: map[string]string{}, uuids: map[string]string{}}
-	api.Feishu.Client = platform
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan error, 1)
-	go func() { done <- api.Feishu.Run(ctx) }()
-	defer func() {
-		cancel()
-		if err := <-done; err != nil && !errors.Is(err, context.Canceled) {
-			t.Errorf("Feishu worker stopped: %v", err)
-		}
-	}()
-	for i, text := range []string{"继续这个话题 " + seed, "随机跳转 " + seed + " " + near + "," + angle,
-		"查看 " + other, "继续这个话题 " + seed} {
-		id := []string{"om_walk_continue", "om_walk_random", "om_walk_open", "om_walk_deleted"}[i]
-		content, _ := json.Marshal(map[string]string{"text": text})
-		event := map[string]any{
-			"header": map[string]string{"event_id": "event_" + id, "event_type": "im.message.receive_v1",
-				"app_id": app, "token": verification},
-			"event": map[string]any{
-				"sender":  map[string]any{"sender_type": "user", "sender_id": map[string]string{"open_id": owner}},
-				"message": map[string]string{"message_id": id, "message_type": "text", "chat_type": "p2p", "content": string(content)},
-			},
-		}
-		h.call(server.URL, "/hooks/feishu", "POST", "", event, 200)
-		wait(t, "queued discovery reply", func() bool {
-			pending, err := api.Notifications.List("pending")
-			for _, item := range pending {
-				if item.SourceEvent != nil && *item.SourceEvent == id {
-					return err == nil
-				}
-			}
-			return false
-		})
-		if i == 3 {
-			h.call(h.memos, "/api/v1/"+seed, "DELETE", h.upstream, nil, 200)
-		}
-		if progress, err := api.Notifications.Deliver(ctx); err != nil || !progress {
-			t.Fatalf("Feishu discovery delivery: progress=%v err=%v", progress, err)
-		}
-		reply := platform.reply(id)
-		if i == 3 {
-			if !strings.Contains(reply, "不可访问") || strings.Contains(reply, "seedbody") {
-				t.Fatalf("deleted walk source did not produce an error reply: %s", reply)
-			}
-			continue
-		}
-		if !strings.Contains(reply, "memos/") || i < 2 && !strings.Contains(reply, "路径：") ||
-			i == 1 && !strings.Contains(reply, other) || i == 2 && !strings.Contains(reply, "otherbody") {
-			t.Fatalf("Feishu discovery reply lost the live result: %s", reply)
-		}
-	}
+	h.call(server.URL, "/api/ext/v1/discovery/open", "POST", h.operator, map[string]string{"name": other}, 200)
+	db := h.database("state")
+	defer db.Close()
 	var opened string
-	if err := h.database("state").QueryRow("SELECT opened_at FROM discovery_reads WHERE memo_name = ?", other).Scan(&opened); err != nil || opened == "" {
-		t.Fatalf("Feishu view did not persist explicit reading: %q %v", opened, err)
+	if err := db.QueryRow("SELECT opened_at FROM discovery_reads WHERE memo_name = ?", other).Scan(&opened); err != nil || opened == "" {
+		t.Fatalf("REST open did not persist explicit reading: %q %v", opened, err)
 	}
+	h.call(h.memos, "/api/v1/"+seed, "DELETE", h.upstream, nil, 200)
+	requireRecordError(t, h.call(server.URL, "/api/ext/v1/discovery/walk", "POST", h.reader,
+		moerise.WalkRequest{Name: seed}, 404), "SOURCE_NOT_FOUND")
 	if provider.queryCalls != 0 {
 		t.Fatal("discovery called the query embedding model")
 	}
-	t.Log("PASS semantic/random walk, REST/MCP scopes and parity, shared reading, and Feishu callback/queue/delivery")
+	t.Log("PASS semantic/random walk, read-only MCP parity, REST reading, and deleted source boundary")
 }

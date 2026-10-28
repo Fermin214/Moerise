@@ -6,11 +6,13 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 func TestFeishuWebhookAcknowledgementAndSignature(t *testing.T) {
@@ -101,7 +103,16 @@ func TestFeishuPushRechecksSourcesAndReceiptIdentity(t *testing.T) {
 	events := NewFeishuService(store, reviews.Source, NewRecordService(store, reviews.Source), reviews, nil)
 	events.Client = platform
 	delivery := NewFeishuDelivery(store, reviews, events)
-	item := Notification{Kind: "review", Date: batch.Date, BatchID: &batch.ID}
+	queue := NewNotificationService(store, reviews, delivery)
+	id, err := queue.enqueue("review", "source-recheck", batch.Date, &batch.ID, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	detail, err := queue.Detail(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	item := detail.Notification
 	edited, deleted := batch.Items[0].Name, batch.Items[1].Name
 	memos[edited]["content"] = "fresh source content"
 	delete(memos, deleted)
@@ -135,5 +146,269 @@ func TestFeishuPushRechecksSourcesAndReceiptIdentity(t *testing.T) {
 	})
 	if _, err := delivery.Send(ctx, item); err == nil || platform.text != "" {
 		t.Fatal("source identity change sent private content")
+	}
+}
+
+type reviewDeliveryPlatform struct {
+	deliveryPlatform
+	texts, uuids []string
+	fail         string
+}
+
+func (p *reviewDeliveryPlatform) SendText(_ context.Context, _, uuid, text string) (string, error) {
+	p.texts, p.uuids = append(p.texts, text), append(p.uuids, uuid)
+	if p.fail != "" {
+		code := p.fail
+		p.fail = ""
+		return "", upstreamError(code, "simulated platform failure")
+	}
+	return "om_" + uuid, nil
+}
+
+func TestFeishuReviewFullTextQueueResumeAndUnknown(t *testing.T) {
+	reviews, memos := reviewFixture(t, 1)
+	store := reviews.Store
+	store.Settings.Channel = feishuSettings(t).Channel
+	store.Settings.Notifications.Enabled = true
+	content := strings.Repeat("长文🙂 <&> \"原文\"\\\n", 4000) + "最终正文"
+	for _, raw := range memos {
+		raw["content"] = content
+	}
+	platform := &reviewDeliveryPlatform{}
+	events := NewFeishuService(store, reviews.Source, nil, reviews, nil)
+	events.Client = platform
+	transport := NewFeishuDelivery(store, reviews, events)
+	queue := NewNotificationService(store, reviews, transport)
+	ctx := context.Background()
+	batch, err := reviews.Daily(ctx, time.Date(2026, 10, 26, 2, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, err := queue.enqueue("review", "full-text", batch.Date, &batch.ID, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sent, err := queue.Deliver(ctx); err != nil || !sent {
+		t.Fatalf("first part: %v", err)
+	}
+	platform.fail = "SEND_OUTCOME_UNKNOWN"
+	if sent, err := queue.Deliver(ctx); err != nil || !sent {
+		t.Fatalf("unknown part: %v", err)
+	}
+	unknown, _ := queue.List("unknown")
+	if len(unknown) != 1 || len(platform.texts) != 2 {
+		t.Fatalf("unknown part was not isolated: %+v", unknown)
+	}
+	// A new queue/transport models a worker restart; durable state owns progress.
+	queue = NewNotificationService(store, reviews, NewFeishuDelivery(store, reviews, events))
+	if err := queue.recover(); err != nil {
+		t.Fatal(err)
+	}
+	if sent, err := queue.Deliver(ctx); err != nil || sent || len(platform.texts) != 2 {
+		t.Fatalf("unknown predecessor released later parts: %v", err)
+	}
+	platform.message = FeishuSentMessage{ID: "om_unknown", Text: platform.texts[1],
+		SenderType: "app", SenderIDType: "app_id", SenderID: "cli_test_app"}
+	if _, err := queue.Resolve(ctx, unknown[0].ID, "sent", "om_unknown", "test"); err != nil {
+		t.Fatal(err)
+	}
+	for range 100 {
+		sent, err := queue.Deliver(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !sent {
+			break
+		}
+	}
+	var joined strings.Builder
+	for _, text := range platform.texts {
+		if !utf8.ValidString(text) || !reviewTextFits(text) {
+			t.Fatal("invalid UTF-8 or oversized request")
+		}
+		_, body, ok := strings.Cut(text, "\n\n")
+		if !ok {
+			t.Fatal("missing full-note header")
+		}
+		joined.WriteString(body)
+	}
+	if joined.String() != content {
+		t.Fatal("long note was truncated, repeated or reordered")
+	}
+	seen := map[string]bool{}
+	for _, uuid := range platform.uuids {
+		if seen[uuid] {
+			t.Fatal("a confirmed fragment was sent twice")
+		}
+		seen[uuid] = true
+	}
+	var root string
+	if err := store.state.QueryRow(`SELECT root_id FROM feishu_review_parts WHERE notification_id = ?`, id).Scan(&root); err != nil || root != id {
+		t.Fatalf("missing durable source references: %v", err)
+	}
+	pending, _ := queue.List("pending")
+	if len(pending) != 0 {
+		t.Fatalf("unfinished parts: %d", len(pending))
+	}
+}
+
+func TestFeishuReviewEmptyAndSourceOutage(t *testing.T) {
+	for _, scenario := range []string{"deleted", "outage", "attachment-only"} {
+		t.Run(scenario, func(t *testing.T) {
+			reviews, memos := reviewFixture(t, 1)
+			store := reviews.Store
+			store.Settings.Channel = feishuSettings(t).Channel
+			platform := &reviewDeliveryPlatform{}
+			events := NewFeishuService(store, reviews.Source, nil, reviews, nil)
+			events.Client = platform
+			transport := NewFeishuDelivery(store, reviews, events)
+			queue := NewNotificationService(store, reviews, transport)
+			ctx := context.Background()
+			batch, err := reviews.Daily(ctx, time.Date(2026, 10, 26, 2, 0, 0, 0, time.UTC))
+			if err != nil {
+				t.Fatal(err)
+			}
+			id, err := queue.enqueue("review", "empty", batch.Date, &batch.ID, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if scenario == "outage" {
+				reviews.Source = fakeClient(store.Settings, func(*http.Request) (int, any, error) { return 503, nil, nil })
+			} else if scenario == "attachment-only" {
+				for _, raw := range memos {
+					raw["content"] = ""
+					raw["attachments"] = []any{map[string]any{
+						"name": "attachments/image1", "filename": "first.png", "type": "image/png"}}
+				}
+			} else {
+				clear(memos)
+			}
+			detail, _ := queue.Detail(id)
+			receipt, err := transport.Send(ctx, detail.Notification)
+			if scenario == "outage" && err == nil ||
+				scenario != "outage" && (err != nil || receipt != "empty:"+id) || len(platform.texts) != 0 {
+				t.Fatalf("empty/outage: receipt=%s err=%v calls=%d", receipt, err, len(platform.texts))
+			}
+		})
+	}
+}
+
+func TestFeishuWebhookFullTextIgnoresAttachments(t *testing.T) {
+	reviews, memos := reviewFixture(t, 1)
+	store := reviews.Store
+	store.Settings.Channel.Kind = "feishu-webhook"
+	store.Settings.Notifications.Enabled = true
+	content := strings.Repeat("Webhook 全文🙂 \"<&>\"\\\n", 2000)
+	for _, raw := range memos {
+		raw["content"] = content
+		raw["attachments"] = []any{
+			map[string]any{"name": "attachments/image1", "filename": "first.png", "type": "image/png"},
+			map[string]any{"name": "attachments/file1", "filename": "report.pdf", "type": "application/pdf"},
+		}
+	}
+	var texts []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		data, _ := io.ReadAll(r.Body)
+		if len(data) > 20*1024 || !utf8.Valid(data) {
+			t.Error("oversized or invalid Webhook request")
+		}
+		var body struct {
+			Type    string            `json:"msg_type"`
+			Content map[string]string `json:"content"`
+		}
+		if json.Unmarshal(data, &body) != nil || body.Type != "text" {
+			t.Error("Webhook must send only text")
+		}
+		texts = append(texts, body.Content["text"])
+		_, _ = io.WriteString(w, `{"code":0}`)
+	}))
+	defer server.Close()
+	store.Settings.Channel.WebhookURL = stringPointer(server.URL)
+	store.Settings.Channel.WebhookSecret = stringPointer("webhook-secret")
+	ctx := context.Background()
+	batch, err := reviews.Daily(ctx, time.Date(2026, 10, 26, 2, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	queue := NewNotificationService(store, reviews, NewFeishuDelivery(store, reviews, nil))
+	if _, err := queue.enqueue("review", "webhook-text", batch.Date, &batch.ID, nil); err != nil {
+		t.Fatal(err)
+	}
+	for range 100 {
+		sent, err := queue.Deliver(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !sent {
+			break
+		}
+	}
+	var joined strings.Builder
+	for _, text := range texts {
+		_, body, found := strings.Cut(text, "\n\n")
+		if !found || strings.Contains(text, "/file/") || strings.Contains(text, "report.pdf") {
+			t.Fatal("Webhook emitted an attachment or attachment link")
+		}
+		joined.WriteString(body)
+	}
+	if len(texts) < 2 || joined.String() != content {
+		t.Fatal("Webhook truncated or repeated the full note")
+	}
+}
+func TestFeishuReviewSourceChangeCancelsOldPartsAndContinues(t *testing.T) {
+	reviews, memos := reviewFixture(t, 3)
+	store := reviews.Store
+	store.Settings.Channel = feishuSettings(t).Channel
+	store.Settings.Notifications.Enabled = true
+	for _, raw := range memos {
+		raw["content"] = strings.Repeat("完整正文🙂\n", 3000)
+	}
+	platform := &reviewDeliveryPlatform{}
+	events := NewFeishuService(store, reviews.Source, nil, reviews, nil)
+	events.Client = platform
+	queue := NewNotificationService(store, reviews, NewFeishuDelivery(store, reviews, events))
+	ctx := context.Background()
+	batch, err := reviews.Daily(ctx, time.Date(2026, 10, 26, 2, 0, 0, 0, time.UTC))
+	if err != nil || len(batch.Items) != 3 {
+		t.Fatalf("batch: %v", err)
+	}
+	if _, err := queue.enqueue("review", "source-change", batch.Date, &batch.ID, nil); err != nil {
+		t.Fatal(err)
+	}
+	if sent, err := queue.Deliver(ctx); err != nil || !sent {
+		t.Fatalf("first fragment: %v", err)
+	}
+	changed := batch.Items[0].Name
+	memos[changed]["content"] = "修改后的新正文"
+	for range 100 {
+		sent, err := queue.Deliver(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !sent {
+			break
+		}
+	}
+	notices, otherNotes := 0, map[string]bool{}
+	for _, text := range platform.texts {
+		if strings.Contains(text, "笔记在推送期间发生了修改") {
+			notices++
+			if !strings.Contains(text, store.Settings.Memos.PublicURL+"/"+changed) {
+				t.Fatal("source change notice lacks usable original note link")
+			}
+		} else if strings.Contains(text, changed) {
+			if text != platform.texts[0] {
+				t.Fatal("old fragments continued after the source changed")
+			}
+		}
+		for _, entry := range batch.Items[1:] {
+			if strings.Contains(text, entry.Name) {
+				otherNotes[entry.Name] = true
+			}
+		}
+	}
+	pending, _ := queue.List("pending")
+	if notices != 1 || len(otherNotes) != 2 || len(pending) != 0 {
+		t.Fatalf("source change blocked delivery: notices=%d other=%d pending=%d", notices, len(otherNotes), len(pending))
 	}
 }

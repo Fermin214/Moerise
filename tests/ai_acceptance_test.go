@@ -5,6 +5,10 @@ package acceptance
 import (
 	"bytes"
 	"context"
+	"crypto/aes"
+	"crypto/cipher"
+	"crypto/rand"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,6 +18,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	moerise "moerise/internal"
 )
@@ -168,19 +173,54 @@ func (r *aiAcceptanceRuntime) stop() {
 	}
 }
 
-func (r *aiAcceptanceRuntime) receive(id string) {
+func (r *aiAcceptanceRuntime) queueSavedAI(id string) {
 	r.h.t.Helper()
-	content, _ := json.Marshal(map[string]string{"text": "洞察 " + r.provider.name})
-	r.h.call(r.server.URL, "/hooks/feishu", "POST", "", map[string]any{
-		"header": map[string]string{"event_id": "event_" + id, "event_type": "im.message.receive_v1",
-			"app_id": *r.settings.Channel.AppID, "token": *r.settings.Channel.VerificationToken},
-		"event": map[string]any{
-			"sender": map[string]any{"sender_type": "user",
-				"sender_id": map[string]string{"open_id": *r.settings.Channel.UserOpenID}},
-			"message": map[string]string{"message_id": id, "message_type": "text",
-				"chat_type": "p2p", "content": string(content)},
-		},
-	}, 200)
+	request := moerise.AIRequest{Names: []string{r.provider.name}}
+	result, err := r.api.AI.Insight(context.Background(), request, nil)
+	if err != nil || !result.Completed {
+		r.h.t.Fatalf("shared insight fixture: %+v %v", result, err)
+	}
+	// Seed a completed encrypted result to exercise recovery independently of text input.
+	key := sha256.Sum256([]byte("moerise-feishu-events-v1\x00" + *r.settings.Channel.AppSecret))
+	block, _ := aes.NewCipher(key[:])
+	aead, _ := cipher.NewGCM(block)
+	seal := func(purpose string, value any) []byte {
+		body, err := json.Marshal(value)
+		if err != nil {
+			r.h.t.Fatal(err)
+		}
+		nonce := make([]byte, aead.NonceSize())
+		if _, err := rand.Read(nonce); err != nil {
+			r.h.t.Fatal(err)
+		}
+		identity := r.settings.Memos.InstanceID + "\x00" + r.settings.Memos.User + "\x00" + purpose
+		return aead.Seal(nonce, nonce, body, []byte(identity))
+	}
+	db := r.h.database("state")
+	defer db.Close()
+	tx, err := db.Begin()
+	if err != nil {
+		r.h.t.Fatal(err)
+	}
+	defer tx.Rollback()
+	stamp := time.Now().UTC().Format(time.RFC3339Nano)
+	if _, err := tx.Exec(`INSERT INTO channel_events
+		(message_id, event_id, event_hash, app_id, sender_open_id, status, result_kind,
+		 resource_name, reply_uuid, available_at, created_at)
+		VALUES (?, ?, ?, ?, ?, 'processed', 'ai', ?, ?, 0, ?)`,
+		id, "event_"+id, id, *r.settings.Channel.AppID, *r.settings.Channel.UserOpenID, id, randomToken(), stamp); err != nil {
+		r.h.t.Fatal(err)
+	}
+	if _, err := tx.Exec(`INSERT INTO feishu_ai_generations
+		(message_id, operation, request, result, status, created_at, updated_at)
+		VALUES (?, 'insight', ?, ?, 'completed', ?, ?)`, id,
+		seal("ai-request:"+id, request), seal("ai-result:"+id, result), stamp, stamp); err != nil {
+		r.h.t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		r.h.t.Fatal(err)
+	}
+	r.api.Feishu.Wake()
 }
 
 func (r *aiAcceptanceRuntime) queued(id string) moerise.Notification {
@@ -251,7 +291,7 @@ func aiAcceptanceRendered(t *testing.T, text string, result moerise.AIResult) {
 	}
 }
 
-func TestAISelectedSourceAcrossRESTMCPAndFeishuAcceptance(t *testing.T) {
+func TestAISelectedSourceAcrossRESTMCPAndQueuedFeishuAcceptance(t *testing.T) {
 	r, aiOnly := newAIAcceptanceRuntime(t)
 	h := r.h
 	request := moerise.AIRequest{Names: []string{r.provider.name}}
@@ -294,17 +334,15 @@ func TestAISelectedSourceAcrossRESTMCPAndFeishuAcceptance(t *testing.T) {
 			}
 		}
 	}
-	r.receive("om_ai_parity")
-	r.receive("om_ai_parity")
+	r.queueSavedAI("om_ai_parity")
 	item := r.queued("om_ai_parity")
 	r.deliver(true)
 	aiAcceptanceRendered(t, r.platform.reply("om_ai_parity"), rest)
-	r.receive("om_ai_parity")
 	r.deliver(false)
 	detail, err := r.api.Notifications.Detail(item.ID)
 	if err != nil || detail.Notification.Status != "sent" || len(detail.Attempts) != 1 ||
 		r.provider.calls.Load() != 3 || r.platform.replyCount() != 1 {
-		t.Fatalf("redelivery regenerated or resent insight: calls=%d sends=%d detail=%+v err=%v",
+		t.Fatalf("saved reply regenerated or resent insight: calls=%d sends=%d detail=%+v err=%v",
 			r.provider.calls.Load(), r.platform.replyCount(), detail, err)
 	}
 }
@@ -333,11 +371,11 @@ func aiAcceptanceCache(t *testing.T, h *harness, id string) aiAcceptanceCachedGe
 func TestAICachedDeliveryRebuildAndRestoreWithRealMemosAcceptance(t *testing.T) {
 	r, _ := newAIAcceptanceRuntime(t)
 	h := r.h
-	r.receive("om_ai_sent")
+	r.queueSavedAI("om_ai_sent")
 	sent := r.queued("om_ai_sent")
 	r.deliver(true)
 	sentText := r.platform.reply("om_ai_sent")
-	r.receive("om_ai_cached")
+	r.queueSavedAI("om_ai_cached")
 	cached := r.queued("om_ai_cached")
 	sentGeneration := aiAcceptanceCache(t, h, "om_ai_sent")
 	cachedGeneration := aiAcceptanceCache(t, h, "om_ai_cached")
@@ -362,8 +400,6 @@ func TestAICachedDeliveryRebuildAndRestoreWithRealMemosAcceptance(t *testing.T) 
 			t.Fatalf("index rebuild/reopen replaced the persisted generation for %s", id)
 		}
 	}
-	r.receive("om_ai_sent")
-	r.receive("om_ai_cached")
 	r.deliver(true)
 	if r.platform.reply("om_ai_cached") != sentText || r.platform.replyCount() != 2 || r.provider.calls.Load() != 2 {
 		t.Fatalf("Store/Feishu reopen did not reuse the cached result: calls=%d sends=%d text=%s",
@@ -398,11 +434,9 @@ func TestAICachedDeliveryRebuildAndRestoreWithRealMemosAcceptance(t *testing.T) 
 	if err != nil || uncertain.Notification.Status != "unknown" || len(uncertain.Attempts) != 0 {
 		t.Fatalf("older snapshot did not hold uncertain send outcome: %+v %v", uncertain, err)
 	}
-	r.receive("om_ai_sent")
-	r.receive("om_ai_cached")
 	r.deliver(false)
 	if r.provider.calls.Load() != 2 || r.platform.replyCount() != 2 {
-		t.Fatal("restore/redelivery automatically regenerated or resent a saved result")
+		t.Fatal("restore automatically regenerated or resent a saved result")
 	}
 	// The platform confirms the send made after the snapshot. Resolving it must
 	// record that receipt without another platform request or model generation.
@@ -415,10 +449,10 @@ func TestAICachedDeliveryRebuildAndRestoreWithRealMemosAcceptance(t *testing.T) 
 	}
 	r.deliver(false)
 
-	r.receive("om_ai_source_changed")
+	r.queueSavedAI("om_ai_source_changed")
 	changed := r.queued("om_ai_source_changed")
 	if r.provider.calls.Load() != 3 {
-		t.Fatal("new event did not generate exactly once")
+		t.Fatal("shared insight fixture did not generate exactly once")
 	}
 	h.call(h.memos, "/api/v1/"+r.provider.name+"?updateMask=content", "PATCH", h.upstream,
 		map[string]string{"content": "原有观察已删除，改为全新内容。"}, 200)
