@@ -35,7 +35,7 @@ LLM 通过独立的协议适配器生成内容，支持 OpenAI Chat Completions�
 
 | 字段 | 含义与范围 |
 | --- | --- |
-| `enabled` | 默认关闭；旧配置未填写此字段时也关闭 |
+| `enabled` | 默认关闭；未填写此字段时使用默认值 |
 | `protocol` | `openai-compatible`、`openai-responses` 或 `anthropic`，默认 Chat Completions |
 | `base_url`、`api_key` | HTTP(S) 基地址与服务凭据；启用时必填 |
 | `model` | 模型或路由名，1 至 200 字节，不含控制字符 |

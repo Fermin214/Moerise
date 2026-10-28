@@ -72,7 +72,7 @@ REST 提供笔记读取、创建、同步管理、中文混合检索、相关笔
 | `page_size` | 20 | 1 至 100 |
 | `page_token` | 空字符串 | 服务返回的不透明游标，最多 4096 字符 |
 
-笔记按 `update_time DESC, name DESC` 排序，使用键值分页。游标通过 HMAC 签名，并绑定实例、账号、归档状态和索引代次。重建索引后旧游标失效，调用方从第一页重新读取。
+笔记按 `update_time DESC, name DESC` 排序，使用键值分页。游标通过 HMAC 签名，并绑定实例、账号、归档状态和索引代次。重建索引使分页游标失效，调用方从第一页重新读取。
 
 列表从本地投影确定候选资源，再请求 Memos 获取最新正文并复查作者。来源已消失时删除对应投影，来源已归档时移出正常列表。单页可能少于 `page_size`，甚至为空；调用方应以 `next_page_token` 是否为空判断分页结束。
 
@@ -87,7 +87,7 @@ Authorization: Bearer <reader-token>
 
 附件数组沿用 Memos 返回的附件元数据。`source_hash` 包含正文、状态、标签、附件和关系等来源信息；正文摘要单独保存在索引中，供后续向量任务判断正文变化。
 
-来源身份或版本无法验证、Memos 连接失败时，读取接口返回 503。接口不使用旧缓存正文替代来源复查。
+来源身份或版本无法验证、Memos 连接失败时，读取接口返回 503，不以缓存正文替代来源复查。
 
 ## 搜索
 
@@ -250,13 +250,13 @@ Content-Type: application/json
 
 调用 Memos 前，服务将幂等键、规范化内容摘要、分配的 `memoId` 和处理状态持久写入 `state.sqlite3`，不将笔记原文存入产品状态。发生超时、5xx 或响应不可信等无法确定写入结果的情况时，返回 503 `WRITE_OUTCOME_UNKNOWN`，且 `error.retryable=true`。调用方只用相同键与相同请求体重试；服务先按持久分配的 `memoId` 复查，必要时才使用同一 ID 创建，重试不会另行生成笔记 ID。
 
-已确认成功的来源笔记被删除后，同键重放返回 404 `SOURCE_NOT_FOUND`，不重建笔记。POST 返回笔记前及每次重放均验证来源身份，并从 Memos 复查作者与正文。身份或来源故障时返回错误，不输出旧正文；幂等记录不作为正文缓存。来源连接与身份错误沿用下表中的 503 错误。
+已确认成功的来源笔记被删除后，同键重放返回 404 `SOURCE_NOT_FOUND`，不重建笔记。POST 返回笔记前及每次重放均验证来源身份，并从 Memos 复查作者与正文。身份或来源故障时返回错误，不输出缓存正文；幂等记录不作为正文缓存。来源连接与身份错误见下表中的 503 错误。
 
-幂等记录随产品状态备份，服务重启后继续使用，索引重建保留记录。恢复快照只能恢复其中已有的幂等记录；快照生成后创建的记录需结合 Memos 原文核实，不能将旧请求直接视为尚未写入。
+幂等记录随产品状态备份，服务重启后继续使用，索引重建保留记录。恢复快照只能恢复其中包含的幂等记录；重试快照生成后的请求前，需结合 Memos 原文核实其写入结果。
 
 ## 通知结果
 
-通知状态包括 `pending`、`running`、`unknown`、`sent`。列表和详情只返回产品状态与资源引用，不包含消息正文。发送开始前持久保存尝试；超时、响应不可信、中断和恢复旧快照均保留结果不明状态，不自动重发。
+通知状态包括 `pending`、`running`、`unknown`、`sent`。列表和详情只返回产品状态与资源引用，不包含消息正文。发送开始前持久保存尝试；超时、响应不可信、中断和恢复快照均保留结果不明状态，不自动重发。
 
 结果确认请求包含 `decision`，为 `sent` 或 `not_sent`，可省略的 `receipt` 至多 256 字节。`sent` 携带回执时通过渠道验证对应通知；不带回执时保存人工确认。`not_sent` 只接受空回执，确认未送达后创建新发送 UUID。操作者来自扩展凭据名称，记录在 `resolutions`。冲突决定或无关回执返回 409 `NOTIFICATION_CONFLICT`。完整流程见[调度与发送队列](NOTIFICATIONS.md)。
 
@@ -287,7 +287,7 @@ Content-Type: application/json
 | `read_daily_review` | `reviews:read` | 读取已有当日批次；不存在时返回 `REVIEW_NOT_FOUND`，不创建批次 |
 | `get_review_batch` | `reviews:read` | 读取指定 `batch_id` |
 
-外部 MCP 仅提供只读工具，不支持创建笔记、创建或更换回顾、记录打开或略过、更新阅读历史。令牌中的 `notes:write`、`reviews:write` 和 `discovery:write` 不增加 MCP 工具。`get_daily_review`、`replace_daily_review`、`open_review_memo`、`skip_review_memo` 和 `open_discovery_memo` 均不注册，工具发现和直接调用都不可用。服务端按读取 Scope 注册工具，`readOnlyHint` 只用于展示提示。原生 REST 入口负责产品状态写入，MCP 可以读取这些入口产生的回顾与条目状态。
+外部 MCP 仅提供只读工具，不支持创建笔记、创建或更换回顾、记录打开或略过、更新阅读历史。令牌中的 `notes:write`、`reviews:write` 和 `discovery:write` 不增加 MCP 工具，工具发现和直接调用均执行只读限制。服务端按读取 Scope 注册工具，`readOnlyHint` 只用于展示提示。REST 入口负责产品状态写入，MCP 可以读取回顾与条目状态。
 
 `get_memo` 接受 `{"name":"memos/example"}`，读取前验证来源账户，返回前获取 Memos 原文；不存在或不属于绑定作者时返回 `SOURCE_NOT_FOUND`。`list_memos` 接受可省略的 `state`（默认 `NORMAL`，也支持 `ARCHIVED`）、`page_size`（默认 20，范围 1—100）、`page_token`。它复用 REST 笔记列表的分页与原文复查，同一实例、作者、索引代次及状态下的游标可在 REST 与 MCP 间互用；无效游标返回 `INVALID_PAGE_TOKEN`。来源故障使获取和列表请求失败，不返回缓存正文。两个工具均只读、幂等、非破坏，不更新阅读历史。
 
