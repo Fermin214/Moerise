@@ -106,6 +106,50 @@ func (m *MemosClient) Create(ctx context.Context, name, content string) (*Memo, 
 	return &memo, nil
 }
 
+func (m *MemosClient) UpdateMemo(ctx context.Context, name string, content *string, state string) (*Memo, error) {
+	if !memoPattern.MatchString(name) {
+		return nil, failure("INVALID_RESOURCE", "Invalid memo resource name", 422, false)
+	}
+	body := map[string]any{"name": name}
+	mask := []string{}
+	if content != nil {
+		body["content"] = *content
+		mask = append(mask, "content")
+	}
+	if state != "" {
+		if state != "NORMAL" && state != "ARCHIVED" {
+			return nil, failure("INVALID_ARGUMENT", "Invalid memo state", 422, false)
+		}
+		body["state"] = state
+		mask = append(mask, "state")
+	}
+	if len(mask) == 0 {
+		return nil, failure("INVALID_ARGUMENT", "No memo fields to update", 422, false)
+	}
+	data, _ := json.Marshal(body)
+	var raw map[string]any
+	if err := m.do(ctx, http.MethodPatch, "/api/v1/"+name,
+		url.Values{"updateMask": {strings.Join(mask, ",")}}, data, &raw); err != nil {
+		return nil, err
+	}
+	memo, err := normalizeMemo(raw)
+	if err != nil {
+		return nil, err
+	}
+	if memo.Name != name || memo.Creator != m.config.User {
+		return nil, upstreamError("UPSTREAM_PROTOCOL", "Memos returned a different resource or author")
+	}
+	return &memo, nil
+}
+
+func (m *MemosClient) DeleteMemo(ctx context.Context, name string) error {
+	if !memoPattern.MatchString(name) {
+		return failure("INVALID_RESOURCE", "Invalid memo resource name", 422, false)
+	}
+	var response map[string]any
+	return m.do(ctx, http.MethodDelete, "/api/v1/"+name, nil, nil, &response)
+}
+
 func (m *MemosClient) Identity(ctx context.Context) (string, error) {
 	var profile struct {
 		Version string `json:"version"`

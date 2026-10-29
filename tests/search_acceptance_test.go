@@ -175,10 +175,10 @@ func TestSearchAcceptance(t *testing.T) {
 	h.withOfflineApp(func(app *moerise.App) {
 		record := func(key, content string, tags ...string) string {
 			t.Helper()
-			if tags == nil {
-				tags = []string{}
+			for _, tag := range tags {
+				content += "\n#" + tag
 			}
-			return h.recordUsingApp(app, key, moerise.CreateNote{Content: content, Tags: tags}, 201)["name"].(string)
+			return h.recordUsingApp(app, key, moerise.CreateNote{Content: content}, 201)["name"].(string)
 		}
 		for i := range 12 {
 			tags := []string{"庭院记"}

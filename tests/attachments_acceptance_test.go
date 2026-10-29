@@ -60,7 +60,7 @@ func TestAttachmentsAcceptance(t *testing.T) {
 				{"filename": "first.txt", "type": "text/plain", "content": base64.StdEncoding.EncodeToString([]byte("first file"))},
 				{"filename": "second.txt", "type": "text/plain", "content": base64.StdEncoding.EncodeToString([]byte("second file"))},
 			}
-			body := map[string]any{"content": "with attachments", "attachments": files}
+			body := map[string]any{"content": "", "attachments": files}
 			requireRecordError(t, h.call(h.base, "/api/ext/v1/notes", "POST", h.reader, body, 403), "FORBIDDEN")
 			requireRecordError(t, h.recordInProcess("files", body, 503), "WRITE_OUTCOME_UNKNOWN")
 			snapshot := filepath.Join(h.root, "partial-attachments")
@@ -69,7 +69,7 @@ func TestAttachmentsAcceptance(t *testing.T) {
 			h.start()
 			h.ready()
 			note := h.recordInProcess("files", body, 200)
-			name := h.requireRecord(note, "", "with attachments", nil)
+			name := h.requireRecord(note, "", "", nil)
 			attachments := note["attachments"].([]any)
 			if len(attachments) != 2 {
 				t.Fatalf("missing linked attachments: %v", note)
@@ -123,7 +123,7 @@ func TestAttachmentsAcceptance(t *testing.T) {
 				t.Fatalf("recovery uploaded duplicates: %d != %d", count, expectedPosts)
 			}
 			h.requireSourceRecords(name)
-			changed := map[string]any{"content": "with attachments", "attachments": []map[string]string{files[1], files[0]}}
+			changed := map[string]any{"content": "", "attachments": []map[string]string{files[1], files[0]}}
 			requireRecordError(t, h.recordInProcess("files", changed, 409), "IDEMPOTENCY_CONFLICT")
 		})
 	}
