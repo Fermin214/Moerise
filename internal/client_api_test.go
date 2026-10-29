@@ -9,6 +9,31 @@ import (
 	"time"
 )
 
+func TestOpenAPIOperationIDsAreUnique(t *testing.T) {
+	var spec struct {
+		Paths map[string]map[string]struct {
+			OperationID string `json:"operationId"`
+		} `json:"paths"`
+	}
+	if err := json.Unmarshal(openAPISpec(), &spec); err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]string{}
+	for path, methods := range spec.Paths {
+		for method, operation := range methods {
+			id := operation.OperationID
+			if id == "" {
+				continue
+			}
+			location := method + " " + path
+			if previous, ok := seen[id]; ok {
+				t.Errorf("operationId %q is shared by %s and %s", id, previous, location)
+			}
+			seen[id] = location
+		}
+	}
+}
+
 func TestClientNotificationRecoveryUsesBoundSession(t *testing.T) {
 	api, fixture := clientFixture(t)
 	rawID, identity, err := api.app.Sessions.Login(t.Context(), "owner", "correct")
@@ -205,6 +230,35 @@ func TestClientStrictRequestsAndIdentityIsolation(t *testing.T) {
 	}
 }
 
+func TestClientRenewalKeepsCookieAndLoginDeadline(t *testing.T) {
+	api, fixture := clientFixture(t)
+	rawID, _, err := api.app.Sessions.Login(t.Context(), "owner", "correct")
+	if err != nil {
+		t.Fatal(err)
+	}
+	hash, _ := sessionHash(rawID)
+	deadline := time.Now().Add(time.Hour).Truncate(time.Second)
+	if _, err := api.app.Store.state.Exec("UPDATE client_sessions SET refresh_expires_at = ? WHERE session_hash = ?", deadline.Unix(), hash); err != nil {
+		t.Fatal(err)
+	}
+	api.app.Sessions.cache(hash, memosCredentials{})
+	cookie := &http.Cookie{Name: api.cookieName(), Value: rawID}
+	response := clientCall(api, "GET", "/api/app/v1/session", "", cookie, "", "")
+	var identity SessionIdentity
+	if response.Code != 200 || json.Unmarshal(response.Body.Bytes(), &identity) != nil || !identity.ExpiresAt.Equal(deadline) {
+		t.Fatalf("renewal changed the login deadline: %d %s", response.Code, response.Body.String())
+	}
+	if response.Header().Get("Set-Cookie") != "" {
+		t.Fatal("session renewal rewrote the browser cookie")
+	}
+	fixture.mu.Lock()
+	refreshes := fixture.refreshes
+	fixture.mu.Unlock()
+	if refreshes != 2 {
+		t.Fatalf("expected login and renewal refreshes, got %d", refreshes)
+	}
+}
+
 func TestClientLogoutCancelsQueuedCreation(t *testing.T) {
 	api, fixture := clientFixture(t)
 	rawID, identity, err := api.app.Sessions.Login(t.Context(), "owner", "correct")
@@ -240,6 +294,9 @@ func TestClientLogoutCancelsQueuedCreation(t *testing.T) {
 	}
 	select {
 	case result := <-done:
+		if result.Header().Get("Set-Cookie") != "" {
+			t.Fatal("canceled creation rewrote the revoked session cookie")
+		}
 		if result.Code == 200 || result.Code == 201 {
 			t.Fatal("queued creation succeeded after logout")
 		}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"slices"
 	"strings"
+	"sync"
 )
 
 type liveListCursor struct {
@@ -54,18 +55,55 @@ func (s *NoteService) ListLive(ctx context.Context, args NoteList) (NotePage, er
 	if err != nil {
 		return result, err
 	}
-	for _, candidate := range memos {
-		memo, err := s.fresh(ctx, candidate.Name)
-		if err != nil {
-			return NotePage{}, err
+	ctx, cancel := context.WithCancelCause(ctx)
+	defer cancel(nil)
+	checked := make([]*Memo, len(memos))
+	jobs := make(chan int)
+	var workers sync.WaitGroup
+	for range min(4, len(memos)) {
+		workers.Go(func() {
+			for i := range jobs {
+				if ctx.Err() != nil {
+					return
+				}
+				candidate := memos[i]
+				memo, err := s.fresh(ctx, candidate.Name)
+				if err != nil {
+					cancel(err)
+					return
+				}
+				if memo == nil || memo.State != args.State {
+					continue
+				}
+				if memo.CreateTime != candidate.CreateTime {
+					cancel(failure("SOURCE_CHANGED", "Memo creation time changed during pagination", 409, true))
+					return
+				}
+				// 按候选位置保存，来源响应顺序不影响创建时间和名称排序。
+				checked[i] = memo
+			}
+		})
+	}
+dispatch:
+	for i := range memos {
+		if ctx.Err() != nil {
+			break
 		}
-		if memo == nil || memo.State != args.State {
-			continue
+		select {
+		case <-ctx.Done():
+			break dispatch
+		case jobs <- i:
 		}
-		if memo.CreateTime != candidate.CreateTime {
-			return NotePage{}, failure("SOURCE_CHANGED", "Memo creation time changed during pagination", 409, true)
+	}
+	close(jobs)
+	workers.Wait()
+	if err := context.Cause(ctx); err != nil {
+		return NotePage{}, err
+	}
+	for _, memo := range checked {
+		if memo != nil {
+			result.Notes = append(result.Notes, memo.Note(s.Settings))
 		}
-		result.Notes = append(result.Notes, memo.Note(s.Settings))
 	}
 	if err := s.Verify(ctx); err != nil {
 		return NotePage{}, err

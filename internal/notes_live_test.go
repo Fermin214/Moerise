@@ -2,12 +2,14 @@ package moerise
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"reflect"
 	"strconv"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 type notesLiveHTTPFixture struct {
@@ -96,6 +98,326 @@ func notesLivePageNames(page NotePage) []string {
 		names = append(names, note.Name)
 	}
 	return names
+}
+
+type notesLiveGetSource struct {
+	Source
+	get func(context.Context, string) (*Memo, error)
+}
+
+func (s *notesLiveGetSource) Get(ctx context.Context, name string) (*Memo, error) {
+	return s.get(ctx, name)
+}
+
+func (s *notesLiveGetSource) ListLivePage(ctx context.Context, state string, size int, token string) ([]Memo, string, error) {
+	return s.Source.(LiveSource).ListLivePage(ctx, state, size, token)
+}
+
+func waitNotesLiveSignal(t *testing.T, signal <-chan struct{}) {
+	t.Helper()
+	select {
+	case <-signal:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for live source workers")
+	}
+}
+
+func TestNotesLiveBoundedConcurrentOrder(t *testing.T) {
+	f := newNotesLiveHTTPFixture(t)
+	f.rows = nil
+	for i := range 21 {
+		row := liveRawMemo(strconv.Itoa(100+i), "candidate")
+		row["createTime"] = time.Date(2020, 1, 1, 0, 0, 30-i/2, 0, time.UTC).Format(time.RFC3339)
+		f.rows = append(f.rows, row)
+	}
+	want := []string{}
+	for i := 0; i < 20; i += 2 {
+		want = append(want, f.rows[i+1]["name"].(string), f.rows[i]["name"].(string))
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	started, completed := make(chan struct{}, 20), make(chan struct{}, 20)
+	release, releaseFirst := make(chan struct{}), make(chan struct{})
+	var mu sync.Mutex
+	active, peak := 0, 0
+	source := f.service.Source
+	f.service.Source = &notesLiveGetSource{Source: source, get: func(ctx context.Context, name string) (*Memo, error) {
+		mu.Lock()
+		active++
+		peak = max(peak, active)
+		mu.Unlock()
+		defer func() {
+			mu.Lock()
+			active--
+			mu.Unlock()
+			completed <- struct{}{}
+		}()
+		started <- struct{}{}
+		select {
+		case <-release:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+		if name == want[0] {
+			select {
+			case <-releaseFirst:
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+		}
+		memo, err := source.Get(ctx, name)
+		if err == nil && memo != nil {
+			switch name {
+			case want[3]:
+				memo.Creator = "users/other"
+			case want[7]:
+				memo.State = "ARCHIVED"
+			case want[9]:
+				memo = nil
+			}
+		}
+		return memo, err
+	}}
+	var page NotePage
+	var err error
+	done := make(chan struct{})
+	go func() {
+		page, err = f.service.ListLive(ctx, NoteList{})
+		close(done)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		waitNotesLiveSignal(t, done)
+	})
+	for range 4 {
+		waitNotesLiveSignal(t, started)
+	}
+	close(release)
+	// 让第一页首条最后完成，验证响应不能按网络完成顺序拼接。
+	for range 19 {
+		waitNotesLiveSignal(t, completed)
+	}
+	close(releaseFirst)
+	waitNotesLiveSignal(t, done)
+	wantNotes := []string{}
+	for i, name := range want {
+		if i != 3 && i != 7 && i != 9 {
+			wantNotes = append(wantNotes, name)
+		}
+	}
+	if err != nil || !reflect.DeepEqual(notesLivePageNames(page), wantNotes) || page.NextPageToken == "" {
+		t.Fatalf("concurrent checks changed order, scope, or cursor: %+v %v", page, err)
+	}
+	if peak != 4 || active != 0 {
+		t.Fatalf("unexpected source concurrency: peak=%d active=%d", peak, active)
+	}
+	for _, note := range page.Notes {
+		if note.Content != "  fresh from Get\n#tag  " {
+			t.Fatal("concurrent checks returned candidate text")
+		}
+	}
+	f.mu.Lock()
+	checks := f.profileChecks
+	f.mu.Unlock()
+	if checks != 2 {
+		t.Fatalf("expected identity checks before and after all source checks, got %d", checks)
+	}
+}
+
+func TestNotesLiveCancellationStopsAndJoinsWorkers(t *testing.T) {
+	for _, point := range []string{"source-error", "creation-changed", "request-canceled"} {
+		t.Run(point, func(t *testing.T) {
+			f := newNotesLiveHTTPFixture(t)
+			f.rows = nil
+			for _, name := range []string{"g", "f", "e", "d", "c", "b", "a"} {
+				f.rows = append(f.rows, liveRawMemo(name, "candidate"))
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			started, canceled := make(chan struct{}, 6), make(chan struct{}, 6)
+			completeOne, triggerFailure, allowExit := make(chan struct{}), make(chan struct{}), make(chan struct{})
+			releaseExit := sync.OnceFunc(func() { close(allowExit) })
+			source := f.service.Source
+			sourceErr := upstreamError("UPSTREAM_AUTH", "Memos rejected the configured credential")
+			f.service.Source = &notesLiveGetSource{Source: source, get: func(ctx context.Context, name string) (*Memo, error) {
+				started <- struct{}{}
+				if name == "memos/g" {
+					select {
+					case <-completeOne:
+						return source.Get(ctx, name)
+					case <-ctx.Done():
+						return nil, ctx.Err()
+					}
+				}
+				if name == "memos/f" && point != "request-canceled" {
+					select {
+					case <-triggerFailure:
+						if point == "source-error" {
+							return nil, sourceErr
+						}
+						memo, err := source.Get(ctx, name)
+						if err == nil && memo != nil {
+							memo.CreateTime = "2019-01-01T00:00:00.000000+00:00"
+						}
+						return memo, err
+					case <-ctx.Done():
+						return nil, ctx.Err()
+					}
+				}
+				<-ctx.Done()
+				canceled <- struct{}{}
+				<-allowExit
+				return nil, ctx.Err()
+			}}
+			var page NotePage
+			var err error
+			done := make(chan struct{})
+			go func() {
+				page, err = f.service.ListLive(ctx, NoteList{PageSize: 6})
+				close(done)
+			}()
+			t.Cleanup(func() {
+				cancel()
+				releaseExit()
+				waitNotesLiveSignal(t, done)
+			})
+			for range 4 {
+				waitNotesLiveSignal(t, started)
+			}
+			close(completeOne)
+			// 第五个任务开始说明已有一条复查成功，失败仍须丢弃整页。
+			waitNotesLiveSignal(t, started)
+			waiting := 3
+			if point == "request-canceled" {
+				waiting = 4
+				cancel()
+			} else {
+				close(triggerFailure)
+			}
+			for range waiting {
+				waitNotesLiveSignal(t, canceled)
+			}
+			select {
+			case <-done:
+				t.Fatal("live list returned before canceled workers exited")
+			default:
+			}
+			releaseExit()
+			waitNotesLiveSignal(t, done)
+			switch point {
+			case "source-error":
+				if !errors.Is(err, sourceErr) {
+					t.Fatalf("source failure was masked by sibling cancellation: %v", err)
+				}
+			case "creation-changed":
+				if errorCode(err) != "SOURCE_CHANGED" {
+					t.Fatalf("creation time change was not rejected: %v", err)
+				}
+			case "request-canceled":
+				if !errors.Is(err, context.Canceled) {
+					t.Fatalf("request cancellation was not propagated: %v", err)
+				}
+			}
+			if len(page.Notes) != 0 || page.NextPageToken != "" {
+				t.Fatalf("failed live list leaked partial data: %+v", page)
+			}
+			if len(started) != 0 {
+				t.Fatal("live list dispatched more source requests after cancellation")
+			}
+		})
+	}
+}
+
+func TestNotesLiveCanceledHTTPPreservesSourceHealth(t *testing.T) {
+	for _, point := range []string{"creation-changed", "source-error", "request-canceled"} {
+		t.Run(point, func(t *testing.T) {
+			settings := testSettings(t)
+			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+			defer cancel()
+			siblingStarted := make(chan struct{})
+			client := liveProbeClient(t, settings, func(r *http.Request) (int, any, error) {
+				switch r.URL.Path {
+				case "/api/v1/instance/profile":
+					return 200, map[string]string{"version": "0.31.0"}, nil
+				case "/api/v1/auth/me":
+					return 200, map[string]any{"user": map[string]string{"name": settings.Memos.User}}, nil
+				case "/api/v1/memos":
+					return 200, map[string]any{"memos": []any{
+						liveRawMemo("z", "candidate"), liveRawMemo("a", "candidate"),
+					}}, nil
+				case "/api/v1/memos/z":
+					select {
+					case <-siblingStarted:
+					case <-r.Context().Done():
+						return 200, liveRawMemo("z", "candidate"), nil
+					}
+					if point == "request-canceled" {
+						<-r.Context().Done()
+						return 200, liveRawMemo("z", "candidate"), nil
+					}
+					if point == "source-error" {
+						return 401, map[string]any{}, nil
+					}
+					changed := liveRawMemo("z", "changed")
+					changed["createTime"], changed["updateTime"] = "2020-01-02T00:00:00Z", "2020-01-02T00:00:00Z"
+					return 200, changed, nil
+				case "/api/v1/memos/a":
+					close(siblingStarted)
+					<-r.Context().Done()
+					return 200, liveRawMemo("a", "candidate"), nil
+				}
+				return 404, map[string]any{}, nil
+			})
+			settings.Memos.BaseURL = client.config.BaseURL
+			store := testStore(t, settings)
+			service := NewNoteService(settings, store, client)
+			var page NotePage
+			var err error
+			done := make(chan struct{})
+			go func() {
+				page, err = service.ListLive(ctx, NoteList{})
+				close(done)
+			}()
+			t.Cleanup(func() {
+				cancel()
+				waitNotesLiveSignal(t, done)
+			})
+			if point == "request-canceled" {
+				waitNotesLiveSignal(t, siblingStarted)
+				cancel()
+			}
+			waitNotesLiveSignal(t, done)
+			switch point {
+			case "creation-changed":
+				if errorCode(err) != "SOURCE_CHANGED" {
+					t.Fatalf("creation time change was not preserved: %v", err)
+				}
+			case "source-error":
+				if errorCode(err) != "UPSTREAM_AUTH" {
+					t.Fatalf("source error was masked by cancellation: %v", err)
+				}
+			case "request-canceled":
+				if !errors.Is(err, context.Canceled) {
+					t.Fatalf("request cancellation was not preserved: %v", err)
+				}
+			}
+			if len(page.Notes) != 0 || page.NextPageToken != "" {
+				t.Fatalf("failed list returned partial data: %+v", page)
+			}
+			if _, err := client.Identity(t.Context()); err != nil {
+				t.Fatalf("source identity is unavailable: %v", err)
+			}
+			status, err := store.Status()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if point == "source-error" {
+				if status.SourceOK || status.LastError == nil || *status.LastError != "UPSTREAM_AUTH" {
+					t.Fatalf("source authentication failure was overwritten: %+v", status)
+				}
+			} else if !status.SourceOK || status.LastError != nil {
+				t.Fatalf("cancellation changed healthy source status: %+v", status)
+			}
+		})
+	}
 }
 
 func TestNotesLiveReadsUndiscoveredSource(t *testing.T) {

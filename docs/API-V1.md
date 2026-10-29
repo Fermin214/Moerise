@@ -12,7 +12,7 @@
 | --- | --- | --- |
 | GET | `/api/app/v1/capabilities` | 匿名获取密码登录方式与笔记入口状态；`ready` 表示入口启用，来源故障由实际请求反馈 |
 | POST | `/api/app/v1/session` | 接收 `username`、`password`，验证官方登录与续期链路，返回身份、时区、会话到期时间和 `csrf_token` |
-| GET | `/api/app/v1/session` | 核验本人身份，必要时续期，返回会话信息 |
+| GET | `/api/app/v1/session` | 核验本人身份，必要时刷新上游凭据，返回会话信息 |
 | DELETE | `/api/app/v1/session` | 先撤销本地会话，再尝试上游退出，清 Cookie 并返回 204；上游不可用仍可退出 |
 | GET | `/api/app/v1/notes` | 实时读取 Memos 本人笔记，默认 `state=NORMAL&order=created_desc&page_size=20` |
 | GET | `/api/app/v1/notes/{memo_id}` | 返回来源复查后的最新 Note，不记录阅读 |
@@ -23,7 +23,7 @@
 
 所有登录和状态变更请求要求 Origin 精确匹配 `web.public_origin`，拒绝缺失或 `null`；登录后的写请求还要求会话对应的 `X-CSRF-Token`。无有效本地会话时，退出只检查 Origin 并幂等清 Cookie。HTTPS Cookie 使用 `__Host-moerise_session`，回环 HTTP 使用 `moerise_local_session`，均具有 HttpOnly、SameSite=Lax 和 Path=/。不设置 Domain；HTTPS 还设置 Secure。
 
-身份响应只包含 `instance_id`、`user.name`、`user.display_name`、`timezone`、`expires_at`、`csrf_token`。Memos PAT、访问和刷新凭据不返回客户端。会话跨普通重启恢复，产品快照恢复会清空会话，索引重建保留会话。密码登录关闭或需要其他认证方式的来源返回 501 `PASSWORD_LOGIN_UNSUPPORTED`。
+身份响应只包含 `instance_id`、`user.name`、`user.display_name`、`timezone`、`expires_at`、`csrf_token`。Memos PAT、访问和刷新凭据不返回客户端。登录有效期不超过登录时的刷新凭据到期时间；上游续期只更新服务端凭据，不延长登录期限，读取和业务响应不设置 Cookie。会话跨普通重启恢复，产品快照恢复会清空会话，索引重建保留会话。密码登录关闭或需要其他认证方式的来源返回 501 `PASSWORD_LOGIN_UNSUPPORTED`。
 
 客户端列表接受 `NORMAL`、`ARCHIVED`、`page_size=1..100`、`page_token`，排序仅支持 `created_desc`；拒绝未知和重复参数。创建时间相同按资源名倒序，置顶和编辑不改变创建时间排序。列表直接从 Memos 取候选并复查来源，来源新增后刷新即可读取；不等待索引同步。游标绑定列表种类、来源、作者、状态及排序，与机器索引游标不可互换，索引重建不会使实时列表游标失效。来源在跨页读取中改变可返回 409 `SOURCE_CHANGED`；资源预算耗尽返回错误，不输出不完整的同时间组。
 

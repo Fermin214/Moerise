@@ -520,13 +520,15 @@ func (s *SessionService) Authenticate(ctx context.Context, rawID string) (*Sessi
 			}
 			return nil, s.rejected(hash, err)
 		}
+		// 浏览器 Cookie 只在登录时设置，续期不能延长该次登录的有效期。
+		expires := min(row.expires, refreshed.refreshExpires.Unix())
 		ciphertext, err := s.encrypt(row, refreshed)
 		if err == nil {
 			var result sql.Result
 			result, err = s.store.state.ExecContext(ctx, `UPDATE client_sessions SET refresh_ciphertext = ?,
 				refresh_expires_at = ?, updated_at = ?, revision = revision + 1
 				WHERE session_hash = ? AND revision = ? AND source_binding_hash = ?`,
-				ciphertext, refreshed.refreshExpires.Unix(), nowText(), hash, row.revision, s.binding)
+				ciphertext, expires, nowText(), hash, row.revision, s.binding)
 			if err == nil {
 				var count int64
 				count, err = result.RowsAffected()
@@ -546,7 +548,7 @@ func (s *SessionService) Authenticate(ctx context.Context, rawID string) (*Sessi
 			}
 			return nil, sessionUnavailable()
 		}
-		row.expires, row.revision = refreshed.refreshExpires.Unix(), row.revision+1
+		row.expires, row.revision = expires, row.revision+1
 		credentials = refreshed
 		s.cache(hash, credentials)
 	}

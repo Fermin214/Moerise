@@ -36,6 +36,9 @@ func (s *NoteService) Verify(ctx context.Context) error {
 func (s *NoteService) fresh(ctx context.Context, name string) (*Memo, error) {
 	memo, err := s.Source.Get(ctx, name)
 	if err != nil {
+		if cause := context.Cause(ctx); cause != nil {
+			return nil, cause
+		}
 		if healthErr := s.Store.SourceHealth(false, errorCode(err), ""); healthErr != nil {
 			return nil, healthErr
 		}

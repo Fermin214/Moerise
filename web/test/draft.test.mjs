@@ -37,6 +37,51 @@ test('only confirmation or explicit abandonment permits a new key', () => {
   assert.equal(draft.pending, null);
 });
 
+test('only argument or media type rejection unlocks the original text for editing', () => {
+  for (const code of ['INVALID_ARGUMENT', 'UNSUPPORTED_MEDIA_TYPE']) {
+    const draft = new Draft();
+    draft.content = '原文';
+    const attempt = draft.begin();
+    draft.reject(attempt, 'WRITE_OUTCOME_UNKNOWN');
+    assert.equal(draft.begin(), attempt);
+    assert.equal(draft.locked, true);
+    draft.reject(attempt, code);
+    assert.equal(draft.pending, null);
+    assert.equal(draft.locked, false);
+    assert.equal(draft.content, '原文');
+    draft.content = '修改后的正文';
+    const next = draft.begin();
+    assert.notEqual(next.key, attempt.key);
+    assert.equal(next.content, '修改后的正文');
+    draft.reject(attempt, code);
+    assert.equal(draft.pending, next);
+    assert.equal(draft.locked, true);
+  }
+});
+
+test('conflicts and unknown outcomes keep the original text locked and retry the same submission', () => {
+  for (const code of [
+    'WRITE_CONFLICT', 'SOURCE_NOT_FOUND', 'IDEMPOTENCY_CONFLICT', 'UPSTREAM_REQUEST_REJECTED',
+    'WRITE_OUTCOME_UNKNOWN', 'NETWORK_ERROR', 'REQUEST_TIMEOUT', 'SESSION_UNAUTHORIZED',
+    'NOTE_SAVE_UNCONFIRMED', 'NEW_BACKEND_ERROR', undefined,
+  ]) {
+    const draft = new Draft();
+    const original = '  原文\n#标签\n  ';
+    draft.content = original;
+    const attempt = draft.begin();
+    for (let retry = 0; retry < 2; retry++) {
+      draft.reject(attempt, code);
+      assert.equal(draft.locked, true);
+      assert.equal(draft.content, original);
+      assert.equal(draft.pending, attempt);
+      assert.equal(draft.pending.key, attempt.key);
+      assert.equal(draft.pending.content, original);
+      assert.equal(draft.begin(), attempt);
+      assert.ok(Object.isFrozen(attempt));
+    }
+  }
+});
+
 test('rejects whitespace-only or oversized new content without mutating content', () => {
   const draft = new Draft();
   draft.content = ' \n\t ';
