@@ -7,7 +7,7 @@ Moerise 是基于 Memos 的单用户自托管笔记服务。服务端使用 Go 1
 | 任务 | 入口 |
 | --- | --- |
 | 了解可用功能、安装方式 | [README](README.md) |
-| 确定产品行为与开发范围 | [产品需求](docs/PRD.md)、[路线图](docs/ROADMAP.md) |
+| 确定产品行为与开发范围 | [产品需求](docs/PRD.md)、[路线图](docs/ROADMAP.md)、[Web 集成设计](docs/DESIGN.md) |
 | 调整模块、存储或来源访问 | [产品与架构](docs/PRODUCT-ARCHITECTURE.md) |
 | 修改 REST、MCP、权限或响应 | [API v1](docs/API-V1.md) |
 | 修改飞书记录或回顾推送 | [飞书接入](docs/FEISHU.md)、[通知与推送](docs/NOTIFICATIONS.md) |

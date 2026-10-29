@@ -2,6 +2,10 @@ export class Draft {
   content = '';
   pending = null;
 
+  get locked() {
+    return !!this.pending;
+  }
+
   begin() {
     if (!this.pending) {
       if (!this.content.trim()) throw Object.assign(new Error('请先写下笔记正文。'), { code: 'CONTENT_EMPTY' });
@@ -17,6 +21,13 @@ export class Draft {
     if (this.pending !== attempt) return;
     if (this.content === attempt.content) this.content = '';
     this.pending = null;
+  }
+
+  reject(attempt, code) {
+    if (this.pending !== attempt) return;
+    if (code === 'INVALID_ARGUMENT' || code === 'UNSUPPORTED_MEDIA_TYPE') {
+      this.abandon();
+    }
   }
 
   abandon() {

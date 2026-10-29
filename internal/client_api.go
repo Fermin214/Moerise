@@ -276,7 +276,6 @@ func (a *ClientAPI) route(w http.ResponseWriter, r *http.Request) (any, int, err
 			return nil, 0, err
 		}
 	}
-	a.cookie(w, rawID, identity.ExpiresAt)
 	switch path {
 	case "/api/app/v1/session":
 		if method == http.MethodGet {

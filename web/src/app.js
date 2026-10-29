@@ -7,7 +7,11 @@ const controllers = new Set();
 let epoch = 0;
 let identity = null;
 let notes = new Map();
+let orderedNotes = [];
+let dateFormatters = null;
 let nextToken = '';
+let listRetryTimer = null;
+let listRetryDelay = 1000;
 let listSequence = 0;
 let listing = false;
 let saving = false;
@@ -25,6 +29,9 @@ function invalidate() {
   listSequence++;
   for (const controller of controllers) controller.abort();
   controllers.clear();
+  clearTimeout(listRetryTimer);
+  listRetryTimer = null;
+  listRetryDelay = 1000;
   listController = null;
   listing = false;
   saving = false;
@@ -76,6 +83,27 @@ function validIdentity(value) {
   return value;
 }
 
+async function sessionRequest(path, options) {
+  const headers = { ...options.headers, 'X-CSRF-Token': identity?.csrf_token || logoutCSRF };
+  try {
+    return await request(path, { ...options, headers });
+  } catch (err) {
+    if (err.code !== 'CSRF_REJECTED') throw err;
+    let value;
+    try {
+      value = validIdentity(await request('/session'));
+    } catch (refreshError) {
+      if (options.method === 'DELETE' && refreshError.status === 401) {
+        return request(path, { ...options, headers });
+      }
+      throw refreshError;
+    }
+    if (identity) identity = value;
+    else logoutCSRF = value.csrf_token;
+    return request(path, { ...options, headers: { ...headers, 'X-CSRF-Token': value.csrf_token } });
+  }
+}
+
 function hidePrivate() {
   $('app').hidden = true;
   $('workspace').hidden = true;
@@ -87,6 +115,7 @@ function hidePrivate() {
   $('empty').hidden = true;
   pageObserver.unobserve($('page-end'));
   notes.clear();
+  orderedNotes = [];
   nextToken = '';
   identity = null;
   $('account-name').textContent = '';
@@ -118,8 +147,8 @@ function handleFailure(element, err) {
 }
 
 function updateComposer() {
-  $('save').disabled = saving || !identity || (!draft.pending && !draft.content.trim());
-  $('content').readOnly = saving || !!draft.pending;
+  $('save').disabled = saving || !identity || (!draft.locked && !draft.content.trim());
+  $('content').readOnly = saving || draft.locked;
   $('composer').setAttribute('aria-busy', String(saving));
 }
 
@@ -185,39 +214,69 @@ $('login-form').addEventListener('submit', async event => {
 function formatTime(value) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return '';
-  const options = { timeZone: identity?.timezone || identity?.user.timezone };
+  const timezone = identity?.timezone;
   try {
-    const parts = new Intl.DateTimeFormat('zh-CN', { ...options, month: 'numeric', day: 'numeric' }).formatToParts(date);
+    if (!dateFormatters || dateFormatters.timezone !== timezone) {
+      dateFormatters = {
+        timezone,
+        date: new Intl.DateTimeFormat('zh-CN', { timeZone: timezone, month: 'numeric', day: 'numeric' }),
+        weekday: new Intl.DateTimeFormat('zh-CN', { timeZone: timezone, weekday: 'short' }),
+      };
+    }
+    const parts = dateFormatters.date.formatToParts(date);
     const month = parts.find(part => part.type === 'month').value;
     const day = parts.find(part => part.type === 'day').value;
-    const weekday = new Intl.DateTimeFormat('zh-CN', { ...options, weekday: 'short' }).format(date);
-    return `${month}月${day}日 ${weekday}`;
+    return `${month}月${day}日 ${dateFormatters.weekday.format(date)}`;
   } catch {
     return `${date.getMonth() + 1}月${date.getDate()}日`;
   }
 }
 
-function renderNotes() {
-  const fragment = document.createDocumentFragment();
-  // Resource names break equal creation-time ties without using locale-specific collation.
-  const ordered = [...notes.values()].sort((a, b) =>
-    Date.parse(b.create_time) - Date.parse(a.create_time) || (a.name < b.name ? 1 : a.name > b.name ? -1 : 0));
-  for (const note of ordered) {
-    const card = document.createElement('article');
-    card.className = 'card';
-    const header = document.createElement('div');
-    header.className = 'hd';
-    const time = document.createElement('time');
-    time.textContent = formatTime(note.create_time);
-    if (Number.isFinite(Date.parse(note.create_time))) time.dateTime = note.create_time;
-    const content = document.createElement('p');
-    content.className = 'note-content';
-    content.textContent = note.content;
-    header.append(time);
-    card.append(header, content);
-    fragment.append(card);
+function compareNotes(a, b) {
+  return Date.parse(b.create_time) - Date.parse(a.create_time) || (a.name < b.name ? 1 : a.name > b.name ? -1 : 0);
+}
+
+function renderNotes(incoming, reset = false) {
+  if (reset) {
+    notes.clear();
+    orderedNotes = [];
+    $('notes').replaceChildren();
   }
-  $('notes').replaceChildren(fragment);
+  for (const note of incoming) {
+    let entry = notes.get(note.name);
+    const moved = !entry || entry.note.create_time !== note.create_time;
+    if (!entry) {
+      const card = document.createElement('article');
+      card.className = 'card';
+      card.dataset.name = note.name;
+      const header = document.createElement('div');
+      header.className = 'hd';
+      const time = document.createElement('time');
+      const content = document.createElement('p');
+      content.className = 'note-content';
+      header.append(time);
+      card.append(header, content);
+      entry = { card, time, content };
+      notes.set(note.name, entry);
+    }
+    if (entry.note?.content !== note.content) entry.content.textContent = note.content;
+    if (moved || entry.timezone !== identity?.timezone) {
+      entry.time.textContent = formatTime(note.create_time);
+      if (Number.isFinite(Date.parse(note.create_time))) entry.time.dateTime = note.create_time;
+      entry.timezone = identity?.timezone;
+    }
+    if (moved && entry.note) orderedNotes.splice(orderedNotes.indexOf(entry), 1);
+    entry.note = note;
+    if (!moved) continue;
+    let start = 0, end = orderedNotes.length;
+    while (start < end) {
+      const middle = (start + end) >>> 1;
+      if (compareNotes(orderedNotes[middle].note, note) < 0) start = middle + 1;
+      else end = middle;
+    }
+    orderedNotes.splice(start, 0, entry);
+    $('notes').insertBefore(entry.card, orderedNotes[start + 1]?.card || null);
+  }
 }
 
 function updateListControls() {
@@ -231,13 +290,16 @@ const pageObserver = new IntersectionObserver(entries => {
   }
 }, { rootMargin: '200px' });
 
-async function loadNotes(reset = false) {
+async function loadNotes(reset = false, retry = false) {
   if (!identity || (!reset && (listing || !nextToken))) return;
   const generation = epoch;
   const sequence = ++listSequence;
   listController?.abort();
   listController = new AbortController();
   listing = true;
+  clearTimeout(listRetryTimer);
+  listRetryTimer = null;
+  if (reset && !retry) listRetryDelay = 1000;
   pageObserver.unobserve($('page-end'));
   updateListControls();
   showError($('list-error'), null);
@@ -252,15 +314,21 @@ async function loadNotes(reset = false) {
       typeof note.name !== 'string' || typeof note.content !== 'string' || note.state !== 'NORMAL')) {
       throw Object.assign(new Error('Invalid note list response'), { code: 'NOTE_LIST_INVALID' });
     }
-    if (reset) notes = new Map();
-    for (const note of page.notes) notes.set(note.name, note);
+    renderNotes(page.notes, reset);
     nextToken = typeof page.next_page_token === 'string' ? page.next_page_token : '';
-    renderNotes();
+    listRetryDelay = 1000;
     $('empty').hidden = !!notes.size || !!nextToken;
     succeeded = true;
   } catch (err) {
     if (generation !== epoch || sequence !== listSequence) return;
     handleFailure($('list-error'), err);
+    if (generation === epoch && err.retryable && identity) {
+      listRetryTimer = setTimeout(() => {
+        listRetryTimer = null;
+        if (generation === epoch && sequence === listSequence) loadNotes(reset, true);
+      }, listRetryDelay);
+      listRetryDelay = Math.min(listRetryDelay * 2, 30_000);
+    }
   } finally {
     if (generation === epoch && sequence === listSequence) {
       listing = false;
@@ -290,9 +358,9 @@ $('composer').addEventListener('submit', async event => {
   updateComposer();
   showError($('save-error'), null);
   try {
-    const note = await request('/notes', {
+    const note = await sessionRequest('/notes', {
       method: 'POST', body: { content: attempt.content },
-      headers: { 'Idempotency-Key': attempt.key, 'X-CSRF-Token': identity.csrf_token },
+      headers: { 'Idempotency-Key': attempt.key },
     });
     stale(generation);
     if (!note?.name || typeof note.content !== 'string') {
@@ -300,13 +368,11 @@ $('composer').addEventListener('submit', async event => {
     }
     draft.confirm(attempt);
     $('content').value = draft.content;
-    if (note.state === 'NORMAL') {
-      notes.set(note.name, note);
-      renderNotes();
-    }
+    if (note.state === 'NORMAL') renderNotes([note]);
     await loadNotes(true);
   } catch (err) {
     if (generation !== epoch) return;
+    draft.reject(attempt, err.code);
     handleFailure($('save-error'), err);
   } finally {
     if (generation === epoch) {
@@ -325,7 +391,7 @@ async function logout() {
   authControls({ busy: true, login: false });
   showError($('auth-error'), null);
   try {
-    await request('/session', { method: 'DELETE', headers: { 'X-CSRF-Token': logoutCSRF } });
+    await sessionRequest('/session', { method: 'DELETE' });
     stale(generation);
     logoutCSRF = null;
     authControls();

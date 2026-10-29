@@ -1497,7 +1497,7 @@
       },
       "get": {
         "operationId": "client_session",
-        "summary": "核验并续期本人会话",
+        "summary": "核验会话并刷新上游凭据",
         "security": [
           {
             "BrowserSession": []
@@ -3320,7 +3320,7 @@
             }
           }
         },
-        "operationId": "client_admin_undefined",
+        "operationId": "client_list_notifications",
         "description": "绑定作者会话的通知恢复操作；不向机器 Bearer 开放。"
       }
     },
@@ -3428,7 +3428,7 @@
             }
           }
         },
-        "operationId": "client_admin_undefined",
+        "operationId": "client_get_notification",
         "description": "绑定作者会话的通知恢复操作；不向机器 Bearer 开放。"
       }
     },
@@ -3564,7 +3564,7 @@
             }
           }
         },
-        "operationId": "client_admin_undefined",
+        "operationId": "client_resolve_notification",
         "description": "绑定作者会话的通知恢复操作；不向机器 Bearer 开放。"
       }
     }
