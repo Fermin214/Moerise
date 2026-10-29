@@ -5,126 +5,98 @@
     "version": "0.2.0"
   },
   "paths": {
-    "/api/ext/v1/insights": {
-      "post": {
-        "summary": "分析明确选定的本人笔记",
-        "operationId": "generateInsights",
-        "description": "同时要求 notes:read 和 ai:generate，模型调用产生用量；不保存分析结果，不保证幂等。1 至 20 个唯一资源名；timeline 必须为 false。所有证据均受状态、标签和创建时间过滤。JSON 请求体最多 64 KiB，拒绝未知字段、重复字段、null、非法参数及查询参数。stream=true 时，预检成功后才开始 SSE；只有完整成功才发 complete，异常发 completed=false 的 error。客户端断开取消生成。",
-        "security": [{"HTTPBearer": []}],
-        "x-required-scopes": ["notes:read", "ai:generate"],
-        "requestBody": {"required": true, "content": {"application/json": {"schema": {
-          "allOf": [
-            {"$ref": "#/components/schemas/AIRequest"},
-            {"required": ["names"], "properties": {"names": {"minItems": 1}, "timeline": {"const": false}}}
-          ]
-        }}}},
-        "responses": {
-          "200": {
-            "description": "AIResult；stream=true 时依次返回 references、content、complete 或 error 事件。insufficient 是成功完成的证据不足结果。",
-            "content": {
-              "application/json": {"schema": {"$ref": "#/components/schemas/AIResult"}},
-              "text/event-stream": {"schema": {"type": "string"}, "x-event-data-schema": {"$ref": "#/components/schemas/AIStreamEvent"}}
-            }
-          },
-          "401": {"description": "UNAUTHENTICATED"},
-          "403": {"description": "FORBIDDEN：必须同时具备两项 Scope"},
-          "404": {"description": "SOURCE_NOT_FOUND：SSE 开始前来源已不可用"},
-          "405": {"description": "METHOD_NOT_ALLOWED"},
-          "409": {"description": "SOURCE_CHANGED：SSE 开始前来源改变"},
-          "422": {"description": "INVALID_ARGUMENT、LLM_CONTEXT_LIMIT、EVIDENCE_BUDGET_EXCEEDED"},
-          "499": {"description": "LLM_CANCELED"},
-          "500": {"description": "INTERNAL"},
-          "503": {"description": "LLM_DISABLED、模型调用或来源复查失败"},
-          "504": {"description": "LLM_TIMEOUT"}
-        }
-      }
-    },
-    "/api/ext/v1/answers": {
-      "post": {
-        "summary": "基于本人笔记回答问题或组织主题时间线",
-        "operationId": "generateAnswer",
-        "description": "同时要求 notes:read 和 ai:generate。question 必填，names 为空；timeline=true 由共享问答服务选择时间线。状态、标签及创建日期过滤用于共享检索。请求体、完成、SSE、取消和错误语义与 insights 相同，不保存结果、不保证幂等。",
-        "security": [{"HTTPBearer": []}],
-        "x-required-scopes": ["notes:read", "ai:generate"],
-        "requestBody": {"required": true, "content": {"application/json": {"schema": {
-          "allOf": [
-            {"$ref": "#/components/schemas/AIRequest"},
-            {"required": ["question"], "properties": {"question": {"minLength": 1, "pattern": "\\S"}, "names": {"maxItems": 0}}}
-          ]
-        }}}},
-        "responses": {
-          "200": {
-            "description": "AIResult；证据不足时 completed=true、status=insufficient，保留已复查引用和 missing。",
-            "content": {
-              "application/json": {"schema": {"$ref": "#/components/schemas/AIResult"}},
-              "text/event-stream": {"schema": {"type": "string"}, "x-event-data-schema": {"$ref": "#/components/schemas/AIStreamEvent"}}
-            }
-          },
-          "401": {"description": "UNAUTHENTICATED"},
-          "403": {"description": "FORBIDDEN：必须同时具备两项 Scope"},
-          "404": {"description": "SOURCE_NOT_FOUND"},
-          "405": {"description": "METHOD_NOT_ALLOWED"},
-          "409": {"description": "SOURCE_CHANGED"},
-          "422": {"description": "INVALID_ARGUMENT、LLM_CONTEXT_LIMIT、EVIDENCE_BUDGET_EXCEEDED"},
-          "499": {"description": "LLM_CANCELED"},
-          "500": {"description": "INTERNAL"},
-          "503": {"description": "LLM_DISABLED、模型调用或来源复查失败"},
-          "504": {"description": "LLM_TIMEOUT"}
-        }
-      }
-    },
     "/api/ext/v1/search/index": {
       "get": {
         "summary": "读取向量索引进度",
-        "description": "结构与同步状态的 vector_index 相同；关闭模型时 ready=false，active/building 可为空。",
-        "security": [{"HTTPBearer": []}],
-        "x-required-scopes": ["notes:read"],
+        "description": "结构与同步状态的 vector_index 相同；关闭模型时 ready=false，active/building 可为空。 外部机器入口受只读操作白名单限制；写入 Scope 不能开放写操作或结构化生成。",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "x-required-scopes": [
+          "notes:read"
+        ],
         "responses": {
-          "200": {"description": "向量索引状态", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/VectorIndexStatus"}}}},
-          "401": {"description": "UNAUTHENTICATED"},
-          "403": {"description": "FORBIDDEN"},
-          "405": {"description": "METHOD_NOT_ALLOWED"},
-          "500": {"description": "INTERNAL"}
+          "200": {
+            "description": "向量索引状态",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VectorIndexStatus"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "UNAUTHENTICATED"
+          },
+          "403": {
+            "description": "FORBIDDEN"
+          },
+          "405": {
+            "description": "METHOD_NOT_ALLOWED"
+          },
+          "500": {
+            "description": "INTERNAL"
+          }
         }
       }
     },
     "/api/ext/v1/discovery/walk": {
       "post": {
         "summary": "语义漫步或随机跳转",
-        "description": "继续话题、换角度或随机选择一个笔记，排除路径资源并降低最近七天显式阅读的优先级。只读，不登记阅读。语义模式复用文档向量，关闭模型或向量未就绪时返回明确错误；随机模式不依赖模型。输出前复查来源身份和原文，原笔记中途改变返回 SOURCE_CHANGED。",
-        "security": [{"HTTPBearer": []}],
-        "x-required-scopes": ["notes:read"],
-        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/WalkRequest"}}}},
+        "description": "继续话题、换角度或随机选择一个笔记，排除路径资源并降低最近七天显式阅读的优先级。只读，不登记阅读。语义模式复用文档向量，关闭模型或向量未就绪时返回明确错误；随机模式不依赖模型。输出前复查来源身份和原文，原笔记中途改变返回 SOURCE_CHANGED。 外部机器入口受只读操作白名单限制；写入 Scope 不能开放写操作或结构化生成。",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "x-required-scopes": [
+          "notes:read"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WalkRequest"
+              }
+            }
+          }
+        },
         "responses": {
-          "200": {"description": "漫步结果；达到路径上限或候选用尽时 item=null、exhausted=true", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/WalkResponse"}}}},
-          "401": {"description": "UNAUTHENTICATED"},
-          "403": {"description": "FORBIDDEN"},
-          "404": {"description": "SOURCE_NOT_FOUND"},
-          "405": {"description": "METHOD_NOT_ALLOWED"},
-          "409": {"description": "SOURCE_CHANGED"},
-          "422": {"description": "INVALID_ARGUMENT"},
-          "503": {"description": "来源故障、模型关闭或索引未就绪"}
-        }
-      }
-    },
-    "/api/ext/v1/discovery/open": {
-      "post": {
-        "summary": "打开笔记并记录最近阅读",
-        "description": "复查来源身份和作者后，以实例、账号、资源名更新发现阅读时间；记录保存在产品数据库并纳入备份。",
-        "security": [{"HTTPBearer": []}],
-        "x-required-scopes": ["discovery:write"],
-        "requestBody": {"required": true, "content": {"application/json": {"schema": {
-          "type": "object", "additionalProperties": false, "required": ["name"],
-          "properties": {"name": {"type": "string", "pattern": "^memos/[a-zA-Z0-9_-]+$"}}
-        }}}},
-        "responses": {
-          "200": {"description": "复查后的原文", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Note"}}}},
-          "401": {"description": "UNAUTHENTICATED"},
-          "403": {"description": "FORBIDDEN"},
-          "404": {"description": "SOURCE_NOT_FOUND"},
-          "405": {"description": "METHOD_NOT_ALLOWED"},
-          "422": {"description": "INVALID_ARGUMENT"},
-          "503": {"description": "来源不可用"}
+          "200": {
+            "description": "漫步结果；达到路径上限或候选用尽时 item=null、exhausted=true",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WalkResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "UNAUTHENTICATED"
+          },
+          "403": {
+            "description": "FORBIDDEN"
+          },
+          "404": {
+            "description": "SOURCE_NOT_FOUND"
+          },
+          "405": {
+            "description": "METHOD_NOT_ALLOWED"
+          },
+          "409": {
+            "description": "SOURCE_CHANGED"
+          },
+          "422": {
+            "description": "INVALID_ARGUMENT"
+          },
+          "503": {
+            "description": "来源故障、模型关闭或索引未就绪"
+          }
         }
       }
     },
@@ -132,16 +104,26 @@
       "get": {
         "summary": "查找相关笔记",
         "operationId": "related_api_ext_v1_notes_memo_id_related_get",
-        "description": "要求 notes:read。从全量原文提取 3.3 词项，按频次降序、词项升序取最多 64 个，编码前 UTF-8 超过 128 字节的词项排除，使用 BM25；标签通道精确匹配共同标签，按共同标签数降序、资源名及片段序号升序，不要求匹配全部原笔记标签。语义复用同一活动代次文档向量，原笔记不同正文片段各自 L2 归一化后等权平均并归一化，相同正文只计一次，候选按正余弦排序；无查询模型、LLM 或额外 embedding 调用。每通道排除自身后取前 100 片段，RRF k=60 先融合片段再合并笔记，笔记取最高片段分，每笔记最多 3 个不同正文片段，相同正文合并 signals 并保留最高分位置，稳定排序同搜索。state 与显式 tags 仅过滤候选。先验证来源版本与身份，再读原笔记并修正投影；候选逐条复查同搜索，变化则丢弃并修正投影；输出前再次读原笔记、核实来源摘要和身份。任意来源故障整请求失败，不输出原笔记或部分结果。未知参数、重复 state/limit 或非法资源名及参数返回 422；非 GET 返回 405。",
-        "security": [{"HTTPBearer": []}],
-        "x-required-scopes": ["notes:read"],
+        "description": "要求 notes:read。从全量原文提取 3.3 词项，按频次降序、词项升序取最多 64 个，编码前 UTF-8 超过 128 字节的词项排除，使用 BM25；标签通道精确匹配共同标签，按共同标签数降序、资源名及片段序号升序，不要求匹配全部原笔记标签。语义复用同一活动代次文档向量，原笔记不同正文片段各自 L2 归一化后等权平均并归一化，相同正文只计一次，候选按正余弦排序；无查询模型、LLM 或额外 embedding 调用。每通道排除自身后取前 100 片段，RRF k=60 先融合片段再合并笔记，笔记取最高片段分，每笔记最多 3 个不同正文片段，相同正文合并 signals 并保留最高分位置，稳定排序同搜索。state 与显式 tags 仅过滤候选。先验证来源版本与身份，再读原笔记并修正投影；候选逐条复查同搜索，变化则丢弃并修正投影；输出前再次读原笔记、核实来源摘要和身份。任意来源故障整请求失败，不输出原笔记或部分结果。未知参数、重复 state/limit 或非法资源名及参数返回 422；非 GET 返回 405。 外部机器入口受只读操作白名单限制；写入 Scope 不能开放写操作或结构化生成。",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "x-required-scopes": [
+          "notes:read"
+        ],
         "parameters": [
           {
             "name": "memo_id",
             "in": "path",
             "required": true,
             "description": "原笔记 memos/{id} 的标识部分，原笔记不受候选状态和标签过滤。",
-            "schema": {"type": "string", "minLength": 1, "pattern": "^[a-zA-Z0-9_-]+$"}
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "^[a-zA-Z0-9_-]+$"
+            }
           },
           {
             "name": "tags",
@@ -149,57 +131,117 @@
             "style": "form",
             "explode": true,
             "description": "重复字段传数组，例如 ?tags=园艺&tags=随记；最多 20 项，格式同搜索，去重排序后对全部候选通道精确 AND 过滤。",
-            "schema": {"$ref": "#/components/schemas/SearchRequest/properties/tags"}
+            "schema": {
+              "$ref": "#/components/schemas/SearchRequest/properties/tags"
+            }
           },
           {
             "name": "state",
             "in": "query",
             "description": "候选状态，仅允许出现一次。",
-            "schema": {"$ref": "#/components/schemas/SearchRequest/properties/state"}
+            "schema": {
+              "$ref": "#/components/schemas/SearchRequest/properties/state"
+            }
           },
           {
             "name": "limit",
             "in": "query",
             "description": "返回笔记数上限，仅允许出现一次。",
-            "schema": {"$ref": "#/components/schemas/SearchRequest/properties/limit"}
+            "schema": {
+              "$ref": "#/components/schemas/SearchRequest/properties/limit"
+            }
           }
         ],
         "responses": {
           "200": {
             "description": "原笔记与相关结果；无命中 results=[]。语义关闭、索引未就绪或原笔记无可用向量时显式降级，取消不降级。",
-            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/RelatedResponse"}}}
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RelatedResponse"
+                }
+              }
+            }
           },
           "401": {
             "description": "UNAUTHENTICATED",
-            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
           },
           "403": {
             "description": "FORBIDDEN：要求 notes:read",
-            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
           },
           "404": {
             "description": "SOURCE_NOT_FOUND：原笔记消失或作者越界",
-            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
           },
           "405": {
             "description": "METHOD_NOT_ALLOWED：仅支持 GET",
-            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
           },
           "409": {
             "description": "SOURCE_CHANGED：处理中原笔记改变，error.retryable=true",
-            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
           },
           "422": {
             "description": "INVALID_ARGUMENT：未知查询参数、重复 state/limit、非法资源名或参数",
-            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
           },
           "500": {
             "description": "INTERNAL",
-            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
           },
           "503": {
             "description": "来源版本、身份或原文复查失败，整请求失败，不返回原笔记或部分结果",
-            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
           }
         }
       }
@@ -208,46 +250,103 @@
       "post": {
         "summary": "中文混合搜索",
         "operationId": "search_api_ext_v1_search_post",
-        "description": "要求 notes:read，REST、MCP 与飞书复用 SearchService，无需 LLM。关键词 BM25、标签匹配、正余弦语义各取前 100 片段，以 RRF k=60 融合后按笔记合并，笔记分数取最高片段分数，每条最多 3 片段，稳定排序。所有通道共用作者、状态及精确 AND 标签过滤。搜索前复查 Memos 版本与身份，返回前逐条读原文；修改、删除、作者越界或过滤变化的候选丢弃并修正投影，最后再查身份。来源故障使整请求失败，不返回缓存正文。非 POST 方法返回 405。",
-        "security": [{"HTTPBearer": []}],
-        "x-required-scopes": ["notes:read"],
+        "description": "要求 notes:read，REST、MCP 与飞书复用 SearchService，无需 LLM。关键词 BM25、标签匹配、正余弦语义各取前 100 片段，以 RRF k=60 融合后按笔记合并，笔记分数取最高片段分数，每条最多 3 片段，稳定排序。所有通道共用作者、状态及精确 AND 标签过滤。搜索前复查 Memos 版本与身份，返回前逐条读原文；修改、删除、作者越界或过滤变化的候选丢弃并修正投影，最后再查身份。来源故障使整请求失败，不返回缓存正文。非 POST 方法返回 405。 外部机器入口受只读操作白名单限制；写入 Scope 不能开放写操作或结构化生成。",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "x-required-scopes": [
+          "notes:read"
+        ],
         "requestBody": {
           "required": true,
           "content": {
             "application/json": {
-              "schema": {"$ref": "#/components/schemas/SearchRequest"},
-              "example": {"query": "整理灵感", "tags": ["工作/灵感"], "state": "NORMAL", "limit": 10}
+              "schema": {
+                "$ref": "#/components/schemas/SearchRequest"
+              },
+              "example": {
+                "query": "整理灵感",
+                "tags": [
+                  "工作/灵感"
+                ],
+                "state": "NORMAL",
+                "limit": 10
+              }
             }
           }
         },
         "responses": {
           "200": {
             "description": "搜索结果；hybrid 模式在模型关闭、索引未就绪或模型失败时返回关键词与标签结果及显式语义状态；keyword 不调用模型，semantic 不降级，取消不降级。",
-            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/SearchResponse"}}}
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SearchResponse"
+                }
+              }
+            }
           },
           "401": {
             "description": "UNAUTHENTICATED",
-            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
           },
           "403": {
             "description": "FORBIDDEN：要求 notes:read",
-            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
           },
           "405": {
             "description": "METHOD_NOT_ALLOWED：仅支持 POST",
-            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
           },
           "422": {
             "description": "INVALID_ARGUMENT：未知字段或参数不合法",
-            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
           },
           "500": {
             "description": "INTERNAL",
-            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
           },
           "503": {
             "description": "来源版本、身份或原文复查失败，或 semantic 模式下模型关闭、索引未就绪或查询模型失败；错误代码说明具体原因",
-            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
           }
         }
       }
@@ -398,7 +497,8 @@
           {
             "HTTPBearer": []
           }
-        ]
+        ],
+        "description": " 外部机器入口受只读操作白名单限制；写入 Scope 不能开放写操作或结构化生成。"
       }
     },
     "/api/ext/v1/notes": {
@@ -520,279 +620,8 @@
             },
             "description": "Service Unavailable"
           }
-        }
-      },
-      "post": {
-        "summary": "创建私有笔记",
-        "description": "要求 notes:write Scope。接收 content、tags 和可选 attachments，固定为绑定账号创建 PRIVATE 笔记。规范化内容由原样正文和去重排序后的标签决定，省略 tags 与空数组等价。非空标签生成 #tag1 #tag2\\n\\n 前缀写入正文，供 Memos 解析；正文与前缀合计 UTF-8 不超过 65536 字节。首次成功 201，同键相同规范化内容重放成功 200，均直接返回 Note。返回前及每次重放均验证来源身份并从 Memos 复查作者与正文。幂等记录持久保存键、内容摘要、分配的 memoId 和处理状态，不缓存原文，重启与索引重建后保留。结果不明时返回 503 WRITE_OUTCOME_UNKNOWN，retryable=true；只用相同键和请求体重试，服务先复查持久分配的 memoId，必要时以同一 ID 创建，不生成重复 ID。已确认成功后来源笔记被删除返回 404 SOURCE_NOT_FOUND，不重建；来源故障不输出旧正文。 附件通过官方 API 上传并关联同一笔记。附件资源标识持久保存，部分失败或响应丢失后使用原键和完整请求体重试，只补齐缺失附件。已确认存在的部分笔记被删除后不重建。请求 JSON 上限 12 MiB。",
-        "operationId": "create_note_api_ext_v1_notes_post",
-        "security": [
-          {
-            "HTTPBearer": []
-          }
-        ],
-        "x-required-scopes": [
-          "notes:write"
-        ],
-        "parameters": [
-          {
-            "name": "Idempotency-Key",
-            "in": "header",
-            "required": true,
-            "description": "每次独立创建使用新键；重试使用相同键与请求体。仅允许 ASCII 字母、数字、点、下划线、冒号和连字符。",
-            "schema": {
-              "type": "string",
-              "minLength": 1,
-              "maxLength": 128,
-              "pattern": "^[A-Za-z0-9._:-]+$(?![\\s\\S])",
-              "title": "Idempotency Key"
-            }
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/CreateNoteRequest"
-              },
-              "example": {
-                "content": "记录一个想法。",
-                "tags": [
-                  "工作/灵感",
-                  "记录"
-                ]
-              }
-            }
-          }
         },
-        "responses": {
-          "200": {
-            "description": "同一幂等键和相同规范化内容重放成功；返回来源复查的最新 Note。",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Note"
-                }
-              }
-            },
-            "headers": {
-              "X-Request-ID": {
-                "description": "请求标识。",
-                "schema": {
-                  "type": "string"
-                }
-              },
-              "Cache-Control": {
-                "description": "禁止缓存业务响应。",
-                "schema": {
-                  "type": "string",
-                  "const": "no-store"
-                }
-              }
-            }
-          },
-          "201": {
-            "description": "首次创建成功；验证来源身份并复查作者与正文后返回 Note。",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Note"
-                }
-              }
-            },
-            "headers": {
-              "X-Request-ID": {
-                "description": "请求标识。",
-                "schema": {
-                  "type": "string"
-                }
-              },
-              "Cache-Control": {
-                "description": "禁止缓存业务响应。",
-                "schema": {
-                  "type": "string",
-                  "const": "no-store"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "UNAUTHENTICATED：缺少或无效的 Bearer 凭据。",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "headers": {
-              "X-Request-ID": {
-                "description": "请求标识。",
-                "schema": {
-                  "type": "string"
-                }
-              },
-              "Cache-Control": {
-                "description": "禁止缓存业务响应。",
-                "schema": {
-                  "type": "string",
-                  "const": "no-store"
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "FORBIDDEN：凭据缺少 notes:write；只读凭据不能写入。",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "headers": {
-              "X-Request-ID": {
-                "description": "请求标识。",
-                "schema": {
-                  "type": "string"
-                }
-              },
-              "Cache-Control": {
-                "description": "禁止缓存业务响应。",
-                "schema": {
-                  "type": "string",
-                  "const": "no-store"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "SOURCE_NOT_FOUND：已确认成功的来源笔记已删除，不重建。",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "headers": {
-              "X-Request-ID": {
-                "description": "请求标识。",
-                "schema": {
-                  "type": "string"
-                }
-              },
-              "Cache-Control": {
-                "description": "禁止缓存业务响应。",
-                "schema": {
-                  "type": "string",
-                  "const": "no-store"
-                }
-              }
-            }
-          },
-          "409": {
-            "description": "IDEMPOTENCY_CONFLICT：同键不同规范化内容；WRITE_CONFLICT：来源资源冲突。",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "headers": {
-              "X-Request-ID": {
-                "description": "请求标识。",
-                "schema": {
-                  "type": "string"
-                }
-              },
-              "Cache-Control": {
-                "description": "禁止缓存业务响应。",
-                "schema": {
-                  "type": "string",
-                  "const": "no-store"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "INVALID_ARGUMENT：幂等键、请求字段、标签或正文与前缀的 UTF-8 总字节数不符合约束。",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "headers": {
-              "X-Request-ID": {
-                "description": "请求标识。",
-                "schema": {
-                  "type": "string"
-                }
-              },
-              "Cache-Control": {
-                "description": "禁止缓存业务响应。",
-                "schema": {
-                  "type": "string",
-                  "const": "no-store"
-                }
-              }
-            }
-          },
-          "500": {
-            "description": "INTERNAL：服务内部错误。",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "headers": {
-              "X-Request-ID": {
-                "description": "请求标识。",
-                "schema": {
-                  "type": "string"
-                }
-              },
-              "Cache-Control": {
-                "description": "禁止缓存业务响应。",
-                "schema": {
-                  "type": "string",
-                  "const": "no-store"
-                }
-              }
-            }
-          },
-          "503": {
-            "description": "WRITE_OUTCOME_UNKNOWN：超时、5xx 或响应不可信等导致写入结果不明，retryable=true，只用相同键和请求体重试。来源连接、身份或协议故障沿用既有错误代码；来源故障不输出旧正文。",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "headers": {
-              "X-Request-ID": {
-                "description": "请求标识。",
-                "schema": {
-                  "type": "string"
-                }
-              },
-              "Cache-Control": {
-                "description": "禁止缓存业务响应。",
-                "schema": {
-                  "type": "string",
-                  "const": "no-store"
-                }
-              }
-            }
-          }
-        }
+        "description": " 外部机器入口受只读操作白名单限制；写入 Scope 不能开放写操作或结构化生成。"
       }
     },
     "/api/ext/v1/notes/{memo_id}": {
@@ -886,7 +715,8 @@
             },
             "description": "Service Unavailable"
           }
-        }
+        },
+        "description": " 外部机器入口受只读操作白名单限制；写入 Scope 不能开放写操作或结构化生成。"
       }
     },
     "/api/ext/v1/sync": {
@@ -969,98 +799,8 @@
           {
             "HTTPBearer": []
           }
-        ]
-      },
-      "post": {
-        "summary": "Sync",
-        "operationId": "sync_api_ext_v1_sync_post",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/SyncRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "202": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/JobResponse"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Unauthorized",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "Forbidden",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Not Found",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Unprocessable Content",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "500": {
-            "description": "Internal Server Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "503": {
-            "description": "Service Unavailable",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "HTTPBearer": []
-          }
-        ]
+        ],
+        "description": " 外部机器入口受只读操作白名单限制；写入 Scope 不能开放写操作或结构化生成。"
       }
     },
     "/api/ext/v1/jobs/{job_id}": {
@@ -1155,7 +895,8 @@
             },
             "description": "Service Unavailable"
           }
-        }
+        },
+        "description": " 外部机器入口受只读操作白名单限制；写入 Scope 不能开放写操作或结构化生成。"
       }
     },
     "/api/ext/v1/reviews/daily": {
@@ -1241,211 +982,8 @@
               }
             }
           }
-        }
-      },
-      "post": {
-        "summary": "Get or create the fixed daily review and selection history",
-        "security": [
-          {
-            "HTTPBearer": []
-          }
-        ],
-        "x-required-scopes": [
-          "reviews:write"
-        ],
-        "parameters": [],
-        "responses": {
-          "200": {
-            "description": "Review batch with freshly checked source notes",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ReviewBatch"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Service error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "Service error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Service error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Service error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "500": {
-            "description": "Service error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "503": {
-            "description": "Service error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          }
         },
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "additionalProperties": false,
-                "properties": {}
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/ext/v1/reviews/daily/replace": {
-      "post": {
-        "summary": "Create a replacement batch; replay the same key on the same local date and rules",
-        "security": [
-          {
-            "HTTPBearer": []
-          }
-        ],
-        "x-required-scopes": [
-          "reviews:write"
-        ],
-        "parameters": [
-          {
-            "name": "Idempotency-Key",
-            "in": "header",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "pattern": "^[a-zA-Z0-9._:-]{1,128}$"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Review batch with freshly checked source notes",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ReviewBatch"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Service error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "Service error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Service error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Service error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "500": {
-            "description": "Service error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "503": {
-            "description": "Service error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          }
-        },
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "additionalProperties": false,
-                "properties": {}
-              }
-            }
-          }
-        }
+        "description": " 外部机器入口受只读操作白名单限制；写入 Scope 不能开放写操作或结构化生成。"
       }
     },
     "/api/ext/v1/reviews/{batch_id}": {
@@ -1541,247 +1079,14 @@
               }
             }
           }
-        }
-      }
-    },
-    "/api/ext/v1/reviews/{batch_id}/items/{memo_id}/open": {
-      "post": {
-        "summary": "Record the first open time independently",
-        "security": [
-          {
-            "HTTPBearer": []
-          }
-        ],
-        "x-required-scopes": [
-          "reviews:write"
-        ],
-        "parameters": [
-          {
-            "name": "batch_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "format": "uuid"
-            }
-          },
-          {
-            "name": "memo_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "pattern": "^[a-zA-Z0-9_-]+$"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Review batch with freshly checked source notes",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ReviewBatch"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Service error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "Service error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Service error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Service error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "500": {
-            "description": "Service error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "503": {
-            "description": "Service error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          }
         },
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "additionalProperties": false,
-                "properties": {}
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/ext/v1/reviews/{batch_id}/items/{memo_id}/skip": {
-      "post": {
-        "summary": "Record the first skip time independently",
-        "security": [
-          {
-            "HTTPBearer": []
-          }
-        ],
-        "x-required-scopes": [
-          "reviews:write"
-        ],
-        "parameters": [
-          {
-            "name": "batch_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "format": "uuid"
-            }
-          },
-          {
-            "name": "memo_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "pattern": "^[a-zA-Z0-9_-]+$"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Review batch with freshly checked source notes",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ReviewBatch"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Service error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "Service error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Service error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Service error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "500": {
-            "description": "Service error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "503": {
-            "description": "Service error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          }
-        },
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "additionalProperties": false,
-                "properties": {}
-              }
-            }
-          }
-        }
+        "description": " 外部机器入口受只读操作白名单限制；写入 Scope 不能开放写操作或结构化生成。"
       }
     },
     "/mcp": {
       "post": {
         "summary": "Moerise extension MCP over stateless Streamable HTTP",
-        "description": "Bearer token authentication. External MCP registers only read-only tools regardless of write scopes. get_memo requires notes:read and accepts name (memos/id), returning the latest owned Note or SOURCE_NOT_FOUND. list_memos requires notes:read and accepts optional state (NORMAL by default, or ARCHIVED), page_size (default 20, range 1-100) and page_token, returning notes and next_page_token. It shares REST notes pagination cursors, ownership checks and live-source reads; invalid cursors return INVALID_PAGE_TOKEN and source failures return errors instead of cached content. semantic_search, get_related_memos and semantic_walk remain read-only notes:read tools and do not record reading history. read_daily_review and get_review_batch require reviews:read; missing reviews return REVIEW_NOT_FOUND without creation. get_daily_review, replace_daily_review, open_review_memo, skip_review_memo, open_discovery_memo and other product writes are not registered and cannot be called even with write scopes. Non-AI tools set readOnlyHint=true, idempotentHint=true, destructiveHint=false. analyze_memos, ask_memos and get_topic_timeline require both notes:read and ai:generate; they invoke a model, return AIResult without saving the result and set readOnlyHint=true, idempotentHint=false, destructiveHint=false. Their input is AIRequest; stream does not enable MCP streaming, and get_topic_timeline forces timeline=true. The complete JSON-RPC body is limited to 64 KiB. MCP errors follow JSON-RPC and tool result conventions.",
+        "description": "独立 Bearer 认证，只读获取、分页、搜索、相关笔记、语义漫步和已有回顾；工具发现与直接调用均不提供写入、状态变更或生成。",
         "security": [
           {
             "HTTPBearer": []
@@ -1899,339 +1204,6 @@
           }
         }
       }
-    },
-    "/api/ext/v1/notifications": {
-      "get": {
-        "summary": "List recent notification state without message content",
-        "x-required-scopes": [
-          "reviews:read"
-        ],
-        "security": [
-          {
-            "HTTPBearer": []
-          }
-        ],
-        "parameters": [
-          {
-            "name": "status",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": "string",
-              "enum": [
-                "pending",
-                "running",
-                "unknown",
-                "sent"
-              ]
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/NotificationList"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Service error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "Service error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Service error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "409": {
-            "description": "Service error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Service error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "500": {
-            "description": "Service error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "503": {
-            "description": "Service error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/ext/v1/notifications/{notification_id}": {
-      "get": {
-        "summary": "Inspect send attempts and outcome resolutions",
-        "x-required-scopes": [
-          "reviews:read"
-        ],
-        "security": [
-          {
-            "HTTPBearer": []
-          }
-        ],
-        "parameters": [
-          {
-            "name": "notification_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "format": "uuid"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/NotificationDetail"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Service error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "Service error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Service error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "409": {
-            "description": "Service error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Service error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "500": {
-            "description": "Service error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "503": {
-            "description": "Service error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/ext/v1/notifications/{notification_id}/resolve": {
-      "post": {
-        "summary": "Resolve an unknown outcome; receipt verification or explicit operator confirmation",
-        "x-required-scopes": [
-          "reviews:write"
-        ],
-        "security": [
-          {
-            "HTTPBearer": []
-          }
-        ],
-        "parameters": [
-          {
-            "name": "notification_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "format": "uuid"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/NotificationDetail"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Service error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "Service error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Service error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "409": {
-            "description": "Service error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Service error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "500": {
-            "description": "Service error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "503": {
-            "description": "Service error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          }
-        },
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/NotificationDecision"
-              }
-            }
-          }
-        }
-      }
     }
   },
   "components": {
@@ -2241,117 +1213,463 @@
         "additionalProperties": false,
         "description": "最多 64 KiB 的严格 JSON 对象；拒绝重复键、大小写变体、未知字段及显式 null。问题长度按 trim 后的值计算。",
         "properties": {
-          "names": {"type": "array", "maxItems": 20, "uniqueItems": true, "items": {"type": "string", "pattern": "^memos/[a-zA-Z0-9_-]+$"}, "description": "洞察明确选定的来源；问答使用检索，不接受非空 names。"},
-          "question": {"type": "string", "x-max-unicode-codepoints-after-trim": 256, "x-max-utf8-bytes-after-trim": 1024, "description": "问答必填；trim 后非空，最多 256 个 Unicode 码点和 1024 个 UTF-8 字节。洞察可省略；非空时采用相同边界。"},
-          "tags": {"$ref": "#/components/schemas/SearchRequest/properties/tags"},
-          "state": {"type": "string", "enum": ["NORMAL", "ARCHIVED", "ALL"], "default": "NORMAL"},
-          "from": {"type": "string", "description": "可省略或为空；非空须为带时区 RFC3339 日期，按 create_time 过滤，下界包含。"},
-          "until": {"type": "string", "description": "可省略或为空；非空须为带时区 RFC3339 日期，按 create_time 过滤，上界不包含。两个边界均存在时须 from < until。"},
-          "timeline": {"type": "boolean", "default": false, "description": "仅用于问答；true 选择主题时间线。"},
-          "stream": {"type": "boolean", "default": false, "description": "仅在 REST 启用 SSE；MCP 始终返回完整结果。"}
+          "names": {
+            "type": "array",
+            "maxItems": 20,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "pattern": "^memos/[a-zA-Z0-9_-]+$"
+            },
+            "description": "洞察明确选定的来源；问答使用检索，不接受非空 names。"
+          },
+          "question": {
+            "type": "string",
+            "x-max-unicode-codepoints-after-trim": 256,
+            "x-max-utf8-bytes-after-trim": 1024,
+            "description": "问答必填；trim 后非空，最多 256 个 Unicode 码点和 1024 个 UTF-8 字节。洞察可省略；非空时采用相同边界。"
+          },
+          "tags": {
+            "$ref": "#/components/schemas/SearchRequest/properties/tags"
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "NORMAL",
+              "ARCHIVED",
+              "ALL"
+            ],
+            "default": "NORMAL"
+          },
+          "from": {
+            "type": "string",
+            "description": "可省略或为空；非空须为带时区 RFC3339 日期，按 create_time 过滤，下界包含。"
+          },
+          "until": {
+            "type": "string",
+            "description": "可省略或为空；非空须为带时区 RFC3339 日期，按 create_time 过滤，上界不包含。两个边界均存在时须 from < until。"
+          },
+          "timeline": {
+            "type": "boolean",
+            "default": false,
+            "description": "仅用于问答；true 选择主题时间线。"
+          },
+          "stream": {
+            "type": "boolean",
+            "default": false,
+            "description": "仅在 REST 启用 SSE；MCP 始终返回完整结果。"
+          }
         }
       },
       "Evidence": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["id", "name", "source_hash", "byte_start", "byte_end", "line_start", "line_end", "content", "url", "create_time", "update_time"],
+        "required": [
+          "id",
+          "name",
+          "source_hash",
+          "byte_start",
+          "byte_end",
+          "line_start",
+          "line_end",
+          "content",
+          "url",
+          "create_time",
+          "update_time"
+        ],
         "properties": {
-          "id": {"type": "string", "pattern": "^E[1-9][0-9]*$", "description": "服务端顺序分配的请求内引用 ID。"},
-          "name": {"type": "string"},
-          "source_hash": {"type": "string"},
-          "byte_start": {"type": "integer", "minimum": 0},
-          "byte_end": {"type": "integer", "minimum": 0},
-          "line_start": {"type": "integer", "minimum": 1},
-          "line_end": {"type": "integer", "minimum": 1},
-          "content": {"type": "string"},
-          "url": {"type": "string"},
-          "create_time": {"type": "string", "format": "date-time"},
-          "update_time": {"type": "string", "format": "date-time"}
+          "id": {
+            "type": "string",
+            "pattern": "^E[1-9][0-9]*$",
+            "description": "服务端顺序分配的请求内引用 ID。"
+          },
+          "name": {
+            "type": "string"
+          },
+          "source_hash": {
+            "type": "string"
+          },
+          "byte_start": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "byte_end": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "line_start": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "line_end": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "content": {
+            "type": "string"
+          },
+          "url": {
+            "type": "string"
+          },
+          "create_time": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "update_time": {
+            "type": "string",
+            "format": "date-time"
+          }
         },
         "description": "复查后的原文片段；字节位置为原文 UTF-8 半开范围，行号从 1 开始。name、摘要、位置及链接均来自服务端，不能使用模型自报来源。"
       },
       "AIStatement": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["kind", "text", "citations"],
+        "required": [
+          "kind",
+          "text",
+          "citations"
+        ],
         "properties": {
-          "kind": {"type": "string", "enum": ["fact", "interpretation", "question"]},
-          "text": {"type": "string"},
-          "citations": {"type": "array", "items": {"type": "string", "pattern": "^E[1-9][0-9]*$"}}
+          "kind": {
+            "type": "string",
+            "enum": [
+              "fact",
+              "interpretation",
+              "question"
+            ]
+          },
+          "text": {
+            "type": "string"
+          },
+          "citations": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^E[1-9][0-9]*$"
+            }
+          }
         }
       },
       "LLMUsage": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["input_tokens", "output_tokens", "total_tokens", "cached_tokens", "cache_creation_tokens"],
+        "required": [
+          "input_tokens",
+          "output_tokens",
+          "total_tokens",
+          "cached_tokens",
+          "cache_creation_tokens"
+        ],
         "properties": {
-          "input_tokens": {"type": ["integer", "null"], "minimum": 0, "description": "总输入 token。Anthropic 为原生 input_tokens 加已报告的 cache_read_input_tokens 与 cache_creation_input_tokens；其他协议沿用其总输入统计。"},
-          "output_tokens": {"type": ["integer", "null"], "minimum": 0},
-          "total_tokens": {"type": ["integer", "null"], "minimum": 0, "description": "供应商报告的总量优先保留；Anthropic 未报告时，在输入与输出齐全且可表示的情况下按归一化后的 input_tokens + output_tokens 计算，否则为 null。"},
-          "cached_tokens": {"type": ["integer", "null"], "minimum": 0, "description": "缓存读取的输入 token，属于 input_tokens 的组成部分；未报告为 null。"},
-          "cache_creation_tokens": {"type": ["integer", "null"], "minimum": 0, "description": "缓存写入的输入 token，属于 input_tokens 的组成部分；Anthropic 对应 cache_creation_input_tokens，未报告为 null。"}
+          "input_tokens": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0,
+            "description": "总输入 token。Anthropic 为原生 input_tokens 加已报告的 cache_read_input_tokens 与 cache_creation_input_tokens；其他协议沿用其总输入统计。"
+          },
+          "output_tokens": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0
+          },
+          "total_tokens": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0,
+            "description": "供应商报告的总量优先保留；Anthropic 未报告时，在输入与输出齐全且可表示的情况下按归一化后的 input_tokens + output_tokens 计算，否则为 null。"
+          },
+          "cached_tokens": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0,
+            "description": "缓存读取的输入 token，属于 input_tokens 的组成部分；未报告为 null。"
+          },
+          "cache_creation_tokens": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0,
+            "description": "缓存写入的输入 token，属于 input_tokens 的组成部分；Anthropic 对应 cache_creation_input_tokens，未报告为 null。"
+          }
         },
         "description": "所有字段均存在，未知用量为 null，显式报告的零为 0。Anthropic 流式用量按原生字段的最新累计值合并后换算，不逐事件叠加缓存；缺少原生 input_tokens 时不将缓存量当作完整输入。"
       },
       "AIMetrics": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["retrieval_ms", "first_content_ms", "generation_ms", "total_ms"],
+        "required": [
+          "retrieval_ms",
+          "first_content_ms",
+          "generation_ms",
+          "total_ms"
+        ],
         "properties": {
-          "retrieval_ms": {"type": "integer", "minimum": 0},
-          "first_content_ms": {"type": ["integer", "null"], "minimum": 0},
-          "generation_ms": {"type": "integer", "minimum": 0},
-          "total_ms": {"type": "integer", "minimum": 0}
+          "retrieval_ms": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "first_content_ms": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0
+          },
+          "generation_ms": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "total_ms": {
+            "type": "integer",
+            "minimum": 0
+          }
         }
       },
       "AIResult": {
         "type": "object",
-        "required": ["kind", "status", "completed", "statements", "references", "used_sources", "omitted", "missing", "timeline", "semantic", "model", "usage", "metrics"],
+        "required": [
+          "kind",
+          "status",
+          "completed",
+          "statements",
+          "references",
+          "used_sources",
+          "omitted",
+          "missing",
+          "timeline",
+          "semantic",
+          "model",
+          "usage",
+          "metrics"
+        ],
         "properties": {
-          "kind": {"type": "string", "enum": ["single", "multi", "answer", "timeline"]},
-          "status": {"type": "string", "enum": ["answered", "insufficient"]},
-          "completed": {"const": true},
-          "statements": {"type": "array", "items": {"$ref": "#/components/schemas/AIStatement"}},
-          "references": {"type": "array", "items": {"$ref": "#/components/schemas/Evidence"}, "description": "提供给模型并经过来源复查的证据，未必都被输出引用。"},
-          "used_sources": {"type": "array", "uniqueItems": true, "items": {"type": "string"}, "description": "输出实际引用的来源资源名，区别于模型收到的全部 references。"},
-          "omitted": {"type": "array", "items": {"type": "string"}, "description": "因过滤或预算未完整纳入的来源。"},
-          "missing": {"type": "array", "items": {"type": "string"}, "description": "证据缺口；insufficient 并非模型服务不可用。"},
-          "timeline": {"type": "array", "items": {"$ref": "#/components/schemas/AITimelinePeriod"}, "description": "按笔记创建时间分段的时间线；所有结果均返回数组，非时间线为 []，空时间段保留。"},
-          "semantic": {"$ref": "#/components/schemas/SearchSemantic"},
-          "model": {"type": "string", "description": "实际模型；无需调用模型的证据不足结果可为空。"},
-          "usage": {"$ref": "#/components/schemas/LLMUsage"},
-          "metrics": {"$ref": "#/components/schemas/AIMetrics"}
+          "kind": {
+            "type": "string",
+            "enum": [
+              "single",
+              "multi",
+              "answer",
+              "timeline"
+            ]
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "answered",
+              "insufficient"
+            ]
+          },
+          "completed": {
+            "const": true
+          },
+          "statements": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AIStatement"
+            }
+          },
+          "references": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Evidence"
+            },
+            "description": "提供给模型并经过来源复查的证据，未必都被输出引用。"
+          },
+          "used_sources": {
+            "type": "array",
+            "uniqueItems": true,
+            "items": {
+              "type": "string"
+            },
+            "description": "输出实际引用的来源资源名，区别于模型收到的全部 references。"
+          },
+          "omitted": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "因过滤或预算未完整纳入的来源。"
+          },
+          "missing": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "证据缺口；insufficient 并非模型服务不可用。"
+          },
+          "timeline": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AITimelinePeriod"
+            },
+            "description": "按笔记创建时间分段的时间线；所有结果均返回数组，非时间线为 []，空时间段保留。"
+          },
+          "semantic": {
+            "$ref": "#/components/schemas/SearchSemantic"
+          },
+          "model": {
+            "type": "string",
+            "description": "实际模型；无需调用模型的证据不足结果可为空。"
+          },
+          "usage": {
+            "$ref": "#/components/schemas/LLMUsage"
+          },
+          "metrics": {
+            "$ref": "#/components/schemas/AIMetrics"
+          }
         }
       },
       "AITimelinePeriod": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["id", "from", "until", "representative_names", "statement_indexes", "empty", "semantic"],
+        "required": [
+          "id",
+          "from",
+          "until",
+          "representative_names",
+          "statement_indexes",
+          "empty",
+          "semantic"
+        ],
         "properties": {
-          "id": {"type": "string", "description": "时间段的请求内标识。"},
-          "from": {"type": "string", "format": "date-time", "description": "创建时间段的包含下界。"},
-          "until": {"type": "string", "format": "date-time", "description": "创建时间段的不包含上界。"},
-          "representative_names": {"type": "array", "items": {"type": "string"}, "description": "代表笔记的资源名；空段为 []。"},
-          "statement_indexes": {"type": "array", "items": {"type": "integer", "minimum": 0}, "description": "指向 AIResult.statements 的从 0 开始的下标；空段为 []。"},
-          "empty": {"type": "boolean"},
-          "missing_reason": {"type": "string", "enum": ["NO_MATCHING_EVIDENCE", "CONTEXT_BUDGET"], "description": "可选；没有匹配证据或证据未能纳入上下文预算。"},
-          "semantic": {"$ref": "#/components/schemas/SearchSemantic"}
+          "id": {
+            "type": "string",
+            "description": "时间段的请求内标识。"
+          },
+          "from": {
+            "type": "string",
+            "format": "date-time",
+            "description": "创建时间段的包含下界。"
+          },
+          "until": {
+            "type": "string",
+            "format": "date-time",
+            "description": "创建时间段的不包含上界。"
+          },
+          "representative_names": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "代表笔记的资源名；空段为 []。"
+          },
+          "statement_indexes": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "description": "指向 AIResult.statements 的从 0 开始的下标；空段为 []。"
+          },
+          "empty": {
+            "type": "boolean"
+          },
+          "missing_reason": {
+            "type": "string",
+            "enum": [
+              "NO_MATCHING_EVIDENCE",
+              "CONTEXT_BUDGET"
+            ],
+            "description": "可选；没有匹配证据或证据未能纳入上下文预算。"
+          },
+          "semantic": {
+            "$ref": "#/components/schemas/SearchSemantic"
+          }
         },
         "description": "时间段以 create_time 组织，与修改时间及正文提及的日期分开；缺少证据的时间段留空，不推断连续经历或变化。"
       },
       "AIStreamEvent": {
         "oneOf": [
-          {"type": "object", "additionalProperties": false, "required": ["type", "references"], "properties": {"type": {"const": "references"}, "references": {"type": "array", "items": {"$ref": "#/components/schemas/Evidence"}}}},
-          {"type": "object", "additionalProperties": false, "required": ["type", "content"], "properties": {"type": {"const": "content"}, "content": {"$ref": "#/components/schemas/AIStatement"}}},
-          {"type": "object", "additionalProperties": false, "required": ["type", "result"], "properties": {"type": {"const": "complete"}, "result": {"$ref": "#/components/schemas/AIResult"}}},
-          {"type": "object", "additionalProperties": false, "required": ["type", "completed", "error"], "properties": {"type": {"const": "error"}, "completed": {"const": false}, "error": {"$ref": "#/components/schemas/ErrorDetail"}}}
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "type",
+              "references"
+            ],
+            "properties": {
+              "type": {
+                "const": "references"
+              },
+              "references": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/Evidence"
+                }
+              }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "type",
+              "content"
+            ],
+            "properties": {
+              "type": {
+                "const": "content"
+              },
+              "content": {
+                "$ref": "#/components/schemas/AIStatement"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "type",
+              "result"
+            ],
+            "properties": {
+              "type": {
+                "const": "complete"
+              },
+              "result": {
+                "$ref": "#/components/schemas/AIResult"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "type",
+              "completed",
+              "error"
+            ],
+            "properties": {
+              "type": {
+                "const": "error"
+              },
+              "completed": {
+                "const": false
+              },
+              "error": {
+                "$ref": "#/components/schemas/ErrorDetail"
+              }
+            }
+          }
         ],
         "description": "SSE event 名与 JSON type 相同。references 在正文前发出，可为空；content 是通过引用检查的完整陈述。只有完整成功才发送 complete；error 终止响应，已有正文不得当作成功结果保存。"
       },
       "RelatedRequest": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["name"],
+        "required": [
+          "name"
+        ],
         "description": "MCP get_related_memos 输入；要求 notes:read，readOnlyHint=true、idempotentHint=true、destructiveHint=false。未知字段或非法参数以 isError=true 和错误文本返回；业务错误文本为包含 code、message、retryable 的 JSON。",
         "properties": {
           "name": {
@@ -2359,15 +1677,25 @@
             "pattern": "^memos/[a-zA-Z0-9_-]+$",
             "description": "必填原笔记资源名，例如 memos/example。"
           },
-          "tags": {"$ref": "#/components/schemas/SearchRequest/properties/tags"},
-          "state": {"$ref": "#/components/schemas/SearchRequest/properties/state"},
-          "limit": {"$ref": "#/components/schemas/SearchRequest/properties/limit"}
+          "tags": {
+            "$ref": "#/components/schemas/SearchRequest/properties/tags"
+          },
+          "state": {
+            "$ref": "#/components/schemas/SearchRequest/properties/state"
+          },
+          "limit": {
+            "$ref": "#/components/schemas/SearchRequest/properties/limit"
+          }
         }
       },
       "RelatedResponse": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["source", "results", "semantic"],
+        "required": [
+          "source",
+          "results",
+          "semantic"
+        ],
         "properties": {
           "source": {
             "$ref": "#/components/schemas/Note",
@@ -2376,15 +1704,39 @@
           "results": {
             "type": "array",
             "maxItems": 20,
-            "items": {"$ref": "#/components/schemas/SearchHit"},
+            "items": {
+              "$ref": "#/components/schemas/SearchHit"
+            },
             "description": "排除原笔记，稳定排序且不超过请求 limit；无结果为 []。每笔记最多 3 个不同正文片段，相同正文合并 signals 并保留最高分位置；字段及位置契约同搜索。"
           },
           "semantic": {
             "$ref": "#/components/schemas/SearchSemantic",
             "description": "不调用查询模型。语义关闭为 EMBEDDING_DISABLED，索引空间或修订失配、未就绪为 INDEX_NOT_READY，原笔记无可用片段向量为 NO_SOURCE_VECTORS。",
             "oneOf": [
-              {"properties": {"used": {"const": true}, "reason": {"const": ""}}},
-              {"properties": {"used": {"const": false}, "reason": {"enum": ["EMBEDDING_DISABLED", "INDEX_NOT_READY", "NO_SOURCE_VECTORS"]}}}
+              {
+                "properties": {
+                  "used": {
+                    "const": true
+                  },
+                  "reason": {
+                    "const": ""
+                  }
+                }
+              },
+              {
+                "properties": {
+                  "used": {
+                    "const": false
+                  },
+                  "reason": {
+                    "enum": [
+                      "EMBEDDING_DISABLED",
+                      "INDEX_NOT_READY",
+                      "NO_SOURCE_VECTORS"
+                    ]
+                  }
+                }
+              }
             ]
           }
         }
@@ -2393,31 +1745,100 @@
         "type": "object",
         "additionalProperties": false,
         "properties": {
-          "name": {"type": "string", "pattern": "^memos/[a-zA-Z0-9_-]+$", "description": "起点资源；continue/angle 必填，random 可省略。"},
-          "mode": {"type": "string", "enum": ["continue", "angle", "random"], "default": "continue"},
-          "path": {"type": "array", "maxItems": 100, "default": [], "items": {"type": "string", "pattern": "^memos/[a-zA-Z0-9_-]+$"}},
-          "include_archived": {"type": "boolean", "default": false}
+          "name": {
+            "type": "string",
+            "pattern": "^memos/[a-zA-Z0-9_-]+$",
+            "description": "起点资源；continue/angle 必填，random 可省略。"
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "continue",
+              "angle",
+              "random"
+            ],
+            "default": "continue"
+          },
+          "path": {
+            "type": "array",
+            "maxItems": 100,
+            "default": [],
+            "items": {
+              "type": "string",
+              "pattern": "^memos/[a-zA-Z0-9_-]+$"
+            }
+          },
+          "include_archived": {
+            "type": "boolean",
+            "default": false
+          }
         }
       },
       "WalkResponse": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["mode", "item", "path", "exhausted", "warnings"],
+        "required": [
+          "mode",
+          "item",
+          "path",
+          "exhausted",
+          "warnings"
+        ],
         "properties": {
-          "mode": {"type": "string", "enum": ["continue", "angle", "random"]},
-          "item": {"anyOf": [{"$ref": "#/components/schemas/SearchHit"}, {"type": "null"}]},
-          "path": {"type": "array", "maxItems": 100, "items": {"type": "string"}},
-          "exhausted": {"type": "boolean"},
-          "warnings": {"type": "array", "items": {"type": "string"}}
+          "mode": {
+            "type": "string",
+            "enum": [
+              "continue",
+              "angle",
+              "random"
+            ]
+          },
+          "item": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SearchHit"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "path": {
+            "type": "array",
+            "maxItems": 100,
+            "items": {
+              "type": "string"
+            }
+          },
+          "exhausted": {
+            "type": "boolean"
+          },
+          "warnings": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
         }
       },
       "SearchRequest": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["query"],
+        "required": [
+          "query"
+        ],
         "description": "接受 query、mode、tags、state、limit。query 长度由服务端在 trim 后校验，未知字段返回 422。",
         "properties": {
-          "mode": {"type": "string", "enum": ["hybrid", "keyword", "semantic"], "default": "hybrid", "description": "keyword 不调用模型；semantic 要求模型和完整索引，失败返回错误；hybrid 可显式降级。"},
+          "mode": {
+            "type": "string",
+            "enum": [
+              "hybrid",
+              "keyword",
+              "semantic"
+            ],
+            "default": "hybrid",
+            "description": "keyword 不调用模型；semantic 要求模型和完整索引，失败返回错误；hybrid 可显式降级。"
+          },
           "query": {
             "type": "string",
             "minLength": 1,
@@ -2439,62 +1860,177 @@
             },
             "description": "输入最多 20 项，服务去重并按字符串升序排序，对来源标签精确 AND 过滤；全部召回通道共用。"
           },
-          "state": {"type": "string", "enum": ["NORMAL", "ARCHIVED", "ALL"], "default": "NORMAL"},
-          "limit": {"type": "integer", "minimum": 1, "maximum": 20, "default": 10}
+          "state": {
+            "type": "string",
+            "enum": [
+              "NORMAL",
+              "ARCHIVED",
+              "ALL"
+            ],
+            "default": "NORMAL"
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 20,
+            "default": 10
+          }
         }
       },
       "SearchResponse": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["query", "mode", "results", "semantic"],
+        "required": [
+          "query",
+          "mode",
+          "results",
+          "semantic"
+        ],
         "properties": {
-          "mode": {"type": "string", "enum": ["hybrid", "keyword", "semantic"], "description": "实际执行的模式；hybrid 降级后为 keyword。"},
-          "query": {"type": "string", "minLength": 1, "maxLength": 256, "description": "trim 后的查询，UTF-8 最多 1024 字节。"},
+          "mode": {
+            "type": "string",
+            "enum": [
+              "hybrid",
+              "keyword",
+              "semantic"
+            ],
+            "description": "实际执行的模式；hybrid 降级后为 keyword。"
+          },
+          "query": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "description": "trim 后的查询，UTF-8 最多 1024 字节。"
+          },
           "results": {
             "type": "array",
             "maxItems": 20,
-            "items": {"$ref": "#/components/schemas/SearchHit"},
+            "items": {
+              "$ref": "#/components/schemas/SearchHit"
+            },
             "description": "稳定排序且不超过请求 limit；无命中为 []，来源变化后可少于 limit。"
           },
-          "semantic": {"$ref": "#/components/schemas/SearchSemantic"}
+          "semantic": {
+            "$ref": "#/components/schemas/SearchSemantic"
+          }
         }
       },
       "SearchHit": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["note", "score", "matches"],
+        "required": [
+          "note",
+          "score",
+          "matches"
+        ],
         "properties": {
-          "note": {"$ref": "#/components/schemas/Note"},
-          "score": {"type": "number", "description": "搜索及相关笔记使用最高片段 RRF 分数；漫步使用余弦与话题、最近阅读加权分数。不是置信度。"},
-          "matches": {"type": "array", "maxItems": 3, "items": {"$ref": "#/components/schemas/SearchMatch"}}
+          "note": {
+            "$ref": "#/components/schemas/Note"
+          },
+          "score": {
+            "type": "number",
+            "description": "搜索及相关笔记使用最高片段 RRF 分数；漫步使用余弦与话题、最近阅读加权分数。不是置信度。"
+          },
+          "matches": {
+            "type": "array",
+            "maxItems": 3,
+            "items": {
+              "$ref": "#/components/schemas/SearchMatch"
+            }
+          }
         }
       },
       "SearchMatch": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["ordinal", "byte_start", "byte_end", "line_start", "line_end", "content", "signals"],
+        "required": [
+          "ordinal",
+          "byte_start",
+          "byte_end",
+          "line_start",
+          "line_end",
+          "content",
+          "signals"
+        ],
         "description": "与 3.2 paragraph-v1-2048 分块一致；位置针对原始正文 UTF-8 字节，区间为 [byte_start, byte_end)，行号从 1 开始，末尾换行属于前一行。",
         "properties": {
-            "ordinal": {"type": "integer", "minimum": 0, "description": "从 0 开始的笔记片段序号。"},
-          "byte_start": {"type": "integer", "minimum": 0},
-          "byte_end": {"type": "integer", "minimum": 0},
-          "line_start": {"type": "integer", "minimum": 1},
-          "line_end": {"type": "integer", "minimum": 1},
-          "content": {"type": "string", "description": "对应原始正文字节区间的片段。"},
-          "signals": {"type": "array", "items": {"type": "string", "enum": ["keyword", "semantic", "tag", "random", "recent_read"]}}
+          "ordinal": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "从 0 开始的笔记片段序号。"
+          },
+          "byte_start": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "byte_end": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "line_start": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "line_end": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "content": {
+            "type": "string",
+            "description": "对应原始正文字节区间的片段。"
+          },
+          "signals": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "keyword",
+                "semantic",
+                "tag",
+                "random",
+                "recent_read"
+              ]
+            }
+          }
         }
       },
       "SearchSemantic": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["used", "reason"],
+        "required": [
+          "used",
+          "reason"
+        ],
         "properties": {
-          "used": {"type": "boolean"},
-          "reason": {"type": "string", "description": "used=true 时为空字符串；否则为 EMBEDDING_DISABLED、INDEX_NOT_READY，关键词模式使用 KEYWORD_MODE，搜索还可返回具体模型错误代码，相关笔记还可返回 NO_SOURCE_VECTORS。"}
+          "used": {
+            "type": "boolean"
+          },
+          "reason": {
+            "type": "string",
+            "description": "used=true 时为空字符串；否则为 EMBEDDING_DISABLED、INDEX_NOT_READY，关键词模式使用 KEYWORD_MODE，搜索还可返回具体模型错误代码，相关笔记还可返回 NO_SOURCE_VECTORS。"
+          }
         },
         "oneOf": [
-          {"properties": {"used": {"const": true}, "reason": {"const": ""}}},
-          {"properties": {"used": {"const": false}, "reason": {"minLength": 1}}}
+          {
+            "properties": {
+              "used": {
+                "const": true
+              },
+              "reason": {
+                "const": ""
+              }
+            }
+          },
+          {
+            "properties": {
+              "used": {
+                "const": false
+              },
+              "reason": {
+                "minLength": 1
+              }
+            }
+          }
         ],
         "description": "每个服务复用一个活动代次的内存 float32 缓存，仅在配置空间和投影修订一致时使用。关闭模型、索引未就绪时降级；搜索还可因查询模型失败降级，相关笔记还可因原笔记无可用向量降级；取消不降级。"
       },
@@ -3016,29 +2552,90 @@
       "VectorGeneration": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["id", "space_hash", "model", "dimensions", "chunk_version", "projection_revision", "notes", "chunks", "completed_chunks", "last_error"],
+        "required": [
+          "id",
+          "space_hash",
+          "model",
+          "dimensions",
+          "chunk_version",
+          "projection_revision",
+          "notes",
+          "chunks",
+          "completed_chunks",
+          "last_error"
+        ],
         "properties": {
-          "id": {"type": "string"},
-          "space_hash": {"type": "string"},
-          "model": {"type": "string"},
-          "dimensions": {"type": "integer"},
-          "chunk_version": {"type": "string"},
-          "projection_revision": {"type": "integer"},
-          "notes": {"type": "integer"},
-          "chunks": {"type": "integer"},
-          "completed_chunks": {"type": "integer"},
-          "last_error": {"type": ["string", "null"]}
+          "id": {
+            "type": "string"
+          },
+          "space_hash": {
+            "type": "string"
+          },
+          "model": {
+            "type": "string"
+          },
+          "dimensions": {
+            "type": "integer"
+          },
+          "chunk_version": {
+            "type": "string"
+          },
+          "projection_revision": {
+            "type": "integer"
+          },
+          "notes": {
+            "type": "integer"
+          },
+          "chunks": {
+            "type": "integer"
+          },
+          "completed_chunks": {
+            "type": "integer"
+          },
+          "last_error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
         }
       },
       "VectorIndexStatus": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["projection_revision", "ready", "active", "building"],
+        "required": [
+          "projection_revision",
+          "ready",
+          "active",
+          "building"
+        ],
         "properties": {
-          "projection_revision": {"type": "integer"},
-          "ready": {"type": "boolean"},
-          "active": {"anyOf": [{"$ref": "#/components/schemas/VectorGeneration"}, {"type": "null"}]},
-          "building": {"anyOf": [{"$ref": "#/components/schemas/VectorGeneration"}, {"type": "null"}]}
+          "projection_revision": {
+            "type": "integer"
+          },
+          "ready": {
+            "type": "boolean"
+          },
+          "active": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/VectorGeneration"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "building": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/VectorGeneration"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
         }
       },
       "Liveness": {

@@ -3,14 +3,12 @@
 package acceptance
 
 import (
-	"bufio"
-	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"io"
-	"mime"
 	"net/http"
 	"net/http/httptest"
 	"net/http/httputil"
@@ -310,8 +308,15 @@ func TestStage4LiveAcceptance(t *testing.T) {
 		baseline[fresh.Name] = fresh
 		report.Sources = append(report.Sources, fresh)
 	}
-	pid := h.process.Process.Pid
-	report.Environment["service_pid"] = pid
+	h.stop()
+	app, err := moerise.OpenApp(h.settings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer app.Close()
+	pid := os.Getpid()
+	report.Environment["execution_entry"] = "shared AIService"
+	report.Environment["evaluation_pid"] = pid
 	report.Execution = "running"
 	save()
 	record := func(row stage4Run) {
@@ -328,15 +333,15 @@ func TestStage4LiveAcceptance(t *testing.T) {
 	}
 	for _, item := range selected {
 		before := stage3Process(t, pid)
-		row := stage4Request(h.client, h.base, h.reader, item, "cases", 1, baseline)
+		row := stage4Request(app.AI, item, "cases", 1, baseline)
 		record(row)
 		report.Runs = append(report.Runs, row)
-		// Persist the response before /proc sampling, which can fail if serve exited.
+		// Persist the business result before sampling process resources.
 		save()
 		after := stage3Process(t, pid)
 		report.Runs[len(report.Runs)-1].Process = &stage4ProcessSample{pid, before, after, after.CPUSeconds - before.CPUSeconds}
 		save()
-		t.Logf("stage4 %s: HTTP=%d complete=%t hard_failures=%v", item.ID, row.HTTPStatus,
+		t.Logf("stage4 %s: status=%d complete=%t hard_failures=%v", item.ID, row.HTTPStatus,
 			row.Result != nil && row.Result.Completed, row.HardFailures)
 	}
 	// One batch per requested level, using the same non-empty case for comparison.
@@ -359,7 +364,7 @@ func TestStage4LiveAcceptance(t *testing.T) {
 			results := make(chan stage4Run, level)
 			for range level {
 				go func() {
-					results <- stage4Request(h.client, h.base, h.reader, *performanceCase, "concurrency", level, baseline)
+					results <- stage4Request(app.AI, *performanceCase, "concurrency", level, baseline)
 				}()
 			}
 			for range level {
@@ -453,164 +458,85 @@ func stage4SameTime(value any, expected string) bool {
 	return ok && errA == nil && errB == nil && a.Equal(b)
 }
 
-func stage4Request(client *http.Client, base, token string, item stage4Case, phase string, concurrency int, sources map[string]moerise.Note) (row stage4Run) {
+// HTTPStatus and request_id retain the historical report shape; Endpoint names
+// the in-process service and no external generation route is used.
+func stage4Request(service *moerise.AIService, item stage4Case, phase string, concurrency int, sources map[string]moerise.Note) (row stage4Run) {
 	start := time.Now()
 	row = stage4Run{
-		Case: item, Phase: phase, Concurrency: concurrency, Endpoint: "/api/ext/v1/answers",
+		Case: item, Phase: phase, Concurrency: concurrency, Endpoint: "AIService.Answer",
 		Request: item.Request, StartedAt: start.UTC().Format(time.RFC3339Nano), ManualReview: true,
+		RequestID: randomToken(), HTTPStatus: 200,
 		Events: []stage4StreamEvent{}, References: []moerise.Evidence{}, Content: []moerise.AIStatement{},
 		ProtocolErrors: []string{}, HardFailures: []string{},
 	}
 	if len(item.Request.Names) > 0 {
-		row.Endpoint = "/api/ext/v1/insights"
+		row.Endpoint = "AIService.Insight"
 	}
 	row.Request.Stream = true
-	defer func() {
-		row.ClientMetrics.TotalMS = time.Since(start).Seconds() * 1000
-		stage4Validate(&row, sources)
-	}()
-	data, err := json.Marshal(row.Request)
-	if err != nil {
-		row.TransportError = err.Error()
-		return
-	}
-	request, err := http.NewRequest(http.MethodPost, base+row.Endpoint, bytes.NewReader(data))
-	if err != nil {
-		row.TransportError = err.Error()
-		return
-	}
-	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set("Accept", "text/event-stream")
-	request.Header.Set("Authorization", "Bearer "+token)
-	response, err := client.Do(request)
-	if err != nil {
-		row.TransportError = err.Error()
-		return
-	}
-	defer response.Body.Close()
-	row.HTTPStatus, row.RequestID = response.StatusCode, response.Header.Get("X-Request-ID")
-	media, _, mediaErr := mime.ParseMediaType(response.Header.Get("Content-Type"))
-	if response.StatusCode != http.StatusOK {
-		data, err := io.ReadAll(io.LimitReader(response.Body, 1<<20+1))
-		if err != nil {
-			row.TransportError = err.Error()
-		}
-		var body struct {
-			Error *stage4PublicError `json:"error"`
-		}
-		if len(data) > 1<<20 || !utf8.Valid(data) || json.Unmarshal(data, &body) != nil || body.Error == nil {
-			row.ProtocolErrors = append(row.ProtocolErrors, "invalid HTTP error envelope")
-		} else {
-			row.Error = body.Error
-		}
-		return
-	}
-	if mediaErr != nil || media != "text/event-stream" {
-		row.ProtocolErrors = append(row.ProtocolErrors, "expected text/event-stream")
-		return
-	}
-	const bodyLimit = 8 << 20
-	reader := &io.LimitedReader{R: response.Body, N: bodyLimit + 1}
-	scanner := bufio.NewScanner(reader)
-	scanner.Buffer(make([]byte, 64<<10), 2<<20)
-	event, payload, terminal, references := "", []string{}, false, false
-	dispatch := func() {
-		if len(payload) == 0 && event == "" {
-			return
-		}
-		data := []byte(strings.Join(payload, "\n"))
+	defer func() { row.ClientMetrics.TotalMS = time.Since(start).Seconds() * 1000; stage4Validate(&row, sources) }()
+	references, complete := false, false
+	emit := func(event moerise.AIEvent) error {
 		elapsed := time.Since(start).Seconds() * 1000
-		if !utf8.Valid(data) || !json.Valid(data) {
-			row.ProtocolErrors = append(row.ProtocolErrors, "invalid UTF-8 or JSON event")
-			return
+		raw, err := json.Marshal(event)
+		if err != nil {
+			return err
 		}
-		row.Events = append(row.Events, stage4StreamEvent{event, elapsed, append(json.RawMessage(nil), data...)})
-		if terminal {
-			row.ProtocolErrors = append(row.ProtocolErrors, "event after terminal event")
-			return
+		row.Events = append(row.Events, stage4StreamEvent{event.Type, elapsed, raw})
+		if complete {
+			row.ProtocolErrors = append(row.ProtocolErrors, "event after completion")
 		}
-		var decoded struct {
-			Type       string               `json:"type"`
-			References []moerise.Evidence   `json:"references"`
-			Content    *moerise.AIStatement `json:"content"`
-			Result     *moerise.AIResult    `json:"result"`
-			Error      *stage4PublicError   `json:"error"`
-			Completed  bool                 `json:"completed"`
-		}
-		if json.Unmarshal(data, &decoded) != nil || decoded.Type != event {
-			row.ProtocolErrors = append(row.ProtocolErrors, "event/type mismatch")
-			return
-		}
-		switch event {
+		switch event.Type {
 		case "references":
-			if references || len(row.Content) != 0 || decoded.References == nil {
-				row.ProtocolErrors = append(row.ProtocolErrors, "invalid references event order or body")
+			if references || len(row.Content) > 0 {
+				row.ProtocolErrors = append(row.ProtocolErrors, "invalid references event order")
 			}
-			references, row.References, row.ClientMetrics.ReferencesMS = true, decoded.References, &elapsed
+			references = true
+			row.References = event.References
+			if row.References == nil {
+				row.References = []moerise.Evidence{}
+			}
+			row.ClientMetrics.ReferencesMS = &elapsed
 		case "content":
-			if !references || decoded.Content == nil {
-				row.ProtocolErrors = append(row.ProtocolErrors, "content without references or statement")
-				return
+			if !references || event.Content == nil {
+				return fmt.Errorf("content without references or statement")
 			}
-			row.Content = append(row.Content, *decoded.Content)
+			row.Content = append(row.Content, *event.Content)
 			if row.ClientMetrics.FirstContentMS == nil {
 				row.ClientMetrics.FirstContentMS = &elapsed
 			}
 		case "complete":
-			terminal = true
-			if !references || decoded.Result == nil {
-				row.ProtocolErrors = append(row.ProtocolErrors, "complete without references or result")
-			}
-			row.Result = decoded.Result
-			if row.Result != nil {
-				row.Metrics, row.Usage = &row.Result.Metrics, row.Result.Usage
-			}
-		case "error":
-			terminal = true
-			row.Error = decoded.Error
-			if decoded.Error == nil || decoded.Completed {
-				row.ProtocolErrors = append(row.ProtocolErrors, "invalid terminal error")
+			complete = true
+			if !references || event.Result == nil {
+				row.ProtocolErrors = append(row.ProtocolErrors, "completion without references or result")
 			}
 		default:
-			row.ProtocolErrors = append(row.ProtocolErrors, "unknown SSE event: "+event)
+			return fmt.Errorf("unknown business event %s", event.Type)
 		}
+		return nil
 	}
-	for scanner.Scan() {
-		line := strings.TrimSuffix(scanner.Text(), "\r")
-		if !utf8.ValidString(line) {
-			row.ProtocolErrors = append(row.ProtocolErrors, "invalid UTF-8 SSE line")
-			break
+	var result moerise.AIResult
+	var err error
+	if len(row.Request.Names) > 0 {
+		result, err = service.Insight(context.Background(), row.Request, emit)
+	} else {
+		result, err = service.Answer(context.Background(), row.Request, emit)
+	}
+	if err != nil {
+		var failure *moerise.ServiceError
+		if errors.As(err, &failure) {
+			row.HTTPStatus = failure.Status
+			row.Error = &stage4PublicError{failure.Code, failure.Message, failure.Retryable && len(row.Content) == 0, row.RequestID}
+		} else {
+			row.HTTPStatus = 500
+			row.TransportError = err.Error()
 		}
-		if line == "" {
-			dispatch()
-			event, payload = "", nil
-			continue
-		}
-		if strings.HasPrefix(line, ":") {
-			continue
-		}
-		field, value, _ := strings.Cut(line, ":")
-		value = strings.TrimPrefix(value, " ")
-		switch field {
-		case "event":
-			event = value
-		case "data":
-			payload = append(payload, value)
-		}
+		return
 	}
-	if err := scanner.Err(); err != nil {
-		row.TransportError = err.Error()
+	if !complete {
+		row.ProtocolErrors = append(row.ProtocolErrors, "service ended without completion")
 	}
-	if reader.N <= 0 {
-		row.ProtocolErrors = append(row.ProtocolErrors, "SSE response exceeds body limit")
-	}
-	if event != "" || len(payload) > 0 {
-		row.TrailingData = strings.Join(payload, "\n")
-		row.ProtocolErrors = append(row.ProtocolErrors, "truncated SSE frame at EOF")
-	}
-	if !terminal {
-		row.ProtocolErrors = append(row.ProtocolErrors, "SSE ended without complete or error")
-	}
+	row.Result = &result
+	row.Metrics, row.Usage = &result.Metrics, result.Usage
 	return
 }
 
@@ -618,7 +544,7 @@ func stage4Validate(row *stage4Run, sources map[string]moerise.Note) {
 	fail := func(message string) { row.HardFailures = append(row.HardFailures, message) }
 	row.HardFailures = append(row.HardFailures, row.ProtocolErrors...)
 	if row.HTTPStatus != http.StatusOK || row.TransportError != "" || row.Error != nil || row.Result == nil {
-		fail("request did not complete successfully; inspect HTTP, error and partial stream evidence")
+		fail("request did not complete successfully; inspect service status, error and partial business events")
 	}
 	if row.RequestID == "" {
 		fail("missing request ID")

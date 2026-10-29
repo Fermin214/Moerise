@@ -73,7 +73,7 @@ func NewFeishuService(store *Store, source Source, records *RecordService, revie
 		return nil
 	}
 	return &FeishuService{Store: store, Source: source, Records: records, Reviews: reviews,
-		Search: NewSearchService(store, source, nil), Client: NewFeishuClient(store.Settings.Channel),
+		Client: NewFeishuClient(store.Settings.Channel),
 		Notifications: notifications, wake: make(chan struct{}, 1)}
 }
 

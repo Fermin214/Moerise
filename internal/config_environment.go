@@ -77,8 +77,7 @@ func (s *Settings) loadEnvironment() error {
 		}
 	}
 	if token := os.Getenv("MOERISE_ACCESS_TOKEN"); token != "" {
-		scopes := []string{"notes:read", "notes:write", "sync:read", "sync:write",
-			"reviews:read", "reviews:write", "discovery:write", "ai:generate"}
+		scopes := []string{"notes:read", "sync:read", "reviews:read"}
 		s.AccessTokens = []AccessToken{{Name: "environment", Token: token, Scopes: scopes}}
 	}
 	return nil

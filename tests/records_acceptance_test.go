@@ -15,19 +15,6 @@ import (
 	"testing"
 )
 
-func (h *harness) record(key, token string, body any, status int) map[string]any {
-	h.t.Helper()
-	headers := map[string]string{}
-	if key != "" {
-		headers["Idempotency-Key"] = key
-	}
-	result, code, err := h.requestWithHeaders(h.base, "/api/ext/v1/notes", "POST", token, body, headers)
-	if err != nil || code != status {
-		h.t.Fatalf("record %q: status=%d expected=%d error=%v response=%v", key, code, status, err, result)
-	}
-	return result
-}
-
 func requireRecordError(t *testing.T, result map[string]any, code string) {
 	t.Helper()
 	detail, ok := result["error"].(map[string]any)
@@ -134,43 +121,41 @@ func TestRecordsAcceptance(t *testing.T) {
 	h := newHarness(t)
 	body := map[string]any{"content": "记录正文\nsecond line", "tags": []string{"测试", "parent/child", "测试"}}
 	key := "records.A-Z_a-z:0-9"
-	requireRecordError(t, h.record(key, h.reader, body, 403), "FORBIDDEN")
-	requireRecordError(t, h.record("", h.operator, body, 422), "INVALID_ARGUMENT")
-	requireRecordError(t, h.record("bad/key", h.operator, body, 422), "INVALID_ARGUMENT")
-	requireRecordError(t, h.record(strings.Repeat("k", 129), h.operator, body, 422), "INVALID_ARGUMENT")
-	requireRecordError(t, h.record("invalid-fields", h.operator,
-		map[string]any{"content": "rejected", "visibility": "PUBLIC"}, 422), "INVALID_ARGUMENT")
-	requireRecordError(t, h.record("invalid-tag", h.operator,
+	requireRecordError(t, h.call(h.base, "/api/ext/v1/notes", "POST", h.reader, body, 403), "FORBIDDEN")
+	requireRecordError(t, h.recordInProcess("", body, 422), "INVALID_ARGUMENT")
+	requireRecordError(t, h.recordInProcess("bad/key", body, 422), "INVALID_ARGUMENT")
+	requireRecordError(t, h.recordInProcess(strings.Repeat("k", 129), body, 422), "INVALID_ARGUMENT")
+	requireRecordError(t, h.recordInProcess("invalid-tag",
 		map[string]any{"content": "rejected", "tags": []string{""}}, 422), "INVALID_ARGUMENT")
 	h.requireSourceRecords()
 
 	content := "#parent/child #测试\n\n记录正文\nsecond line"
 	tags := []string{"parent", "parent/child", "测试"}
-	name := h.requireRecord(h.record(key, h.operator, body, 201), "", content, tags)
-	h.requireRecord(h.record(key, h.operator, body, 200), name, content, tags)
+	name := h.requireRecord(h.recordInProcess(key, body, 201), "", content, tags)
+	h.requireRecord(h.recordInProcess(key, body, 200), name, content, tags)
 	conflict := map[string]any{"content": "different", "tags": body["tags"]}
-	requireRecordError(t, h.record(key, h.operator, conflict, 409), "IDEMPOTENCY_CONFLICT")
+	requireRecordError(t, h.recordInProcess(key, conflict, 409), "IDEMPOTENCY_CONFLICT")
 	h.requireSourceRecords(name)
 
 	plainBody := map[string]any{"content": "plain text without tags"}
 	plainKey := strings.Repeat("k", 128)
-	plainName := h.requireRecord(h.record(plainKey, h.operator, plainBody, 201), "", plainBody["content"].(string), nil)
+	plainName := h.requireRecord(h.recordInProcess(plainKey, plainBody, 201), "", plainBody["content"].(string), nil)
 	h.requireSourceRecords(name, plainName)
 	snapshot := filepath.Join(h.root, "records-snapshot")
 	h.command(true, "backup", "--output", snapshot)
 
 	edited := "#edited\n\nedited in Memos"
 	h.call(h.memos, "/api/v1/"+name+"?updateMask=content", "PATCH", h.upstream, map[string]string{"content": edited}, 200)
-	fresh := h.record(key, h.operator, body, 200)
+	fresh := h.recordInProcess(key, body, 200)
 	h.requireRecord(fresh, name, edited, []string{"edited"})
 	h.call(h.memos, "/api/v1/"+plainName, "DELETE", h.upstream, nil, 200)
-	requireRecordError(t, h.record(plainKey, h.operator, plainBody, 404), "SOURCE_NOT_FOUND")
+	requireRecordError(t, h.recordInProcess(plainKey, plainBody, 404), "SOURCE_NOT_FOUND")
 
 	checkPersisted := func() {
 		t.Helper()
-		h.requireRecord(h.record(key, h.operator, body, 200), name, edited, []string{"edited"})
-		requireRecordError(t, h.record(key, h.operator, conflict, 409), "IDEMPOTENCY_CONFLICT")
-		requireRecordError(t, h.record(plainKey, h.operator, plainBody, 404), "SOURCE_NOT_FOUND")
+		h.requireRecord(h.recordInProcess(key, body, 200), name, edited, []string{"edited"})
+		requireRecordError(t, h.recordInProcess(key, conflict, 409), "IDEMPOTENCY_CONFLICT")
+		requireRecordError(t, h.recordInProcess(plainKey, plainBody, 404), "SOURCE_NOT_FOUND")
 		h.requireSourceRecords(name)
 	}
 	for _, operation := range []string{"restart", "rebuild-index", "restore"} {
@@ -289,7 +274,7 @@ func TestRecordsFaultRecoveryAcceptance(t *testing.T) {
 			fault.mu.Unlock()
 			body := map[string]any{"content": "recover " + mode, "tags": []string{"recovery"}}
 			key := "recovery:" + mode
-			requireRecordError(t, h.record(key, h.operator, body, 503), "WRITE_OUTCOME_UNKNOWN")
+			requireRecordError(t, h.recordInProcess(key, body, 503), "WRITE_OUTCOME_UNKNOWN")
 			posts := recordPosts(fault.snapshot())
 			if len(posts) != 1 {
 				t.Fatalf("unknown outcome must leave exactly one source attempt: %v", posts)
@@ -318,7 +303,7 @@ func TestRecordsFaultRecoveryAcceptance(t *testing.T) {
 			h.ready()
 
 			start := len(fault.snapshot())
-			note := h.record(key, h.operator, body, 200)
+			note := h.recordInProcess(key, body, 200)
 			events := fault.snapshot()
 			requireRecordLookup(t, events[start:], memoID, mode == "unavailable")
 			h.requireRecord(note, name, "#recovery\n\n"+body["content"].(string), []string{"recovery"})
@@ -346,7 +331,7 @@ func TestRecordsFaultRecoveryAcceptance(t *testing.T) {
 				h.start()
 				h.ready()
 				start = len(fault.snapshot())
-				h.requireRecord(h.record(key, h.operator, body, 200), name, "#recovery\n\n"+body["content"].(string), []string{"recovery"})
+				h.requireRecord(h.recordInProcess(key, body, 200), name, "#recovery\n\n"+body["content"].(string), []string{"recovery"})
 				requireRecordLookup(t, fault.snapshot()[start:], memoID, false)
 				if posts := recordPosts(fault.snapshot()); len(posts) != expectedPosts {
 					t.Fatalf("%s added source POSTs: %v", operation, posts)

@@ -213,7 +213,7 @@ func TestRelatedRESTInputAndPermissions(t *testing.T) {
 		}
 		return 200, raw, nil
 	})
-	api, err := NewAPI(settings, store, client, NewSyncService(store, client))
+	api, err := NewAPI(NewApp(settings, store, client))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -222,7 +222,7 @@ func TestRelatedRESTInputAndPermissions(t *testing.T) {
 		status               int
 	}{
 		{"GET", "", "", 401}, {"GET", "", settings.AccessTokens[1].Token, 403},
-		{"POST", "", settings.AccessTokens[0].Token, 405},
+		{"POST", "", settings.AccessTokens[0].Token, 403},
 		{"GET", "?limit=0", settings.AccessTokens[0].Token, 422},
 		{"GET", "?limit=21", settings.AccessTokens[0].Token, 422},
 		{"GET", "?limit=1&limit=2", settings.AccessTokens[0].Token, 422},

@@ -86,7 +86,7 @@ func TestVectorIndexAcceptance(t *testing.T) {
 	bodies := []string{"fictional balcony herbs", "fictional bicycle brakes", "fictional reading list", "fictional archived note",
 		strings.Repeat("\u865a", 1100) + "\n\n" + strings.Repeat("\u6784", 1100)}
 	for i, body := range bodies {
-		note := h.record(fmt.Sprintf("vector-%d", i), h.operator, map[string]string{"content": body}, 201)
+		note := h.recordInProcess(fmt.Sprintf("vector-%d", i), map[string]string{"content": body}, 201)
 		names = append(names, note["name"].(string))
 	}
 	h.sync("full")
@@ -202,7 +202,7 @@ func TestVectorIndexAcceptance(t *testing.T) {
 		if rebuilt.Active.ID == active.Active.ID || rebuilt.Active.Notes != 4 {
 			t.Fatal("derived index was not rebuilt from Memos")
 		}
-		note := h.record("vector-0", h.operator, map[string]string{"content": bodies[0]}, 200)
+		note := h.recordInProcess("vector-0", map[string]string{"content": bodies[0]}, 200)
 		if note["name"] != names[0] {
 			t.Fatal("vector rebuild or restore lost product idempotency")
 		}

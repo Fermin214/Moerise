@@ -330,7 +330,9 @@ func TestConcurrentWorkerReadsAndSyncRequests(t *testing.T) {
 		return 200, rawMemo("example", "live"), nil
 	})
 	worker := NewSyncService(store, client)
-	api, err := NewAPI(settings, store, client, worker)
+	app := NewApp(settings, store, client)
+	app.Worker = worker
+	api, err := NewAPI(app)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -347,10 +349,14 @@ func TestConcurrentWorkerReadsAndSyncRequests(t *testing.T) {
 	for i := 0; i < 6; i++ {
 		group.Go(func() {
 			for j := 0; j < 12; j++ {
-				method, path, body := "GET", "/api/ext/v1/notes", ""
 				if j%3 == 0 {
-					method, path, body = "POST", "/api/ext/v1/sync", `{"mode":"full"}`
+					if _, err := store.Enqueue("full", true); err != nil {
+						t.Error(err)
+						return
+					}
+					worker.Wake()
 				}
+				method, path, body := "GET", "/api/ext/v1/notes", ""
 				request := httptest.NewRequest(method, path, strings.NewReader(body))
 				request.Header.Set("Authorization", "Bearer "+settings.AccessTokens[1].Token)
 				response := httptest.NewRecorder()
@@ -410,8 +416,7 @@ func TestAPIContractAndSourceIsolation(t *testing.T) {
 		}
 		return 200, rawMemo(name, "fresh"), nil
 	})
-	worker := NewSyncService(store, client)
-	api, err := NewAPI(s, store, client, worker)
+	api, err := NewAPI(NewApp(s, store, client))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -437,14 +442,14 @@ func TestAPIContractAndSourceIsolation(t *testing.T) {
 	}{
 		{"GET", "/api/ext/v1/notes", "", "", 401},
 		{"POST", "/api/ext/v1/sync", s.AccessTokens[0].Token, `{"mode":"full"}`, 403},
-		{"POST", "/api/ext/v1/sync", s.AccessTokens[1].Token, `{"mode":"bad"}`, 422},
-		{"POST", "/api/ext/v1/sync", s.AccessTokens[1].Token, `{"mode":"full","extra":true}`, 422},
-		{"POST", "/api/ext/v1/sync", s.AccessTokens[1].Token, `{"mode":null}`, 422},
+		{"POST", "/api/ext/v1/sync", s.AccessTokens[1].Token, `{"mode":"bad"}`, 403},
+		{"POST", "/api/ext/v1/sync", s.AccessTokens[1].Token, `{"mode":"full","extra":true}`, 403},
+		{"POST", "/api/ext/v1/sync", s.AccessTokens[1].Token, `{"mode":null}`, 403},
 		{"GET", "/api/ext/v1/notes?page_size=0", s.AccessTokens[0].Token, "", 422},
 		{"GET", "/api/ext/v1/notes/other", s.AccessTokens[0].Token, "", 404},
 		{"GET", "/openapi.json", "", "", 200},
 		{"GET", "/docs", "", "", 200},
-		{"DELETE", "/api/ext/v1/sync", s.AccessTokens[1].Token, "", 405},
+		{"DELETE", "/api/ext/v1/sync", s.AccessTokens[1].Token, "", 403},
 	} {
 		response := call(test.method, test.path, test.token, test.body)
 		if response.Code != test.status {

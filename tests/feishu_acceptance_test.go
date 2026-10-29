@@ -134,7 +134,7 @@ func TestFeishuProactiveReviewWithRealMemosAcceptance(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer store.Close()
-	api, err := moerise.NewAPI(settings, store, source, moerise.NewSyncService(store, source))
+	api, err := moerise.NewAPI(moerise.NewApp(settings, store, source))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -209,10 +209,9 @@ func TestFeishuProactiveReviewWithRealMemosAcceptance(t *testing.T) {
 	if calls != 1 {
 		t.Fatal("unknown push generated another platform request")
 	}
-	resolved := h.call(server.URL, "/api/ext/v1/notifications/"+notification.ID+"/resolve", "POST", h.operator,
-		map[string]string{"decision": "sent", "receipt": receipt}, 200)
-	if resolved["notification"].(map[string]any)["receipt"] != receipt {
-		t.Fatal("verified platform receipt was not saved")
+	resolved, err := api.Notifications.Resolve(ctx, notification.ID, "sent", receipt, "users/owner")
+	if err != nil || resolved.Notification.Receipt == nil || *resolved.Notification.Receipt != receipt {
+		t.Fatalf("verified receipt: %+v %v", resolved, err)
 	}
 	for range 10 {
 		progress, err := api.Notifications.Deliver(ctx)
@@ -290,7 +289,7 @@ func TestFeishuEventsWithRealMemosAcceptance(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		api, err = moerise.NewAPI(settings, store, source, moerise.NewSyncService(store, source))
+		api, err = moerise.NewAPI(moerise.NewApp(settings, store, source))
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -19,7 +19,7 @@ func TestMCPAuthenticationOriginAndPrivateResponses(t *testing.T) {
 		t.Error("MCP initialization accessed private notes")
 		return 500, nil, nil
 	})
-	api, err := NewAPI(settings, store, client, NewSyncService(store, client))
+	api, err := NewAPI(NewApp(settings, store, client))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -61,7 +61,7 @@ func mcpReadFixture(t *testing.T) (*API, map[string]map[string]any) {
 			"notes:read", "notes:write", "reviews:read", "reviews:write", "discovery:write", "ai:generate"}},
 		AccessToken{"reviews", strings.Repeat("v", 40), []string{"reviews:read"}},
 		AccessToken{"writes", strings.Repeat("w", 40), []string{"notes:write", "reviews:write", "discovery:write"}})
-	api, err := NewAPI(settings, reviews.Store, reviews.Source, NewSyncService(reviews.Store, reviews.Source))
+	api, err := NewAPI(NewApp(settings, reviews.Store, reviews.Source))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -108,7 +108,6 @@ func TestMCPReadOnlyDiscoveryAndDirectCalls(t *testing.T) {
 	api, _ := mcpReadFixture(t)
 	noteTools := []string{"get_memo", "list_memos", "semantic_search", "get_related_memos", "semantic_walk"}
 	reviewTools := []string{"get_review_batch", "read_daily_review"}
-	aiTools := []string{"analyze_memos", "ask_memos", "get_topic_timeline"}
 	for _, test := range []struct {
 		token string
 		want  []string
@@ -116,7 +115,7 @@ func TestMCPReadOnlyDiscoveryAndDirectCalls(t *testing.T) {
 		{strings.Repeat("r", 40), noteTools},
 		{strings.Repeat("v", 40), reviewTools},
 		{strings.Repeat("w", 40), []string{}},
-		{strings.Repeat("f", 40), append(append(slices.Clone(noteTools), reviewTools...), aiTools...)},
+		{strings.Repeat("f", 40), append(slices.Clone(noteTools), reviewTools...)},
 	} {
 		tools := aiMCPCall(t, api, test.token, "tools/list", map[string]any{})["result"].(map[string]any)["tools"].([]any)
 		got := []string{}
@@ -126,7 +125,7 @@ func TestMCPReadOnlyDiscoveryAndDirectCalls(t *testing.T) {
 			got = append(got, name)
 			annotations := tool["annotations"].(map[string]any)
 			if annotations["readOnlyHint"] != true || annotations["destructiveHint"] != false ||
-				annotations["idempotentHint"] != !slices.Contains(aiTools, name) {
+				annotations["idempotentHint"] != true {
 				t.Fatalf("incorrect tool hints: %v", tool)
 			}
 		}
@@ -138,7 +137,7 @@ func TestMCPReadOnlyDiscoveryAndDirectCalls(t *testing.T) {
 	}
 	for _, token := range []string{strings.Repeat("f", 40), strings.Repeat("w", 40), strings.Repeat("r", 40)} {
 		for _, name := range []string{"get_daily_review", "replace_daily_review", "open_review_memo",
-			"skip_review_memo", "open_discovery_memo", "mark_memo_read"} {
+			"skip_review_memo", "open_discovery_memo", "mark_memo_read", "analyze_memos", "ask_memos", "get_topic_timeline"} {
 			mcpUnknownTool(t, api, token, name)
 		}
 	}
@@ -206,11 +205,12 @@ func TestMCPFetchListAndRESTPagination(t *testing.T) {
 		t.Fatalf("archived filter failed: %v", page)
 	}
 	for _, args := range []map[string]any{
-		{"page_size": 0}, {"page_size": 101}, {"state": "ALL"}, {"page_token": strings.Repeat("x", 4097)},
+		{"page_size": 0}, {"page_size": 101}, {"state": "ALL"},
 	} {
 		mcpReadError(t, api, reader, "list_memos", args, "INVALID_ARGUMENT")
 	}
 	mcpReadError(t, api, reader, "list_memos", map[string]any{"page_token": "invalid"}, "INVALID_PAGE_TOKEN")
+	mcpReadError(t, api, reader, "list_memos", map[string]any{"page_token": strings.Repeat("x", 4097)}, "INVALID_PAGE_TOKEN")
 	cursor := api.encodeCursor("NORMAL", []string{"2020-01-01T00:00:00Z", "memos/review-00"})
 	mcpReadError(t, api, reader, "list_memos", map[string]any{"state": "ARCHIVED", "page_token": cursor}, "INVALID_PAGE_TOKEN")
 	mcpReadError(t, api, reader, "get_memo", map[string]any{"name": "../users/foreign"}, "INVALID_RESOURCE")
@@ -246,6 +246,7 @@ func TestMCPSourceIsolationAndFailures(t *testing.T) {
 					code = "IDENTITY_MISMATCH"
 				}
 			}
+			api.Notes.Source = api.Source
 			mcpReadError(t, api, reader, "get_memo", map[string]any{"name": "memos/review-00"}, code)
 			if change == "foreign" || change == "deleted" {
 				page := mcpReadResult(t, api, reader, "list_memos", map[string]any{})

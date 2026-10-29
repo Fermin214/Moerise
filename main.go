@@ -134,116 +134,20 @@ func run(args []string) error {
 }
 
 func serve(settings moerise.Settings, address string) error {
-	lock, err := moerise.AcquireWriter(settings.StateDir)
+	app, err := moerise.OpenApp(settings)
 	if err != nil {
 		return err
 	}
-	defer lock.Close()
-	store, err := moerise.NewStore(settings)
+	defer app.Close()
+	api, err := moerise.NewAPI(app)
 	if err != nil {
 		return err
-	}
-	defer store.Close()
-	source := moerise.NewMemosClient(settings.Memos)
-	defer source.Close()
-	worker := moerise.NewSyncService(store, source)
-	api, err := moerise.NewAPI(settings, store, source, worker)
-	if err != nil {
-		return err
-	}
-	if settings.LLM.Enabled {
-		provider, err := moerise.NewLLMProvider(settings.LLM)
-		if err != nil {
-			return err
-		}
-		defer provider.Close()
-		api.AI.Provider = provider
-	}
-	var vectorWorker *moerise.VectorIndexService
-	if settings.Embedding.Enabled {
-		provider, err := moerise.NewEmbeddingProvider(settings.Embedding)
-		if err != nil {
-			return err
-		}
-		defer provider.Close()
-		vectorWorker = moerise.NewVectorIndexService(store, source, provider)
-		api.Search.Provider = provider
 	}
 	server := &http.Server{Addr: address, Handler: api, ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout: 30 * time.Second, WriteTimeout: 120 * time.Second, IdleTimeout: 60 * time.Second,
 		ErrorLog: slog.NewLogLogger(slog.Default().Handler(), slog.LevelError)}
-	signalCtx, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stopSignals()
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	workerDone, serverDone := make(chan error, 1), make(chan error, 1)
-	go func() { workerDone <- worker.Run(ctx) }()
-	var vectorDone chan error
-	if vectorWorker != nil {
-		vectorDone = make(chan error, 1)
-		go func() { vectorDone <- vectorWorker.Run(ctx) }()
-	}
-	var feishuDone chan error
-	if api.Feishu != nil {
-		feishuDone = make(chan error, 1)
-		go func() { feishuDone <- api.Feishu.Run(ctx) }()
-	}
-	notificationDone := make(chan error, 1)
-	go func() { notificationDone <- api.Notifications.Run(ctx) }()
-	go func() { serverDone <- server.ListenAndServe() }()
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
 	slog.Info("service started", "address", address, "version", moerise.Version)
-	var result error
-	workerExited := false
-	feishuExited := false
-	notificationExited := false
-	vectorExited := false
-	select {
-	case <-signalCtx.Done():
-	case err := <-workerDone:
-		workerExited = true
-		if err != nil && !errors.Is(err, context.Canceled) {
-			result = errors.New("background worker stopped")
-		}
-	case err := <-serverDone:
-		if !errors.Is(err, http.ErrServerClosed) {
-			result = err
-		}
-	case err := <-feishuDone:
-		feishuExited = true
-		if err != nil && !errors.Is(err, context.Canceled) {
-			result = errors.New("Feishu worker stopped")
-		}
-	case err := <-notificationDone:
-		notificationExited = true
-		if err != nil && !errors.Is(err, context.Canceled) {
-			result = errors.New("notification worker stopped")
-		}
-	case err := <-vectorDone:
-		vectorExited = true
-		if err != nil && !errors.Is(err, context.Canceled) {
-			result = errors.New("vector index worker stopped")
-		}
-	}
-	cancel()
-	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer shutdownCancel()
-	if err := server.Shutdown(shutdownCtx); err != nil {
-		_ = server.Close()
-		if result == nil {
-			result = err
-		}
-	}
-	if !workerExited {
-		<-workerDone
-	}
-	if feishuDone != nil && !feishuExited {
-		<-feishuDone
-	}
-	if !notificationExited {
-		<-notificationDone
-	}
-	if vectorDone != nil && !vectorExited {
-		<-vectorDone
-	}
-	return result
+	return app.Run(ctx, server)
 }

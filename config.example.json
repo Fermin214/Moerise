@@ -13,17 +13,12 @@
     {
       "name": "operator",
       "token": "replace-with-an-independent-random-token-at-least-32-characters",
-      "scopes": ["notes:read", "notes:write", "sync:read", "sync:write", "reviews:read", "reviews:write", "discovery:write"]
+      "scopes": ["notes:read", "sync:read", "reviews:read"]
     },
     {
       "name": "reader",
       "token": "replace-with-another-random-token-at-least-32-characters",
       "scopes": ["notes:read", "reviews:read"]
-    },
-    {
-      "name": "ai-client",
-      "token": "replace-with-a-separate-ai-client-token",
-      "scopes": ["notes:read", "ai:generate"]
     }
   ],
   "cursor_secret": "replace-with-another-independent-random-secret-at-least-32-characters",

@@ -242,7 +242,7 @@ func TestSearchRESTScopeValidationAndEncryptedFeishuRequest(t *testing.T) {
 		}
 		return 200, raw, nil
 	})
-	api, err := NewAPI(settings, store, client, NewSyncService(store, client))
+	api, err := NewAPI(NewApp(settings, store, client))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -302,7 +302,7 @@ func TestSearchRESTScopeValidationAndEncryptedFeishuRequest(t *testing.T) {
 	request.Header.Set("Authorization", "Bearer "+settings.AccessTokens[0].Token)
 	response := httptest.NewRecorder()
 	api.ServeHTTP(response, request)
-	if response.Code != 405 {
+	if response.Code != 403 {
 		t.Fatal("search accepted a method outside its contract")
 	}
 }

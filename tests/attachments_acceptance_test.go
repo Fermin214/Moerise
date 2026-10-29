@@ -61,14 +61,14 @@ func TestAttachmentsAcceptance(t *testing.T) {
 				{"filename": "second.txt", "type": "text/plain", "content": base64.StdEncoding.EncodeToString([]byte("second file"))},
 			}
 			body := map[string]any{"content": "with attachments", "attachments": files}
-			requireRecordError(t, h.record("files", h.reader, body, 403), "FORBIDDEN")
-			requireRecordError(t, h.record("files", h.operator, body, 503), "WRITE_OUTCOME_UNKNOWN")
+			requireRecordError(t, h.call(h.base, "/api/ext/v1/notes", "POST", h.reader, body, 403), "FORBIDDEN")
+			requireRecordError(t, h.recordInProcess("files", body, 503), "WRITE_OUTCOME_UNKNOWN")
 			snapshot := filepath.Join(h.root, "partial-attachments")
 			h.command(true, "backup", "--output", snapshot)
 			h.stop()
 			h.start()
 			h.ready()
-			note := h.record("files", h.operator, body, 200)
+			note := h.recordInProcess("files", body, 200)
 			name := h.requireRecord(note, "", "with attachments", nil)
 			attachments := note["attachments"].([]any)
 			if len(attachments) != 2 {
@@ -111,7 +111,7 @@ func TestAttachmentsAcceptance(t *testing.T) {
 				}
 				h.start()
 				h.ready()
-				replay := h.record("files", h.operator, body, 200)
+				replay := h.recordInProcess("files", body, 200)
 				if replay["name"] != name || len(replay["attachments"].([]any)) != 2 {
 					t.Fatal("attachment resources changed after recovery")
 				}
@@ -124,7 +124,7 @@ func TestAttachmentsAcceptance(t *testing.T) {
 			}
 			h.requireSourceRecords(name)
 			changed := map[string]any{"content": "with attachments", "attachments": []map[string]string{files[1], files[0]}}
-			requireRecordError(t, h.record("files", h.operator, changed, 409), "IDEMPOTENCY_CONFLICT")
+			requireRecordError(t, h.recordInProcess("files", changed, 409), "IDEMPOTENCY_CONFLICT")
 		})
 	}
 }

@@ -3,6 +3,7 @@
 package acceptance
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -10,6 +11,9 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
+
+	moerise "moerise/internal"
 )
 
 func (h *harness) mcp(token, method string, params any) map[string]any {
@@ -42,7 +46,7 @@ func (h *harness) reviewTool(name string, arguments any) map[string]any {
 func TestReviewsAcrossRESTAndMCPAcceptance(t *testing.T) {
 	h := newHarness(t)
 	for i := range 6 {
-		h.record(fmt.Sprintf("review-%d", i), h.operator, map[string]string{"content": fmt.Sprintf("review %d", i)}, 201)
+		h.recordInProcess(fmt.Sprintf("review-%d", i), map[string]string{"content": fmt.Sprintf("review %d", i)}, 201)
 	}
 	h.stop()
 	// Prepare source notes before starting the daily review's product state.
@@ -58,7 +62,12 @@ func TestReviewsAcrossRESTAndMCPAcceptance(t *testing.T) {
 	h.start()
 	h.ready()
 	requireRecordError(t, h.call(h.base, "/api/ext/v1/reviews/daily", "POST", h.reader, map[string]any{}, 403), "FORBIDDEN")
-	batch := h.call(h.base, "/api/ext/v1/reviews/daily", "POST", h.operator, map[string]any{}, 200)
+	h.call(h.base, "/api/ext/v1/reviews/daily", "POST", h.operator, map[string]any{}, 403)
+	var batch map[string]any
+	h.withOfflineApp(func(app *moerise.App) {
+		value, err := app.Reviews.Daily(context.Background(), time.Now())
+		batch = businessResult(h, value, 200, err, 200)
+	})
 	id := batch["id"].(string)
 	if len(batch["items"].([]any)) != 3 {
 		t.Fatalf("incorrect batch: %v", batch)
@@ -89,7 +98,7 @@ func TestReviewsAcrossRESTAndMCPAcceptance(t *testing.T) {
 			t.Fatalf("incorrect MCP tools: %v", names)
 		}
 		for _, tool := range []string{"get_daily_review", "replace_daily_review", "open_review_memo",
-			"skip_review_memo", "open_discovery_memo", "mark_memo_read"} {
+			"skip_review_memo", "open_discovery_memo", "mark_memo_read", "analyze_memos", "ask_memos", "get_topic_timeline"} {
 			denied, status, err := h.requestWithHeaders(h.base, "/mcp", "POST", token,
 				map[string]any{"jsonrpc": "2.0", "id": "denied", "method": "tools/call",
 					"params": map[string]any{"name": tool, "arguments": map[string]any{}}},
@@ -113,28 +122,41 @@ func TestReviewsAcrossRESTAndMCPAcceptance(t *testing.T) {
 		t.Fatalf("MCP did not paginate notes: %v", got)
 	}
 	path := "/api/ext/v1/reviews/" + id
-	h.call(h.base, path+"/items/"+strings.TrimPrefix(name, "memos/")+"/open", "POST", h.operator, map[string]any{}, 200)
+	h.call(h.base, path+"/items/"+strings.TrimPrefix(name, "memos/")+"/open", "POST", h.operator, map[string]any{}, 403)
+	h.withOfflineApp(func(app *moerise.App) {
+		_, err := app.Reviews.Mark(context.Background(), id, name, "open", time.Now())
+		if err != nil {
+			t.Fatal(err)
+		}
+	})
 	fresh := h.call(h.base, path, "GET", h.reader, nil, 200)
 	if fresh["items"].([]any)[0].(map[string]any)["opened_at"] == nil {
-		t.Fatal("REST open was not persisted")
+		t.Fatal("shared service open was not persisted")
 	}
-	h.call(h.base, path+"/items/"+strings.TrimPrefix(name, "memos/")+"/skip", "POST", h.operator, map[string]any{}, 200)
+	h.withOfflineApp(func(app *moerise.App) {
+		_, err := app.Reviews.Mark(context.Background(), id, name, "skip", time.Now())
+		if err != nil {
+			t.Fatal(err)
+		}
+	})
 	fresh = h.reviewTool("get_review_batch", map[string]string{"batch_id": id})
 	if fresh["items"].([]any)[0].(map[string]any)["skipped_at"] == nil {
-		t.Fatal("REST skip was not visible over MCP")
+		t.Fatal("shared service skip was not visible over MCP")
 	}
-	replacement, status, err := h.requestWithHeaders(h.base, "/api/ext/v1/reviews/daily/replace", "POST", h.operator, map[string]any{},
-		map[string]string{"Idempotency-Key": "shared-replacement"})
-	if err != nil || status != 200 {
-		t.Fatalf("REST replacement: %v status=%d err=%v", replacement, status, err)
-	}
-	rest, status, err := h.requestWithHeaders(h.base, "/api/ext/v1/reviews/daily/replace", "POST", h.operator, map[string]any{},
-		map[string]string{"Idempotency-Key": "shared-replacement"})
-	if err != nil || status != 200 || rest["id"] != replacement["id"] {
-		t.Fatalf("REST replacement replay: %v status=%d err=%v", rest, status, err)
+	h.call(h.base, "/api/ext/v1/reviews/daily/replace", "POST", h.operator, map[string]any{}, 403)
+	var replacement map[string]any
+	for range 2 {
+		h.withOfflineApp(func(app *moerise.App) {
+			value, err := app.Reviews.Replace(context.Background(), "shared-replacement", time.Now())
+			replay := businessResult(h, value, 200, err, 200)
+			if replacement != nil && replay["id"] != replacement["id"] {
+				t.Fatal("replacement changed identity")
+			}
+			replacement = replay
+		})
 	}
 	if got := h.reviewTool("read_daily_review", map[string]any{}); got["id"] != replacement["id"] {
-		t.Fatal("MCP did not read the REST replacement")
+		t.Fatal("MCP did not read the shared service replacement")
 	}
 	seen := map[string]bool{}
 	for _, value := range batch["items"].([]any) {

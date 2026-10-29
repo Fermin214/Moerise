@@ -135,7 +135,7 @@ func TestRelatedAcceptance(t *testing.T) {
 		if len(tags) > 0 {
 			input["tags"] = tags
 		}
-		return h.record("related-"+key, h.operator, input, 201)["name"].(string)
+		return h.recordInProcess("related-"+key, input, 201)["name"].(string)
 	}
 	path := func(name string) string {
 		return "/api/ext/v1/notes/" + strings.TrimPrefix(name, "memos/") + "/related"
@@ -275,7 +275,7 @@ func TestRelatedAcceptance(t *testing.T) {
 	h.sync("full")
 
 	h.call(h.base, path(tagSeed), "GET", "", nil, 401)
-	h.call(h.base, path(tagSeed), "POST", h.reader, nil, 405)
+	h.call(h.base, path(tagSeed), "POST", h.reader, nil, 403)
 	for _, query := range []string{
 		"?unknown=1", "?limit=1&limit=2", "?state=NORMAL&state=ALL",
 		"?limit=0", "?limit=21", "?limit=-1", "?limit=1.5", "?limit=nope", "?limit=",

@@ -41,7 +41,7 @@ func (p *discoveryEmbeddings) Embed(_ context.Context, texts []string, purpose m
 func TestDiscoveryAcrossEntrypointsAcceptance(t *testing.T) {
 	h := newHarness(t)
 	record := func(key, body, tag string) string {
-		return h.record(key, h.operator, map[string]any{"content": body, "tags": []string{tag}}, 201)["name"].(string)
+		return h.recordInProcess(key, map[string]any{"content": body, "tags": []string{tag}}, 201)["name"].(string)
 	}
 	seed := record("walk-seed", "seedbody", "study/base")
 	near := record("walk-near", "nearbody", "study/recall")
@@ -85,7 +85,7 @@ func TestDiscoveryAcrossEntrypointsAcceptance(t *testing.T) {
 			break
 		}
 	}
-	api, err := moerise.NewAPI(settings, store, source, moerise.NewSyncService(store, source))
+	api, err := moerise.NewAPI(moerise.NewApp(settings, store, source))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -130,14 +130,17 @@ func TestDiscoveryAcrossEntrypointsAcceptance(t *testing.T) {
 	} {
 		requireRecordError(t, h.call(server.URL, "/api/ext/v1/discovery/walk", "POST", h.reader, invalid, 422), "INVALID_ARGUMENT")
 	}
-	h.call(server.URL, "/api/ext/v1/discovery/walk", "GET", h.reader, nil, 405)
+	h.call(server.URL, "/api/ext/v1/discovery/walk", "GET", h.reader, nil, 403)
 	h.call(server.URL, "/api/ext/v1/discovery/walk", "POST", "", map[string]string{"mode": "random"}, 401)
 	requireRecordError(t, h.call(server.URL, "/api/ext/v1/discovery/open", "POST", h.reader,
 		map[string]string{"name": near}, 403), "FORBIDDEN")
-	h.call(server.URL, "/api/ext/v1/discovery/open", "POST", h.operator, map[string]string{"name": near}, 200)
+	h.call(server.URL, "/api/ext/v1/discovery/open", "POST", h.operator, map[string]string{"name": near}, 403)
+	if _, err := api.Search.Open(context.Background(), near); err != nil {
+		t.Fatal(err)
+	}
 	afterOpen := walk(moerise.WalkRequest{Name: seed})
 	if afterOpen.Item == nil || afterOpen.Item.Note.Name != angle {
-		t.Fatal("REST open did not update shared recent-reading ranking")
+		t.Fatal("shared service open did not update shared recent-reading ranking")
 	}
 	mcp := func(token, method string, params any) map[string]any {
 		t.Helper()
@@ -176,12 +179,14 @@ func TestDiscoveryAcrossEntrypointsAcceptance(t *testing.T) {
 	if json.Unmarshal(data, &fromMCP) != nil || !reflect.DeepEqual(fromMCP, afterOpen) {
 		t.Fatalf("REST/MCP discovery differs: %s", data)
 	}
-	h.call(server.URL, "/api/ext/v1/discovery/open", "POST", h.operator, map[string]string{"name": other}, 200)
+	if _, err := api.Search.Open(context.Background(), other); err != nil {
+		t.Fatal(err)
+	}
 	db := h.database("state")
 	defer db.Close()
 	var opened string
 	if err := db.QueryRow("SELECT opened_at FROM discovery_reads WHERE memo_name = ?", other).Scan(&opened); err != nil || opened == "" {
-		t.Fatalf("REST open did not persist explicit reading: %q %v", opened, err)
+		t.Fatalf("shared service open did not persist explicit reading: %q %v", opened, err)
 	}
 	h.call(h.memos, "/api/v1/"+seed, "DELETE", h.upstream, nil, 200)
 	requireRecordError(t, h.call(server.URL, "/api/ext/v1/discovery/walk", "POST", h.reader,
@@ -189,5 +194,5 @@ func TestDiscoveryAcrossEntrypointsAcceptance(t *testing.T) {
 	if provider.queryCalls != 0 {
 		t.Fatal("discovery called the query embedding model")
 	}
-	t.Log("PASS semantic/random walk, read-only MCP parity, REST reading, and deleted source boundary")
+	t.Log("PASS semantic/random walk, read-only MCP parity, shared-service reading, and deleted source boundary")
 }

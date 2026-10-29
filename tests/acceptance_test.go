@@ -4,6 +4,7 @@ package acceptance
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"database/sql"
 	"encoding/hex"
@@ -30,6 +31,7 @@ type harness struct {
 	t                                                                        *testing.T
 	binary, root, config, base, memos, container, upstream, reader, operator string
 	settings                                                                 moerise.Settings
+	password                                                                 string
 	process                                                                  *exec.Cmd
 	log                                                                      *os.File
 	client                                                                   *http.Client
@@ -145,8 +147,7 @@ func (h *harness) command(expectSuccess bool, args ...string) string {
 
 func (h *harness) sync(mode string) {
 	h.t.Helper()
-	job := h.call(h.base, "/api/ext/v1/sync", "POST", h.operator, map[string]string{"mode": mode}, 202)["job"].(map[string]any)
-	id := job["id"].(string)
+	id := h.enqueueSync(mode).ID
 	wait(h.t, "sync job", func() bool {
 		result, status, err := h.request(h.base, "/api/ext/v1/jobs/"+id, "GET", h.operator, nil)
 		if err != nil || status != 200 {
@@ -265,6 +266,7 @@ func newHarnessWithUpstream(t *testing.T, decorate func(string) string) *harness
 		return err == nil && status == 200
 	})
 	password := randomToken()
+	h.password = password
 	h.call(h.memos, "/api/v1/users", "POST", "", map[string]string{"username": "acceptance-owner", "password": password, "role": "ADMIN"}, 200)
 	session := h.call(h.memos, "/api/v1/auth/signin", "POST", "", map[string]any{"passwordCredentials": map[string]string{"username": "acceptance-owner", "password": password}}, 200)
 	user := session["user"].(map[string]any)["name"].(string)
@@ -333,7 +335,7 @@ func TestMemosAcceptance(t *testing.T) {
 	h.call(h.base, "/api/ext/v1/notes", "GET", "invalid", nil, 401)
 	h.call(h.base, "/api/ext/v1/sync", "GET", h.reader, nil, 403)
 	h.call(h.base, "/api/ext/v1/sync", "POST", h.reader, map[string]string{"mode": "full"}, 403)
-	h.call(h.base, "/api/ext/v1/sync", "POST", h.operator, map[string]string{"mode": "other"}, 422)
+	h.call(h.base, "/api/ext/v1/sync", "POST", h.operator, map[string]string{"mode": "other"}, 403)
 	t.Log("PASS authentication and read scopes")
 
 	names := []string{}
@@ -373,11 +375,27 @@ func TestMemosAcceptance(t *testing.T) {
 	h.call(h.memos, "/api/v1/"+names[1]+"?updateMask=state", "PATCH", h.upstream, map[string]string{"state": "ARCHIVED"}, 200)
 	h.call(h.memos, "/api/v1/"+names[2], "DELETE", h.upstream, nil, 200)
 	h.call(h.memos, "/api/v1/"+names[3]+"?updateMask=content,update_time", "PATCH", h.upstream, map[string]string{"content": "backdated", "updateTime": "2018-01-01T00:00:00Z"}, 200)
-	h.sync("incremental")
-	projection = h.projection()
-	if projection[names[0]]["content"] != "edited" || projection[names[1]]["state"] != "ARCHIVED" || projection[names[3]]["content"] == "backdated" {
-		t.Fatal("incorrect incremental sync")
-	}
+	h.withOfflineApp(func(app *moerise.App) {
+		if _, err := app.Store.Enqueue("incremental", true); err != nil {
+			t.Fatal(err)
+		}
+		job, err := app.Store.Claim()
+		if err != nil || job == nil {
+			t.Fatalf("claim incremental sync: %v", err)
+		}
+		result, err := app.Worker.Sync(context.Background(), *job)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := app.Store.Complete(job.ID, result); err != nil {
+			t.Fatal(err)
+		}
+		projection = h.projection()
+		if result["mode"] != "incremental" || projection[names[0]]["content"] != "edited" ||
+			projection[names[1]]["state"] != "ARCHIVED" || projection[names[3]]["content"] == "backdated" {
+			t.Fatal("incorrect incremental sync")
+		}
+	})
 	h.call(h.base, "/api/ext/v1/notes/"+strings.TrimPrefix(names[2], "memos/"), "GET", h.reader, nil, 404)
 	h.sync("full")
 	projection = h.projection()
@@ -403,8 +421,7 @@ func TestMemosAcceptance(t *testing.T) {
 
 	docker(t, "stop", h.container)
 	h.call(h.base, "/api/ext/v1/notes", "GET", h.reader, nil, 503)
-	job := h.call(h.base, "/api/ext/v1/sync", "POST", h.operator, map[string]string{"mode": "full"}, 202)["job"].(map[string]any)
-	id := job["id"].(string)
+	id := h.enqueueSync("full").ID
 	wait(t, "retry persisted", func() bool {
 		result, code, err := h.request(h.base, "/api/ext/v1/jobs/"+id, "GET", h.operator, nil)
 		return err == nil && code == 200 && result["job"].(map[string]any)["last_error"] != nil
