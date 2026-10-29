@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>Moerise</title>
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+  <link rel="stylesheet" href="/styles.css">
+  <script type="module" src="/app.js"></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">跳到正文</a>
+  <header class="mobile-bar">
+    <button id="menu-open" type="button" class="icon-button" aria-label="打开导航" aria-controls="sidebar" aria-expanded="false">☰</button>
+    <span class="mobile-brand">Moerise</span>
+  </header>
+  <button id="scrim" class="scrim" type="button" aria-label="关闭导航" hidden></button>
+  <div class="app">
+    <aside id="sidebar" class="sidebar" aria-label="侧栏">
+      <div class="brand"><span class="brand-mark" aria-hidden="true">M</span><strong>Moerise</strong>
+        <button id="menu-close" class="icon-button" type="button" aria-label="关闭导航">×</button>
+      </div>
+      <nav aria-label="主导航"><a class="nav-entry selected" href="#main" aria-current="page"><span aria-hidden="true">☷</span>时间线</a></nav>
+      <div class="sidebar-description">
+        <p>给想法一个落点。</p>
+        <p>正常笔记按创建时间排列。写下的正文、换行和 #标签都会原样保存。</p>
+      </div>
+      <section class="account" aria-labelledby="account-heading">
+        <h2 id="account-heading">账户</h2>
+        <p id="account-name">尚未登录</p>
+        <p id="account-zone" class="muted"></p>
+        <button id="logout" class="quiet-button" type="button" hidden>退出登录</button>
+      </section>
+    </aside>
+    <main id="main" class="main" tabindex="-1">
+      <div class="feed">
+        <section id="auth" class="auth-card" aria-labelledby="auth-title">
+          <span class="brand-mark" aria-hidden="true">M</span>
+          <h1 id="auth-title">登录 Moerise</h1>
+          <p class="muted">使用此实例绑定的 Memos 账户。</p>
+          <p id="auth-status" role="status" aria-live="polite">正在恢复会话…</p>
+          <p id="auth-error" class="error" role="alert" hidden></p>
+          <form id="login-form" hidden>
+            <label for="username">用户名</label>
+            <input id="username" name="username" autocomplete="username" required autocapitalize="none" spellcheck="false">
+            <label for="password">密码</label>
+            <input id="password" name="password" type="password" autocomplete="current-password" required>
+            <button id="login" class="primary-button" type="submit">登录</button>
+          </form>
+          <button id="auth-retry" class="quiet-button" type="button" hidden>重试恢复会话</button>
+          <button id="logout-retry" class="quiet-button" type="button" hidden>重试退出</button>
+        </section>
+        <section id="workspace" aria-labelledby="timeline-title" hidden>
+          <header class="feed-heading">
+            <div><h1 id="timeline-title">时间线</h1><p class="muted">写下此刻，留给以后。</p></div>
+            <button id="refresh" class="quiet-button" type="button">刷新</button>
+          </header>
+          <form id="composer" class="composer">
+            <label class="sr-only" for="content">笔记正文</label>
+            <textarea id="content" name="content" rows="5" placeholder="此刻有什么想记下来？" aria-describedby="compose-help pending-help"></textarea>
+            <div class="composer-footer"><span id="compose-help" class="muted">Ctrl + Enter 保存</span><button id="save" class="primary-button" type="submit">保存笔记</button></div>
+            <p id="pending-help" class="pending-help" hidden></p>
+            <button id="abandon" class="quiet-button" type="button" hidden>放弃重试，另开记录</button>
+            <p id="save-status" role="status" aria-live="polite"></p>
+            <p id="save-error" class="error" role="alert" hidden></p>
+          </form>
+          <div class="list-heading"><h2>全部正常笔记</h2><span class="muted">创建时间倒序</span></div>
+          <p id="list-status" role="status" aria-live="polite"></p>
+          <p id="list-error" class="error" role="alert" hidden></p>
+          <div id="notes" class="notes" aria-label="笔记列表"></div>
+          <div class="pagination"><button id="load-more" class="quiet-button" type="button" hidden>加载更多</button></div>
+        </section>
+      </div>
+    </main>
+  </div>
+  <dialog id="abandon-dialog" aria-labelledby="abandon-title" aria-describedby="abandon-description">
+    <h2 id="abandon-title">放弃原提交的重试？</h2>
+    <p id="abandon-description">原提交可能已经保存。另开记录会使用新的提交标识，可能产生重复笔记。编辑框里的文字会留下；请先刷新时间线确认。</p>
+    <div class="dialog-actions"><button id="keep-retry" class="quiet-button" type="button" autofocus>继续保留重试</button><button id="confirm-abandon" class="primary-button" type="button">放弃重试</button></div>
+  </dialog>
+</body>
+</html>
