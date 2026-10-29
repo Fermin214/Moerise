@@ -6,7 +6,8 @@ type ClientLogin struct {
 }
 
 type ClientCreateNote struct {
-	Content string `json:"content"`
+	Content     string             `json:"content"`
+	Attachments []CreateAttachment `json:"attachments,omitempty"`
 }
 
 type NotePage struct {
@@ -19,4 +20,7 @@ type NoteList struct {
 	Order     string
 	PageSize  int
 	PageToken string
+	Query     string
+	Tags      []string
+	Date      string
 }

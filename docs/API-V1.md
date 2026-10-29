@@ -16,7 +16,12 @@
 | DELETE | `/api/app/v1/session` | 先撤销本地会话，再尝试上游退出，清 Cookie 并返回 204；上游不可用仍可退出 |
 | GET | `/api/app/v1/notes` | 实时读取 Memos 本人笔记，默认 `state=NORMAL&order=created_desc&page_size=20` |
 | GET | `/api/app/v1/notes/{memo_id}` | 返回来源复查后的最新 Note，不记录阅读 |
-| POST | `/api/app/v1/notes` | 接收 `{content}`，必填 `Idempotency-Key`，首次 201、重放 200，均直接返回 Note |
+| POST | `/api/app/v1/notes` | 接收 `{content,attachments}`，必填 `Idempotency-Key`，首次 201、重放 200，均直接返回 Note |
+| PATCH | `/api/app/v1/notes/{memo_id}` | 原文编辑、归档或恢复、添加或移除附件；提交 `source_hash` 和 `Idempotency-Key` |
+| DELETE | `/api/app/v1/notes/{memo_id}` | 提交 `{source_hash}`，删除笔记，返回 204 |
+| GET | `/api/app/v1/tags` | `state=NORMAL/ARCHIVED` 范围内的全部标签，返回 `{tags:[{tag,count}]}` |
+| GET | `/api/app/v1/calendar` | 接收 `state`、必填 `month=YYYY-MM`，返回 `{month,days:[{date,count}]}` |
+| GET、HEAD | `/api/app/v1/notes/{memo_id}/attachments/{attachment_id}/content` | 会话、作者及父笔记关联检查后的受保护文件流，支持单段 Range |
 | GET | `/api/app/v1/admin/notifications` | 读取通知，支持单个 `status` 参数 |
 | GET | `/api/app/v1/admin/notifications/{notification_id}` | 读取通知、尝试和确认详情 |
 | POST | `/api/app/v1/admin/notifications/{notification_id}/resolve` | 接收 `decision`、`receipt`，调用通知回执核验和恢复服务 |
@@ -25,9 +30,17 @@
 
 身份响应只包含 `instance_id`、`user.name`、`user.display_name`、`timezone`、`expires_at`、`csrf_token`。Memos PAT、访问和刷新凭据不返回客户端。登录有效期不超过登录时的刷新凭据到期时间；上游续期只更新服务端凭据，不延长登录期限，读取和业务响应不设置 Cookie。会话跨普通重启恢复，产品快照恢复会清空会话，索引重建保留会话。密码登录关闭或需要其他认证方式的来源返回 501 `PASSWORD_LOGIN_UNSUPPORTED`。
 
-客户端列表接受 `NORMAL`、`ARCHIVED`、`page_size=1..100`、`page_token`，排序仅支持 `created_desc`；拒绝未知和重复参数。创建时间相同按资源名倒序，置顶和编辑不改变创建时间排序。列表直接从 Memos 取候选并复查来源，来源新增后刷新即可读取；不等待索引同步。游标绑定列表种类、来源、作者、状态及排序，与机器索引游标不可互换，索引重建不会使实时列表游标失效。来源在跨页读取中改变可返回 409 `SOURCE_CHANGED`；资源预算耗尽返回错误，不输出不完整的同时间组。
+客户端列表接受 `state=NORMAL/ARCHIVED`、`page_size=1..100`、`page_token`，排序仅支持 `created_desc`。`query` 是基础关键词，最多 256 个 Unicode 码点和 1024 个 UTF-8 字节；重复 `tag` 参数按精确 AND 组合，最多 20 个；`date=YYYY-MM-DD` 按产品时区限定创建日期。各条件在服务端分页前组合，拒绝未知参数及除 `tag` 外的重复参数。
 
-创建只接受真实正文，保留首尾空白、换行和正文中的 `#标签`，固定 PRIVATE。正文须非空白，最多 65536 UTF-8 字节；独立 `tags` 和附件字段不在此创建接口中。每次独立提交使用新键，超时、结果不明或重新登录后的同次重试使用原键及原请求体。同键不同正文返回 409 `IDEMPOTENCY_CONFLICT`；写入结果不明返回 503 `WRITE_OUTCOME_UNKNOWN`。持久幂等属于实例，不绑定某次浏览器会话。
+创建时间相同按资源名倒序，置顶和编辑不改变创建时间排序。列表直接从 Memos 取候选并复查来源，来源新增后刷新即可读取。游标绑定列表种类、来源、作者、状态、排序及筛选，与机器索引游标不可互换，索引重建不会使实时列表游标失效。来源在跨页读取中改变可返回 409 `SOURCE_CHANGED`；资源预算耗尽返回错误。标签和日历统计覆盖对应来源范围，不从客户端已加载页推算。
+
+创建和编辑保留正文首尾空白、换行及全部 `#标签`，不接受独立标签数组。创建固定 PRIVATE。正文最多 65536 UTF-8 字节；正文非空白或至少保留一个合法附件，纯图片和纯普通文件均可保存，不补占位文字。新增 `attachments` 为 `{filename,type,content}` 数组，`content` 是 Base64 原始字节；单次最多十个，原始总大小不超过 8 MiB。
+
+每次独立提交使用新键，超时、结果不明或重新登录后的同次重试使用原键及原请求体。同键不同请求返回 409 `IDEMPOTENCY_CONFLICT`；创建结果不明返回 503 `WRITE_OUTCOME_UNKNOWN`。持久幂等属于实例，不绑定某次浏览器会话。
+
+编辑接收 `content`、`state`、新增 `attachments`、`remove_attachments` 及必填 `source_hash`；未提交的正文和状态保持原值，已有附件默认保留。移除列表使用完整附件资源名，且必须真实关联父笔记。`state=ARCHIVED` 归档，`state=NORMAL` 恢复。编辑和删除先复查来源版本，变化返回 409 `SOURCE_CHANGED`。Memos 更新没有原子条件写入，复查与写入之间的外部并发仍可能按最后一次写入生效。
+
+客户端 Note 的附件只包含 `name`、`filename`、`type`、`size`、`content_url`，`url` 为 Moerise 详情路径。图片和下载始终使用 `content_url`；该路径只接受资源标识，不接受上游地址。每次读取复查登录、作者、父笔记与附件关联，返回 `no-store`、`nosniff` 和安全文件名。PNG、JPEG、GIF、WebP、AVIF 内联，其余类型按 `application/octet-stream` 下载。支持 GET、HEAD 和单段 `Range: bytes=...`，多段或无效范围返回 416，单次读取上限 128 MiB。
 
 客户端沿用 `error.code/message/retryable/request_id`：401 表示会话失效，403 表示身份范围或请求边界错误，503 表示来源、配置或存储故障，不返回 Bearer 认证挑战。私人响应使用 `Cache-Control: no-store`。通知确认的 `resolved_by` 为登录用户资源名；其业务决策和回执要求见[通知说明](NOTIFICATIONS.md)。
 

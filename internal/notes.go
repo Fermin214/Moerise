@@ -9,7 +9,9 @@ import (
 	"net/url"
 	"slices"
 	"strconv"
+	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 type NoteService struct {
@@ -79,7 +81,11 @@ func parseNoteList(query url.Values, live bool) (NoteList, error) {
 		args.Order = "created_desc"
 	}
 	for key, values := range query {
-		if len(values) != 1 || (key != "state" && key != "page_size" && key != "page_token" && !(live && key == "order")) {
+		if live && key == "tag" && len(values) > 0 {
+			continue
+		}
+		if len(values) != 1 || (key != "state" && key != "page_size" && key != "page_token" &&
+			!(live && (key == "order" || key == "query" || key == "date"))) {
 			return args, failure("INVALID_ARGUMENT", "Invalid list parameters", 422, false)
 		}
 	}
@@ -100,6 +106,48 @@ func parseNoteList(query url.Values, live bool) (NoteList, error) {
 	if args.PageSize < 1 || args.PageSize > 100 || len(args.PageToken) > 4096 ||
 		(args.State != "NORMAL" && args.State != "ARCHIVED") || (live && args.Order != "created_desc") {
 		return args, failure("INVALID_ARGUMENT", "Invalid list parameters", 422, false)
+	}
+	if live {
+		args.Query, args.Tags, args.Date = query.Get("query"), query["tag"], query.Get("date")
+		return normalizeLiveList(args)
+	}
+	return args, nil
+}
+
+func normalizeLiveList(args NoteList) (NoteList, error) {
+	bad := failure("INVALID_ARGUMENT", "Invalid list parameters", 422, false)
+	if args.State == "" {
+		args.State = "NORMAL"
+	}
+	if args.Order == "" {
+		args.Order = "created_desc"
+	}
+	if args.PageSize == 0 {
+		args.PageSize = 20
+	}
+	if args.PageSize < 1 || args.PageSize > 100 || args.Order != "created_desc" ||
+		(args.State != "NORMAL" && args.State != "ARCHIVED") || len(args.PageToken) > 4096 ||
+		!utf8.ValidString(args.Query) || len(args.Query) > 1024 || utf8.RuneCountInString(args.Query) > 256 ||
+		len(args.Tags) > 20 {
+		return args, bad
+	}
+	args.Query = strings.TrimSpace(args.Query)
+	args.Tags = slices.Clone(args.Tags)
+	for _, tag := range args.Tags {
+		if !utf8.ValidString(tag) || len(tag) > 400 || utf8.RuneCountInString(tag) > 100 || !tagPattern.MatchString(tag) {
+			return args, bad
+		}
+	}
+	slices.Sort(args.Tags)
+	args.Tags = slices.Compact(args.Tags)
+	if len(args.Tags) == 0 {
+		args.Tags = nil
+	}
+	if args.Date != "" {
+		date, err := time.Parse(time.DateOnly, args.Date)
+		if err != nil || date.Year() < 1 || date.Format(time.DateOnly) != args.Date {
+			return args, bad
+		}
 	}
 	return args, nil
 }

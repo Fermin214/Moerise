@@ -63,13 +63,18 @@ func (a *ClientAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	defer func() {
-		if recover() != nil {
+		if recovered := recover(); recovered != nil {
+			if recovered == http.ErrAbortHandler {
+				panic(recovered)
+			}
 			writeClientError(w, errors.New("client handler panic"), id)
 		}
 	}()
 	result, status, err := a.route(w, r)
 	if err != nil {
 		writeClientError(w, err, id)
+	} else if status == -1 {
+		return
 	} else if status == http.StatusNoContent {
 		w.WriteHeader(status)
 	} else {
@@ -199,12 +204,12 @@ func (a *ClientAPI) route(w http.ResponseWriter, r *http.Request) (any, int, err
 	if len(r.Header.Values("Authorization")) != 0 {
 		return nil, 0, failure("FORBIDDEN", "Client requests require a browser session", 403, false)
 	}
-	if r.URL.RawQuery != "" && !(r.URL.Path == "/api/app/v1/notes" && r.Method == http.MethodGet) &&
+	if r.URL.RawQuery != "" && !(slices.Contains([]string{"/api/app/v1/notes", "/api/app/v1/tags", "/api/app/v1/calendar"}, r.URL.Path) && r.Method == http.MethodGet) &&
 		!(r.URL.Path == "/api/app/v1/admin/notifications" && r.Method == http.MethodGet) {
 		return nil, 0, failure("INVALID_ARGUMENT", "Unexpected query parameters", 422, false)
 	}
 	path, method := r.URL.Path, r.Method
-	if method != http.MethodGet {
+	if method != http.MethodGet && method != http.MethodHead {
 		if err := a.origin(r); err != nil {
 			return nil, 0, err
 		}
@@ -268,7 +273,7 @@ func (a *ClientAPI) route(w http.ResponseWriter, r *http.Request) (any, int, err
 	}
 	defer release()
 	r = r.WithContext(ctx)
-	if method != http.MethodGet {
+	if method != http.MethodGet && method != http.MethodHead {
 		if err := checkCSRF(r, identity); err != nil {
 			return nil, 0, err
 		}
@@ -292,23 +297,45 @@ func (a *ClientAPI) route(w http.ResponseWriter, r *http.Request) (any, int, err
 				return nil, 0, err
 			}
 			result, err := a.app.Notes.ListLive(r.Context(), args)
+			for i := range result.Notes {
+				result.Notes[i] = clientNote(result.Notes[i])
+			}
 			return result, 200, err
 		}
 		if method == http.MethodPost {
 			var body ClientCreateNote
-			if err := readClientJSON(w, r, 512*1024, []string{"content"}, &body); err != nil {
+			if err := readClientJSON(w, r, 12*1024*1024, []string{"content", "attachments"}, &body); err != nil {
 				return nil, 0, err
 			}
 			if err := a.app.Sessions.CheckActive(r.Context(), identity); err != nil {
 				return nil, 0, err
 			}
-			return a.app.Records.Create(r.Context(), r.Header.Get("Idempotency-Key"), CreateNote{Content: body.Content})
+			note, status, err := a.app.Records.Create(r.Context(), r.Header.Get("Idempotency-Key"),
+				CreateNote{Content: body.Content, Attachments: body.Attachments})
+			return clientNote(note), status, err
 		}
+	case "/api/app/v1/tags", "/api/app/v1/calendar":
+		if method != http.MethodGet {
+			break
+		}
+		query, err := url.ParseQuery(r.URL.RawQuery)
+		if err != nil {
+			return nil, 0, failure("INVALID_ARGUMENT", "Invalid aggregation parameters", 422, false)
+		}
+		for key, values := range query {
+			if len(values) != 1 || (key != "state" && !(path == "/api/app/v1/calendar" && key == "month")) {
+				return nil, 0, failure("INVALID_ARGUMENT", "Invalid aggregation parameters", 422, false)
+			}
+		}
+		if path == "/api/app/v1/tags" {
+			tags, err := a.app.Notes.Tags(r.Context(), query.Get("state"))
+			return map[string]any{"tags": tags}, 200, err
+		}
+		days, err := a.app.Notes.Calendar(r.Context(), query.Get("state"), query.Get("month"))
+		return map[string]any{"month": query.Get("month"), "days": days}, 200, err
 	default:
-		if strings.HasPrefix(path, "/api/app/v1/notes/") && method == http.MethodGet {
-			name := "memos/" + strings.TrimPrefix(path, "/api/app/v1/notes/")
-			note, err := a.app.Notes.Get(r.Context(), name)
-			return note, 200, err
+		if strings.HasPrefix(path, "/api/app/v1/notes/") {
+			return a.noteRoute(w, r)
 		}
 		if path == "/api/app/v1/admin/notifications" || strings.HasPrefix(path, "/api/app/v1/admin/notifications/") {
 			return a.notifications(w, r, identity)
