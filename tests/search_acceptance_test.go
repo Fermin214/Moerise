@@ -167,39 +167,42 @@ func TestSearchAcceptance(t *testing.T) {
 			t.Fatalf("unexpected semantic status: %+v", result.Semantic)
 		}
 	}
-	record := func(key, content string, tags ...string) string {
-		t.Helper()
-		if tags == nil {
-			tags = []string{}
-		}
-		return h.record(key, h.operator, moerise.CreateNote{Content: content, Tags: tags}, 201)["name"].(string)
-	}
 	var moonNames, gardenNames, andNames []string
-	for i := range 12 {
-		tags := []string{"庭院记"}
-		if i < 4 {
-			tags = []string{"庭院"}
-		}
-		if i%2 == 0 {
-			tags = append(tags, "随记")
-		}
-		name := record(fmt.Sprintf("search-moon-%d", i), fmt.Sprintf("月港值守记录 %d：窗边留有一盏小灯。", i), tags...)
-		moonNames = append(moonNames, name)
-		if i < 4 {
-			gardenNames = append(gardenNames, name)
-			if i%2 == 0 {
-				andNames = append(andNames, name)
-			}
-		}
-	}
+	var longName, semanticName, edited, deleted, archived string
 	longBody := "纸鹤甲\n" + strings.Repeat("a", 1500) + "\n\n" +
 		"纸鹤乙\n" + strings.Repeat("b", 1500) + "\n\n" +
 		"纸鹤丙\n" + strings.Repeat("c", 1500) + "\n"
-	longName := record("search-long", longBody)
-	semanticName := record("search-semantic", semanticBody)
-	edited := record("search-edit", "琥珀旧稿仍在木桌上。")
-	deleted := record("search-delete", "琥珀撤稿放在抽屉里。")
-	archived := record("search-archive", "琥珀封箱写着旧航线。")
+	h.withOfflineApp(func(app *moerise.App) {
+		record := func(key, content string, tags ...string) string {
+			t.Helper()
+			if tags == nil {
+				tags = []string{}
+			}
+			return h.recordUsingApp(app, key, moerise.CreateNote{Content: content, Tags: tags}, 201)["name"].(string)
+		}
+		for i := range 12 {
+			tags := []string{"庭院记"}
+			if i < 4 {
+				tags = []string{"庭院"}
+			}
+			if i%2 == 0 {
+				tags = append(tags, "随记")
+			}
+			name := record(fmt.Sprintf("search-moon-%d", i), fmt.Sprintf("月港值守记录 %d：窗边留有一盏小灯。", i), tags...)
+			moonNames = append(moonNames, name)
+			if i < 4 {
+				gardenNames = append(gardenNames, name)
+				if i%2 == 0 {
+					andNames = append(andNames, name)
+				}
+			}
+		}
+		longName = record("search-long", longBody)
+		semanticName = record("search-semantic", semanticBody)
+		edited = record("search-edit", "琥珀旧稿仍在木桌上。")
+		deleted = record("search-delete", "琥珀撤稿放在抽屉里。")
+		archived = record("search-archive", "琥珀封箱写着旧航线。")
+	})
 	h.sync("full")
 
 	h.call(h.base, "/api/ext/v1/search", "POST", "", moerise.SearchRequest{Query: "月"}, 401)

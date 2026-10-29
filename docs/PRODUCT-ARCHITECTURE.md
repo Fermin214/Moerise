@@ -18,18 +18,18 @@ Moerise 是基于 Memos 的开源、自托管个人笔记服务。Core 提供同
 | Moerise Core | 同步、索引、身份范围、持久任务、笔记写入适配、回顾、检索、模型调用与通知 |
 | 飞书应用机器人 | 专用私聊文字、图片与文件记录，以及每日回顾推送 |
 | 飞书自定义机器人 Webhook | 向群发送每日回顾 |
-| REST 入口 | 按 Scope 提供笔记、同步、回顾、通知、检索和 AI 接口 |
+| 机器 REST 入口 | 同时检查 Bearer Scope 和只读操作白名单，提供笔记、同步状态、已有回顾和检索 |
 | 外部 MCP | 只读获取和搜索笔记，可读取已有回顾；服务端限制工具发现与调用，不开放笔记写入或产品状态变更 |
 
-Memos 是笔记的唯一权威数据源，Core 只通过官方 API 访问原文。REST 笔记创建与专用记录机器人调用同一写入服务，外部 Agent 使用只读 MCP。笔记编辑和删除通过 Memos 完成。
+Memos 是笔记的唯一权威数据源，Core 只通过官方 API 访问原文。原生客户端与专用记录机器人调用同一写入服务，外部 Agent 使用只读 REST 或 MCP。笔记编辑和删除通过 Memos 完成。
 
-回顾、检索和模型调用由业务服务处理；HTTP 与消息适配器负责请求、平台收发、格式和回执。AI 接口返回生成结果，不自动创建笔记。
+回顾、检索和模型调用由业务服务处理；HTTP 与消息适配器负责请求、平台收发、格式和回执。旧生成编排用于历史任务恢复，外部机器不能发起新生成。
 
 ### Web 集成边界
 
-Web 通过同源 `/api/app/v1` 调用 Core，Core 只通过 Memos 官方认证、笔记和文件接口访问来源，不开放任意 Memos 路径透传。浏览器会话、后台 PAT 和外部机器 Bearer 分离，登录身份必须匹配绑定作者。3.1 增加 App 统一持有 Store、共享业务服务、Provider 和后台循环，REST、MCP、飞书和客户端适配器通过依赖注入复用。
+Web 通过同源 `/api/app/v1` 调用 Core，Core 只通过 Memos 官方认证、笔记和文件接口访问来源，不开放任意 Memos 路径透传。浏览器会话、后台 PAT 和外部机器 Bearer 分离，登录身份必须匹配绑定作者。App 统一持有 Store、共享业务服务、Provider 和后台循环，REST、MCP、飞书和客户端适配器通过依赖注入复用。
 
-3.1 对外机器 REST/MCP 使用只读操作白名单，并关闭外部结构化生成入口；必要通知确认等操作迁至绑定作者会话的受控管理适配。后续笔记编辑、删除与附件能力由共享服务调用官方 API，Web 路由、Cookie 和展示状态不进入业务层。
+对外机器 REST/MCP 使用只读操作白名单；外部结构化生成入口关闭。通知确认等操作使用绑定作者会话的受控管理适配。后续笔记编辑、删除与附件能力由共享服务调用官方 API，Web 路由、Cookie 和展示状态不进入业务层。
 
 `state.sqlite3` 随阶段增加浏览器会话、持久设置、全天回顾计划与时段分配、聊天会话/消息/材料引用。向量与地图布局属于 `index.sqlite3` 的可重建状态。3.6 扩展回顾计划和调度，3.7 增加自然聊天编排；旧结构化生成专用编排随 3.9 清理，保留 LLM Provider、流式通信、搜索、已应用迁移及未完成发送恢复。产品规则只在 PRD 维护。
 
@@ -41,14 +41,14 @@ Web 通过同源 `/api/app/v1` 调用 Core，Core 只通过 Memos 官方认证�
 flowchart LR
     Memos["官方 Memos：账户、原文、标签与附件"]
     Core["Moerise Core"] -->|"官方 API：同步与读写"| Memos
-    Caller["REST 调用方"] -->|"读取、记录与产品状态操作"| Core
+    Caller["机器 REST 调用方"] -->|"只读获取、搜索与状态"| Core
     Agents["外部 Agent"] -->|"只读 MCP：获取与搜索"| Core
     FeishuBot["飞书应用机器人"] -->|"专用私聊文字与图片记录"| Core
     Core --> Notify["回顾调度与渠道发送"]
     Core --> State["state.sqlite3：产品状态与渠道暂存"]
     Core --> Index["index.sqlite3：可重建索引"]
     Core --> Embedding["Embedding：语义检索与漫步"]
-    Core --> LLM["LLM：结构化洞察、问答与时间线"]
+    Core --> LLM["LLM Provider：模型通信与历史任务恢复"]
     Notify --> FeishuBot
     Notify -.-> FeishuWebhook["飞书 Webhook：可选推送"]
 ```
@@ -59,6 +59,8 @@ flowchart LR
 
 | 源码 | 职责 |
 | --- | --- |
+| `internal/app.go` | 唯一服务装配、Provider 和工作循环、资源关闭与写锁所有权 |
+| `internal/notes.go` | 共享笔记读取、来源复查与机器索引分页 |
 | `internal/api.go`、`models.go`、`openapi.json` | REST 路由、访问范围、来源复查、分页与响应契约 |
 | `internal/memos.go` | Memos 版本与身份检查、官方 API 调用及笔记格式转换 |
 | `internal/records.go`、`attachments.go` | 文本、标签和附件记录、持久幂等、写入结果复查与恢复 |

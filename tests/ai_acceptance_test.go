@@ -14,7 +14,6 @@ import (
 	"fmt"
 	"net/http/httptest"
 	"path/filepath"
-	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -129,12 +128,12 @@ func (r *aiAcceptanceRuntime) start() {
 	if err != nil {
 		r.h.t.Fatal(err)
 	}
-	r.api, err = moerise.NewAPI(r.settings, r.store, r.source, moerise.NewSyncService(r.store, r.source))
+	r.api, err = moerise.NewAPI(moerise.NewApp(r.settings, r.store, r.source))
 	if err != nil {
 		r.h.t.Fatal(err)
 	}
 	if r.api.AI == nil || r.api.Feishu == nil || r.api.Feishu.AI != r.api.AI || r.api.AI.Search != r.api.Search {
-		r.h.t.Fatal("REST, MCP and Feishu do not share AI and evidence services")
+		r.h.t.Fatal("App and Feishu do not share AI and evidence services")
 	}
 	r.api.AI.Provider, r.api.Feishu.Client = r.provider, r.platform
 	r.server = httptest.NewServer(r.api)
@@ -276,14 +275,14 @@ func aiAcceptanceRendered(t *testing.T, text string, result moerise.AIResult) {
 			line += " [" + strings.Join(item.Citations, ", ") + "]"
 		}
 		if !strings.Contains(text, line+"\n") {
-			t.Fatalf("Feishu statement/citation differs from REST/MCP: missing %q in %s", line, text)
+			t.Fatalf("Feishu statement/citation differs from shared service: missing %q in %s", line, text)
 		}
 	}
 	for _, item := range result.References {
 		line := fmt.Sprintf("引用 %s：%s 第 %d-%d 行\n%s\n",
 			item.ID, item.Name, item.LineStart, item.LineEnd, item.URL)
 		if !strings.Contains(text, line) {
-			t.Fatalf("Feishu reference mapping differs from REST/MCP: missing %q in %s", line, text)
+			t.Fatalf("Feishu reference mapping differs from shared service: missing %q in %s", line, text)
 		}
 	}
 	if !strings.Contains(text, "实际引用：1 条笔记。") {
@@ -291,11 +290,11 @@ func aiAcceptanceRendered(t *testing.T, text string, result moerise.AIResult) {
 	}
 }
 
-func TestAISelectedSourceAcrossRESTMCPAndQueuedFeishuAcceptance(t *testing.T) {
+func TestAISelectedSourceSharedServiceAndQueuedFeishuAcceptance(t *testing.T) {
 	r, aiOnly := newAIAcceptanceRuntime(t)
 	h := r.h
 	request := moerise.AIRequest{Names: []string{r.provider.name}}
-	for _, token := range []string{h.reader, aiOnly} {
+	for _, token := range []string{h.reader, aiOnly, h.operator} {
 		h.call(r.server.URL, "/api/ext/v1/insights", "POST", token, request, 403)
 		rpc, status, err := h.requestWithHeaders(r.server.URL, "/mcp", "POST", token,
 			map[string]any{"jsonrpc": "2.0", "id": "denied-ai", "method": "tools/call",
@@ -309,15 +308,9 @@ func TestAISelectedSourceAcrossRESTMCPAndQueuedFeishuAcceptance(t *testing.T) {
 	if r.provider.calls.Load() != 0 {
 		t.Fatal("scope denial invoked the model")
 	}
-	rest := aiAcceptanceResult(t, h.call(r.server.URL, "/api/ext/v1/insights", "POST", h.operator, request, 200))
-	tool := h.mcp(h.operator, "tools/call", map[string]any{"name": "analyze_memos", "arguments": request})
-	if tool["isError"] == true {
-		t.Fatalf("MCP insight failed: %v", tool)
-	}
-	mcp := aiAcceptanceResult(t, tool["structuredContent"])
-	rest.Metrics, mcp.Metrics = moerise.AIMetrics{}, moerise.AIMetrics{}
-	if !reflect.DeepEqual(rest, mcp) {
-		t.Fatalf("REST/MCP result or reference mapping differs: REST=%+v MCP=%+v", rest, mcp)
+	rest, err := r.api.AI.Insight(context.Background(), request, nil)
+	if err != nil || !rest.Completed {
+		t.Fatalf("shared insight: %+v %v", rest, err)
 	}
 	reference := rest.References[0]
 	if reference.ID != "E1" || reference.Name != r.provider.name || reference.SourceHash == "" ||
@@ -341,7 +334,7 @@ func TestAISelectedSourceAcrossRESTMCPAndQueuedFeishuAcceptance(t *testing.T) {
 	r.deliver(false)
 	detail, err := r.api.Notifications.Detail(item.ID)
 	if err != nil || detail.Notification.Status != "sent" || len(detail.Attempts) != 1 ||
-		r.provider.calls.Load() != 3 || r.platform.replyCount() != 1 {
+		r.provider.calls.Load() != 2 || r.platform.replyCount() != 1 {
 		t.Fatalf("saved reply regenerated or resent insight: calls=%d sends=%d detail=%+v err=%v",
 			r.provider.calls.Load(), r.platform.replyCount(), detail, err)
 	}
@@ -440,8 +433,9 @@ func TestAICachedDeliveryRebuildAndRestoreWithRealMemosAcceptance(t *testing.T) 
 	}
 	// The platform confirms the send made after the snapshot. Resolving it must
 	// record that receipt without another platform request or model generation.
-	h.call(r.server.URL, "/api/ext/v1/notifications/"+cached.ID+"/resolve", "POST", h.operator,
-		map[string]string{"decision": "sent", "receipt": receipt}, 200)
+	if _, err := r.api.Notifications.Resolve(context.Background(), cached.ID, "sent", receipt, "users/owner"); err != nil {
+		t.Fatal(err)
+	}
 	resolved, err := r.api.Notifications.Detail(cached.ID)
 	if err != nil || resolved.Notification.Status != "sent" || resolved.Notification.Receipt == nil ||
 		*resolved.Notification.Receipt != receipt || len(resolved.Resolutions) != 1 {

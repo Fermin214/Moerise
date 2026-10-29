@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
@@ -43,41 +42,41 @@ func TestConcurrentRecordsUseOneResource(t *testing.T) {
 		}
 		return 200, created, nil
 	})
-	api, err := NewAPI(settings, store, client, NewSyncService(store, client))
-	if err != nil {
-		t.Fatal(err)
-	}
+	records := NewRecordService(store, client)
 	var group sync.WaitGroup
-	results := make(chan *httptest.ResponseRecorder, 12)
+	type outcome struct {
+		status int
+		err    error
+	}
+	results := make(chan outcome, 12)
 	for range 12 {
 		group.Go(func() {
-			request := httptest.NewRequest("POST", "/api/ext/v1/notes",
-				strings.NewReader(`{"content":"concurrent note","tags":["z","a","a"]}`))
-			request.Header.Set("Authorization", "Bearer "+settings.AccessTokens[1].Token)
-			request.Header.Set("Idempotency-Key", "same-key")
-			response := httptest.NewRecorder()
-			api.ServeHTTP(response, request)
-			results <- response
+			_, status, err := records.Create(context.Background(), "same-key",
+				CreateNote{Content: "concurrent note", Tags: []string{"z", "a", "a"}})
+			results <- outcome{status, err}
 		})
 	}
 	group.Wait()
 	close(results)
 	first := 0
 	for response := range results {
-		if response.Code == 201 {
+		if response.err != nil {
+			t.Fatal(response.err)
+		}
+		if response.status == 201 {
 			first++
-		} else if response.Code != 200 {
-			t.Fatalf("concurrent record: %d %s", response.Code, response.Body.String())
+		} else if response.status != 200 {
+			t.Fatalf("concurrent record: %d", response.status)
 		}
 	}
 	if first != 1 || posts != 1 || created["content"] != "#a #z\n\nconcurrent note" {
 		t.Fatalf("duplicate or incorrect writes: first=%d posts=%d content=%v", first, posts, created["content"])
 	}
-	_, _, err = api.Records.Create(context.Background(), "same-key", CreateNote{Content: "concurrent note", Tags: []string{"a", "z"}})
+	_, _, err := records.Create(context.Background(), "same-key", CreateNote{Content: "concurrent note", Tags: []string{"a", "z"}})
 	if err != nil || posts != 1 {
 		t.Fatal("normalized tags did not preserve idempotency")
 	}
-	_, _, err = api.Records.Create(context.Background(), "same-key", CreateNote{Content: "different"})
+	_, _, err = records.Create(context.Background(), "same-key", CreateNote{Content: "different"})
 	if errorCode(err) != "IDEMPOTENCY_CONFLICT" || posts != 1 {
 		t.Fatal("conflicting request reused an idempotency key")
 	}
@@ -91,40 +90,23 @@ func TestRecordRejectsInvalidRequestsBeforeSourceAccess(t *testing.T) {
 		t.Error("invalid record reached Memos")
 		return 500, nil, nil
 	})
-	api, err := NewAPI(settings, store, client, NewSyncService(store, client))
-	if err != nil {
-		t.Fatal(err)
-	}
+	records := NewRecordService(store, client)
 	for _, test := range []struct {
-		key, body string
-		token     int
-		status    int
+		key   string
+		input CreateNote
 	}{
-		{"key", `{"content":"private"}`, 0, 403},
-		{"", `{"content":"private"}`, 1, 422},
-		{"invalid key", `{"content":"private"}`, 1, 422},
-		{"key", `{"content":"private","creator":"users/other"}`, 1, 422},
-		{"key", `{"content":"private","visibility":"PUBLIC"}`, 1, 422},
-		{"key", `{"content":"private","tags":["a #public"]}`, 1, 422},
-		{"key", `{"content":"private","tags":["v\u00b2"]}`, 1, 422},
-		{"key", `{"content":"private","tags":null}`, 1, 422},
-		{"key", `{"content":"private","attachments":null}`, 1, 422},
-		{"key", `{"content":"private","attachments":[{"filename":"a.txt","type":"text/plain","content":null}]}`, 1, 422},
-		{"key", `{"content":"private","attachments":[{"filename":"a.txt","type":"text/plain","content":[1,2]}]}`, 1, 422},
-		{"key", `{"content":"private","attachments":[{"filename":"../a.txt","type":"text/plain","content":"YQ=="}]}`, 1, 422},
-		{"key", `{"content":"private","attachments":[{"filename":"a.txt","type":"text/plain","content":""}]}`, 1, 422},
-		{"key", `{"content":"private","attachments":[{"filename":"a.txt","type":"text/plain","content":"not base64"}]}`, 1, 422},
-		{"key", `{"content":"private","attachments":[{"filename":"a.txt","type":"text/plain; charset=utf-8","content":"YQ=="}]}`, 1, 422},
-		{"key", `{"content":" "}`, 1, 422},
-		{"key", `{"content":"` + strings.Repeat("x", 65536) + `","tags":["a"]}`, 1, 422},
+		{"", CreateNote{Content: "private"}},
+		{"invalid key", CreateNote{Content: "private"}},
+		{"key", CreateNote{Content: "private", Tags: []string{"a #public"}}},
+		{"key", CreateNote{Content: "private", Tags: []string{"v\u00b2"}}},
+		{"key", CreateNote{Content: " "}},
+		{"key", CreateNote{Content: strings.Repeat("x", 65536), Tags: []string{"a"}}},
+		{"key", CreateNote{Content: "private", Attachments: []CreateAttachment{{Filename: "../a.txt", Type: "text/plain", Content: []byte("a")}}}},
+		{"key", CreateNote{Content: "private", Attachments: []CreateAttachment{{Filename: "a.txt", Type: "text/plain", Content: nil}}}},
+		{"key", CreateNote{Content: "private", Attachments: []CreateAttachment{{Filename: "a.txt", Type: "text/plain; charset=utf-8", Content: []byte("a")}}}},
 	} {
-		request := httptest.NewRequest("POST", "/api/ext/v1/notes", strings.NewReader(test.body))
-		request.Header.Set("Authorization", "Bearer "+settings.AccessTokens[test.token].Token)
-		request.Header.Set("Idempotency-Key", test.key)
-		response := httptest.NewRecorder()
-		api.ServeHTTP(response, request)
-		if response.Code != test.status {
-			t.Fatalf("invalid request: %d %s", response.Code, response.Body.String())
+		if _, _, err := records.Create(context.Background(), test.key, test.input); errorCode(err) != "INVALID_ARGUMENT" {
+			t.Fatalf("invalid record reached the service: %v", err)
 		}
 	}
 	var rows int

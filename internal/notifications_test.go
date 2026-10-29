@@ -2,12 +2,9 @@ package moerise
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
-	"net/http/httptest"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 )
@@ -307,7 +304,7 @@ func TestRestoredNotificationsRequireOutcomeReview(t *testing.T) {
 	}
 }
 
-func TestNotificationHTTPScopesAndReceiptResolution(t *testing.T) {
+func TestNotificationReceiptResolutionAndAudit(t *testing.T) {
 	service, platform := notificationFixture(t)
 	ctx := context.Background()
 	if _, err := service.Schedule(ctx, time.Date(2026, 10, 26, 2, 0, 0, 0, time.UTC)); err != nil {
@@ -317,39 +314,22 @@ func TestNotificationHTTPScopesAndReceiptResolution(t *testing.T) {
 	if _, err := service.Deliver(ctx); err != nil {
 		t.Fatal(err)
 	}
-	items, _ := service.List("unknown")
+	items, err := service.List("unknown")
+	if err != nil || len(items) == 0 {
+		t.Fatalf("missing unknown notification: %v %v", items, err)
+	}
 	id := items[0].ID
-	settings := service.Store.Settings
-	settings.AccessTokens[0].Scopes = append(settings.AccessTokens[0].Scopes, "reviews:read")
-	settings.AccessTokens[1].Scopes = append(settings.AccessTokens[1].Scopes, "reviews:read", "reviews:write")
-	source := service.Reviews.Source
-	api, err := NewAPI(settings, service.Store, source, NewSyncService(service.Store, source))
-	if err != nil {
-		t.Fatal(err)
+	if _, err := service.List("pending|running"); errorCode(err) != "INVALID_ARGUMENT" {
+		t.Fatalf("invalid filter: %v", err)
 	}
-	api.Notifications = service
-	call := func(method, path, body string, token int, expected int) *httptest.ResponseRecorder {
-		t.Helper()
-		request := httptest.NewRequest(method, path, strings.NewReader(body))
-		request.Header.Set("Authorization", "Bearer "+settings.AccessTokens[token].Token)
-		response := httptest.NewRecorder()
-		api.ServeHTTP(response, request)
-		if response.Code != expected {
-			t.Fatalf("notification HTTP: %d %s", response.Code, response.Body.String())
-		}
-		return response
+	if _, err := service.Resolve(ctx, id, "sent", "unrelated", "users/owner"); errorCode(err) != "NOTIFICATION_CONFLICT" {
+		t.Fatalf("unrelated receipt: %v", err)
 	}
-	call("GET", "/api/ext/v1/notifications?status=unknown", "", 0, 200)
-	call("GET", "/api/ext/v1/notifications?status=pending%7Crunning", "", 0, 422)
-	path := "/api/ext/v1/notifications/" + id + "/resolve"
-	resolution := fmt.Sprintf(`{"decision":"sent","receipt":"platform-receipt:%s"}`, id)
-	call("POST", path, resolution, 0, 403)
-	call("POST", path, `{"decision":"sent","receipt":"unrelated"}`, 1, 409)
-	call("POST", path, `{"decision":"not_sent","receipt":"unrelated"}`, 1, 422)
-	response := call("POST", path, resolution, 1, 200)
-	var detail NotificationDetail
-	if json.Unmarshal(response.Body.Bytes(), &detail) != nil || detail.Notification.Status != "sent" ||
-		len(detail.Resolutions) != 1 || detail.Resolutions[0].ResolvedBy != "operator" {
-		t.Fatal("receipt check and operator audit were not exposed in the notification result")
+	if _, err := service.Resolve(ctx, id, "not_sent", "unrelated", "users/owner"); errorCode(err) != "INVALID_ARGUMENT" {
+		t.Fatalf("not_sent receipt: %v", err)
+	}
+	detail, err := service.Resolve(ctx, id, "sent", fmt.Sprintf("platform-receipt:%s", id), "users/owner")
+	if err != nil || detail.Notification.Status != "sent" || len(detail.Resolutions) != 1 || detail.Resolutions[0].ResolvedBy != "users/owner" {
+		t.Fatalf("receipt/audit: %+v %v", detail, err)
 	}
 }
