@@ -139,6 +139,17 @@ npm --prefix web start
 
 正式浏览器流程使用构建后的 Web 和真实 Memos，关闭 Embedding、LLM 与飞书，完成登录、本人正常笔记分页、原文创建、刷新、Core 重启后继续访问及退出。创建内容包含首尾空白、换行和正文标签，并从 Memos 官方 API 读回核对；同一创建请求重试复用原幂等键且只产生一条笔记。从 Memos 编辑旧笔记后检查 Web 的创建时间排序，从 Memos 新增后刷新应可见；来源断连时请求失败，恢复后可继续访问。退出后旧 Cookie 不能访问客户端 API，机器令牌不能代替浏览器会话。登录后的可见文案、元素、布局与样式严格以原型为准，产品行为遵循 PRD。
 
+Web 使用两栏布局，侧栏关键词、日历和标签在任意页面跳回时间线并组合筛选。归档入口位于用户菜单；详情路由 `/notes/{id}` 支持直接访问和登录后恢复，返回来源页时恢复筛选及浏览位置。卡片内编辑支持 Ctrl+Enter 保存、Esc 取消；附件与正文分别编辑，正文中的标签保持原样。
+
+`web/test/browser.mjs` 使用正式 Web 和隔离 HTTP 来源，在真实 Chromium 中检查页面交互、附件、来源返回、冲突提示及迟到响应隔离。它从 `MOERISE_PLAYWRIGHT_MODULE` 指定的已安装 Playwright 模块加载浏览器运行时：
+
+```bash
+MOERISE_PLAYWRIGHT_MODULE=/absolute/path/to/playwright/index.mjs \
+node --test web/test/browser.mjs
+```
+
+该流程补充 Node 测试中的路由、草稿幂等和同源代理检查。真实 Memos 的联合浏览器流程还需覆盖来源版本、原文读回及服务重启。
+
 ### 平台适配与持续集成
 
 平台适配测试使用 HTTP 模拟服务验证主动发送的目标与 UUID、租户凭据、文字及图片回执、Webhook 签名与请求大小，以及明确拒绝、响应不可信和重定向处理。回执边界另测相同正文的不同通知，拒绝重复绑定、发送时间不符和会话不符的回执。

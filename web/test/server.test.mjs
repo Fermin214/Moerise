@@ -35,7 +35,7 @@ function raw(url, path) {
 
 test('build assets are served with no-store and a same-origin CSP', async t => {
   const { url } = await fixture(t, () => assert.fail('Static files must not reach Core'));
-  for (const path of ['/', '/app.js', '/draft.js', '/errors.js', '/styles.css', '/favicon.svg']) {
+  for (const path of ['/', '/app.js', '/draft.js', '/errors.js', '/routes.js', '/markdown.js', '/styles.css', '/favicon.svg']) {
     const response = await fetch(url + path);
     assert.equal(response.status, 200);
     assert.equal(response.headers.get('cache-control'), 'no-store');
@@ -106,7 +106,7 @@ test('rejects Authorization even with an existing cookie, including an empty hea
   const { url } = await fixture(t, () => assert.fail('Authorization requests must not reach Core'));
   for (const path of ['/api/app/v1', '/api/app/v1/session', '/api/app/v1/notes']) {
     for (const authorization of ['', 'Bearer machine-token']) {
-      for (const method of ['GET', 'POST', 'DELETE']) {
+      for (const method of ['GET', 'POST', 'PATCH', 'DELETE']) {
         const response = await fetch(url + path, {
           method, headers: {
             Cookie: 'session=existing-cookie', Authorization: authorization,
@@ -117,6 +117,64 @@ test('rejects Authorization even with an existing cookie, including an empty hea
         assert.equal((await response.json()).error.code, 'AUTHORIZATION_REJECTED');
       }
     }
+  }
+});
+
+test('deep links serve the application only for whitelisted pages', async t => {
+  const { url } = await fixture(t, () => assert.fail('Page requests must not reach Core'));
+  for (const path of ['/notes/abc-123?from=%2Farchived', '/archived?tag=a', '/review', '/walk', '/insights', '/map', '/settings']) {
+    const response = await fetch(url + path);
+    assert.equal(response.status, 200, path);
+    assert.match(response.headers.get('content-type'), /text\/html/);
+    assert.match(await response.text(), /id="app"/);
+  }
+  assert.equal((await fetch(`${url}/notes/abc`, { method: 'HEAD' })).status, 200);
+  for (const path of ['/notes/', '/notes/abc/extra', '/unknown', '/src/routes.js', '/internal/config']) {
+    assert.equal((await fetch(url + path)).status, 404, path);
+  }
+});
+
+test('PATCH forwards full JSON, version, CSRF and retry key and rejects other origins', async t => {
+  let received;
+  const { url } = await fixture(t, async (req, res) => {
+    let body = '';
+    for await (const chunk of req) body += chunk;
+    received = { method: req.method, body: JSON.parse(body), headers: req.headers };
+    res.end('{}');
+  });
+  const body = { content: '#原文\n', source_hash: 'source-v1', attachments: [{ filename: 'a', type: 'text/plain', content: 'YQ==' }], remove_attachments: ['attachments/b'] };
+  const response = await fetch(`${url}/api/app/v1/notes/a`, {
+    method: 'PATCH', headers: { Origin: 'https://notes.example.com', 'Content-Type': 'application/json', 'X-CSRF-Token': 'csrf', 'Idempotency-Key': 'fixed-key' },
+    body: JSON.stringify(body),
+  });
+  assert.equal(response.status, 200);
+  assert.equal(received.method, 'PATCH');
+  assert.deepEqual(received.body, body);
+  assert.equal(received.headers['idempotency-key'], 'fixed-key');
+  assert.equal(received.headers['x-csrf-token'], 'csrf');
+  assert.equal((await fetch(`${url}/api/app/v1/notes/a`, { method: 'PATCH' })).status, 403);
+});
+
+test('protected attachment GET and HEAD stream Range metadata and cookie through Core', async t => {
+  const { url } = await fixture(t, (req, res) => {
+    assert.equal(req.headers.cookie, 'session=opaque');
+    assert.equal(req.headers.range, 'bytes=1-3');
+    assert.equal(req.headers['if-range'], '"revision"');
+    res.writeHead(206, {
+      'Content-Type': 'application/octet-stream', 'Content-Length': '3',
+      'Content-Range': 'bytes 1-3/5', 'Accept-Ranges': 'bytes', 'Content-Disposition': 'attachment; filename="a.bin"',
+    });
+    res.end(req.method === 'HEAD' ? undefined : Buffer.from([1, 2, 3]));
+  });
+  for (const method of ['GET', 'HEAD']) {
+    const response = await fetch(`${url}/api/app/v1/notes/a/attachments/b/content`, {
+      method, headers: { Cookie: 'session=opaque', Range: 'bytes=1-3', 'If-Range': '"revision"' },
+    });
+    assert.equal(response.status, 206);
+    assert.equal(response.headers.get('content-range'), 'bytes 1-3/5');
+    assert.equal(response.headers.get('cache-control'), 'no-store');
+    assert.match(response.headers.get('content-disposition'), /attachment/);
+    assert.deepEqual([...new Uint8Array(await response.arrayBuffer())], method === 'HEAD' ? [] : [1, 2, 3]);
   }
 });
 

@@ -6,12 +6,16 @@ import { fileURLToPath } from 'node:url';
 import { resolve } from 'node:path';
 
 const prefix = '/api/app/v1';
+const pages = new Set(['/', '/archived', '/review', '/walk', '/insights', '/map', '/settings']);
+const notePath = /^\/notes\/[A-Za-z0-9_-]+$/;
 const assets = new Map([
   ['/', ['index.html', 'text/html; charset=utf-8']],
   ['/index.html', ['index.html', 'text/html; charset=utf-8']],
   ['/app.js', ['app.js', 'text/javascript; charset=utf-8']],
   ['/draft.js', ['draft.js', 'text/javascript; charset=utf-8']],
   ['/errors.js', ['errors.js', 'text/javascript; charset=utf-8']],
+  ['/routes.js', ['routes.js', 'text/javascript; charset=utf-8']],
+  ['/markdown.js', ['markdown.js', 'text/javascript; charset=utf-8']],
   ['/styles.css', ['styles.css', 'text/css; charset=utf-8']],
   ['/prototype.css', ['prototype.css', 'text/css; charset=utf-8']],
   ['/memos.css', ['memos.css', 'text/css; charset=utf-8']],
@@ -68,8 +72,8 @@ export function createWebServer({
         error(res, 403, 'AUTHORIZATION_REJECTED', '客户端 API 仅使用登录会话，不接受 Authorization 请求头。');
         return;
       }
-      if (!['GET', 'HEAD', 'POST', 'DELETE'].includes(req.method)) {
-        res.setHeader('Allow', 'GET, HEAD, POST, DELETE');
+      if (!['GET', 'HEAD', 'POST', 'PATCH', 'DELETE'].includes(req.method)) {
+        res.setHeader('Allow', 'GET, HEAD, POST, PATCH, DELETE');
         error(res, 405, 'METHOD_NOT_ALLOWED', '此请求方法不可用。');
         return;
       }
@@ -78,7 +82,8 @@ export function createWebServer({
         return;
       }
       const headers = {};
-      for (const name of ['accept', 'content-type', 'content-length', 'cookie', 'origin', 'x-csrf-token', 'idempotency-key']) {
+      for (const name of ['accept', 'content-type', 'content-length', 'cookie', 'origin', 'x-csrf-token', 'idempotency-key',
+        ...(['GET', 'HEAD'].includes(req.method) ? ['range', 'if-range'] : [])]) {
         if (req.headers[name] !== undefined) headers[name] = req.headers[name];
       }
       headers.host = core.host;
@@ -109,7 +114,7 @@ export function createWebServer({
       req.pipe(upstream);
       return;
     }
-    const asset = assets.get(path);
+    const asset = assets.get(path) || (pages.has(path) || notePath.test(path) ? assets.get('/') : null);
     if (!asset || !['GET', 'HEAD'].includes(req.method)) {
       error(res, 404, 'NOT_FOUND', '页面不存在。');
       return;
