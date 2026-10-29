@@ -25,6 +25,7 @@ type clientHarness struct {
 	h      *harness
 	cookie *http.Cookie
 	csrf   string
+	key    string
 }
 
 func (c *clientHarness) call(method, path string, body any, status int) map[string]any {
@@ -43,8 +44,12 @@ func (c *clientHarness) call(method, path string, body any, status int) map[stri
 	if c.cookie != nil {
 		request.AddCookie(c.cookie)
 	}
-	if path == "/api/app/v1/notes" && method == http.MethodPost {
-		request.Header.Set("Idempotency-Key", "client-acceptance-original")
+	if (path == "/api/app/v1/notes" && method == http.MethodPost) || method == http.MethodPatch {
+		key := c.key
+		if key == "" {
+			key = "client-acceptance-original"
+		}
+		request.Header.Set("Idempotency-Key", key)
 	}
 	response, err := c.h.client.Do(request)
 	if err != nil {

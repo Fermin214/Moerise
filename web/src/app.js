@@ -159,7 +159,7 @@ function sourceTimeline() {
 }
 function sidebarFilter(change) {
   const source = sourceTimeline();
-  navigate(timelineURL(source.path, { ...source.values, ...change }));
+  navigate(timelineURL(source.path, { ...source.values, query: $('q').value, ...change }));
 }
 function rememberView(writeHistory = true) {
   if (!identity || !['/', '/archived'].includes(new URL(currentURL, location.origin).pathname)) return;
@@ -755,7 +755,7 @@ $('back').addEventListener('click', () => {
 $('logout').addEventListener('click', logout);
 $('user-menu').addEventListener('click', () => {
   const open = $('account-menu').hidden; closeMenus(); $('account-menu').hidden = !open;
-  $('user-menu').setAttribute('aria-expanded', String(open)); if (open) $('logout').focus();
+  $('user-menu').setAttribute('aria-expanded', String(open)); if (open) $('account-menu').querySelector('[role="menuitem"]')?.focus();
 });
 const extensionPaths = new Map([['每日回顾', '/review'], ['随机漫步', '/walk'], ['AI 洞察', '/insights'], ['认知地图', '/map'], ['设置', '/settings']]);
 document.querySelectorAll('a[aria-disabled="true"]').forEach(link => {
