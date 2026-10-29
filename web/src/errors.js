@@ -5,17 +5,17 @@ const messages = {
   LOGIN_RATE_LIMITED: 'Memos 登录尝试过于频繁，请稍后再试。',
   RATE_LIMITED: '登录尝试过于频繁，请稍后再试。',
   UPSTREAM_UNAVAILABLE: 'Memos 服务暂时无法连接，请稍后重试。',
-  UPSTREAM_AUTH: 'Memos 拒绝了来源凭据，请检查 Core 的来源配置。',
+  UPSTREAM_AUTH: 'Memos 身份校验失败。',
   SESSION_UNAVAILABLE: '会话服务暂时不可用，请稍后重试。',
   CSRF_REJECTED: '会话校验失败，请退出后重新登录。',
-  ORIGIN_REJECTED: '访问地址与服务配置不一致，请检查公开地址。',
-  AUTHORIZATION_REJECTED: '客户端 API 仅使用登录会话，请移除 Authorization 请求头。',
-  WRITE_OUTCOME_UNKNOWN: '保存结果尚未确认，请使用原提交重试。',
-  IDEMPOTENCY_CONFLICT: '提交标识与正文不匹配，请先确认原提交的保存结果。',
-  WRITE_CONFLICT: '原提交与来源记录存在冲突，请先确认来源内容。',
+  ORIGIN_REJECTED: '访问地址不匹配。',
+  AUTHORIZATION_REJECTED: '请使用 Memos 账户登录。',
+  WRITE_OUTCOME_UNKNOWN: '保存结果尚未确认。',
+  IDEMPOTENCY_CONFLICT: '保存内容不一致。',
+  WRITE_CONFLICT: '笔记内容存在冲突。',
   INVALID_PAGE_TOKEN: '分页已失效，请刷新时间线。',
   SOURCE_NOT_FOUND: '这条笔记已不存在或无法访问，请刷新时间线。',
-  IDENTITY_MISMATCH: '来源作者与实例绑定不一致，请检查 Core 的来源配置。',
+  IDENTITY_MISMATCH: 'Memos 身份校验失败。',
   CORE_UNAVAILABLE: '服务暂时无法连接，请稍后重试。',
   NETWORK_ERROR: '网络连接中断，请稍后重试。',
   REQUEST_TIMEOUT: '请求超时，保存结果可能尚未确认。',
@@ -23,13 +23,9 @@ const messages = {
   CONTENT_TOO_LARGE: '正文不能超过 64 KiB。',
   SESSION_RESPONSE_INVALID: '服务返回的会话信息不完整，请重试登录。',
   NOTE_LIST_INVALID: '服务返回的笔记列表格式无效，请刷新重试。',
-  NOTE_SAVE_UNCONFIRMED: '保存响应不完整，请使用原提交重试。',
+  NOTE_SAVE_UNCONFIRMED: '保存结果尚未确认。',
 };
 
 export function errorText(err) {
-  return [
-    messages[err.code] || '请求未能完成，请稍后重试。',
-    err.code ? `（${err.code}）` : '',
-    err.requestId ? `请求编号：${err.requestId}` : '',
-  ].filter(Boolean).join(' ');
+  return messages[err.code] || '请求未能完成，请稍后重试。';
 }

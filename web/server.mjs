@@ -13,6 +13,10 @@ const assets = new Map([
   ['/draft.js', ['draft.js', 'text/javascript; charset=utf-8']],
   ['/errors.js', ['errors.js', 'text/javascript; charset=utf-8']],
   ['/styles.css', ['styles.css', 'text/css; charset=utf-8']],
+  ['/prototype.css', ['prototype.css', 'text/css; charset=utf-8']],
+  ['/memos.css', ['memos.css', 'text/css; charset=utf-8']],
+  ['/layout.css', ['layout.css', 'text/css; charset=utf-8']],
+  ['/memos-logo.webp', ['memos-logo.webp', 'image/webp']],
   ['/favicon.svg', ['favicon.svg', 'image/svg+xml']],
 ]);
 const hopHeaders = new Set([

@@ -10,74 +10,75 @@
   <script type="module" src="/app.js"></script>
 </head>
 <body>
-  <a class="skip-link" href="#main">跳到正文</a>
-  <header class="mobile-bar">
-    <button id="menu-open" type="button" class="icon-button" aria-label="打开导航" aria-controls="sidebar" aria-expanded="false">☰</button>
-    <span class="mobile-brand">Moerise</span>
-  </header>
-  <button id="scrim" class="scrim" type="button" aria-label="关闭导航" hidden></button>
-  <div class="app">
-    <aside id="sidebar" class="sidebar" aria-label="侧栏">
-      <div class="brand"><span class="brand-mark" aria-hidden="true">M</span><strong>Moerise</strong>
-        <button id="menu-close" class="icon-button" type="button" aria-label="关闭导航">×</button>
+  <section id="auth" class="memos-auth" aria-labelledby="auth-title">
+    <div class="memos-login">
+      <div class="memos-brand"><img src="/memos-logo.webp" alt=""><span>Memos</span></div>
+      <h1 id="auth-title">登录</h1>
+      <p class="memos-welcome">欢迎回来。</p>
+      <p id="auth-error" class="error" role="alert" hidden></p>
+      <form id="login-form" hidden>
+        <div><label for="username">用户名</label><input id="username" name="username" placeholder="用户名" autocomplete="username" required autocapitalize="off" spellcheck="false"></div>
+        <div><label for="password">密码</label><input id="password" name="password" type="password" placeholder="密码" autocomplete="current-password" required></div>
+        <button id="login" type="submit">登录</button>
+      </form>
+    </div>
+  </section>
+  <div id="app" class="app" hidden>
+    <aside class="side">
+      <div style="display:flex;align-items:center;gap:10px;padding:4px 8px 2px;min-height:36px">
+        <span style="width:28px;height:28px;border-radius:9px;background:#5B8DEF;display:flex;align-items:center;justify-content:center">
+          <svg class="i" style="width:16px;height:16px;stroke:#fff;stroke-width:2.2" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 18V7l8 7 8-7v11"></path></svg>
+        </span>
+        <b style="font-size:17px">Moerise</b>
       </div>
-      <nav aria-label="主导航"><a class="nav-entry selected" href="#main" aria-current="page"><span aria-hidden="true">☷</span>时间线</a></nav>
-      <div class="sidebar-description">
-        <p>给想法一个落点。</p>
-        <p>正常笔记按创建时间排列。写下的正文、换行和 #标签都会原样保存。</p>
+      <nav aria-label="主导航" style="display:flex;flex-direction:column;gap:2px">
+        <a class="ent on" href="#main" aria-current="page"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 6h14M5 12h14M5 18h9"></path></svg>时间线</a>
+        <div class="sep" role="separator"></div>
+        <a class="ent" href="#" aria-disabled="true"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="5" width="16" height="15" rx="3"></rect><path d="M8 3v4M16 3v4M4 10h16M9 15l2 2 4-4"></path></svg>每日回顾</a>
+        <a class="ent" href="#" aria-disabled="true"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8h3c4 0 6 8 10 8h3M4 16h3c1.6 0 2.8-1.2 3.8-2.6M20 8h-3c-1.4 0-2.5.9-3.4 2M18 5l2 3-2 3M18 13l2 3-2 3"></path></svg>随机漫步</a>
+        <a class="ent" href="#" aria-disabled="true"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8zM18 16l.8 2.2L21 19l-2.2.8L18 22l-.8-2.2L15 19l2.2-.8z"></path></svg>AI 洞察</a>
+        <a class="ent" href="#" aria-disabled="true"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><circle cx="6" cy="7" r="2.5"></circle><circle cx="18" cy="6" r="2.5"></circle><circle cx="12" cy="18" r="2.5"></circle><path d="M8.3 8.3l2.4 7.4M15.9 8l-2.8 7.8M8.5 7h7"></path></svg>认知地图</a>
+      </nav>
+      <div class="sq" style="margin-top:6px">
+        <label class="sr" for="q">搜索笔记</label><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6"></circle><path d="M20 20l-4.5-4.5"></path></svg>
+        <input id="q" type="search" placeholder="搜索笔记" disabled>
       </div>
-      <section class="account" aria-labelledby="account-heading">
-        <h2 id="account-heading">账户</h2>
-        <p id="account-name">尚未登录</p>
-        <p id="account-zone" class="muted"></p>
-        <button id="logout" class="quiet-button" type="button" hidden>退出登录</button>
+      <section aria-label="日历" style="display:flex;flex-direction:column;gap:4px">
+        <div class="lab"><b id="calendar-title" style="font-size:13px;font-weight:600;color:#3A4049"></b><span style="display:flex">
+          <button class="btn s" style="width:28px;height:28px" type="button" aria-label="上个月" disabled><svg class="i" style="width:16px;height:16px" viewBox="0 0 24 24" aria-hidden="true"><path d="M14 6l-6 6 6 6"></path></svg></button>
+          <button class="btn s" style="width:28px;height:28px" type="button" aria-label="下个月" disabled><svg class="i" style="width:16px;height:16px" viewBox="0 0 24 24" aria-hidden="true"><path d="M10 6l6 6-6 6"></path></svg></button>
+        </span></div>
+        <div id="calendar" class="hm"><span>一</span><span>二</span><span>三</span><span>四</span><span>五</span><span>六</span><span>日</span></div>
       </section>
+      <section aria-label="标签" class="tg" style="display:flex;flex-direction:column;gap:1px"><div class="lab" style="padding-bottom:2px"><span>标签</span></div></section>
+      <div id="account" style="margin-top:auto;display:flex;flex-direction:column;gap:2px;padding-top:8px;border-top:1px solid #E8E8E4;position:sticky;bottom:-14px;background:#F4F4F1;padding-bottom:2px" hidden>
+        <a class="ent" href="#" aria-disabled="true"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"></circle><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M18.4 5.6l-2.1 2.1M7.7 16.3l-2.1 2.1"></path></svg>设置</a>
+        <button id="user-menu" class="ent" type="button" aria-haspopup="menu" aria-expanded="false" aria-label="用户菜单" style="border:0;background:transparent;width:100%;cursor:pointer;font-size:14px">
+          <svg class="i" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="3.5"></circle><path d="M5 20c1-4 4-5.5 7-5.5s6 1.5 7 5.5"></path></svg>
+          <span id="account-name"></span>
+          <svg class="i dots" style="margin-left:auto;width:16px;height:16px" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5h.01M12 12h.01M12 19h.01"></path></svg>
+        </button>
+        <div id="account-menu" class="menu" role="menu" style="top:auto;bottom:44px" hidden>
+          <button id="logout" class="mi" type="button" role="menuitem">退出登录</button>
+        </div>
+      </div>
     </aside>
     <main id="main" class="main" tabindex="-1">
       <div class="feed">
-        <section id="auth" class="auth-card" aria-labelledby="auth-title">
-          <span class="brand-mark" aria-hidden="true">M</span>
-          <h1 id="auth-title">登录 Moerise</h1>
-          <p class="muted">使用此实例绑定的 Memos 账户。</p>
-          <p id="auth-status" role="status" aria-live="polite">正在恢复会话…</p>
-          <p id="auth-error" class="error" role="alert" hidden></p>
-          <form id="login-form" hidden>
-            <label for="username">用户名</label>
-            <input id="username" name="username" autocomplete="username" required autocapitalize="none" spellcheck="false">
-            <label for="password">密码</label>
-            <input id="password" name="password" type="password" autocomplete="current-password" required>
-            <button id="login" class="primary-button" type="submit">登录</button>
-          </form>
-          <button id="auth-retry" class="quiet-button" type="button" hidden>重试恢复会话</button>
-          <button id="logout-retry" class="quiet-button" type="button" hidden>重试退出</button>
-        </section>
-        <section id="workspace" aria-labelledby="timeline-title" hidden>
-          <header class="feed-heading">
-            <div><h1 id="timeline-title">时间线</h1><p class="muted">写下此刻，留给以后。</p></div>
-            <button id="refresh" class="quiet-button" type="button">刷新</button>
-          </header>
-          <form id="composer" class="composer">
-            <label class="sr-only" for="content">笔记正文</label>
-            <textarea id="content" name="content" rows="5" placeholder="此刻有什么想记下来？" aria-describedby="compose-help pending-help"></textarea>
-            <div class="composer-footer"><span id="compose-help" class="muted">Ctrl + Enter 保存</span><button id="save" class="primary-button" type="submit">保存笔记</button></div>
-            <p id="pending-help" class="pending-help" hidden></p>
-            <button id="abandon" class="quiet-button" type="button" hidden>放弃重试，另开记录</button>
-            <p id="save-status" role="status" aria-live="polite"></p>
+        <section id="workspace" class="stage" hidden>
+          <form id="composer" class="card composer" aria-label="新建笔记">
+            <label class="sr" for="content">写点什么</label>
+            <textarea id="content" name="content" rows="3" placeholder="此刻在想什么？用 # 添加标签"></textarea>
+            <div class="bar"><div style="display:flex;align-items:center;gap:4px"><button class="btn" type="button" aria-label="添加附件" disabled><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"></path></svg></button></div><button id="save" class="save" type="submit">保存<small>Ctrl ↵</small></button></div>
             <p id="save-error" class="error" role="alert" hidden></p>
           </form>
-          <div class="list-heading"><h2>全部正常笔记</h2><span class="muted">创建时间倒序</span></div>
-          <p id="list-status" role="status" aria-live="polite"></p>
+          <p id="empty" class="sub" style="text-align:center" hidden>没有匹配的笔记</p>
           <p id="list-error" class="error" role="alert" hidden></p>
-          <div id="notes" class="notes" aria-label="笔记列表"></div>
-          <div class="pagination"><button id="load-more" class="quiet-button" type="button" hidden>加载更多</button></div>
+          <div id="notes" style="display:flex;flex-direction:column;gap:14px"></div>
+          <div id="page-end" aria-hidden="true"></div>
         </section>
       </div>
     </main>
   </div>
-  <dialog id="abandon-dialog" aria-labelledby="abandon-title" aria-describedby="abandon-description">
-    <h2 id="abandon-title">放弃原提交的重试？</h2>
-    <p id="abandon-description">原提交可能已经保存。另开记录会使用新的提交标识，可能产生重复笔记。编辑框里的文字会留下；请先刷新时间线确认。</p>
-    <div class="dialog-actions"><button id="keep-retry" class="quiet-button" type="button" autofocus>继续保留重试</button><button id="confirm-abandon" class="primary-button" type="button">放弃重试</button></div>
-  </dialog>
 </body>
 </html>
