@@ -123,6 +123,14 @@ go test -tags=integration ./tests -run '^TestClientMemosAcceptance$' -v -count=1
 
 该流程覆盖未登录与错误密码、非绑定账户拒绝、本人正常笔记分页、创建时间及同时间资源名倒序、置顶与编辑不改变创建排序、含空白换行和标签的原文创建、同键重放与冲突、来源断连、Core 重启后的会话及幂等状态、索引重建后的会话与来源列表、退出后旧 Cookie 失效，以及带写入 Scope 的机器令牌仍不能写入或生成。响应检查包括 Cookie 属性、禁止缓存和上游敏感字段隔离。该测试不启动 Web 或浏览器；Origin、CSRF、续期与退出竞争、快照恢复后会话失效由 `internal/client_api_test.go` 和 `internal/sessions_test.go` 补充覆盖。
 
+`tests/client_management_acceptance_test.go` 的 `TestClientManagementMemosAcceptance` 补充笔记管理和附件流程：
+
+```bash
+go test -tags=integration ./tests -run '^TestClientManagementMemosAcceptance$' -v -count=1
+```
+
+该流程检查原文保留、纯图片及纯文件创建、编辑冲突、归档恢复、删除、关键词/日期/多标签组合筛选和全量标签日历统计，并从 Memos 官方 API 核对纯图片的空正文与附件归属。附件检查覆盖跨重启读取、GET/HEAD/单区间 Range、图片内嵌及文件下载、匿名与无关笔记拒绝、退出后失效，以及上传成功后响应丢失时跨重启复用附件。
+
 使用 Node.js 24+ 构建并检查正式 Web：
 
 ```bash
@@ -137,7 +145,7 @@ CORE_ORIGIN=http://127.0.0.1:8787 PUBLIC_ORIGIN=http://localhost:3000 \
 npm --prefix web start
 ```
 
-正式浏览器流程使用构建后的 Web 和真实 Memos，关闭 Embedding、LLM 与飞书，完成登录、本人正常笔记分页、原文创建、刷新、Core 重启后继续访问及退出。创建内容包含首尾空白、换行和正文标签，并从 Memos 官方 API 读回核对；同一创建请求重试复用原幂等键且只产生一条笔记。从 Memos 编辑旧笔记后检查 Web 的创建时间排序，从 Memos 新增后刷新应可见；来源断连时请求失败，恢复后可继续访问。退出后旧 Cookie 不能访问客户端 API，机器令牌不能代替浏览器会话。登录后的可见文案、元素、布局与样式严格以原型为准，产品行为遵循 PRD。
+正式浏览器流程使用构建后的 Web 和真实 Memos，关闭 Embedding、LLM 与飞书，完成登录、本人正常笔记分页、原文创建、刷新、Core 重启后继续访问及退出。创建内容包含首尾空白、换行和正文标签，并从 Memos 官方 API 读回核对；同一创建请求重试复用原幂等键且只产生一条笔记。管理流程覆盖纯图片与纯文件、附件增删、归档恢复、删除确认、跨页组合筛选、详情刷新及返回来源页，并检查桌面和窄屏布局。从 Memos 编辑旧笔记后检查 Web 的创建时间排序，从 Memos 新增后刷新应可见；来源断连时请求失败，恢复后可继续访问。退出后旧 Cookie 不能访问客户端 API，机器令牌不能代替浏览器会话。登录后的可见文案、元素、布局与样式严格以原型为准，产品行为遵循 PRD。
 
 Web 使用两栏布局，侧栏关键词、日历和标签在任意页面跳回时间线并组合筛选。归档入口位于用户菜单；详情路由 `/notes/{id}` 支持直接访问和登录后恢复，返回来源页时恢复筛选及浏览位置。卡片内编辑支持 Ctrl+Enter 保存、Esc 取消；附件与正文分别编辑，正文中的标签保持原样。
 
@@ -147,6 +155,8 @@ Web 使用两栏布局，侧栏关键词、日历和标签在任意页面跳回�
 MOERISE_PLAYWRIGHT_MODULE=/absolute/path/to/playwright/index.mjs \
 node --test web/test/browser.mjs
 ```
+
+默认使用 Playwright 安装的 Chromium；设置 `MOERISE_PLAYWRIGHT_CHANNEL=chrome` 可复用本机 Chrome。
 
 该流程补充 Node 测试中的路由、草稿幂等和同源代理检查。真实 Memos 的联合浏览器流程还需覆盖来源版本、原文读回及服务重启。
 

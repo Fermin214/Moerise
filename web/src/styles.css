@@ -31,6 +31,7 @@ button:disabled { cursor:default; opacity:.5; }
 .editor textarea { min-height:130px; }
 .note-error { margin-top:10px; }
 .more[aria-expanded="true"] { opacity:1; }
+.menu a.mi { display:flex; align-items:center; text-decoration:none; }
 .tag-row { width:100%; border:0; background:transparent; text-align:left; cursor:pointer; }
 #calendar { min-height:160px; }
 #sidebar-error { padding:0 8px; }

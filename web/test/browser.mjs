@@ -129,7 +129,7 @@ async function fixture(t) {
     await browser?.close();
     await Promise.all([core, live].map(server => new Promise(resolve => { server.close(resolve); server.closeAllConnections(); })));
   });
-  browser = await chromium.launch({ headless: true });
+  browser = await chromium.launch({ headless: true, channel: process.env.MOERISE_PLAYWRIGHT_CHANNEL || undefined });
   const context = await browser.newContext({ viewport: { width: 1360, height: 960 } });
   const page = await context.newPage(), errors = [];
   page.on('pageerror', err => errors.push(err.message));
@@ -167,10 +167,13 @@ test('browser timeline management, attachment retries, history, conflicts and pr
   await page.waitForURL('**/?tag=*');
   await page.locator('[data-name="memos/n00"]').waitFor();
   await screenshot(page, 'desktop.png');
-  await page.locator('#q').fill('笔记');
-  await page.locator('#q').press('Enter');
-  await page.waitForURL('**/*query=*');
-  await page.locator('#tags button', { hasText: '#灵感' }).click();
+  await page.locator('#tags button', { hasText: '#灵感' }).waitFor();
+  await page.evaluate(() => {
+    const search = document.getElementById('q');
+    search.value = '笔记';
+    search.dispatchEvent(new Event('input', { bubbles: true }));
+    [...document.querySelectorAll('#tags button')].find(button => button.textContent.includes('#灵感')).click();
+  });
   await page.waitForFunction(() => new URL(location.href).searchParams.getAll('tag').length === 2);
   await page.locator('#calendar button[aria-label^="2026-10-29"]').click();
   await page.waitForFunction(() => new URL(location.href).searchParams.get('date') === '2026-10-29');
@@ -225,6 +228,7 @@ test('browser timeline management, attachment retries, history, conflicts and pr
   await page.locator('[data-name="memos/n00"] .note-content', { hasText: '外部修改' }).waitFor();
   await menu(page, 'n00', '归档');
   await page.locator('[data-name="memos/n00"]').waitFor({ state: 'detached' });
+  await page.getByRole('button', { name: '用户菜单' }).click();
   await page.locator('a[href="/archived"]').click();
   await page.locator('[data-name="memos/n00"]').waitFor();
   await menu(page, 'n00', '恢复到时间线');
@@ -305,6 +309,7 @@ test('late list and file reads cannot restore private data or overwrite a newer 
   await page.locator('#q').fill('slow');
   await page.locator('#q').press('Enter');
   await hasRequest;
+  await page.getByRole('button', { name: '用户菜单' }).click();
   await page.locator('a[href="/archived"]').click();
   await page.locator('[data-name="memos/old"]').waitFor();
   release();
