@@ -61,6 +61,9 @@ flowchart LR
 | --- | --- |
 | `internal/app.go` | 唯一服务装配、Provider 和工作循环、资源关闭与写锁所有权 |
 | `internal/notes.go` | 共享笔记读取、来源复查与机器索引分页 |
+| `internal/client_api.go`、`client_models.go` | 同源 Cookie、Origin、CSRF、原生笔记与受控通知恢复路由 |
+| `internal/memos_auth.go`、`sessions.go` | 官方密码认证、加密持久会话、串行续期与本地撤销 |
+| `internal/memos_live.go`、`notes_live.go` | 创建时间倒序的来源分页、同时间组排序及独立签名游标 |
 | `internal/api.go`、`models.go`、`openapi.json` | REST 路由、访问范围、来源复查、分页与响应契约 |
 | `internal/memos.go` | Memos 版本与身份检查、官方 API 调用及笔记格式转换 |
 | `internal/records.go`、`attachments.go` | 文本、标签和附件记录、持久幂等、写入结果复查与恢复 |
@@ -115,16 +118,16 @@ SQLite 使用 WAL。迁移按编号执行并校验摘要，产品状态与投影
 
 ### 笔记创建流程
 
-`POST /api/ext/v1/notes` 要求 `notes:write` Scope 与必填 `Idempotency-Key`，接收 `content`、可省略的 `tags` 和 `attachments`。键为 1 至 128 个 ASCII 字母、数字或 `._:-`。正文必填且非空白；标签输入最多 20 项，每项 1 至 100 个 Unicode 字符，由 Unicode 字母、十进制数字、下划线和连字符组成的非空段以 `/` 分隔，不含 `#` 或空白。附件有序，最多 10 个，合计至多 8 MiB，通过 Base64 传入。
+`POST /api/app/v1/notes` 要求本人浏览器会话、Origin、CSRF 与必填 `Idempotency-Key`，只接收 `content`。键为 1 至 128 个 ASCII 字母、数字或 `._:-`。正文须非空白，最多 65536 UTF-8 字节。
 
-1. 检查凭据、请求头与字段，标签去重并按字符串升序排序。非空标签生成 `#tag1 #tag2\n\n` 前缀，与原正文合计 UTF-8 编码不超过 65536 字节；空标签不添加前缀。
+1. 检查会话、请求头与字段，将真实正文交给共享 Records 服务；不拆分标签或添加前缀。受保护请求绑定可取消的会话 context，退出撤销会话时一并取消排队请求。
 2. 以原正文和规范化标签计算内容摘要，将幂等键、摘要、分配的 `memoId` 和处理状态持久写入产品数据库。同键不同规范化内容返回 409 `IDEMPOTENCY_CONFLICT`。
-3. 验证来源身份，通过官方 API 为绑定账号创建 `PRIVATE` 笔记，将标签前缀写入正文供 Memos 解析。接口不开放 `creator`、`visibility` 或 `state`。附件按位置持久分配资源标识，通过官方 API 上传并关联已复查作者的笔记，每次上传前再次检查来源身份与父笔记。
+3. 验证来源身份，通过官方 API 为绑定账号创建 `PRIVATE` 笔记，保留首尾空白、换行和正文标签。接口不开放 `creator`、`visibility` 或 `state`。
 4. 超时、5xx、响应不可信等结果不明时返回 503 `WRITE_OUTCOME_UNKNOWN`，`retryable=true`。调用方只用相同键和请求体重试；服务先复查持久分配的 `memoId`，必要时才以同一 ID 创建，避免生成重复 ID。来源资源冲突返回 409 `WRITE_CONFLICT`。
-5. 确认创建时检查请求标签是否在 Memos 中完整保留；不完整时返回 409 `WRITE_CONFLICT`。返回前验证来源身份并复查作者与正文，首次请求成功返回 201 和 `Note`。同键相同规范化内容重放时再次复查来源，成功返回 200 和最新 `Note`；来源故障不输出缓存正文。
+5. 返回前验证来源身份并复查作者与正文，首次请求成功返回 201 和 `Note`。同键同正文重放时再次复查来源，成功返回 200 和最新 `Note`；来源故障不输出缓存正文。
 6. 已确认成功的来源笔记被删除后，重放返回 404 `SOURCE_NOT_FOUND`，不重建笔记。
 
-附件失败后使用同一请求继续，复查已分配的附件资源并只补齐缺失项。正文与全部附件关联成功后才确认整次写入；部分成功后的父笔记已删除时不重建。产品数据库只保存请求摘要、附件标识和父笔记确认状态，不存文件字节。
+内部渠道记录继续复用已有标签与附件能力：独立标签按既有规则规范化，附件按位置持久分配资源标识，通过官方 API 上传并关联已复查作者的笔记。附件失败后使用同一请求继续，只补齐缺失项；每次上传前检查来源身份和父笔记。正文与全部附件关联成功后才确认整次写入，部分成功后的父笔记已删除时不重建。产品数据库只保存请求摘要、附件标识和父笔记确认状态，不存文件字节。
 
 ### 同步流程
 
@@ -206,7 +209,7 @@ REST 与 MCP 共享 `AIService` 及模型提供商。渠道队列中的 AI 任�
 
 Moerise 的 `/mcp` 使用官方 Go MCP SDK 提供无会话 Streamable HTTP 传输。工具包括单条获取、分页列表、搜索、相关笔记、语义漫步、回顾读取及 AI 分析，按令牌的读取 Scope 注册。
 
-回顾尚未生成时 MCP 返回 `REVIEW_NOT_FOUND`，由 Core 生成流程创建。工具发现与直接调用都不开放笔记写入、创建或更换回顾、打开、略过和阅读历史写入，即使令牌包含写入 Scope。AI 工具另需 `ai:generate`，调用产生模型用量但不保存结果。工具及权限见 [API v1](API-V1.md#每日回顾与-mcp)。
+回顾尚未生成时 MCP 返回 `REVIEW_NOT_FOUND`，由 Core 生成流程创建。工具发现与直接调用都不开放笔记写入、创建或更换回顾、打开、略过、阅读历史写入及 AI 生成，即使令牌包含写入 Scope 或 `ai:generate`。工具及权限见 [API v1](API-V1.md#每日回顾与-mcp)。
 
 Memos 0.31.0 的 PAT 缺少读写 Scope；`readOnlyHint` 和客户端工具筛选只是调用方提示或限制。Moerise 的只读边界由服务端凭据检查落实，上游 PAT 保存在服务端。依据见[令牌协议](https://github.com/usememos/memos/blob/v0.31.0/proto/api/v1/user_service.proto)及[令牌创建实现](https://github.com/usememos/memos/blob/v0.31.0/server/api/v1/user_service_access_tokens.go)。
 

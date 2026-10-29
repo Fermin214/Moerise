@@ -11,7 +11,9 @@ import (
 	"encoding/base64"
 	"errors"
 	"net"
+	"net/netip"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -51,6 +53,10 @@ type sessionLock struct {
 	refs int
 }
 
+type sessionRequest struct {
+	cancel context.CancelFunc
+}
+
 type SessionService struct {
 	store    *Store
 	source   Source
@@ -62,6 +68,7 @@ type SessionService struct {
 	mu        sync.Mutex
 	locks     map[string]*sessionLock
 	access    map[string]sessionAccess
+	active    map[string]map[*sessionRequest]struct{}
 	nextClean time.Time
 	closed    bool
 	ctx       context.Context
@@ -82,23 +89,82 @@ func (config *WebConfig) validate() error {
 	if !config.Enabled {
 		return nil
 	}
-	if !validOrigin(config.PublicOrigin) {
-		return errors.New("invalid configuration at web.public_origin")
+	origin, err := canonicalWebOrigin(config.PublicOrigin)
+	if err != nil {
+		return err
 	}
-	origin, _ := url.Parse(config.PublicOrigin)
-	if origin.Path != "" && origin.Path != "/" {
-		return errors.New("invalid configuration at web.public_origin")
+	config.PublicOrigin = origin
+	_, err = stateEncryptionKey(config.StateEncryptionKey)
+	return err
+}
+
+func canonicalWebOrigin(value string) (string, error) {
+	bad := errors.New("invalid configuration at web.public_origin")
+	if !validOrigin(value) || strings.ContainsAny(value, `\#`) {
+		return "", bad
 	}
-	host := origin.Hostname()
-	if origin.Scheme == "http" && host != "localhost" {
-		address := net.ParseIP(host)
-		if address == nil || !address.IsLoopback() {
-			return errors.New("web.public_origin requires HTTPS or a loopback HTTP address")
+	origin, _ := url.Parse(value)
+	if (origin.Path != "" && origin.Path != "/") || strings.HasSuffix(origin.Host, ":") {
+		return "", bad
+	}
+	scheme, host := strings.ToLower(origin.Scheme), strings.ToLower(origin.Hostname())
+	address, err := netip.ParseAddr(strings.TrimSuffix(host, "."))
+	if err == nil {
+		if address.Zone() != "" || (address.Is6() && !strings.HasPrefix(origin.Host, "[")) {
+			return "", bad
+		}
+		host = address.String()
+		if address.Is4In6() {
+			// 浏览器将映射 IPv4 的 IPv6 地址也序列化为十六进制。
+			ip := address.As16()
+			host = "::ffff:" + strconv.FormatUint(uint64(ip[12])<<8|uint64(ip[13]), 16) +
+				":" + strconv.FormatUint(uint64(ip[14])<<8|uint64(ip[15]), 16)
+		}
+	} else {
+		labels := strings.Split(strings.TrimSuffix(host, "."), ".")
+		if len(host) > 254 {
+			return "", bad
+		}
+		for _, label := range labels {
+			if label == "" || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
+				return "", bad
+			}
+			for _, ch := range label {
+				if !(ch >= 'a' && ch <= 'z') && !(ch >= '0' && ch <= '9') && ch != '-' {
+					return "", bad
+				}
+			}
+		}
+		last := labels[len(labels)-1]
+		digits := "0123456789"
+		if strings.HasPrefix(last, "0x") {
+			last, digits = last[2:], "0123456789abcdef"
+		}
+		// 非标准数字主机会被浏览器当成 IPv4 重写或拒绝。
+		if strings.Trim(last, digits) == "" {
+			return "", bad
 		}
 	}
-	config.PublicOrigin = strings.TrimRight(config.PublicOrigin, "/")
-	_, err := stateEncryptionKey(config.StateEncryptionKey)
-	return err
+	if scheme == "http" && strings.TrimSuffix(host, ".") != "localhost" && !address.Unmap().IsLoopback() {
+		return "", errors.New("web.public_origin requires HTTPS or a loopback HTTP address")
+	}
+	port := origin.Port()
+	if port != "" {
+		number, err := strconv.ParseUint(port, 10, 16)
+		if err != nil || number == 0 {
+			return "", bad
+		}
+		port = strconv.FormatUint(number, 10)
+		if (scheme == "http" && number == 80) || (scheme == "https" && number == 443) {
+			port = ""
+		}
+	}
+	if port != "" {
+		host = net.JoinHostPort(host, port)
+	} else if strings.Contains(host, ":") {
+		host = "[" + host + "]"
+	}
+	return scheme + "://" + host, nil
 }
 
 func sessionBinding(config MemosConfig) string {
@@ -150,7 +216,7 @@ func NewSessionService(store *Store, source Source) (*SessionService, error) {
 	return &SessionService{
 		store: store, source: source, settings: settings, auth: newMemosAuthClient(settings.Memos),
 		aead: aead, binding: sessionBinding(settings.Memos), locks: map[string]*sessionLock{},
-		access: map[string]sessionAccess{}, ctx: ctx, cancel: cancel,
+		access: map[string]sessionAccess{}, active: map[string]map[*sessionRequest]struct{}{}, ctx: ctx, cancel: cancel,
 	}, nil
 }
 
@@ -273,9 +339,16 @@ func (s *SessionService) load(ctx context.Context, hash string) (sessionRow, err
 func (s *SessionService) revoke(hash string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	s.cache(hash, memosCredentials{})
 	if _, err := s.store.state.ExecContext(ctx, "DELETE FROM client_sessions WHERE session_hash = ?", hash); err != nil {
 		return sessionUnavailable()
+	}
+	s.mu.Lock()
+	delete(s.access, hash)
+	requests := s.active[hash]
+	delete(s.active, hash)
+	s.mu.Unlock()
+	for request := range requests {
+		request.cancel()
 	}
 	return nil
 }
@@ -298,8 +371,25 @@ func (s *SessionService) clean(ctx context.Context) {
 		}
 	}
 	s.mu.Unlock()
-	_, _ = s.store.state.ExecContext(ctx, `DELETE FROM client_sessions WHERE session_hash IN
-		(SELECT session_hash FROM client_sessions WHERE refresh_expires_at <= ? LIMIT 64)`, time.Now().Unix())
+	rows, err := s.store.state.QueryContext(ctx,
+		"SELECT session_hash FROM client_sessions WHERE refresh_expires_at <= ? LIMIT 64", time.Now().Unix())
+	if err != nil {
+		return
+	}
+	var expired []string
+	for rows.Next() {
+		var hash string
+		if err := rows.Scan(&hash); err != nil {
+			break
+		}
+		expired = append(expired, hash)
+	}
+	rows.Close()
+	for _, hash := range expired {
+		unlock := s.lock(hash)
+		_, _ = s.load(ctx, hash)
+		unlock()
+	}
 }
 
 func (s *SessionService) public(row sessionRow, user SessionUser) *SessionIdentity {
@@ -497,7 +587,51 @@ func (s *SessionService) CheckActive(ctx context.Context, identity *SessionIdent
 		return err
 	}
 	defer done()
+	if identity == nil {
+		return sessionUnauthorized()
+	}
+	unlock := s.lock(identity.sessionHash)
+	defer unlock()
 	return s.checkActive(ctx, identity)
+}
+
+func (s *SessionService) BindRequest(ctx context.Context, identity *SessionIdentity) (context.Context, func(), error) {
+	ctx, done, err := s.operation(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	if identity == nil {
+		done()
+		return nil, nil, sessionUnauthorized()
+	}
+	hash := identity.sessionHash
+	unlock := s.lock(hash)
+	defer unlock()
+	if err := s.checkActive(ctx, identity); err != nil {
+		done()
+		return nil, nil, err
+	}
+	ctx, cancel := context.WithCancel(ctx)
+	request := &sessionRequest{cancel}
+	s.mu.Lock()
+	if s.active[hash] == nil {
+		s.active[hash] = map[*sessionRequest]struct{}{}
+	}
+	s.active[hash][request] = struct{}{}
+	s.mu.Unlock()
+	var once sync.Once
+	return ctx, func() {
+		once.Do(func() {
+			s.mu.Lock()
+			delete(s.active[hash], request)
+			if len(s.active[hash]) == 0 {
+				delete(s.active, hash)
+			}
+			s.mu.Unlock()
+			cancel()
+			done()
+		})
+	}, nil
 }
 
 func (s *SessionService) LocalIdentity(ctx context.Context, rawID string) (*SessionIdentity, error) {
@@ -510,6 +644,8 @@ func (s *SessionService) LocalIdentity(ctx context.Context, rawID string) (*Sess
 	if err != nil {
 		return nil, err
 	}
+	unlock := s.lock(hash)
+	defer unlock()
 	row, err := s.load(ctx, hash)
 	if err != nil {
 		return nil, err
@@ -528,9 +664,9 @@ func (s *SessionService) Logout(ctx context.Context, rawID string) error {
 		return nil
 	}
 	unlock := s.lock(hash)
-	defer unlock()
 	row, err := s.load(ctx, hash)
 	if err != nil {
+		unlock()
 		if errorCode(err) == "SESSION_UNAUTHORIZED" {
 			return nil
 		}
@@ -538,8 +674,10 @@ func (s *SessionService) Logout(ctx context.Context, rawID string) error {
 	}
 	credentials, _ := s.decrypt(row)
 	if err := s.revoke(hash); err != nil {
+		unlock()
 		return err
 	}
+	unlock()
 	// 上游清理即使需要刷新，也不能重建已经删除的本地会话。
 	_ = s.auth.signOut(ctx, credentials)
 	return nil

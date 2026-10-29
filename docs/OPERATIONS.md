@@ -29,7 +29,7 @@ Moerise 支持 Linux 原生二进制和 Docker Linux 容器部署，两者都需
 
 扩展令牌须各不相同，且与 Memos PAT 分开。分别用密码管理器生成至少 32 字符的随机令牌和分页密钥；安装了 OpenSSL 时也可使用 `openssl rand -hex 32`。Scope 说明见 [API v1](API-V1.md#资源与身份)。
 
-模板中的 `operator` 包含笔记、同步、回顾的读写 Scope 和 `discovery:write`，`reader` 包含 `notes:read`、`reviews:read`，`ai-client` 包含 `notes:read`、`ai:generate`。AI 接口需要这两个 Scope 且启用 `llm.enabled`。只读凭据不能创建笔记、每日批次或保存打开、略过记录。笔记创建请求需携带 `Idempotency-Key`；503 `WRITE_OUTCOME_UNKNOWN` 表示写入结果不明，只能使用同一键和请求体重试，完整规则见[创建笔记](API-V1.md#创建笔记)。
+模板中的 `operator` 包含 `notes:read`、`sync:read`、`reviews:read`，`reader` 包含 `notes:read`、`reviews:read`。外部机器入口由只读操作白名单约束，写入 Scope 也不能开放写操作或生成。原生客户端通过独立浏览器会话创建笔记，请求需携带 `Idempotency-Key`；503 `WRITE_OUTCOME_UNKNOWN` 表示写入结果不明，只能使用同一键和请求体重试，完整规则见[原生客户端](API-V1.md#原生客户端)。
 
 扩展 MCP 使用相同的 Moerise 令牌，连接服务的 `/mcp`；具体工具和语义见 [API v1](API-V1.md#每日回顾与-mcp)。
 
@@ -68,7 +68,7 @@ Moerise 支持 Linux 原生二进制和 Docker Linux 容器部署，两者都需
 
 ### Web 会话
 
-使用 `openssl rand -base64 32` 生成独立的状态加密主密钥，与 PAT、机器令牌和分页密钥分别保存。`web.public_origin` 只填写协议、主机和可选端口，例如 `https://notes.example.com`；本地联调可用 `http://127.0.0.1:8787`。启用后，Core 必须能够访问 Memos 的官方 Connect `SignIn`、`RefreshToken`、`SignOut` 和 REST `/api/v1/auth/me`。
+使用 `openssl rand -base64 32` 生成独立的状态加密主密钥，与 PAT、机器令牌和分页密钥分别保存。`web.public_origin` 只填写协议、主机和可选端口，例如 `https://notes.example.com`；本地联调可用 `http://127.0.0.1:8787`。主机名使用 ASCII 或 Punycode；服务会规范化大小写、IPv6 和默认端口，以匹配浏览器 Origin。启用后，Core 必须能够访问 Memos 的官方 Connect `SignIn`、`RefreshToken`、`SignOut` 和 REST `/api/v1/auth/me`。
 
 客户端通过 Memos 用户名和密码登录，登录账户必须等于实例绑定作者及后台 PAT 所属账户。浏览器会话 ID 只保存摘要，刷新凭据以按用途派生的 AEAD 密钥加密保存在 `state.sqlite3`，短期访问令牌只保存在内存。普通重启和升级通过刷新凭据恢复登录；更换加密密钥后需要重新登录。退出先删除本地会话，上游清理失败仍完成本地退出。
 

@@ -1,8 +1,35 @@
 # Moerise API v1
 
-机器 REST 前缀为 `/api/ext/v1`，MCP 位于 `/mcp`。路由由 [api.go](../internal/api.go) 定义，字段模型见 [models.go](../internal/models.go)，完整字段契约见 [openapi.json](../internal/openapi.json)。服务通过 `/openapi.json` 提供契约，通过 `/docs` 提供交互文档。
+原生客户端前缀为 `/api/app/v1`，机器 REST 前缀为 `/api/ext/v1`，MCP 位于 `/mcp`。客户端路由见 [client_api.go](../internal/client_api.go)，机器路由见 [api.go](../internal/api.go)，完整字段契约见 [openapi.json](../internal/openapi.json)。服务通过 `/openapi.json` 提供契约，通过 `/docs` 提供交互文档。
 
 机器入口提供本人笔记读取、中文混合检索、相关笔记、语义漫步、已有回顾和同步状态读取。操作是否只读由服务端白名单判定；搜索和漫步的 POST 保持可用。
+
+## 原生客户端
+
+启用 `web.enabled` 后，客户端使用同源 Cookie。登录账户必须匹配绑定的 Memos 作者；客户端路径拒绝 Authorization，机器路径只接受独立 Bearer，不使用浏览器 Cookie。
+
+| 方法 | 路径 | 行为 |
+| --- | --- | --- |
+| GET | `/api/app/v1/capabilities` | 匿名获取密码登录方式与笔记入口状态；`ready` 表示入口启用，来源故障由实际请求反馈 |
+| POST | `/api/app/v1/session` | 接收 `username`、`password`，验证官方登录与续期链路，返回身份、时区、会话到期时间和 `csrf_token` |
+| GET | `/api/app/v1/session` | 核验本人身份，必要时续期，返回会话信息 |
+| DELETE | `/api/app/v1/session` | 先撤销本地会话，再尝试上游退出，清 Cookie 并返回 204；上游不可用仍可退出 |
+| GET | `/api/app/v1/notes` | 实时读取 Memos 本人笔记，默认 `state=NORMAL&order=created_desc&page_size=20` |
+| GET | `/api/app/v1/notes/{memo_id}` | 返回来源复查后的最新 Note，不记录阅读 |
+| POST | `/api/app/v1/notes` | 接收 `{content}`，必填 `Idempotency-Key`，首次 201、重放 200，均直接返回 Note |
+| GET | `/api/app/v1/admin/notifications` | 读取通知，支持单个 `status` 参数 |
+| GET | `/api/app/v1/admin/notifications/{notification_id}` | 读取通知、尝试和确认详情 |
+| POST | `/api/app/v1/admin/notifications/{notification_id}/resolve` | 接收 `decision`、`receipt`，调用通知回执核验和恢复服务 |
+
+所有登录和状态变更请求要求 Origin 精确匹配 `web.public_origin`，拒绝缺失或 `null`；登录后的写请求还要求会话对应的 `X-CSRF-Token`。无有效本地会话时，退出只检查 Origin 并幂等清 Cookie。HTTPS Cookie 使用 `__Host-moerise_session`，回环 HTTP 使用 `moerise_local_session`，均具有 HttpOnly、SameSite=Lax 和 Path=/。不设置 Domain；HTTPS 还设置 Secure。
+
+身份响应只包含 `instance_id`、`user.name`、`user.display_name`、`timezone`、`expires_at`、`csrf_token`。Memos PAT、访问和刷新凭据不返回客户端。会话跨普通重启恢复，产品快照恢复会清空会话，索引重建保留会话。密码登录关闭或需要其他认证方式的来源返回 501 `PASSWORD_LOGIN_UNSUPPORTED`。
+
+客户端列表接受 `NORMAL`、`ARCHIVED`、`page_size=1..100`、`page_token`，排序仅支持 `created_desc`；拒绝未知和重复参数。创建时间相同按资源名倒序，置顶和编辑不改变创建时间排序。列表直接从 Memos 取候选并复查来源，来源新增后刷新即可读取；不等待索引同步。游标绑定列表种类、来源、作者、状态及排序，与机器索引游标不可互换，索引重建不会使实时列表游标失效。来源在跨页读取中改变可返回 409 `SOURCE_CHANGED`；资源预算耗尽返回错误，不输出不完整的同时间组。
+
+创建只接受真实正文，保留首尾空白、换行和正文中的 `#标签`，固定 PRIVATE。正文须非空白，最多 65536 UTF-8 字节；独立 `tags` 和附件字段不在此创建接口中。每次独立提交使用新键，超时、结果不明或重新登录后的同次重试使用原键及原请求体。同键不同正文返回 409 `IDEMPOTENCY_CONFLICT`；写入结果不明返回 503 `WRITE_OUTCOME_UNKNOWN`。持久幂等属于实例，不绑定某次浏览器会话。
+
+客户端沿用 `error.code/message/retryable/request_id`：401 表示会话失效，403 表示身份范围或请求边界错误，503 表示来源、配置或存储故障，不返回 Bearer 认证挑战。私人响应使用 `Cache-Control: no-store`。通知确认的 `resolved_by` 为登录用户资源名；其业务决策和回执要求见[通知说明](NOTIFICATIONS.md)。
 
 ## 资源与身份
 

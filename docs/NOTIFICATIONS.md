@@ -63,13 +63,13 @@ AI 的生成状态与发送状态分开保存：生成只有一次，完整结�
 
 ## 查询与处理
 
-下表是迁移前管理路由。3.1 将必要确认操作迁至绑定作者会话的受控管理适配，对外机器令牌不再具有状态写权限；具体新路径随客户端实现更新。队列状态机、单片回执和幂等规则继续复用。
+通知管理使用绑定作者的浏览器会话，复用队列状态机、单片回执和幂等规则。登录和状态变更请求检查公开 Origin，状态变更还检查会话 CSRF；机器 Bearer 不能读取或修改管理资源。
 
-| 方法 | 路径 | Scope |
+| 方法 | 路径 | 身份 |
 | --- | --- | --- |
-| GET | `/api/ext/v1/notifications?status=unknown` | `reviews:read` |
-| GET | `/api/ext/v1/notifications/{id}` | `reviews:read` |
-| POST | `/api/ext/v1/notifications/{id}/resolve` | `reviews:write` |
+| GET | `/api/app/v1/admin/notifications?status=unknown` | 本人会话 |
+| GET | `/api/app/v1/admin/notifications/{id}` | 本人会话 |
+| POST | `/api/app/v1/admin/notifications/{id}/resolve` | 本人会话、Origin 和 CSRF |
 
 列表最多返回最近 100 条，可按 `pending`、`running`、`unknown`、`sent` 筛选。详情包含通知、发送尝试及结果确认记录，不包含消息正文或平台凭据。
 

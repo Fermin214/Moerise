@@ -21,6 +21,11 @@
       "scopes": ["notes:read", "reviews:read"]
     }
   ],
+  "web": {
+    "enabled": false,
+    "public_origin": "",
+    "state_encryption_key": ""
+  },
   "cursor_secret": "replace-with-another-independent-random-secret-at-least-32-characters",
   "timezone": "Asia/Hong_Kong",
   "state_dir": "/data/state",
