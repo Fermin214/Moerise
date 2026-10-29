@@ -295,7 +295,16 @@ func (s *FeishuService) execute(ctx context.Context, message feishuMessage) (str
 		if err != nil {
 			return "", "", err
 		}
-		note, _, err := s.Records.Create(ctx, key, CreateNote{Content: "附件：" + file.Filename, Attachments: []CreateAttachment{file}})
+		input := CreateNote{Attachments: []CreateAttachment{file}}
+		saved, err := s.Store.savedNoteHash(key)
+		if err != nil {
+			return "", "", err
+		}
+		legacy := CreateNote{Content: "附件：" + file.Filename, Attachments: input.Attachments}
+		if _, hash, err := prepareLegacyNote(legacy); err == nil && saved == hash {
+			input = legacy
+		}
+		note, _, err := s.Records.Create(ctx, key, input)
 		return "saved", note.Name, err
 	}
 	if message.Type != "text" {

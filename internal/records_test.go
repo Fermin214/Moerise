@@ -52,7 +52,7 @@ func TestConcurrentRecordsUseOneResource(t *testing.T) {
 	for range 12 {
 		group.Go(func() {
 			_, status, err := records.Create(context.Background(), "same-key",
-				CreateNote{Content: "concurrent note", Tags: []string{"z", "a", "a"}})
+				CreateNote{Content: "  concurrent #z note\n#a  "})
 			results <- outcome{status, err}
 		})
 	}
@@ -69,12 +69,12 @@ func TestConcurrentRecordsUseOneResource(t *testing.T) {
 			t.Fatalf("concurrent record: %d", response.status)
 		}
 	}
-	if first != 1 || posts != 1 || created["content"] != "#a #z\n\nconcurrent note" {
+	if first != 1 || posts != 1 || created["content"] != "  concurrent #z note\n#a  " {
 		t.Fatalf("duplicate or incorrect writes: first=%d posts=%d content=%v", first, posts, created["content"])
 	}
-	_, _, err := records.Create(context.Background(), "same-key", CreateNote{Content: "concurrent note", Tags: []string{"a", "z"}})
+	_, _, err := records.Create(context.Background(), "same-key", CreateNote{Content: "  concurrent #z note\n#a  "})
 	if err != nil || posts != 1 {
-		t.Fatal("normalized tags did not preserve idempotency")
+		t.Fatal("verbatim request did not preserve idempotency")
 	}
 	_, _, err = records.Create(context.Background(), "same-key", CreateNote{Content: "different"})
 	if errorCode(err) != "IDEMPOTENCY_CONFLICT" || posts != 1 {
@@ -98,6 +98,7 @@ func TestRecordRejectsInvalidRequestsBeforeSourceAccess(t *testing.T) {
 		{"", CreateNote{Content: "private"}},
 		{"invalid key", CreateNote{Content: "private"}},
 		{"key", CreateNote{Content: "private", Tags: []string{"a #public"}}},
+		{"key", CreateNote{Content: "private", Tags: []string{"valid"}}},
 		{"key", CreateNote{Content: "private", Tags: []string{"v\u00b2"}}},
 		{"key", CreateNote{Content: " "}},
 		{"key", CreateNote{Content: strings.Repeat("x", 65536), Tags: []string{"a"}}},
@@ -225,5 +226,53 @@ func TestRecordConflictDoesNotAdoptAnotherAuthorsResource(t *testing.T) {
 	names, _ := store.Names()
 	if len(names) != 0 {
 		t.Fatal("foreign resource reached the projection")
+	}
+}
+
+func TestRecordLegacyTagsRecoverOnlyPersistedDigests(t *testing.T) {
+	for _, status := range []string{"pending", "unknown", "succeeded"} {
+		for _, exists := range []bool{false, true} {
+			if status == "succeeded" && !exists {
+				continue
+			}
+			t.Run(status+map[bool]string{false: "/absent", true: "/existing"}[exists], func(t *testing.T) {
+				f := newRecordMutationFixture(t)
+				input := CreateNote{Content: "historical body", Tags: []string{"z", "a", "a"}}
+				content, hash, err := prepareLegacyNote(input)
+				if err != nil {
+					t.Fatal(err)
+				}
+				write, err := f.store.reserveNote("legacy", hash)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := f.store.updateNoteWrite("legacy", status, ""); err != nil {
+					t.Fatal(err)
+				}
+				f.memo = nil
+				if exists {
+					f.memo = rawMemo(strings.TrimPrefix(write.Name, "memos/"), content)
+					f.memo["tags"] = []string{"a", "z"}
+				}
+				// Memos parses native tags on create; emulate that response here.
+				handler := f.client.client.Transport
+				f.client.client.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
+					response, err := handler.RoundTrip(r)
+					if r.Method == "POST" && f.memo != nil {
+						f.memo["tags"] = []string{"a", "z"}
+					}
+					return response, err
+				})
+				input.Tags = []string{"a", "z"}
+				note, _, err := NewRecordService(f.store, f.client).Create(context.Background(), "legacy", input)
+				if err != nil || note.Content != "#a #z\n\nhistorical body" || f.memoPosts > 1 {
+					t.Fatalf("legacy recovery: %+v posts=%d err=%v", note, f.memoPosts, err)
+				}
+				input.Content = "different historical body"
+				if _, _, err := NewRecordService(f.store, f.client).Create(context.Background(), "legacy", input); errorCode(err) != "IDEMPOTENCY_CONFLICT" {
+					t.Fatalf("legacy hash was not enforced: %v", err)
+				}
+			})
+		}
 	}
 }

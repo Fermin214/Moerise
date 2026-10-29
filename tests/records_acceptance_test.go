@@ -3,6 +3,8 @@
 package acceptance
 
 import (
+	"crypto/sha256"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/http/httputil"
@@ -119,7 +121,7 @@ func (h *harness) requireSourceRecords(names ...string) {
 
 func TestRecordsAcceptance(t *testing.T) {
 	h := newHarness(t)
-	body := map[string]any{"content": "记录正文\nsecond line", "tags": []string{"测试", "parent/child", "测试"}}
+	body := map[string]any{"content": "记录正文 #测试\nsecond line #parent/child"}
 	key := "records.A-Z_a-z:0-9"
 	requireRecordError(t, h.call(h.base, "/api/ext/v1/notes", "POST", h.reader, body, 403), "FORBIDDEN")
 	requireRecordError(t, h.recordInProcess("", body, 422), "INVALID_ARGUMENT")
@@ -127,13 +129,15 @@ func TestRecordsAcceptance(t *testing.T) {
 	requireRecordError(t, h.recordInProcess(strings.Repeat("k", 129), body, 422), "INVALID_ARGUMENT")
 	requireRecordError(t, h.recordInProcess("invalid-tag",
 		map[string]any{"content": "rejected", "tags": []string{""}}, 422), "INVALID_ARGUMENT")
+	requireRecordError(t, h.recordInProcess("separate-tag",
+		map[string]any{"content": "rejected", "tags": []string{"valid"}}, 422), "INVALID_ARGUMENT")
 	h.requireSourceRecords()
 
-	content := "#parent/child #测试\n\n记录正文\nsecond line"
+	content := body["content"].(string)
 	tags := []string{"parent", "parent/child", "测试"}
 	name := h.requireRecord(h.recordInProcess(key, body, 201), "", content, tags)
 	h.requireRecord(h.recordInProcess(key, body, 200), name, content, tags)
-	conflict := map[string]any{"content": "different", "tags": body["tags"]}
+	conflict := map[string]any{"content": "different"}
 	requireRecordError(t, h.recordInProcess(key, conflict, 409), "IDEMPOTENCY_CONFLICT")
 	h.requireSourceRecords(name)
 
@@ -171,6 +175,53 @@ func TestRecordsAcceptance(t *testing.T) {
 		checkPersisted()
 		t.Logf("PASS record replay, conflict, fresh source, and deleted source after %s", operation)
 	}
+}
+
+func TestRecordsLegacyUpgradeAcceptance(t *testing.T) {
+	h := newHarness(t)
+	body := map[string]any{"content": "legacy body", "tags": []string{"z", "a", "a"}}
+	content := "#a #z\n\nlegacy body"
+	// This is the historical canonical digest, independent of the new preparer.
+	digest := sha256.Sum256([]byte(`{"content": "legacy body", "tags": ["a", "z"]}`))
+	names := []string{}
+	h.stop()
+	db := h.database("state")
+	for _, status := range []string{"pending", "unknown", "succeeded"} {
+		name := "memos/legacy-upgrade-" + status
+		names = append(names, name)
+		if status != "pending" {
+			h.call(h.memos, "/api/v1/memos?memoId="+strings.TrimPrefix(name, "memos/"), "POST", h.upstream,
+				map[string]string{"content": content, "visibility": "PRIVATE"}, 200)
+		}
+		_, err := db.Exec(`INSERT INTO note_writes
+			(instance_id, user_name, idempotency_key, request_hash, memo_name, status, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, h.settings.Memos.InstanceID, h.settings.Memos.User,
+			"legacy:"+status, fmt.Sprintf("%x", digest), name, status, "2026-10-28T00:00:00Z", "2026-10-28T00:00:00Z")
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	snapshot := filepath.Join(h.root, "legacy-writes")
+	h.command(true, "backup", "--output", snapshot)
+	h.start()
+	h.ready()
+	replay := func() {
+		t.Helper()
+		for _, status := range []string{"pending", "unknown", "succeeded"} {
+			h.requireRecord(h.recordInProcess("legacy:"+status, body, 200),
+				"memos/legacy-upgrade-"+status, content, []string{"a", "z"})
+		}
+		h.requireSourceRecords(names...)
+	}
+	replay()
+	h.stop()
+	h.command(true, "restore", "--source", snapshot, "--safety-backup", filepath.Join(h.root, "before-legacy-restore"))
+	h.start()
+	h.ready()
+	replay()
 }
 
 type recordUpstreamEvent struct {
@@ -272,7 +323,7 @@ func TestRecordsFaultRecoveryAcceptance(t *testing.T) {
 			fault.mu.Lock()
 			fault.armed = true
 			fault.mu.Unlock()
-			body := map[string]any{"content": "recover " + mode, "tags": []string{"recovery"}}
+			body := map[string]any{"content": "recover " + mode + "\n#recovery"}
 			key := "recovery:" + mode
 			requireRecordError(t, h.recordInProcess(key, body, 503), "WRITE_OUTCOME_UNKNOWN")
 			posts := recordPosts(fault.snapshot())
@@ -306,7 +357,7 @@ func TestRecordsFaultRecoveryAcceptance(t *testing.T) {
 			note := h.recordInProcess(key, body, 200)
 			events := fault.snapshot()
 			requireRecordLookup(t, events[start:], memoID, mode == "unavailable")
-			h.requireRecord(note, name, "#recovery\n\n"+body["content"].(string), []string{"recovery"})
+			h.requireRecord(note, name, body["content"].(string), []string{"recovery"})
 			posts = recordPosts(events)
 			expectedPosts := 1
 			if mode == "unavailable" {
@@ -331,7 +382,7 @@ func TestRecordsFaultRecoveryAcceptance(t *testing.T) {
 				h.start()
 				h.ready()
 				start = len(fault.snapshot())
-				h.requireRecord(h.recordInProcess(key, body, 200), name, "#recovery\n\n"+body["content"].(string), []string{"recovery"})
+				h.requireRecord(h.recordInProcess(key, body, 200), name, body["content"].(string), []string{"recovery"})
 				requireRecordLookup(t, fault.snapshot()[start:], memoID, false)
 				if posts := recordPosts(fault.snapshot()); len(posts) != expectedPosts {
 					t.Fatalf("%s added source POSTs: %v", operation, posts)

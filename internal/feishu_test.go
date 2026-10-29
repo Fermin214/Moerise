@@ -356,3 +356,63 @@ func TestFeishuPrivateTextRecordsVerbatim(t *testing.T) {
 		}
 	}
 }
+
+type recordAttachmentPlatform struct {
+	unknownFeishuReply
+	file CreateAttachment
+}
+
+func (p *recordAttachmentPlatform) Download(context.Context, string, string, string, string) (CreateAttachment, error) {
+	return p.file, nil
+}
+
+func TestFeishuAttachmentVerbatimAndLegacyRecovery(t *testing.T) {
+	for _, status := range []string{"new", "pending", "unknown", "succeeded"} {
+		for _, kind := range []string{"file", "image"} {
+			t.Run(status+"/"+kind, func(t *testing.T) {
+				f := newRecordMutationFixture(t)
+				f.memo = nil
+				file := CreateAttachment{"file.bin", "application/octet-stream", []byte("original bytes")}
+				if kind == "image" {
+					file.Type = "image/png"
+				}
+				message := feishuMessage{ID: "om_file", Type: kind,
+					Content: string(canonicalJSON(map[string]string{"file_key": "file_key", "image_key": "image_key", "file_name": file.Filename}))}
+				expected := ""
+				if status != "new" {
+					input := CreateNote{Content: "附件：" + file.Filename, Attachments: []CreateAttachment{file}}
+					content, hash, err := prepareLegacyNote(input)
+					if err != nil {
+						t.Fatal(err)
+					}
+					key := "feishu:" + hashBytes([]byte(message.ID))
+					write, err := f.store.reserveNote(key, hash)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if err := f.store.updateNoteWrite(key, status, ""); err != nil {
+						t.Fatal(err)
+					}
+					expected = content
+					if status == "succeeded" {
+						f.memo = rawMemo(strings.TrimPrefix(write.Name, "memos/"), expected)
+						raw := map[string]any{"name": "attachments/old", "memo": write.Name, "filename": file.Filename, "type": file.Type}
+						f.files["attachments/old"] = raw
+						f.memo["attachments"] = []map[string]any{raw}
+					}
+				}
+				service := &FeishuService{Store: f.store, Source: f.client, Records: NewRecordService(f.store, f.client),
+					Client: &recordAttachmentPlatform{file: file}}
+				for range 2 {
+					kind, _, err := service.execute(context.Background(), message)
+					if err != nil || kind != "saved" || f.memo["content"] != expected || len(f.attachments()) != 1 {
+						t.Fatalf("attachment record: memo=%+v kind=%s err=%v", f.memo, kind, err)
+					}
+				}
+				if f.memoPosts > 1 || len(f.posts) > 1 {
+					t.Fatal("Feishu replay duplicated a resource")
+				}
+			})
+		}
+	}
+}

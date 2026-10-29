@@ -372,8 +372,8 @@ func TestFeishuEventsWithRealMemosAcceptance(t *testing.T) {
 	wait(t, "Feishu attachment capture", func() bool { return platform.reply("om_file") != "" })
 	fileName := strings.Split(platform.reply("om_file"), "\n")[1]
 	fileNote := h.call(h.memos, "/api/v1/"+fileName, "GET", h.upstream, nil, 200)
-	if len(fileNote["attachments"].([]any)) != 1 {
-		t.Fatal("Feishu file was not linked in Memos")
+	if len(fileNote["attachments"].([]any)) != 1 || (fileNote["content"] != nil && fileNote["content"] != "") {
+		t.Fatal("Feishu file must be linked without placeholder content")
 	}
 	imageEvent := event("om_image", "ou_owner", "image", map[string]string{"image_key": "img_123"})
 	send(imageEvent)
@@ -382,8 +382,8 @@ func TestFeishuEventsWithRealMemosAcceptance(t *testing.T) {
 	imageName := strings.Split(platform.reply("om_image"), "\n")[1]
 	imageNote := h.call(h.memos, "/api/v1/"+imageName, "GET", h.upstream, nil, 200)
 	attachments := imageNote["attachments"].([]any)
-	if len(attachments) != 1 {
-		t.Fatal("Feishu image was not linked once in Memos")
+	if len(attachments) != 1 || (imageNote["content"] != nil && imageNote["content"] != "") {
+		t.Fatal("Feishu image must be linked once without placeholder content")
 	}
 	attachment := attachments[0].(map[string]any)
 	if attachment["type"] != "image/png" || attachment["memo"] != imageName {

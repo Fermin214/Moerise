@@ -18,6 +18,14 @@ type attachmentSource interface {
 	UploadAttachment(context.Context, string, string, CreateAttachment) error
 }
 
+func (m *MemosClient) DeleteAttachment(ctx context.Context, name string) error {
+	if !attachmentPattern.MatchString(name) {
+		return failure("INVALID_ARGUMENT", "Invalid attachment resource", 422, false)
+	}
+	var response map[string]any
+	return m.do(ctx, http.MethodDelete, "/api/v1/"+name, nil, nil, &response)
+}
+
 func (m *MemosClient) GetAttachment(ctx context.Context, name string) (map[string]any, error) {
 	if !attachmentPattern.MatchString(name) {
 		return nil, failure("INVALID_ARGUMENT", "Invalid attachment resource", 422, false)
