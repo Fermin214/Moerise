@@ -399,7 +399,13 @@ DELETE /api/app/v1/session
 
 编辑、删除、附件变更均在共享服务中核验父笔记作者，使用官方接口，并按来源结果更新投影。不把 Memos 数据库路径或表结构引入 Core。修改、删除能力按需新增小接口，不扩大外部 MCP 的操作集合。
 
-可以用 `source_hash` 作为客户端编辑版本提示，提交前复查来源；**这种复查不等于原子条件更新**。Memos 自带界面与 Moerise 写入可能并发，若官方更新接口没有可靠的 CAS，单进程锁无法消除外部写入竞争。3.2 需明确采用来源复查加冲突提示，还是接受最后写入生效，不能仅提供 `If-Match` 就声称彻底防止覆盖。
+编辑和删除提交读取时的 `source_hash`，共享服务写入前复查来源，版本变化返回 `SOURCE_CHANGED`，由客户端刷新后重新编辑。Memos 0.31 的更新协议没有原子条件更新；来源复查与写入之间发生的外部写入仍按最后一次写入生效，单进程锁不能消除来自 Memos 界面的竞争。
+
+客户端列表使用 `GET /api/app/v1/notes`，`query` 为基础关键词，重复 `tag` 参数按精确 AND 组合，`date=YYYY-MM-DD` 按产品时区限定创建日期；`state` 选择正常或归档，排序固定为 `created_desc`。全部条件在服务端分页前应用，并绑定到签名游标。`GET /tags?state=...` 返回全范围标签及数量，`GET /calendar?state=...&month=YYYY-MM` 返回该月每日创建数量；两者均以官方来源为准。
+
+创建与编辑中的新增附件使用 `{filename,type,content}`，`content` 为 Base64 原始字节；单次最多十个，原始总大小不超过 8 MiB。编辑使用 `PATCH /notes/{id}`，允许 `content`、`state`、新增 `attachments` 与 `remove_attachments`，携带 `source_hash` 和稳定 `Idempotency-Key`。删除使用 `DELETE /notes/{id}` 并提交 `source_hash`。客户端附件 DTO 只提供资源名、文件名、类型、大小及 Core 同源读取路径。
+
+Web 详情地址为 `/notes/{id}`，可选 `from` 保存受限站内来源地址；直接打开、刷新和登录后恢复均通过同一路由。时间线筛选写入 URL，历史条目保存滚动位置，详情返回恢复来源筛选与位置。
 
 文件接口只接收资源 ID。先验证登录、来源身份、父笔记和附件真实关联，再以固定 Memos 地址读取，禁止接受任意 URL。图片使用安全的内容类型和 nosniff；主动内容和普通文件按下载处理，支持受限流式读取和取消。Range、HEAD 和上游错误按同一身份路径处理，不通过 302 暴露带凭据地址。
 
