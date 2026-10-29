@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -16,7 +17,71 @@ type LiveSource interface {
 	ListLivePage(ctx context.Context, state string, size int, token string) ([]Memo, string, error)
 }
 
+type LiveFilter struct {
+	Query        string
+	Tags         []string
+	CreatedFrom  time.Time
+	CreatedUntil time.Time
+}
+
+type FilteredLiveSource interface {
+	ListFilteredLivePage(context.Context, string, int, string, LiveFilter) ([]Memo, string, error)
+}
+
 var _ LiveSource = (*MemosClient)(nil)
+var _ FilteredLiveSource = (*MemosClient)(nil)
+
+func (f LiveFilter) empty() bool {
+	return f.Query == "" && len(f.Tags) == 0 && f.CreatedFrom.IsZero() && f.CreatedUntil.IsZero()
+}
+
+func (f LiveFilter) matches(memo *Memo) bool {
+	if f.Query != "" && !strings.Contains(strings.ToLower(memo.Content), strings.ToLower(f.Query)) {
+		return false
+	}
+	for _, tag := range f.Tags {
+		found := false
+		for _, actual := range memo.Tags {
+			if actual == tag {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	if !f.CreatedFrom.IsZero() || !f.CreatedUntil.IsZero() {
+		created, err := time.Parse(time.RFC3339Nano, memo.CreateTime)
+		if err != nil || (!f.CreatedFrom.IsZero() && created.Before(f.CreatedFrom)) ||
+			(!f.CreatedUntil.IsZero() && !created.Before(f.CreatedUntil)) {
+			return false
+		}
+	}
+	return true
+}
+
+func (f LiveFilter) cel() string {
+	expr := ""
+	// JSON 字符串字面量也是 CEL 字符串；用户文本不能成为表达式的一部分。
+	literal := func(value string) string {
+		data, _ := json.Marshal(value)
+		return string(data)
+	}
+	if f.Query != "" {
+		expr += " && content.contains(" + literal(f.Query) + ")"
+	}
+	for _, tag := range f.Tags {
+		expr += " && " + literal(tag) + " in tags"
+	}
+	if !f.CreatedFrom.IsZero() {
+		expr += " && created_ts >= timestamp(" + literal(f.CreatedFrom.UTC().Format(time.RFC3339Nano)) + ")"
+	}
+	if !f.CreatedUntil.IsZero() {
+		expr += " && created_ts < timestamp(" + literal(f.CreatedUntil.UTC().Format(time.RFC3339Nano)) + ")"
+	}
+	return expr
+}
 
 const (
 	memosLiveMaxRetainedMemos = 10000
@@ -37,6 +102,10 @@ type memosLiveCursor struct {
 
 // ListLivePage 按创建时间、资源名依次倒序；调用方须签名封装对外返回的游标。
 func (m *MemosClient) ListLivePage(ctx context.Context, state string, size int, token string) ([]Memo, string, error) {
+	return m.ListFilteredLivePage(ctx, state, size, token, LiveFilter{})
+}
+
+func (m *MemosClient) ListFilteredLivePage(ctx context.Context, state string, size int, token string, filter LiveFilter) ([]Memo, string, error) {
 	if state == "" {
 		state = "NORMAL"
 	}
@@ -47,6 +116,9 @@ func (m *MemosClient) ListLivePage(ctx context.Context, state string, size int, 
 		return nil, "", upstreamError("UPSTREAM_PROTOCOL", "Invalid Memos live list configuration")
 	}
 	binding := hashBytes(canonicalJSON([]string{m.config.InstanceID, m.config.BaseURL, m.config.User, state, "created_desc"}))
+	if !filter.empty() {
+		binding = hashBytes(canonicalJSON([]any{binding, filter}))
+	}
 	cursor := memosLiveCursor{}
 	if token != "" {
 		invalid := failure("INVALID_PAGE_TOKEN", "Invalid live list page token", 422, false)
@@ -73,13 +145,13 @@ func (m *MemosClient) ListLivePage(ctx context.Context, state string, size int, 
 		}
 	}
 	limits := memosLiveLimits{memosLiveMaxRetainedMemos, memosLiveMaxRetainedBytes}
-	items, pages, err := m.scanLivePage(ctx, state, size, cursor, limits)
+	items, pages, err := m.scanFilteredLivePage(ctx, state, size, cursor, limits, filter)
 	if err != nil {
 		return nil, "", err
 	}
 	// Memos 在同时间条目内仍按 offset 翻页，重复扫描用于发现收集边界条目时的位移。
 	if pages > 1 {
-		again, _, err := m.scanLivePage(ctx, state, size, cursor, limits)
+		again, _, err := m.scanFilteredLivePage(ctx, state, size, cursor, limits, filter)
 		if err != nil {
 			return nil, "", err
 		}
@@ -103,7 +175,11 @@ func (m *MemosClient) ListLivePage(ctx context.Context, state string, size int, 
 }
 
 func (m *MemosClient) scanLivePage(ctx context.Context, state string, size int, cursor memosLiveCursor, limits memosLiveLimits) ([]Memo, int, error) {
-	filter := "creator == '" + m.config.User + "'"
+	return m.scanFilteredLivePage(ctx, state, size, cursor, limits, LiveFilter{})
+}
+
+func (m *MemosClient) scanFilteredLivePage(ctx context.Context, state string, size int, cursor memosLiveCursor, limits memosLiveLimits, options LiveFilter) ([]Memo, int, error) {
+	filter := "creator == '" + m.config.User + "'" + options.cel()
 	if cursor.Created != "" {
 		created, _ := time.Parse(time.RFC3339Nano, cursor.Created)
 		filter += ` && created_ts <= timestamp("` + created.UTC().Format(time.RFC3339Nano) + `")`
@@ -147,6 +223,7 @@ func (m *MemosClient) scanLivePage(ctx context.Context, state string, size int, 
 				return nil, page, err
 			}
 			if memo.Creator != m.config.User || memo.State != state ||
+				!options.matches(&memo) ||
 				(cursor.Created != "" && memo.CreateTime > cursor.Created) ||
 				(previousTime != "" && memo.CreateTime > previousTime) {
 				return nil, page, upstreamError("UPSTREAM_PROTOCOL", "Memos returned an invalid live list order or scope")

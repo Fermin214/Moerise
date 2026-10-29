@@ -2344,6 +2344,39 @@
               ],
               "default": "created_desc"
             }
+          },
+          {
+            "name": "query",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "maxLength": 256
+            },
+            "description": "基础关键词，不依赖模型；最多 1024 UTF-8 字节。"
+          },
+          {
+            "name": "tag",
+            "in": "query",
+            "schema": {
+              "type": "array",
+              "maxItems": 20,
+              "items": {
+                "type": "string",
+                "maxLength": 100
+              }
+            },
+            "description": "重复参数按精确 AND 组合。",
+            "style": "form",
+            "explode": true
+          },
+          {
+            "name": "date",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "format": "date"
+            },
+            "description": "按产品时区筛选创建日期。"
           }
         ],
         "responses": {
@@ -2352,7 +2385,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/NotePage"
+                  "$ref": "#/components/schemas/ClientNotePage"
                 }
               }
             },
@@ -2598,7 +2631,7 @@
             }
           }
         },
-        "description": "默认 NORMAL + created_desc，创建时间相同时按资源名倒序。置顶和更新时间不改变排序。签名游标绑定来源、作者、状态和排序，与机器索引游标不通用；索引重建不使该游标失效。拒绝未知或重复参数。来源变化可返回 SOURCE_CHANGED，刷新第一页重取。"
+        "description": "全部条件在服务端分页前组合，按创建时间、资源名倒序。游标绑定来源、作者、状态、排序及筛选。"
       },
       "post": {
         "operationId": "client_create_note",
@@ -2650,7 +2683,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Note"
+                  "$ref": "#/components/schemas/ClientNote"
                 }
               }
             },
@@ -2675,7 +2708,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Note"
+                  "$ref": "#/components/schemas/ClientNote"
                 }
               }
             },
@@ -2931,7 +2964,7 @@
             }
           }
         },
-        "description": "调用共享 Records 服务，保存原正文和正文内标签，固定 PRIVATE。同一实例内同键同正文重放返回 200，同键不同正文返回 409。WRITE_OUTCOME_UNKNOWN 时使用原键及原请求体重试，重新登录也沿用原键。"
+        "description": "共享 Records 原文写入；允许纯图片或普通文件附件，不补占位正文或标签前缀。失败重试沿用同键和原请求。"
       }
     },
     "/api/app/v1/notes/{memo_id}": {
@@ -2963,7 +2996,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Note"
+                  "$ref": "#/components/schemas/ClientNote"
                 }
               }
             },
@@ -2982,6 +3015,604 @@
                 "description": "请求标识。"
               }
             }
+          },
+          "401": {
+            "description": "浏览器会话无效或失效；不使用 Bearer 认证。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                },
+                "description": "禁止缓存。"
+              },
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "请求标识。"
+              }
+            }
+          },
+          "403": {
+            "description": "登录账户不匹配，或 Origin、CSRF 校验失败。机器 Bearer 不能用于客户端。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                },
+                "description": "禁止缓存。"
+              },
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "请求标识。"
+              }
+            }
+          },
+          "404": {
+            "description": "资源不存在。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                },
+                "description": "禁止缓存。"
+              },
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "请求标识。"
+              }
+            }
+          },
+          "409": {
+            "description": "幂等冲突或来源变化。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                },
+                "description": "禁止缓存。"
+              },
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "请求标识。"
+              }
+            }
+          },
+          "415": {
+            "description": "请求必须为 application/json。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                },
+                "description": "禁止缓存。"
+              },
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "请求标识。"
+              }
+            }
+          },
+          "422": {
+            "description": "参数不符合约束。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                },
+                "description": "禁止缓存。"
+              },
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "请求标识。"
+              }
+            }
+          },
+          "429": {
+            "description": "登录请求过于频繁。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                },
+                "description": "禁止缓存。"
+              },
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "请求标识。"
+              }
+            }
+          },
+          "500": {
+            "description": "内部错误。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                },
+                "description": "禁止缓存。"
+              },
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "请求标识。"
+              }
+            }
+          },
+          "503": {
+            "description": "来源、凭据配置或会话存储故障。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                },
+                "description": "禁止缓存。"
+              },
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "请求标识。"
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "operationId": "client_update_note",
+        "summary": "编辑、归档及增删本人笔记附件",
+        "security": [
+          {
+            "BrowserSession": []
+          },
+          {
+            "LocalBrowserSession": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "memo_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Memo Id"
+            }
+          },
+          {
+            "name": "Origin",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "精确匹配 MOERISE_PUBLIC_ORIGIN，不能省略或为 null。"
+          },
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "登录或读取会话响应中的 csrf_token。"
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "description": "每次独立创建使用新键；重试使用相同键与请求体。仅允许 ASCII 字母、数字、点、下划线、冒号和连字符。",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "pattern": "^[A-Za-z0-9._:-]+$(?![\\s\\S])",
+              "title": "Idempotency Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ClientUpdateNote"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "成功。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClientNote"
+                }
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                },
+                "description": "禁止缓存。"
+              },
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "请求标识。"
+              }
+            }
+          },
+          "401": {
+            "description": "浏览器会话无效或失效；不使用 Bearer 认证。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                },
+                "description": "禁止缓存。"
+              },
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "请求标识。"
+              }
+            }
+          },
+          "403": {
+            "description": "登录账户不匹配，或 Origin、CSRF 校验失败。机器 Bearer 不能用于客户端。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                },
+                "description": "禁止缓存。"
+              },
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "请求标识。"
+              }
+            }
+          },
+          "404": {
+            "description": "资源不存在。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                },
+                "description": "禁止缓存。"
+              },
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "请求标识。"
+              }
+            }
+          },
+          "409": {
+            "description": "幂等冲突或来源变化。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                },
+                "description": "禁止缓存。"
+              },
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "请求标识。"
+              }
+            }
+          },
+          "415": {
+            "description": "请求必须为 application/json。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                },
+                "description": "禁止缓存。"
+              },
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "请求标识。"
+              }
+            }
+          },
+          "422": {
+            "description": "参数不符合约束。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                },
+                "description": "禁止缓存。"
+              },
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "请求标识。"
+              }
+            }
+          },
+          "429": {
+            "description": "登录请求过于频繁。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                },
+                "description": "禁止缓存。"
+              },
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "请求标识。"
+              }
+            }
+          },
+          "500": {
+            "description": "内部错误。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                },
+                "description": "禁止缓存。"
+              },
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "请求标识。"
+              }
+            }
+          },
+          "503": {
+            "description": "来源、凭据配置或会话存储故障。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                },
+                "description": "禁止缓存。"
+              },
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "请求标识。"
+              }
+            }
+          }
+        },
+        "description": "来源变化返回 409 SOURCE_CHANGED。返回 Note 为来源复查结果；附件重试复用稳定资源标识。"
+      },
+      "delete": {
+        "operationId": "client_delete_note",
+        "summary": "删除本人笔记",
+        "security": [
+          {
+            "BrowserSession": []
+          },
+          {
+            "LocalBrowserSession": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "memo_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Memo Id"
+            }
+          },
+          {
+            "name": "Origin",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "精确匹配 MOERISE_PUBLIC_ORIGIN，不能省略或为 null。"
+          },
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "登录或读取会话响应中的 csrf_token。"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ClientDeleteNote"
+              }
+            }
+          }
+        },
+        "responses": {
+          "204": {
+            "description": "已删除或来源已不存在。"
           },
           "401": {
             "description": "浏览器会话无效或失效；不使用 Bearer 认证。",
@@ -3566,6 +4197,1022 @@
         },
         "operationId": "client_resolve_notification",
         "description": "绑定作者会话的通知恢复操作；不向机器 Bearer 开放。"
+      }
+    },
+    "/api/app/v1/tags": {
+      "get": {
+        "operationId": "client_tags",
+        "summary": "读取全范围标签及笔记数",
+        "security": [
+          {
+            "BrowserSession": []
+          },
+          {
+            "LocalBrowserSession": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "state",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "NORMAL",
+                "ARCHIVED"
+              ],
+              "default": "NORMAL"
+            },
+            "description": "聚合的笔记范围。"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClientTags"
+                }
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                },
+                "description": "禁止缓存。"
+              },
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "请求标识。"
+              }
+            }
+          },
+          "401": {
+            "description": "浏览器会话无效或失效；不使用 Bearer 认证。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                },
+                "description": "禁止缓存。"
+              },
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "请求标识。"
+              }
+            }
+          },
+          "403": {
+            "description": "登录账户不匹配，或 Origin、CSRF 校验失败。机器 Bearer 不能用于客户端。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                },
+                "description": "禁止缓存。"
+              },
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "请求标识。"
+              }
+            }
+          },
+          "404": {
+            "description": "资源不存在。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                },
+                "description": "禁止缓存。"
+              },
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "请求标识。"
+              }
+            }
+          },
+          "409": {
+            "description": "幂等冲突或来源变化。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                },
+                "description": "禁止缓存。"
+              },
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "请求标识。"
+              }
+            }
+          },
+          "415": {
+            "description": "请求必须为 application/json。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                },
+                "description": "禁止缓存。"
+              },
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "请求标识。"
+              }
+            }
+          },
+          "422": {
+            "description": "参数不符合约束。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                },
+                "description": "禁止缓存。"
+              },
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "请求标识。"
+              }
+            }
+          },
+          "429": {
+            "description": "登录请求过于频繁。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                },
+                "description": "禁止缓存。"
+              },
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "请求标识。"
+              }
+            }
+          },
+          "500": {
+            "description": "内部错误。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                },
+                "description": "禁止缓存。"
+              },
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "请求标识。"
+              }
+            }
+          },
+          "503": {
+            "description": "来源、凭据配置或会话存储故障。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                },
+                "description": "禁止缓存。"
+              },
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "请求标识。"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/app/v1/calendar": {
+      "get": {
+        "operationId": "client_calendar",
+        "summary": "读取产品时区的逐日笔记数",
+        "security": [
+          {
+            "BrowserSession": []
+          },
+          {
+            "LocalBrowserSession": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "state",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "NORMAL",
+                "ARCHIVED"
+              ],
+              "default": "NORMAL"
+            },
+            "description": "聚合的笔记范围。"
+          },
+          {
+            "name": "month",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "pattern": "^\\d{4}-\\d{2}$"
+            },
+            "description": "月份，例如 2026-10。",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClientCalendar"
+                }
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                },
+                "description": "禁止缓存。"
+              },
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "请求标识。"
+              }
+            }
+          },
+          "401": {
+            "description": "浏览器会话无效或失效；不使用 Bearer 认证。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                },
+                "description": "禁止缓存。"
+              },
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "请求标识。"
+              }
+            }
+          },
+          "403": {
+            "description": "登录账户不匹配，或 Origin、CSRF 校验失败。机器 Bearer 不能用于客户端。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                },
+                "description": "禁止缓存。"
+              },
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "请求标识。"
+              }
+            }
+          },
+          "404": {
+            "description": "资源不存在。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                },
+                "description": "禁止缓存。"
+              },
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "请求标识。"
+              }
+            }
+          },
+          "409": {
+            "description": "幂等冲突或来源变化。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                },
+                "description": "禁止缓存。"
+              },
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "请求标识。"
+              }
+            }
+          },
+          "415": {
+            "description": "请求必须为 application/json。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                },
+                "description": "禁止缓存。"
+              },
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "请求标识。"
+              }
+            }
+          },
+          "422": {
+            "description": "参数不符合约束。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                },
+                "description": "禁止缓存。"
+              },
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "请求标识。"
+              }
+            }
+          },
+          "429": {
+            "description": "登录请求过于频繁。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                },
+                "description": "禁止缓存。"
+              },
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "请求标识。"
+              }
+            }
+          },
+          "500": {
+            "description": "内部错误。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                },
+                "description": "禁止缓存。"
+              },
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "请求标识。"
+              }
+            }
+          },
+          "503": {
+            "description": "来源、凭据配置或会话存储故障。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                },
+                "description": "禁止缓存。"
+              },
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "请求标识。"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/app/v1/notes/{memo_id}/attachments/{attachment_id}/content": {
+      "get": {
+        "operationId": "client_get_attachment",
+        "summary": "流式读取受保护附件",
+        "security": [
+          {
+            "BrowserSession": []
+          },
+          {
+            "LocalBrowserSession": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "memo_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Memo Id"
+            }
+          },
+          {
+            "name": "attachment_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Range",
+            "in": "header",
+            "schema": {
+              "type": "string"
+            },
+            "description": "可选单段 bytes 范围。"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "安全栅格图片可内联，其余文件以下载返回；最大 128 MiB。",
+            "headers": {
+              "Content-Disposition": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Content-Length": {
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "X-Content-Type-Options": {
+                "schema": {
+                  "const": "nosniff"
+                }
+              }
+            },
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "206": {
+            "description": "所请求单段范围，含 Content-Range。"
+          },
+          "401": {
+            "description": "浏览器会话无效或失效；不使用 Bearer 认证。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                },
+                "description": "禁止缓存。"
+              },
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "请求标识。"
+              }
+            }
+          },
+          "403": {
+            "description": "登录账户不匹配，或 Origin、CSRF 校验失败。机器 Bearer 不能用于客户端。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                },
+                "description": "禁止缓存。"
+              },
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "请求标识。"
+              }
+            }
+          },
+          "404": {
+            "description": "资源不存在。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                },
+                "description": "禁止缓存。"
+              },
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "请求标识。"
+              }
+            }
+          },
+          "409": {
+            "description": "幂等冲突或来源变化。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                },
+                "description": "禁止缓存。"
+              },
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "请求标识。"
+              }
+            }
+          },
+          "416": {
+            "description": "范围不合法或超出文件大小。"
+          },
+          "422": {
+            "description": "参数不符合约束。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                },
+                "description": "禁止缓存。"
+              },
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "请求标识。"
+              }
+            }
+          },
+          "503": {
+            "description": "来源、凭据配置或会话存储故障。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                },
+                "description": "禁止缓存。"
+              },
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "请求标识。"
+              }
+            }
+          }
+        }
+      },
+      "head": {
+        "operationId": "client_head_attachment",
+        "summary": "读取受保护附件的响应头",
+        "security": [
+          {
+            "BrowserSession": []
+          },
+          {
+            "LocalBrowserSession": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "memo_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Memo Id"
+            }
+          },
+          {
+            "name": "attachment_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Range",
+            "in": "header",
+            "schema": {
+              "type": "string"
+            },
+            "description": "可选单段 bytes 范围。"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "安全栅格图片可内联，其余文件以下载返回；最大 128 MiB。",
+            "headers": {
+              "Content-Disposition": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Content-Length": {
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "X-Content-Type-Options": {
+                "schema": {
+                  "const": "nosniff"
+                }
+              }
+            }
+          },
+          "206": {
+            "description": "所请求单段范围，含 Content-Range。"
+          },
+          "401": {
+            "description": "浏览器会话无效或失效；不使用 Bearer 认证。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                },
+                "description": "禁止缓存。"
+              },
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "请求标识。"
+              }
+            }
+          },
+          "403": {
+            "description": "登录账户不匹配，或 Origin、CSRF 校验失败。机器 Bearer 不能用于客户端。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                },
+                "description": "禁止缓存。"
+              },
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "请求标识。"
+              }
+            }
+          },
+          "404": {
+            "description": "资源不存在。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                },
+                "description": "禁止缓存。"
+              },
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "请求标识。"
+              }
+            }
+          },
+          "409": {
+            "description": "幂等冲突或来源变化。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                },
+                "description": "禁止缓存。"
+              },
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "请求标识。"
+              }
+            }
+          },
+          "416": {
+            "description": "范围不合法或超出文件大小。"
+          },
+          "422": {
+            "description": "参数不符合约束。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                },
+                "description": "禁止缓存。"
+              },
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "请求标识。"
+              }
+            }
+          },
+          "503": {
+            "description": "来源、凭据配置或会话存储故障。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                },
+                "description": "禁止缓存。"
+              },
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "请求标识。"
+              }
+            }
+          }
+        }
       }
     }
   },
@@ -5401,14 +7048,17 @@
       "ClientCreateNote": {
         "type": "object",
         "additionalProperties": false,
-        "required": [
-          "content"
-        ],
+        "description": "正文可为空；正文非空白或至少有一个附件。正文保持原样，最多 65536 UTF-8 字节；新增附件最多十个且原始总大小不超过 8 MiB。",
         "properties": {
           "content": {
-            "type": "string",
-            "minLength": 1,
-            "description": "非空白原文，最多 65536 UTF-8 字节。保留首尾空白、换行及正文标签；不接受独立 tags 或附件字段。"
+            "type": "string"
+          },
+          "attachments": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ClientAttachmentInput"
+            },
+            "maxItems": 10
           }
         }
       },
@@ -5476,6 +7126,283 @@
             "enum": [
               "ready"
             ]
+          }
+        }
+      },
+      "ClientAttachment": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "name",
+          "filename",
+          "type",
+          "size",
+          "content_url"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "pattern": "^attachments/[a-zA-Z0-9][a-zA-Z0-9-]{0,35}$"
+          },
+          "filename": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          },
+          "size": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "content_url": {
+            "type": "string",
+            "description": "Core 同源且受浏览器会话保护的文件读取路径。"
+          }
+        }
+      },
+      "ClientAttachmentInput": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "filename",
+          "type",
+          "content"
+        ],
+        "properties": {
+          "filename": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 255
+          },
+          "type": {
+            "type": "string",
+            "description": "不含参数的 MIME 类型。"
+          },
+          "content": {
+            "type": "string",
+            "contentEncoding": "base64",
+            "minLength": 1
+          }
+        }
+      },
+      "ClientNote": {
+        "properties": {
+          "instance_id": {
+            "type": "string",
+            "title": "Instance Id"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "creator": {
+            "type": "string",
+            "title": "Creator"
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "NORMAL",
+              "ARCHIVED"
+            ],
+            "title": "State"
+          },
+          "visibility": {
+            "type": "string",
+            "title": "Visibility"
+          },
+          "content": {
+            "type": "string",
+            "title": "Content"
+          },
+          "tags": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Tags"
+          },
+          "attachments": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ClientAttachment"
+            }
+          },
+          "create_time": {
+            "type": "string",
+            "title": "Create Time"
+          },
+          "update_time": {
+            "type": "string",
+            "title": "Update Time"
+          },
+          "source_hash": {
+            "type": "string",
+            "title": "Source Hash"
+          },
+          "url": {
+            "type": "string",
+            "title": "Url",
+            "description": "Moerise 详情页站内路径。"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "instance_id",
+          "name",
+          "creator",
+          "state",
+          "visibility",
+          "content",
+          "tags",
+          "attachments",
+          "create_time",
+          "update_time",
+          "source_hash",
+          "url"
+        ],
+        "title": "ClientNote"
+      },
+      "ClientNotePage": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "notes",
+          "next_page_token"
+        ],
+        "properties": {
+          "notes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ClientNote"
+            }
+          },
+          "next_page_token": {
+            "type": "string"
+          }
+        }
+      },
+      "ClientUpdateNote": {
+        "type": "object",
+        "additionalProperties": false,
+        "description": "来源版本复查；保留原有附件，新增附件使用稳定幂等键。Memos 没有原子条件更新，外部并发写入仍可能最后写入生效。",
+        "properties": {
+          "content": {
+            "type": "string"
+          },
+          "attachments": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ClientAttachmentInput"
+            },
+            "maxItems": 10
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "NORMAL",
+              "ARCHIVED"
+            ]
+          },
+          "source_hash": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          },
+          "remove_attachments": {
+            "type": "array",
+            "maxItems": 10,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "pattern": "^attachments/[a-zA-Z0-9][a-zA-Z0-9-]{0,35}$"
+            }
+          }
+        },
+        "required": [
+          "source_hash"
+        ]
+      },
+      "ClientDeleteNote": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "source_hash"
+        ],
+        "properties": {
+          "source_hash": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          }
+        }
+      },
+      "ClientTagCount": {
+        "type": "object",
+        "required": [
+          "tag",
+          "count"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "tag": {
+            "type": "string"
+          },
+          "count": {
+            "type": "integer",
+            "minimum": 1
+          }
+        }
+      },
+      "ClientTags": {
+        "type": "object",
+        "required": [
+          "tags"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "tags": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ClientTagCount"
+            }
+          }
+        }
+      },
+      "ClientDayCount": {
+        "type": "object",
+        "required": [
+          "date",
+          "count"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "date": {
+            "type": "string",
+            "format": "date"
+          },
+          "count": {
+            "type": "integer",
+            "minimum": 1
+          }
+        }
+      },
+      "ClientCalendar": {
+        "type": "object",
+        "required": [
+          "month",
+          "days"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "month": {
+            "type": "string",
+            "pattern": "^\\d{4}-\\d{2}$"
+          },
+          "days": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ClientDayCount"
+            }
           }
         }
       }
