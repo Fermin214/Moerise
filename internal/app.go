@@ -48,6 +48,9 @@ func NewApp(settings Settings, store *Store, source Source) *App {
 
 // OpenApp 负责 serve 使用的写锁、数据库和网络资源。
 func OpenApp(settings Settings) (_ *App, result error) {
+	if err := settings.Validate(); err != nil {
+		return nil, err
+	}
 	var cleanup []func()
 	defer func() {
 		if result != nil {

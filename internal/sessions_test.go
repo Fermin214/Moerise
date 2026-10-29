@@ -514,3 +514,69 @@ func TestSessionEncryptionBindingAndRecovery(t *testing.T) {
 		})
 	}
 }
+
+func TestWebOriginCanonicalization(t *testing.T) {
+	for _, item := range []struct {
+		input, want string
+	}{
+		{"https://NOTES.example.com:443/", "https://notes.example.com"},
+		{"http://LOCALHOST:80", "http://localhost"},
+		{"http://127.0.0.1:015300", "http://127.0.0.1:15300"},
+		{"http://[0:0:0:0:0:0:0:1]:80", "http://[::1]"},
+		{"https://[::ffff:127.0.0.1]:443", "https://[::ffff:7f00:1]"},
+		{"https://xn--fsqu00a.example:8443", "https://xn--fsqu00a.example:8443"},
+	} {
+		got, err := canonicalWebOrigin(item.input)
+		if err != nil || got != item.want {
+			t.Errorf("%q: origin=%q want=%q err=%v", item.input, got, item.want, err)
+		}
+	}
+	for _, input := range []string{
+		"https://notes.example.com/path", "https://notes.example.com:",
+		"http://notes.example.com", "https://notes.example.com:65536",
+		"https://例子.example", "https://127.1", "https://0x7f000001",
+		"https://[::1%25zone]", "https://notes.example.com/#",
+	} {
+		if got, err := canonicalWebOrigin(input); err == nil {
+			t.Errorf("unmatchable origin accepted: %q -> %q", input, got)
+		}
+	}
+}
+
+func TestSessionBoundRequestsFollowDurableRevocation(t *testing.T) {
+	fixture := newSessionAuthFixture(t)
+	store := sessionTestStore(t, fixture.settings)
+	service := sessionTestService(t, store)
+	raw, identity := sessionTestLogin(t, service)
+	ctx, release, err := service.BindRequest(t.Context(), identity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	if _, err := store.state.Exec(`CREATE TRIGGER fail_session_delete BEFORE DELETE ON client_sessions
+		BEGIN SELECT RAISE(ABORT, 'delete failure'); END`); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Logout(t.Context(), raw); errorCode(err) != "SESSION_UNAVAILABLE" || ctx.Err() != nil {
+		t.Fatalf("failed revocation canceled a valid session: %v %v", err, ctx.Err())
+	}
+	if _, err := store.state.Exec("DROP TRIGGER fail_session_delete"); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Logout(t.Context(), raw); err != nil || ctx.Err() == nil {
+		t.Fatalf("durable revocation did not cancel its requests: %v %v", err, ctx.Err())
+	}
+	if _, release, err := service.BindRequest(t.Context(), identity); errorCode(err) != "SESSION_UNAUTHORIZED" {
+		if release != nil {
+			release()
+		}
+		t.Fatalf("request registered after logout: %v", err)
+	}
+	release()
+	service.mu.Lock()
+	count := len(service.active)
+	service.mu.Unlock()
+	if count != 0 {
+		t.Fatal("request release retained a session registration")
+	}
+}

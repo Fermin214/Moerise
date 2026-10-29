@@ -139,7 +139,7 @@ func serve(settings moerise.Settings, address string) error {
 		return err
 	}
 	defer app.Close()
-	api, err := moerise.NewAPI(app)
+	api, err := moerise.NewHandler(app)
 	if err != nil {
 		return err
 	}

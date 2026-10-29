@@ -4,6 +4,7 @@ import (
 	"context"
 	"net"
 	"net/http"
+	"os"
 	"slices"
 	"testing"
 	"time"
@@ -65,11 +66,12 @@ func TestAppListenerFailureStopsWorkers(t *testing.T) {
 
 func TestAppConstructionFailureReleasesWriter(t *testing.T) {
 	settings := testSettings(t)
-	settings.LLM.Enabled = true
-	settings.LLM.Protocol = "unsupported"
+	if err := os.WriteFile(settings.IndexDir, []byte("not a directory"), 0600); err != nil {
+		t.Fatal(err)
+	}
 	if app, err := OpenApp(settings); err == nil {
 		app.Close()
-		t.Fatal("unsupported provider was accepted")
+		t.Fatal("database construction unexpectedly succeeded")
 	}
 	lock, err := AcquireWriter(settings.StateDir)
 	if err != nil {
