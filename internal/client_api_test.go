@@ -1,12 +1,54 @@
 package moerise
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 )
+
+func TestClientNotificationRecoveryUsesBoundSession(t *testing.T) {
+	api, fixture := clientFixture(t)
+	rawID, identity, err := api.app.Sessions.Login(t.Context(), "owner", "correct")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cookie := &http.Cookie{Name: api.cookieName(), Value: rawID}
+	id, err := api.app.Notifications.enqueue("review", "client-recovery", "2026-10-29", nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := api.app.Store.state.Exec("UPDATE notifications SET status = 'unknown' WHERE id = ?", id); err != nil {
+		t.Fatal(err)
+	}
+	path := "/api/app/v1/admin/notifications/" + id
+	for _, route := range []string{"/api/app/v1/admin/notifications?status=unknown", path} {
+		response := clientCall(api, "GET", route, "", cookie, "", "")
+		if response.Code != 200 || !strings.Contains(response.Body.String(), id) {
+			t.Fatalf("recovery read: %d %s", response.Code, response.Body.String())
+		}
+	}
+	response := clientCall(api, "POST", path+"/resolve", `{"decision":"not_sent","receipt":""}`,
+		cookie, fixture.settings.Web.PublicOrigin, "")
+	if response.Code != 403 {
+		t.Fatalf("recovery accepted missing CSRF: %d %s", response.Code, response.Body.String())
+	}
+	response = clientCall(api, "POST", path+"/resolve", `{"decision":"not_sent","receipt":""}`,
+		cookie, fixture.settings.Web.PublicOrigin, identity.CSRFToken)
+	if response.Code != 200 {
+		t.Fatalf("recovery: %d %s", response.Code, response.Body.String())
+	}
+	var detail NotificationDetail
+	if err := json.Unmarshal(response.Body.Bytes(), &detail); err != nil {
+		t.Fatal(err)
+	}
+	if detail.Notification.Status != "pending" || len(detail.Resolutions) != 1 ||
+		detail.Resolutions[0].ResolvedBy != identity.User.Name {
+		t.Fatalf("recovery did not record the bound user: %+v", detail)
+	}
+}
 
 type observedBody struct {
 	*strings.Reader

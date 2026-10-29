@@ -8,7 +8,7 @@ FROM node:24-alpine@sha256:8a32c8cf649a49915a66e81e7a609223c708d0adabf288ee3f407
 ENV NODE_ENV=production HOST=0.0.0.0 PORT=3000
 WORKDIR /app
 COPY --from=build --chown=node:node /app/dist ./dist
-COPY --chown=node:node server.mjs package.json ./
+COPY --chown=node:node server.mjs package.json MEMOS-LICENSE ./
 USER node
 EXPOSE 3000
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s \

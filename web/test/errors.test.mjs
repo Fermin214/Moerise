@@ -9,8 +9,8 @@ test('unsupported login, rate limits and service errors have Chinese explanation
   ]) {
     const text = errorText({ code, message: 'English backend message', requestId: 'request-42' });
     assert.match(text, /[\u4e00-\u9fff]/);
-    assert.ok(text.includes(code));
-    assert.ok(text.includes('request-42'));
+    assert.ok(!text.includes(code));
+    assert.ok(!text.includes('request-42'));
     assert.ok(!text.includes('English backend message'));
   }
   assert.match(errorText({ code: 'PASSWORD_LOGIN_UNSUPPORTED' }), /不支持密码登录/);
@@ -19,8 +19,8 @@ test('unsupported login, rate limits and service errors have Chinese explanation
 test('unknown errors use Chinese fallback without exposing backend prose', () => {
   const result = errorText({ code: 'NEW_BACKEND_ERROR', message: 'Raw upstream diagnostic', requestId: 'trace-1' });
   assert.match(result, /请求未能完成/);
-  assert.ok(result.includes('NEW_BACKEND_ERROR'));
-  assert.ok(result.includes('trace-1'));
+  assert.ok(!result.includes('NEW_BACKEND_ERROR'));
+  assert.ok(!result.includes('trace-1'));
   assert.ok(!result.includes('Raw upstream diagnostic'));
   assert.equal(errorText(new Error('Unexpected JS error')), '请求未能完成，请稍后重试。');
 });
