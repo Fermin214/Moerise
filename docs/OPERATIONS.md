@@ -15,6 +15,9 @@ Moerise 支持 Linux 原生二进制和 Docker Linux 容器部署，两者都需
 | `memos.token` | 该账号的 Memos PAT，至少 16 字符 |
 | `access_tokens` | Moerise 独立访问令牌列表，每项有名称、令牌和 Scope；令牌至少 32 字符 |
 | `cursor_secret` | 独立随机密钥，至少 32 字符，用于分页签名及按来源和幂等键派生新资源标识；随配置备份 |
+| `web.enabled` | Web 客户端会话开关，默认关闭 |
+| `web.public_origin` | Web 公开 Origin，启用会话时必填；使用 HTTPS，仅回环地址允许 HTTP |
+| `web.state_encryption_key` | 启用会话时必填，独立随机 32 字节密钥的标准 Base64 编码，用于按用途派生状态加密密钥 |
 | `timezone` | IANA 时区名，用于产品日期与调度，按部署设置；默认 `Asia/Hong_Kong` |
 | `state_dir`、`index_dir` | 不同的可写持久目录，默认 `/data/state`、`/data/index` |
 | `sync` | 增量轮询、全量修复、重叠时间、退避及任务租约 |
@@ -49,6 +52,7 @@ Moerise 支持 Linux 原生二进制和 Docker Linux 容器部署，两者都需
 | `MOERISE_MEMOS_INSTANCE_ID`、`MOERISE_MEMOS_BASE_URL`、`MOERISE_MEMOS_PUBLIC_URL` | `memos.instance_id`、`base_url`、`public_url` |
 | `MOERISE_MEMOS_USER`、`MOERISE_MEMOS_TOKEN` | `memos.user`、`token` |
 | `MOERISE_ACCESS_TOKEN`、`MOERISE_CURSOR_SECRET` | 机器接口令牌、分页及幂等密钥 |
+| `MOERISE_WEB_ENABLED`、`MOERISE_PUBLIC_ORIGIN`、`MOERISE_STATE_ENCRYPTION_KEY` | `web.enabled`、`web.public_origin`、`web.state_encryption_key` |
 | `MOERISE_TIMEZONE`、`MOERISE_STATE_DIR`、`MOERISE_INDEX_DIR` | 时区、状态目录、索引目录 |
 | `MOERISE_REVIEW_COUNT`、`MOERISE_REVIEW_MIN_AGE_HOURS`、`MOERISE_REVIEW_RECENT_DAYS` | 回顾条数、等待小时、排除天数 |
 | `MOERISE_REVIEW_INCLUDE_ARCHIVED` | 是否包含归档，`true` 或 `false` |
@@ -61,6 +65,14 @@ Moerise 支持 Linux 原生二进制和 Docker Linux 容器部署，两者都需
 | `MOERISE_FEISHU_WEBHOOK_URL`、`MOERISE_FEISHU_WEBHOOK_SECRET` | 自定义机器人地址与可选签名密钥 |
 
 只通过环境运行二进制时，填写全部必要来源、鉴权及密钥变量即可省略 JSON 文件。Compose 挂载 `.local/config.json`；采用环境配置时先复制模板创建此文件，再由 `.env` 覆盖必要值。服务不支持浏览器设置，修改配置后需重启。
+
+### Web 会话
+
+使用 `openssl rand -base64 32` 生成独立的状态加密主密钥，与 PAT、机器令牌和分页密钥分别保存。`web.public_origin` 只填写协议、主机和可选端口，例如 `https://notes.example.com`；本地联调可用 `http://127.0.0.1:8787`。启用后，Core 必须能够访问 Memos 的官方 Connect `SignIn`、`RefreshToken`、`SignOut` 和 REST `/api/v1/auth/me`。
+
+客户端通过 Memos 用户名和密码登录，登录账户必须等于实例绑定作者及后台 PAT 所属账户。浏览器会话 ID 只保存摘要，刷新凭据以按用途派生的 AEAD 密钥加密保存在 `state.sqlite3`，短期访问令牌只保存在内存。普通重启和升级通过刷新凭据恢复登录；更换加密密钥后需要重新登录。退出先删除本地会话，上游清理失败仍完成本地退出。
+
+产品快照包含刷新凭据密文，状态加密主密钥随部署配置单独备份。恢复产品快照会清空客户端会话，所有浏览器需要重新登录；索引重建保留会话。
 
 ## 二进制运行
 
@@ -187,6 +199,8 @@ docker compose up -d --no-build moerise
 ```
 
 恢复会校验摘要、数据库、迁移和来源绑定，另存覆盖前的产品数据库，清理同步进度及同步任务，并删除派生索引。`--safety-backup` 使用新的目录名。重新启动服务后执行全量同步，产品历史和人工状态从快照恢复。
+
+恢复同时清空客户端会话，旧浏览器 Cookie 不能继续使用；普通重启和索引重建保留有效会话。
 
 ### 重建索引
 
