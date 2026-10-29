@@ -1,12 +1,60 @@
 package moerise
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 )
+
+func TestWebConfigurationEnvironmentAndBoundaries(t *testing.T) {
+	settings := testSettings(t)
+	data, _ := json.Marshal(settings)
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(path, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	key := base64.StdEncoding.EncodeToString([]byte(strings.Repeat("k", 32)))
+	t.Setenv("MOERISE_WEB_ENABLED", "true")
+	t.Setenv("MOERISE_PUBLIC_ORIGIN", "https://notes.example.com/")
+	t.Setenv("MOERISE_STATE_ENCRYPTION_KEY", key)
+	loaded, err := LoadSettings(path)
+	if err != nil || !loaded.Web.Enabled || loaded.Web.PublicOrigin != "https://notes.example.com" || loaded.Web.StateEncryptionKey != key {
+		t.Fatalf("web environment: %+v %v", loaded.Web.Enabled, err)
+	}
+	for _, origin := range []string{"https://notes.example.com", "http://localhost:8787", "http://127.0.0.1:8787", "http://[::1]:8787"} {
+		loaded.Web.PublicOrigin = origin
+		if err := loaded.Validate(); err != nil {
+			t.Fatalf("valid origin %q: %v", origin, err)
+		}
+	}
+	for _, origin := range []string{"", "null", "http://notes.example.com", "https://notes.example.com/path", "https://notes.example.com//", "https://user@notes.example.com", "https://notes.example.com?x=1"} {
+		loaded.Web.PublicOrigin = origin
+		if err := loaded.Validate(); err == nil {
+			t.Fatalf("invalid origin %q accepted", origin)
+		}
+	}
+	loaded.Web.PublicOrigin = "https://notes.example.com"
+	for _, badKey := range []string{"", "not-base64", base64.StdEncoding.EncodeToString([]byte("short"))} {
+		loaded.Web.StateEncryptionKey = badKey
+		if err := loaded.Validate(); err == nil {
+			t.Fatal("invalid encryption key accepted")
+		}
+	}
+	loaded.Web.StateEncryptionKey = key
+	loaded.CursorSecret = key
+	if err := loaded.Validate(); err == nil {
+		t.Fatal("state encryption reused the cursor key")
+	}
+	loaded.Web.Enabled = false
+	loaded.Web.PublicOrigin, loaded.Web.StateEncryptionKey = "", ""
+	if err := loaded.Validate(); err != nil {
+		t.Fatal("disabled web requires session configuration")
+	}
+}
 
 func TestEnvironmentOverridesAndExplicitReviewMigration(t *testing.T) {
 	settings := testSettings(t)

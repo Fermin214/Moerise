@@ -225,6 +225,7 @@ func Restore(settings Settings, source, safety string) error {
 		UPDATE sync_state SET watermark = NULL, last_full = NULL, last_incremental = NULL,
 			source_ok = 0, index_generation = NULL;
 		DELETE FROM jobs WHERE kind = 'sync';
+		DELETE FROM client_sessions;
 		UPDATE feishu_ai_generations SET status = 'interrupted', error_code = 'STATE_RESTORED'
 			WHERE status = 'running';
 		UPDATE notifications SET status = 'unknown', last_error = 'STATE_RESTORED'

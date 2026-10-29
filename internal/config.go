@@ -31,6 +31,12 @@ type MemosConfig struct {
 	MaxPages       int     `json:"max_pages"`
 }
 
+type WebConfig struct {
+	Enabled            bool   `json:"enabled"`
+	PublicOrigin       string `json:"public_origin"`
+	StateEncryptionKey string `json:"state_encryption_key"`
+}
+
 type AccessToken struct {
 	Name   string   `json:"name"`
 	Token  string   `json:"token"`
@@ -108,6 +114,7 @@ func configured(value *string) string {
 
 type Settings struct {
 	Memos         MemosConfig        `json:"memos"`
+	Web           WebConfig          `json:"web"`
 	AccessTokens  []AccessToken      `json:"access_tokens"`
 	CursorSecret  string             `json:"cursor_secret"`
 	Timezone      string             `json:"timezone"`
@@ -229,6 +236,9 @@ func validOrigin(value string) bool {
 
 func (s *Settings) Validate() error {
 	bad := func(field string) error { return fmt.Errorf("invalid configuration at %s", field) }
+	if err := s.Web.validate(); err != nil {
+		return err
+	}
 	if !instancePattern.MatchString(s.Memos.InstanceID) {
 		return bad("memos.instance_id")
 	}
@@ -261,6 +271,10 @@ func (s *Settings) Validate() error {
 			}
 		}
 		names[access.Name], tokens[access.Token] = true, true
+	}
+	if s.Web.Enabled && (s.Web.StateEncryptionKey == s.CursorSecret ||
+		s.Web.StateEncryptionKey == s.Memos.Token || tokens[s.Web.StateEncryptionKey]) {
+		return bad("web.state_encryption_key must be independent")
 	}
 	if _, err := time.LoadLocation(s.Timezone); err != nil || s.Timezone == "" {
 		return bad("timezone")
