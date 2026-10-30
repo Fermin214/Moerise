@@ -26,7 +26,7 @@ type FeishuClient struct {
 
 func NewFeishuClient(config ChannelConfig) *FeishuClient {
 	return &FeishuClient{config: config, baseURL: "https://open.feishu.cn/open-apis",
-		http: &http.Client{Timeout: 15 * time.Second,
+		http: &http.Client{Timeout: 15 * time.Second, Transport: http.DefaultTransport.(*http.Transport).Clone(),
 			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}
 }
 

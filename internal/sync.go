@@ -170,33 +170,13 @@ func (s *SyncService) Run(ctx context.Context) error {
 	timer := time.NewTicker(time.Second)
 	defer timer.Stop()
 	for ctx.Err() == nil {
-		if err := s.Schedule(); err != nil {
-			return err
-		}
-		job, err := s.Store.Claim()
+		unlock := s.Store.lockRuntime()
+		worked, err := s.runOne(ctx)
+		unlock()
 		if err != nil {
 			return err
 		}
-		if job != nil {
-			result, err := s.Sync(ctx, *job)
-			if ctx.Err() != nil {
-				return ctx.Err()
-			}
-			if err != nil {
-				code := errorCode(err)
-				if healthErr := s.Store.SourceHealth(false, code, ""); healthErr != nil {
-					return healthErr
-				}
-				if retryErr := s.Store.Retry(*job, code); retryErr != nil {
-					return retryErr
-				}
-				slog.Warn("sync failed", "code", code, "job", job.ID)
-			} else {
-				if err := s.Store.Complete(job.ID, result); err != nil {
-					return err
-				}
-				slog.Info("sync succeeded", "mode", result["mode"], "observed", result["observed"], "changed", result["changed"], "removed", result["removed"])
-			}
+		if worked {
 			continue
 		}
 		select {
@@ -207,4 +187,34 @@ func (s *SyncService) Run(ctx context.Context) error {
 		}
 	}
 	return ctx.Err()
+}
+
+func (s *SyncService) runOne(ctx context.Context) (bool, error) {
+	if err := s.Schedule(); err != nil {
+		return false, err
+	}
+	job, err := s.Store.Claim()
+	if err != nil || job == nil {
+		return false, err
+	}
+	result, err := s.Sync(ctx, *job)
+	if ctx.Err() != nil {
+		return false, ctx.Err()
+	}
+	if err != nil {
+		code := errorCode(err)
+		if healthErr := s.Store.SourceHealth(false, code, ""); healthErr != nil {
+			return false, healthErr
+		}
+		if retryErr := s.Store.Retry(*job, code); retryErr != nil {
+			return false, retryErr
+		}
+		slog.Warn("sync failed", "code", code, "job", job.ID)
+	} else {
+		if err := s.Store.Complete(job.ID, result); err != nil {
+			return false, err
+		}
+		slog.Info("sync succeeded", "mode", result["mode"], "observed", result["observed"], "changed", result["changed"], "removed", result["removed"])
+	}
+	return true, nil
 }

@@ -69,11 +69,15 @@ type FeishuService struct {
 }
 
 func NewFeishuService(store *Store, source Source, records *RecordService, reviews *ReviewService, notifications *NotificationService) *FeishuService {
-	if configured(store.Settings.Channel.AppID) == "" || store.Settings.Channel.Kind != "feishu-app" {
+	return newFeishuService(store.Settings.Channel, store, source, records, reviews, notifications)
+}
+
+func newFeishuService(config ChannelConfig, store *Store, source Source, records *RecordService, reviews *ReviewService, notifications *NotificationService) *FeishuService {
+	if configured(config.AppID) == "" || config.Kind != "feishu-app" {
 		return nil
 	}
 	return &FeishuService{Store: store, Source: source, Records: records, Reviews: reviews,
-		Client:        NewFeishuClient(store.Settings.Channel),
+		Client:        NewFeishuClient(config),
 		Notifications: notifications, wake: make(chan struct{}, 1)}
 }
 
@@ -151,6 +155,32 @@ func (s *FeishuService) Receive(request *http.Request) (any, int, error) {
 }
 
 func (s *FeishuService) Run(ctx context.Context) error {
+	if err := s.prepare(); err != nil {
+		return err
+	}
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		progress, err := s.processOne(ctx)
+		if err != nil {
+			return err
+		}
+		if progress {
+			continue
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+		case <-s.wake:
+		}
+	}
+}
+
+func (s *FeishuService) prepare() error {
 	if err := s.recoverAI(); err != nil {
 		return err
 	}
@@ -184,26 +214,7 @@ func (s *FeishuService) Run(ctx context.Context) error {
 			return err
 		}
 	}
-	ticker := time.NewTicker(500 * time.Millisecond)
-	defer ticker.Stop()
-	for {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		progress, err := s.processOne(ctx)
-		if err != nil {
-			return err
-		}
-		if progress {
-			continue
-		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-ticker.C:
-		case <-s.wake:
-		}
-	}
+	return nil
 }
 
 func (s *FeishuService) processOne(ctx context.Context) (bool, error) {

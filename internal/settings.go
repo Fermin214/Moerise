@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 	"unicode/utf8"
 )
 
@@ -32,6 +33,14 @@ type ProductSettings struct {
 	LLM           LLMConfig          `json:"llm"`
 	Channel       ChannelConfig      `json:"channel"`
 	Insights      InsightsConfig     `json:"insights"`
+	Daily         *dailySettings     `json:"daily,omitempty"`
+}
+
+type dailySettings struct {
+	Timezone      string             `json:"timezone"`
+	Review        ReviewConfig       `json:"review"`
+	Notifications NotificationConfig `json:"notifications"`
+	Until         time.Time          `json:"until"`
 }
 
 type SecretUpdate struct {
@@ -64,12 +73,13 @@ type SettingsView struct {
 }
 
 func productSettings(s Settings) ProductSettings {
-	return ProductSettings{s.Timezone, s.Review, s.Notifications, s.Embedding, s.LLM, s.Channel, s.Insights}
+	return ProductSettings{s.Timezone, s.Review, s.Notifications, s.Embedding, s.LLM, s.Channel, s.Insights, s.daily}
 }
 
 func (p ProductSettings) apply(s Settings) Settings {
 	s.Timezone, s.Review, s.Notifications = p.Timezone, p.Review, p.Notifications
 	s.Embedding, s.LLM, s.Channel, s.Insights = p.Embedding, p.LLM, p.Channel, p.Insights
+	s.daily = p.Daily
 	return s
 }
 
@@ -211,6 +221,8 @@ func publicProduct(product ProductSettings) map[string]any {
 	data, _ := json.Marshal(product)
 	var result map[string]any
 	_ = json.Unmarshal(data, &result)
+	delete(result, "daily")
+	result["notifications"].(map[string]any)["times"] = product.Notifications.Clocks()
 	for _, section := range []string{"llm", "embedding"} {
 		delete(result[section].(map[string]any), "api_key")
 	}
@@ -219,6 +231,17 @@ func publicProduct(product ProductSettings) map[string]any {
 		delete(channel, key)
 	}
 	return result
+}
+
+func (s *Store) reviewSettings(at time.Time) Settings {
+	settings := s.Settings
+	if previous := settings.daily; previous != nil && at.Before(previous.Until) {
+		settings.Timezone, settings.Review = previous.Timezone, previous.Review
+		enabled := settings.Notifications.Enabled
+		settings.Notifications = previous.Notifications
+		settings.Notifications.Enabled = enabled
+	}
+	return settings
 }
 
 func (s *Store) settingsView() SettingsView {

@@ -66,25 +66,62 @@ func (s *FeishuService) queueCipher() cipher.AEAD {
 	return aead
 }
 
+const feishuQueuePrefix = "moerise:feishu-queue:v2\x00"
+
+func (s *FeishuService) queueIdentity(message string) []byte {
+	settings := s.Store.Settings
+	return canonicalJSON([]string{feishuQueuePrefix, settings.Memos.InstanceID, settings.Memos.User,
+		configured(settings.Channel.AppID), configured(settings.Channel.UserOpenID), message})
+}
+
 func (s *FeishuService) seal(message string, body []byte) ([]byte, error) {
 	aead := s.queueCipher()
+	identity := []byte(s.Store.Settings.Memos.InstanceID + "\x00" + s.Store.Settings.Memos.User + "\x00" + message)
+	var prefix []byte
+	if s.Store.Settings.Web.StateEncryptionKey != "" {
+		var err error
+		aead, err = newStateCipher(s.Store.Settings, "feishu-queue")
+		if err != nil {
+			return nil, err
+		}
+		prefix, identity = []byte(feishuQueuePrefix), s.queueIdentity(message)
+	}
 	nonce := make([]byte, aead.NonceSize())
 	if _, err := rand.Read(nonce); err != nil {
 		return nil, err
 	}
-	identity := s.Store.Settings.Memos.InstanceID + "\x00" + s.Store.Settings.Memos.User + "\x00" + message
-	return aead.Seal(nonce, nonce, body, []byte(identity)), nil
+	return aead.Seal(append(prefix, nonce...), nonce, body, identity), nil
 }
 
 func (s *FeishuService) unseal(message string, body []byte) ([]byte, error) {
+	data, _, err := s.openQueue(message, body)
+	return data, err
+}
+
+// 认证后返回格式，迁移时复用已采用稳定密钥的密文。
+func (s *FeishuService) openQueue(message string, body []byte) ([]byte, bool, error) {
+	if s.Store.Settings.Web.StateEncryptionKey != "" && bytes.HasPrefix(body, []byte(feishuQueuePrefix)) {
+		aead, err := newStateCipher(s.Store.Settings, "feishu-queue")
+		if err != nil {
+			return nil, false, err
+		}
+		encoded := body[len(feishuQueuePrefix):]
+		if len(encoded) >= aead.NonceSize()+aead.Overhead() {
+			data, err := aead.Open(nil, encoded[:aead.NonceSize()], encoded[aead.NonceSize():], s.queueIdentity(message))
+			if err == nil {
+				return data, true, nil
+			}
+		}
+		// 旧 nonce 和密文也可能碰巧包含版本前缀，仍需尝试旧格式的认证解密。
+	}
 	aead := s.queueCipher()
-	if len(body) < aead.NonceSize() {
-		return nil, upstreamError("CHANNEL_QUEUE_KEY", "Cannot decrypt queued Feishu event")
+	if len(body) < aead.NonceSize()+aead.Overhead() {
+		return nil, false, upstreamError("CHANNEL_QUEUE_KEY", "Cannot decrypt queued Feishu event")
 	}
 	identity := s.Store.Settings.Memos.InstanceID + "\x00" + s.Store.Settings.Memos.User + "\x00" + message
 	data, err := aead.Open(nil, body[:aead.NonceSize()], body[aead.NonceSize():], []byte(identity))
 	if err != nil {
-		return nil, upstreamError("CHANNEL_QUEUE_KEY", "Cannot decrypt queued Feishu event; restore its application secret")
+		return nil, false, upstreamError("CHANNEL_QUEUE_KEY", "Cannot decrypt queued Feishu event; restore its state key or original application secret")
 	}
-	return data, nil
+	return data, false, nil
 }

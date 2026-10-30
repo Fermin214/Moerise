@@ -91,6 +91,8 @@ func writeError(writer http.ResponseWriter, err error, requestID string) {
 }
 
 func (a *API) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
+	a.runtimeMu.RLock()
+	defer a.runtimeMu.RUnlock()
 	id := newID()
 	writer.Header().Set("X-Request-ID", id)
 	writer.Header().Set("Cache-Control", "no-store")
@@ -234,7 +236,7 @@ func (a *API) route(writer http.ResponseWriter, request *http.Request) (any, int
 			return nil, 0, err
 		}
 		return map[string]any{"instance_id": a.Settings.Memos.InstanceID, "user": a.Settings.Memos.User,
-			"credential": access.Name, "scopes": access.Scopes, "timezone": a.Settings.Timezone, "api_version": "v1"}, 200, nil
+			"credential": access.Name, "scopes": access.Scopes, "timezone": a.Store.Settings.Timezone, "api_version": "v1"}, 200, nil
 	case "/api/ext/v1/notes":
 		return a.notes(request)
 	case "/api/ext/v1/sync":

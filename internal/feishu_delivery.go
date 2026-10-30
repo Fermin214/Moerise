@@ -24,11 +24,15 @@ type FeishuDelivery struct {
 }
 
 func NewFeishuDelivery(store *Store, reviews *ReviewService, events *FeishuService) NotificationTransport {
-	if events == nil && (store.Settings.Channel.Kind != "feishu-webhook" || configured(store.Settings.Channel.WebhookURL) == "") {
+	return newFeishuDelivery(store.Settings.Channel, store, reviews, events)
+}
+
+func newFeishuDelivery(config ChannelConfig, store *Store, reviews *ReviewService, events *FeishuService) NotificationTransport {
+	if events == nil && (config.Kind != "feishu-webhook" || configured(config.WebhookURL) == "") {
 		return nil
 	}
-	return &FeishuDelivery{Store: store, Reviews: reviews, Events: events, images: NewFeishuClient(store.Settings.Channel),
-		http: &http.Client{Timeout: 15 * time.Second,
+	return &FeishuDelivery{Store: store, Reviews: reviews, Events: events, images: NewFeishuClient(config),
+		http: &http.Client{Timeout: 15 * time.Second, Transport: http.DefaultTransport.(*http.Transport).Clone(),
 			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}
 }
 
