@@ -166,6 +166,48 @@ node --test web/test/browser.mjs
 
 浏览器回归覆盖会话失效后的草稿及附件恢复、创建和编辑的原键原请求体重试、并发请求失效后编辑器解锁提交、自动分页及多个编辑器重排时输入焦点保留、同时间资源名跨页排序、正文原生附件图片及下载、失败提交刷新后操作恢复，以及侧栏聚合复用、月份切换取消、缓存到期与写入或页面重新获得焦点后的刷新。`web/test/markdown.test.mjs` 补充附件映射边界与 64 KiB 未闭合标记的解析耗时检查。
 
+### 真实 Compose 部署验收
+
+`scripts/check-compose.mjs` 使用 Node.js 24 标准库、Docker CLI 和 Compose 2.24+，依次运行 bundled 与 external 两种拓扑。Docker Engine 与脚本必须位于同一台机器，并能运行 Linux 容器。脚本通过回环地址和随机空闲端口访问服务，不需要 npm 依赖、模型或飞书凭据。
+
+```bash
+node scripts/check-compose.mjs
+node scripts/check-compose.mjs --skip-build
+node scripts/check-compose.mjs --skip-build --keep
+```
+
+默认构建 Core 与 Web，镜像标签使用独立项目名。`--skip-build` 使用环境变量 `MOERISE_IMAGE_TAG` 指定的已有镜像标签，省略时使用 `stage34`；Core 与 Web 必须同时具有该标签。PowerShell 示例：
+
+```powershell
+$env:MOERISE_IMAGE_TAG = 'stage34'
+node scripts/check-compose.mjs --skip-build --keep
+```
+
+每次执行生成 `.local/compose-acceptance-<随机ID>/`，从 `.env.example` 生成独立 `.env`，设置随机账户密码、PAT、机器令牌、分页密钥和状态加密主密钥。`MOERISE_ENV_FILE` 指向该文件的绝对路径，供 Compose 服务的 `env_file` 使用。所有 Compose 调用显式传入同一 `--project-name moerise-acceptance-<随机ID>` 和 `--env-file`，项目环境与宿主机的部署变量隔离。
+
+两种场景分别创建全新账户与数据卷：
+
+- bundled 使用 `memos` profile，通过 `compose up -d memos` 启动固定版本及摘要的官方 Memos；完成首个 ADMIN 账户、官方登录、PAT 创建及 `/api/v1/auth/me` 作者确认后启动 Core/Web。
+- external 使用空 profile，先通过 `compose create moerise` 创建独立项目网络，再通过 `docker run` 启动相同官方 Memos 镜像。来源使用网络别名 `source`，Core 连接 `http://source:5230`；来源容器没有 Compose 项目标签，独立启停。
+
+bundled 的容器与卷全部删除后才创建 external 场景。验收通过 Web 的同源 API 检查 Cookie、Origin、CSRF、原文创建与官方接口读回、编辑、归档、组合筛选、删除、纯文件附件及受保护读取、设置版本保存与过期版本拒绝。随后检查 Core/Memos 重启、Core/Web 强制重建、停止 Core 后运行 `rebuild-index` 对会话、设置、笔记和附件的保留，并导出备份，检查 `manifest.json`、SQLite 文件头和 SHA-256。导出快照通过宿主机只读挂载恢复，旧 Cookie 被拒绝，重新登录后设置与笔记保持。
+
+来源停止后先请求真实笔记与附件 API，检查失败响应不返回缓存正文或凭据，再等待 Web `/health/ready` 返回 503，并检查 Core 与 Web `/health/live` 均返回 200。Core 就绪检查读取同步状态，默认同步间隔为 60 秒，因此降级检查允许等待 90 秒。来源恢复后继续使用原会话读取设置、笔记与附件。Web 的 `/api/ext/v1/notes` 与 `/mcp` 必须返回 404；external 场景还检查停止应用后独立 Memos 仍能读取原文。
+
+默认在 `finally` 中删除独立来源容器，再执行独立项目的 `compose down --volumes`，删除脚本构建的专用镜像及临时凭据，仅留下无密钥的 `checks.json`。复用的镜像不删除。Windows 递归删除前检查绝对路径、仓库 `.local` 父目录、随机目录名及符号链接。检查失败或收到 SIGINT/SIGTERM 时也进入资源回收；回收错误以非零退出码报告。
+
+`--keep` 仅在全部检查成功后留下 external 场景，写入 `runtime.json`，字段为 `root`、`project`、`envFile`、`url`、`username`、`password`。浏览器使用 `url` 及该账户登录；该文件和 `.env` 含测试凭据，位于 Git 忽略目录。`checks.json` 保存检查名称、耗时及结果，不保存响应正文或凭据。浏览器检查结束后，在仓库根目录使用运行信息回收：
+
+```powershell
+$runtime = Get-Content -Raw '.local/compose-acceptance-<随机ID>/runtime.json' | ConvertFrom-Json
+$env:MOERISE_ENV_FILE = $runtime.envFile
+docker rm -f -v "$($runtime.project)-source"
+docker compose --file compose.yaml --project-name $runtime.project --env-file $runtime.envFile down --volumes --remove-orphans
+Remove-Item -LiteralPath $runtime.envFile, (Join-Path $runtime.root 'runtime.json')
+```
+
+若使用默认构建并加 `--keep`，还需删除 `moerise:<project>` 和 `moerise-web:<project>` 两个专用镜像。Docker Desktop 引擎若要求提升权限，脚本与清理命令均在可访问引擎的提升权限终端执行。
+
 ### 平台适配与持续集成
 
 平台适配测试使用 HTTP 模拟服务验证主动发送的目标与 UUID、租户凭据、文字及图片回执、Webhook 签名与请求大小，以及明确拒绝、响应不可信和重定向处理。回执边界另测相同正文的不同通知，拒绝重复绑定、发送时间不符和会话不符的回执。
