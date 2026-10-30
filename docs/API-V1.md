@@ -18,6 +18,9 @@
 | PATCH | `/api/app/v1/settings` | 提交版本、日常配置和密钥操作，保存并生效，返回递增版本的设置视图 |
 | GET | `/api/app/v1/models` | 返回设置版本、两类模型的启用与配置状态、索引状态和代次进度 |
 | POST | `/api/app/v1/models/{embedding,llm}/check` | 接收 `{version}`，分别检查已保存的模型连接，返回版本、`status=ok` 和耗时 |
+| GET | `/api/app/v1/reviews/daily` | 生成或读取完整固定日计划，返回全部条目及冻结设置版本 |
+| POST | `/api/app/v1/walks/start` | 接收 `{name?}`，返回指定或随机起点，不记录阅读 |
+| POST | `/api/app/v1/walks/next` | 接收 `{name,path}`，在语义候选中随机选择未访问的下一条 |
 | GET | `/api/app/v1/notes` | 实时读取 Memos 本人笔记，默认 `state=NORMAL&order=created_desc&page_size=20` |
 | GET | `/api/app/v1/notes/{memo_id}` | 返回来源复查后的最新 Note，不记录阅读 |
 | POST | `/api/app/v1/notes` | 接收 `{content,attachments}`，必填 `Idempotency-Key`，首次 201、重放 200，均直接返回 Note |
@@ -49,6 +52,10 @@ Web 会话失效时隐藏私人界面，在页面内存中保存创建和编辑�
 附件移除先检查请求完成后的正文。Markdown 图片仍引用待删除附件时，在写入前返回 422 `ATTACHMENT_REFERENCED`；不合法的原生图片地址、HTML 引用或其他来源删除前置条件返回 422 `ATTACHMENT_DELETE_REJECTED`，两者均不可原样重试。Web 保留草稿并允许修正正文，可在同一请求中去掉图片引用和附件；普通链接、行内代码和代码块不按图片引用处理。
 
 客户端 Note 的附件只包含 `name`、`filename`、`type`、`size`、`content_url`，`url` 为 Moerise 详情路径。图片和下载始终使用 `content_url`；该路径只接受资源标识，不接受上游地址。每次读取复查登录、作者、父笔记与附件关联，返回 `no-store`、`nosniff` 和安全文件名。PNG、JPEG、GIF、WebP、AVIF 内联，其余类型按 `application/octet-stream` 下载。支持 GET、HEAD 和单段 `Range: bytes=...`，多段或无效范围返回 416，单次读取上限 128 MiB。
+
+回顾响应沿用 `ReviewBatch`，`items` 返回全天计划的全部条目，最多 480 条；`settings_version` 为冻结规则的产品设置版本，历史批次或缺少版本信息的过渡规则为 0。Note 使用客户端详情及附件路径。缺失来源保留 `unavailable` 位置，不补抽。客户端不提供换组、打开、略过或完成接口。
+
+漫步起点和前进均返回 `WalkResponse`。指定起点的首个响应包含该笔记，`path=[name]`；省略 `name` 时随机开始。前进提交正在阅读的资源名及完整已访问 `path`，成功后路径追加下一条，`exhausted=true` 仅表示合格候选全部耗尽。标签和跨入口阅读不改变选取概率。漫步要求已启用且就绪的 Embedding，关闭返回 `EMBEDDING_DISABLED`，构建中返回 `INDEX_NOT_READY`。JSON 请求体上限 1 MiB，超出返回可重试的 413 `WALK_RESOURCE_LIMIT`；技术资源错误不表示候选耗尽，也不推进路径。请求支持取消，停止或离开页面会取消进行中的请求。
 
 Web 正文中的原生 `/file/attachments/{id}/{filename}` 引用按父笔记附件表转换为受保护的 `content_url`，未知或不属于该笔记的引用保持文字。侧栏标签按笔记状态、日历按状态和月份复用聚合结果，缓存有效期一分钟；写入、手动刷新笔记或页面重新获得焦点后刷新聚合，被替代的聚合请求会取消。
 
