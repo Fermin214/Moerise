@@ -88,7 +88,7 @@ function validIdentity(value) {
   if (!value?.user?.name || !value.csrf_token) throw Object.assign(new Error('Invalid session response'), { code: 'SESSION_RESPONSE_INVALID' });
   return value;
 }
-async function sessionRequest(path, options) {
+async function sessionRequest(path, options = {}) {
   const headers = { ...options.headers, 'X-CSRF-Token': identity?.csrf_token || logoutCSRF };
   try { return await request(path, { ...options, headers }); }
   catch (err) {
@@ -792,6 +792,21 @@ async function showRoute() {
     $('view-title').textContent = pages.get(location.pathname) || '页面不存在'; $('view-title').hidden = false;
     $('capability').textContent = pages.has(location.pathname) ? `${pages.get(location.pathname)}尚未开放。` : '请从侧栏打开主页。';
     $('capability').hidden = false; window.scrollTo(0, 0);
+    if (['/walk', '/insights', '/map'].includes(location.pathname)) {
+      const page = location.pathname, label = pages.get(page);
+      try {
+        const models = await sessionRequest('/models');
+        if (generation !== epoch || sequence !== viewSequence) return;
+        const hint = page === '/insights'
+          ? (models.llm.enabled ? 'LLM 已启用，可在设置中检查连接。' : '请在设置中启用 LLM。')
+          : ({ disabled: '请在设置中启用 Embedding。', waiting: '语义索引正在等待同步或构建。',
+            building: '语义索引构建中，可在设置中查看进度。', ready: '语义索引已就绪。',
+            unavailable: '语义索引构建失败，可在设置中查看错误。' }[models.index_status] || '索引状态不可用。');
+        $('capability').textContent = `${hint}${label}尚未开放。`;
+      } catch (err) {
+        if (generation === epoch && sequence === viewSequence) handleFailure($('capability'), err);
+      }
+    }
   }
 }
 function updateComposer() {
