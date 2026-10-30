@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"math/rand/v2"
+	"strings"
 	"time"
 )
 
@@ -19,13 +20,14 @@ type ReviewItem struct {
 }
 
 type ReviewBatch struct {
-	ID          string       `json:"id"`
-	Date        string       `json:"date"`
-	Timezone    string       `json:"timezone"`
-	RuleVersion string       `json:"rule_version"`
-	Sequence    int          `json:"sequence"`
-	CreatedAt   string       `json:"created_at"`
-	Items       []ReviewItem `json:"items"`
+	ID              string       `json:"id"`
+	Date            string       `json:"date"`
+	Timezone        string       `json:"timezone"`
+	RuleVersion     string       `json:"rule_version"`
+	Sequence        int          `json:"sequence"`
+	CreatedAt       string       `json:"created_at"`
+	Items           []ReviewItem `json:"items"`
+	SettingsVersion int64        `json:"settings_version"`
 }
 
 type ReviewService struct {
@@ -41,7 +43,7 @@ func NewReviewService(store *Store, source Source) *ReviewService {
 }
 
 func (s *ReviewService) ruleVersion() string {
-	return "random-v1"
+	return "daily-plan-v2"
 }
 
 func (s *ReviewService) binding() (string, string) {
@@ -52,9 +54,9 @@ func (s *ReviewService) verify(ctx context.Context) error {
 	return NewRecordService(s.Store, s.Source).verify(ctx)
 }
 
-// Daily creates only the first batch; Replace is the sole way to advance its sequence.
+// Daily freezes the day's selection and disjoint slot allocations together.
 func (s *ReviewService) Daily(ctx context.Context, at time.Time) (ReviewBatch, error) {
-	return s.batch(ctx, at, "")
+	return s.batch(ctx, at)
 }
 
 func (s *ReviewService) ReadDaily(ctx context.Context, at time.Time) (ReviewBatch, error) {
@@ -68,9 +70,7 @@ func (s *ReviewService) ReadDaily(ctx context.Context, at time.Time) (ReviewBatc
 	}
 	instance, user := s.binding()
 	var id string
-	err = s.Store.state.QueryRow(`SELECT id FROM review_batches WHERE instance_id = ? AND user_name = ?
-		AND local_date = ? AND timezone = ?`+reviewBatchOrder,
-		instance, user, at.In(location).Format(time.DateOnly), settings.Timezone).Scan(&id)
+	err = s.dailyID(s.Store.state, instance, user, at.In(location).Format(time.DateOnly), settings.Timezone).Scan(&id)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ReviewBatch{}, failure("REVIEW_NOT_FOUND", "No daily review has been created", 404, false)
 	}
@@ -84,10 +84,39 @@ func (s *ReviewService) Replace(ctx context.Context, key string, at time.Time) (
 	if !idempotencyPattern.MatchString(key) {
 		return ReviewBatch{}, failure("INVALID_ARGUMENT", "A valid Idempotency-Key is required", 422, false)
 	}
-	return s.batch(ctx, at, key)
+	settings := s.Store.reviewSettings(at)
+	location, err := time.LoadLocation(settings.Timezone)
+	if err != nil {
+		return ReviewBatch{}, err
+	}
+	instance, user := s.binding()
+	var id string
+	err = s.Store.state.QueryRow(`SELECT id FROM review_batches WHERE instance_id = ? AND user_name = ?
+		AND local_date = ? AND timezone = ? AND request_key = ?`+reviewBatchOrder,
+		instance, user, at.In(location).Format(time.DateOnly), settings.Timezone, key).Scan(&id)
+	if err == nil {
+		return s.Get(ctx, id)
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return ReviewBatch{}, err
+	}
+	return ReviewBatch{}, failure("REVIEW_REPLACEMENT_DISABLED", "Daily review plans cannot be replaced", 410, false)
 }
 
-func (s *ReviewService) batch(ctx context.Context, at time.Time, key string) (ReviewBatch, error) {
+type reviewQuery interface {
+	QueryRow(string, ...any) *sql.Row
+}
+
+func (s *ReviewService) dailyID(db reviewQuery, instance, user, date, timezone string) *sql.Row {
+	// A timezone change must not create a second selection for the same local date.
+	return db.QueryRow(`SELECT batch_id FROM review_plans
+		WHERE instance_id = ? AND user_name = ? AND local_date = ?
+		UNION ALL SELECT id FROM (SELECT id FROM review_batches
+		WHERE instance_id = ? AND user_name = ? AND local_date = ? AND timezone = ?`+reviewBatchOrder+`) LIMIT 1`,
+		instance, user, date, instance, user, date, timezone)
+}
+
+func (s *ReviewService) batch(ctx context.Context, at time.Time) (ReviewBatch, error) {
 	s.Store.reviewMu.Lock()
 	defer s.Store.reviewMu.Unlock()
 	if err := s.verify(ctx); err != nil {
@@ -100,17 +129,14 @@ func (s *ReviewService) batch(ctx context.Context, at time.Time, key string) (Re
 	}
 	date, rule := at.In(location).Format(time.DateOnly), s.ruleVersion()
 	instance, user := s.binding()
-	query := `SELECT id FROM review_batches WHERE instance_id = ? AND user_name = ?
-		AND local_date = ? AND timezone = ?`
-	args := []any{instance, user, date, settings.Timezone}
-	if key != "" {
-		query += " AND request_key = ?"
-		args = append(args, key)
-	}
-	query += reviewBatchOrder
 	var id string
-	err = s.Store.state.QueryRow(query, args...).Scan(&id)
+	err = s.dailyID(s.Store.state, instance, user, date, settings.Timezone).Scan(&id)
 	if err == nil {
+		if err := transaction(s.Store.state, func(tx *sql.Tx) error {
+			return s.freezePlan(tx, id, date, settings)
+		}); err != nil {
+			return ReviewBatch{}, err
+		}
 		return s.load(ctx, id)
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
@@ -123,7 +149,7 @@ func (s *ReviewService) batch(ctx context.Context, at time.Time, key string) (Re
 	if state.LastFull == nil {
 		return ReviewBatch{}, upstreamError("INDEX_NOT_READY", "Daily review requires the first complete synchronization")
 	}
-	candidates, err := s.selectMemos(ctx, at, location)
+	candidates, err := s.selectMemos(ctx, at, location, settings.Review.Count*len(settings.Notifications.Clocks()))
 	if err != nil {
 		return ReviewBatch{}, err
 	}
@@ -131,10 +157,10 @@ func (s *ReviewService) batch(ctx context.Context, at time.Time, key string) (Re
 	err = transaction(s.Store.state, func(tx *sql.Tx) error {
 		// Recheck after acquiring the database write lock as well as the in-process gate.
 		var existing string
-		err := tx.QueryRow(query, args...).Scan(&existing)
+		err := s.dailyID(tx, instance, user, date, settings.Timezone).Scan(&existing)
 		if err == nil {
 			id = existing
-			return nil
+			return s.freezePlan(tx, id, date, settings)
 		}
 		if !errors.Is(err, sql.ErrNoRows) {
 			return err
@@ -145,13 +171,9 @@ func (s *ReviewService) batch(ctx context.Context, at time.Time, key string) (Re
 			instance, user, date, settings.Timezone, rule).Scan(&sequence); err != nil {
 			return err
 		}
-		var requestKey any
-		if key != "" {
-			requestKey = key
-		}
 		if _, err := tx.Exec(`INSERT INTO review_batches
 			(id, instance_id, user_name, local_date, timezone, rule_version, sequence, request_key, created_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, id, instance, user, date, settings.Timezone, rule, sequence+1, requestKey, stamp); err != nil {
+			VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?)`, id, instance, user, date, settings.Timezone, rule, sequence+1, stamp); err != nil {
 			return err
 		}
 		for i, memo := range candidates {
@@ -160,7 +182,7 @@ func (s *ReviewService) batch(ctx context.Context, at time.Time, key string) (Re
 				return err
 			}
 		}
-		return nil
+		return s.freezePlan(tx, id, date, settings)
 	})
 	if err != nil {
 		return ReviewBatch{}, err
@@ -168,7 +190,7 @@ func (s *ReviewService) batch(ctx context.Context, at time.Time, key string) (Re
 	return s.load(ctx, id)
 }
 
-func (s *ReviewService) selectMemos(ctx context.Context, at time.Time, location *time.Location) ([]Memo, error) {
+func (s *ReviewService) selectMemos(ctx context.Context, at time.Time, location *time.Location, count int) ([]Memo, error) {
 	instance, user := s.binding()
 	rows, err := s.Store.state.Query(`SELECT i.memo_name, MAX(b.local_date) FROM review_items i
 		JOIN review_batches b ON b.id = i.batch_id WHERE b.instance_id = ? AND b.user_name = ?
@@ -238,7 +260,7 @@ func (s *ReviewService) selectMemos(ctx context.Context, at time.Time, location 
 			continue
 		}
 		selected = append(selected, *memo)
-		if len(selected) == rules.Count {
+		if len(selected) == count {
 			break
 		}
 	}
@@ -253,10 +275,29 @@ func (s *ReviewService) eligible(memo Memo, at time.Time) bool {
 	created, err := time.Parse(time.RFC3339Nano, memo.CreateTime)
 	return err == nil && memo.Creator == s.Store.Settings.Memos.User &&
 		(memo.State == "NORMAL" || settings.Review.IncludeArchived && memo.State == "ARCHIVED") &&
-		!created.After(at.Add(-time.Duration(settings.Review.MinAgeHours)*time.Hour))
+		!created.After(at.Add(-time.Duration(settings.Review.MinAgeHours)*time.Hour)) &&
+		reviewContent(memo.Content, memo.Attachments)
+}
+
+func reviewContent(content string, attachments []map[string]any) bool {
+	if strings.TrimSpace(content) != "" {
+		return true
+	}
+	for _, attachment := range attachments {
+		kind, _ := attachment["type"].(string)
+		name, _ := attachment["name"].(string)
+		if strings.HasPrefix(kind, "image/") && attachmentPattern.MatchString(name) {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *ReviewService) load(ctx context.Context, id string) (ReviewBatch, error) {
+	return s.loadRange(ctx, id, 0, -1)
+}
+
+func (s *ReviewService) loadRange(ctx context.Context, id string, first, count int) (ReviewBatch, error) {
 	instance, user := s.binding()
 	batch := ReviewBatch{Items: []ReviewItem{}}
 	err := s.Store.state.QueryRow(`SELECT id, local_date, timezone, rule_version, sequence, created_at
@@ -268,8 +309,12 @@ func (s *ReviewService) load(ctx context.Context, id string) (ReviewBatch, error
 	if err != nil {
 		return ReviewBatch{}, err
 	}
+	if err := s.Store.state.QueryRow(`SELECT COALESCE(
+		(SELECT settings_version FROM review_plans WHERE batch_id = ?), 0)`, id).Scan(&batch.SettingsVersion); err != nil {
+		return ReviewBatch{}, err
+	}
 	rows, err := s.Store.state.Query(`SELECT memo_name, source_hash, selected_at, opened_at, skipped_at
-		FROM review_items WHERE batch_id = ? ORDER BY position`, id)
+		FROM review_items WHERE batch_id = ? ORDER BY position LIMIT ? OFFSET ?`, id, count, first)
 	if err != nil {
 		return ReviewBatch{}, err
 	}

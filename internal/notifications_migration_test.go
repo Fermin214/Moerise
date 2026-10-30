@@ -111,23 +111,19 @@ func TestNotificationMigrationRecoversLegacyEnqueueBeforeScheduleAdvance(t *test
 			if err != nil {
 				t.Fatal(err)
 			}
-			platform := service.Transport.(*notificationPlatform)
-			switch test.status {
-			case "running":
-				platform.mode = "crash"
-				func() {
-					defer func() { _ = recover() }()
-					_, _ = service.Deliver(context.Background())
-				}()
-			case "unknown", "sent":
-				if test.status == "unknown" {
-					platform.mode = "unknown"
+			// Build the old schema's saved outcome without running newer SQL against it.
+			if test.status != "pending" {
+				if _, err := service.Store.state.Exec(`INSERT INTO notification_attempts
+					(id, notification_id, attempt, platform_uuid, started_at, outcome)
+					SELECT ?, id, 1, platform_uuid, ?, ? FROM notifications WHERE id = ?`,
+					newID(), nowText(), test.status, root); err != nil {
+					t.Fatal(err)
 				}
-				if progress, err := service.Deliver(context.Background()); err != nil || !progress {
-					t.Fatalf("legacy delivery: %v %v", progress, err)
+				if _, err := service.Store.state.Exec(`UPDATE notifications SET status = ?, attempts = 1 WHERE id = ?`,
+					test.status, root); err != nil {
+					t.Fatal(err)
 				}
 			}
-			platform.mode = ""
 			var before string
 			if err := service.Store.state.QueryRow("SELECT status FROM notifications WHERE id = ?", root).Scan(&before); err != nil || before != test.status {
 				t.Fatalf("legacy send state: %s %v", before, err)
@@ -157,14 +153,14 @@ func TestNotificationMigrationRecoversLegacyEnqueueBeforeScheduleAdvance(t *test
 			if count, err := service.Schedule(ctx, at); err != nil || count != 0 {
 				t.Fatalf("upgrade duplicated the legacy review: %d %v", count, err)
 			}
-			if count, err := service.Schedule(ctx, at.Add(3*time.Hour)); err != nil || count != 1 {
-				t.Fatalf("legacy root consumed a later slot: %d %v", count, err)
+			if count, err := service.Schedule(ctx, at.Add(3*time.Hour)); err != nil || count != 0 {
+				t.Fatalf("legacy whole-batch queue was duplicated in a later slot: %d %v", count, err)
 			}
 			if count, err := service.Schedule(ctx, at.Add(4*time.Hour)); err != nil || count != 0 {
 				t.Fatalf("rescheduling duplicated a processed slot: %d %v", count, err)
 			}
 			items, err := service.List("")
-			if err != nil || len(items) != 2 {
+			if err != nil || len(items) != 1 {
 				t.Fatalf("wrong queue after upgrade: %+v %v", items, err)
 			}
 			var status string
@@ -196,8 +192,8 @@ func TestNotificationMigrationDoesNotConsumeSlotForModernRootOrParts(t *testing.
 	if err := service.Store.state.QueryRow("SELECT COUNT(*) FROM review_schedule_slots WHERE clock = ''").Scan(&slots); err != nil || slots != 0 {
 		t.Fatalf("modern root or part was mistaken for a legacy root: %d %v", slots, err)
 	}
-	if count, err := service.Schedule(context.Background(), time.Date(2026, 10, 28, 2, 0, 0, 0, time.UTC)); err != nil || count != 1 {
-		t.Fatalf("an unscheduled first slot was skipped: %d %v", count, err)
+	if count, err := service.Schedule(context.Background(), time.Date(2026, 10, 28, 2, 0, 0, 0, time.UTC)); err != nil || count != 0 {
+		t.Fatalf("existing whole-batch allocation was duplicated: %d %v", count, err)
 	}
 }
 

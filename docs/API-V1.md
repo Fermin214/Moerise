@@ -242,7 +242,7 @@ Authorization: Bearer <reader-token>
 
 机器 REST 只读取已有回顾批次。当天没有批次时返回 404 `REVIEW_NOT_FOUND`，读取操作不创建批次、不更换内容、不更新打开或略过记录。
 
-响应直接返回 `ReviewBatch`，含 `id`、`date`、`timezone`、`rule_version`、`sequence`、`created_at` 和有序 `items`。条目含 `name`、`selected_source_hash`、`selected_at`、独立的 `opened_at` 与 `skipped_at`、`unavailable`，以及可用时的最新 `note`。来源删除或作者变化时保留条目位置，`unavailable=true` 并省略 `note`。选择、参数和恢复规则见[每日回顾](DAILY-REVIEW.md)。
+响应直接返回 `ReviewBatch`，含 `id`、`date`、`timezone`、`rule_version`、`sequence`、`created_at`、`settings_version` 和全天有序 `items`。条目含 `name`、`selected_source_hash`、`selected_at`、历史字段 `opened_at` 与 `skipped_at`、`unavailable`，以及可用时的最新 `note`。来源删除或作者变化时保留条目位置，`unavailable=true` 并省略 `note`。选择、参数和恢复规则见[每日回顾](DAILY-REVIEW.md)。
 
 扩展 MCP 位于 `/mcp`，使用官方 Go MCP SDK 的无会话 Streamable HTTP 传输，返回 JSON。客户端对该 URL 发送 MCP 请求，使用与 REST 相同的 Moerise Bearer 凭据；请求体上限为 64 KiB。协议初始化、请求头和错误按 MCP 协议处理，业务错误使用工具结果的 `isError` 及包含 `code`、`message`、`retryable` 的 JSON 文本。MCP GET、DELETE 不提供事件流或会话管理。含跨站来源的请求受到同源检查。
 
