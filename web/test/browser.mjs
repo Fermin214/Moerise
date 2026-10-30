@@ -77,6 +77,10 @@ async function fixture(t) {
       const start = Number(url.searchParams.get('page_token') || 0);
       json({ notes: result.slice(start, start + 20), next_page_token: start + 20 < result.length ? String(start + 20) : '' }); return;
     }
+    if (path === '/reviews/daily' && req.method === 'GET') {
+      json({ id: 'browser-daily', date: '2026-10-30', timezone: 'Asia/Hong_Kong',
+        items: [...notes.values()].slice(0, 6).map(note => ({ name: note.name, unavailable: false, note })) }); return;
+    }
     if (path === '/notes' && req.method === 'POST') {
       const key = req.headers['idempotency-key']; assert.ok(key);
       if (idempotency.has(key)) { json(idempotency.get(key)); return; }
@@ -201,16 +205,16 @@ test('browser timeline management, attachment retries, history, conflicts and pr
   await page.locator('article.note').waitFor();
   await page.locator('#back').click();
   await page.locator('[data-name="memos/n46"]').waitFor();
-  assert.ok(await page.evaluate(() => window.scrollY) > 100);
+  await page.waitForFunction(() => window.scrollY > 100);
   await page.goForward();
   await page.locator('article.note').waitFor();
   await page.reload();
   await page.locator('article.note').waitFor();
   await page.locator('#back').click();
   await page.locator('[data-name="memos/n46"]').waitFor();
-  assert.ok(await page.evaluate(() => window.scrollY) > 100);
+  await page.waitForFunction(() => window.scrollY > 100);
   await page.locator('a[href="/review"]').click();
-  await page.locator('#capability').waitFor();
+  await page.locator('.review-positions').waitFor();
   await page.locator('#q').fill('笔记 4');
   await page.locator('#q').press('Enter');
   await page.waitForFunction(() => location.pathname === '/' && new URL(location.href).searchParams.get('query') === '笔记 4');

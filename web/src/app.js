@@ -19,6 +19,7 @@ let month = '', routeReturnKey = null;
 let pageCount = 0, reloading = false;
 let lastTimeline = { path: '/', values: filters('') };
 let settingsPage = null;
+let discoveryPage = null, reviewView = null, walkView = null;
 history.replaceState({ ...history.state, webKey: currentKey }, '');
 history.scrollRestoration = 'manual';
 
@@ -43,6 +44,7 @@ function stale(generation) { if (generation !== epoch) throw aborted(); }
 function invalidate() {
   epoch++; viewSequence++; listSequence++;
   settingsPage?.destroy(); settingsPage = null;
+  discoveryPage?.destroy(); discoveryPage = null;
   invalidateSidebar();
   for (const controller of controllers) controller.abort();
   controllers.clear();
@@ -132,6 +134,7 @@ function hidePrivate({ resume = false } = {}) {
   pageObserver.disconnect();
   items = []; nextToken = '';
   snapshots.clear();
+  reviewView = walkView = null;
   month = ''; identity = null; routeReturnKey = null;
   pageCount = 0; reloading = false; lastTimeline = { path: '/', values: filters('') };
   closeMenus();
@@ -454,7 +457,7 @@ function renderNote(note, detail = false) {
     ['编辑', () => startEdit(note), ''],
     ...(!detail ? [['打开笔记', () => openNote(note), '']] : []),
     [note.state === 'ARCHIVED' ? '恢复到主页' : '归档', () => changeState(note), ''],
-    ['从这条漫步', () => navigate('/walk'), ''],
+    ['从这条漫步', () => startFromNote(note), ''],
     ['AI 洞察这条', () => navigate('/insights'), ''],
     ['删除', () => confirmDelete(card, note), 'dg'],
   ];
@@ -726,14 +729,245 @@ async function loadNotes(reset = false, retry = false) {
     }
   }
 }
+function startFromNote(note) {
+  navigate(`/walk?${new URLSearchParams({ name: note.name })}`);
+}
+function discoveryText(value) {
+  const code = typeof value === 'string' ? value : value?.code;
+  return {
+    EMBEDDING_DISABLED: '请在设置中启用 Embedding。',
+    EMBEDDING_UNAVAILABLE: 'Embedding 暂时无法连接，请重试或在设置中检查连接。',
+    EMBEDDING_RATE_LIMITED: 'Embedding 调用受限，请稍后重试。',
+    EMBEDDING_PROTOCOL: 'Embedding 返回格式或维度与配置不符，请在设置中检查连接。',
+    INDEX_NOT_READY: '语义索引尚未就绪，请在设置中查看构建进度后重试。',
+    NO_SOURCE_VECTORS: '这条笔记没有可用的正文向量，请从其他笔记开始。',
+    SEMANTIC_UNAVAILABLE: '语义索引暂时不可用，请稍后重试。',
+    WALK_RESOURCE_LIMIT: '漫步暂时达到技术资源限制，请重试。',
+    RESOURCE_LIMIT: '漫步暂时达到技术资源限制，请重试。',
+    WALK_RESPONSE_INVALID: '服务返回的漫步内容不完整，请重试。',
+    REVIEW_RESPONSE_INVALID: '服务返回的回顾内容不完整，请重试。',
+    REQUEST_TIMEOUT: '读取超时，请重试。',
+  }[code] || (typeof value === 'string' ? `服务提示：${value}` : errorText(value));
+}
+function discoveryCard(note, review = false) {
+  const card = el('article', `card big discovery-note${review ? ' rv' : ''}`);
+  card.dataset.name = note.name;
+  const header = el('div', 'hd'), time = el('time', '', formatTime(note.create_time));
+  time.dateTime = note.create_time;
+  const open = button('', 'btn s', () => openNote(note));
+  open.setAttribute('aria-label', '打开笔记'); open.title = '打开笔记';
+  const icon = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  icon.setAttribute('class', 'i'); icon.setAttribute('viewBox', '0 0 24 24'); icon.setAttribute('aria-hidden', 'true');
+  const arrow = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+  arrow.setAttribute('d', 'M9 6h9v9M18 6L7 17'); icon.append(arrow); open.append(icon);
+  const metadata = el('div', 'discovery-meta');
+  if (review && Number.isFinite(Date.parse(note.create_time))) {
+    const days = Math.max(0, Math.floor((Date.now() - Date.parse(note.create_time)) / 86_400_000));
+    header.append(el('span', 'pill', days ? `${days} 天前` : '今天')); metadata.append(time);
+  } else header.append(time);
+  for (const tag of note.tags || []) metadata.append(el('span', 'tag', `#${tag}`));
+  metadata.append(open); header.append(metadata);
+  const content = el('div', 'note-content'); content.append(renderMarkdown(note.content, note));
+  card.append(header, content, renderAttachments(note));
+  return card;
+}
+function createDiscoveryPage(kind) {
+  let alive = true, sequence = 0, controller = null, busy = false, failure = null, retry = null;
+  let modelHint = '', configured = true;
+  const root = el('div', `stage mid discovery-page ${kind}-page`);
+  root.id = 'discovery-page';
+  const active = ticket => alive && ticket === sequence;
+  function cancel() {
+    sequence++; controller?.abort(); controller = null; busy = false;
+  }
+  function message(text, error = false) {
+    const node = el('p', error ? 'error' : 'sub', text);
+    node.setAttribute('role', error ? 'alert' : 'status'); root.append(node);
+  }
+  function render() {
+    if (!alive) return;
+    root.replaceChildren(); root.setAttribute('aria-busy', String(busy));
+    if (kind === 'review') renderReview();
+    else renderWalk();
+    if (failure) {
+      message(discoveryText(failure), true);
+      root.append(button('重试', 'ghost discovery-retry', () => retry?.()));
+    }
+  }
+  function renderReview() {
+    const batch = reviewView?.batch;
+    if (!batch) { if (busy) message('正在加载每日回顾…'); return; }
+    const date = batch.date.split('-').map(Number);
+    root.append(el('p', 'sub', `${date[1]}月${date[2]}日 · 今天的 ${batch.items.length} 条旧笔记`));
+    if (!batch.items.length) { message('今天没有可回顾的旧笔记。'); return; }
+    const selected = reviewView.position;
+    const stack = el('div', 'review-stack');
+    for (let i = 0; i < Math.min(2, batch.items.length - selected - 1); i++) {
+      const peek = el('div', `peek peek-${i + 1}`); peek.setAttribute('aria-hidden', 'true'); stack.append(peek);
+    }
+    batch.items.forEach((item, index) => {
+      let card;
+      if (item.unavailable) {
+        card = el('article', 'card big rv discovery-note');
+        card.append(el('p', 'sub', '这条笔记已不存在或无法访问。'));
+      } else card = discoveryCard(item.note, true);
+      card.hidden = index !== selected; card.dataset.reviewIndex = String(index); stack.append(card);
+    });
+    root.append(stack);
+    const controls = el('div', 'discovery-controls'), positions = el('div', 'pg review-positions');
+    positions.setAttribute('role', 'group'); positions.setAttribute('aria-label', '回顾条目');
+    batch.items.forEach((_, index) => {
+      const dot = button('', `dt${index === selected ? ' on' : ''}`, () => { reviewView.position = index; render(); });
+      dot.setAttribute('aria-label', `第 ${index + 1} / ${batch.items.length} 条`);
+      dot.setAttribute('aria-pressed', String(index === selected)); positions.append(dot);
+    });
+    const actions = el('div', 'discovery-actions'), current = batch.items[selected];
+    if (!current.unavailable) {
+      actions.append(button('从这条漫步', 'ghost', () => startFromNote(current.note)),
+        button('AI 洞察这条', 'ghost', () => navigate('/insights')));
+    }
+    actions.append(button(selected + 1 < batch.items.length ? '下一条' : '再看一遍', 'save', () => {
+      reviewView.position = (selected + 1) % batch.items.length; render();
+    }));
+    controls.append(positions, actions); root.append(controls);
+  }
+  async function loadReview() {
+    cancel();
+    const ticket = sequence;
+    controller = new AbortController(); busy = true; failure = null; retry = loadReview; render();
+    try {
+      const batch = await request('/reviews/daily', { controller });
+      if (!active(ticket)) return;
+      if (!batch?.id || !/^\d{4}-\d{2}-\d{2}$/.test(batch.date) || !batch.timezone || !Array.isArray(batch.items) ||
+          batch.items.some(item => !item || !noteID(item.name) || typeof item.unavailable !== 'boolean' ||
+            (!item.unavailable && (!validNote(item.note) || item.note.name !== item.name)))) {
+        throw Object.assign(new Error('Invalid daily review'), { code: 'REVIEW_RESPONSE_INVALID' });
+      }
+      const position = reviewView?.batch.id === batch.id ? reviewView.position : 0;
+      reviewView = { batch, position: Math.min(position, Math.max(0, batch.items.length - 1)) };
+    } catch (err) {
+      if (!active(ticket) || err.name === 'AbortError') return;
+      if (err.status === 401) { expire(err); return; }
+      failure = err;
+    } finally { if (active(ticket)) { busy = false; render(); } }
+  }
+  function stopWalk() {
+    cancel(); walkView = { key: currentKey, result: null, previous: null };
+    failure = retry = null; render();
+  }
+  function renderWalk() {
+    root.append(el('p', 'sub', '随意走走，看会遇见什么'));
+    if (modelHint) {
+      message(modelHint);
+      const settings = el('a', 'dlink', '打开设置'); settings.href = '/settings'; settings.dataset.route = ''; root.append(settings);
+    }
+    const result = walkView?.result;
+    if (result?.item) {
+      const notes = el('div', 'walk-cards');
+      if (walkView.previous) {
+        const previous = el('div', 'card walk-trail');
+        previous.append(el('span', 'sub', formatTime(walkView.previous.create_time)),
+          el('div', 'walk-trail-text', walkView.previous.content));
+        previous.setAttribute('aria-hidden', 'true'); notes.append(previous);
+      }
+      notes.append(discoveryCard(result.item.note)); root.append(notes);
+    } else if (!result?.exhausted) {
+      const start = el('div', 'walk-start');
+      const control = button(busy ? '翻找中…' : '随机开始', 'save', () => walkRequest('/walks/start', {}));
+      control.disabled = busy || !configured; start.append(control); root.append(start);
+      if (!busy) message('也可以从笔记详情出发');
+    }
+    for (const warning of walkView?.warnings || []) message(discoveryText(warning));
+    if (result?.exhausted) message(result.item ? '能走的路都走完了。' : '没有可漫步的笔记。');
+    if (result || ((busy || failure) && retry !== loadWalk)) {
+      const controls = el('div', 'discovery-controls'), actions = el('div', 'discovery-actions');
+      controls.append(el('span', 'sub', `已漫步 ${result?.path.length || 0} 条`));
+      actions.append(button('停止', 'pbtn', stopWalk));
+      if (result?.item && !result.exhausted) {
+        const next = button(busy ? '翻找中…' : '继续漫步', 'save', () => walkRequest('/walks/next', {
+          name: result.item.note.name, path: [...result.path],
+        }));
+        next.disabled = busy || !configured; actions.append(next);
+      }
+      controls.append(actions); root.append(controls);
+    }
+  }
+  async function walkRequest(path, body) {
+    if (busy) return;
+    const ticket = ++sequence;
+    controller = new AbortController(); busy = true; failure = null;
+    retry = () => walkRequest(path, body); walkView.warnings = []; render();
+    try {
+      const result = await sessionRequest(path, { method: 'POST', body, controller });
+      if (!active(ticket)) return;
+      const validPath = Array.isArray(result?.path) && result.path.every(name => typeof name === 'string' && noteID(name)) &&
+        new Set(result.path).size === result.path.length;
+      const prior = path === '/walks/next' ? body.path : [];
+      if (!validPath || typeof result.mode !== 'string' || typeof result.exhausted !== 'boolean' ||
+          !Array.isArray(result.warnings) || result.warnings.some(value => typeof value !== 'string') ||
+          prior.some((name, index) => result.path[index] !== name) ||
+          (result.item ? !validNote(result.item.note) || result.path.at(-1) !== result.item.note.name ||
+            result.path.length !== prior.length + 1 || (body.name && !prior.length && result.item.note.name !== body.name)
+            : result.path.length !== prior.length)) {
+        throw Object.assign(new Error('Invalid walk response'), { code: 'WALK_RESPONSE_INVALID' });
+      }
+      walkView.warnings = result.warnings;
+      if (!result.item && !result.exhausted) {
+        failure = { code: 'WALK_RESOURCE_LIMIT' };
+      } else {
+        if (result.item) {
+          walkView.previous = walkView.result?.item?.note || null; walkView.result = result;
+        } else walkView.result = { ...result, item: walkView.result?.item };
+      }
+    } catch (err) {
+      if (!active(ticket) || err.name === 'AbortError') return;
+      if (err.status === 401) { expire(err); return; }
+      failure = err;
+    } finally { if (active(ticket)) { busy = false; render(); } }
+  }
+  async function loadWalk() {
+    cancel();
+    const ticket = sequence;
+    controller = new AbortController(); busy = true; failure = null; retry = loadWalk; render();
+    try {
+      const models = await sessionRequest('/models', { controller });
+      if (!active(ticket)) return;
+      configured = models.embedding?.enabled === true;
+      modelHint = configured ? '' : '请在设置中启用 Embedding，再开始随机漫步。';
+      busy = false;
+      const name = new URLSearchParams(location.search).get('name');
+      if (configured && name && walkView.key !== currentKey) {
+        walkView = { key: currentKey, result: null, previous: null };
+        if (!noteID(name)) failure = { code: 'SOURCE_NOT_FOUND' };
+        else { await walkRequest('/walks/start', { name }); return; }
+      }
+    } catch (err) {
+      if (!active(ticket) || err.name === 'AbortError') return;
+      if (err.status === 401) { expire(err); return; }
+      configured = false; failure = err;
+    } finally { if (active(ticket)) { busy = false; render(); } }
+  }
+  return {
+    async mount(parent) {
+      parent.append(root);
+      if (kind === 'review') await loadReview();
+      else {
+        walkView ||= { key: null, result: null, previous: null };
+        await loadWalk();
+      }
+    },
+    destroy() { alive = false; cancel(); root.remove(); },
+  };
+}
 async function showRoute() {
   if (!identity) return;
   settingsPage?.destroy(); settingsPage = null;
+  discoveryPage?.destroy(); discoveryPage = null;
   const generation = epoch, sequence = ++viewSequence;
   listSequence++; listController?.abort(); clearTimeout(retryTimer); pageObserver.disconnect();
   listing = reloading = false; items = []; nextToken = ''; pageCount = 0;
   $('notes').replaceChildren(); closeMenus();
-  $('notes').hidden = $('page-end').hidden = location.pathname === '/settings';
+  $('notes').hidden = $('page-end').hidden = ['/settings', '/review', '/walk'].includes(location.pathname);
   for (const id of ['back', 'view-title', 'capability', 'empty', 'list-retry', 'filters', 'load-more']) $(id).hidden = true;
   showError($('list-error'), null); $('composer').hidden = location.pathname !== '/';
   const detail = notePath.exec(location.pathname);
@@ -776,6 +1010,11 @@ async function showRoute() {
       handleFailure($('list-error'), err);
       if (identity) { $('list-retry').textContent = '重新加载笔记'; $('list-retry').hidden = false; }
     }
+  } else if (location.pathname === '/review' || location.pathname === '/walk') {
+    $('view-title').textContent = pages.get(location.pathname); $('view-title').hidden = false;
+    window.scrollTo(0, 0);
+    discoveryPage = createDiscoveryPage(location.pathname === '/review' ? 'review' : 'walk');
+    await discoveryPage.mount($('workspace'));
   } else if (location.pathname === '/settings') {
     $('view-title').textContent = '设置'; $('view-title').hidden = false;
     window.scrollTo(0, 0);
@@ -792,7 +1031,7 @@ async function showRoute() {
     $('view-title').textContent = pages.get(location.pathname) || '页面不存在'; $('view-title').hidden = false;
     $('capability').textContent = pages.has(location.pathname) ? `${pages.get(location.pathname)}尚未开放。` : '请从侧栏打开主页。';
     $('capability').hidden = false; window.scrollTo(0, 0);
-    if (['/walk', '/insights', '/map'].includes(location.pathname)) {
+    if (['/insights', '/map'].includes(location.pathname)) {
       const page = location.pathname, label = pages.get(page);
       try {
         const models = await sessionRequest('/models');
