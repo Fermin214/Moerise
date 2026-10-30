@@ -240,11 +240,11 @@ Memos 中单独撤销 Moerise 对应的上游刷新会话，要到下一次刷�
                                       └─ Memos:5230
 ```
 
-目标服务为官方 `memos`、`core`、`web` 三个组件。Web 镜像中的轻量 HTTP 服务可以同时承担静态分发和到 Core 的固定反向代理，不必额外增加网关服务。TLS 可接入部署者已有入口，3.4 再确定默认交付方式。
+部署包含官方 Memos、Core 和 Web 三个组件。Compose 服务名分别为 `memos`、`moerise` 和 `web`。Web 镜像中的轻量 HTTP 服务承担静态分发和到 Core 的固定反向代理；TLS 接入部署者已有入口，转发到 Web 的回环端口。公开 Origin 由同一个部署参数传入 Core 和 Web，浏览器使用相对路径。
 
 Core 的 `memos.base_url` 使用容器内地址；`memos.public_url` 用于打开 Memos 原文。Web 构建产物只使用相对路径 `/api/app/v1`，不包含容器地址、PAT、模型或渠道凭据。Memos、state、index 各有独立数据卷，Web 静态文件不要求可写产品数据卷。
 
-已有 `compose.yaml` 提供 Core 和 local profile 的 Memos，没有 Web。3.1 的测试环境可以复用它的镜像及网络结构；完整首启、服务依赖、健康检查、持久化和升级在 3.4 交付。
+内置 Memos 由 Compose profile 启用；连接外部 Memos 时关闭该 profile，Core 使用外部根地址，两种拓扑共用客户端契约。Memos 不依赖 Core 和 Web，可先独立启动以创建官方账户。Core 存活后启动 Web；来源不可用通过就绪检查及客户端错误反映，存活检查不依赖来源。
 
 ### 5.2 连接外部 Memos
 
@@ -269,9 +269,9 @@ POST /memos.api.v1.AuthService/SignOut
 
 全新 Compose 的顺序为：启动官方 Memos → 用其官方入口创建首个账户 → 创建本人 PAT 并取得资源名 → 填写 Core 部署参数 → 启动 Core/Web。Core 缺少绑定时应给出简洁的配置错误，不能自动注册用户或用首位登录用户抢占实例。
 
-3.4 以官方账户创建和受控绑定为基础设计可执行的首启说明与命令。部署参数不能提供一个并不存在的用户或 PAT，也不能由首位浏览器访问者自动更换实例作者。
+首启先复制 `.env.example` 并启动官方 Memos，通过官方入口创建账户及 PAT，使用官方 `/api/v1/auth/me` 取得本人资源名，再填写 Core 绑定参数和独立密钥，启动 Core 与 Web。已有 Memos 使用相同流程取得 PAT 和资源名。部署参数不能提供一个并不存在的用户或 PAT，也不能由首位浏览器访问者自动更换实例作者。
 
-空 Memos 数据卷还没有用户和 PAT，仅凭预填 `memos.user/token` 无法完成真正的全新单步启动。3.4 必须明确首次 `docker compose up -d` 后的官方账户创建及受控绑定路径，或设计一次性的安装命令，再据此验证 PRD 的首启体验；不能以三个容器都启动替代这一流程。
+空 Memos 数据卷没有用户和 PAT，首启分为官方账户初始化与完整服务启动两步。Moerise 不代建账户，不根据首次浏览器访问自动改变作者绑定。Memos、产品状态、索引和备份分别持久化；重新创建容器和重建索引不会删除产品状态。
 
 ## 6. 最小应用装配层
 
