@@ -16,6 +16,7 @@ const assets = new Map([
   ['/errors.js', ['errors.js', 'text/javascript; charset=utf-8']],
   ['/routes.js', ['routes.js', 'text/javascript; charset=utf-8']],
   ['/markdown.js', ['markdown.js', 'text/javascript; charset=utf-8']],
+  ['/settings.js', ['settings.js', 'text/javascript; charset=utf-8']],
   ['/styles.css', ['styles.css', 'text/css; charset=utf-8']],
   ['/prototype.css', ['prototype.css', 'text/css; charset=utf-8']],
   ['/memos.css', ['memos.css', 'text/css; charset=utf-8']],

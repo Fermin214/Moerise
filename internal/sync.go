@@ -164,7 +164,10 @@ func (s *SyncService) Schedule() error {
 func (s *SyncService) Run(ctx context.Context) error {
 	s.alive.Store(true)
 	defer s.alive.Store(false)
-	if _, err := s.Store.Enqueue("full", false); err != nil {
+	unlock := s.Store.lockRuntime()
+	_, err := s.Store.Enqueue("full", false)
+	unlock()
+	if err != nil {
 		return err
 	}
 	timer := time.NewTicker(time.Second)

@@ -114,12 +114,6 @@ async function fixture(t) {
     env: { ...process.env, CHROME_LOG_FILE: join(dist, 'chromium.log') },
   });
   const page = await browser.newPage({ viewport: { width: 1360, height: 960 } }), errors = [];
-  // 可选模块夹具用于独立的界面测试。
-  if (process.env.MOERISE_SETTINGS_MODULE_FIXTURE === '1') {
-    await page.route('**/settings.js', route => route.fulfill({
-      contentType: 'text/javascript', path: fileURLToPath(new URL('../src/settings.js', import.meta.url)),
-    }));
-  }
   page.on('pageerror', err => errors.push(err.message));
   return { page, state, url, errors };
 }

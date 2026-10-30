@@ -32,9 +32,9 @@ go run . check-config
 go run . serve --host 127.0.0.1
 ```
 
-`check-config` 只检查配置格式。来源版本与账号在同步时检查，运行状态见[运行检查](OPERATIONS.md#运行检查)。命令的 `--config` 参数优先于 `MOERISE_CONFIG_FILE`，两者均省略时读取 `.local/config.json`。
+`check-config` 检查合并持久设置后的有效配置。来源版本与账号在同步时检查，运行状态见[运行检查](OPERATIONS.md#运行检查)。命令的 `--config` 参数优先于 `MOERISE_CONFIG_FILE`，两者均省略时读取 `.local/config.json`。
 
-配置按内置默认值、JSON、非空 `MOERISE_*` 环境变量依次覆盖。`MOERISE_NOTIFICATIONS_TIMES=09:00,18:00` 设置每天两个时段，`MOERISE_REVIEW_COUNT` 控制每次条数；完整变量见[配置说明](OPERATIONS.md#配置)。修改部署环境后重启进程读取配置。
+基础设施按内置默认值、JSON、非空 `MOERISE_*` 环境变量依次覆盖。配置状态加密主密钥后，日常字段从部署值初始化一次，随后以 Web 保存的持久值为准。`MOERISE_NOTIFICATIONS_TIMES=09:00,18:00` 和 `MOERISE_REVIEW_COUNT` 提供初始时段及每次条数；完整变量见[配置说明](OPERATIONS.md#配置)。基础设施变更通过重启读取。
 
 ## 检查与验证
 
@@ -157,6 +157,10 @@ node --test web/test/browser.mjs
 ```
 
 默认使用 Playwright 安装的 Chromium；设置 `MOERISE_PLAYWRIGHT_CHANNEL=chrome` 可复用本机 Chrome。
+
+`web/test/settings-browser.mjs` 使用同一浏览器运行方式，检查设置保存、密钥移除、版本冲突、繁忙重试、时区与侧栏刷新、路由离开及退出后的迟到响应。它通过正式静态资源和同源代理加载设置模块。
+
+`TestClientSettingsMemosAcceptance` 使用真实 Memos 和 Core 检查旧配置初始化、设置版本、模型保存生效、LLM 与向量资源隔离、Embedding 代次切换、重启及索引重建；通过 `go test -tags=integration ./tests -run '^TestClientSettingsMemosAcceptance$' -v -count=1` 执行。难以由浏览器稳定触发的排空超时、并发会话边界及旧队列密文迁移由 `internal/settings*_test.go` 和 `internal/feishu_queue_migration_test.go` 补充。
 
 该流程补充 Node 测试中的路由、草稿幂等和同源代理检查。真实 Memos 的联合浏览器流程还需覆盖来源版本、原文读回及服务重启。
 
