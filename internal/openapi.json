@@ -5884,7 +5884,7 @@
               },
               "time": {
                 "type": "string",
-                "description": "兼容单时段的 HH:MM；设置了非空 times 时使用 times。"
+                "description": "有效推送时段中最早的 HH:MM，与 times 的首项一致。"
               },
               "times": {
                 "type": "array",
@@ -6171,7 +6171,7 @@
               },
               "time": {
                 "type": "string",
-                "description": "兼容单时段的 HH:MM；设置了非空 times 时使用 times。"
+                "description": "兼容单时段的 HH:MM；只提交 time 时替换有效时段列表，同时提交非空 times 时以 times 为准。"
               },
               "times": {
                 "type": "array",
@@ -6181,7 +6181,7 @@
                   "type": "string",
                   "pattern": "^([01][0-9]|2[0-3]):[0-5][0-9]$"
                 },
-                "description": "每天的推送时段，数组整体替换。"
+                "description": "每天的推送时段，数组整体替换。非空列表同步将 time 设为最早时段；空列表回退到 time，省略 time 时回退到保存前的最早时段。"
               }
             }
           },

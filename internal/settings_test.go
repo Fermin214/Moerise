@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -22,6 +23,52 @@ func settingsChange(version int64, fields string) SettingsUpdate {
 	_ = json.Unmarshal([]byte(fields), &update.Settings)
 	update.Version = version
 	return update
+}
+
+func TestProductSettingsNotificationTimePatch(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		times  []string
+		patch  string
+		clocks []string
+	}{
+		{"legacy_single", nil, `{"time":"18:00"}`, []string{"18:00"}},
+		{"replace_multiple", []string{"09:00", "12:00"}, `{"time":"18:00"}`, []string{"18:00"}},
+		{"times_only", nil, `{"times":["20:00","08:00"]}`, []string{"08:00", "20:00"}},
+		{"both_fields", nil, `{"time":"18:00","times":["20:00","08:00"]}`, []string{"08:00", "20:00"}},
+		{"empty_with_time", []string{"09:00", "12:00"}, `{"time":"18:00","times":[]}`, []string{"18:00"}},
+		{"empty_list", []string{"08:00", "20:00"}, `{"times":[]}`, []string{"08:00"}},
+		{"unrelated_field", []string{"08:00", "20:00"}, `{"enabled":false}`, []string{"08:00", "20:00"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			deployment, store := settingsFixture(t)
+			store.Settings.Notifications.Times = test.times
+			next, err := store.prepareSettings(settingsChange(1, `{"notifications":`+test.patch+`}`))
+			if err != nil || !slices.Equal(next.Notifications.Clocks(), test.clocks) ||
+				next.Notifications.Time != test.clocks[0] {
+				t.Fatalf("inconsistent time patch: %+v %v", next.Notifications, err)
+			}
+			if store.Settings.Notifications.Time != "09:00" ||
+				!slices.Equal(store.Settings.Notifications.Times, test.times) {
+				t.Fatal("preparing a time patch mutated saved settings")
+			}
+			if err := store.persistSettings(next); err != nil {
+				t.Fatal(err)
+			}
+			loaded, err := loadPersistedProduct(deployment)
+			if err != nil || !slices.Equal(loaded.Notifications.Clocks(), test.clocks) ||
+				loaded.Notifications.Time != test.clocks[0] {
+				t.Fatalf("restart changed effective notification times: %+v %v", loaded.Notifications, err)
+			}
+		})
+	}
+	_, store := settingsFixture(t)
+	store.Settings.Notifications.Times = []string{"09:00", "12:00"}
+	for _, clock := range []string{"", "25:00", "9:00"} {
+		if _, err := store.prepareSettings(settingsChange(1, `{"notifications":{"time":"`+clock+`"}}`)); errorCode(err) != "INVALID_ARGUMENT" {
+			t.Fatalf("invalid single time accepted: %q %v", clock, err)
+		}
+	}
 }
 
 func TestProductSettingsPersistenceAndSecretBoundaries(t *testing.T) {

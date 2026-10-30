@@ -89,3 +89,32 @@ func TestSettingsRuntimeKeepsTodaysReviewAndTransitionsAfterMidnight(t *testing.
 		t.Fatal("new day did not use saved settings")
 	}
 }
+
+func TestSettingsSingleTimeChangesNextDaySchedule(t *testing.T) {
+	reviews, _ := reviewFixture(t, 12)
+	store := reviews.Store
+	store.Settings.Web.StateEncryptionKey = base64.StdEncoding.EncodeToString([]byte(strings.Repeat("k", 32)))
+	store.Settings.Channel.Kind = "feishu-webhook"
+	store.Settings.Channel.WebhookURL = new("https://hooks.example.com/review")
+	store.Settings.Notifications.Enabled = true
+	if err := store.initializeProductSettings(); err != nil {
+		t.Fatal(err)
+	}
+	app := NewApp(store.Settings, store, reviews.Source)
+	defer app.Close()
+	view, err := app.UpdateSettings(t.Context(), settingsChange(1, `{"notifications":{"time":"18:00"}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	notifications := view.Settings["notifications"].(map[string]any)
+	if notifications["time"] != "18:00" || store.Settings.daily == nil {
+		t.Fatal("single time update did not establish the day transition")
+	}
+	nextDay := store.Settings.daily.Until
+	if count, err := app.Notifications.Schedule(t.Context(), nextDay.Add(17*time.Hour+59*time.Minute)); err != nil || count != 0 {
+		t.Fatalf("next day still scheduled at the old time: %d %v", count, err)
+	}
+	if count, err := app.Notifications.Schedule(t.Context(), nextDay.Add(18*time.Hour)); err != nil || count != 1 {
+		t.Fatalf("next day missed the updated single time: %d %v", count, err)
+	}
+}

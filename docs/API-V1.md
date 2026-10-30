@@ -70,6 +70,8 @@ GET 和 PATCH 的成功响应均为 `SettingsView`：
 
 PATCH 请求体仅接受 `version`、`settings`、`secrets`，上限 128 KiB，Content-Type 必须为 `application/json`。`version` 必填且为正整数；至少提交一个设置字段或密钥操作。设置对象递归合并，数组整体替换；省略字段保持原值。所有层级拒绝重复字段、未知字段和显式 `null`，设置对象内也不能嵌入密钥或基础设施字段。
 
+只提交 `notifications.time` 时替换有效时段列表；提交非空 `notifications.times` 时以列表为准，并将 `time` 同步为最早时段。空列表回退到 `time`，省略 `time` 时使用保存前的最早时段。GET 和 PATCH 响应的 `times` 均返回有效时段。
+
 ```json
 {
   "version": 1,
