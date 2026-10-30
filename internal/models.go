@@ -201,6 +201,27 @@ type JobCount struct {
 	Count  int    `json:"count"`
 }
 
+type ClientModelStatus struct {
+	Enabled    bool   `json:"enabled"`
+	Configured bool   `json:"configured"`
+	Protocol   string `json:"protocol"`
+	Model      string `json:"model"`
+}
+
+type ClientModels struct {
+	Version     int64              `json:"version"`
+	Embedding   ClientModelStatus  `json:"embedding"`
+	LLM         ClientModelStatus  `json:"llm"`
+	IndexStatus string             `json:"index_status"`
+	VectorIndex *VectorIndexStatus `json:"vector_index"`
+}
+
+type ClientModelCheck struct {
+	Version    int64  `json:"version"`
+	Status     string `json:"status"`
+	DurationMS int64  `json:"duration_ms"`
+}
+
 type SyncStatus struct {
 	InstanceID      string             `json:"instance_id"`
 	Watermark       *string            `json:"watermark"`

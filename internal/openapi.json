@@ -5748,6 +5748,819 @@
           }
         }
       }
+    },
+    "/api/app/v1/models": {
+      "get": {
+        "operationId": "client_models_status",
+        "summary": "读取本人模型与索引状态",
+        "description": "要求本人会话；拒绝 Authorization 和查询参数。状态不返回凭据或 API 地址。连接检查要求 Origin、CSRF 和设置版本，使用共享 Provider、虚构文本及最长 55 秒总预算，不写笔记、设置或旧生成任务；不返回模型输出和供应商错误正文。",
+        "security": [
+          {
+            "BrowserSession": []
+          },
+          {
+            "LocalBrowserSession": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClientModels"
+                }
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                },
+                "description": "禁止缓存。"
+              },
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "请求标识。"
+              }
+            }
+          },
+          "401": {
+            "description": "SESSION_UNAUTHORIZED：浏览器会话缺失或失效；不返回 Bearer 认证挑战。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                },
+                "description": "禁止缓存。"
+              },
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "请求标识。"
+              }
+            }
+          },
+          "403": {
+            "description": "FORBIDDEN、ACCOUNT_NOT_BOUND、ORIGIN_REJECTED 或 CSRF_REJECTED：客户端拒绝 Authorization；账号必须匹配绑定作者，写入必须通过 Origin 和 CSRF 检查。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                },
+                "description": "禁止缓存。"
+              },
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "请求标识。"
+              }
+            }
+          },
+          "404": {
+            "description": "NOT_FOUND：未启用浏览器入口。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                },
+                "description": "禁止缓存。"
+              },
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "请求标识。"
+              }
+            }
+          },
+          "405": {
+            "description": "METHOD_NOT_ALLOWED：该路径仅支持 GET 和 PATCH。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                },
+                "description": "禁止缓存。"
+              },
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "请求标识。"
+              }
+            }
+          },
+          "422": {
+            "description": "INVALID_ARGUMENT：拒绝查询参数。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                },
+                "description": "禁止缓存。"
+              },
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "请求标识。"
+              }
+            }
+          },
+          "500": {
+            "description": "INTERNAL：内部服务错误，响应不包含凭据或输入值。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                },
+                "description": "禁止缓存。"
+              },
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "请求标识。"
+              }
+            }
+          },
+          "503": {
+            "description": "EMBEDDING_DISABLED、LLM_DISABLED、MODEL_CHECK_TIMEOUT 或模型认证、限流、协议及连接错误。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                },
+                "description": "禁止缓存。"
+              },
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "请求标识。"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/app/v1/models/embedding/check": {
+      "post": {
+        "operationId": "client_models_embedding",
+        "summary": "检查已保存的 embedding 连接",
+        "description": "要求本人会话；拒绝 Authorization 和查询参数。状态不返回凭据或 API 地址。连接检查要求 Origin、CSRF 和设置版本，使用共享 Provider、虚构文本及最长 55 秒总预算，不写笔记、设置或旧生成任务；不返回模型输出和供应商错误正文。",
+        "security": [
+          {
+            "BrowserSession": []
+          },
+          {
+            "LocalBrowserSession": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "Origin",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "精确匹配 web.public_origin，不能省略或为 null；重复头拒绝。"
+          },
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            },
+            "description": "登录或会话响应中的 csrf_token，必须匹配该会话；重复头拒绝。"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ClientModelCheckRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "成功。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClientModelCheck"
+                }
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                },
+                "description": "禁止缓存。"
+              },
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "请求标识。"
+              }
+            }
+          },
+          "401": {
+            "description": "SESSION_UNAUTHORIZED：浏览器会话缺失或失效；不返回 Bearer 认证挑战。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                },
+                "description": "禁止缓存。"
+              },
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "请求标识。"
+              }
+            }
+          },
+          "403": {
+            "description": "FORBIDDEN、ACCOUNT_NOT_BOUND、ORIGIN_REJECTED 或 CSRF_REJECTED：客户端拒绝 Authorization；账号必须匹配绑定作者，写入必须通过 Origin 和 CSRF 检查。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                },
+                "description": "禁止缓存。"
+              },
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "请求标识。"
+              }
+            }
+          },
+          "404": {
+            "description": "NOT_FOUND：未启用浏览器入口。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                },
+                "description": "禁止缓存。"
+              },
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "请求标识。"
+              }
+            }
+          },
+          "405": {
+            "description": "METHOD_NOT_ALLOWED：该路径仅支持 GET 和 PATCH。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                },
+                "description": "禁止缓存。"
+              },
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "请求标识。"
+              }
+            }
+          },
+          "422": {
+            "description": "INVALID_ARGUMENT：请求格式或字段不合法、参数超限、空修改、缺失或非正整数版本；任意层级的未知字段、重复字段和 null 均拒绝。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                },
+                "description": "禁止缓存。"
+              },
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "请求标识。"
+              }
+            }
+          },
+          "500": {
+            "description": "INTERNAL：内部服务错误，响应不包含凭据或输入值。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                },
+                "description": "禁止缓存。"
+              },
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "请求标识。"
+              }
+            }
+          },
+          "503": {
+            "description": "EMBEDDING_DISABLED、LLM_DISABLED、MODEL_CHECK_TIMEOUT 或模型认证、限流、协议及连接错误。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                },
+                "description": "禁止缓存。"
+              },
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "请求标识。"
+              }
+            }
+          },
+          "409": {
+            "description": "SETTINGS_CONFLICT：设置版本变化，重新加载后检查。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                },
+                "description": "禁止缓存。"
+              },
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "请求标识。"
+              }
+            }
+          },
+          "415": {
+            "description": "UNSUPPORTED_MEDIA_TYPE：Content-Type 必须为 application/json。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                },
+                "description": "禁止缓存。"
+              },
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "请求标识。"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/app/v1/models/llm/check": {
+      "post": {
+        "operationId": "client_models_llm",
+        "summary": "检查已保存的 llm 连接",
+        "description": "要求本人会话；拒绝 Authorization 和查询参数。状态不返回凭据或 API 地址。连接检查要求 Origin、CSRF 和设置版本，使用共享 Provider、虚构文本及最长 55 秒总预算，不写笔记、设置或旧生成任务；不返回模型输出和供应商错误正文。",
+        "security": [
+          {
+            "BrowserSession": []
+          },
+          {
+            "LocalBrowserSession": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "Origin",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "精确匹配 web.public_origin，不能省略或为 null；重复头拒绝。"
+          },
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            },
+            "description": "登录或会话响应中的 csrf_token，必须匹配该会话；重复头拒绝。"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ClientModelCheckRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "成功。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClientModelCheck"
+                }
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                },
+                "description": "禁止缓存。"
+              },
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "请求标识。"
+              }
+            }
+          },
+          "401": {
+            "description": "SESSION_UNAUTHORIZED：浏览器会话缺失或失效；不返回 Bearer 认证挑战。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                },
+                "description": "禁止缓存。"
+              },
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "请求标识。"
+              }
+            }
+          },
+          "403": {
+            "description": "FORBIDDEN、ACCOUNT_NOT_BOUND、ORIGIN_REJECTED 或 CSRF_REJECTED：客户端拒绝 Authorization；账号必须匹配绑定作者，写入必须通过 Origin 和 CSRF 检查。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                },
+                "description": "禁止缓存。"
+              },
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "请求标识。"
+              }
+            }
+          },
+          "404": {
+            "description": "NOT_FOUND：未启用浏览器入口。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                },
+                "description": "禁止缓存。"
+              },
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "请求标识。"
+              }
+            }
+          },
+          "405": {
+            "description": "METHOD_NOT_ALLOWED：该路径仅支持 GET 和 PATCH。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                },
+                "description": "禁止缓存。"
+              },
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "请求标识。"
+              }
+            }
+          },
+          "422": {
+            "description": "INVALID_ARGUMENT：请求格式或字段不合法、参数超限、空修改、缺失或非正整数版本；任意层级的未知字段、重复字段和 null 均拒绝。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                },
+                "description": "禁止缓存。"
+              },
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "请求标识。"
+              }
+            }
+          },
+          "500": {
+            "description": "INTERNAL：内部服务错误，响应不包含凭据或输入值。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                },
+                "description": "禁止缓存。"
+              },
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "请求标识。"
+              }
+            }
+          },
+          "503": {
+            "description": "EMBEDDING_DISABLED、LLM_DISABLED、MODEL_CHECK_TIMEOUT 或模型认证、限流、协议及连接错误。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                },
+                "description": "禁止缓存。"
+              },
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "请求标识。"
+              }
+            }
+          },
+          "409": {
+            "description": "SETTINGS_CONFLICT：设置版本变化，重新加载后检查。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                },
+                "description": "禁止缓存。"
+              },
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "请求标识。"
+              }
+            }
+          },
+          "415": {
+            "description": "UNSUPPORTED_MEDIA_TYPE：Content-Type 必须为 application/json。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                },
+                "description": "禁止缓存。"
+              },
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "请求标识。"
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -8588,6 +9401,101 @@
             }
           }
         }
+      },
+      "ClientModelStatus": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "configured": {
+            "type": "boolean"
+          },
+          "protocol": {
+            "type": "string"
+          },
+          "model": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "enabled",
+          "configured",
+          "protocol",
+          "model"
+        ]
+      },
+      "ClientModels": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "version": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "embedding": {
+            "$ref": "#/components/schemas/ClientModelStatus"
+          },
+          "llm": {
+            "$ref": "#/components/schemas/ClientModelStatus"
+          },
+          "index_status": {
+            "type": "string",
+            "enum": [
+              "disabled",
+              "waiting",
+              "building",
+              "ready",
+              "unavailable"
+            ]
+          },
+          "vector_index": {
+            "$ref": "#/components/schemas/VectorIndexStatus"
+          }
+        },
+        "required": [
+          "version",
+          "embedding",
+          "llm",
+          "index_status",
+          "vector_index"
+        ]
+      },
+      "ClientModelCheckRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "version": {
+            "type": "integer",
+            "minimum": 1
+          }
+        },
+        "required": [
+          "version"
+        ]
+      },
+      "ClientModelCheck": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "version": {
+            "type": "integer"
+          },
+          "status": {
+            "type": "string",
+            "const": "ok"
+          },
+          "duration_ms": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "version",
+          "status",
+          "duration_ms"
+        ]
       }
     },
     "securitySchemes": {

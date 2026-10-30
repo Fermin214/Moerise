@@ -43,3 +43,9 @@
 修改应用、接收目标或 Webhook 不重复处理已经入队或已处理的日期时段。旧通知仍可查询和确认，结果不明的任务须经人工确认后才能继续；其发送与回执核对使用原渠道。尚需恢复的旧渠道凭据随产品设置加密保存，不在设置响应中返回，重启后继续可用。新入队的通知使用新渠道。
 
 只有 Webhook URL 的渠道支持文字。配置应用图片上传凭据后支持图文；应用机器人具备完整记录凭据后支持记录。能力由服务端按实际配置计算。
+
+## 模型与索引状态
+
+`GET /api/app/v1/models` 要求本人会话，返回设置 `version`、`embedding`、`llm`、`index_status` 和 `vector_index`。两类模型各包含 `enabled`、`configured`、`protocol` 和 `model`；`configured` 表示地址、密钥和模型均已填写，不表示远端可用。索引状态为 `disabled`（关闭）、`waiting`（等待完整同步或构建计划）、`building`（构建）、`ready`（配置与投影一致）、`unavailable`（构建失败并等待重试）。`vector_index` 包含活动与构建代次、片段总数、完成数和脱敏错误代码，旧代次可能与新配置不匹配，只有 `ready` 才可用于语义查询。
+
+`POST /api/app/v1/models/embedding/check` 和 `/api/app/v1/models/llm/check` 接收 `{version}`，要求本人会话、Origin 和 CSRF。版本变化返回 `SETTINGS_CONFLICT`。检查复用有效 Provider 的并发控制，Embedding 检查虚构文档与查询，LLM 检查虚构文本的流式回复；不新增笔记、设置或旧生成任务。成功返回 `{version,status:"ok",duration_ms}`，失败返回模型错误代码，不返回供应商错误正文、密钥或生成内容。检查总预算最多 55 秒，各模型仍受自身超时配置约束，超时返回 `MODEL_CHECK_TIMEOUT`。关闭的模型分别返回 `EMBEDDING_DISABLED` 或 `LLM_DISABLED`。

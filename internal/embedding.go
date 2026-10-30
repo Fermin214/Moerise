@@ -313,6 +313,12 @@ func CheckEmbedding(ctx context.Context, config EmbeddingConfig) (EmbeddingCheck
 		return EmbeddingCheck{}, err
 	}
 	defer provider.Close()
+	return checkEmbedding(ctx, config, provider)
+}
+
+func checkEmbedding(ctx context.Context, config EmbeddingConfig, provider EmbeddingProvider) (EmbeddingCheck, error) {
+	ctx, cancel := context.WithTimeout(ctx, time.Duration(config.TimeoutSeconds*float64(time.Second)))
+	defer cancel()
 	started := time.Now()
 	documents, err := provider.Embed(ctx, []string{"I planted basil on the balcony.", "I repaired the bicycle brake."}, EmbeddingDocument)
 	if err != nil {
