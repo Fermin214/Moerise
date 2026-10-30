@@ -5621,6 +5621,56 @@
               }
             }
           },
+          "409": {
+            "description": "SETTINGS_CONFLICT：版本已变化，重新读取后基于新版本修改。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                },
+                "description": "禁止缓存。"
+              },
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "请求标识。"
+              }
+            }
+          },
+          "415": {
+            "description": "UNSUPPORTED_MEDIA_TYPE：Content-Type 必须为 application/json。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                },
+                "description": "禁止缓存。"
+              },
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "请求标识。"
+              }
+            }
+          },
           "422": {
             "description": "INVALID_ARGUMENT：请求格式或字段不合法、参数超限、空修改、缺失或非正整数版本；任意层级的未知字段、重复字段和 null 均拒绝。",
             "content": {
@@ -5673,56 +5723,6 @@
           },
           "503": {
             "description": "SETTINGS_BUSY：应用繁忙；SETTINGS_UNAVAILABLE：尚未配置状态加密密钥。会话、来源或存储故障沿用对应服务错误；失败不发布部分配置。",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "headers": {
-              "Cache-Control": {
-                "schema": {
-                  "type": "string",
-                  "const": "no-store"
-                },
-                "description": "禁止缓存。"
-              },
-              "X-Request-ID": {
-                "schema": {
-                  "type": "string"
-                },
-                "description": "请求标识。"
-              }
-            }
-          },
-          "409": {
-            "description": "SETTINGS_CONFLICT：版本已变化，重新读取后基于新版本修改。",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "headers": {
-              "Cache-Control": {
-                "schema": {
-                  "type": "string",
-                  "const": "no-store"
-                },
-                "description": "禁止缓存。"
-              },
-              "X-Request-ID": {
-                "schema": {
-                  "type": "string"
-                },
-                "description": "请求标识。"
-              }
-            }
-          },
-          "415": {
-            "description": "UNSUPPORTED_MEDIA_TYPE：Content-Type 必须为 application/json。",
             "content": {
               "application/json": {
                 "schema": {
@@ -6136,6 +6136,56 @@
               }
             }
           },
+          "409": {
+            "description": "SETTINGS_CONFLICT：设置版本变化，重新加载后检查。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                },
+                "description": "禁止缓存。"
+              },
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "请求标识。"
+              }
+            }
+          },
+          "415": {
+            "description": "UNSUPPORTED_MEDIA_TYPE：Content-Type 必须为 application/json。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                },
+                "description": "禁止缓存。"
+              },
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "请求标识。"
+              }
+            }
+          },
           "422": {
             "description": "INVALID_ARGUMENT：请求格式或字段不合法、参数超限、空修改、缺失或非正整数版本；任意层级的未知字段、重复字段和 null 均拒绝。",
             "content": {
@@ -6188,56 +6238,6 @@
           },
           "503": {
             "description": "EMBEDDING_DISABLED、LLM_DISABLED、MODEL_CHECK_TIMEOUT 或模型认证、限流、协议及连接错误。",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "headers": {
-              "Cache-Control": {
-                "schema": {
-                  "type": "string",
-                  "const": "no-store"
-                },
-                "description": "禁止缓存。"
-              },
-              "X-Request-ID": {
-                "schema": {
-                  "type": "string"
-                },
-                "description": "请求标识。"
-              }
-            }
-          },
-          "409": {
-            "description": "SETTINGS_CONFLICT：设置版本变化，重新加载后检查。",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "headers": {
-              "Cache-Control": {
-                "schema": {
-                  "type": "string",
-                  "const": "no-store"
-                },
-                "description": "禁止缓存。"
-              },
-              "X-Request-ID": {
-                "schema": {
-                  "type": "string"
-                },
-                "description": "请求标识。"
-              }
-            }
-          },
-          "415": {
-            "description": "UNSUPPORTED_MEDIA_TYPE：Content-Type 必须为 application/json。",
             "content": {
               "application/json": {
                 "schema": {
@@ -6434,6 +6434,56 @@
               }
             }
           },
+          "409": {
+            "description": "SETTINGS_CONFLICT：设置版本变化，重新加载后检查。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                },
+                "description": "禁止缓存。"
+              },
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "请求标识。"
+              }
+            }
+          },
+          "415": {
+            "description": "UNSUPPORTED_MEDIA_TYPE：Content-Type 必须为 application/json。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                },
+                "description": "禁止缓存。"
+              },
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "请求标识。"
+              }
+            }
+          },
           "422": {
             "description": "INVALID_ARGUMENT：请求格式或字段不合法、参数超限、空修改、缺失或非正整数版本；任意层级的未知字段、重复字段和 null 均拒绝。",
             "content": {
@@ -6508,56 +6558,6 @@
                 "description": "请求标识。"
               }
             }
-          },
-          "409": {
-            "description": "SETTINGS_CONFLICT：设置版本变化，重新加载后检查。",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "headers": {
-              "Cache-Control": {
-                "schema": {
-                  "type": "string",
-                  "const": "no-store"
-                },
-                "description": "禁止缓存。"
-              },
-              "X-Request-ID": {
-                "schema": {
-                  "type": "string"
-                },
-                "description": "请求标识。"
-              }
-            }
-          },
-          "415": {
-            "description": "UNSUPPORTED_MEDIA_TYPE：Content-Type 必须为 application/json。",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "headers": {
-              "Cache-Control": {
-                "schema": {
-                  "type": "string",
-                  "const": "no-store"
-                },
-                "description": "禁止缓存。"
-              },
-              "X-Request-ID": {
-                "schema": {
-                  "type": "string"
-                },
-                "description": "请求标识。"
-              }
-            }
           }
         }
       }
@@ -6573,7 +6573,7 @@
             "type": "integer",
             "format": "int64",
             "minimum": 1,
-            "maximum": 9223372036854775807,
+            "maximum": 9223372036854776000,
             "description": "读取到的设置版本；初始化为 1，成功保存后递增。"
           },
           "settings": {
@@ -6909,7 +6909,7 @@
             "type": "integer",
             "format": "int64",
             "minimum": 1,
-            "maximum": 9223372036854775807,
+            "maximum": 9223372036854776000,
             "description": "读取到的设置版本；初始化为 1，成功保存后递增。"
           },
           "settings": {
@@ -8779,7 +8779,12 @@
             "items": {
               "$ref": "#/components/schemas/ReviewItem"
             },
-            "maxItems": 20
+            "maxItems": 480
+          },
+          "settings_version": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "计划冻结的产品设置版本；历史批次或缺少版本信息的过渡规则为 0。"
           }
         },
         "required": [
@@ -8789,7 +8794,8 @@
           "rule_version",
           "sequence",
           "created_at",
-          "items"
+          "items",
+          "settings_version"
         ]
       },
       "Notification": {
@@ -8858,6 +8864,11 @@
           "updated_at": {
             "type": "string",
             "format": "date-time"
+          },
+          "slot_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "固定计划的时段分配引用；历史整批通知省略。"
           }
         },
         "required": [

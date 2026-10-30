@@ -144,28 +144,12 @@ func TestReviewsAcrossRESTAndMCPAcceptance(t *testing.T) {
 		t.Fatal("shared service skip was not visible over MCP")
 	}
 	h.call(h.base, "/api/ext/v1/reviews/daily/replace", "POST", h.operator, map[string]any{}, 403)
-	var replacement map[string]any
-	for range 2 {
-		h.withOfflineApp(func(app *moerise.App) {
-			value, err := app.Reviews.Replace(context.Background(), "shared-replacement", time.Now())
-			replay := businessResult(h, value, 200, err, 200)
-			if replacement != nil && replay["id"] != replacement["id"] {
-				t.Fatal("replacement changed identity")
-			}
-			replacement = replay
-		})
-	}
-	if got := h.reviewTool("read_daily_review", map[string]any{}); got["id"] != replacement["id"] {
-		t.Fatal("MCP did not read the shared service replacement")
-	}
-	seen := map[string]bool{}
-	for _, value := range batch["items"].([]any) {
-		seen[value.(map[string]any)["name"].(string)] = true
-	}
-	for _, value := range replacement["items"].([]any) {
-		if seen[value.(map[string]any)["name"].(string)] {
-			t.Fatal("replacement repeated a recent memo")
-		}
+	h.withOfflineApp(func(app *moerise.App) {
+		value, err := app.Reviews.Replace(context.Background(), "shared-replacement", time.Now())
+		requireRecordError(t, businessResult(h, value, 200, err, 410), "REVIEW_REPLACEMENT_DISABLED")
+	})
+	if got := h.reviewTool("read_daily_review", map[string]any{}); got["id"] != id {
+		t.Fatal("MCP changed the fixed daily plan")
 	}
 	snapshot := filepath.Join(h.root, "reviews")
 	h.command(true, "backup", "--output", snapshot)
@@ -179,7 +163,7 @@ func TestReviewsAcrossRESTAndMCPAcceptance(t *testing.T) {
 		}
 		h.start()
 		h.ready()
-		if got := h.reviewTool("read_daily_review", map[string]any{}); got["id"] != replacement["id"] {
+		if got := h.reviewTool("read_daily_review", map[string]any{}); got["id"] != id {
 			t.Fatalf("%s changed batch identity", operation)
 		}
 		got := h.call(h.base, path, "GET", h.reader, nil, 200)["items"].([]any)[0].(map[string]any)

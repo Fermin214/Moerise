@@ -125,11 +125,12 @@ func TestDailyReviewWithoutPushAndMultipleSlots(t *testing.T) {
 	ctx := context.Background()
 	at := time.Date(2026, 10, 28, 2, 0, 0, 0, time.UTC)
 	service.Store.Settings.Notifications.Enabled = false
+	service.Store.Settings.Notifications.Times = []string{"09:00", "12:00"}
 	if count, err := service.Schedule(ctx, at); err != nil || count != 0 {
 		t.Fatalf("daily generation without push: %d %v", count, err)
 	}
 	first, err := service.Reviews.ReadDaily(ctx, at)
-	if err != nil || len(first.Items) != 3 || platform.calls != 0 {
+	if err != nil || len(first.Items) != 6 || platform.calls != 0 {
 		t.Fatalf("disabled push should still expose today's review: %+v %v", first, err)
 	}
 	service.Store.Settings.Notifications.Enabled = true
@@ -140,11 +141,11 @@ func TestDailyReviewWithoutPushAndMultipleSlots(t *testing.T) {
 	service.Store.Settings.Review.Count = 1
 	service.Store.Settings.Review.IncludeArchived = true
 	service.Store.Settings.Notifications.Times = []string{"09:00", "10:00", "12:00"}
-	if count, err := service.Schedule(ctx, at.Add(3*time.Hour)); err != nil || count != 2 {
+	if count, err := service.Schedule(ctx, at.Add(3*time.Hour)); err != nil || count != 1 {
 		t.Fatalf("added and later slots: %d %v", count, err)
 	}
 	notifications, err := service.List("")
-	if err != nil || len(notifications) != 3 {
+	if err != nil || len(notifications) != 2 {
 		t.Fatalf("slot queue: %+v %v", notifications, err)
 	}
 	for _, item := range notifications {
@@ -162,20 +163,19 @@ func TestScheduleUsesLatestReplacementWithinSecond(t *testing.T) {
 	service, _ := notificationFixture(t)
 	ctx := context.Background()
 	at := time.Date(2026, 10, 28, 2, 0, 0, 0, time.UTC)
-	legacy, err := service.Reviews.Daily(ctx, at)
+	seedLegacyReview(t, service.Reviews, at, "legacy-scheduled", "legacy-rules", 40)
+	var latest ReviewBatch
+	for i, offset := range []time.Duration{500 * time.Millisecond, 510 * time.Millisecond} {
+		latest = seedLegacyReview(t, service.Reviews, at.Add(offset), fmt.Sprintf("scheduled-replace-%d", i), "random-v1", i+1)
+	}
+	memo, err := service.Reviews.Source.Get(ctx, "memos/review-00")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := service.Store.state.Exec(`UPDATE review_batches
-		SET rule_version = 'legacy-rules', sequence = 40 WHERE id = ?`, legacy.ID); err != nil {
+	if _, err := service.Store.state.Exec(`INSERT INTO review_items
+		(batch_id, position, memo_name, source_hash, selected_at) VALUES (?, 0, ?, ?, ?)`,
+		latest.ID, memo.Name, memo.SourceHash, nowText()); err != nil {
 		t.Fatal(err)
-	}
-	var latest ReviewBatch
-	for i, offset := range []time.Duration{500 * time.Millisecond, 510 * time.Millisecond} {
-		latest, err = service.Reviews.Replace(ctx, fmt.Sprintf("scheduled-replace-%d", i), at.Add(offset))
-		if err != nil {
-			t.Fatal(err)
-		}
 	}
 	if count, err := service.Schedule(ctx, at.Add(time.Second)); err != nil || count != 1 {
 		t.Fatalf("schedule replacement: %d %v", count, err)

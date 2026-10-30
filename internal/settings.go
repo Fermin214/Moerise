@@ -43,6 +43,7 @@ type dailySettings struct {
 	Review        ReviewConfig       `json:"review"`
 	Notifications NotificationConfig `json:"notifications"`
 	Until         time.Time          `json:"until"`
+	Version       int64              `json:"version,omitempty"`
 }
 
 type SecretUpdate struct {
@@ -246,6 +247,8 @@ func (s *Store) reviewSettings(at time.Time) Settings {
 		enabled := settings.Notifications.Enabled
 		settings.Notifications = previous.Notifications
 		settings.Notifications.Enabled = enabled
+	} else {
+		settings.daily = nil
 	}
 	return settings
 }

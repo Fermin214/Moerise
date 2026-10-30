@@ -74,7 +74,7 @@ func (s *FeishuDelivery) prepareReview(ctx context.Context, item Notification) (
 	if !errors.Is(err, sql.ErrNoRows) {
 		return part, err
 	}
-	batch, err := s.Reviews.Get(ctx, *item.BatchID)
+	batch, err := s.Reviews.forNotification(ctx, item)
 	if err != nil {
 		return part, err
 	}
@@ -101,7 +101,8 @@ func (s *FeishuDelivery) prepareReview(ctx context.Context, item Notification) (
 		for _, attachment := range note.Attachments {
 			kind, _ := attachment["type"].(string)
 			name, _ := attachment["name"].(string)
-			if strings.HasPrefix(kind, "image/") && attachmentPattern.MatchString(name) {
+			if strings.HasPrefix(kind, "image/") && attachmentPattern.MatchString(name) &&
+				configured(s.Store.Settings.Channel.AppID) != "" && configured(s.Store.Settings.Channel.AppSecret) != "" {
 				parts = append(parts, feishuReviewPart{Root: item.ID, Kind: "image", Name: note.Name,
 					Version: note.SourceHash, Position: len(parts), Attachment: name})
 			}
@@ -132,9 +133,9 @@ func (s *FeishuDelivery) prepareReview(ctx context.Context, item Notification) (
 			if i != 0 {
 				id = derivedID(s.Store.Settings.CursorSecret, "review-part", item.ID, strconv.Itoa(i))
 				_, err := tx.Exec(`INSERT INTO notifications
-					(id, instance_id, user_name, channel_key, logical_key, kind, local_date, batch_id,
+					(id, instance_id, user_name, channel_key, logical_key, kind, local_date, batch_id, slot_id,
 					status, platform_uuid, available_at, created_at, updated_at)
-					SELECT ?, instance_id, user_name, channel_key, ?, kind, local_date, batch_id,
+					SELECT ?, instance_id, user_name, channel_key, ?, kind, local_date, batch_id, slot_id,
 					'pending', ?, 1.0e30, ?, ? FROM notifications WHERE id = ?`,
 					id, "review-part:"+item.ID+":"+strconv.Itoa(i),
 					derivedID(s.Store.Settings.CursorSecret, "notification-send", id), nowText(), nowText(), item.ID)

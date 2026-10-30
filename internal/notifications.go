@@ -16,6 +16,7 @@ type Notification struct {
 	Kind         string  `json:"kind"`
 	Date         string  `json:"date"`
 	BatchID      *string `json:"batch_id"`
+	SlotID       *string `json:"slot_id,omitempty"`
 	SourceEvent  *string `json:"source_event"`
 	Status       string  `json:"status"`
 	Attempts     int     `json:"attempts"`
@@ -80,7 +81,7 @@ func notificationChannelKey(channel ChannelConfig) string {
 		configured(channel.UserOpenID), destination, configured(channel.WebhookURL)}))
 }
 
-// Schedule fixes today's batch independently of delivery and processes each due slot once.
+// Schedule only creates the most recent due slot; existing queue entries recover independently.
 func (s *NotificationService) Schedule(ctx context.Context, at time.Time) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -91,15 +92,14 @@ func (s *NotificationService) Schedule(ctx context.Context, at time.Time) (int, 
 	}
 	instance, user, channel := settings.Memos.InstanceID, settings.Memos.User, s.channelKey()
 	today := at.In(location).Format(time.DateOnly)
-	var batch ReviewBatch
-	var batchID string
-	err = s.Store.state.QueryRow(`SELECT id FROM review_batches
-		WHERE instance_id = ? AND user_name = ? AND timezone = ? AND local_date = ?`+reviewBatchOrder,
-		instance, user, settings.Timezone, today).Scan(&batchID)
-	loaded := false
+	var batchID, timezone string
+	err = s.Store.state.QueryRow(`SELECT p.batch_id, b.timezone FROM review_plans p
+		JOIN review_batches b ON b.id = p.batch_id WHERE p.instance_id = ? AND p.user_name = ? AND p.local_date = ?`,
+		instance, user, today).Scan(&batchID, &timezone)
 	if errors.Is(err, sql.ErrNoRows) {
+		var batch ReviewBatch
 		batch, err = s.Reviews.Daily(ctx, at)
-		batchID, loaded = batch.ID, true
+		batchID, timezone, today = batch.ID, batch.Timezone, batch.Date
 	}
 	if err != nil {
 		return 0, err
@@ -107,51 +107,88 @@ func (s *NotificationService) Schedule(ctx context.Context, at time.Time) (int, 
 	if !settings.Notifications.Enabled {
 		return 0, nil
 	}
-	created := 0
-	for ordinal, clock := range settings.Notifications.Clocks() {
-		moment, err := scheduledMoment(today, clock, location)
+	location, err = time.LoadLocation(timezone)
+	if err != nil {
+		return 0, err
+	}
+	slots, err := s.Reviews.slots(batchID)
+	if err != nil {
+		return 0, err
+	}
+	latest := -1
+	var latestMoment time.Time
+	for ordinal, slot := range slots {
+		moment, err := scheduledMoment(today, slot.Clock, location)
 		if err != nil {
-			return created, err
+			return 0, err
 		}
-		if moment.After(at) {
-			continue
+		if !moment.After(at) && (latest == -1 || !moment.Before(latestMoment)) {
+			latest, latestMoment = ordinal, moment
 		}
+	}
+	if latest < 0 {
+		return 0, nil
+	}
+	processed := func(db reviewQuery, ordinal int) (bool, error) {
 		var done bool
-		if err := s.Store.state.QueryRow(`SELECT EXISTS (SELECT 1 FROM review_schedule_slots
+		err := db.QueryRow(`SELECT EXISTS (SELECT 1 FROM review_schedule_slots
 			WHERE instance_id = ? AND user_name = ? AND timezone = ?
 			AND local_date = ? AND (clock = ? OR (clock = '' AND ? = 0))
 			UNION ALL SELECT 1 FROM notifications
-			WHERE instance_id = ? AND user_name = ? AND kind = 'review' AND logical_key = ?)`,
-			instance, user, settings.Timezone, today, clock, ordinal,
-			instance, user, today+":"+clock).Scan(&done); err != nil {
-			return created, err
+			WHERE instance_id = ? AND user_name = ? AND kind = 'review'
+			AND (logical_key = ? OR (logical_key = ? AND ? = 0)))`,
+			instance, user, timezone, today, slots[ordinal].Clock, ordinal,
+			instance, user, today+":"+slots[ordinal].Clock, today, ordinal).Scan(&done)
+		return done, err
+	}
+	done, err := processed(s.Store.state, latest)
+	if err != nil {
+		return 0, err
+	}
+	available := false
+	if !done && slots[latest].Count > 0 {
+		batch, err := s.Reviews.forNotification(ctx, Notification{BatchID: &batchID, SlotID: &slots[latest].ID})
+		if err != nil {
+			return 0, err
 		}
-		if done {
-			continue
-		}
-		if !loaded {
-			batch, err = s.Reviews.Get(ctx, batchID)
-			if err != nil {
-				return created, err
-			}
-			loaded = true
-		}
-		available := slices.ContainsFunc(batch.Items, func(item ReviewItem) bool {
+		available = slices.ContainsFunc(batch.Items, func(item ReviewItem) bool {
 			return !item.Unavailable && item.Note != nil
 		})
-		if available {
-			if _, err := s.enqueue("review", today+":"+clock, today, &batch.ID, nil); err != nil {
-				return created, err
-			}
-			created++
-		}
-		if _, err := s.Store.state.Exec(`INSERT OR IGNORE INTO review_schedule_slots
-			(instance_id, user_name, channel_key, timezone, local_date, clock) VALUES (?, ?, ?, ?, ?, ?)`,
-			instance, user, channel, settings.Timezone, today, clock); err != nil {
-			return created, err
-		}
 	}
-	return created, nil
+	created := 0
+	err = transaction(s.Store.state, func(tx *sql.Tx) error {
+		for ordinal := 0; ordinal <= latest; ordinal++ {
+			done, err := processed(tx, ordinal)
+			if err != nil {
+				return err
+			}
+			if done {
+				continue
+			}
+			slot := slots[ordinal]
+			if ordinal == latest && available {
+				logical := today + ":" + slot.Clock
+				id := derivedID(settings.CursorSecret, "notification", instance, user, channel, logical)
+				stamp := nowText()
+				if _, err := tx.Exec(`INSERT INTO notifications
+					(id, instance_id, user_name, channel_key, logical_key, kind, local_date, batch_id, slot_id,
+					status, platform_uuid, available_at, created_at, updated_at)
+					VALUES (?, ?, ?, ?, ?, 'review', ?, ?, ?, 'pending', ?, ?, ?, ?)`,
+					id, instance, user, channel, logical, today, batchID, slot.ID,
+					derivedID(settings.CursorSecret, "notification-send", id), nowSeconds(), stamp, stamp); err != nil {
+					return err
+				}
+				created++
+			}
+			if _, err := tx.Exec(`INSERT INTO review_schedule_slots
+				(instance_id, user_name, channel_key, timezone, local_date, clock) VALUES (?, ?, ?, ?, ?, ?)`,
+				instance, user, channel, timezone, today, slot.Clock); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	return created, err
 }
 
 func scheduledMoment(date, clock string, location *time.Location) (time.Time, error) {
@@ -257,14 +294,14 @@ func syncEventNotification(tx *sql.Tx, item Notification, status string, receipt
 }
 
 const notificationColumns = `id, kind, local_date, batch_id, source_event, status, attempts, available_at,
-	receipt, last_error, created_at, updated_at, platform_uuid, channel_key`
+	receipt, last_error, created_at, updated_at, platform_uuid, channel_key, slot_id`
 
 func scanNotification(row interface{ Scan(...any) error }) (Notification, error) {
 	var notification Notification
 	err := row.Scan(&notification.ID, &notification.Kind, &notification.Date, &notification.BatchID,
 		&notification.SourceEvent, &notification.Status, &notification.Attempts, &notification.AvailableAt,
 		&notification.Receipt, &notification.LastError, &notification.CreatedAt, &notification.UpdatedAt,
-		&notification.PlatformUUID, &notification.channelKey)
+		&notification.PlatformUUID, &notification.channelKey, &notification.SlotID)
 	return notification, err
 }
 

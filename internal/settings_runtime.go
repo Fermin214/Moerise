@@ -121,7 +121,7 @@ func (a *App) UpdateSettings(ctx context.Context, update SettingsUpdate) (Settin
 		location, _ := time.LoadLocation(old.Timezone)
 		day := now.In(location)
 		until := time.Date(day.Year(), day.Month(), day.Day()+1, 0, 0, 0, 0, location)
-		settings.daily = &dailySettings{old.Timezone, old.Review, old.Notifications, until}
+		settings.daily = &dailySettings{old.Timezone, old.Review, old.Notifications, until, a.Store.productVersion}
 	} else {
 		settings.daily = nil
 	}
