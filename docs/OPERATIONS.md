@@ -66,7 +66,7 @@ Moerise 支持 Linux 原生二进制和 Docker Linux 容器部署，两者都需
 | `MOERISE_FEISHU_USER_OPEN_ID` | 专用私聊身份与主动推送接收者 |
 | `MOERISE_FEISHU_WEBHOOK_URL`、`MOERISE_FEISHU_WEBHOOK_SECRET` | 自定义机器人地址与可选签名密钥 |
 
-只通过环境运行二进制时，填写全部必要来源、鉴权及密钥变量即可省略 JSON 文件。Compose 挂载 `.local/config.json`；采用环境配置时先复制模板创建此文件，再由 `.env` 覆盖必要值。服务不支持浏览器设置，修改配置后需重启。
+只通过环境运行二进制时，填写全部必要来源、鉴权及密钥变量即可省略 JSON 文件。Compose 挂载 `.local/config.json`；采用环境配置时先复制模板创建此文件，再由 `.env` 覆盖必要值。基础设施变化通过重启生效；日常字段通过 Web 设置保存，已有持久值不再由部署文件覆盖。
 
 ### Web 会话
 

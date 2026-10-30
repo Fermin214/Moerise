@@ -35,16 +35,21 @@ func TestSettingsRuntimeDrainAndResourceReplacement(t *testing.T) {
 		t.Fatalf("offline provider configuration did not publish: %v", err)
 	}
 	provider := app.AI.Provider
-	view, err = app.UpdateSettings(t.Context(), settingsChange(2, `{"insights":{"default_prompt":"新的思考方向"}}`))
-	if err != nil || view.Version != 3 || app.AI.Provider != provider {
+	view, err = app.UpdateSettings(t.Context(), settingsChange(2, `{"llm":{"model":"replacement-model"}}`))
+	if err != nil || view.Version != 3 || app.AI.Provider == provider || configured(store.Settings.LLM.Model) != "replacement-model" {
+		t.Fatalf("model-only update did not replace the provider: %v", err)
+	}
+	provider = app.AI.Provider
+	view, err = app.UpdateSettings(t.Context(), settingsChange(3, `{"insights":{"default_prompt":"新的思考方向"}}`))
+	if err != nil || view.Version != 4 || app.AI.Provider != provider {
 		t.Fatalf("unrelated setting replaced provider: %v", err)
 	}
 	if app.Records != records || app.Reviews != reviews || app.Search != search ||
 		app.Store != store || app.Source != source || app.Notes.Settings.Insights.DefaultPrompt != "新的思考方向" {
 		t.Fatal("settings update rebuilt shared state or left a stale settings consumer")
 	}
-	if _, err := app.UpdateSettings(t.Context(), settingsChange(3, `{"llm":{"protocol":"invalid"}}`)); errorCode(err) != "INVALID_ARGUMENT" ||
-		store.productVersion != 3 || app.AI.Provider != provider {
+	if _, err := app.UpdateSettings(t.Context(), settingsChange(4, `{"llm":{"protocol":"invalid"}}`)); errorCode(err) != "INVALID_ARGUMENT" ||
+		store.productVersion != 4 || app.AI.Provider != provider {
 		t.Fatalf("invalid provider update changed runtime: %v", err)
 	}
 }

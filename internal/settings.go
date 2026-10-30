@@ -154,7 +154,7 @@ func storedProduct(db *sql.DB, settings Settings) (Settings, int64, error) {
 	return settings, version, err
 }
 
-// Deployment values initialize product settings once; subsequent loads use the saved version.
+// 部署值只初始化一次，后续读取持久版本。
 func loadPersistedProduct(settings Settings) (Settings, error) {
 	path := filepath.Join(settings.StateDir, "state.sqlite3")
 	if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
@@ -293,12 +293,21 @@ func (s *Store) prepareSettings(update SettingsUpdate) (Settings, error) {
 		return s.Settings, failure("SETTINGS_UNAVAILABLE", "Configure the state encryption key before saving settings", 503, false)
 	}
 	product := productSettings(s.Settings)
+	// 解码会复用非空指针，先复制配置，避免修改旧版本或使资源变化比较失真。
+	original, err := json.Marshal(product)
+	if err != nil {
+		return s.Settings, err
+	}
+	product = ProductSettings{}
+	if err := json.Unmarshal(original, &product); err != nil {
+		return s.Settings, err
+	}
 	view := publicProduct(product)
 	if err := mergeSettings(view, update.Settings); err != nil {
 		return s.Settings, err
 	}
 	body, _ := json.Marshal(view)
-	// Decode into the existing value so omitted secret fields retain their values.
+	// 在已有值上解码，保留未提交的密钥。
 	if strictJSON(bytes.NewReader(body), &product) != nil {
 		return s.Settings, bad
 	}
@@ -318,7 +327,7 @@ func (s *Store) prepareSettings(update SettingsUpdate) (Settings, error) {
 			}
 		case "replace":
 			value := configured(operation.Value)
-			if value == "" || strings.ContainsAny(value, "*•●") || len(value) > 16384 {
+			if value == "" || strings.ContainsAny(value, "*•●…") || len(value) > 16384 {
 				return s.Settings, bad
 			}
 			*field = &value

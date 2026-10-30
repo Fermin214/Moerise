@@ -49,7 +49,7 @@ func TestProductSettingsPersistenceAndSecretBoundaries(t *testing.T) {
 	if bytes.Contains(ciphertext, []byte(key)) || bytes.Contains(ciphertext, []byte("review")) {
 		t.Fatal("product settings are stored in plaintext")
 	}
-	// Read while the writer is open to include the WAL, as after an interrupted process.
+	// 写连接未关闭时读取 WAL，覆盖进程中断后的恢复路径。
 	loaded, err := loadPersistedProduct(settings)
 	if err != nil || loaded.Review.Count != 8 || configured(loaded.LLM.APIKey) != key {
 		t.Fatalf("persisted settings did not override deployment values: %v, %+v", err, loaded.Review)
@@ -67,6 +67,7 @@ func TestProductSettingsSecretOperationsAndValidation(t *testing.T) {
 	_, store := settingsFixture(t)
 	key := "a-private-key"
 	store.Settings.LLM.APIKey = &key
+	store.Settings.LLM.Model = new("original-model")
 	for _, body := range []string{
 		`{"memos":{"token":"bad"}}`, `{"llm":{"api_key":"bypass"}}`,
 		`{"review":{"count":0}}`, `{"notifications":{"times":["09:00","09:00"]}}`,
@@ -75,6 +76,14 @@ func TestProductSettingsSecretOperationsAndValidation(t *testing.T) {
 		if _, err := store.prepareSettings(settingsChange(1, body)); errorCode(err) != "INVALID_ARGUMENT" {
 			t.Fatalf("accepted invalid settings %s: %v", body, err)
 		}
+	}
+	if _, err := store.prepareSettings(settingsChange(1, `{"llm":{"model":"changed-model"},"review":{"count":0}}`)); errorCode(err) != "INVALID_ARGUMENT" ||
+		configured(store.Settings.LLM.Model) != "original-model" {
+		t.Fatal("rejected settings mutated a pointer in the published version")
+	}
+	prepared, err := store.prepareSettings(settingsChange(1, `{"llm":{"model":"changed-model"}}`))
+	if err != nil || configured(prepared.LLM.Model) != "changed-model" || configured(store.Settings.LLM.Model) != "original-model" {
+		t.Fatal("preparing a new model changed the existing model")
 	}
 	for _, operation := range []SecretUpdate{
 		{Action: "replace"}, {Action: "replace", Value: new("*****")},
@@ -101,7 +110,28 @@ func TestProductSettingsSecretOperationsAndValidation(t *testing.T) {
 }
 
 func TestProductSettingsUpgradeInitializationAndEnvironmentPrecedence(t *testing.T) {
-	settings, store := settingsFixture(t)
+	settings := testSettings(t)
+	settings.Review.MinAgeHours, settings.Review.RecentDays = 29, 11
+	legacy, err := NewStore(settings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 使用旧版结构验证已有数据库的增量升级。
+	if _, err := legacy.state.Exec(`DROP TABLE product_settings; DELETE FROM schema_migrations WHERE version = '017'`); err != nil {
+		t.Fatal(err)
+	}
+	if err := legacy.Close(); err != nil {
+		t.Fatal(err)
+	}
+	settings.Web.StateEncryptionKey = base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{7}, 32))
+	before, err := loadPersistedProduct(settings)
+	if err != nil || before.Review.MinAgeHours != 29 {
+		t.Fatalf("legacy configuration cannot load before migration: %v", err)
+	}
+	store := testStore(t, before)
+	if store.productVersion != 1 || store.Settings.Review.MinAgeHours != 29 || store.Settings.Review.RecentDays != 11 {
+		t.Fatal("schema upgrade replaced customized product values")
+	}
 	next, err := store.prepareSettings(settingsChange(1, `{"review":{"min_age_hours":12,"recent_days":2}}`))
 	if err != nil {
 		t.Fatal(err)

@@ -30,7 +30,7 @@ type App struct {
 
 // NewApp 装配共享服务；传入的 Store 和 Source 由调用方关闭。
 func NewApp(settings Settings, store *Store, source Source) *App {
-	settings = store.Settings
+	settings = productSettings(store.Settings).apply(settings)
 	a := &App{Settings: settings, Store: store, Source: source, Worker: NewSyncService(store, source)}
 	store.runtimeMu = &a.runtimeMu
 	a.Notes = NewNoteService(settings, store, source)
