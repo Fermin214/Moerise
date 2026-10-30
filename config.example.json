@@ -45,6 +45,7 @@
     "api_key": null,
     "model": "qwen3.7-text-embedding",
     "dimensions": 1024,
+    "send_dimensions": false,
     "batch_size": 20,
     "timeout_seconds": 30,
     "max_concurrency": 2,

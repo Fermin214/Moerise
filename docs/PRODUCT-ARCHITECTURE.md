@@ -179,7 +179,7 @@ embedding 与 LLM 使用独立配置。embedding 通过提供商适配器生成�
 
 分块与向量构建位于 `internal/chunks.go`、`internal/vector_index.go`。索引数据库保存投影修订号、构建与发布代次、片段来源位置和同空间正文向量缓存。每批提交后可恢复进度，发布事务只接受与投影修订一致且片段完整的代次；投影变化重新规划，复用已完成向量。分块规则和状态接口见[向量模型](EMBEDDING.md#分块与向量索引)。
 
-向量业务只依赖 `EmbeddingProvider`，百炼适配使用 DashScope 原生协议，明确设置文档或查询类型、连续向量输出和维度，不支持通用 Embedding 协议。LLM 业务只依赖 `LLMProvider`，支持 OpenAI Chat Completions、OpenAI Responses 和 Anthropic Messages；协议、地址、凭据及模型分别配置。两类模型分别进行连接检查。
+向量业务只依赖 `EmbeddingProvider`，百炼适配使用 DashScope 原生协议，明确设置文档或查询类型、连续向量输出和维度，同时支持 OpenAI 兼容协议，按期望维度校验返回，可选择是否发送维度参数。LLM 业务只依赖 `LLMProvider`，支持 OpenAI Chat Completions、OpenAI Responses 和 Anthropic Messages；协议、地址、凭据及模型分别配置。两类模型分别进行连接检查。
 
 外部模型凭据只由服务端模型适配器读取。Embedding、LLM、飞书分别按需启用，笔记读写、关键词搜索和每日回顾独立运行。语义漫步的 `continue`、`angle` 模式需要 Embedding，`random` 模式无需模型；AI 生成需要 LLM。
 
