@@ -83,5 +83,8 @@
     "min_age_hours": 72,
     "recent_days": 7,
     "include_archived": false
+  },
+  "insights": {
+    "default_prompt": "请围绕所选笔记探索它们之间的联系、思想变化、潜在矛盾和新的可能性。区分笔记原意与新提出的联想和假设。"
   }
 }

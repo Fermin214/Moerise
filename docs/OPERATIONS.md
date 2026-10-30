@@ -18,7 +18,7 @@ Moerise 支持 Linux 原生二进制和 Docker Linux 容器部署，两者都需
 | `web.enabled` | Web 客户端会话开关，默认关闭 |
 | `web.public_origin` | Web 公开 Origin，启用会话时必填；使用 HTTPS，仅回环地址允许 HTTP |
 | `web.state_encryption_key` | 启用会话时必填，独立随机 32 字节密钥的标准 Base64 编码，用于按用途派生状态加密密钥 |
-| `timezone` | IANA 时区名，用于产品日期与调度，按部署设置；默认 `Asia/Hong_Kong` |
+| `timezone` | IANA 时区名，用于产品日期与调度；初始默认值 `Asia/Hong_Kong` |
 | `state_dir`、`index_dir` | 不同的可写持久目录，默认 `/data/state`、`/data/index` |
 | `sync` | 增量轮询、全量修复、重叠时间、退避及任务租约 |
 | `review` | 随机回顾数量、等待期、近期排除期与归档范围，默认 3 条、72 小时、7 天，详见[每日回顾](DAILY-REVIEW.md) |
@@ -41,7 +41,9 @@ Moerise 支持 Linux 原生二进制和 Docker Linux 容器部署，两者都需
 
 服务绑定来源根地址和账号。更换来源或账号时使用新的 `instance_id` 和数据卷。根地址不包含账号密码、路径、查询参数或片段；Memos 请求直接连接来源，不读取环境中的 HTTP 代理设置。
 
-默认增量间隔为 60 秒，全量修复间隔为 6 小时，水位重叠为 5 分钟。`check-config` 只校验格式；来源连接、版本和账号在同步时检查。
+默认增量间隔为 60 秒，全量修复间隔为 6 小时，水位重叠为 5 分钟。`check-config` 校验有效配置；来源连接、版本和账号在同步时检查。
+
+设置状态加密主密钥后，首次启动将有效日常配置加密写入 `state.sqlite3`。后续启动以持久值为准，部署中的回顾、时区、模型与渠道字段只用于首次初始化；基础设施仍按 JSON 和环境变量加载。旧实例首次启用时保留原有自定义值。密钥不匹配时启动失败，不能用默认值覆盖密文。字段与密钥操作见[产品设置](SETTINGS.md)。
 
 ### 环境参数
 

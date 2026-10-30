@@ -126,6 +126,7 @@ type Settings struct {
 	Embedding     EmbeddingConfig    `json:"embedding"`
 	LLM           LLMConfig          `json:"llm"`
 	Channel       ChannelConfig      `json:"channel"`
+	Insights      InsightsConfig     `json:"insights"`
 }
 
 func DefaultSettings() Settings {
@@ -140,7 +141,8 @@ func DefaultSettings() Settings {
 			Dimensions: 1024, BatchSize: 20, TimeoutSeconds: 30, MaxConcurrency: 2, MaxRetries: 2},
 		LLM: LLMConfig{Protocol: "openai-compatible", TimeoutSeconds: 90, MaxConcurrency: 2,
 			MaxRetries: 2, MaxOutputTokens: 2048, ContextBytes: 24000},
-		Channel: ChannelConfig{Kind: "feishu-app"},
+		Channel:  ChannelConfig{Kind: "feishu-app"},
+		Insights: InsightsConfig{DefaultPrompt: DefaultInsightPrompt},
 	}
 }
 
@@ -217,6 +219,10 @@ func LoadSettings(path string) (Settings, error) {
 		}
 	}
 	if err := settings.loadEnvironment(); err != nil {
+		return settings, err
+	}
+	settings, err = loadPersistedProduct(settings)
+	if err != nil {
 		return settings, err
 	}
 	return settings, settings.Validate()
