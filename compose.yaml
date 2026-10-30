@@ -2,14 +2,20 @@ name: moerise-local
 
 services:
   memos:
-    profiles: [local]
+    profiles: [memos, local]
     image: neosmemo/memos:0.31.0@sha256:24c2707ddd8fbd2ceaa7a61ecab86a53cdcde640b24ce572b73da14b00b5785f
-    restart: no
+    restart: unless-stopped
     ports:
       - "127.0.0.1:${MEMOS_PORT:-5231}:5230"
     volumes:
       - memos-data:/var/opt/memos
     networks: [local]
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:5230/healthz"]
+      interval: 15s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
     logging:
       options:
         max-size: "5m"
@@ -19,15 +25,19 @@ services:
     image: moerise:${MOERISE_IMAGE_TAG:-0.2.0}
     build: .
     env_file:
-      - path: .env
+      - path: ${MOERISE_ENV_FILE:-.env}
         required: false
-    restart: no
+    environment:
+      MOERISE_WEB_ENABLED: ${MOERISE_WEB_ENABLED:-true}
+      MOERISE_PUBLIC_ORIGIN: ${MOERISE_PUBLIC_ORIGIN:-http://localhost:3000}
+      MOERISE_STATE_DIR: /data/state
+      MOERISE_INDEX_DIR: /data/index
+    restart: unless-stopped
     init: true
     ports:
       - "127.0.0.1:${MOERISE_PORT:-8787}:8787"
     volumes:
-      - ./.local/config.json:/run/moerise/config.json:ro
-      - ./.local/backups:/backups
+      - backup-data:/backups
       - state-data:/data/state
       - index-data:/data/index
     networks: [local]
@@ -42,6 +52,31 @@ services:
         max-size: "5m"
         max-file: "2"
 
+  web:
+    image: moerise-web:${MOERISE_IMAGE_TAG:-0.2.0}
+    build: ./web
+    environment:
+      CORE_ORIGIN: http://moerise:8787
+      PUBLIC_ORIGIN: ${MOERISE_PUBLIC_ORIGIN:-http://localhost:3000}
+    depends_on:
+      moerise:
+        condition: service_healthy
+    restart: unless-stopped
+    init: true
+    ports:
+      - "${WEB_BIND_ADDRESS:-127.0.0.1}:${WEB_PORT:-3000}:3000"
+    networks: [local]
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
+    read_only: true
+    tmpfs: ["/tmp:size=16m"]
+    mem_limit: 128m
+    cpus: 0.5
+    logging:
+      options:
+        max-size: "5m"
+        max-file: "2"
+
 networks:
   local:
     driver: bridge
@@ -50,3 +85,4 @@ volumes:
   memos-data:
   state-data:
   index-data:
+  backup-data:

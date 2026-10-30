@@ -34,33 +34,43 @@ Moerise 的笔记接口会向 Memos 复查原文，来源服务不可用时返�
 
 ## 运行条件
 
-- 可访问的 Memos 0.31.x 实例，以及对应账号的个人访问令牌（PAT）。
+- 官方 Memos 0.31.x 及对应账号的个人访问令牌（PAT），可由随附 Compose 部署，也可连接已有实例。
 - 服务端支持 Linux 原生二进制和 Docker Linux 容器。
 - 从源码构建需要 Go 1.27+；容器部署需要支持 Linux 容器的 Docker Engine 与 Compose 插件。
 - 分别用于产品状态和可重建索引的持久目录。
 
 ## 安装与使用
 
-Web 的构建、运行和独立容器配置见 [Web 指南](docs/WEB.md)。在 Core 开启 `MOERISE_WEB_ENABLED`，配置公开 Origin 和独立状态加密密钥；Web 通过同源代理连接 Core，浏览器无需配置 PAT 或机器令牌。
-
-Linux 二进制的构建、配置和运行方法见[运行与恢复](docs/OPERATIONS.md#二进制运行)。容器部署先在仓库根目录用 Bash 执行：
+容器部署在仓库根目录执行。先复制环境模板并启动官方 Memos：
 
 ```bash
-mkdir -p .local/backups
-cp config.example.json .local/config.json
+cp .env.example .env
+docker compose up -d memos
 ```
 
-编辑 `.local/config.json`，填写 Memos 地址、账号资源名和 PAT，并为 Moerise 生成独立的访问令牌和分页密钥。字段说明见[配置说明](docs/OPERATIONS.md#配置)。基础功能无需配置模型或飞书。
+打开 `http://localhost:5231`，按 Memos 官方流程创建账户，在账户设置中创建 PAT。使用该 PAT 请求 `GET http://localhost:5231/api/v1/auth/me`，将响应 `user.name` 填入 `.env` 的 `MOERISE_MEMOS_USER`，PAT 填入 `MOERISE_MEMOS_TOKEN`。
 
-Linux 部署需先按[容器部署](docs/OPERATIONS.md#容器部署)设置配置和备份目录的挂载权限，再启动服务：
+在 `.env` 中填写稳定且唯一的 `MOERISE_MEMOS_INSTANCE_ID`，分别生成机器令牌、分页密钥与状态加密密钥：
 
 ```bash
-docker compose up -d --build moerise
+openssl rand -hex 32     # MOERISE_ACCESS_TOKEN
+openssl rand -hex 32     # MOERISE_CURSOR_SECRET
+openssl rand -base64 32  # MOERISE_STATE_ENCRYPTION_KEY
 ```
 
-启动后访问服务的 `/docs`，点击 **Authorize** 填入 Moerise 访问令牌即可调用接口。`/health/ready` 返回 200 表示已连接来源并完成首次全量同步。接口使用方法见 [API v1](docs/API-V1.md)。
+填写后启动完整服务：
 
-随附 Compose 部署 Core，可通过 `local` profile 启动开发用 Memos，仅发布回环端口。完整 Web 与三组件一体化 Compose 的交付见[路线图](docs/ROADMAP.md#阶段三完整-web-与一体化-compose)。监听地址、对外访问、备份和升级见[运行与恢复](docs/OPERATIONS.md)。
+```bash
+docker compose up -d --build
+docker compose ps
+curl --fail http://localhost:3000/health/ready
+```
+
+打开 `http://localhost:3000`，使用同一 Memos 账户登录。基础笔记操作无需模型或飞书配置；日常设置在 Web 保存后生效。Memos、产品状态、索引与备份使用独立数据卷。
+
+连接已有 Memos 时，将 `.env` 中 `COMPOSE_PROFILES` 留空，填写容器可达的 `MOERISE_MEMOS_BASE_URL`、浏览器可达的 `MOERISE_MEMOS_PUBLIC_URL` 及本人 PAT、资源名和独立密钥，再执行相同启动命令。详细首启、外部 Memos、HTTPS、旧配置迁移、备份与升级见[运行与恢复](docs/OPERATIONS.md#容器部署)。
+
+对外访问使用 HTTPS，并将 `MOERISE_PUBLIC_ORIGIN` 设置为浏览器访问的完整来源。Core 的 `/docs`、机器 REST/MCP 与飞书回调使用独立的 `8787` 回环端口，Web 只代理客户端 API。Web 独立构建见 [Web 指南](docs/WEB.md)，Linux 二进制运行见[运行与恢复](docs/OPERATIONS.md#二进制运行)，机器接口见 [API v1](docs/API-V1.md)。
 
 ## 文档
 

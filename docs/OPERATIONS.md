@@ -4,7 +4,7 @@ Moerise 支持 Linux 原生二进制和 Docker Linux 容器部署，两者都需
 
 ## 配置
 
-配置模板为 `config.example.json` 和 `.env.example`。服务默认读取 `.local/config.json`，也可通过 `MOERISE_CONFIG_FILE` 或命令参数 `--config` 指定路径，参数优先。配置按内置默认值、JSON、非空 `MOERISE_*` 环境变量的顺序覆盖，JSON 字符串不进行变量替换。Compose 自动将可选的 `.env` 传给 Core；二进制运行时由进程环境传入。
+配置模板为 `config.example.json` 和 `.env.example`。服务默认读取 `.local/config.json`，也可通过 `MOERISE_CONFIG_FILE` 或命令参数 `--config` 指定路径，参数优先。配置按内置默认值、JSON、非空 `MOERISE_*` 环境变量的顺序覆盖，JSON 字符串不进行变量替换。Compose 将 `.env` 传给 Core；二进制运行时由进程环境传入。环境变量包含完整来源和鉴权参数时无需 JSON 文件。
 
 | 配置 | 含义与要求 |
 | --- | --- |
@@ -47,7 +47,7 @@ Moerise 支持 Linux 原生二进制和 Docker Linux 容器部署，两者都需
 
 ### 环境参数
 
-环境变量使用以下对应关系；空值保留 JSON 或内置默认值。`MOERISE_ACCESS_TOKEN` 非空时以单个 `environment` 凭据替换 JSON 令牌列表，包含全部支持的 Scope；MCP 的工具集合始终只读。
+环境变量使用以下对应关系；空值保留 JSON 或内置默认值。`MOERISE_ACCESS_TOKEN` 非空时以单个 `environment` 凭据替换 JSON 令牌列表，包含 `notes:read`、`sync:read` 和 `reviews:read`；MCP 的工具集合始终只读。
 
 | 环境变量 | 配置 |
 | --- | --- |
@@ -66,13 +66,13 @@ Moerise 支持 Linux 原生二进制和 Docker Linux 容器部署，两者都需
 | `MOERISE_FEISHU_USER_OPEN_ID` | 专用私聊身份与主动推送接收者 |
 | `MOERISE_FEISHU_WEBHOOK_URL`、`MOERISE_FEISHU_WEBHOOK_SECRET` | 自定义机器人地址与可选签名密钥 |
 
-只通过环境运行二进制时，填写全部必要来源、鉴权及密钥变量即可省略 JSON 文件。Compose 挂载 `.local/config.json`；采用环境配置时先复制模板创建此文件，再由 `.env` 覆盖必要值。基础设施变化通过重启生效；日常字段通过 Web 设置保存，已有持久值不再由部署文件覆盖。
+只通过环境运行二进制时，填写全部必要来源、鉴权及密钥变量即可省略 JSON 文件。Compose 使用 `.env`，不要求宿主机配置文件或备份目录。基础设施变化通过重新创建容器生效；日常字段通过 Web 设置保存，已有持久值不再由部署文件覆盖。
 
 ### Web 会话
 
 使用 `openssl rand -base64 32` 生成独立的状态加密主密钥，与 PAT、机器令牌和分页密钥分别保存。`web.public_origin` 只填写协议、主机和可选端口，例如 `https://notes.example.com`；本地联调可用 `http://127.0.0.1:8787`。主机名使用 ASCII 或 Punycode；服务会规范化大小写、IPv6 和默认端口，以匹配浏览器 Origin。启用后，Core 必须能够访问 Memos 的官方 Connect `SignIn`、`RefreshToken`、`SignOut` 和 REST `/api/v1/auth/me`。
 
-客户端通过 Memos 用户名和密码登录，登录账户必须等于实例绑定作者及后台 PAT 所属账户。浏览器会话 ID 只保存摘要，刷新凭据以按用途派生的 AEAD 密钥加密保存在 `state.sqlite3`，短期访问令牌只保存在内存。登录有效期不超过登录时的刷新凭据到期时间，上游续期不延长登录期限。普通重启和升级通过刷新凭据恢复登录；到期或更换加密密钥后需要重新登录。退出先删除本地会话，上游清理失败仍完成本地退出。
+客户端通过 Memos 用户名和密码登录，登录账户必须等于实例绑定作者及后台 PAT 所属账户。浏览器会话 ID 只保存摘要，刷新凭据以按用途派生的 AEAD 密钥加密保存在 `state.sqlite3`，短期访问令牌只保存在内存。登录有效期不超过登录时的刷新凭据到期时间，上游续期不延长登录期限。普通重启和升级通过刷新凭据恢复登录，到期后需要重新登录。已有加密状态必须沿用原主密钥，密钥不匹配会阻止 Core 启动，重新登录不能修复。退出先删除本地会话，上游清理失败仍完成本地退出。
 
 产品快照包含刷新凭据密文，状态加密主密钥随部署配置单独备份。恢复产品快照会清空客户端会话，所有浏览器需要重新登录；索引重建保留会话。
 
@@ -97,38 +97,90 @@ cp config.example.json .local/config.json
 
 ## 容器部署
 
-需要支持 Linux 容器的 Docker Engine 和 Compose 插件。获取源码后准备配置与备份目录：
+需要支持 Linux 容器的 Docker Engine 和 Compose 2.24+。以下为官方 Memos、Core 和 Web 的完整部署；默认仅发布宿主机回环端口。
+
+### 全新 Memos
+
+复制环境模板，先单独启动官方 Memos：
 
 ```bash
-mkdir -p .local/backups
-cp config.example.json .local/config.json
+cp .env.example .env
+docker compose up -d memos
 ```
 
-按配置表填写 `.local/config.json`，数据目录沿用模板中的 `/data/state`、`/data/index`。`memos.base_url` 必须从容器内部可达；同一 Compose 网络中的服务可通过服务名访问。
+在 `http://localhost:5231` 创建首个账户，并在 Memos 账户设置创建 PAT。使用本人 PAT 请求官方接口，响应的 `user.name` 是绑定资源名：
 
-Linux 的配置与备份绑定挂载需允许 UID 10001 读取配置、写入备份目录。例如，在启动前执行：
+服务器上部署时，可先使用 `ssh -L 5231:127.0.0.1:5231 -L 3000:127.0.0.1:3000 user@host` 将两个回环端口转发至本机，完成初始化和 Web 登录，再配置正式 HTTPS 入口。
 
 ```bash
-sudo chown 10001:10001 .local/config.json .local/backups
-sudo chmod 600 .local/config.json
-sudo chmod 700 .local/backups
+read -r -s -p "Memos PAT: " MEMOS_PAT
+echo
+curl --fail --silent --show-error \
+  -H "Authorization: Bearer ${MEMOS_PAT}" \
+  http://localhost:5231/api/v1/auth/me
+unset MEMOS_PAT
 ```
 
-也可用 ACL 授予对应权限。使用 rootless Docker 或用户命名空间映射时，按实际 UID 映射设置宿主机权限。命名数据卷由镜像中的 UID 10001 目录初始化。
+填写 `.env` 的 `MOERISE_MEMOS_USER` 和 `MOERISE_MEMOS_TOKEN`，指定稳定唯一的 `MOERISE_MEMOS_INSTANCE_ID`。使用 `openssl rand -hex 32` 分别生成机器令牌与分页密钥，使用 `openssl rand -base64 32` 生成独立状态加密密钥，填入对应字段。妥善备份 `.env`，可在 Linux 执行 `chmod 600 .env`。
 
-启动服务并检查配置：
+Core 的来源根地址使用容器网络中的 `http://memos:5230`；`MOERISE_MEMOS_PUBLIC_URL` 使用浏览器可达的地址。首位 Web 登录者不能更换作者绑定，登录账户与 PAT 所属账户必须一致。
+
+启动完整服务：
 
 ```bash
-docker compose up -d --build moerise
+docker compose up -d --build
 docker compose exec -T moerise moerise check-config
 docker compose ps
+curl --fail http://localhost:3000/health/ready
 ```
 
-以上命令只启动 Moerise，连接配置中的已有 Memos。随附 Compose 配置使用命名卷保存产品状态和索引，将配置以只读方式挂载，并将 `.local/backups/` 挂载到 `/backups`。容器以 UID 10001 运行，根文件系统只读，内存上限为 384 MiB、CPU 上限为 1 核；可按负载调整 Compose 配置。
+打开 `http://localhost:3000` 使用同一 Memos 用户名和密码登录。首次构建会下载锁定摘要的基础镜像与 Go 依赖。后续代码更新后使用 `docker compose up -d --build`；仅更改 `.env` 时使用 `docker compose up -d`，单纯 `restart` 不会重新读取容器环境。
 
-宿主机端口由 `MOERISE_PORT` 设置，默认只发布回环地址。Dockerfile 使用锁定摘要的 Go 构建镜像；运行镜像仅包含静态二进制和 CA 证书，时区数据嵌入二进制。依赖版本和校验和由 Go 模块文件管理。
+### 外部 Memos
 
-需要额外部署测试 Memos 时，`docker compose --profile local up -d memos` 可启动随附的 Memos 0.31.0 容器，宿主机端口由 `MEMOS_PORT` 设置。账号初始化和 PAT 创建使用 Memos 自身的流程，再将连接信息填入 Moerise 配置。
+将 `COMPOSE_PROFILES` 留空，设置外部 Memos 的根地址、公开地址、实例标识、本人资源名和 PAT。其余密钥及 Origin 与一体化部署相同，执行 `docker compose up -d --build` 只启动 Core 和 Web。容器中的 `localhost` 指向容器自身；外部根地址必须从 Core 容器可达，并放通官方 REST 与 Connect 认证路径。
+
+从内置 Memos 切换前先备份数据；停止内置服务使用 `docker compose --profile memos stop memos`。更换来源或账号需使用新的实例标识和产品数据卷，不能将旧绑定状态直接指向另一来源。
+
+### 入口与持久化
+
+| 参数或数据卷 | 默认值与职责 |
+| --- | --- |
+| `COMPOSE_PROFILES` | `memos` 启动官方 Memos，留空使用外部实例；保留 `local` profile 别名 |
+| `COMPOSE_PROJECT_NAME` | `moerise-local`；同一部署保持不变，决定命名卷及网络的名称 |
+| `WEB_BIND_ADDRESS`、`WEB_PORT` | `127.0.0.1`、`3000`，正式 Web 入口 |
+| `MEMOS_PORT`、`MOERISE_PORT` | `5231`、`8787`，Memos 与 Core 的回环端口 |
+| `MOERISE_PUBLIC_ORIGIN` | `http://localhost:3000`；同一个参数传给 Core 和 Web |
+| `MOERISE_IMAGE_TAG` | Core 和 Web 的本地构建标签，分别维护两个镜像 |
+| `MOERISE_ENV_FILE` | Core 环境文件路径，默认 `.env`；使用其他环境文件时与 Compose 的 `--env-file` 指向同一个文件 |
+| `memos-data` | 官方 Memos 账户、笔记和附件 |
+| `state-data` | Core 产品状态、持久设置、会话和任务 |
+| `index-data` | 可重建索引 |
+| `backup-data` | Core `/backups` 的状态快照；需导出至宿主机或其他存储 |
+
+Core 和 Web 使用非 root 用户、只读根文件系统和独立临时目录；Core 默认 384 MiB、1 核，Web 默认 128 MiB、0.5 核。命名卷由镜像目录的所有者初始化，无需预建配置和备份绑定挂载。Core 的 scratch 镜像包含静态二进制、CA 证书及嵌入式时区数据；Web 镜像独立构建，无产品数据卷，也不接收 `.env` 或 Memos 凭据。
+
+Memos、Core、Web 各有存活检查；Web 的 `/health/ready` 反映来源连接及首次同步结果。Core 存活后 Web 即可启动，来源暂时不可用不会阻止登录页显示。`docker compose down` 保留命名卷，日常维护不要添加 `--volumes`。
+
+### HTTPS
+
+远程访问将 `MOERISE_PUBLIC_ORIGIN` 改为公开 HTTPS 来源，例如 `https://notes.example.com`，重新创建 Core 和 Web。由宿主机 HTTPS 入口反向代理到 Web：
+
+```caddyfile
+notes.example.com {
+    reverse_proxy 127.0.0.1:3000
+}
+```
+
+该示例适用于已有 Caddy 及正确指向宿主机的域名。入口位于容器中时使用同一 Docker 网络的 `web:3000`，或将 `WEB_BIND_ADDRESS` 设置为可被入口访问的宿主机地址。Web 不代理机器接口或飞书回调；需要这些入口时，将特定路径单独转发到 Core 的 `8787` 端口。Memos 官方管理页使用独立入口。
+
+### 旧 Compose 配置
+
+沿用原部署的 Compose 项目名，才能继续使用已有的 `state-data`、`index-data` 和 `memos-data`。将 `.local/config.json` 中的基础设施参数及原密钥填入 `.env`；已有加密状态必须使用原状态主密钥，持久日常设置无需重新填写。
+
+使用高级 JSON 配置时可在 `compose.override.yaml` 的 `services.moerise.volumes` 中增加 `.local/config.json:/run/moerise/config.json:ro`，保持 UID 10001 可读。原 `.local/backups/` 文件继续通过原路径读取；需要容器访问旧快照时添加 `.local/backups:/legacy-backups:ro`，恢复命令的 `--source` 使用该目录。新的备份写入 `/backups`，按下文命令导出。
+
+尚无持久产品设置的旧实例，首次升级需加载完整旧 JSON，并将 `.env` 的时区、回顾、推送和渠道等日常字段留空，或填入原有值，避免模板默认值覆盖后被首次持久化。模型配置同样沿用旧 JSON。首次启动完成后，日常设置由 Web 保存；基础设施参数及原密钥继续保存在部署配置中。
 
 ## 运行检查
 
@@ -176,11 +228,13 @@ docker compose ps
 
 ```bash
 docker compose exec -T moerise moerise backup --output /backups/state-snapshot
+mkdir -p .local/backups
+docker compose cp moerise:/backups/state-snapshot .local/backups/state-snapshot
 ```
 
 输出目录包含 `state.sqlite3` 和 `manifest.json`。快照通过 SQLite `VACUUM INTO` 生成一致副本，再检查完整性、外键、来源绑定和迁移摘要。备份格式为 `1`，清单包含服务版本和数据库 SHA-256。
 
-完整恢复还需要单独备份配置文件、Memos 数据和运行版本。Memos 备份应包含原文、附件、账号及令牌状态，按对应版本的备份方法执行。产品状态快照不包含这些数据。
+`backup-data` 与运行容器独立，导出副本还应复制至其他存储。完整恢复还需要单独备份 `.env` 或配置文件、Memos 数据和运行版本。Memos 备份应包含原文、附件、账号及令牌状态，按对应版本的备份方法执行。产品状态快照不包含这些数据。
 
 ### 恢复产品状态
 
@@ -201,6 +255,17 @@ docker compose up -d --no-build moerise
 ```
 
 恢复会校验摘要、数据库、迁移和来源绑定，另存覆盖前的产品数据库，清理同步进度及同步任务，并删除派生索引。`--safety-backup` 使用新的目录名。重新启动服务后执行全量同步，产品历史和人工状态从快照恢复。
+
+换机或备份卷丢失时，可直接只读挂载宿主机导出的快照。恢复前先恢复 Memos 数据及原 `.env`，保持来源绑定、分页密钥和状态主密钥一致。Linux 上为容器 UID 10001 设置快照读取权限：
+
+```bash
+sudo chown -R 10001:10001 .local/backups/state-snapshot
+docker compose stop moerise
+docker compose run --rm --no-deps -T \
+  -v "$(pwd)/.local/backups/state-snapshot:/restore-source:ro" \
+  moerise restore --source /restore-source --safety-backup /backups/before-restore
+docker compose up -d --no-build
+```
 
 恢复同时清空客户端会话，旧浏览器 Cookie 不能继续使用；普通重启和索引重建保留有效会话。
 
@@ -225,8 +290,10 @@ docker compose up -d --no-build moerise
 ## 升级与回滚
 
 1. 升级前备份产品状态、配置和 Memos 数据，记录对应的源码提交或镜像摘要。
-2. 停止服务，切换到目标代码或镜像。源码部署重新构建目标版本二进制；使用随附 Compose 构建时执行 `docker compose build moerise`。
+2. 停止服务，切换到目标代码或镜像。源码部署重新构建目标版本二进制；使用随附 Compose 构建时执行 `docker compose build moerise web`，再执行 `docker compose up -d` 重新创建服务。
 3. 以同一配置和数据目录启动服务，检查就绪状态及同步结果。
 4. 回滚时停止服务，切换到目标版本；数据库结构不匹配时，恢复该版本对应的状态备份，再启动并检查。
 
 源码改动可使用 `git revert <提交>` 生成反向提交。数据库迁移不会随 Git 操作逆向执行；数据恢复也不会切换代码或镜像。已应用的迁移必须保持原样，结构变更使用新的编号迁移。
+
+Memos 镜像独立锁定版本与摘要，升级按官方迁移说明执行。只升级 Web 可使用 `docker compose up -d --build --no-deps web`，只升级 Core 可使用 `docker compose up -d --build --no-deps moerise`；两者均沿用原项目名及数据卷。删除服务前先导出笔记、附件、产品快照及部署密钥；`docker compose down --volumes` 会删除该项目的数据卷。
