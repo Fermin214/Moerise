@@ -16,6 +16,8 @@
 | DELETE | `/api/app/v1/session` | 先撤销本地会话，再尝试上游退出，清 Cookie 并返回 204；上游不可用仍可退出 |
 | GET | `/api/app/v1/settings` | 返回设置版本、日常配置、凭据配置状态、渠道能力及内置洞察 Prompt |
 | PATCH | `/api/app/v1/settings` | 提交版本、日常配置和密钥操作，保存并生效，返回递增版本的设置视图 |
+| GET | `/api/app/v1/models` | 返回设置版本、两类模型的启用与配置状态、索引状态和代次进度 |
+| POST | `/api/app/v1/models/{embedding,llm}/check` | 接收 `{version}`，分别检查已保存的模型连接，返回版本、`status=ok` 和耗时 |
 | GET | `/api/app/v1/notes` | 实时读取 Memos 本人笔记，默认 `state=NORMAL&order=created_desc&page_size=20` |
 | GET | `/api/app/v1/notes/{memo_id}` | 返回来源复查后的最新 Note，不记录阅读 |
 | POST | `/api/app/v1/notes` | 接收 `{content,attachments}`，必填 `Idempotency-Key`，首次 201、重放 200，均直接返回 Note |

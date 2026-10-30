@@ -551,6 +551,10 @@ func CheckLLM(ctx context.Context, config LLMConfig) (LLMCheck, error) {
 		return LLMCheck{}, err
 	}
 	defer provider.Close()
+	return checkLLM(ctx, config, provider)
+}
+
+func checkLLM(ctx context.Context, config LLMConfig, provider LLMProvider) (LLMCheck, error) {
 	started := time.Now()
 	result, err := provider.Generate(ctx, []LLMMessage{
 		{Role: "user", Content: "A fictional gardener planted basil on an imaginary balcony. Reply with OK."},
