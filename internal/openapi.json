@@ -5215,10 +5215,1184 @@
           }
         }
       }
+    },
+    "/api/app/v1/settings": {
+      "get": {
+        "operationId": "client_get_settings",
+        "summary": "读取本人产品设置与渠道能力",
+        "description": "要求有效本人浏览器会话并复查绑定账号，拒绝 Authorization 和查询参数。返回脱敏配置、版本、密钥配置状态及内置默认 Prompt，不包含密钥、Webhook URL 或部署基础设施参数。",
+        "security": [
+          {
+            "BrowserSession": []
+          },
+          {
+            "LocalBrowserSession": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功，返回脱敏设置视图。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SettingsView"
+                }
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                },
+                "description": "禁止缓存。"
+              },
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "请求标识。"
+              }
+            }
+          },
+          "401": {
+            "description": "SESSION_UNAUTHORIZED：浏览器会话缺失或失效；不返回 Bearer 认证挑战。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                },
+                "description": "禁止缓存。"
+              },
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "请求标识。"
+              }
+            }
+          },
+          "403": {
+            "description": "FORBIDDEN、ACCOUNT_NOT_BOUND、ORIGIN_REJECTED 或 CSRF_REJECTED：客户端拒绝 Authorization；账号必须匹配绑定作者，写入必须通过 Origin 和 CSRF 检查。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                },
+                "description": "禁止缓存。"
+              },
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "请求标识。"
+              }
+            }
+          },
+          "404": {
+            "description": "NOT_FOUND：未启用浏览器入口。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                },
+                "description": "禁止缓存。"
+              },
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "请求标识。"
+              }
+            }
+          },
+          "405": {
+            "description": "METHOD_NOT_ALLOWED：该路径仅支持 GET 和 PATCH。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                },
+                "description": "禁止缓存。"
+              },
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "请求标识。"
+              }
+            }
+          },
+          "422": {
+            "description": "INVALID_ARGUMENT：拒绝查询参数。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                },
+                "description": "禁止缓存。"
+              },
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "请求标识。"
+              }
+            }
+          },
+          "500": {
+            "description": "INTERNAL：内部服务错误，响应不包含凭据或输入值。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                },
+                "description": "禁止缓存。"
+              },
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "请求标识。"
+              }
+            }
+          },
+          "503": {
+            "description": "会话、来源或存储暂时不可用，沿用对应服务错误。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                },
+                "description": "禁止缓存。"
+              },
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "请求标识。"
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "operationId": "client_update_settings",
+        "summary": "保存本人产品设置并生效",
+        "description": "先验证本人会话、绑定请求、Origin、CSRF 和会话有效性；最大 128 KiB 严格 JSON。对象递归合并，数组整体替换。保存成功后发布配置并递增版本；版本冲突或其他失败不发布部分配置。机器 REST/MCP 无设置读写入口。",
+        "security": [
+          {
+            "BrowserSession": []
+          },
+          {
+            "LocalBrowserSession": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "Origin",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "精确匹配 web.public_origin，不能省略或为 null；重复头拒绝。"
+          },
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            },
+            "description": "登录或会话响应中的 csrf_token，必须匹配该会话；重复头拒绝。"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SettingsUpdate"
+              },
+              "example": {
+                "version": 1,
+                "settings": {
+                  "review": {
+                    "count": 3
+                  },
+                  "notifications": {
+                    "times": [
+                      "09:00",
+                      "18:00"
+                    ]
+                  }
+                },
+                "secrets": {
+                  "llm_api_key": {
+                    "action": "replace",
+                    "value": "new-secret"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "保存成功，返回与 GET 相同的视图，version 递增。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SettingsView"
+                }
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                },
+                "description": "禁止缓存。"
+              },
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "请求标识。"
+              }
+            }
+          },
+          "401": {
+            "description": "SESSION_UNAUTHORIZED：浏览器会话缺失或失效；不返回 Bearer 认证挑战。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                },
+                "description": "禁止缓存。"
+              },
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "请求标识。"
+              }
+            }
+          },
+          "403": {
+            "description": "FORBIDDEN、ACCOUNT_NOT_BOUND、ORIGIN_REJECTED 或 CSRF_REJECTED：客户端拒绝 Authorization；账号必须匹配绑定作者，写入必须通过 Origin 和 CSRF 检查。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                },
+                "description": "禁止缓存。"
+              },
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "请求标识。"
+              }
+            }
+          },
+          "404": {
+            "description": "NOT_FOUND：未启用浏览器入口。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                },
+                "description": "禁止缓存。"
+              },
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "请求标识。"
+              }
+            }
+          },
+          "405": {
+            "description": "METHOD_NOT_ALLOWED：该路径仅支持 GET 和 PATCH。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                },
+                "description": "禁止缓存。"
+              },
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "请求标识。"
+              }
+            }
+          },
+          "422": {
+            "description": "INVALID_ARGUMENT：请求格式或字段不合法、参数超限、空修改、缺失或非正整数版本；任意层级的未知字段、重复字段和 null 均拒绝。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                },
+                "description": "禁止缓存。"
+              },
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "请求标识。"
+              }
+            }
+          },
+          "500": {
+            "description": "INTERNAL：内部服务错误，响应不包含凭据或输入值。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                },
+                "description": "禁止缓存。"
+              },
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "请求标识。"
+              }
+            }
+          },
+          "503": {
+            "description": "SETTINGS_BUSY：应用繁忙；SETTINGS_UNAVAILABLE：尚未配置状态加密密钥。会话、来源或存储故障沿用对应服务错误；失败不发布部分配置。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                },
+                "description": "禁止缓存。"
+              },
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "请求标识。"
+              }
+            }
+          },
+          "409": {
+            "description": "SETTINGS_CONFLICT：版本已变化，重新读取后基于新版本修改。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                },
+                "description": "禁止缓存。"
+              },
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "请求标识。"
+              }
+            }
+          },
+          "415": {
+            "description": "UNSUPPORTED_MEDIA_TYPE：Content-Type 必须为 application/json。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                },
+                "description": "禁止缓存。"
+              },
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "请求标识。"
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
     "schemas": {
+      "SettingsView": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "version": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 1,
+            "maximum": 9223372036854775807,
+            "description": "读取到的设置版本；初始化为 1，成功保存后递增。"
+          },
+          "settings": {
+            "$ref": "#/components/schemas/ClientProductSettings"
+          },
+          "secrets": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "llm_api_key": {
+                "$ref": "#/components/schemas/SettingsSecretStatus"
+              },
+              "embedding_api_key": {
+                "$ref": "#/components/schemas/SettingsSecretStatus"
+              },
+              "app_secret": {
+                "$ref": "#/components/schemas/SettingsSecretStatus"
+              },
+              "verification_token": {
+                "$ref": "#/components/schemas/SettingsSecretStatus"
+              },
+              "encrypt_key": {
+                "$ref": "#/components/schemas/SettingsSecretStatus"
+              },
+              "webhook_url": {
+                "$ref": "#/components/schemas/SettingsSecretStatus"
+              },
+              "webhook_secret": {
+                "$ref": "#/components/schemas/SettingsSecretStatus"
+              }
+            },
+            "required": [
+              "llm_api_key",
+              "embedding_api_key",
+              "app_secret",
+              "verification_token",
+              "encrypt_key",
+              "webhook_url",
+              "webhook_secret"
+            ]
+          },
+          "channel_capabilities": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "text": {
+                "type": "boolean"
+              },
+              "images": {
+                "type": "boolean"
+              },
+              "record": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "text",
+              "images",
+              "record"
+            ]
+          },
+          "default_insight_prompt": {
+            "type": "string",
+            "description": "内置洞察 Prompt，用于恢复 settings.insights.default_prompt。"
+          }
+        },
+        "required": [
+          "version",
+          "settings",
+          "secrets",
+          "channel_capabilities",
+          "default_insight_prompt"
+        ]
+      },
+      "ClientProductSettings": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "timezone": {
+            "type": "string",
+            "description": "IANA 时区名称，例如 Asia/Hong_Kong。"
+          },
+          "review": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "count": {
+                "type": "integer",
+                "description": "每个时段的笔记数，1 至 20。"
+              },
+              "min_age_hours": {
+                "type": "integer",
+                "description": "等待期，0 至 87600 小时。"
+              },
+              "recent_days": {
+                "type": "integer",
+                "description": "重复排除期，0 至 3650 天。"
+              },
+              "topic_limit": {
+                "type": "integer",
+                "description": "兼容配置字段。"
+              },
+              "include_archived": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "count",
+              "min_age_hours",
+              "recent_days",
+              "topic_limit",
+              "include_archived"
+            ]
+          },
+          "notifications": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "enabled": {
+                "type": "boolean"
+              },
+              "time": {
+                "type": "string",
+                "description": "兼容单时段的 HH:MM；设置了非空 times 时使用 times。"
+              },
+              "times": {
+                "type": "array",
+                "maxItems": 24,
+                "uniqueItems": true,
+                "items": {
+                  "type": "string",
+                  "pattern": "^([01][0-9]|2[0-3]):[0-5][0-9]$"
+                },
+                "description": "每天的推送时段，数组整体替换。"
+              }
+            },
+            "required": [
+              "enabled",
+              "time"
+            ]
+          },
+          "llm": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "enabled": {
+                "type": "boolean"
+              },
+              "protocol": {
+                "type": "string",
+                "description": "模型协议，启用时校验支持的协议及其他参数。"
+              },
+              "base_url": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "供应商 API 地址。"
+              },
+              "model": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "模型名称。"
+              },
+              "timeout_seconds": {
+                "type": "number"
+              },
+              "max_concurrency": {
+                "type": "integer"
+              },
+              "max_retries": {
+                "type": "integer"
+              },
+              "max_output_tokens": {
+                "type": "integer"
+              },
+              "context_bytes": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "enabled",
+              "protocol",
+              "base_url",
+              "model",
+              "timeout_seconds",
+              "max_concurrency",
+              "max_retries",
+              "max_output_tokens",
+              "context_bytes"
+            ]
+          },
+          "embedding": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "enabled": {
+                "type": "boolean"
+              },
+              "provider": {
+                "type": "string",
+                "description": "供应商，启用时支持 bailian。"
+              },
+              "protocol": {
+                "type": "string",
+                "description": "启用时支持 dashscope。"
+              },
+              "base_url": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "供应商 API 地址。"
+              },
+              "model": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "模型名称。"
+              },
+              "dimensions": {
+                "type": "integer"
+              },
+              "batch_size": {
+                "type": "integer"
+              },
+              "timeout_seconds": {
+                "type": "number"
+              },
+              "max_concurrency": {
+                "type": "integer"
+              },
+              "max_retries": {
+                "type": "integer"
+              },
+              "query_instruction": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "查询指令。"
+              }
+            },
+            "required": [
+              "enabled",
+              "provider",
+              "protocol",
+              "base_url",
+              "model",
+              "dimensions",
+              "batch_size",
+              "timeout_seconds",
+              "max_concurrency",
+              "max_retries",
+              "query_instruction"
+            ]
+          },
+          "channel": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "feishu-app",
+                  "feishu-webhook"
+                ]
+              },
+              "app_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "user_open_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "destination": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "kind",
+              "app_id",
+              "user_open_id",
+              "destination"
+            ]
+          },
+          "insights": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "default_prompt": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 16000,
+                "description": "默认洞察 Prompt，不能仅含空白。"
+              }
+            },
+            "required": [
+              "default_prompt"
+            ]
+          }
+        },
+        "required": [
+          "timezone",
+          "review",
+          "notifications",
+          "llm",
+          "embedding",
+          "channel",
+          "insights"
+        ]
+      },
+      "SettingsUpdate": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "version": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 1,
+            "maximum": 9223372036854775807,
+            "description": "读取到的设置版本；初始化为 1，成功保存后递增。"
+          },
+          "settings": {
+            "$ref": "#/components/schemas/ClientSettingsPatch"
+          },
+          "secrets": {
+            "$ref": "#/components/schemas/SettingsSecretUpdates"
+          }
+        },
+        "required": [
+          "version"
+        ],
+        "description": "最大 128 KiB；必须包含至少一个设置字段或密钥操作。只含空设置对象的请求被拒绝；未知字段、重复字段、大小写变体及 null 均拒绝。基础设施配置不能通过此接口修改。",
+        "anyOf": [
+          {
+            "required": [
+              "settings"
+            ],
+            "properties": {
+              "settings": {
+                "minProperties": 1
+              }
+            }
+          },
+          {
+            "required": [
+              "secrets"
+            ],
+            "properties": {
+              "secrets": {
+                "minProperties": 1
+              }
+            }
+          }
+        ]
+      },
+      "ClientSettingsPatch": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "timezone": {
+            "type": "string",
+            "description": "IANA 时区名称，例如 Asia/Hong_Kong。"
+          },
+          "review": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "count": {
+                "type": "integer",
+                "description": "每个时段的笔记数，1 至 20。"
+              },
+              "min_age_hours": {
+                "type": "integer",
+                "description": "等待期，0 至 87600 小时。"
+              },
+              "recent_days": {
+                "type": "integer",
+                "description": "重复排除期，0 至 3650 天。"
+              },
+              "topic_limit": {
+                "type": "integer",
+                "description": "兼容配置字段。"
+              },
+              "include_archived": {
+                "type": "boolean"
+              }
+            }
+          },
+          "notifications": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "enabled": {
+                "type": "boolean"
+              },
+              "time": {
+                "type": "string",
+                "description": "兼容单时段的 HH:MM；设置了非空 times 时使用 times。"
+              },
+              "times": {
+                "type": "array",
+                "maxItems": 24,
+                "uniqueItems": true,
+                "items": {
+                  "type": "string",
+                  "pattern": "^([01][0-9]|2[0-3]):[0-5][0-9]$"
+                },
+                "description": "每天的推送时段，数组整体替换。"
+              }
+            }
+          },
+          "llm": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "enabled": {
+                "type": "boolean"
+              },
+              "protocol": {
+                "type": "string",
+                "description": "模型协议，启用时校验支持的协议及其他参数。"
+              },
+              "base_url": {
+                "type": "string",
+                "description": "供应商 API 地址。"
+              },
+              "model": {
+                "type": "string",
+                "description": "模型名称。"
+              },
+              "timeout_seconds": {
+                "type": "number"
+              },
+              "max_concurrency": {
+                "type": "integer"
+              },
+              "max_retries": {
+                "type": "integer"
+              },
+              "max_output_tokens": {
+                "type": "integer"
+              },
+              "context_bytes": {
+                "type": "integer"
+              }
+            }
+          },
+          "embedding": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "enabled": {
+                "type": "boolean"
+              },
+              "provider": {
+                "type": "string",
+                "description": "供应商，启用时支持 bailian。"
+              },
+              "protocol": {
+                "type": "string",
+                "description": "启用时支持 dashscope。"
+              },
+              "base_url": {
+                "type": "string",
+                "description": "供应商 API 地址。"
+              },
+              "model": {
+                "type": "string",
+                "description": "模型名称。"
+              },
+              "dimensions": {
+                "type": "integer"
+              },
+              "batch_size": {
+                "type": "integer"
+              },
+              "timeout_seconds": {
+                "type": "number"
+              },
+              "max_concurrency": {
+                "type": "integer"
+              },
+              "max_retries": {
+                "type": "integer"
+              },
+              "query_instruction": {
+                "type": "string",
+                "description": "查询指令。"
+              }
+            }
+          },
+          "channel": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "feishu-app",
+                  "feishu-webhook"
+                ]
+              },
+              "app_id": {
+                "type": "string"
+              },
+              "user_open_id": {
+                "type": "string"
+              },
+              "destination": {
+                "type": "string"
+              }
+            }
+          },
+          "insights": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "default_prompt": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 16000,
+                "description": "默认洞察 Prompt，不能仅含空白。"
+              }
+            }
+          }
+        },
+        "description": "日常设置部分更新；对象递归合并，数组整体替换。未知字段、重复字段、大小写变体及任意层级的 null 均拒绝；密钥只能通过 secrets 操作更新。调用预算按模型启用后的配置校验。"
+      },
+      "SettingsSecretUpdates": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "llm_api_key": {
+            "$ref": "#/components/schemas/SettingsSecretOperation"
+          },
+          "embedding_api_key": {
+            "$ref": "#/components/schemas/SettingsSecretOperation"
+          },
+          "app_secret": {
+            "$ref": "#/components/schemas/SettingsSecretOperation"
+          },
+          "verification_token": {
+            "$ref": "#/components/schemas/SettingsSecretOperation"
+          },
+          "encrypt_key": {
+            "$ref": "#/components/schemas/SettingsSecretOperation"
+          },
+          "webhook_url": {
+            "$ref": "#/components/schemas/SettingsSecretOperation"
+          },
+          "webhook_secret": {
+            "$ref": "#/components/schemas/SettingsSecretOperation"
+          }
+        }
+      },
+      "SettingsSecretOperation": {
+        "description": "省略等同保持；keep、clear 禁止携带 value，replace 必须提供非空真实值，不能含 *、•、● 等遮蔽字符。响应不返回 value。",
+        "oneOf": [
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "action": {
+                "type": "string",
+                "const": "keep"
+              }
+            },
+            "required": [
+              "action"
+            ]
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "action": {
+                "type": "string",
+                "const": "clear"
+              }
+            },
+            "required": [
+              "action"
+            ]
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "action": {
+                "type": "string",
+                "const": "replace"
+              },
+              "value": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 16384,
+                "writeOnly": true,
+                "description": "非空真实凭据，不能仅含空白或使用遮蔽字符。"
+              }
+            },
+            "required": [
+              "action",
+              "value"
+            ]
+          }
+        ]
+      },
+      "SettingsSecretStatus": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "configured": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "configured"
+        ]
+      },
       "AIRequest": {
         "type": "object",
         "additionalProperties": false,
