@@ -6,8 +6,10 @@ import { renderMarkdown } from './markdown.js';
 const $ = id => document.getElementById(id);
 const draft = new Draft(), controllers = new Set(), snapshots = new Map();
 const editors = new Map(), pendingWrites = new Map(), failures = new Map();
+const sidebarTags = new Map(), sidebarCalendars = new Map();
 let epoch = 0, viewSequence = 0, listSequence = 0, sidebarSequence = 0;
 let identity = null, logoutCSRF = null, authBusy = false, saving = false, readingFiles = false, listing = false;
+let draftOwner = null;
 let items = [], nextToken = '', listController = null, retryReset = true;
 let retryTimer = null, retryDelay = 1000, searchTimer = null;
 let currentURL = location.pathname + location.search;
@@ -37,7 +39,8 @@ function showError(element, err) {
 function aborted() { return new DOMException('Stale request', 'AbortError'); }
 function stale(generation) { if (generation !== epoch) throw aborted(); }
 function invalidate() {
-  epoch++; viewSequence++; listSequence++; sidebarSequence++;
+  epoch++; viewSequence++; listSequence++;
+  invalidateSidebar();
   for (const controller of controllers) controller.abort();
   controllers.clear();
   clearTimeout(retryTimer);
@@ -102,7 +105,20 @@ function closeMenus() {
   document.querySelectorAll('.menu').forEach(menu => { menu.hidden = true; });
   document.querySelectorAll('[aria-haspopup="menu"]').forEach(control => control.setAttribute('aria-expanded', 'false'));
 }
-function hidePrivate() {
+function clearDrafts() {
+  for (const editor of editors.values()) editor.draft.clear();
+  editors.clear(); pendingWrites.clear(); failures.clear(); draft.clear();
+  draftOwner = null;
+}
+function hidePrivate({ resume = false } = {}) {
+  if (resume) {
+    draftOwner ||= identity?.user.name;
+    for (const [name, operation] of pendingWrites) {
+      operation.busy = false;
+      failures.set(name, { code: 'NOTE_SAVE_UNCONFIRMED' });
+    }
+    for (const editor of editors.values()) editor.suspend();
+  } else clearDrafts();
   $('app').hidden = $('workspace').hidden = true;
   $('auth').hidden = false;
   for (const id of ['notes', 'tags', 'filters', 'calendar', 'draft-attachments']) $(id).replaceChildren();
@@ -113,8 +129,6 @@ function hidePrivate() {
   pageObserver.disconnect();
   items = []; nextToken = '';
   snapshots.clear();
-  for (const editor of editors.values()) editor.draft.clear();
-  editors.clear(); pendingWrites.clear(); failures.clear(); draft.clear();
   month = ''; identity = null; routeReturnKey = null;
   pageCount = 0; reloading = false; lastTimeline = { path: '/', values: filters('') };
   closeMenus();
@@ -126,7 +140,7 @@ function authControls({ busy = false, login = true } = {}) {
   for (const id of ['username', 'password', 'login']) $(id).disabled = busy;
 }
 function expire(err) {
-  invalidate(); hidePrivate(); logoutCSRF = null; authControls();
+  invalidate(); hidePrivate({ resume: true }); logoutCSRF = null; authControls();
   showError($('auth-error'), err);
   $('username').focus();
 }
@@ -199,6 +213,8 @@ async function reloadTimeline(pages = pageCount || 1, scroll = window.scrollY) {
 }
 async function enter(value) {
   identity = validIdentity(value);
+  if (draftOwner && draftOwner !== identity.user.name) clearDrafts();
+  draftOwner = null;
   logoutCSRF = null;
   $('auth').hidden = true;
   $('app').hidden = $('workspace').hidden = false;
@@ -206,6 +222,8 @@ async function enter(value) {
   $('account-name').textContent = identity.user.display_name || identity.user.name;
   $('account').hidden = false;
   month = localToday().slice(0, 7);
+  $('content').value = draft.content;
+  for (const editor of editors.values()) editor.update();
   updateComposer();
   await showRoute();
 }
@@ -273,6 +291,40 @@ function renderFilters() {
   }
   box.append(button('清除全部', 'ghost', () => navigate(location.pathname)));
 }
+function invalidateSidebar() {
+  sidebarSequence++;
+  for (const cache of [sidebarTags, sidebarCalendars]) {
+    for (const entry of cache.values()) entry.controller?.abort();
+    cache.clear();
+  }
+}
+function sidebarData(cache, key, path) {
+  for (const [other, entry] of cache) {
+    if (other !== key && entry.controller) { entry.controller.abort(); cache.delete(other); }
+  }
+  const cached = cache.get(key);
+  if (cached && !cached.controller && Date.now() - cached.loadedAt >= 60_000) cache.delete(key);
+  if (!cache.has(key)) {
+    const entry = { controller: new AbortController() };
+    entry.promise = request(path, { controller: entry.controller }).then(data => {
+      entry.controller = null;
+      entry.loadedAt = Date.now();
+      return data;
+    }).catch(err => {
+      if (cache.get(key) === entry) cache.delete(key);
+      throw err;
+    });
+    cache.set(key, entry);
+  }
+  return cache.get(key).promise;
+}
+function refreshSidebarOnFocus() {
+  if (!identity || document.visibilityState !== 'visible') return;
+  for (const cache of [sidebarTags, sidebarCalendars]) {
+    for (const [key, entry] of cache) if (!entry.controller) cache.delete(key);
+  }
+  loadSidebar();
+}
 async function loadSidebar() {
   if (!identity) return;
   const sequence = ++sidebarSequence, generation = epoch;
@@ -282,11 +334,12 @@ async function loadSidebar() {
   $('tags').replaceChildren(); renderCalendar([], values.date, true);
   try {
     const [tags, calendar] = await Promise.all([
-      request(`/tags?${new URLSearchParams({ state })}`),
-      request(`/calendar?${new URLSearchParams({ state, month: selectedMonth })}`),
+      sidebarData(sidebarTags, state, `/tags?${new URLSearchParams({ state })}`),
+      sidebarData(sidebarCalendars, `${state}:${selectedMonth}`, `/calendar?${new URLSearchParams({ state, month: selectedMonth })}`),
     ]);
     if (generation !== epoch || sequence !== sidebarSequence) return;
     if (!Array.isArray(tags?.tags) || !Array.isArray(calendar?.days) || calendar.month !== selectedMonth) {
+      sidebarTags.delete(state); sidebarCalendars.delete(`${state}:${selectedMonth}`);
       throw Object.assign(new Error('Invalid sidebar data'), { code: 'NOTE_LIST_INVALID' });
     }
     for (const item of tags.tags) {
@@ -340,7 +393,7 @@ function validNote(note) {
     ['NORMAL', 'ARCHIVED'].includes(note.state) && typeof note.source_hash === 'string' && !!note.source_hash;
 }
 function compareNotes(a, b) {
-  return Date.parse(b.create_time) - Date.parse(a.create_time) || b.name.localeCompare(a.name);
+  return Date.parse(b.create_time) - Date.parse(a.create_time) || (a.name < b.name ? 1 : a.name > b.name ? -1 : 0);
 }
 function renderAttachments(note) {
   const box = el('div', 'attachment-list');
@@ -371,6 +424,7 @@ function renderNote(note, detail = false) {
   if (editor) return editor.form;
   const card = el('article', `card${detail ? ' note' : ''}`);
   card.dataset.name = note.name;
+  card.dataset.sourceHash = note.source_hash;
   const header = el('div', 'hd'), time = el('time', '', formatTime(note.create_time, detail));
   if (Number.isFinite(Date.parse(note.create_time))) time.dateTime = note.create_time;
   if (detail) header.append(time);
@@ -387,7 +441,7 @@ function renderNote(note, detail = false) {
   });
   more.setAttribute('aria-label', '更多操作');
   more.setAttribute('aria-haspopup', 'menu'); more.setAttribute('aria-expanded', 'false');
-  const content = el('div', 'note-content'); content.append(renderMarkdown(note.content));
+  const content = el('div', 'note-content'); content.append(renderMarkdown(note.content, note));
   const tags = el('div', 'note-tags');
   for (const tag of note.tags || []) tags.append(button(`#${tag}`, 'tag', () => {
     const source = sourceTimeline();
@@ -419,7 +473,30 @@ function renderNote(note, detail = false) {
   if (failure) appendNoteError(card, note, failure);
   return card;
 }
-function renderList() { $('notes').replaceChildren(...items.map(note => renderNote(note, notePath.test(location.pathname)))); }
+function renderList() {
+  const list = $('notes'), names = new Set(items.map(note => note.name));
+  const focusedEditor = list.contains(document.activeElement) ? document.activeElement.closest('form.editor') : null;
+  const existing = new Map([...list.children].map(node => [node.dataset.name, node]));
+  for (const [name, node] of existing) if (!names.has(name)) node.remove();
+  let cursor = list.firstElementChild;
+  for (const note of items) {
+    const previous = existing.get(note.name);
+    const node = editors.get(note.name)?.form ||
+      (previous?.dataset.sourceHash === note.source_hash ? previous : renderNote(note, notePath.test(location.pathname)));
+    if (node !== cursor) {
+      if (node.parentNode === list && node === focusedEditor) {
+        // 移动周围卡片，保持编辑表单连接，避免输入失焦。
+        const after = node.nextSibling;
+        while (cursor && cursor !== node) {
+          const next = cursor.nextElementSibling;
+          list.insertBefore(cursor, after); cursor = next;
+        }
+      } else list.insertBefore(node, cursor);
+    }
+    if (previous && previous !== node) previous.remove();
+    cursor = node.nextElementSibling;
+  }
+}
 function replaceCard(note) {
   const card = [...$('notes').children].find(node => node.dataset.name === note.name);
   if (card) card.replaceWith(renderNote(note, notePath.test(location.pathname)));
@@ -438,12 +515,13 @@ async function refreshNote(note) {
     if (sequence !== viewSequence) return;
     if (!validNote(updated)) throw Object.assign(new Error('Invalid note'), { code: 'NOTE_LIST_INVALID' });
     editors.get(note.name)?.draft.clear(); editors.delete(note.name); pendingWrites.delete(note.name); failures.delete(note.name);
+    replaceCard(updated);
     items = items.map(item => item.name === note.name ? updated : item);
     if (isTimeline() && updated.state !== (location.pathname === '/archived' ? 'ARCHIVED' : 'NORMAL')) items = items.filter(item => item.name !== note.name);
     dirtySnapshots();
     if (isTimeline()) await reloadTimeline();
     else renderList();
-    $('empty').hidden = !isTimeline() || !!items.length || !!nextToken; loadSidebar();
+    $('empty').hidden = !isTimeline() || !!items.length || !!nextToken; invalidateSidebar(); loadSidebar();
   } catch (err) { if (generation === epoch && sequence === viewSequence) handleFailure($('list-error'), err); }
 }
 function confirmDelete(card, note) {
@@ -494,16 +572,15 @@ async function performWrite(note) {
       else renderList();
     }
     $('empty').hidden = !isTimeline() || !!items.length || !!nextToken;
-    loadSidebar();
+    invalidateSidebar(); loadSidebar();
   } catch (err) {
     if (generation !== epoch || err.name === 'AbortError') return;
     operation.busy = false;
     if (err.status === 401) { expire(err); return; }
     failures.set(note.name, err);
     if (editor) {
-      if (['INVALID_ARGUMENT', 'UNSUPPORTED_MEDIA_TYPE'].includes(err.code)) {
-        editor.draft.reject(editor.draft.pending, err.code); pendingWrites.delete(note.name);
-      }
+      editor.draft.reject(editor.draft.pending, err.code);
+      if (!editor.draft.locked) pendingWrites.delete(note.name);
       editor.update(); editor.showFailure(err);
     } else replaceCard(note);
   } finally { if (generation === epoch) { operation.busy = false; editor?.update(); } }
@@ -558,7 +635,11 @@ function startEdit(note) {
       row.append(remove); retained.append(row);
     }
   }
-  const context = { draft: model, form, text, update, showFailure(err) { showError(message, err); refresh.hidden = false; } };
+  const context = {
+    draft: model, form, text, update,
+    suspend() { readSequence++; reading = false; update(); },
+    showFailure(err) { showError(message, err); refresh.hidden = false; },
+  };
   editors.set(note.name, context);
   text.addEventListener('input', () => { model.content = text.value; update(); });
   text.addEventListener('keydown', event => {
@@ -733,7 +814,7 @@ $('composer').addEventListener('submit', async event => {
     if (!validNote(note)) throw Object.assign(new Error('Invalid create response'), { code: 'NOTE_SAVE_UNCONFIRMED' });
     draft.confirm(attempt); $('content').value = draft.content; dirtySnapshots();
     if (isTimeline()) await loadNotes(true);
-    loadSidebar();
+    invalidateSidebar(); loadSidebar();
   } catch (err) {
     if (generation !== epoch) return;
     draft.reject(attempt, err.code); handleFailure($('save-error'), err);
@@ -792,4 +873,6 @@ window.addEventListener('scroll', () => {
 }, { passive: true });
 window.addEventListener('pagehide', () => { invalidate(); hidePrivate(); });
 window.addEventListener('pageshow', event => { if (event.persisted) restore(); });
+window.addEventListener('focus', refreshSidebarOnFocus);
+document.addEventListener('visibilitychange', refreshSidebarOnFocus);
 restore();

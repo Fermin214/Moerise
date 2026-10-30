@@ -70,7 +70,7 @@ export class Draft {
 
   reject(attempt, code) {
     if (this.pending !== attempt) return;
-    if (code === 'INVALID_ARGUMENT' || code === 'UNSUPPORTED_MEDIA_TYPE') {
+    if (['INVALID_ARGUMENT', 'UNSUPPORTED_MEDIA_TYPE', 'ATTACHMENT_REFERENCED', 'ATTACHMENT_DELETE_REJECTED'].includes(code)) {
       this.abandon();
     }
   }

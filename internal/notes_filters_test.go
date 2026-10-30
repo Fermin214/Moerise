@@ -24,8 +24,8 @@ func TestParseLiveNoteFilters(t *testing.T) {
 	for _, query := range []url.Values{
 		{"query": {"one", "two"}}, {"date": {"2024-02-29", "2024-02-29"}},
 		{"state": {"NORMAL", "NORMAL"}}, {"page_size": {"1", "2"}}, {"unknown": {"x"}},
-		{"tag": {}}, {"tag": {""}}, {"tag": {"#tag"}}, {"tag": {"tag/"}},
-		{"tag": {"a b"}}, {"tag": {strings.Repeat("a", 101)}}, {"tag": slices.Repeat([]string{"a"}, 21)},
+		{"tag": {}}, {"tag": {""}},
+		{"tag": {strings.Repeat("a", 101)}}, {"tag": slices.Repeat([]string{"a"}, 21)},
 		{"query": {string([]byte{0xff})}}, {"tag": {string([]byte{0xff})}},
 		{"query": {strings.Repeat("文", 257)}}, {"query": {strings.Repeat(" ", 1025)}},
 		{"date": {"2023-02-29"}}, {"date": {"2024-2-29"}}, {"date": {"2024-02-30"}},
@@ -38,6 +38,8 @@ func TestParseLiveNoteFilters(t *testing.T) {
 	for _, query := range []url.Values{
 		{"query": {""}}, {"query": {strings.Repeat("文", 256)}},
 		{"tag": {"标签/子", "Other"}}, {"date": {""}},
+		{"tag": {"C++", "R&D", "e\u0301", "👩‍💻", "#tag", "tag/", "a b"}},
+		{"tag": {strings.Repeat("😀", 100)}},
 	} {
 		if _, err := parseNoteList(query, true); err != nil {
 			t.Errorf("rejected valid filters %q: %v", query, err)

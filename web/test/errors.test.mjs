@@ -5,7 +5,7 @@ import { errorText } from '../src/errors.js';
 test('unsupported login, rate limits and service errors have Chinese explanations', () => {
   for (const code of [
     'PASSWORD_LOGIN_UNSUPPORTED', 'LOGIN_RATE_LIMITED', 'RATE_LIMITED',
-    'UPSTREAM_UNAVAILABLE', 'UPSTREAM_AUTH', 'SESSION_UNAVAILABLE',
+    'UPSTREAM_UNAVAILABLE', 'UPSTREAM_AUTH', 'SESSION_UNAVAILABLE', 'ATTACHMENT_REFERENCED', 'ATTACHMENT_DELETE_REJECTED',
   ]) {
     const text = errorText({ code, message: 'English backend message', requestId: 'request-42' });
     assert.match(text, /[\u4e00-\u9fff]/);

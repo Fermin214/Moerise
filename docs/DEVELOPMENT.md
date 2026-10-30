@@ -123,13 +123,13 @@ go test -tags=integration ./tests -run '^TestClientMemosAcceptance$' -v -count=1
 
 该流程覆盖未登录与错误密码、非绑定账户拒绝、本人正常笔记分页、创建时间及同时间资源名倒序、置顶与编辑不改变创建排序、含空白换行和标签的原文创建、同键重放与冲突、来源断连、Core 重启后的会话及幂等状态、索引重建后的会话与来源列表、退出后旧 Cookie 失效，以及带写入 Scope 的机器令牌仍不能写入或生成。响应检查包括 Cookie 属性、禁止缓存和上游敏感字段隔离。该测试不启动 Web 或浏览器；Origin、CSRF、续期与退出竞争、快照恢复后会话失效由 `internal/client_api_test.go` 和 `internal/sessions_test.go` 补充覆盖。
 
-`tests/client_management_acceptance_test.go` 的 `TestClientManagementMemosAcceptance` 补充笔记管理和附件流程：
+`tests/client_management_acceptance_test.go` 补充笔记管理、附件及原生来源边界，各流程使用独立的 Memos 实例：
 
 ```bash
-go test -tags=integration ./tests -run '^TestClientManagementMemosAcceptance$' -v -count=1
+go test -tags=integration ./tests -run '^TestClient(Management|NativeExactTags|MutationTimestamps|AttachmentDeletionPreflight|ExistingAttachmentCounts)MemosAcceptance$' -v -count=1
 ```
 
-该流程检查原文保留、纯图片及纯文件创建、编辑冲突、归档恢复、删除、关键词/日期/多标签组合筛选和全量标签日历统计，并从 Memos 官方 API 核对纯图片的空正文与附件归属。附件检查覆盖跨重启读取、GET/HEAD/单区间 Range、图片内嵌及文件下载、匿名与无关笔记拒绝、退出后失效，以及上传成功后响应丢失时跨重启复用附件。
+该流程检查原文保留、纯图片及纯文件创建、编辑冲突、归档恢复、删除、关键词/日期/多标签组合筛选和全量标签日历统计，并从 Memos 官方 API 核对纯图片的空正文与附件归属。原生标签覆盖标点、组合字符及 emoji；正文和状态编辑检查修改时间推进及创建时间保留。附件检查覆盖跨重启读取、GET/HEAD/单区间 Range、图片内嵌及文件下载、匿名与无关笔记拒绝、退出后失效、超过十个已有附件的笔记管理、正文仍引用附件时的可修正错误，以及上传成功后响应丢失时跨重启复用附件。
 
 使用 Node.js 24+ 构建并检查正式 Web：
 
@@ -159,6 +159,8 @@ node --test web/test/browser.mjs
 默认使用 Playwright 安装的 Chromium；设置 `MOERISE_PLAYWRIGHT_CHANNEL=chrome` 可复用本机 Chrome。
 
 该流程补充 Node 测试中的路由、草稿幂等和同源代理检查。真实 Memos 的联合浏览器流程还需覆盖来源版本、原文读回及服务重启。
+
+浏览器回归覆盖会话失效后的草稿及附件恢复、创建和编辑的原键原请求体重试、并发请求失效后编辑器解锁提交、自动分页及多个编辑器重排时输入焦点保留、同时间资源名跨页排序、正文原生附件图片及下载、失败提交刷新后操作恢复，以及侧栏聚合复用、月份切换取消、缓存到期与写入或页面重新获得焦点后的刷新。`web/test/markdown.test.mjs` 补充附件映射边界与 64 KiB 未闭合标记的解析耗时检查。
 
 ### 平台适配与持续集成
 

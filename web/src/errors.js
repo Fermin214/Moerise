@@ -17,6 +17,8 @@ const messages = {
   ATTACHMENT_COUNT: '最多添加 10 个附件。',
   ATTACHMENT_SIZE: '新增附件总大小不能超过 8 MiB。',
   ATTACHMENT_READ: '附件读取失败，请重新添加。',
+  ATTACHMENT_REFERENCED: '正文仍在引用该图片，请先移除图片引用再保存。',
+  ATTACHMENT_DELETE_REJECTED: '附件无法删除，请检查正文中的图片引用及关联的动态照片附件。',
   INVALID_PAGE_TOKEN: '分页已失效，请刷新时间线。',
   SOURCE_NOT_FOUND: '这条笔记已不存在或无法访问，请刷新时间线。',
   IDENTITY_MISMATCH: 'Memos 身份校验失败。',

@@ -93,8 +93,12 @@ func (f *recordMutationFixture) handle(r *http.Request) (int, any, error) {
 				mask = append(mask, field)
 			}
 		}
+		mask = append(mask, "update_time")
 		if r.URL.Query().Get("updateMask") != strings.Join(mask, ",") {
 			f.t.Fatalf("incorrect update mask: %s", r.URL.RawQuery)
+		}
+		if _, ok := body["createTime"]; ok {
+			f.t.Fatal("mutation rewrote create_time")
 		}
 		f.memo["updateTime"] = "2026-10-29T01:00:00Z"
 		return f.reply("PATCH", f.memo)
@@ -226,11 +230,7 @@ func TestRecordMutationRejectsForeignStaleEmptyAndUnrelatedRemoval(t *testing.T)
 			case "unrelated":
 				input.RemoveAttachments = []string{"attachments/foreign"}
 			case "too-many":
-				for _, suffix := range []string{"a", "b", "c", "d", "e", "f", "g", "h", "i", "j"} {
-					f.add("attachments/" + suffix)
-				}
-				input.SourceHash = f.sourceHash()
-				files := []CreateAttachment{{"a.txt", "text/plain", []byte("new")}}
+				files := slices.Repeat([]CreateAttachment{{"a.txt", "text/plain", []byte("new")}}, 11)
 				input.Attachments = &files
 			case "invalid-state":
 				input.State = "DELETED"
@@ -328,6 +328,128 @@ func TestRecordMutationDeleteDoesNotHideSourceFailures(t *testing.T) {
 			}
 			if err := f.noteService().Delete(context.Background(), "memos/existing", hash); errorCode(err) != want || f.deletes != 0 {
 				t.Fatalf("source failure treated as deletion: %v deletes=%d", err, f.deletes)
+			}
+		})
+	}
+}
+
+func TestRecordMutationAttachmentDeletionPreconditions(t *testing.T) {
+	for _, scenario := range []struct {
+		name, message, want string
+		code, status        int
+		retryable           bool
+	}{
+		{"referenced", "attachment keep is referenced by memo content", "ATTACHMENT_REFERENCED", 9, 400, false},
+		{"invalid-reference", "memo contains an invalid managed attachment reference", "ATTACHMENT_DELETE_REJECTED", 9, 400, false},
+		{"bad-adapter-request", "invalid attachment id", "UPSTREAM_REQUEST_REJECTED", 3, 400, true},
+		{"source-down", "unavailable", "UPSTREAM_UNAVAILABLE", 14, 503, true},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			f := newRecordMutationFixture(t)
+			f.add("attachments/keep")
+			f.client = fakeClient(f.store.Settings, func(r *http.Request) (int, any, error) {
+				if r.Method == http.MethodDelete && r.URL.Path == "/api/v1/attachments/keep" {
+					return scenario.status, map[string]any{"code": scenario.code, "message": scenario.message}, nil
+				}
+				return f.handle(r)
+			})
+			_, err := f.noteService().Update(t.Context(), "memos/existing", "remove",
+				UpdateNote{SourceHash: f.sourceHash(), RemoveAttachments: []string{"attachments/keep"}})
+			var service *ServiceError
+			if !errors.As(err, &service) || service.Code != scenario.want || service.Retryable != scenario.retryable {
+				t.Fatalf("deletion error classification: %+v", err)
+			}
+			if !scenario.retryable && service.Status != 422 {
+				t.Fatalf("precondition did not return a correctable status: %+v", service)
+			}
+			if f.deletes != 0 || len(f.attachments()) != 1 {
+				t.Fatal("rejected deletion changed the source")
+			}
+		})
+	}
+}
+
+func TestRecordMutationAttachmentPreflightBeforeAnyWrite(t *testing.T) {
+	destination := "/file/attachments/keep/picture.png"
+	image := "![picture](" + destination + ")"
+	for _, scenario := range []struct {
+		name, content string
+		referenced    bool
+	}{
+		{"unchanged-content", image, true},
+		{"changed-content", image + "\nchanged caption", true},
+		{"reference-image", "![picture][pic]\n\n[pic]: " + destination, true},
+		{"angle-image", "![picture](<" + destination + ">)", true},
+		{"filename-free", "![picture](/file/attachments/keep)", true},
+		{"image-in-link", "[" + image + "](https://example.org)", true},
+		{"inline-code", "`" + image + "`", false},
+		{"fenced-code", "```markdown\n" + image + "\n```", false},
+		{"indented-code", "    " + image, false},
+		{"escaped-image", "\\" + image, false},
+		{"plain-link", "[download](" + destination + ")", false},
+		{"raw-url", destination, false},
+		{"gfm-url", "https://example.org/" + image, false},
+		{"invalid-reference-definition", "![picture][pic]\n\n[pic]: " + destination + "(", false},
+		{"removed-reference", "corrected caption", false},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			f := newRecordMutationFixture(t)
+			f.add("attachments/keep")
+			f.memo["content"] = image
+			originalHash := f.sourceHash()
+			files := []CreateAttachment{{"new.txt", "text/plain", []byte("new file")}}
+			input := UpdateNote{Content: stringPointer(scenario.content), State: "ARCHIVED",
+				SourceHash: originalHash, Attachments: &files, RemoveAttachments: []string{"attachments/keep"}}
+			note, err := f.noteService().Update(t.Context(), "memos/existing", "preflight", input)
+			if !scenario.referenced {
+				if err != nil || note.Content != scenario.content || len(note.Attachments) != 1 {
+					t.Fatalf("non-image text blocked deletion: %+v %v", note, err)
+				}
+				return
+			}
+			if errorCode(err) != "ATTACHMENT_REFERENCED" || f.sourceHash() != originalHash ||
+				len(f.posts)+f.patches+f.deletes != 0 {
+				t.Fatalf("reference rejection reached an upstream write: posts=%v patches=%d deletes=%d err=%v",
+					f.posts, f.patches, f.deletes, err)
+			}
+			hash, err := f.store.savedNoteHash("~update:" + hashBytes([]byte("preflight")))
+			if err != nil || hash != "" {
+				t.Fatalf("preflight rejection reserved the mutation key: %q %v", hash, err)
+			}
+			input.Content = stringPointer("corrected caption")
+			note, err = f.noteService().Update(t.Context(), "memos/existing", "preflight", input)
+			if err != nil || note.Content != *input.Content || len(note.Attachments) != 1 {
+				t.Fatalf("corrected draft could not reuse its version and key: %+v %v", note, err)
+			}
+		})
+	}
+}
+
+func TestMemosAttachmentPreflightUsesSourceOrigin(t *testing.T) {
+	for _, scenario := range []struct {
+		name, origin, destination, want string
+	}{
+		{"same-origin", "https://memos.example", "https://MEMOS.example:443/file/attachments/keep/picture.png", "ATTACHMENT_REFERENCED"},
+		{"foreign-origin", "https://memos.example", "https://elsewhere.example/file/attachments/keep/picture.png", ""},
+		{"foreign-port", "https://memos.example", "https://memos.example:444/file/attachments/keep/picture.png", ""},
+		{"missing-origin", "", "https://memos.example/file/attachments/keep/picture.png", "ATTACHMENT_DELETE_REJECTED"},
+		{"protocol-relative", "https://memos.example", "//memos.example/file/attachments/keep/picture.png", "ATTACHMENT_DELETE_REJECTED"},
+		{"foreign-protocol-relative", "https://memos.example", "//elsewhere.example/file/attachments/keep/picture.png", ""},
+		{"query", "", "/file/attachments/keep/picture.png?download=1", "ATTACHMENT_DELETE_REJECTED"},
+		{"fragment", "", "/file/attachments/keep/picture.png#part", "ATTACHMENT_DELETE_REJECTED"},
+		{"encoded", "", "/file/attachments/keep/picture%2Epng", "ATTACHMENT_DELETE_REJECTED"},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			settings := testSettings(t)
+			client := fakeClient(settings, func(r *http.Request) (int, any, error) {
+				if r.Method != "GET" || r.URL.Path != "/api/v1/instance/profile" {
+					t.Fatalf("unexpected preflight request: %s %s", r.Method, r.URL)
+				}
+				return 200, map[string]any{"version": "0.31.0", "instanceUrl": scenario.origin}, nil
+			})
+			err := client.CheckAttachmentRemoval(t.Context(), "![picture]("+scenario.destination+")", []string{"attachments/keep"})
+			if (scenario.want == "" && err != nil) || (scenario.want != "" && errorCode(err) != scenario.want) {
+				t.Fatalf("source origin classification: want=%s error=%v", scenario.want, err)
 			}
 		})
 	}

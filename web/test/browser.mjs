@@ -27,6 +27,7 @@ async function fixture(t) {
     { name: 'attachments/pic', filename: 'image.png', type: 'image/png', size: png.length, content_url: '/api/app/v1/notes/n02/attachments/pic/content' },
     { name: 'attachments/doc', filename: 'document.pdf', type: 'application/pdf', size: 3, content_url: '/api/app/v1/notes/n02/attachments/doc/content' },
   ];
+  notes.get('n02').content += '\n\n[资料](/file/attachments/doc/document.pdf) ![原图](/file/attachments/pic/image.png)';
   notes.set('old', { ...notes.get('n00'), name: 'memos/old', state: 'ARCHIVED', content: '归档原文 #想法', source_hash: 'v-old' });
   const state = { notes, requests: [], unknownCreate: false, unknownPatch: false, conflict: false, csrfRejected: false, created: 0, session: false };
   const idempotency = new Map();
@@ -72,7 +73,7 @@ async function fixture(t) {
       const result = source.filter(note => note.content.includes(url.searchParams.get('query') || '') &&
         url.searchParams.getAll('tag').every(tag => note.tags.includes(tag)) &&
         (!url.searchParams.get('date') || note.create_time.startsWith(url.searchParams.get('date'))))
-        .sort((a, b) => b.create_time.localeCompare(a.create_time) || b.name.localeCompare(a.name));
+        .sort((a, b) => Date.parse(b.create_time) - Date.parse(a.create_time) || (a.name < b.name ? 1 : a.name > b.name ? -1 : 0));
       const start = Number(url.searchParams.get('page_token') || 0);
       json({ notes: result.slice(start, start + 20), next_page_token: start + 20 < result.length ? String(start + 20) : '' }); return;
     }
@@ -104,6 +105,11 @@ async function fixture(t) {
     if (body.source_hash !== note.source_hash) { error('WRITE_CONFLICT'); return; }
     if (req.method === 'DELETE') { notes.delete(id); res.writeHead(204); res.end(); return; }
     assert.equal(req.method, 'PATCH'); assert.ok(req.headers['idempotency-key']);
+    for (const resource of body.remove_attachments || []) {
+      if ((body.content ?? note.content).includes(`](/file/${resource}/`) && note.attachments.some(item => item.name === resource && item.type.startsWith('image/'))) {
+        error('ATTACHMENT_REFERENCED', 422); return;
+      }
+    }
     if (body.content !== undefined) note.content = body.content;
     if (body.state) note.state = body.state;
     note.tags = [...note.content.matchAll(/#([^\s#]+)/g)].map(match => match[1]);
@@ -132,6 +138,7 @@ async function fixture(t) {
   browser = await chromium.launch({ headless: true, channel: process.env.MOERISE_PLAYWRIGHT_CHANNEL || undefined });
   const context = await browser.newContext({ viewport: { width: 1360, height: 960 } });
   const page = await context.newPage(), errors = [];
+  await page.clock.setFixedTime(new Date('2026-10-30T04:00:00Z'));
   page.on('pageerror', err => errors.push(err.message));
   return { page, context, state, errors, url: `http://127.0.0.1:${port}` };
 }
@@ -161,6 +168,12 @@ test('browser timeline management, attachment retries, history, conflicts and pr
   assert.equal(new URL(page.url()).pathname, '/notes/n02');
   assert.equal(await page.locator('.attachment-list img').count(), 1);
   assert.equal(await page.locator('a[download="document.pdf"]').count(), 1);
+  const nativeLink = page.locator('.note-content a', { hasText: '资料' });
+  assert.equal(await nativeLink.getAttribute('href'), '/api/app/v1/notes/n02/attachments/doc/content');
+  assert.equal(await page.locator('.note-content img').getAttribute('src'), '/api/app/v1/notes/n02/attachments/pic/content');
+  const downloaded = page.waitForEvent('download');
+  await nativeLink.click();
+  assert.equal((await downloaded).url(), `${url}/api/app/v1/notes/n02/attachments/doc/content`);
   await page.reload();
   await page.locator('article.note').waitFor();
   await page.locator('#back').click();
@@ -333,5 +346,246 @@ test('late list and file reads cannot restore private data or overwrite a newer 
   await page.locator('[data-name="memos/n00"]').waitFor();
   assert.equal(await page.locator('#draft-attachments').textContent(), '');
   assert.equal(await page.locator('#content').inputValue(), '');
+  assert.deepEqual(errors, []);
+});
+
+test('session renewal restores unsaved drafts and replays ambiguous creates and edits with the original body and key', { timeout: 60_000 }, async t => {
+  const { page, state, errors, url } = await fixture(t);
+  await page.goto(url); await login(page);
+  await page.locator('[data-name="memos/n00"]').waitFor();
+  await page.locator('#content').fill('创建草稿原文');
+  await page.locator('#attachment-input').setInputFiles({ name: 'draft.txt', mimeType: 'text/plain', buffer: Buffer.from('draft bytes') });
+  await menu(page, 'n00', '编辑');
+  const editor = page.locator('[data-name="memos/n00"].editor'), text = editor.locator('textarea');
+  await text.fill('编辑草稿原文');
+  await editor.locator('input[type="file"]').setInputFiles({ name: 'edit.txt', mimeType: 'text/plain', buffer: Buffer.from('edit bytes') });
+  async function expireViaList(query) {
+    state.session = false;
+    await page.locator('#q').fill(query); await page.locator('#q').press('Enter');
+    await page.locator('#login-form').waitFor({ state: 'visible' });
+    assert.equal(await page.locator('#notes').textContent(), '');
+    assert.equal(await page.locator('#content').inputValue(), '');
+    await login(page); await editor.waitFor();
+  }
+  await expireViaList('笔记');
+  assert.equal(await page.locator('#content').inputValue(), '创建草稿原文');
+  assert.match(await page.locator('#draft-attachments').textContent(), /draft.txt/);
+  assert.equal(await text.inputValue(), '编辑草稿原文');
+  assert.equal(await text.getAttribute('readonly'), null);
+  assert.match(await editor.textContent(), /edit.txt/);
+
+  state.unknownCreate = true;
+  await page.locator('#save').click(); await page.locator('#save-error').waitFor({ state: 'visible' });
+  await expireViaList('笔记 ');
+  assert.equal(await page.locator('#content').getAttribute('readonly'), '');
+  await page.locator('#save').click();
+  await page.waitForFunction(() => document.getElementById('content').value === '');
+  const creates = state.requests.filter(item => item.path === '/notes' && item.method === 'POST');
+  assert.equal(creates.length, 2); assert.equal(state.created, 1);
+  assert.equal(creates[0].headers['idempotency-key'], creates[1].headers['idempotency-key']);
+  assert.deepEqual(creates[0].body, creates[1].body);
+  assert.equal(Buffer.from(creates[1].body.attachments[0].content, 'base64').toString(), 'draft bytes');
+
+  state.unknownPatch = true;
+  await text.press('Control+Enter'); await editor.getByText('保存结果尚未确认。').waitFor();
+  await expireViaList('');
+  assert.equal(await text.getAttribute('readonly'), '');
+  assert.equal(await text.inputValue(), '编辑草稿原文');
+  await text.press('Control+Enter');
+  await page.waitForFunction(() => !document.querySelector('form.editor'));
+  const patches = state.requests.filter(item => item.path === '/notes/n00' && item.method === 'PATCH');
+  assert.equal(patches.length, 2);
+  assert.equal(patches[0].headers['idempotency-key'], patches[1].headers['idempotency-key']);
+  assert.deepEqual(patches[0].body, patches[1].body);
+  assert.equal(Buffer.from(patches[1].body.attachments[0].content, 'base64').toString(), 'edit bytes');
+  assert.equal(state.notes.get('n00').attachments.length, 1);
+  assert.deepEqual(errors, []);
+});
+
+test('a sidebar 401 interrupts an in-flight edit without losing its retry or leaving it busy', { timeout: 60_000 }, async t => {
+  const { page, state, errors, url } = await fixture(t);
+  await page.goto(url); await login(page);
+  await page.locator('[data-name="memos/n00"]').waitFor();
+  let release, captured;
+  const delayed = new Promise(resolve => { release = resolve; }), submitted = new Promise(resolve => { captured = resolve; });
+  await page.route('**/api/app/v1/notes/n00', async route => {
+    if (route.request().method() !== 'PATCH') { await route.continue(); return; }
+    const response = await route.fetch();
+    captured(); await delayed;
+    await route.fulfill({ response }).catch(() => {});
+  });
+  await menu(page, 'n00', '编辑');
+  const editor = page.locator('form.editor');
+  await editor.locator('textarea').fill('来源已保存但响应尚未到达');
+  await editor.locator('textarea').press('Control+Enter'); await submitted;
+  state.session = false;
+  await page.locator('#month-next').click();
+  await page.locator('#login-form').waitFor({ state: 'visible' });
+  release(); await page.unroute('**/api/app/v1/notes/n00');
+  await login(page); await editor.waitFor();
+  assert.equal(await editor.getByRole('button', { name: '保存' }).isEnabled(), true);
+  await editor.locator('textarea').press('Control+Enter');
+  await page.locator('[data-name="memos/n00"] .note-content', { hasText: '来源已保存但响应尚未到达' }).waitFor();
+  const patches = state.requests.filter(item => item.path === '/notes/n00' && item.method === 'PATCH');
+  assert.equal(patches.length, 2);
+  assert.equal(patches[0].headers['idempotency-key'], patches[1].headers['idempotency-key']);
+  assert.deepEqual(patches[0].body, patches[1].body);
+  assert.deepEqual(errors, []);
+});
+
+test('automatic pagination preserves the connected editor, focus and selection across equal-time resource names', { timeout: 60_000 }, async t => {
+  const { page, state, errors, url } = await fixture(t);
+  const ids = [...Array.from({ length: 19 }, (_, i) => `z${i}`), 'a', 'Z'];
+  for (const id of ids) state.notes.set(id, {
+    ...state.notes.get('n00'), name: `memos/${id}`, source_hash: `v-${id}`, create_time: '2026-10-30T00:00:00Z',
+  });
+  let release, captured;
+  const delayed = new Promise(resolve => { release = resolve; }), loading = new Promise(resolve => { captured = resolve; });
+  await page.route('**/api/app/v1/notes?*', async route => {
+    if (new URL(route.request().url()).searchParams.get('page_token') === '20') { captured(); await delayed; }
+    await route.continue().catch(() => {});
+  });
+  await page.goto(url); await login(page);
+  await page.locator('[data-name="memos/a"]').waitFor();
+  await menu(page, 'a', '编辑'); await loading;
+  const text = page.locator('form.editor textarea');
+  await text.fill('分页时连续输入');
+  await page.evaluate(() => {
+    globalThis.activeEditor = document.querySelector('form.editor');
+    globalThis.editorRemoved = false;
+    new MutationObserver(records => {
+      if (records.some(record => [...record.removedNodes].includes(globalThis.activeEditor))) globalThis.editorRemoved = true;
+    }).observe(document.getElementById('notes'), { childList: true });
+    document.activeElement.setSelectionRange(2, 5);
+  });
+  release(); await page.locator('[data-name="memos/Z"]').waitFor();
+  assert.deepEqual(await page.evaluate(() => ({
+    connected: globalThis.activeEditor.isConnected,
+    same: globalThis.activeEditor === document.querySelector('form.editor'),
+    removed: globalThis.editorRemoved,
+    focused: document.activeElement === globalThis.activeEditor.querySelector('textarea'),
+    selection: [document.activeElement.selectionStart, document.activeElement.selectionEnd],
+  })), { connected: true, same: true, removed: false, focused: true, selection: [2, 5] });
+  assert.deepEqual(await page.locator('#notes > [data-name]').evaluateAll(nodes => nodes.slice(0, 21).map(node => node.dataset.name)),
+    ids.sort((a, b) => a < b ? 1 : a > b ? -1 : 0).map(id => `memos/${id}`));
+  await text.press('End'); await text.press('Control+Enter');
+  await page.locator('[data-name="memos/a"] .note-content', { hasText: '分页时连续输入' }).waitFor();
+  assert.deepEqual(errors, []);
+});
+
+test('sidebar aggregates reuse loaded and in-flight data, cancel replaced months and refresh after writes', { timeout: 60_000 }, async t => {
+  const { page, state, errors, url } = await fixture(t);
+  let release;
+  const delayed = new Promise(resolve => { release = resolve; });
+  await page.route(/\/api\/app\/v1\/(?:tags|calendar)\?/, async route => { await delayed; await route.continue().catch(() => {}); });
+  await page.goto(url); await login(page); await page.locator('[data-name="memos/n00"]').waitFor();
+  const requests = [];
+  page.on('request', request => { if (/\/api\/app\/v1\/(?:tags|calendar)\?/.test(request.url())) requests.push(request.url()); });
+  for (const query of ['笔记', '笔记 1', '笔记 2']) {
+    await page.locator('#q').fill(query); await page.locator('#q').press('Enter');
+    await page.waitForFunction(query => new URL(location.href).searchParams.get('query') === query, query);
+  }
+  assert.equal(requests.length, 0);
+  release(); await page.locator('#tags button').first().waitFor();
+  await page.unroute(/\/api\/app\/v1\/(?:tags|calendar)\?/);
+  const count = path => state.requests.filter(item => item.path === path).length;
+  assert.equal(count('/tags'), 1); assert.equal(count('/calendar'), 1);
+  await page.locator('#month-next').click();
+  await page.waitForFunction(() => document.querySelector('#calendar button:not([disabled])') && document.getElementById('calendar-title').textContent === '2026年11月');
+  assert.equal(count('/tags'), 1); assert.equal(count('/calendar'), 2);
+  await page.locator('#month-prev').click();
+  await page.waitForFunction(() => document.getElementById('calendar-title').textContent === '2026年10月');
+  assert.equal(count('/calendar'), 2);
+  let cancelRelease, captured;
+  const cancelled = new Promise(resolve => { cancelRelease = resolve; }), pending = new Promise(resolve => { captured = resolve; });
+  await page.route('**/api/app/v1/calendar?*month=2026-09*', async route => {
+    captured(); await cancelled; await route.fulfill({ json: { month: '2026-09', days: [] } }).catch(() => {});
+  });
+  const aborted = page.waitForEvent('requestfailed', request => request.url().includes('month=2026-09'));
+  await page.locator('#month-prev').click(); await pending;
+  await page.locator('#month-prev').click(); await aborted;
+  cancelRelease();
+  await page.waitForFunction(() => document.querySelector('#calendar button:not([disabled])') && document.getElementById('calendar-title').textContent === '2026年8月');
+  const before = { tags: count('/tags'), calendar: count('/calendar') };
+  await page.locator('#content').fill('写入后刷新聚合');
+  await page.locator('#save').click();
+  await page.waitForFunction(() => document.getElementById('content').value === '');
+  await page.locator('#tags button').first().waitFor();
+  assert.equal(count('/tags'), before.tags + 1); assert.equal(count('/calendar'), before.calendar + 1);
+  const refreshed = { tags: count('/tags'), calendar: count('/calendar') };
+  await page.clock.setFixedTime(new Date('2026-10-30T04:01:01Z'));
+  await page.locator('#q').fill('写入后'); await page.locator('#q').press('Enter');
+  await page.locator('#tags button').first().waitFor();
+  assert.equal(count('/tags'), refreshed.tags + 1); assert.equal(count('/calendar'), refreshed.calendar + 1);
+  await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+  await page.locator('#tags button').first().waitFor();
+  assert.equal(count('/tags'), refreshed.tags + 2); assert.equal(count('/calendar'), refreshed.calendar + 2);
+  assert.deepEqual(errors, []);
+});
+
+test('referenced attachment rejection keeps the draft editable so its body can be corrected and saved', { timeout: 60_000 }, async t => {
+  const { page, state, errors, url } = await fixture(t);
+  await page.goto(`${url}/notes/n02`); await login(page);
+  await page.locator('article.note').waitFor();
+  await page.getByRole('button', { name: '编辑', exact: true }).click();
+  const editor = page.locator('form.editor'), text = editor.locator('textarea');
+  const original = await text.inputValue();
+  await editor.getByRole('button', { name: '移除附件 image.png' }).click();
+  await text.press('Control+Enter');
+  await editor.getByText('正文仍在引用该图片，请先移除图片引用再保存。').waitFor();
+  assert.equal(await text.getAttribute('readonly'), null);
+  assert.equal(await text.inputValue(), original);
+  await text.fill(original.replace('![原图](/file/attachments/pic/image.png)', ''));
+  await text.press('Control+Enter');
+  await page.locator('article.note').waitFor();
+  const patches = state.requests.filter(item => item.path === '/notes/n02' && item.method === 'PATCH');
+  assert.equal(patches.length, 2);
+  assert.notEqual(patches[0].headers['idempotency-key'], patches[1].headers['idempotency-key']);
+  assert.deepEqual(state.notes.get('n02').attachments.map(item => item.name), ['attachments/doc']);
+  assert.deepEqual(errors, []);
+});
+
+test('refreshing an unchanged note clears failed mutation controls', { timeout: 60_000 }, async t => {
+  const { page, errors, url } = await fixture(t);
+  await page.goto(url); await login(page);
+  await page.locator('[data-name="memos/n00"]').waitFor();
+  await page.route('**/api/app/v1/notes/n00', async route => {
+    if (route.request().method() === 'PATCH') {
+      await route.fulfill({ status: 503, json: { error: { code: 'UPSTREAM_UNAVAILABLE', retryable: true } } });
+    } else await route.continue();
+  });
+  await menu(page, 'n00', '归档');
+  const card = page.locator('[data-name="memos/n00"]');
+  await card.getByRole('button', { name: '重试原提交' }).waitFor();
+  await card.getByRole('button', { name: '刷新笔记' }).click();
+  await card.locator('.note-error').waitFor({ state: 'detached' });
+  await card.getByRole('button', { name: '更多操作' }).click();
+  assert.equal(await card.getByRole('menuitem', { name: '归档', exact: true }).isEnabled(), true);
+  assert.deepEqual(errors, []);
+});
+
+test('reordering multiple editors keeps the focused editor connected', { timeout: 60_000 }, async t => {
+  const { page, state, errors, url } = await fixture(t);
+  await page.goto(url); await login(page);
+  await page.locator('[data-name="memos/n00"]').waitFor();
+  await page.locator('#content').fill('触发时间线刷新');
+  await menu(page, 'n00', '编辑'); await menu(page, 'n01', '编辑');
+  const text = page.locator('[data-name="memos/n00"].editor textarea');
+  await text.fill('连续输入中的草稿');
+  state.notes.get('n01').create_time = '2027-01-01T00:00:00Z';
+  await page.evaluate(() => {
+    globalThis.focusedForm = document.activeElement.closest('form.editor');
+    globalThis.focusedRemoved = false;
+    new MutationObserver(records => {
+      if (records.some(record => [...record.removedNodes].includes(globalThis.focusedForm))) globalThis.focusedRemoved = true;
+    }).observe(document.getElementById('notes'), { childList: true });
+    document.getElementById('composer').requestSubmit();
+  });
+  await page.waitForFunction(() => document.querySelector('#notes > :first-child')?.dataset.name === 'memos/n01');
+  assert.deepEqual(await page.evaluate(() => ({
+    removed: globalThis.focusedRemoved,
+    focused: document.activeElement.closest('form.editor') === globalThis.focusedForm,
+  })), { removed: false, focused: true });
+  assert.equal(await text.inputValue(), '连续输入中的草稿');
   assert.deepEqual(errors, []);
 });

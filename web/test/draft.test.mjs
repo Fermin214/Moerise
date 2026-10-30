@@ -37,8 +37,8 @@ test('only confirmation or explicit abandonment permits a new key', () => {
   assert.equal(draft.pending, null);
 });
 
-test('only argument or media type rejection unlocks the original text for editing', () => {
-  for (const code of ['INVALID_ARGUMENT', 'UNSUPPORTED_MEDIA_TYPE']) {
+test('correctable argument, media type or attachment precondition rejection unlocks the original text for editing', () => {
+  for (const code of ['INVALID_ARGUMENT', 'UNSUPPORTED_MEDIA_TYPE', 'ATTACHMENT_REFERENCED', 'ATTACHMENT_DELETE_REJECTED']) {
     const draft = new Draft();
     draft.content = '原文';
     const attempt = draft.begin();
