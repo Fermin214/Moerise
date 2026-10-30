@@ -93,7 +93,7 @@ export function createWebServer({
   const core = origin(coreOrigin, 'CORE_ORIGIN');
   const publicURL = webOrigin(publicOrigin);
   const transport = core.protocol === 'https:' ? https : http;
-  if (!Number.isInteger(healthTimeout) || healthTimeout < 1 || healthTimeout > 4_294_967_295) {
+  if (!Number.isInteger(healthTimeout) || healthTimeout < 1 || healthTimeout > 2_147_483_647) {
     throw new Error('Invalid health timeout');
   }
 
