@@ -38,6 +38,8 @@ Core 需要开启客户端 API，并将 `MOERISE_PUBLIC_ORIGIN` 配置为同一 
 
 ## Docker
 
+完整三组件部署使用仓库根目录的 `.env.example` 和 `compose.yaml`，首启及外部 Memos 配置见[运行与恢复](OPERATIONS.md#容器部署)。Compose 只将 Core 地址和公开 Origin 传给 Web；Core 与 Web 共用 `MOERISE_PUBLIC_ORIGIN`，其余凭据留在 Core。
+
 在仓库根目录构建：
 
 ```sh
