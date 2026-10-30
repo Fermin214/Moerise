@@ -61,7 +61,8 @@ func (s *ReviewService) ReadDaily(ctx context.Context, at time.Time) (ReviewBatc
 	if err := s.verify(ctx); err != nil {
 		return ReviewBatch{}, err
 	}
-	location, err := time.LoadLocation(s.Store.Settings.Timezone)
+	settings := s.Store.reviewSettings(at)
+	location, err := time.LoadLocation(settings.Timezone)
 	if err != nil {
 		return ReviewBatch{}, err
 	}
@@ -69,7 +70,7 @@ func (s *ReviewService) ReadDaily(ctx context.Context, at time.Time) (ReviewBatc
 	var id string
 	err = s.Store.state.QueryRow(`SELECT id FROM review_batches WHERE instance_id = ? AND user_name = ?
 		AND local_date = ? AND timezone = ?`+reviewBatchOrder,
-		instance, user, at.In(location).Format(time.DateOnly), s.Store.Settings.Timezone).Scan(&id)
+		instance, user, at.In(location).Format(time.DateOnly), settings.Timezone).Scan(&id)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ReviewBatch{}, failure("REVIEW_NOT_FOUND", "No daily review has been created", 404, false)
 	}
@@ -92,7 +93,7 @@ func (s *ReviewService) batch(ctx context.Context, at time.Time, key string) (Re
 	if err := s.verify(ctx); err != nil {
 		return ReviewBatch{}, err
 	}
-	settings := s.Store.Settings
+	settings := s.Store.reviewSettings(at)
 	location, err := time.LoadLocation(settings.Timezone)
 	if err != nil {
 		return ReviewBatch{}, err
@@ -193,7 +194,7 @@ func (s *ReviewService) selectMemos(ctx context.Context, at time.Time, location 
 	if err != nil {
 		return nil, err
 	}
-	rules := s.Store.Settings.Review
+	rules := s.Store.reviewSettings(at).Review
 	recent := at.In(location).AddDate(0, 0, 1-rules.RecentDays).Format(time.DateOnly)
 	candidates := []Memo{}
 	for rows.Next() {
@@ -248,10 +249,11 @@ func (s *ReviewService) selectMemos(ctx context.Context, at time.Time, location 
 }
 
 func (s *ReviewService) eligible(memo Memo, at time.Time) bool {
+	settings := s.Store.reviewSettings(at)
 	created, err := time.Parse(time.RFC3339Nano, memo.CreateTime)
 	return err == nil && memo.Creator == s.Store.Settings.Memos.User &&
-		(memo.State == "NORMAL" || s.Store.Settings.Review.IncludeArchived && memo.State == "ARCHIVED") &&
-		!created.After(at.Add(-time.Duration(s.Store.Settings.Review.MinAgeHours)*time.Hour))
+		(memo.State == "NORMAL" || settings.Review.IncludeArchived && memo.State == "ARCHIVED") &&
+		!created.After(at.Add(-time.Duration(settings.Review.MinAgeHours)*time.Hour))
 }
 
 func (s *ReviewService) load(ctx context.Context, id string) (ReviewBatch, error) {

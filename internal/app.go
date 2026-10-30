@@ -25,11 +25,14 @@ type App struct {
 	Sessions      *SessionService
 	closers       []func()
 	closeOnce     sync.Once
+	runtimeMu     sync.RWMutex
 }
 
 // NewApp 装配共享服务；传入的 Store 和 Source 由调用方关闭。
 func NewApp(settings Settings, store *Store, source Source) *App {
+	settings = store.Settings
 	a := &App{Settings: settings, Store: store, Source: source, Worker: NewSyncService(store, source)}
+	store.runtimeMu = &a.runtimeMu
 	a.Notes = NewNoteService(settings, store, source)
 	a.Records, a.Reviews = NewRecordService(store, source), NewReviewService(store, source)
 	a.Search = NewSearchService(store, source, nil)
@@ -38,16 +41,19 @@ func NewApp(settings Settings, store *Store, source Source) *App {
 	a.Feishu = NewFeishuService(store, source, a.Records, a.Reviews, a.Notifications)
 	if a.Feishu != nil {
 		a.Feishu.Search, a.Feishu.AI = a.Search, a.AI
-		if client, ok := a.Feishu.Client.(*FeishuClient); ok {
-			a.closers = append(a.closers, client.http.CloseIdleConnections)
-		}
 	}
 	a.Notifications.Transport = NewFeishuDelivery(store, a.Reviews, a.Feishu)
+	a.closers = append(a.closers, a.closeRuntime)
 	return a
 }
 
 // OpenApp 负责 serve 使用的写锁、数据库和网络资源。
 func OpenApp(settings Settings) (_ *App, result error) {
+	var err error
+	settings, err = loadPersistedProduct(settings)
+	if err != nil {
+		return nil, err
+	}
 	if err := settings.Validate(); err != nil {
 		return nil, err
 	}
@@ -73,12 +79,12 @@ func OpenApp(settings Settings) (_ *App, result error) {
 	cleanup = append(cleanup, source.Close)
 	a := NewApp(settings, store, source)
 	cleanup = append(cleanup, a.closers...)
+	settings = store.Settings
 	if settings.LLM.Enabled {
 		provider, err := NewLLMProvider(settings.LLM)
 		if err != nil {
 			return nil, err
 		}
-		cleanup = append(cleanup, provider.Close)
 		a.AI.Provider = provider
 	}
 	if settings.Embedding.Enabled {
@@ -86,7 +92,6 @@ func OpenApp(settings Settings) (_ *App, result error) {
 		if err != nil {
 			return nil, err
 		}
-		cleanup = append(cleanup, provider.Close)
 		a.Search.Provider = provider
 		a.Vector = NewVectorIndexService(store, source, provider)
 	}
@@ -124,12 +129,8 @@ func (a *App) Run(ctx context.Context, server *http.Server) error {
 	}
 	start("sync", a.Worker.Run)
 	start("notifications", a.Notifications.Run)
-	if a.Feishu != nil {
-		start("Feishu", a.Feishu.Run)
-	}
-	if a.Vector != nil {
-		start("vector index", a.Vector.Run)
-	}
+	start("Feishu", a.runFeishu)
+	start("vector index", a.runVector)
 	go func() { done <- outcome{"HTTP", server.ListenAndServe()} }()
 	var result error
 	select {

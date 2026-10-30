@@ -26,6 +26,7 @@ type Store struct {
 	reviewMu       sync.Mutex
 	vectorMu       sync.Mutex
 	productVersion int64
+	runtimeMu      *sync.RWMutex
 }
 
 func openDB(path string, readonly bool) (*sql.DB, error) {

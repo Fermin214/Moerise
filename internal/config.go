@@ -127,6 +127,7 @@ type Settings struct {
 	LLM           LLMConfig          `json:"llm"`
 	Channel       ChannelConfig      `json:"channel"`
 	Insights      InsightsConfig     `json:"insights"`
+	daily         *dailySettings
 }
 
 func DefaultSettings() Settings {

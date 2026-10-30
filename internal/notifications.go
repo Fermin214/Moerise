@@ -79,7 +79,7 @@ func (s *NotificationService) channelKey() string {
 func (s *NotificationService) Schedule(ctx context.Context, at time.Time) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	settings := s.Store.Settings
+	settings := s.Store.reviewSettings(at)
 	location, err := time.LoadLocation(settings.Timezone)
 	if err != nil {
 		return 0, err
@@ -497,7 +497,10 @@ func (s *NotificationService) Resolve(ctx context.Context, id, decision, receipt
 }
 
 func (s *NotificationService) Run(ctx context.Context) error {
-	if err := s.recover(); err != nil {
+	unlock := s.Store.lockRuntime()
+	err := s.recover()
+	unlock()
+	if err != nil {
 		return err
 	}
 	ticker := time.NewTicker(time.Second)
@@ -506,10 +509,13 @@ func (s *NotificationService) Run(ctx context.Context) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if _, err := s.Schedule(ctx, time.Now()); err != nil {
-			slog.Warn("notification schedule deferred", "code", errorCode(err))
+		unlock := s.Store.lockRuntime()
+		if _, scheduleErr := s.Schedule(ctx, time.Now()); scheduleErr != nil {
+			slog.Warn("notification schedule deferred", "code", errorCode(scheduleErr))
 		}
-		if _, err := s.Deliver(ctx); err != nil {
+		_, err := s.Deliver(ctx)
+		unlock()
+		if err != nil {
 			return err
 		}
 		select {
