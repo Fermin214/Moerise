@@ -20,6 +20,8 @@
 
 `PATCH /api/app/v1/settings` 需要浏览器会话、同源 Origin 和 CSRF，提交读取到的 `version`、需要修改的 `settings` 字段及 `secrets` 操作。对象字段合并，数组整体替换；未知字段和空值返回 422。
 
+只提交 `notifications.time` 时，将有效推送时段替换为该单时段。提交非空 `notifications.times` 时以列表为准，`time` 与最早时段保持一致；同时提交两个字段也遵循此规则。空 `times` 回退到 `time`，省略 `time` 时回退到保存前的最早时段。响应中的 `times` 始终列出有效时段。
+
 密钥名称为 `llm_api_key`、`embedding_api_key`、`app_secret`、`verification_token`、`encrypt_key`、`webhook_url`、`webhook_secret`。每个操作是以下形式之一：
 
 ```json
