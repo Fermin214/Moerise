@@ -91,6 +91,16 @@ func TestDiscoveryAcrossEntrypointsAcceptance(t *testing.T) {
 	}
 	server := httptest.NewServer(api)
 	defer server.Close()
+	started, err := api.Search.StartWalk(context.Background(), seed)
+	if err != nil || started.Item == nil || started.Item.Note.Name != seed ||
+		!slices.Equal(started.Path, []string{seed}) || started.Exhausted {
+		t.Fatalf("specified start did not return the original memo: %+v %v", started, err)
+	}
+	randomStart, err := api.Search.StartWalk(context.Background(), "")
+	if err != nil || randomStart.Item == nil ||
+		!slices.Equal(randomStart.Path, []string{randomStart.Item.Note.Name}) || randomStart.Exhausted {
+		t.Fatalf("random start did not return exactly one memo: %+v %v", randomStart, err)
+	}
 	walk := func(request moerise.WalkRequest) moerise.WalkResponse {
 		t.Helper()
 		status, err := store.VectorStatus()
@@ -109,12 +119,14 @@ func TestDiscoveryAcrossEntrypointsAcceptance(t *testing.T) {
 		return result
 	}
 	continued := walk(moerise.WalkRequest{Name: seed})
-	if continued.Item == nil || continued.Item.Note.Name != near || !slices.Equal(continued.Path, []string{seed, near}) {
-		t.Fatalf("continue did not prefer the same topic: %+v", continued)
+	if continued.Item == nil || !slices.Contains([]string{near, angle}, continued.Item.Note.Name) ||
+		!slices.Equal(continued.Path, []string{seed, continued.Item.Note.Name}) ||
+		!slices.Equal(continued.Item.Matches[0].Signals, []string{"semantic"}) {
+		t.Fatalf("continue did not choose a semantic neighbor: %+v", continued)
 	}
 	angled := walk(moerise.WalkRequest{Name: seed, Mode: "angle"})
-	if angled.Item == nil || angled.Item.Note.Name != angle {
-		t.Fatalf("angle did not change topic: %+v", angled)
+	if angled.Item == nil || !slices.Contains([]string{near, angle}, angled.Item.Note.Name) {
+		t.Fatalf("angle did not choose a semantic neighbor: %+v", angled)
 	}
 	random := walk(moerise.WalkRequest{Name: seed, Mode: "random", Path: []string{near, angle}})
 	if random.Item == nil || random.Item.Note.Name != other {
@@ -138,9 +150,10 @@ func TestDiscoveryAcrossEntrypointsAcceptance(t *testing.T) {
 	if _, err := api.Search.Open(context.Background(), near); err != nil {
 		t.Fatal(err)
 	}
-	afterOpen := walk(moerise.WalkRequest{Name: seed})
-	if afterOpen.Item == nil || afterOpen.Item.Note.Name != angle {
-		t.Fatal("shared service open did not update shared recent-reading ranking")
+	afterOpen := walk(moerise.WalkRequest{Name: seed, Path: []string{angle}})
+	if afterOpen.Item == nil || afterOpen.Item.Note.Name != near || afterOpen.Item.Score != 1 ||
+		!slices.Equal(afterOpen.Item.Matches[0].Signals, []string{"semantic"}) {
+		t.Fatal("shared service open changed semantic eligibility or score")
 	}
 	mcp := func(token, method string, params any) map[string]any {
 		t.Helper()
@@ -173,7 +186,8 @@ func TestDiscoveryAcrossEntrypointsAcceptance(t *testing.T) {
 			t.Fatalf("MCP exposed the removed reading tool: status=%d err=%v response=%v", code, err, denied)
 		}
 	}
-	result := mcp(h.reader, "tools/call", map[string]any{"name": "semantic_walk", "arguments": map[string]string{"name": seed}})
+	result := mcp(h.reader, "tools/call", map[string]any{"name": "semantic_walk",
+		"arguments": map[string]any{"name": seed, "path": []string{angle}}})
 	data, _ := json.Marshal(result["structuredContent"])
 	var fromMCP moerise.WalkResponse
 	if json.Unmarshal(data, &fromMCP) != nil || !reflect.DeepEqual(fromMCP, afterOpen) {

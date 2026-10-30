@@ -293,7 +293,7 @@ func TestMCPReviewReadsDoNotCreateOrMark(t *testing.T) {
 	mcpReadResult(t, api, token, "list_memos", map[string]any{})
 	mcpReadResult(t, api, token, "semantic_search", map[string]any{"query": "review"})
 	mcpReadResult(t, api, token, "get_related_memos", map[string]any{"name": batch.Items[0].Name})
-	mcpReadResult(t, api, token, "semantic_walk", map[string]any{"mode": "random"})
+	mcpReadError(t, api, token, "semantic_walk", map[string]any{"mode": "random"}, "EMBEDDING_DISABLED")
 	after, err := api.Reviews.Get(context.Background(), batch.ID)
 	if err != nil || !reflect.DeepEqual(after, batch) {
 		t.Fatalf("MCP changed the existing batch or item history: %+v %v", after, err)

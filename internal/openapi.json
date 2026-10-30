@@ -46,7 +46,7 @@
     "/api/ext/v1/discovery/walk": {
       "post": {
         "summary": "语义漫步或随机跳转",
-        "description": "继续话题、换角度或随机选择一个笔记，排除路径资源并降低最近七天显式阅读的优先级。只读，不登记阅读。语义模式复用文档向量，关闭模型或向量未就绪时返回明确错误；随机模式不依赖模型。输出前复查来源身份和原文，原笔记中途改变返回 SOURCE_CHANGED。 外部机器入口受只读操作白名单限制；写入 Scope 不能开放写操作或结构化生成。",
+        "description": "continue 和兼容值 angle 在所有正余弦语义候选中等概率选择一条，random 在正常笔记中随机选择起点；均要求已启用且就绪的向量索引。标签和近期阅读不改变权重，同次路径去重，不设固定路径条数上限。候选耗尽与技术资源错误分别返回；输出前复查来源身份和原文，起点变化返回 SOURCE_CHANGED。只读，不登记阅读。",
         "security": [
           {
             "HTTPBearer": []
@@ -7763,11 +7763,11 @@
               "angle",
               "random"
             ],
-            "default": "continue"
+            "default": "continue",
+            "description": "continue 和兼容值 angle 均在合格语义候选中随机；random 为随机起点。"
           },
           "path": {
             "type": "array",
-            "maxItems": 100,
             "default": [],
             "items": {
               "type": "string",
@@ -7811,13 +7811,13 @@
           },
           "path": {
             "type": "array",
-            "maxItems": 100,
             "items": {
               "type": "string"
             }
           },
           "exhausted": {
-            "type": "boolean"
+            "type": "boolean",
+            "description": "仅当完整候选集合经路径去重和来源复查后为空时为 true；资源预算用错误返回。"
           },
           "warnings": {
             "type": "array",

@@ -85,8 +85,11 @@ func (a *API) newMCPHandler() http.Handler {
 					}
 					return a.Notes.ListIndexed(ctx, list)
 				})
-			addDomainTool(server, "semantic_walk", "沿语义继续话题、换角度或随机跳转；按路径去重，不记录阅读。",
-				a.Search.Walk)
+			addDomainTool(server, "semantic_walk", "随机开始或在语义候选中随机前进；同次路径去重，不按标签或阅读历史加权，不记录阅读。",
+				func(ctx context.Context, args WalkRequest) (WalkResponse, error) {
+					result, err := a.Search.Walk(ctx, args)
+					return result, walkError(err)
+				})
 			addDomainTool(server, "get_related_memos", "从指定本人笔记寻找相关笔记，排除自身、合并重复片段并复查来源。",
 				func(ctx context.Context, args RelatedRequest) (RelatedResponse, error) {
 					return a.Search.Related(ctx, args)

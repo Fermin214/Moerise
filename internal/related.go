@@ -86,6 +86,15 @@ func (s *Store) relatedLexicalCandidates(ctx context.Context, seed Memo, request
 }
 
 func (s *SearchService) relatedSemanticCandidates(ctx context.Context, seed Memo, request SearchRequest) ([]searchCandidate, SearchSemantic, error) {
+	candidates, semantic, err := s.allRelatedSemanticCandidates(ctx, seed, request)
+	if err != nil {
+		return nil, semantic, err
+	}
+	sortSearchCandidates(candidates)
+	return candidates[:min(len(candidates), searchCandidates)], semantic, nil
+}
+
+func (s *SearchService) allRelatedSemanticCandidates(ctx context.Context, seed Memo, request SearchRequest) ([]searchCandidate, SearchSemantic, error) {
 	unused := func(reason string) ([]searchCandidate, SearchSemantic, error) {
 		return nil, SearchSemantic{Reason: reason}, nil
 	}
@@ -152,8 +161,7 @@ func (s *SearchService) relatedSemanticCandidates(ctx context.Context, seed Memo
 			candidates = append(candidates, item)
 		}
 	}
-	sortSearchCandidates(candidates)
-	return candidates[:min(len(candidates), searchCandidates)], SearchSemantic{Used: true}, nil
+	return candidates, SearchSemantic{Used: true}, ctx.Err()
 }
 
 func (s *SearchService) Related(ctx context.Context, request RelatedRequest) (RelatedResponse, error) {

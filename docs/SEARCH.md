@@ -6,7 +6,7 @@ REST 和扩展 MCP 通过同一个 `SearchService` 搜索绑定作者的笔记�
 
 本页描述已实现的机器协议。Web 的基础关键词/标签搜索、归档入口和创建时间排序由 [PRD](PRD.md#1-moerise-web) 定义，在 [ROADMAP 3.2](ROADMAP.md#阶段三完整-web-与一体化-compose) 增加客户端适配，不要求改变机器协议的 hybrid 默认值或索引列表游标。
 
-语义漫步章节中的主题权重、近期阅读降权、最高分选择和 100 项路径限制属于旧实现。3.6 改为关联候选内随机和同次去重，区分候选耗尽与技术资源限制；外部状态写入口在 3.1 关闭。算法参数与测试随对应功能调整，不由 Web 演示数据确定。
+语义漫步在全部合格关联候选内随机选择，同次去重，不按标签或阅读记录调整概率。完整候选扫描与请求取消共同区分候选耗尽和技术资源限制。
 
 ## 请求与结果
 
@@ -123,19 +123,23 @@ REST 使用 `GET /api/ext/v1/notes/{memo_id}/related`，要求 `notes:read`。�
 | 字段 | 规则 |
 | --- | --- |
 | `name` | 起点资源名；`continue`、`angle` 必填，`random` 可省略 |
-| `mode` | 默认 `continue`；可选 `angle`、`random` |
-| `path` | 已访问资源名数组，输入至多 100 项；去重并排除起点及路径资源 |
+| `mode` | 默认 `continue`；`continue` 与兼容值 `angle` 均随机选择语义邻居，`random` 用于选择随机起点 |
+| `path` | 已访问资源名数组，无固定条数上限；按首次出现顺序去重并排除起点及路径资源 |
 | `include_archived` | 默认 `false`；为 `true` 时允许归档候选 |
 
-`continue` 和 `angle` 复用相关笔记的文档向量聚合及正余弦候选，每次最多考察前 100 个片段。`continue` 对共同顶层标签加 0.2；`angle` 对共同顶层标签减 0.3，对其他主题加 0.15。无共同标签时按语义相关度选择。无需查询模型或 LLM；模型关闭、索引未就绪或起点无向量分别返回 503 `EMBEDDING_DISABLED`、`INDEX_NOT_READY`、`NO_SOURCE_VECTORS`。
+`continue` 和 `angle` 复用相关笔记的文档向量聚合，扫描活动索引内全部片段，仅接受正余弦候选，不受相关笔记前 100 片段的限制。候选按笔记去重，每条保留相似度最高的片段作为匹配说明，然后在未访问的笔记集合内等概率抽取。正文分块数量、相似度高低、共同标签和跨入口阅读记录均不改变抽取概率。
 
-`random` 从排除路径后的投影抽样至多 100 条，无需模型，基础分数为 0.5。最近七天通过发现打开接口或回顾显式打开的资源减 0.4；展示、召回、推送或漫步本身不记录阅读。同分随机候选保持抽样顺序。
+`random` 扫描排除路径后的完整作者投影，在允许状态的笔记内等概率选择起点，基础分数为 0.5。兼容请求可携带 `name`，该资源仍需复查并加入排除路径；下一步以展示的笔记作为 `name`，使用 `continue`。所有模式均要求开启 Embedding 且活动索引就绪；关闭模型或索引未就绪分别返回 503 `EMBEDDING_DISABLED`、`INDEX_NOT_READY`，语义继续时起点无向量返回 503 `NO_SOURCE_VECTORS`。请求复用已有文档向量，不调用查询模型或 LLM。
 
-成功返回 `WalkResponse`：`mode`、一个 `item: SearchHit | null`、后续 `path`、`exhausted` 和 `warnings`。调用方应原样传回路径。达到 100 项或候选范围用尽时返回 `item=null`、`exhausted=true`；该状态只描述路径或候选范围，范围之外仍可能有未读笔记。漫步的 `score` 为语义或随机基础分与话题、阅读权重之和，片段 `signals` 还可包含 `random`、`recent_read`。
+共享服务 `SearchService.StartWalk(ctx, name)` 供客户端起点路由复用。省略名称时选择随机起点，指定名称时原样返回该条笔记，`path` 仅含该资源，`exhausted=false`；两种起点均检查模型开关和活动索引。指定起点返回 `mode=continue`、`score=0`、空匹配数组，不使用候选状态过滤屏蔽归档起点。客户端起点请求为 `POST /walks/start {"name":"memos/id"}`，`name` 可省略；继续请求携带展示项的 `name` 和完整 `path`。
+
+成功返回 `WalkResponse`：`mode`、一个 `item: SearchHit | null`、后续 `path`、`exhausted` 和 `warnings`。调用方应原样传回路径。只有完整候选集合内不存在通过来源复查的未访问笔记，才返回 `item=null`、`exhausted=true`。该状态描述相对于起点与归档开关的合格集合，不表示整库没有其他笔记。语义步骤的 `score` 为原始余弦相似度，匹配信号仅为 `semantic`；随机起点的匹配信号为 `random`。分数用于说明关联，不表示选择概率。
+
+服务每次调用使用最长 90 秒的上下文，继承调用方更短的期限和取消信号。完整扫描、逐条来源复查及最终身份检查中发生取消或超时，均返回上下文错误，不返回部分笔记或耗尽结果。候选以随机顺序逐条复查，发生修改、删除、作者或状态变化时剔除并继续，不在丢弃若干候选后提前报告耗尽。客户端 HTTP 对路径 JSON 使用 1 MiB 字节预算，超过预算返回可重试的 `WALK_RESOURCE_LIMIT`；该预算属于请求资源限制，与路径条数及候选耗尽无关。
 
 来源复查规则与相关笔记一致：开始和结束验证身份，逐条读取候选；起点输出前再次复查，改变返回可重试的 409 `SOURCE_CHANGED`，消失或作者越界返回 404 `SOURCE_NOT_FOUND`。来源故障使整请求失败。
 
-`POST /api/ext/v1/discovery/open` 接受 `{"name":"memos/id"}`，要求 `discovery:write`。成功复查来源后返回 `Note`，更新产品数据库 `discovery_reads.opened_at`。显式打开与回顾打开共同参与最近阅读降权，点击 Memos 链接不自动登记。记录仅含绑定、资源名和时间，随产品状态备份；索引重建保留阅读记录。
+共享服务 `SearchService.Open(ctx, name)` 成功复查来源后返回 `Note`，更新产品数据库 `discovery_reads.opened_at`。机器 REST 拒绝 `POST /api/ext/v1/discovery/open`，包括带 `discovery:write` Scope 的令牌。显式阅读记录随产品状态备份，索引重建保留记录；漫步不读取这些记录，也不自动登记阅读。
 
 `GET /api/ext/v1/search/index` 使用 `notes:read`，返回与同步状态 `vector_index` 相同的 `projection_revision`、`ready`、`active`、`building`。模型关闭时 `ready=false`，不用申请同步管理 Scope 即可检查检索索引。
 
@@ -151,7 +155,7 @@ REST 使用 `GET /api/ext/v1/notes/{memo_id}/related`，要求 `notes:read`。�
 
 飞书中的 `相关 memos/资源标识` 按正文保存，不执行相关查询。发送队列中的相关笔记回复默认取 5 条、`NORMAL`，发送时重新获取相关结果，复查原笔记及候选；展示原笔记资源名和 URL、结果片段、行号、资源名与 URL，以及语义降级原因。来源故障不发送原笔记或部分结果。
 
-MCP `semantic_walk` 使用 `WalkRequest`，要求 `notes:read`，工具提示为只读、幂等、非破坏；调用不改变产品状态，随机模式的结果可变化。外部 MCP 不注册 `open_discovery_memo`，阅读记录通过要求 `discovery:write` 的 REST 接口更新，参数为 `name`。飞书中的“漫步”“继续这个话题”“换个角度”“随机跳转”和“查看”全部按正文记录，不执行漫步或更新阅读状态，见[飞书入口](FEISHU.md#私聊记录)。
+MCP `semantic_walk` 使用 `WalkRequest`，要求 `notes:read`，工具提示为只读、幂等、非破坏；调用不改变产品状态，全部模式的结果均可变化。外部 MCP 不注册 `open_discovery_memo`，机器 REST 同样不提供阅读写入口。飞书中的“漫步”“继续这个话题”“换个角度”“随机跳转”和“查看”全部按正文记录，不执行漫步或更新阅读状态，见[飞书入口](FEISHU.md#私聊记录)。
 
 ## 索引与恢复
 

@@ -211,7 +211,7 @@ Content-Type: application/json
 
 ## 语义漫步
 
-`POST /api/ext/v1/discovery/walk` 接受 `name`、`mode`、`path`、`include_archived`；默认 `continue`，`angle` 换角度，`random` 随机选择且允许省略起点。路径输入最多 100 项，返回一个 `item`、后续 `path`、`mode`、`exhausted`、`warnings`。漫步只读，使用 `notes:read`；模型关闭或向量未就绪时只有随机模式可用。起点变化、来源故障及最近阅读加权规则见[语义漫步](SEARCH.md#语义漫步)。
+`POST /api/ext/v1/discovery/walk` 接受 `name`、`mode`、`path`、`include_archived`；默认 `continue`，兼容值 `angle` 使用相同的语义候选随机规则，`random` 随机选择起点且允许省略 `name`。路径不设固定条数上限，机器 REST 的 JSON 请求体预算为 64 KiB。返回一个 `item`、后续 `path`、`mode`、`exhausted`、`warnings`。漫步只读，使用 `notes:read`；均要求已启用且就绪的 Embedding。来源复查、候选去重及技术资源规则见[语义漫步](SEARCH.md#语义漫步)。
 
 ## 相关笔记
 

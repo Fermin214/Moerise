@@ -2,23 +2,11 @@ package moerise
 
 import (
 	"context"
-	"encoding/json"
+	"database/sql"
+	"math/rand/v2"
 	"slices"
-	"strings"
 	"time"
 )
-
-func sharesTopic(a, b Memo) bool {
-	for _, left := range a.Tags {
-		for _, right := range b.Tags {
-			topic := strings.SplitN(left, "/", 2)[0]
-			if topic != "" && topic == strings.SplitN(right, "/", 2)[0] {
-				return true
-			}
-		}
-	}
-	return false
-}
 
 func (s *SearchService) recentReads() (map[string]bool, error) {
 	settings := s.Store.Settings
@@ -30,14 +18,13 @@ func (s *SearchService) recentReads() (map[string]bool, error) {
 }
 
 func (s *SearchService) randomWalkCandidates(ctx context.Context, request WalkRequest, path []string) ([]searchCandidate, error) {
-	data, err := json.Marshal(path)
-	if err != nil {
-		return nil, err
+	visited := make(map[string]bool, len(path))
+	for _, name := range path {
+		visited[name] = true
 	}
 	rows, err := s.Store.index.QueryContext(ctx, `SELECT name, source_hash FROM memos
-		WHERE instance_id = ? AND user_name = ? AND (? OR state = 'NORMAL')
-		AND NOT EXISTS (SELECT 1 FROM json_each(?) WHERE value = memos.name) ORDER BY random() LIMIT ?`,
-		s.Store.Settings.Memos.InstanceID, s.Store.Settings.Memos.User, request.IncludeArchived, string(data), searchCandidates)
+		WHERE instance_id = ? AND user_name = ? AND (? OR state = 'NORMAL') ORDER BY name`,
+		s.Store.Settings.Memos.InstanceID, s.Store.Settings.Memos.User, request.IncludeArchived)
 	if err != nil {
 		return nil, err
 	}
@@ -47,6 +34,9 @@ func (s *SearchService) randomWalkCandidates(ctx context.Context, request WalkRe
 		var candidate searchCandidate
 		if err := rows.Scan(&candidate.name, &candidate.sourceHash); err != nil {
 			return nil, err
+		}
+		if visited[candidate.name] {
+			continue
 		}
 		candidate.score = 0.5
 		candidates = append(candidates, candidate)
@@ -58,17 +48,19 @@ func normalizeWalk(request WalkRequest) (WalkRequest, error) {
 	if request.Mode == "" {
 		request.Mode = "continue"
 	}
-	if !slices.Contains([]string{"continue", "angle", "random"}, request.Mode) || len(request.Path) > 100 ||
+	if !slices.Contains([]string{"continue", "angle", "random"}, request.Mode) ||
 		(request.Name == "" && request.Mode != "random") || (request.Name != "" && !memoPattern.MatchString(request.Name)) {
 		return request, failure("INVALID_ARGUMENT", "Invalid discovery walk parameters", 422, false)
 	}
 	path := make([]string, 0, len(request.Path))
+	seen := make(map[string]bool, len(request.Path))
 	for _, name := range request.Path {
 		if !memoPattern.MatchString(name) {
 			return request, failure("INVALID_ARGUMENT", "Invalid discovery path memo name", 422, false)
 		}
-		if !slices.Contains(path, name) {
+		if !seen[name] {
 			path = append(path, name)
+			seen[name] = true
 		}
 	}
 	request.Path = path
@@ -76,14 +68,79 @@ func normalizeWalk(request WalkRequest) (WalkRequest, error) {
 }
 
 func (s *SearchService) Walk(ctx context.Context, request WalkRequest) (WalkResponse, error) {
+	return s.walk(ctx, request, rand.IntN)
+}
+
+func (s *SearchService) walkIndexReady(ctx context.Context) error {
+	if !s.Store.Settings.Embedding.Enabled {
+		return failure("EMBEDDING_DISABLED", "Discovery requires an enabled document vector index", 503, false)
+	}
+	_, err := s.vectors(ctx)
+	if err == sql.ErrNoRows {
+		return failure("INDEX_NOT_READY", "Discovery requires a ready document vector index", 503, true)
+	}
+	return err
+}
+
+func (s *SearchService) StartWalk(ctx context.Context, name string) (result WalkResponse, err error) {
+	if name == "" {
+		return s.Walk(ctx, WalkRequest{Mode: "random"})
+	}
 	ctx, cancel := context.WithTimeout(ctx, 90*time.Second)
 	defer cancel()
-	request, err := normalizeWalk(request)
-	result := WalkResponse{Mode: request.Mode, Path: request.Path, Warnings: []string{}}
+	defer func() {
+		if ctx.Err() != nil {
+			result, err = WalkResponse{}, ctx.Err()
+		}
+	}()
+	if !memoPattern.MatchString(name) {
+		return result, failure("INVALID_ARGUMENT", "Invalid discovery starting memo name", 422, false)
+	}
+	if err := s.verify(ctx); err != nil {
+		return result, err
+	}
+	seed, err := s.liveSearchMemo(ctx, name)
 	if err != nil {
 		return result, err
 	}
-	if request.Name != "" && len(result.Path) < 100 && !slices.Contains(result.Path, request.Name) {
+	if seed == nil {
+		return result, failure("SOURCE_NOT_FOUND", "Memo is unavailable", 404, false)
+	}
+	if err := s.walkIndexReady(ctx); err != nil {
+		return result, err
+	}
+	fresh, err := s.liveSearchMemo(ctx, name)
+	if err != nil {
+		return result, err
+	}
+	if fresh == nil {
+		return result, failure("SOURCE_NOT_FOUND", "Source memo is unavailable", 404, false)
+	}
+	if fresh.SourceHash != seed.SourceHash {
+		return result, failure("SOURCE_CHANGED", "Source memo changed during discovery; retry the request", 409, true)
+	}
+	if err := s.verify(ctx); err != nil {
+		return result, err
+	}
+	return WalkResponse{Mode: "continue", Item: &SearchHit{Note: fresh.Note(s.Store.Settings), Matches: []SearchMatch{}},
+		Path: []string{name}, Warnings: []string{}}, nil
+}
+
+// Inject the draw per call so tests can check every eligible note without shared random state.
+func (s *SearchService) walk(ctx context.Context, request WalkRequest, intN func(int) int) (result WalkResponse, err error) {
+	ctx, cancel := context.WithTimeout(ctx, 90*time.Second)
+	defer cancel()
+	defer func() {
+		if ctx.Err() != nil {
+			result, err = WalkResponse{}, ctx.Err()
+		}
+	}()
+	request, err = normalizeWalk(request)
+	result = WalkResponse{Mode: request.Mode, Path: request.Path, Warnings: []string{}}
+	if err != nil {
+		return result, err
+	}
+	if request.Name != "" && !slices.Contains(result.Path, request.Name) {
 		result.Path = append(result.Path, request.Name)
 	}
 	if err := s.verify(ctx); err != nil {
@@ -99,14 +156,6 @@ func (s *SearchService) Walk(ctx context.Context, request WalkRequest) (WalkResp
 			return result, failure("SOURCE_NOT_FOUND", "Memo is unavailable", 404, false)
 		}
 	}
-	if len(result.Path) >= 100 {
-		result.Exhausted = true
-		return result, s.verify(ctx)
-	}
-	recent, err := s.recentReads()
-	if err != nil {
-		return result, err
-	}
 	candidates := []searchCandidate{}
 	if request.Mode != "random" {
 		options := SearchRequest{State: "NORMAL"}
@@ -114,7 +163,7 @@ func (s *SearchService) Walk(ctx context.Context, request WalkRequest) (WalkResp
 			options.State = "ALL"
 		}
 		var semantic SearchSemantic
-		candidates, semantic, err = s.relatedSemanticCandidates(ctx, *seed, options)
+		candidates, semantic, err = s.allRelatedSemanticCandidates(ctx, *seed, options)
 		if err != nil {
 			return result, err
 		}
@@ -123,46 +172,46 @@ func (s *SearchService) Walk(ctx context.Context, request WalkRequest) (WalkResp
 				semantic.Reason != "EMBEDDING_DISABLED")
 		}
 	} else {
+		if err := s.walkIndexReady(ctx); err != nil {
+			return result, err
+		}
 		candidates, err = s.randomWalkCandidates(ctx, request, result.Path)
 		if err != nil {
 			return result, err
 		}
 	}
-	for i := range candidates {
-		candidate := &candidates[i]
-		if request.Mode != "random" {
-			if request.Mode == "continue" {
-				candidate.score += 0.2
-			} else {
-				candidate.score += 0.15
-			}
-		}
-		if recent[candidate.name] {
-			candidate.score -= 0.4
-		}
+	visited := make(map[string]bool, len(result.Path))
+	for _, name := range result.Path {
+		visited[name] = true
 	}
-	// These upper bounds include topic bonuses; random ties retain their sampled order.
-	slices.SortStableFunc(candidates, func(a, b searchCandidate) int {
-		if a.score > b.score {
-			return -1
+	// A note occupies one slot even when many chunks have positive cosine similarity.
+	slots := map[string]int{}
+	eligible := make([]searchCandidate, 0)
+	for i, candidate := range candidates {
+		if i%256 == 0 && ctx.Err() != nil {
+			return WalkResponse{}, ctx.Err()
 		}
-		if a.score < b.score {
-			return 1
-		}
-		return 0
-	})
-	checked := map[string]bool{}
-	for _, candidate := range candidates {
-		if len(result.Path) >= 100 {
-			break
-		}
-		if slices.Contains(result.Path, candidate.name) || checked[candidate.name] {
+		if visited[candidate.name] {
 			continue
 		}
-		if result.Item != nil && candidate.score <= result.Item.Score {
-			break
+		if slot, ok := slots[candidate.name]; ok {
+			if candidate.score > eligible[slot].score {
+				eligible[slot] = candidate
+			}
+			continue
 		}
-		checked[candidate.name] = true
+		slots[candidate.name] = len(eligible)
+		eligible = append(eligible, candidate)
+	}
+	// A lazy random permutation is uniform over the notes that pass live source checks.
+	for len(eligible) > 0 {
+		if err := ctx.Err(); err != nil {
+			return WalkResponse{}, err
+		}
+		slot := intN(len(eligible))
+		candidate := eligible[slot]
+		eligible[slot] = eligible[len(eligible)-1]
+		eligible = eligible[:len(eligible)-1]
 		memo, err := s.liveSearchMemo(ctx, candidate.name)
 		if err != nil {
 			return WalkResponse{}, err
@@ -178,18 +227,6 @@ func (s *SearchService) Walk(ctx context.Context, request WalkRequest) (WalkResp
 			}
 		} else {
 			candidate.signals = []string{"semantic"}
-			sameTopic := sharesTopic(*seed, *memo)
-			if sameTopic {
-				candidate.signals = append(candidate.signals, "tag")
-			}
-			if request.Mode == "continue" && !sameTopic {
-				candidate.score -= 0.2
-			} else if request.Mode == "angle" && sameTopic {
-				candidate.score -= 0.45
-			}
-		}
-		if recent[memo.Name] {
-			candidate.signals = append(candidate.signals, "recent_read")
 		}
 		hit := SearchHit{Note: memo.Note(s.Store.Settings), Score: candidate.score, Matches: []SearchMatch{}}
 		chunk := candidate.chunk
@@ -198,9 +235,8 @@ func (s *SearchService) Walk(ctx context.Context, request WalkRequest) (WalkResp
 			hit.Matches = append(hit.Matches, SearchMatch{chunk.Ordinal, chunk.ByteStart, chunk.ByteEnd,
 				chunk.LineStart, chunk.LineEnd, chunk.Content, candidate.signals})
 		}
-		if result.Item == nil || hit.Score > result.Item.Score {
-			result.Item = &hit
-		}
+		result.Item = &hit
+		break
 	}
 	if seed != nil {
 		fresh, err := s.liveSearchMemo(ctx, seed.Name)
@@ -214,13 +250,16 @@ func (s *SearchService) Walk(ctx context.Context, request WalkRequest) (WalkResp
 			return WalkResponse{}, failure("SOURCE_CHANGED", "Source memo changed during discovery; retry the request", 409, true)
 		}
 	}
+	if err := s.verify(ctx); err != nil {
+		return WalkResponse{}, err
+	}
+	if err := ctx.Err(); err != nil {
+		return WalkResponse{}, err
+	}
 	if result.Item != nil {
 		result.Path = append(result.Path, result.Item.Note.Name)
 	} else {
 		result.Exhausted = true
-	}
-	if err := s.verify(ctx); err != nil {
-		return WalkResponse{}, err
 	}
 	return result, nil
 }
