@@ -20,11 +20,12 @@ import (
 var migrations embed.FS
 
 type Store struct {
-	Settings Settings
-	state    *sql.DB
-	index    *sql.DB
-	reviewMu sync.Mutex
-	vectorMu sync.Mutex
+	Settings       Settings
+	state          *sql.DB
+	index          *sql.DB
+	reviewMu       sync.Mutex
+	vectorMu       sync.Mutex
+	productVersion int64
 }
 
 func openDB(path string, readonly bool) (*sql.DB, error) {
@@ -185,6 +186,10 @@ func NewStore(settings Settings) (*Store, error) {
 		}
 	}
 	if err := store.bind(); err != nil {
+		store.Close()
+		return nil, err
+	}
+	if err := store.initializeProductSettings(); err != nil {
 		store.Close()
 		return nil, err
 	}
