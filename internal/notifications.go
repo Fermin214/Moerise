@@ -25,6 +25,7 @@ type Notification struct {
 	CreatedAt    string  `json:"created_at"`
 	UpdatedAt    string  `json:"updated_at"`
 	PlatformUUID string  `json:"-"`
+	channelKey   string
 }
 
 type NotificationAttempt struct {
@@ -55,10 +56,11 @@ type NotificationTransport interface {
 }
 
 type NotificationService struct {
-	Store     *Store
-	Reviews   *ReviewService
-	Transport NotificationTransport
-	mu        sync.Mutex
+	Store            *Store
+	Reviews          *ReviewService
+	Transport        NotificationTransport
+	channelTransport func(ChannelConfig) (NotificationTransport, func())
+	mu               sync.Mutex
 }
 
 func NewNotificationService(store *Store, reviews *ReviewService, transport NotificationTransport) *NotificationService {
@@ -66,7 +68,10 @@ func NewNotificationService(store *Store, reviews *ReviewService, transport Noti
 }
 
 func (s *NotificationService) channelKey() string {
-	channel := s.Store.Settings.Channel
+	return notificationChannelKey(s.Store.Settings.Channel)
+}
+
+func notificationChannelKey(channel ChannelConfig) string {
 	destination := configured(channel.Destination)
 	if channel.Kind == "feishu-app" && destination == "" {
 		destination = configured(channel.UserOpenID)
@@ -113,9 +118,12 @@ func (s *NotificationService) Schedule(ctx context.Context, at time.Time) (int, 
 		}
 		var done bool
 		if err := s.Store.state.QueryRow(`SELECT EXISTS (SELECT 1 FROM review_schedule_slots
-			WHERE instance_id = ? AND user_name = ? AND channel_key = ? AND timezone = ?
-			AND local_date = ? AND (clock = ? OR (clock = '' AND ? = 0)))`,
-			instance, user, channel, settings.Timezone, today, clock, ordinal).Scan(&done); err != nil {
+			WHERE instance_id = ? AND user_name = ? AND timezone = ?
+			AND local_date = ? AND (clock = ? OR (clock = '' AND ? = 0))
+			UNION ALL SELECT 1 FROM notifications
+			WHERE instance_id = ? AND user_name = ? AND kind = 'review' AND logical_key = ?)`,
+			instance, user, settings.Timezone, today, clock, ordinal,
+			instance, user, today+":"+clock).Scan(&done); err != nil {
 			return created, err
 		}
 		if done {
@@ -249,13 +257,14 @@ func syncEventNotification(tx *sql.Tx, item Notification, status string, receipt
 }
 
 const notificationColumns = `id, kind, local_date, batch_id, source_event, status, attempts, available_at,
-	receipt, last_error, created_at, updated_at, platform_uuid`
+	receipt, last_error, created_at, updated_at, platform_uuid, channel_key`
 
 func scanNotification(row interface{ Scan(...any) error }) (Notification, error) {
 	var notification Notification
 	err := row.Scan(&notification.ID, &notification.Kind, &notification.Date, &notification.BatchID,
 		&notification.SourceEvent, &notification.Status, &notification.Attempts, &notification.AvailableAt,
-		&notification.Receipt, &notification.LastError, &notification.CreatedAt, &notification.UpdatedAt, &notification.PlatformUUID)
+		&notification.Receipt, &notification.LastError, &notification.CreatedAt, &notification.UpdatedAt,
+		&notification.PlatformUUID, &notification.channelKey)
 	return notification, err
 }
 
@@ -267,8 +276,8 @@ func (s *NotificationService) Detail(id string) (NotificationDetail, error) {
 	settings := s.Store.Settings
 	var err error
 	detail.Notification, err = scanNotification(s.Store.state.QueryRow("SELECT "+notificationColumns+` FROM notifications
-		WHERE id = ? AND instance_id = ? AND user_name = ? AND channel_key = ?`, id,
-		settings.Memos.InstanceID, settings.Memos.User, s.channelKey()))
+		WHERE id = ? AND instance_id = ? AND user_name = ?`, id,
+		settings.Memos.InstanceID, settings.Memos.User))
 	if errors.Is(err, sql.ErrNoRows) {
 		return detail, failure("NOTIFICATION_NOT_FOUND", "Notification is unavailable", 404, false)
 	}
@@ -315,8 +324,8 @@ func (s *NotificationService) List(status string) ([]Notification, error) {
 		return nil, failure("INVALID_ARGUMENT", "Invalid notification status", 422, false)
 	}
 	settings := s.Store.Settings
-	query := "SELECT " + notificationColumns + ` FROM notifications WHERE instance_id = ? AND user_name = ? AND channel_key = ?`
-	args := []any{settings.Memos.InstanceID, settings.Memos.User, s.channelKey()}
+	query := "SELECT " + notificationColumns + ` FROM notifications WHERE instance_id = ? AND user_name = ?`
+	args := []any{settings.Memos.InstanceID, settings.Memos.User}
 	if status != "" {
 		query += " AND status = ?"
 		args = append(args, status)
@@ -355,7 +364,7 @@ func (s *NotificationService) recover() error {
 }
 
 func (s *NotificationService) Deliver(ctx context.Context) (bool, error) {
-	if s.Transport == nil {
+	if s.Transport == nil && s.channelTransport == nil {
 		return false, nil
 	}
 	s.mu.Lock()
@@ -366,9 +375,9 @@ func (s *NotificationService) Deliver(ctx context.Context) (bool, error) {
 	err := transaction(s.Store.state, func(tx *sql.Tx) error {
 		var err error
 		item, err = scanNotification(tx.QueryRow("SELECT "+notificationColumns+` FROM notifications
-			WHERE status = 'pending' AND (kind = 'reply' OR ?) AND available_at <= ? AND instance_id = ? AND user_name = ? AND channel_key = ?
+			WHERE status = 'pending' AND (kind = 'reply' OR ?) AND available_at <= ? AND instance_id = ? AND user_name = ?
 			ORDER BY available_at, created_at, id LIMIT 1`, settings.Notifications.Enabled, nowSeconds(), settings.Memos.InstanceID,
-			settings.Memos.User, s.channelKey()))
+			settings.Memos.User))
 		if err != nil {
 			return err
 		}
@@ -390,7 +399,12 @@ func (s *NotificationService) Deliver(ctx context.Context) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	receipt, sendErr := s.Transport.Send(ctx, item)
+	transport, closeTransport, sendErr := s.transportFor(item)
+	defer closeTransport()
+	receipt := ""
+	if sendErr == nil {
+		receipt, sendErr = transport.Send(ctx, item)
+	}
 	status, outcome, code := "sent", "sent", ""
 	var savedReceipt any
 	if sendErr == nil && receipt == "" {
@@ -448,10 +462,12 @@ func (s *NotificationService) Resolve(ctx context.Context, id, decision, receipt
 		return detail, failure("NOTIFICATION_CONFLICT", "Only an unknown notification can be resolved", 409, false)
 	}
 	if decision == "sent" && receipt != "" {
-		if s.Transport == nil {
-			return detail, upstreamError("CHANNEL_UNAVAILABLE", "Channel receipt verification is unavailable")
+		transport, closeTransport, err := s.transportFor(detail.Notification)
+		defer closeTransport()
+		if err != nil {
+			return detail, err
 		}
-		found, err := s.Transport.Check(ctx, detail.Notification, receipt)
+		found, err := transport.Check(ctx, detail.Notification, receipt)
 		if err != nil {
 			return detail, err
 		}

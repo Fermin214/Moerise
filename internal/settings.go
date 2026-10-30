@@ -33,7 +33,9 @@ type ProductSettings struct {
 	LLM           LLMConfig          `json:"llm"`
 	Channel       ChannelConfig      `json:"channel"`
 	Insights      InsightsConfig     `json:"insights"`
-	Daily         *dailySettings     `json:"daily,omitempty"`
+
+	Daily                *dailySettings           `json:"daily,omitempty"`
+	NotificationChannels map[string]ChannelConfig `json:"notification_channels,omitempty"`
 }
 
 type dailySettings struct {
@@ -73,13 +75,14 @@ type SettingsView struct {
 }
 
 func productSettings(s Settings) ProductSettings {
-	return ProductSettings{s.Timezone, s.Review, s.Notifications, s.Embedding, s.LLM, s.Channel, s.Insights, s.daily}
+	return ProductSettings{s.Timezone, s.Review, s.Notifications, s.Embedding, s.LLM, s.Channel, s.Insights, s.daily, s.notificationChannels}
 }
 
 func (p ProductSettings) apply(s Settings) Settings {
 	s.Timezone, s.Review, s.Notifications = p.Timezone, p.Review, p.Notifications
 	s.Embedding, s.LLM, s.Channel, s.Insights = p.Embedding, p.LLM, p.Channel, p.Insights
 	s.daily = p.Daily
+	s.notificationChannels = p.NotificationChannels
 	return s
 }
 
@@ -222,6 +225,7 @@ func publicProduct(product ProductSettings) map[string]any {
 	var result map[string]any
 	_ = json.Unmarshal(data, &result)
 	delete(result, "daily")
+	delete(result, "notification_channels")
 	result["notifications"].(map[string]any)["times"] = product.Notifications.Clocks()
 	for _, section := range []string{"llm", "embedding"} {
 		delete(result[section].(map[string]any), "api_key")
