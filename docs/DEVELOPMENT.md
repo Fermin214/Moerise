@@ -190,11 +190,21 @@ node scripts/check-compose.mjs --skip-build --keep
 - bundled 使用 `memos` profile，通过 `compose up -d memos` 启动固定版本及摘要的官方 Memos；完成首个 ADMIN 账户、官方登录、PAT 创建及 `/api/v1/auth/me` 作者确认后启动 Core/Web。
 - external 使用空 profile，先通过 `compose create moerise` 创建独立项目网络，再通过 `docker run` 启动相同官方 Memos 镜像。来源使用网络别名 `source`，Core 连接 `http://source:5230`；来源容器没有 Compose 项目标签，独立启停。
 
-bundled 的容器与卷全部删除后才创建 external 场景。验收通过 Web 的同源 API 检查 Cookie、Origin、CSRF、原文创建与官方接口读回、编辑、归档、组合筛选、删除、纯文件附件及受保护读取、设置版本保存与过期版本拒绝。随后检查 Core/Memos 重启、Core/Web 强制重建、停止 Core 后运行 `rebuild-index` 对会话、设置、笔记和附件的保留，并导出备份，检查 `manifest.json`、SQLite 文件头和 SHA-256。导出快照通过宿主机只读挂载恢复，旧 Cookie 被拒绝，重新登录后设置与笔记保持。
+external 来源的镜像从 `compose --profile memos config --format json` 读取，与 bundled 共用 `services.memos.image` 的版本及摘要。
+
+bundled 的容器与卷全部删除后才创建 external 场景。验收通过 Web 的同源 API 检查 Cookie、Origin、CSRF、原文创建与官方接口读回、编辑、归档、组合筛选、删除、纯文件附件及受保护读取、设置版本保存与过期版本拒绝。随后检查 Core/Memos 重启、Core/Web 强制重建、停止 Core 后运行 `rebuild-index` 对会话、设置、笔记和附件的保留，并导出备份，检查 `manifest.json`、SQLite 文件头和 SHA-256。
+
+快照使用独立目录，目录权限为 0755、文件权限为 0644；包含 `.env` 的父目录仍为 0700。Core 只读挂载快照目录，UID 10001 可读取文件，该挂载只包含快照文件。备份后先保存不同的时区、回顾数量及新版本，再恢复快照；恢复后旧 Cookie 被拒绝，重新登录必须读到备份时的设置版本和值，笔记及附件继续从 Memos 读取。
 
 来源停止后先请求真实笔记与附件 API，检查失败响应不返回缓存正文或凭据，再等待 Web `/health/ready` 返回 503，并检查 Core 与 Web `/health/live` 均返回 200。Core 就绪检查读取同步状态，默认同步间隔为 60 秒，因此降级检查允许等待 90 秒。来源恢复后继续使用原会话读取设置、笔记与附件。Web 的 `/api/ext/v1/notes` 与 `/mcp` 必须返回 404；external 场景还检查停止应用后独立 Memos 仍能读取原文。
 
 默认在 `finally` 中删除独立来源容器，再执行独立项目的 `compose down --volumes`，删除脚本构建的专用镜像及临时凭据，仅留下无密钥的 `checks.json`。复用的镜像不删除。Windows 递归删除前检查绝对路径、仓库 `.local` 父目录、随机目录名及符号链接。检查失败或收到 SIGINT/SIGTERM 时也进入资源回收；回收错误以非零退出码报告。
+
+Docker 命令使用异步子进程，并绑定中断信号及命令超时。子进程退出后才进入回收；忽略终止信号的子进程在 1 秒后强制结束，回收命令使用独立的超时。构建中断属于难以稳定由真实构建触发的分支，专项检查使用可控子进程覆盖退出等待、忽略 SIGTERM 和预先取消：
+
+```bash
+node --test scripts/test/compose-process.test.mjs
+```
 
 `--keep` 仅在全部检查成功后留下 external 场景，写入 `runtime.json`，字段为 `root`、`project`、`envFile`、`url`、`username`、`password`。浏览器使用 `url` 及该账户登录；该文件和 `.env` 含测试凭据，位于 Git 忽略目录。`checks.json` 保存检查名称、耗时及结果，不保存响应正文或凭据。浏览器检查结束后，在仓库根目录使用运行信息回收：
 

@@ -1,10 +1,10 @@
-import { execFileSync } from 'node:child_process';
+import { runProcess } from './compose-process.mjs';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import {
   basename, dirname, isAbsolute, resolve,
 } from 'node:path';
 import {
-  existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, rmSync,
+  chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, rmSync,
   unlinkSync, writeFileSync,
 } from 'node:fs';
 import { createServer } from 'node:net';
@@ -34,7 +34,6 @@ const template = readFileSync(resolve(repo, '.env.example'), 'utf8');
 const skipBuild = flags.has('--skip-build');
 const imageTag = skipBuild ? (process.env.MOERISE_IMAGE_TAG || 'stage34') : project;
 assert.match(imageTag, /^[\w][\w.-]{0,127}$/, 'MOERISE_IMAGE_TAG 必须是镜像标签');
-const memosImage = 'neosmemo/memos:0.31.0@sha256:24c2707ddd8fbd2ceaa7a61ecab86a53cdcde640b24ce572b73da14b00b5785f';
 const sourceName = `${project}-source`;
 const oneOffNames = [`${project}-rebuild`, `${project}-backup`, `${project}-restore`];
 const evidence = { project, imageTag, startedAt: new Date().toISOString(), scenarios: [], checks: [] };
@@ -58,13 +57,13 @@ let step = '初始化';
 let scenario = '';
 let runtime;
 
-function docker(args, { cleanup = false, timeout = 180_000 } = {}) {
+async function docker(args, { cleanup = false, timeout = cleanup ? 30_000 : 180_000 } = {}) {
   if (!cleanup) cancellation.signal.throwIfAborted();
   try {
-    return execFileSync('docker', args, {
-      cwd: repo, env: dockerEnv, encoding: 'utf8', timeout,
-      maxBuffer: 16 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true,
-    }).trim();
+    return await runProcess('docker', args, {
+      cwd: repo, env: dockerEnv, timeout,
+      signal: cleanup ? undefined : cancellation.signal,
+    });
   } catch (error) {
     // Docker errors can echo env configuration; evidence contains only operation and exit status.
     throw new Error(`docker ${args[0]} 失败 (${error.code || error.status || 'signal'})`);
@@ -163,21 +162,21 @@ async function ready(url) {
   await waitFor('Web 就绪', async () => (await request(url, '/health/ready')).status === 200);
 }
 
-function removeNamedContainer(name) {
+async function removeNamedContainer(name) {
   assert.ok([sourceName, ...oneOffNames].includes(name), '拒绝删除范围外容器');
-  const found = docker(['ps', '-aq', '--filter', `name=^/${name}$`], { cleanup: true });
-  if (found) docker(['rm', '-f', '-v', name], { cleanup: true });
+  const found = await docker(['ps', '-aq', '--filter', `name=^/${name}$`], { cleanup: true });
+  if (found) await docker(['rm', '-f', '-v', name], { cleanup: true });
 }
 
-function cleanupResources() {
+async function cleanupResources() {
   if (!active) return;
   // An external source has no Compose project labels and must be removed before its network.
   const errors = [];
   for (const name of [sourceName, ...oneOffNames]) {
-    try { removeNamedContainer(name); } catch { errors.push(`删除 ${name} 失败`); }
+    try { await removeNamedContainer(name); } catch { errors.push(`删除 ${name} 失败`); }
   }
   try {
-    compose(['down', '--volumes', '--remove-orphans', '--timeout', '10'], { cleanup: true });
+    await compose(['down', '--volumes', '--remove-orphans', '--timeout', '10'], { cleanup: true });
   } catch { errors.push('compose down 失败'); }
   if (errors.length) throw new Error(errors.join('; '));
   active = false;
@@ -227,22 +226,25 @@ async function runScenario(kind) {
   active = true;
   evidence.scenarios.push({ scenario: kind, project, url, sourceURL });
   if (!skipBuild && !buildAttempted) {
-    await check('构建 Core 与 Web', () => {
+    await check('构建 Core 与 Web', async () => {
       buildAttempted = true;
-      compose(['build', 'moerise', 'web'], { timeout: 1_200_000 });
+      await compose(['build', 'moerise', 'web'], { timeout: 1_200_000 });
     });
   }
   await check('启动独立 Memos 来源', async () => {
     if (kind === 'bundled') {
-      compose(['up', '-d', 'memos']);
+      await compose(['up', '-d', 'memos']);
     } else {
-      compose(['create', '--no-build', 'moerise']);
-      docker([
+      const model = JSON.parse(await compose(['--profile', 'memos', 'config', '--format', 'json']));
+      const memosImage = model.services?.memos?.image;
+      assert.ok(typeof memosImage === 'string' && memosImage.length > 0, 'Compose 未配置 Memos 镜像');
+      await compose(['create', '--no-build', 'moerise']);
+      await docker([
         'run', '-d', '--name', sourceName, '--network', `${project}_local`,
         '--network-alias', 'source', '--publish', `127.0.0.1:${memosPort}:5230`,
         '--mount', 'type=volume,target=/var/opt/memos', memosImage,
       ]);
-      const labels = JSON.parse(docker(['inspect', '--format', '{{json .Config.Labels}}', sourceName]));
+      const labels = JSON.parse(await docker(['inspect', '--format', '{{json .Config.Labels}}', sourceName]));
       assert.ok(!labels?.['com.docker.compose.project'], 'external 来源不能属于 Compose 项目');
     }
     await waitFor('Memos 就绪', async () => (await request(sourceURL, '/api/v1/instance/profile')).status === 200);
@@ -270,7 +272,7 @@ async function runScenario(kind) {
     values.MOERISE_MEMOS_USER = me.user.name;
     values.MOERISE_MEMOS_TOKEN = pat;
     writeEnv(values);
-    compose(['up', '-d', '--no-build', 'moerise', 'web']);
+    await compose(['up', '-d', '--no-build', 'moerise', 'web']);
     await ready(url);
   });
 
@@ -365,32 +367,36 @@ async function runScenario(kind) {
     : docker([command, sourceName]);
 
   await check('重启 Core 与 Memos 后保留会话、设置、笔记和附件', async () => {
-    compose(['stop', 'moerise']);
-    sourceControl('restart');
+    await compose(['stop', 'moerise']);
+    await sourceControl('restart');
     await waitFor('Memos 重启', async () => (await request(sourceURL, '/api/v1/instance/profile')).status === 200);
-    compose(['start', 'moerise']);
+    await compose(['start', 'moerise']);
     await ready(url);
     await retained();
   });
   await check('强制重建 Core/Web 容器后保留产品状态', async () => {
-    compose(['up', '-d', '--no-build', '--force-recreate', 'moerise', 'web']);
+    await compose(['up', '-d', '--no-build', '--force-recreate', 'moerise', 'web']);
     await ready(url);
     await retained();
   });
   await check('停止 Core 并重建索引后保留产品状态', async () => {
-    compose(['stop', 'moerise']);
-    compose(['run', '--rm', '--no-deps', '--name', oneOffNames[0], 'moerise', 'rebuild-index']);
-    compose(['up', '-d', '--no-build', 'moerise', 'web']);
+    await compose(['stop', 'moerise']);
+    await compose(['run', '--rm', '--no-deps', '--name', oneOffNames[0], 'moerise', 'rebuild-index']);
+    await compose(['up', '-d', '--no-build', 'moerise', 'web']);
     await ready(url);
     await retained();
   });
-  await check('导出备份并核对 manifest 与 SQLite 文件', () => {
-    compose(['run', '--rm', '--no-deps', '--name', oneOffNames[1], 'moerise', 'backup', '--output', '/backups/acceptance']);
+  const snapshot = resolve(root, `snapshot-${kind}`);
+  await check('导出备份并核对 manifest 与 SQLite 文件', async () => {
+    mkdirSync(snapshot, { mode: 0o755 });
+    chmodSync(snapshot, 0o755);
+    await compose(['run', '--rm', '--no-deps', '--name', oneOffNames[1], 'moerise', 'backup', '--output', '/backups/acceptance']);
     for (const file of ['manifest.json', 'state.sqlite3']) {
-      compose(['cp', `moerise:/backups/acceptance/${file}`, resolve(root, file)]);
+      await compose(['cp', `moerise:/backups/acceptance/${file}`, resolve(snapshot, file)]);
+      chmodSync(resolve(snapshot, file), 0o644);
     }
-    const manifest = JSON.parse(readFileSync(resolve(root, 'manifest.json'), 'utf8'));
-    const database = readFileSync(resolve(root, 'state.sqlite3'));
+    const manifest = JSON.parse(readFileSync(resolve(snapshot, 'manifest.json'), 'utf8'));
+    const database = readFileSync(resolve(snapshot, 'state.sqlite3'));
     assert.ok(database.subarray(0, 16).equals(Buffer.from('SQLite format 3\0')), '备份不是 SQLite');
     assert.equal(manifest.format, 1);
     assert.equal(manifest.instance_id, instance);
@@ -399,23 +405,31 @@ async function runScenario(kind) {
     assert.equal(manifest.state_sha256, createHash('sha256').update(database).digest('hex'));
   });
   await check('从宿主机导出快照恢复并清除旧会话', async () => {
-    compose(['stop', 'moerise']);
-    compose([
+    const changed = (await api('PATCH', '/api/app/v1/settings', {
+      version: saved.version, settings: { timezone: 'Asia/Hong_Kong', review: { count: 7 } },
+    })).value;
+    assert.equal(changed.version, saved.version + 1);
+    const running = (await api('GET', '/api/app/v1/settings')).value;
+    assert.equal(running.version, changed.version);
+    assert.equal(running.settings.timezone, 'Asia/Hong_Kong');
+    assert.equal(running.settings.review.count, 7);
+    await compose(['stop', 'moerise']);
+    await compose([
       'run', '--rm', '--no-deps', '--name', oneOffNames[2],
-      '--volume', `${root}:/restore-source:ro`,
+      '--volume', `${snapshot}:/restore-source:ro`,
       'moerise', 'restore', '--source', '/restore-source', '--safety-backup', '/backups/before-restore',
     ]);
-    compose(['up', '-d', '--no-build', 'moerise', 'web']);
+    await compose(['up', '-d', '--no-build', 'moerise', 'web']);
     await ready(url);
     await api('GET', '/api/app/v1/session', undefined, 401);
     const login = await api('POST', '/api/app/v1/session', { username, password });
     cookie = login.headers.getSetCookie().find(value => /^moerise[^=]*=/i.test(value)).split(';')[0];
     await retained();
-    unlinkSync(resolve(root, 'manifest.json'));
-    unlinkSync(resolve(root, 'state.sqlite3'));
+    unlinkSync(resolve(snapshot, 'manifest.json'));
+    unlinkSync(resolve(snapshot, 'state.sqlite3'));
   });
   await check('来源断连时 live=200、ready=503 且 API 不返回缓存', async () => {
-    sourceControl('stop');
+    await sourceControl('stop');
     for (const path of ['/api/app/v1/notes', notePath(note), download]) {
       const result = await request(url, path, { headers: { Cookie: cookie } });
       assert.ok(result.status >= 500 && result.status <= 599, '来源断连仍返回成功或会话失效');
@@ -426,7 +440,7 @@ async function runScenario(kind) {
     await waitFor('来源断连就绪降级', async () => (await request(url, '/health/ready')).status === 503, 90_000);
     expectStatus(await request(url, '/health/live'), 200, 'Web 存活');
     expectStatus(await request(`http://127.0.0.1:${corePort}`, '/health/live'), 200, 'Core 存活');
-    sourceControl('start');
+    await sourceControl('start');
     await ready(url);
     await retained();
   });
@@ -436,12 +450,12 @@ async function runScenario(kind) {
   });
   if (kind === 'external') {
     await check('应用停止后独立 Memos 仍存活', async () => {
-      compose(['stop', 'web', 'moerise']);
+      await compose(['stop', 'web', 'moerise']);
       const source = expectStatus(await request(sourceURL, `/api/v1/${note.name}`, {
         headers: { Authorization: `Bearer ${pat}` },
       }), 200, '独立来源存活');
       assert.equal(source.value?.content, edited);
-      compose(['up', '-d', '--no-build', 'moerise', 'web']);
+      await compose(['up', '-d', '--no-build', 'moerise', 'web']);
       await ready(url);
       await retained();
     });
@@ -453,8 +467,8 @@ mkdirSync(resolve(repo, '.local'), { recursive: true });
 assert.equal(realpathSync(resolve(repo, '.local')), resolve(repo, '.local'), '.local 不能重定向到其他目录');
 mkdirSync(root, { mode: 0o700 });
 try {
-  docker(['compose', 'version']);
-  docker(['info', '--format', '{{.ServerVersion}}']);
+  await docker(['compose', 'version']);
+  await docker(['info', '--format', '{{.ServerVersion}}']);
   await runScenario('bundled');
   await check('删除 bundled 资源以隔离 external 场景', cleanupResources);
   await runScenario('external');
@@ -477,7 +491,7 @@ try {
   }
   if (!kept) {
     try {
-      cleanupResources();
+      await cleanupResources();
       evidence.cleanup = true;
     } catch {
       evidence.cleanup = false;
@@ -487,7 +501,10 @@ try {
     }
     if (buildAttempted) {
       try {
-        docker(['image', 'rm', `moerise:${imageTag}`, `moerise-web:${imageTag}`], { cleanup: true });
+        for (const image of [`moerise:${imageTag}`, `moerise-web:${imageTag}`]) {
+          const found = await docker(['image', 'ls', '--quiet', image], { cleanup: true });
+          if (found) await docker(['image', 'rm', image], { cleanup: true });
+        }
       } catch {
         evidence.imageCleanup = false;
         succeeded = false;
