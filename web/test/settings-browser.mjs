@@ -255,6 +255,89 @@ test('injected requests cannot publish late success or expiry after settings dis
   assert.deepEqual(result, { lateGETIgnored: true, submittedRealSecret: true, removedSecret: true, saved: 0, failed: 0, nodes: 0 });
 });
 
+test('model polling stays single after saving and invalidates results on version change', { timeout: 60_000 }, async t => {
+  const { page, url, errors } = await fixture(t);
+  await page.goto(url);
+  const result = await page.evaluate(async initial => {
+    const { createSettingsPage } = await import('/settings.js');
+    const host = document.createElement('div'); document.body.append(host);
+    const originalSetTimeout = window.setTimeout, originalClearTimeout = window.clearTimeout;
+    const timers = new Map(), models = [], checks = [];
+    let nextTimer = -1, snapshot = structuredClone(initial);
+    for (const group of ['llm', 'embedding']) snapshot.settings[group].enabled = true;
+    window.setTimeout = (callback, delay, ...args) => {
+      if (delay !== 5000) return originalSetTimeout(callback, delay, ...args);
+      const id = nextTimer--; timers.set(id, () => callback(...args)); return id;
+    };
+    window.clearTimeout = id => {
+      if (!timers.delete(id)) originalClearTimeout(id);
+    };
+    const settle = () => new Promise(resolve => originalSetTimeout(resolve, 0));
+    const poll = () => {
+      if (timers.size !== 1) throw new Error(`Expected one model poll, got ${timers.size}`);
+      const [id, callback] = timers.entries().next().value; timers.delete(id); callback();
+    };
+    const status = (version, index_status) => ({
+      version, index_status,
+      llm: { enabled: true, configured: true }, embedding: { enabled: true, configured: true },
+      vector_index: { building: { chunks: 12, completed_chunks: 4, last_error: 'EMBEDDING_AUTH' } },
+    });
+    const view = createSettingsPage({
+      sessionRequest(path, options = {}) {
+        if (path === '/models') return new Promise((resolve, reject) => models.push({ ...options, resolve, reject }));
+        if (path.endsWith('/check')) return new Promise(resolve => checks.push({ ...options, resolve }));
+        if (options.method === 'PATCH') {
+          snapshot = { ...snapshot, version: snapshot.version + 1 };
+          snapshot.settings.review.count = options.body.settings.review.count;
+        }
+        return Promise.resolve(structuredClone(snapshot));
+      },
+    });
+    try {
+      await view.mount(host);
+      host.querySelector('[name="review.count"]').value = '4';
+      host.querySelector('form').requestSubmit(); await settle();
+      const requestsAfterSave = models.length, abortedOldPoll = models[0].controller.signal.aborted;
+      models[0].reject(new DOMException('Aborted', 'AbortError')); await settle();
+      const timersAfterCancelledPoll = timers.size;
+      models[1].resolve(status(2, 'waiting')); await settle();
+      const waitingHidesOldBuild = host.querySelector('progress').hidden &&
+        !host.querySelector('#settings-index-status').textContent.includes('4/12') &&
+        !host.querySelector('#settings-index-status').textContent.includes('EMBEDDING_AUTH');
+      poll(); models[2].resolve(status(2, 'building')); await settle();
+      const freshBuildShown = !host.querySelector('progress').hidden &&
+        host.querySelector('#settings-index-status').textContent.includes('4/12');
+      const modelBlocks = host.querySelectorAll('.settings-model');
+      modelBlocks[0].querySelector('button').click();
+      checks[0].resolve({ version: 2, duration_ms: 17 }); await settle();
+      const successfulCheckShown = host.querySelector('#settings-llm-check-result').textContent.includes('连接正常');
+      modelBlocks[1].querySelector('button').click();
+      const pendingCheckShown = host.querySelector('#settings-embedding-check-result').textContent.includes('正在检查');
+      poll(); models[3].resolve(status(3, 'ready')); await settle();
+      const conflictClearsResults = [...host.querySelectorAll('[id$="-check-result"]')].every(node => !node.textContent) &&
+        host.querySelector('progress').hidden && host.querySelector('#settings-index-status').textContent.includes('已失效');
+      checks[1].resolve({ version: 2, duration_ms: 17 }); await settle();
+      const lateCheckIgnored = !host.querySelector('#settings-embedding-check-result').textContent &&
+        checks[1].controller.signal.aborted;
+      const conflictStopsPolling = timers.size === 0 &&
+        [...host.querySelectorAll('.settings-model button, button.save')].every(node => node.disabled);
+      await view.mount(host);
+      const last = models.at(-1);
+      view.destroy(); last.resolve(status(2, 'building')); await settle();
+      return { requestsAfterSave, abortedOldPoll, timersAfterCancelledPoll, waitingHidesOldBuild, freshBuildShown,
+        successfulCheckShown, pendingCheckShown, conflictClearsResults, lateCheckIgnored, conflictStopsPolling,
+        destroyedStopsPolling: timers.size === 0 && last.controller.signal.aborted };
+    } finally {
+      view.destroy(); host.remove();
+      window.setTimeout = originalSetTimeout; window.clearTimeout = originalClearTimeout;
+    }
+  }, settings());
+  assert.deepEqual(result, { requestsAfterSave: 2, abortedOldPoll: true, timersAfterCancelledPoll: 0,
+    waitingHidesOldBuild: true, freshBuildShown: true, successfulCheckShown: true, pendingCheckShown: true,
+    conflictClearsResults: true, lateCheckIgnored: true, conflictStopsPolling: true, destroyedStopsPolling: true });
+  assert.deepEqual(errors, []);
+});
+
 test('model settings pair protocols, check saved versions and discard obsolete results', { timeout: 60_000 }, async t => {
   const { page, state, url, errors } = await fixture(t);
   await page.goto(`${url}/settings`); await login(page); await pageReady(page);

@@ -232,7 +232,7 @@ func (s *SessionService) operation(ctx context.Context) (context.Context, func()
 	return ctx, func() { stop(); cancel(); s.pending.Done() }, nil
 }
 
-func (s *SessionService) lock(hash string) func() {
+func (s *SessionService) lock(ctx context.Context, hash string) (func(), error) {
 	s.mu.Lock()
 	lock := s.locks[hash]
 	if lock == nil {
@@ -241,15 +241,26 @@ func (s *SessionService) lock(hash string) func() {
 	}
 	lock.refs++
 	s.mu.Unlock()
-	lock.mu.Lock()
-	return func() {
-		lock.mu.Unlock()
+	release := func() {
 		s.mu.Lock()
 		lock.refs--
 		if lock.refs == 0 {
 			delete(s.locks, hash)
 		}
 		s.mu.Unlock()
+	}
+	for {
+		if err := ctx.Err(); err != nil {
+			release()
+			return nil, err
+		}
+		if lock.mu.TryLock() {
+			return func() { lock.mu.Unlock(); release() }, nil
+		}
+		if err := runtimePause(ctx, 10*time.Millisecond); err != nil {
+			release()
+			return nil, err
+		}
 	}
 }
 
@@ -386,7 +397,10 @@ func (s *SessionService) clean(ctx context.Context) {
 	}
 	rows.Close()
 	for _, hash := range expired {
-		unlock := s.lock(hash)
+		unlock, err := s.lock(ctx, hash)
+		if err != nil {
+			return
+		}
 		_, _ = s.load(ctx, hash)
 		unlock()
 	}
@@ -499,7 +513,10 @@ func (s *SessionService) Authenticate(ctx context.Context, rawID string) (*Sessi
 		return nil, err
 	}
 	s.clean(ctx)
-	unlock := s.lock(hash)
+	unlock, err := s.lock(ctx, hash)
+	if err != nil {
+		return nil, err
+	}
 	defer unlock()
 	row, err := s.load(ctx, hash)
 	if err != nil {
@@ -592,7 +609,10 @@ func (s *SessionService) CheckActive(ctx context.Context, identity *SessionIdent
 	if identity == nil {
 		return sessionUnauthorized()
 	}
-	unlock := s.lock(identity.sessionHash)
+	unlock, err := s.lock(ctx, identity.sessionHash)
+	if err != nil {
+		return err
+	}
 	defer unlock()
 	return s.checkActive(ctx, identity)
 }
@@ -607,7 +627,11 @@ func (s *SessionService) BindRequest(ctx context.Context, identity *SessionIdent
 		return nil, nil, sessionUnauthorized()
 	}
 	hash := identity.sessionHash
-	unlock := s.lock(hash)
+	unlock, err := s.lock(ctx, hash)
+	if err != nil {
+		done()
+		return nil, nil, err
+	}
 	defer unlock()
 	if err := s.checkActive(ctx, identity); err != nil {
 		done()
@@ -646,7 +670,10 @@ func (s *SessionService) LocalIdentity(ctx context.Context, rawID string) (*Sess
 	if err != nil {
 		return nil, err
 	}
-	unlock := s.lock(hash)
+	unlock, err := s.lock(ctx, hash)
+	if err != nil {
+		return nil, err
+	}
 	defer unlock()
 	row, err := s.load(ctx, hash)
 	if err != nil {
@@ -665,7 +692,10 @@ func (s *SessionService) Logout(ctx context.Context, rawID string) error {
 	if err != nil {
 		return nil
 	}
-	unlock := s.lock(hash)
+	unlock, err := s.lock(ctx, hash)
+	if err != nil {
+		return err
+	}
 	row, err := s.load(ctx, hash)
 	if err != nil {
 		unlock()

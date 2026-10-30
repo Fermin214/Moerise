@@ -2,6 +2,7 @@ package moerise
 
 import (
 	"bytes"
+	"context"
 	"crypto/hmac"
 	"encoding/json"
 	"errors"
@@ -58,6 +59,13 @@ func writeClientError(w http.ResponseWriter, err error, id string) {
 }
 
 func (a *ClientAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	check := isModelCheck(r)
+	if check {
+		// 会话认证、资源等待及模型调用共享代理超时以内的预算。
+		ctx, cancel := context.WithTimeout(r.Context(), modelCheckTimeout)
+		defer cancel()
+		r = r.WithContext(ctx)
+	}
 	id := newID()
 	w.Header().Set("X-Request-ID", id)
 	w.Header().Set("Cache-Control", "no-store")
@@ -70,11 +78,20 @@ func (a *ClientAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			writeClientError(w, errors.New("client handler panic"), id)
 		}
 	}()
-	if r.URL.Path != "/api/app/v1/settings" || r.Method != http.MethodPatch {
+	if check {
+		if err := a.lockModelCheck(r.Context()); err != nil {
+			writeClientError(w, modelCheckError(r.Context(), err), id)
+			return
+		}
+		defer a.app.runtimeMu.RUnlock()
+	} else if r.URL.Path != "/api/app/v1/settings" || r.Method != http.MethodPatch {
 		a.app.runtimeMu.RLock()
 		defer a.app.runtimeMu.RUnlock()
 	}
 	result, status, err := a.route(w, r)
+	if check {
+		err = modelCheckError(r.Context(), err)
+	}
 	if err != nil {
 		writeClientError(w, err, id)
 	} else if status == -1 {

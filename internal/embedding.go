@@ -147,19 +147,20 @@ func (c *embeddingClient) batch(ctx context.Context, texts []string, purpose Emb
 	case <-ctx.Done():
 		return EmbeddingResult{}, ctx.Err()
 	}
-	parameters := map[string]any{"dimension": c.config.Dimensions, "output_type": "dense", "text_type": purpose}
-	if purpose == EmbeddingQuery && configured(c.config.QueryInstruction) != "" {
-		parameters["instruct"] = configured(c.config.QueryInstruction)
-	}
-	body, _ := json.Marshal(map[string]any{"model": configured(c.config.Model),
-		"input": map[string]any{"texts": texts}, "parameters": parameters})
+	request := map[string]any{"model": configured(c.config.Model)}
 	if c.config.Protocol == "openai-compatible" {
-		request := map[string]any{"model": configured(c.config.Model), "input": texts, "encoding_format": "float"}
+		request["input"], request["encoding_format"] = texts, "float"
 		if c.config.SendDimensions {
 			request["dimensions"] = c.config.Dimensions
 		}
-		body, _ = json.Marshal(request)
+	} else {
+		parameters := map[string]any{"dimension": c.config.Dimensions, "output_type": "dense", "text_type": purpose}
+		if purpose == EmbeddingQuery && configured(c.config.QueryInstruction) != "" {
+			parameters["instruct"] = configured(c.config.QueryInstruction)
+		}
+		request["input"], request["parameters"] = map[string]any{"texts": texts}, parameters
 	}
+	body, _ := json.Marshal(request)
 	for attempt := 0; ; attempt++ {
 		result, retryAfter, err := c.request(ctx, body, len(texts))
 		if err == nil {

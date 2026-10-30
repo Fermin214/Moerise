@@ -5753,7 +5753,7 @@
       "get": {
         "operationId": "client_models_status",
         "summary": "读取本人模型与索引状态",
-        "description": "要求本人会话；拒绝 Authorization 和查询参数。状态不返回凭据或 API 地址。连接检查要求 Origin、CSRF 和设置版本，使用共享 Provider、虚构文本及最长 55 秒总预算，不写笔记、设置或旧生成任务；不返回模型输出和供应商错误正文。",
+        "description": "要求本人会话；拒绝 Authorization 和查询参数。状态不返回凭据或 API 地址。连接检查要求 Origin、CSRF 和设置版本，使用共享 Provider 和虚构文本，会话认证、锁等待与模型调用共享最长 55 秒总预算，不写笔记、设置或旧生成任务；不返回模型输出和供应商错误正文。",
         "security": [
           {
             "BrowserSession": []
@@ -5864,7 +5864,7 @@
             }
           },
           "405": {
-            "description": "METHOD_NOT_ALLOWED：该路径仅支持 GET 和 PATCH。",
+            "description": "METHOD_NOT_ALLOWED：该路径仅支持 GET。",
             "content": {
               "application/json": {
                 "schema": {
@@ -5970,7 +5970,7 @@
       "post": {
         "operationId": "client_models_embedding",
         "summary": "检查已保存的 embedding 连接",
-        "description": "要求本人会话；拒绝 Authorization 和查询参数。状态不返回凭据或 API 地址。连接检查要求 Origin、CSRF 和设置版本，使用共享 Provider、虚构文本及最长 55 秒总预算，不写笔记、设置或旧生成任务；不返回模型输出和供应商错误正文。",
+        "description": "要求本人会话；拒绝 Authorization 和查询参数。状态不返回凭据或 API 地址。连接检查要求 Origin、CSRF 和设置版本，使用共享 Provider 和虚构文本，会话认证、锁等待与模型调用共享最长 55 秒总预算，不写笔记、设置或旧生成任务；不返回模型输出和供应商错误正文。",
         "security": [
           {
             "BrowserSession": []
@@ -6112,7 +6112,7 @@
             }
           },
           "405": {
-            "description": "METHOD_NOT_ALLOWED：该路径仅支持 GET 和 PATCH。",
+            "description": "METHOD_NOT_ALLOWED：该路径仅支持 POST。",
             "content": {
               "application/json": {
                 "schema": {
@@ -6268,7 +6268,7 @@
       "post": {
         "operationId": "client_models_llm",
         "summary": "检查已保存的 llm 连接",
-        "description": "要求本人会话；拒绝 Authorization 和查询参数。状态不返回凭据或 API 地址。连接检查要求 Origin、CSRF 和设置版本，使用共享 Provider、虚构文本及最长 55 秒总预算，不写笔记、设置或旧生成任务；不返回模型输出和供应商错误正文。",
+        "description": "要求本人会话；拒绝 Authorization 和查询参数。状态不返回凭据或 API 地址。连接检查要求 Origin、CSRF 和设置版本，使用共享 Provider 和虚构文本，会话认证、锁等待与模型调用共享最长 55 秒总预算，不写笔记、设置或旧生成任务；不返回模型输出和供应商错误正文。",
         "security": [
           {
             "BrowserSession": []
@@ -6410,7 +6410,7 @@
             }
           },
           "405": {
-            "description": "METHOD_NOT_ALLOWED：该路径仅支持 GET 和 PATCH。",
+            "description": "METHOD_NOT_ALLOWED：该路径仅支持 POST。",
             "content": {
               "application/json": {
                 "schema": {

@@ -69,7 +69,8 @@ export function createSettingsPage({ sessionRequest, handleFailure, onSaved = ()
   const checks = new Map();
 
   function abortModels() {
-    clearTimeout(modelTimer); modelTimer = null; modelController?.abort();
+    clearTimeout(modelTimer); modelTimer = null;
+    const pending = modelController; modelController = null; pending?.abort();
     for (const controller of checks.values()) controller.abort();
     checks.clear();
   }
@@ -243,14 +244,22 @@ export function createSettingsPage({ sessionRequest, handleFailure, onSaved = ()
   }
   function versionConflict() {
     abortModels(); conflict = true; save.disabled = true; updateChecks();
+    for (const view of modelViews.values()) {
+      view.config.textContent = '设置已变更，请重新加载。';
+      view.result.textContent = '';
+    }
+    indexText.textContent = '索引状态已失效，请重新加载设置。';
+    indexProgress.hidden = true; indexProgress.value = 0;
     failure({ code: 'SETTINGS_CONFLICT' });
   }
   async function refreshModels() {
-    const ticket = sequence;
-    modelController?.abort(); modelController = new AbortController();
+    if (!active || busy || conflict || modelController) return;
+    clearTimeout(modelTimer); modelTimer = null;
+    const ticket = sequence, requestController = new AbortController();
+    modelController = requestController;
     try {
-      const data = await sessionRequest('/models', { controller: modelController });
-      if (!active || sequence !== ticket) return;
+      const data = await sessionRequest('/models', { controller: requestController });
+      if (!active || sequence !== ticket || modelController !== requestController) return;
       if (data.version !== snapshot.version) { versionConflict(); return; }
       for (const [group, view] of modelViews) {
         view.config.textContent = !data[group].enabled ? '已关闭' : data[group].configured ? '已启用 · 已配置' : '配置不完整';
@@ -259,7 +268,7 @@ export function createSettingsPage({ sessionRequest, handleFailure, onSaved = ()
         building: '语义索引构建中', ready: '语义索引已就绪', unavailable: '语义索引构建失败，等待重试' };
       const generation = data.vector_index?.building;
       indexText.textContent = labels[data.index_status] || '索引状态不可用';
-      indexProgress.hidden = !generation || data.index_status === 'disabled';
+      indexProgress.hidden = !generation || !['building', 'unavailable'].includes(data.index_status);
       if (!indexProgress.hidden) {
         indexProgress.max = Math.max(1, generation.chunks);
         indexProgress.value = generation.completed_chunks;
@@ -267,10 +276,13 @@ export function createSettingsPage({ sessionRequest, handleFailure, onSaved = ()
         if (generation.last_error) indexText.textContent += ` · ${generation.last_error}`;
       }
     } catch (err) {
-      if (!active || sequence !== ticket || err.name === 'AbortError') return;
+      if (!active || sequence !== ticket || modelController !== requestController || err.name === 'AbortError') return;
       modelError(indexText, err);
     } finally {
-      if (active && sequence === ticket && !conflict) modelTimer = setTimeout(refreshModels, 5000);
+      if (modelController === requestController) {
+        modelController = null;
+        if (active && sequence === ticket && !conflict) modelTimer = setTimeout(refreshModels, 5000);
+      }
     }
   }
   async function checkModel(group) {
@@ -388,7 +400,7 @@ export function createSettingsPage({ sessionRequest, handleFailure, onSaved = ()
     reload = button('重新加载设置', 'ghost', load);
     footer.append(error, status, reload, save); form.append(footer);
     root.replaceChildren(form); busy = conflict = false;
-    updateChecks(); refreshModels();
+    updateChecks();
   }
   async function load() {
     const ticket = ++sequence; controller?.abort(); abortModels(); clearSecrets(); controller = new AbortController();
@@ -408,7 +420,10 @@ export function createSettingsPage({ sessionRequest, handleFailure, onSaved = ()
       error = el('p', 'error sub'); error.setAttribute('role', 'alert');
       root.replaceChildren(error, button('重新加载设置', 'ghost', load)); failure(err);
     } finally {
-      if (active && sequence === ticket) { busy = false; root.setAttribute('aria-busy', 'false'); }
+      if (active && sequence === ticket) {
+        busy = false; root.setAttribute('aria-busy', 'false');
+        if (form?.parentElement === root) { updateChecks(); refreshModels(); }
+      }
     }
   }
   async function submit(event) {
@@ -437,7 +452,8 @@ export function createSettingsPage({ sessionRequest, handleFailure, onSaved = ()
     } catch (err) {
       if (!active || sequence !== ticket) return;
       clearSecrets();
-      conflict = err.code === 'SETTINGS_CONFLICT'; failure(err);
+      if (err.code === 'SETTINGS_CONFLICT') versionConflict();
+      else failure(err);
       if (active && replaced) status.textContent = '新密钥已从表单移除；再次替换时请重新填写。';
     } finally {
       if (active && sequence === ticket) {
@@ -445,7 +461,7 @@ export function createSettingsPage({ sessionRequest, handleFailure, onSaved = ()
         for (const input of locked) input.disabled = false;
         form.setAttribute('aria-busy', 'false'); save.disabled = conflict; reload.disabled = false;
         updateChecks();
-        if (!modelTimer && !conflict) refreshModels();
+        if (!conflict) refreshModels();
       }
     }
   }
