@@ -131,6 +131,9 @@ func (a *App) UpdateSettings(ctx context.Context, update SettingsUpdate) (Settin
 	if err := a.Store.migrateFeishuQueue(); err != nil {
 		return SettingsView{}, err
 	}
+	if err := a.Store.retainNotificationChannels(&settings); err != nil {
+		return SettingsView{}, err
+	}
 	if err := a.Store.persistSettings(settings); err != nil {
 		return SettingsView{}, err
 	}

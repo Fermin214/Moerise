@@ -127,7 +127,9 @@ type Settings struct {
 	LLM           LLMConfig          `json:"llm"`
 	Channel       ChannelConfig      `json:"channel"`
 	Insights      InsightsConfig     `json:"insights"`
-	daily         *dailySettings
+
+	daily                *dailySettings
+	notificationChannels map[string]ChannelConfig
 }
 
 func DefaultSettings() Settings {

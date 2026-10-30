@@ -43,6 +43,7 @@ func NewApp(settings Settings, store *Store, source Source) *App {
 		a.Feishu.Search, a.Feishu.AI = a.Search, a.AI
 	}
 	a.Notifications.Transport = NewFeishuDelivery(store, a.Reviews, a.Feishu)
+	a.Notifications.channelTransport = a.notificationTransport
 	a.closers = append(a.closers, a.closeRuntime)
 	return a
 }
