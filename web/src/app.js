@@ -2,6 +2,7 @@ import { Draft, readAttachments } from './draft.js';
 import { errorText } from './errors.js';
 import { pages, notePath, filters, timelineURL, listQuery, safeFrom, detailURL, noteID, attachmentURL, rasterImage } from './routes.js';
 import { renderMarkdown } from './markdown.js';
+import { createSettingsPage } from './settings.js';
 
 const $ = id => document.getElementById(id);
 const draft = new Draft(), controllers = new Set(), snapshots = new Map();
@@ -17,6 +18,7 @@ let currentKey = history.state?.webKey || crypto.randomUUID();
 let month = '', routeReturnKey = null;
 let pageCount = 0, reloading = false;
 let lastTimeline = { path: '/', values: filters('') };
+let settingsPage = null;
 history.replaceState({ ...history.state, webKey: currentKey }, '');
 history.scrollRestoration = 'manual';
 
@@ -40,6 +42,7 @@ function aborted() { return new DOMException('Stale request', 'AbortError'); }
 function stale(generation) { if (generation !== epoch) throw aborted(); }
 function invalidate() {
   epoch++; viewSequence++; listSequence++;
+  settingsPage?.destroy(); settingsPage = null;
   invalidateSidebar();
   for (const controller of controllers) controller.abort();
   controllers.clear();
@@ -725,10 +728,12 @@ async function loadNotes(reset = false, retry = false) {
 }
 async function showRoute() {
   if (!identity) return;
+  settingsPage?.destroy(); settingsPage = null;
   const generation = epoch, sequence = ++viewSequence;
   listSequence++; listController?.abort(); clearTimeout(retryTimer); pageObserver.disconnect();
   listing = reloading = false; items = []; nextToken = ''; pageCount = 0;
   $('notes').replaceChildren(); closeMenus();
+  $('notes').hidden = $('page-end').hidden = location.pathname === '/settings';
   for (const id of ['back', 'view-title', 'capability', 'empty', 'list-retry', 'filters', 'load-more']) $(id).hidden = true;
   showError($('list-error'), null); $('composer').hidden = location.pathname !== '/';
   const detail = notePath.exec(location.pathname);
@@ -771,6 +776,18 @@ async function showRoute() {
       handleFailure($('list-error'), err);
       if (identity) { $('list-retry').textContent = '重新加载笔记'; $('list-retry').hidden = false; }
     }
+  } else if (location.pathname === '/settings') {
+    $('view-title').textContent = '设置'; $('view-title').hidden = false;
+    window.scrollTo(0, 0);
+    settingsPage = createSettingsPage({
+      sessionRequest, handleFailure,
+      onSaved: data => {
+        identity.timezone = data.settings.timezone;
+        month = sourceTimeline().values.date?.slice(0, 7) || localToday().slice(0, 7);
+        dirtySnapshots(); invalidateSidebar(); loadSidebar();
+      },
+    });
+    await settingsPage.mount($('workspace'));
   } else {
     $('view-title').textContent = pages.get(location.pathname) || '页面不存在'; $('view-title').hidden = false;
     $('capability').textContent = pages.has(location.pathname) ? `${pages.get(location.pathname)}尚未开放。` : '请从侧栏打开时间线。';
