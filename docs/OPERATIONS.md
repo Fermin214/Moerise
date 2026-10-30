@@ -24,7 +24,7 @@ Moerise 支持 Linux 原生二进制和 Docker Linux 容器部署，两者都需
 | `review` | 随机回顾数量、等待期、近期排除期与归档范围，默认 3 条、72 小时、7 天，详见[每日回顾](DAILY-REVIEW.md) |
 | `notifications` | 主动推送开关和 `times` 时段列表，默认关闭、每天 `09:00` 一次；使用顶层时区 |
 | `channel` | 飞书应用凭据、事件验证、绑定身份及推送渠道，详见[飞书入口](FEISHU.md) |
-| `embedding` | 独立的向量模型配置，默认关闭；百炼配置与连接检查见[向量模型](EMBEDDING.md) |
+| `embedding` | 独立的向量模型配置，默认关闭；通用及百炼配置与连接检查见[向量模型](EMBEDDING.md) |
 | `llm` | 独立的对话模型配置，默认关闭；协议、限额与连接检查见 [AI](AI.md) |
 
 扩展令牌须各不相同，且与 Memos PAT 分开。分别用密码管理器生成至少 32 字符的随机令牌和分页密钥；安装了 OpenSSL 时也可使用 `openssl rand -hex 32`。Scope 说明见 [API v1](API-V1.md#资源与身份)。

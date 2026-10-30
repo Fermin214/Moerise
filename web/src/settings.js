@@ -234,6 +234,8 @@ export function createSettingsPage({ sessionRequest, handleFailure, onSaved = ()
       EMBEDDING_UNAVAILABLE: 'Embedding 连接失败，请检查服务和地址。',
       LLM_UNAVAILABLE: 'LLM 连接失败，请检查服务和地址。',
       MODEL_CHECK_TIMEOUT: '连接检查超时，请稍后重试。',
+      UPSTREAM_AUTH_UNAVAILABLE: 'Memos 连接失败，请恢复笔记服务后重试。',
+      UPSTREAM_UNAVAILABLE: 'Memos 连接失败，请恢复笔记服务后重试。',
     };
     node.hidden = false;
     if (messages[err.code]) node.textContent = messages[err.code];

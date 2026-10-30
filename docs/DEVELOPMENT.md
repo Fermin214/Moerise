@@ -166,6 +166,22 @@ node --test web/test/browser.mjs
 
 浏览器回归覆盖会话失效后的草稿及附件恢复、创建和编辑的原键原请求体重试、并发请求失效后编辑器解锁提交、自动分页及多个编辑器重排时输入焦点保留、同时间资源名跨页排序、正文原生附件图片及下载、失败提交刷新后操作恢复，以及侧栏聚合复用、月份切换取消、缓存到期与写入或页面重新获得焦点后的刷新。`web/test/markdown.test.mjs` 补充附件映射边界与 64 KiB 未闭合标记的解析耗时检查。
 
+### 模型与索引联合流程
+
+`scripts/check-models.mjs` 使用真实 Memos、Linux Core、正式 Web、Chromium 和可控模型服务。需要 Node.js 24、Docker Linux 引擎及已安装的 Playwright；脚本自行编译 Core 和 Web，Docker 首次运行可下载 Go 与 Memos 镜像及 Go 依赖。PowerShell 示例：
+
+```powershell
+$env:MOERISE_PLAYWRIGHT_MODULE = 'C:/path/to/playwright/index.mjs'
+$env:MOERISE_PLAYWRIGHT_CHANNEL = 'chrome'
+node scripts/check-models.mjs
+```
+
+省略 `MOERISE_PLAYWRIGHT_CHANNEL` 时使用 Playwright 安装的 Chromium。模型模拟器运行在宿主机，Core 通过 `host.docker.internal` 访问，Linux 引擎使用 `host-gateway` 映射。来源与 Core 使用独立 Docker 网络，发布端口只绑定回环地址。
+
+流程覆盖两类模型独立启停、Web 保存与连接检查、版本冲突和错误脱敏、通用文档与查询协议、部分索引持久化、Core 重启续建、未变片段复用、Embedding 空间替换时阻止混用、LLM 变更保留向量代次，以及索引重建后的设置、密钥与浏览器会话。末尾检查模型关闭后的关键词搜索、笔记写入、退出及窄屏布局。轮询间隔为 1 秒，来源同步间隔为 5 秒；来源透传代理将请求起始时间至少间隔 150 毫秒，控制联合验收的并行流量，Memos 自身的限流规则继续生效。
+
+每次创建 `.local/models-acceptance-<随机ID>/`，保存脱敏 `checks.json` 和桌面、窄屏截图。流程结束或失败后关闭浏览器、回收独立容器、数据卷与网络，并删除配置凭据、二进制及数据库。供应商异常格式、取消与并发边界由 `internal/embedding_test.go` 补充，迟到响应和设置冲突由 `web/test/settings-browser.mjs` 补充。既有百炼及快照恢复链路使用 `TestVectorIndexAcceptance`，持久设置与模型替换使用 `TestClientSettingsMemosAcceptance`。
+
 ### 真实 Compose 部署验收
 
 `scripts/check-compose.mjs` 使用 Node.js 24 标准库、Docker CLI 和 Compose 2.24+，依次运行 bundled 与 external 两种拓扑。Docker Engine 与脚本必须位于同一台机器，并能运行 Linux 容器。脚本通过回环地址和随机空闲端口访问服务，不需要 npm 依赖、模型或飞书凭据。
