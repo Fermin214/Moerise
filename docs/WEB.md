@@ -18,11 +18,11 @@ npm --prefix web start
 | 环境变量 | 默认值 | 用途 |
 | --- | --- | --- |
 | `CORE_ORIGIN` | `http://127.0.0.1:8787` | Core 的固定 HTTP(S) 来源，仅服务端使用 |
-| `PUBLIC_ORIGIN` | `http://localhost:3000` | 浏览器访问的完整来源，写请求精确匹配 |
+| `PUBLIC_ORIGIN` | `http://localhost:3000` | 浏览器访问的完整来源，仅 HTTPS 或 loopback HTTP，写请求精确匹配 |
 | `HOST` | `0.0.0.0` | Web 监听地址 |
 | `PORT` | `3000` | Web 监听端口 |
 
-来源必须只包含协议、主机和可选端口，不带用户信息、路径、查询参数或片段。HTTPS 可由外层反向代理终止，转发到 Web；浏览器始终通过同一公开来源读取页面和 API。
+来源必须只包含协议、主机和可选端口，不带用户信息、路径、查询参数或片段。`PUBLIC_ORIGIN` 与 Core 的公开来源采用相同安全限制：HTTPS，或主机为 `localhost`、IPv4/IPv6 loopback 的 HTTP；普通域名和内网地址不能使用公开 HTTP 来源。`CORE_ORIGIN` 可使用 `http://core:8787` 等内网 HTTP 地址。HTTPS 可由外层反向代理终止，转发到 Web；浏览器始终通过同一公开来源读取页面和 API。
 
 PowerShell 本地运行示例：
 
@@ -49,7 +49,18 @@ docker run --rm --name moerise-web --network moerise \
   moerise-web
 ```
 
-示例要求已创建 `moerise` 网络，Core 在其中以 `core` 为主机名提供 8787 端口，并由 HTTPS 入口将 `notes.example.com` 转发至 Web。Web 容器使用普通用户运行，不需要挂载数据库或配置 Memos PAT。镜像包含根页面健康检查。
+示例要求已创建 `moerise` 网络，Core 在其中以 `core` 为主机名提供 8787 端口，并由 HTTPS 入口将 `notes.example.com` 转发至 Web。Web 容器使用普通用户运行，不需要挂载数据库或配置 Memos PAT。镜像通过 `/health/live` 检查自身存活，`fetch` 使用 `AbortSignal.timeout(2000)` 限制请求时长；Docker 检查超时为 3 秒。
+
+## 健康检查
+
+| 路径 | 方法 | 成功条件 | 成功响应 |
+| --- | --- | --- | --- |
+| `/health/live` | GET、HEAD | 构建入口 `dist/index.html` 可读 | 200，`{"status":"ok"}` |
+| `/health/ready` | GET、HEAD | 构建入口可读，且 Core 就绪检查返回 200 | 200，`{"status":"ready"}` |
+
+构建入口读取失败时，两种检查均返回 503。就绪检查固定使用服务端 GET 请求 `CORE_ORIGIN` 的 `/health/ready`，不带浏览器 Cookie、Authorization、Origin 或其他客户端请求头，不跟随重定向，不接受目标地址参数。Core 的非 200 响应、断连和超时均映射为 503；探测总时限为 2 秒，包含连接和响应读取，持续返回数据也不会延长时限。构建入口读取失败时不请求 Core。
+
+失败响应固定为 `{"status":"degraded"}`，不包含构建内容、私人笔记、上游响应、凭据或连接细节。HEAD 使用相同检查与状态码，响应无正文。其他方法返回 405，`Allow: GET, HEAD`，不读取构建或探测 Core。健康响应使用 `Cache-Control: no-store`；存活检查不依赖 Core 就绪状态。
 
 ## 同源请求与会话
 
