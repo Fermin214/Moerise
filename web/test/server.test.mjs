@@ -246,6 +246,20 @@ test('rejects configured origins that could add credentials or paths', () => {
   }
 });
 
+test('health timeout accepts only positive signed 32-bit integers without warnings', async t => {
+  const options = { coreOrigin: 'http://core:8787', publicOrigin: 'https://notes.example.com' };
+  for (const healthTimeout of [NaN, Infinity, -Infinity, 1.5, 0, -1, 2_147_483_648]) {
+    assert.throws(() => createWebServer({ ...options, healthTimeout }), /Invalid health timeout/,
+      String(healthTimeout));
+  }
+  const emitWarning = t.mock.method(process, 'emitWarning', () => {});
+  const server = createWebServer({ ...options, healthTimeout: 2_147_483_647 });
+  t.after(() => server.close());
+  assert.equal(server.listening, false);
+  await new Promise(setImmediate);
+  assert.equal(emitWarning.mock.callCount(), 0);
+});
+
 test('health checks fail closed on a missing build without probing Core or exposing files', async t => {
   const dist = await mkdtemp(join(tmpdir(), 'moerise-web-health-'));
   t.after(() => rm(dist, { recursive: true, force: true }));
