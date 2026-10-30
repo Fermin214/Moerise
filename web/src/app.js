@@ -453,7 +453,7 @@ function renderNote(note, detail = false) {
   const actions = [
     ['编辑', () => startEdit(note), ''],
     ...(!detail ? [['打开笔记', () => openNote(note), '']] : []),
-    [note.state === 'ARCHIVED' ? '恢复到时间线' : '归档', () => changeState(note), ''],
+    [note.state === 'ARCHIVED' ? '恢复到主页' : '归档', () => changeState(note), ''],
     ['从这条漫步', () => navigate('/walk'), ''],
     ['AI 洞察这条', () => navigate('/insights'), ''],
     ['删除', () => confirmDelete(card, note), 'dg'],
@@ -712,7 +712,7 @@ async function loadNotes(reset = false, retry = false) {
     handleFailure($('list-error'), err);
     if (!identity) return;
     retryReset = reset || err.code === 'INVALID_PAGE_TOKEN';
-    $('list-retry').textContent = retryReset ? '刷新时间线' : '重试加载'; $('list-retry').hidden = false;
+    $('list-retry').textContent = retryReset ? '刷新主页' : '重试加载'; $('list-retry').hidden = false;
     if (err.retryable) {
       retryTimer = setTimeout(() => {
         if (generation === epoch && view === viewSequence && sequence === listSequence) loadNotes(reset, true);
@@ -763,7 +763,7 @@ async function showRoute() {
     }
   } else if (detail) {
     const from = safeFrom(new URLSearchParams(location.search).get('from'));
-    const label = pages.get(new URL(from, location.origin).pathname) || '时间线';
+    const label = pages.get(new URL(from, location.origin).pathname) || '主页';
     routeReturnKey = history.state?.returnKey || null;
     $('back').textContent = `‹ 返回${label}`; $('back').hidden = false; window.scrollTo(0, 0);
     try {
@@ -790,7 +790,7 @@ async function showRoute() {
     await settingsPage.mount($('workspace'));
   } else {
     $('view-title').textContent = pages.get(location.pathname) || '页面不存在'; $('view-title').hidden = false;
-    $('capability').textContent = pages.has(location.pathname) ? `${pages.get(location.pathname)}尚未开放。` : '请从侧栏打开时间线。';
+    $('capability').textContent = pages.has(location.pathname) ? `${pages.get(location.pathname)}尚未开放。` : '请从侧栏打开主页。';
     $('capability').hidden = false; window.scrollTo(0, 0);
   }
 }

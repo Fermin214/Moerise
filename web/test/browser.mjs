@@ -244,7 +244,7 @@ test('browser timeline management, attachment retries, history, conflicts and pr
   await page.getByRole('button', { name: '用户菜单' }).click();
   await page.locator('a[href="/archived"]').click();
   await page.locator('[data-name="memos/n00"]').waitFor();
-  await menu(page, 'n00', '恢复到时间线');
+  await menu(page, 'n00', '恢复到主页');
   await page.locator('[data-name="memos/n00"]').waitFor({ state: 'detached' });
   await page.locator('a[href="/"]').click();
   await page.locator('[data-name="memos/n00"]').waitFor();
