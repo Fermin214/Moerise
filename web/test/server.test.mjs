@@ -2,15 +2,19 @@ import assert from 'node:assert/strict';
 import http from 'node:http';
 import { once } from 'node:events';
 import { test } from 'node:test';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { createWebServer } from '../server.mjs';
 
-async function fixture(t, handler) {
+async function fixture(t, handler, options = {}) {
   const core = http.createServer(handler);
   core.listen(0, '127.0.0.1');
   await once(core, 'listening');
   const web = createWebServer({
     coreOrigin: `http://127.0.0.1:${core.address().port}`,
     publicOrigin: 'https://notes.example.com',
+    ...options,
   });
   web.listen(0, '127.0.0.1');
   await once(web, 'listening');
@@ -228,5 +232,106 @@ test('rejects configured origins that could add credentials or paths', () => {
     'file:///etc/passwd', 'https://user:secret@example.com', 'http://example.com/api',
     'http://example.com?target=http://attacker.example', 'http://example.com/#fragment',
   ]) assert.throws(() => createWebServer({ coreOrigin }));
-  assert.throws(() => createWebServer({ publicOrigin: 'https://notes.example.com/path' }));
+  for (const publicOrigin of [
+    'http://notes.example.com', 'http://192.168.1.2', 'http://[::ffff:c0a8:102]',
+    'https://notes.example.com/path', 'https://notes.example.com:',
+    'http://127.1', 'http://0x7f000001', 'https://notes.example.com/#',
+  ]) assert.throws(() => createWebServer({ publicOrigin }));
+  for (const publicOrigin of [
+    'https://notes.example.com', 'http://LOCALHOST:80/', 'http://localhost.:3000',
+    'http://127.2.3.4:3000', 'http://[::1]:3000', 'http://[::ffff:127.0.0.1]:3000',
+  ]) {
+    const server = createWebServer({ coreOrigin: 'http://core:8787', publicOrigin });
+    server.close();
+  }
+});
+
+test('health checks fail closed on a missing build without probing Core or exposing files', async t => {
+  const dist = await mkdtemp(join(tmpdir(), 'moerise-web-health-'));
+  t.after(() => rm(dist, { recursive: true, force: true }));
+  let probes = 0;
+  const { url } = await fixture(t, (req, res) => { probes++; res.end('private upstream'); }, { dist });
+  for (const method of ['GET', 'HEAD']) {
+    for (const path of ['/health/live', '/health/ready']) {
+      const response = await fetch(url + path, { method });
+      assert.equal(response.status, 503);
+      assert.equal(response.headers.get('cache-control'), 'no-store');
+      assert.equal(await response.text(), method === 'HEAD' ? '' : '{"status":"degraded"}');
+    }
+  }
+  assert.equal(probes, 0);
+  await writeFile(join(dist, 'index.html'), 'private build contents');
+  const response = await fetch(url + '/health/live');
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), { status: 'ok' });
+  assert.equal(probes, 0);
+});
+
+test('readiness uses only the fixed Core path and isolates browser credentials and upstream data', async t => {
+  const received = [];
+  const { url } = await fixture(t, (req, res) => {
+    received.push({ method: req.method, path: req.url, headers: req.headers });
+    res.writeHead(200, {
+      'Set-Cookie': 'private=upstream', 'Location': 'https://unrelated.invalid',
+      'X-Private': 'upstream details',
+    });
+    res.end('private Core response');
+  });
+  for (const method of ['GET', 'HEAD']) {
+    const response = await fetch(url + '/health/ready?target=http://unrelated.invalid/api/ext/v1/notes', {
+      method, headers: {
+        Cookie: 'session=browser', Authorization: 'Bearer browser',
+        Origin: 'https://unrelated.invalid', 'X-Target-URL': 'http://unrelated.invalid',
+        'X-Forwarded-Host': 'unrelated.invalid', 'X-CSRF-Token': 'browser-csrf',
+      },
+    });
+    assert.equal(response.status, 200);
+    assert.equal(await response.text(), method === 'HEAD' ? '' : '{"status":"ready"}');
+    for (const name of ['set-cookie', 'location', 'x-private']) assert.equal(response.headers.get(name), null);
+  }
+  assert.equal(received.length, 2);
+  for (const request of received) {
+    assert.equal(request.method, 'GET');
+    assert.equal(request.path, '/health/ready');
+    assert.equal(request.headers.accept, 'application/json');
+    for (const name of ['cookie', 'authorization', 'origin', 'x-target-url', 'x-forwarded-host', 'x-csrf-token']) {
+      assert.equal(request.headers[name], undefined, name);
+    }
+  }
+  for (const path of ['/health/live', '/health/ready']) {
+    for (const method of ['POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS']) {
+      const response = await fetch(url + path, { method });
+      assert.equal(response.status, 405);
+      assert.equal(response.headers.get('allow'), 'GET, HEAD');
+    }
+  }
+  for (const path of ['/health', '/health/ready/', '/health/live/extra']) {
+    assert.equal((await fetch(url + path)).status, 404);
+  }
+  assert.equal((await fetch(url + '/health/live', { method: 'HEAD' })).status, 200);
+  assert.equal(received.length, 2);
+});
+
+test('readiness masks Core failure and redirects and bounds stalled probes', async t => {
+  let mode;
+  let probes = 0;
+  const { url } = await fixture(t, (req, res) => {
+    probes++;
+    if (mode === 'disconnect') req.socket.destroy();
+    else if (mode === 'headers-timeout') return;
+    else if (mode === 'body-timeout') { res.writeHead(200); res.write('private partial response'); }
+    else if (mode === 'redirect') { res.writeHead(302, { Location: '/api/ext/v1/notes' }); res.end(); }
+    else { res.writeHead(503, { 'Set-Cookie': 'private=upstream' }); res.end('private source failure'); }
+  }, { healthTimeout: 100 });
+  for (mode of ['unhealthy', 'redirect', 'disconnect', 'headers-timeout', 'body-timeout']) {
+    for (const method of ['GET', 'HEAD']) {
+      const response = await fetch(url + '/health/ready', { method, signal: AbortSignal.timeout(3000) });
+      assert.equal(response.status, 503, mode);
+      assert.equal(response.headers.get('cache-control'), 'no-store');
+      assert.equal(response.headers.get('set-cookie'), null);
+      assert.equal(await response.text(), method === 'HEAD' ? '' : '{"status":"degraded"}');
+    }
+    assert.equal((await fetch(url + '/health/live')).status, 200, mode);
+  }
+  assert.equal(probes, 10);
 });

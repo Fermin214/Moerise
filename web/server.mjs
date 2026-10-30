@@ -4,6 +4,7 @@ import { readFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { resolve } from 'node:path';
+import { BlockList, isIP } from 'node:net';
 
 const prefix = '/api/app/v1';
 const pages = new Set(['/', '/archived', '/review', '/walk', '/insights', '/map', '/settings']);
@@ -38,6 +39,45 @@ function origin(value, label) {
   return url;
 }
 
+function webOrigin(value) {
+  const url = origin(value, 'PUBLIC_ORIGIN');
+  const parts = /^https?:\/\/(\[[\da-f:.]+\]|[\da-z.-]+)(?::(\d+))?\/?$/i.exec(value);
+  if (!parts || (parts[2] !== undefined && Number(parts[2]) === 0)) {
+    throw new Error('Invalid PUBLIC_ORIGIN');
+  }
+  const host = parts[1].replace(/^\[|\]$/g, '').replace(/\.$/, '').toLowerCase();
+  const family = isIP(host);
+  if (!family && (host.length > 253 ||
+      !host.split('.').every(label => /^[a-z\d](?:[a-z\d-]{0,61}[a-z\d])?$/.test(label)) ||
+      /^(?:\d+|0x[\da-f]*)$/.test(host.split('.').at(-1)))) {
+    throw new Error('Invalid PUBLIC_ORIGIN');
+  }
+  const loopback = new BlockList();
+  loopback.addSubnet('127.0.0.0', 8, 'ipv4');
+  loopback.addAddress('::1', 'ipv6');
+  if (url.protocol === 'http:' && host !== 'localhost' &&
+      !(family && loopback.check(host, family === 6 ? 'ipv6' : 'ipv4'))) {
+    throw new Error('PUBLIC_ORIGIN requires HTTPS or a loopback HTTP address');
+  }
+  return url;
+}
+
+function coreReady(core, transport, timeout) {
+  return new Promise(resolve => {
+    // Health probes have a fixed target and never inherit browser headers.
+    const probe = transport.get({
+      protocol: core.protocol, hostname: core.hostname.replace(/^\[|\]$/g, ''),
+      port: core.port || undefined, path: '/health/ready',
+      headers: { Accept: 'application/json' }, signal: AbortSignal.timeout(timeout),
+    }, response => {
+      response.on('error', () => resolve(false));
+      response.on('end', () => resolve(response.statusCode === 200));
+      response.resume();
+    });
+    probe.on('error', () => resolve(false));
+  });
+}
+
 function error(res, status, code, message) {
   res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' });
   res.end(JSON.stringify({ error: { code, message, retryable: status >= 500, request_id: randomUUID() } }));
@@ -48,10 +88,14 @@ export function createWebServer({
   publicOrigin = process.env.PUBLIC_ORIGIN || 'http://localhost:3000',
   dist = fileURLToPath(new URL('./dist/', import.meta.url)),
   proxyTimeout = 60_000,
+  healthTimeout = 2_000,
 } = {}) {
   const core = origin(coreOrigin, 'CORE_ORIGIN');
-  const publicURL = origin(publicOrigin, 'PUBLIC_ORIGIN');
+  const publicURL = webOrigin(publicOrigin);
   const transport = core.protocol === 'https:' ? https : http;
+  if (!Number.isInteger(healthTimeout) || healthTimeout < 1 || healthTimeout > 4_294_967_295) {
+    throw new Error('Invalid health timeout');
+  }
 
   return http.createServer(async (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
@@ -66,6 +110,26 @@ export function createWebServer({
     if (!target.startsWith('/') || target.startsWith('//') ||
         /[%\\#]/.test(path) || path.split('/').some(part => part === '.' || part === '..')) {
       error(res, 400, 'INVALID_PATH', '请求路径无效。');
+      return;
+    }
+    if (path === '/health/live' || path === '/health/ready') {
+      if (!['GET', 'HEAD'].includes(req.method)) {
+        res.setHeader('Allow', 'GET, HEAD');
+        error(res, 405, 'METHOD_NOT_ALLOWED', '此请求方法不可用。');
+        return;
+      }
+      let healthy = false;
+      try {
+        await readFile(resolve(dist, 'index.html'));
+        healthy = path === '/health/live' || await coreReady(core, transport, healthTimeout);
+      } catch {
+        // Health responses expose neither build contents nor upstream failures.
+      }
+      const body = JSON.stringify({ status: healthy ? (path === '/health/live' ? 'ok' : 'ready') : 'degraded' });
+      res.writeHead(healthy ? 200 : 503, {
+        'Content-Type': 'application/json; charset=utf-8', 'Content-Length': Buffer.byteLength(body),
+      });
+      res.end(req.method === 'HEAD' ? undefined : body);
       return;
     }
     if (path === prefix || path.startsWith(`${prefix}/`)) {
