@@ -41,7 +41,7 @@ func (p *discoveryEmbeddings) Embed(_ context.Context, texts []string, purpose m
 func TestDiscoveryAcrossEntrypointsAcceptance(t *testing.T) {
 	h := newHarness(t)
 	record := func(key, body, tag string) string {
-		return h.recordInProcess(key, map[string]any{"content": body, "tags": []string{tag}}, 201)["name"].(string)
+		return h.recordInProcess(key, map[string]any{"content": "#" + tag + "\n\n" + body}, 201)["name"].(string)
 	}
 	seed := record("walk-seed", "seedbody", "study/base")
 	near := record("walk-near", "nearbody", "study/recall")

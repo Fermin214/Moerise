@@ -4,9 +4,18 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"net/url"
+	"regexp"
 	"slices"
 	"strings"
 	"sync"
+
+	"github.com/yuin/goldmark"
+	"github.com/yuin/goldmark/ast"
+	"github.com/yuin/goldmark/extension"
+	"github.com/yuin/goldmark/parser"
+	"github.com/yuin/goldmark/text"
+	"github.com/yuin/goldmark/util"
 )
 
 type UpdateNote struct {
@@ -25,6 +34,7 @@ type memoMutationSource interface {
 type attachmentMutationSource interface {
 	attachmentSource
 	DeleteAttachment(context.Context, string) error
+	CheckAttachmentRemoval(context.Context, string, []string) error
 }
 
 // The single-user service serializes mutations across NoteService instances.
@@ -73,8 +83,7 @@ func validateUpdate(input UpdateNote) ([]CreateAttachment, error) {
 	}
 	if !validSourceHash(input.SourceHash) ||
 		(input.State != "" && input.State != "NORMAL" && input.State != "ARCHIVED") ||
-		(input.Content != nil && len(*input.Content) > 65536) ||
-		len(input.RemoveAttachments) > 10 {
+		(input.Content != nil && len(*input.Content) > 65536) {
 		return nil, failure("INVALID_ARGUMENT", "Invalid content, state, source_hash or attachments", 422, false)
 	}
 	if err := validateAttachments(files); err != nil {
@@ -104,14 +113,201 @@ func validateUpdateParent(memo *Memo, input UpdateNote, files []CreateAttachment
 	if input.Content != nil {
 		content = *input.Content
 	}
-	if count > 10 || (strings.TrimSpace(content) == "" && count == 0) {
-		return failure("INVALID_ARGUMENT", "A note requires content or attachments, with at most 10 attachments", 422, false)
+	if strings.TrimSpace(content) == "" && count == 0 {
+		return failure("INVALID_ARGUMENT", "A note requires content or attachments", 422, false)
 	}
 	return nil
 }
 
 func hasAttachment(memo *Memo, name string) bool {
 	return slices.ContainsFunc(memo.Attachments, func(raw map[string]any) bool { return raw["name"] == name })
+}
+
+func attachmentReferenced() error {
+	return failure("ATTACHMENT_REFERENCED",
+		"Remove the native attachment image reference from the memo content before deleting the attachment", 422, false)
+}
+
+func attachmentDeleteRejected() error {
+	return failure("ATTACHMENT_DELETE_REJECTED",
+		"Memos rejected attachment deletion; correct managed image references in the memo content or check attachment group constraints", 422, false)
+}
+
+// 与 Memos 0.31 使用同版 Goldmark，只检查图片节点；普通链接与代码不构成附件引用。
+func attachmentImageDestinations(content string) ([]string, error) {
+	const domain = `(?:[\p{L}\p{N}_-]+\.)*[\p{L}\p{N}-]+\.[\p{L}\p{N}-]+`
+	linkify := extension.NewLinkifyParser(
+		extension.WithLinkifyAllowedProtocols([]string{"http:", "https:"}),
+		extension.WithLinkifyURLRegexp(regexp.MustCompile(`^https?://`+domain+`[^<\x09-\x0d\p{Z}]*`)),
+		extension.WithLinkifyWWWRegexp(regexp.MustCompile(`^www\.`+domain+`[^<\x09-\x0d\p{Z}]*`)),
+		extension.WithLinkifyEmailRegexp(regexp.MustCompile(`a^`)),
+	)
+	md := goldmark.New(
+		goldmark.WithExtensions(extension.Table, extension.Strikethrough, extension.TaskList),
+		goldmark.WithParserOptions(parser.WithInlineParsers(util.Prioritized(linkify, 999))),
+	)
+	source := []byte(content)
+	root := md.Parser().Parse(text.NewReader(source))
+	// Memos 将裸目标中括号未闭合的引用定义当作普通文本。
+	var masked []byte
+	_ = ast.Walk(root, func(node ast.Node, entering bool) (ast.WalkStatus, error) {
+		definition, ok := node.(*ast.LinkReferenceDefinition)
+		if !entering || !ok {
+			return ast.WalkContinue, nil
+		}
+		depth := 0
+		for i := 0; i < len(definition.Destination); i++ {
+			switch definition.Destination[i] {
+			case '\\':
+				if i+1 < len(definition.Destination) && util.IsPunct(definition.Destination[i+1]) {
+					i++
+				}
+			case '(':
+				depth++
+			case ')':
+				depth--
+			}
+		}
+		if depth <= 0 {
+			return ast.WalkContinue, nil
+		}
+		reader := text.NewBlockReader(source, definition.Lines())
+		reader.SkipSpaces()
+		if reader.Peek() != '[' {
+			return ast.WalkContinue, nil
+		}
+		reader.Advance(1)
+		if _, found := reader.FindClosure('[', ']', text.FindClosureOptions{Nesting: false, Newline: true, Advance: true}); !found || reader.Peek() != ':' {
+			return ast.WalkContinue, nil
+		}
+		_, position := reader.Position()
+		colon := position.Start
+		reader.Advance(1)
+		reader.SkipSpaces()
+		if colon >= 0 && colon < len(source) && source[colon] == ':' && reader.Peek() != '<' {
+			if masked == nil {
+				masked = slices.Clone(source)
+			}
+			masked[colon] = ';'
+		}
+		return ast.WalkContinue, nil
+	})
+	if masked != nil {
+		root = md.Parser().Parse(text.NewReader(masked))
+	}
+	destinations := []string{}
+	err := ast.Walk(root, func(node ast.Node, entering bool) (ast.WalkStatus, error) {
+		if !entering {
+			return ast.WalkContinue, nil
+		}
+		switch node := node.(type) {
+		case *ast.Image:
+			destinations = append(destinations, string(node.Destination))
+		case *ast.RawHTML:
+			if strings.Contains(string(node.Segments.Value(source)), "/file/attachments/") {
+				return ast.WalkStop, attachmentDeleteRejected()
+			}
+		case *ast.HTMLBlock:
+			raw := string(node.Lines().Value(source))
+			if node.HasClosure() {
+				raw += string(node.ClosureLine.Value(source))
+			}
+			if strings.Contains(raw, "/file/attachments/") {
+				return ast.WalkStop, attachmentDeleteRejected()
+			}
+		}
+		return ast.WalkContinue, nil
+	})
+	return destinations, err
+}
+
+func (m *MemosClient) CheckAttachmentRemoval(ctx context.Context, content string, names []string) error {
+	destinations, err := attachmentImageDestinations(content)
+	if err != nil {
+		return err
+	}
+	var instance *url.URL
+	loadedOrigin := false
+	for _, destination := range destinations {
+		parsed, err := url.Parse(destination)
+		if err != nil || !strings.HasPrefix(parsed.Path, "/file/attachments/") {
+			continue
+		}
+		if parsed.IsAbs() || parsed.Host != "" {
+			if !loadedOrigin {
+				var profile struct {
+					InstanceURL string `json:"instanceUrl"`
+				}
+				if err := m.request(ctx, "/api/v1/instance/profile", nil, &profile); err != nil {
+					return err
+				}
+				if origin := strings.TrimSpace(profile.InstanceURL); origin != "" {
+					instance, err = url.Parse(origin)
+					if err != nil || !instance.IsAbs() || instance.Host == "" {
+						return upstreamError("UPSTREAM_PROTOCOL", "Invalid Memos instance URL")
+					}
+				}
+				loadedOrigin = true
+			}
+			// instanceUrl 是 Memos 的来源配置，不能用 Moerise PublicURL 代替。
+			if parsed.Scheme == "" {
+				withScheme := *parsed
+				if instance != nil {
+					withScheme.Scheme = instance.Scheme
+				}
+				if instance == nil || sameAttachmentOrigin(&withScheme, instance) {
+					return attachmentDeleteRejected()
+				}
+				continue
+			}
+			if instance == nil {
+				return attachmentDeleteRejected()
+			}
+			if !sameAttachmentOrigin(parsed, instance) {
+				continue
+			}
+		}
+		if parsed.RawQuery != "" || parsed.Fragment != "" || parsed.RawPath != "" ||
+			strings.Contains(parsed.EscapedPath(), "%") {
+			return attachmentDeleteRejected()
+		}
+		parts := strings.Split(strings.TrimPrefix(parsed.Path, "/file/attachments/"), "/")
+		if (len(parts) != 1 && len(parts) != 2) || !attachmentPattern.MatchString("attachments/"+parts[0]) ||
+			(len(parts) == 2 && parts[1] == "") {
+			return attachmentDeleteRejected()
+		}
+		if slices.Contains(names, "attachments/"+parts[0]) {
+			return attachmentReferenced()
+		}
+	}
+	return nil
+}
+
+func sameAttachmentOrigin(a, b *url.URL) bool {
+	port := func(u *url.URL) string {
+		if value := u.Port(); value != "" {
+			return value
+		}
+		switch strings.ToLower(u.Scheme) {
+		case "http":
+			return "80"
+		case "https":
+			return "443"
+		}
+		return ""
+	}
+	return strings.EqualFold(a.Scheme, b.Scheme) && strings.EqualFold(a.Hostname(), b.Hostname()) && port(a) == port(b)
+}
+
+func (s *NoteService) checkAttachmentRemoval(ctx context.Context, memo *Memo, input UpdateNote) error {
+	if len(input.RemoveAttachments) == 0 {
+		return nil
+	}
+	content := memo.Content
+	if input.Content != nil {
+		content = *input.Content
+	}
+	return s.Source.(attachmentMutationSource).CheckAttachmentRemoval(ctx, content, input.RemoveAttachments)
 }
 
 // Each intent contains only fingerprints. It shares the durable write journal and
@@ -276,6 +472,9 @@ func (s *NoteService) Update(ctx context.Context, name, key string, input Update
 		if err := validateUpdateParent(memo, input, files); err != nil {
 			return Note{}, err
 		}
+		if err := s.checkAttachmentRemoval(ctx, memo, input); err != nil {
+			return Note{}, err
+		}
 	}
 	write, err := s.Store.reserveNote(writeKey, hash)
 	if err != nil {
@@ -308,6 +507,11 @@ func (s *NoteService) Update(ctx context.Context, name, key string, input Update
 			return Note{}, err
 		}
 		return memo.Note(s.Settings), nil
+	}
+	if saved != "" {
+		if err := s.checkAttachmentRemoval(ctx, memo, input); err != nil {
+			return Note{}, err
+		}
 	}
 	steps := []noteMutationStep{}
 	records := NewRecordService(s.Store, s.Source)

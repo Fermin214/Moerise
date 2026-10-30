@@ -65,6 +65,20 @@ func (m *MemosClient) do(ctx context.Context, method, path string, query url.Val
 	case response.StatusCode == 404:
 		return failure("SOURCE_NOT_FOUND", "Memo is unavailable", 404, false)
 	case response.StatusCode == 400:
+		if method == http.MethodDelete && strings.HasPrefix(path, "/api/v1/attachments/") {
+			var rejected struct {
+				Code    int    `json:"code"`
+				Message string `json:"message"`
+			}
+			err := json.NewDecoder(io.LimitReader(response.Body, 64*1024)).Decode(&rejected)
+			// Memos 0.31 在删除附件前按 Markdown 图片节点检查正文引用。
+			if err == nil && rejected.Code == 9 {
+				if strings.Contains(rejected.Message, "is referenced by memo content") {
+					return attachmentReferenced()
+				}
+				return attachmentDeleteRejected()
+			}
+		}
 		return upstreamError("UPSTREAM_REQUEST_REJECTED", "Memos rejected the adapter request")
 	case response.StatusCode == 409:
 		return failure("UPSTREAM_RESOURCE_EXISTS", "The Memos resource already exists", 409, false)
@@ -126,6 +140,8 @@ func (m *MemosClient) UpdateMemo(ctx context.Context, name string, content *stri
 	if len(mask) == 0 {
 		return nil, failure("INVALID_ARGUMENT", "No memo fields to update", 422, false)
 	}
+	// 省略字段值，由 Memos 使用服务端时间，避免改动 create_time。
+	mask = append(mask, "update_time")
 	data, _ := json.Marshal(body)
 	var raw map[string]any
 	if err := m.do(ctx, http.MethodPatch, "/api/v1/"+name,

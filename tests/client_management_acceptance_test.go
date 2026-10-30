@@ -16,9 +16,11 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"os"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	moerise "moerise/internal"
 )
@@ -305,4 +307,195 @@ func TestClientManagementMemosAcceptance(t *testing.T) {
 	c.call("DELETE", "/api/app/v1/session", nil, 204)
 	c.call("GET", download, nil, 401)
 	c.call("GET", pictureURL, nil, 401)
+}
+
+func TestClientNativeExactTagsMemosAcceptance(t *testing.T) {
+	h := newHarness(t)
+	c := managedClient(t, h)
+	tags := []string{"C++", "R&D", "e\u0301", "👩‍💻"}
+	c.key = "native-unicode-tags"
+	native := c.call("POST", "/api/app/v1/notes",
+		map[string]any{"content": "#" + strings.Join(tags, " #")}, 201)
+	h.call(h.memos, "/api/v1/memos?memoId=native-tag-decoy", "POST", h.upstream,
+		map[string]string{"content": "#C #R #é #👩", "visibility": "PRIVATE"}, 200)
+	source := h.call(h.memos, "/api/v1/"+native["name"].(string), "GET", h.upstream, nil, 200)
+	for _, tag := range tags {
+		if !slices.Contains(source["tags"].([]any), any(tag)) {
+			t.Fatalf("real Memos did not parse the native tag %q: %v", tag, source["tags"])
+		}
+		page := c.call("GET", "/api/app/v1/notes?tag="+url.QueryEscape(tag), nil, 200)
+		rows := page["notes"].([]any)
+		if len(rows) != 1 || rows[0].(map[string]any)["name"] != native["name"] {
+			t.Fatalf("native tag %q did not filter exactly: %v", tag, page)
+		}
+	}
+	query := url.Values{"tag": tags}
+	page := c.call("GET", "/api/app/v1/notes?"+query.Encode(), nil, 200)
+	if rows := page["notes"].([]any); len(rows) != 1 || rows[0].(map[string]any)["name"] != native["name"] {
+		t.Fatalf("native tags did not combine exactly: %v", page)
+	}
+}
+
+func TestClientMutationTimestampsMemosAcceptance(t *testing.T) {
+	h := newHarness(t)
+	c := managedClient(t, h)
+	c.key = "timestamp-create"
+	native := c.call("POST", "/api/app/v1/notes", map[string]any{"content": "timestamps"}, 201)
+	created := native["create_time"]
+	for i, change := range []map[string]any{
+		{"content": "edited timestamps"}, {"state": "ARCHIVED"}, {"state": "NORMAL"},
+	} {
+		h.call(h.memos, "/api/v1/"+native["name"].(string)+"?updateMask=update_time",
+			"PATCH", h.upstream, map[string]string{"updateTime": "2020-01-01T00:00:00Z"}, 200)
+		native = c.call("GET", clientNotePath(native), nil, 200)
+		change["source_hash"] = native["source_hash"]
+		before := time.Now().UTC().Truncate(time.Second)
+		c.key = fmt.Sprintf("timestamp-update-%d", i)
+		native = c.call("PATCH", clientNotePath(native), change, 200)
+		updated, err := time.Parse(time.RFC3339Nano, native["update_time"].(string))
+		if err != nil || updated.Before(before) || native["create_time"] != created {
+			t.Fatalf("mutation did not advance update_time while preserving create_time: %v, %v", native, err)
+		}
+		source := h.call(h.memos, "/api/v1/"+native["name"].(string), "GET", h.upstream, nil, 200)
+		sourceCreated, _ := time.Parse(time.RFC3339Nano, source["createTime"].(string))
+		wantCreated, _ := time.Parse(time.RFC3339Nano, created.(string))
+		sourceUpdated, _ := time.Parse(time.RFC3339Nano, source["updateTime"].(string))
+		if !sourceCreated.Equal(wantCreated) || !sourceUpdated.Equal(updated) {
+			t.Fatalf("timestamp response differs from real Memos: %v", source)
+		}
+	}
+}
+
+func TestClientAttachmentDeletionPreflightMemosAcceptance(t *testing.T) {
+	h := newHarness(t)
+	c := managedClient(t, h)
+	file := map[string]any{"filename": "资料.txt", "type": "text/plain",
+		"content": base64.StdEncoding.EncodeToString([]byte("private attachment bytes\n"))}
+	var picture bytes.Buffer
+	if err := png.Encode(&picture, image.NewRGBA(image.Rect(0, 0, 1, 1))); err != nil {
+		t.Fatal(err)
+	}
+	for _, syntax := range []string{"image", "reference-image", "link", "code", "fenced-code"} {
+		c.key = "reference-create-" + syntax
+		native := c.call("POST", "/api/app/v1/notes", map[string]any{
+			"content": "caption", "attachments": []any{map[string]any{
+				"filename": "picture.png", "type": "image/png",
+				"content": base64.StdEncoding.EncodeToString(picture.Bytes()),
+			}},
+		}, 201)
+		resource := native["attachments"].([]any)[0].(map[string]any)["name"].(string)
+		destination := "/file/" + resource + "/picture.png"
+		body := "![picture](" + destination + ")"
+		switch syntax {
+		case "reference-image":
+			body = "![picture][pic]\n\n[pic]: " + destination
+		case "link":
+			body = "[download](" + destination + ")"
+		case "code":
+			body = "`" + body + "`"
+		case "fenced-code":
+			body = "```markdown\n" + body + "\n```"
+		}
+		c.key = "reference-body-" + syntax
+		native = c.call("PATCH", clientNotePath(native),
+			map[string]any{"source_hash": native["source_hash"], "content": body}, 200)
+		h.call(h.memos, "/api/v1/"+native["name"].(string)+"?updateMask=update_time",
+			"PATCH", h.upstream, map[string]string{"updateTime": "2020-01-01T00:00:00Z"}, 200)
+		native = c.call("GET", clientNotePath(native), nil, 200)
+		c.key = "reference-delete-" + syntax
+		remove := map[string]any{"source_hash": native["source_hash"], "content": body,
+			"remove_attachments": []string{resource}}
+		if syntax == "image" || syntax == "reference-image" {
+			if syntax == "image" {
+				c.key = "reference-reject-before-all-writes"
+				c.call("PATCH", clientNotePath(native), map[string]any{
+					"source_hash": native["source_hash"], "content": body + "\nchanged caption",
+					"state": "ARCHIVED", "attachments": []any{file}, "remove_attachments": []string{resource},
+				}, 422)
+				c.key = "reference-delete-" + syntax
+			}
+			for range 2 {
+				result := c.call("PATCH", clientNotePath(native), remove, 422)
+				rejected := result["error"].(map[string]any)
+				if rejected["code"] != "ATTACHMENT_REFERENCED" || rejected["retryable"] != false ||
+					!strings.Contains(rejected["message"].(string), "memo content") {
+					t.Fatalf("referenced image did not return a correctable error: %v", result)
+				}
+			}
+			unchanged := c.call("GET", clientNotePath(native), nil, 200)
+			if unchanged["source_hash"] != native["source_hash"] || len(unchanged["attachments"].([]any)) != 1 {
+				t.Fatal("write preflight changed the rejected attachment, content, state or timestamp")
+			}
+			// 预检失败不占用幂等键；沿用草稿来源版本和键即可修正文后保存。
+			remove["content"] = "corrected caption"
+		}
+		native = c.call("PATCH", clientNotePath(native), remove, 200)
+		if len(native["attachments"].([]any)) != 0 {
+			t.Fatalf("attachment deletion did not finish after reference correction: %v", native)
+		}
+		source := h.call(h.memos, "/api/v1/"+native["name"].(string), "GET", h.upstream, nil, 200)
+		if attachments, _ := source["attachments"].([]any); len(attachments) != 0 {
+			t.Fatalf("real Memos retained the removed attachment: %v", source)
+		}
+	}
+}
+
+func TestClientExistingAttachmentCountsMemosAcceptance(t *testing.T) {
+	h := newHarness(t)
+	c := managedClient(t, h)
+	file := map[string]any{"filename": "资料.txt", "type": "text/plain",
+		"content": base64.StdEncoding.EncodeToString([]byte("private attachment bytes\n"))}
+	source := h.call(h.memos, "/api/v1/memos?memoId=large-attachment-note", "POST", h.upstream,
+		map[string]string{"content": "many attachments", "visibility": "PRIVATE"}, 200)
+	for i := range 12 {
+		h.call(h.memos, fmt.Sprintf("/api/v1/attachments?attachmentId=existing-file-%d", i),
+			"POST", h.upstream, map[string]any{"memo": source["name"],
+				"filename": fmt.Sprintf("existing-%d.txt", i), "type": "text/plain", "content": file["content"]}, 200)
+	}
+	native := c.call("GET", clientNotePath(source), nil, 200)
+	for i, change := range []map[string]any{
+		{"content": "edited with twelve attachments", "attachments": []any{}},
+		{"state": "ARCHIVED"}, {"state": "NORMAL"},
+	} {
+		change["source_hash"] = native["source_hash"]
+		c.key = fmt.Sprintf("large-attachment-update-%d", i)
+		native = c.call("PATCH", clientNotePath(native), change, 200)
+		if len(native["attachments"].([]any)) != 12 {
+			t.Fatal("editing or archiving changed existing attachments")
+		}
+	}
+	c.key = "large-attachment-reduce"
+	native = c.call("PATCH", clientNotePath(native), map[string]any{
+		"source_hash":        native["source_hash"],
+		"remove_attachments": []any{native["attachments"].([]any)[0].(map[string]any)["name"]},
+	}, 200)
+	if len(native["attachments"].([]any)) != 11 {
+		t.Fatal("reducing attachments to eleven failed")
+	}
+	files := slices.Repeat([]any{file}, 11)
+	c.key = "large-attachment-reject-eleven-new"
+	c.call("PATCH", clientNotePath(native), map[string]any{
+		"source_hash": native["source_hash"], "attachments": files,
+	}, 422)
+	unchanged := c.call("GET", clientNotePath(native), nil, 200)
+	if unchanged["source_hash"] != native["source_hash"] {
+		t.Fatal("rejected upload changed the existing note")
+	}
+	c.key = "large-attachment-add-ten"
+	native = c.call("PATCH", clientNotePath(native), map[string]any{
+		"source_hash": native["source_hash"], "attachments": files[:10],
+	}, 200)
+	if len(native["attachments"].([]any)) != 21 {
+		t.Fatal("per-request upload limit incorrectly capped the attachment total")
+	}
+	names := []any{}
+	for _, raw := range native["attachments"].([]any) {
+		names = append(names, raw.(map[string]any)["name"])
+	}
+	c.key = "large-attachment-remove-all"
+	native = c.call("PATCH", clientNotePath(native),
+		map[string]any{"source_hash": native["source_hash"], "remove_attachments": names}, 200)
+	if len(native["attachments"].([]any)) != 0 || native["content"] != "edited with twelve attachments" {
+		t.Fatal("removing more than ten existing attachments failed")
+	}
 }

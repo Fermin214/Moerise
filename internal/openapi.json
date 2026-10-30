@@ -2362,10 +2362,11 @@
               "maxItems": 20,
               "items": {
                 "type": "string",
+                "minLength": 1,
                 "maxLength": 100
               }
             },
-            "description": "重复参数按精确 AND 组合。",
+            "description": "重复参数按精确 AND 组合；每项最多 400 UTF-8 字节，兼容 C++、R&D、组合字符及 emoji 等 Memos 原生标签。",
             "style": "form",
             "explode": true
           },
@@ -7286,7 +7287,7 @@
       "ClientUpdateNote": {
         "type": "object",
         "additionalProperties": false,
-        "description": "来源版本复查；保留原有附件，新增附件使用稳定幂等键。Memos 没有原子条件更新，外部并发写入仍可能最后写入生效。",
+        "description": "来源版本复查；保留原有附件，单次新增最多十个，来源已有更多附件仍可管理。修改正文或状态推进来源修改时间，创建时间保持原值。新增附件使用稳定幂等键。Memos 没有原子条件更新，外部并发写入仍可能最后写入生效。",
         "properties": {
           "content": {
             "type": "string"
@@ -7311,7 +7312,7 @@
           },
           "remove_attachments": {
             "type": "array",
-            "maxItems": 10,
+            "description": "移除真实关联的附件，数量不受单次新增上限限制。正文仍引用待删除图片时返回 422 ATTACHMENT_REFERENCED；原生引用不合法或其他删除前置条件失败返回 422 ATTACHMENT_DELETE_REJECTED，修正后提交。",
             "uniqueItems": true,
             "items": {
               "type": "string",

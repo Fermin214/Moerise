@@ -133,7 +133,9 @@ func TestRelatedAcceptance(t *testing.T) {
 		t.Helper()
 		input := map[string]any{"content": body}
 		if len(tags) > 0 {
-			input["tags"] = tags
+			tags = slices.Clone(tags)
+			slices.Sort(tags)
+			input["content"] = "#" + strings.Join(slices.Compact(tags), " #") + "\n\n" + body
 		}
 		return h.recordInProcess("related-"+key, input, 201)["name"].(string)
 	}

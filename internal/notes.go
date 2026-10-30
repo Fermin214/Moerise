@@ -134,7 +134,7 @@ func normalizeLiveList(args NoteList) (NoteList, error) {
 	args.Query = strings.TrimSpace(args.Query)
 	args.Tags = slices.Clone(args.Tags)
 	for _, tag := range args.Tags {
-		if !utf8.ValidString(tag) || len(tag) > 400 || utf8.RuneCountInString(tag) > 100 || !tagPattern.MatchString(tag) {
+		if tag == "" || !utf8.ValidString(tag) || len(tag) > 400 || utf8.RuneCountInString(tag) > 100 {
 			return args, bad
 		}
 	}
