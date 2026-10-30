@@ -313,6 +313,8 @@ func (a *ClientAPI) route(w http.ResponseWriter, r *http.Request) (any, int, err
 		return a.settingsRoute(w, r)
 	case "/api/app/v1/models", "/api/app/v1/models/embedding/check", "/api/app/v1/models/llm/check":
 		return a.modelsRoute(w, r)
+	case "/api/app/v1/reviews/daily", "/api/app/v1/walks/start", "/api/app/v1/walks/next":
+		return a.discoveryRoute(w, r)
 	case "/api/app/v1/notes":
 		if method == http.MethodGet {
 			query, err := url.ParseQuery(r.URL.RawQuery)
