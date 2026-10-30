@@ -40,6 +40,32 @@ button:disabled { cursor:default; opacity:.5; }
 #load-more { align-self:center; }
 #back { align-self:flex-start; }
 #list-retry { align-self:flex-start; }
+.discovery-page { min-width:0; }
+.discovery-page > .sub,.discovery-page > .error { margin:0; }
+.discovery-note { width:100%; min-height:220px; box-shadow:0 10px 30px rgba(31,35,40,.07); }
+.discovery-note .hd { gap:8px; flex-wrap:wrap; }
+.discovery-meta { display:flex; align-items:center; justify-content:flex-end; flex-wrap:wrap; gap:8px; margin-left:auto; min-width:0; }
+.discovery-meta .tag { overflow-wrap:anywhere; max-width:100%; }
+.review-stack { position:relative; padding-bottom:22px; }
+.review-stack .peek-1 { transform:translateY(8px) scale(.96); opacity:.8; }
+.review-stack .peek-2 { transform:translateY(16px) scale(.92); opacity:.5; }
+.discovery-controls { display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px; }
+.discovery-actions { display:flex; align-items:center; flex-wrap:wrap; gap:4px; }
+.review-positions { flex-wrap:wrap; gap:4px 0; max-width:100%; }
+.review-positions .dt { border:0; padding:0; cursor:pointer; height:8px; flex:none; }
+.review-positions .dt::after { content:""; display:block; height:24px; transform:translateY(-8px); }
+.discovery-retry { align-self:flex-start; }
+.walk-start { min-height:400px; display:flex; align-items:center; justify-content:center; }
+.walk-start .save { height:52px; padding:0 28px; font-size:16px; box-shadow:0 8px 24px rgba(91,141,239,.28); }
+.walk-cards { display:flex; flex-direction:column; align-items:center; gap:10px; min-width:0; }
+.walk-trail { width:92%; padding:8px 16px; opacity:.6; }
+.walk-trail-text { font-size:13px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+@media (max-width:760px) {
+  .discovery-page .card.big { padding:22px 20px; }
+  .discovery-controls { align-items:flex-start; }
+  .discovery-page .card.big p { font-size:18px !important; }
+  .walk-start { min-height:280px; }
+}
 .mobile-filter-toggle { display:none; }
 .attachment-list .dlink { font-size:13px; }
 .settings-page,.settings-form { display:flex; flex-direction:column; gap:14px; min-width:0; }
