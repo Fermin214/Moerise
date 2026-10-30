@@ -314,6 +314,93 @@ func TestEmbeddingConcurrencyAndPreflight(t *testing.T) {
 	}
 }
 
+// Malformed provider replies and dimension negotiation are not reproducible with real models.
+func TestCompatibleEmbeddingProtocol(t *testing.T) {
+	for _, sendDimensions := range []bool{false, true} {
+		t.Run(map[bool]string{false: "fixed-dimensions", true: "requested-dimensions"}[sendDimensions], func(t *testing.T) {
+			var calls int
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls++
+				var body map[string]json.RawMessage
+				if r.URL.Path != "/models/v1/embeddings" || r.Method != "POST" ||
+					r.Header.Get("Authorization") != "Bearer embedding-test-credential" ||
+					json.NewDecoder(r.Body).Decode(&body) != nil {
+					t.Error("invalid compatible endpoint or credential")
+				}
+				var texts []string
+				if json.Unmarshal(body["input"], &texts) != nil || len(texts) == 0 ||
+					string(body["encoding_format"]) != `"float"` || string(body["model"]) != `"custom-model"` ||
+					(body["dimensions"] != nil) != sendDimensions || body["parameters"] != nil {
+					t.Error("invalid compatible request")
+				}
+				items := make([]any, len(texts))
+				for i := range texts {
+					items[len(texts)-1-i] = map[string]any{"index": i, "embedding": []float32{float32(len(texts[i])), 1, 0}}
+				}
+				_ = json.NewEncoder(w).Encode(map[string]any{"data": items})
+			}))
+			defer server.Close()
+			config := embeddingTestConfig(server.URL)
+			base, model := server.URL+"/models/v1/", "custom-model"
+			config.Provider, config.Protocol = "openai-compatible", "openai-compatible"
+			config.BaseURL, config.Model = &base, &model
+			config.Dimensions, config.BatchSize, config.SendDimensions = 3, 2, sendDimensions
+			provider, err := NewEmbeddingProvider(config)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer provider.Close()
+			for _, purpose := range []EmbeddingPurpose{EmbeddingDocument, EmbeddingQuery} {
+				result, err := provider.Embed(t.Context(), []string{"one", "second", "third"}, purpose)
+				if err != nil || len(result.Vectors) != 3 || result.Vectors[1][0] != 6 || result.TotalTokens != 0 {
+					t.Fatalf("batch ordering or optional usage failed: %v", err)
+				}
+			}
+			if calls != 4 {
+				t.Fatalf("unexpected batch count: %d", calls)
+			}
+			fixedSpace := embeddingSpace(config)
+			config.SendDimensions = !sendDimensions
+			if fixedSpace == embeddingSpace(config) {
+				t.Fatal("dimension request semantics reused the old document space")
+			}
+			instruction := "query instruction"
+			config.QueryInstruction = &instruction
+			if config.Validate() == nil {
+				t.Fatal("unsupported query instruction accepted")
+			}
+		})
+	}
+	for _, body := range []string{
+		`{"data":[{"index":0,"embedding":[1,0]}]}`,
+		`{"data":[{"index":0,"embedding":[1,null,0]}]}`,
+		`{"data":[{"index":0,"embedding":[0,0,0]}]}`,
+		`{"data":[{"index":1,"embedding":[1,0,0]}]}`,
+		`{"data":[{"embedding":[1,0,0]}]}`,
+		`{"data":[{"index":0,"embedding":[1,0,0]}],"usage":{"total_tokens":-1}}`,
+		`{"data":[{"index":0,"embedding":[1,0,0]}],"error":{"message":"private input"}}`,
+		`{"data":[{"index":0,"embedding":[1,0,0]}]} {}`,
+	} {
+		t.Run(body, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = io.WriteString(w, body)
+			}))
+			defer server.Close()
+			config := embeddingTestConfig(server.URL)
+			config.Provider, config.Protocol, config.Dimensions = "openai-compatible", "openai-compatible", 3
+			provider, err := NewEmbeddingProvider(config)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer provider.Close()
+			result, err := provider.Embed(t.Context(), []string{"private input"}, EmbeddingQuery)
+			if errorCode(err) != "EMBEDDING_PROTOCOL" || result.Vectors != nil || strings.Contains(err.Error(), "private input") {
+				t.Fatalf("invalid response accepted or leaked: %v", err)
+			}
+		})
+	}
+}
+
 func TestEmbeddingConfiguration(t *testing.T) {
 	for _, field := range []string{"provider", "protocol", "base_url", "api_key", "model", "dimensions", "batch_size", "timeout_seconds", "max_concurrency", "max_retries"} {
 		t.Run(field, func(t *testing.T) {

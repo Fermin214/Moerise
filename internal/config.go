@@ -86,6 +86,7 @@ type EmbeddingConfig struct {
 	APIKey           *string `json:"api_key"`
 	Model            *string `json:"model"`
 	Dimensions       int     `json:"dimensions"`
+	SendDimensions   bool    `json:"send_dimensions"`
 	BatchSize        int     `json:"batch_size"`
 	TimeoutSeconds   float64 `json:"timeout_seconds"`
 	MaxConcurrency   int     `json:"max_concurrency"`

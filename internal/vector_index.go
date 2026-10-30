@@ -33,8 +33,12 @@ type VectorIndexStatus struct {
 }
 
 func embeddingSpace(config EmbeddingConfig) string {
-	data, _ := json.Marshal([]any{config.Provider, config.Protocol,
-		strings.TrimRight(configured(config.BaseURL), "/"), configured(config.Model), config.Dimensions, ChunkVersion})
+	space := []any{config.Provider, config.Protocol,
+		strings.TrimRight(configured(config.BaseURL), "/"), configured(config.Model), config.Dimensions, ChunkVersion}
+	if config.Protocol == "openai-compatible" && config.SendDimensions {
+		space = append(space, true)
+	}
+	data, _ := json.Marshal(space)
 	return hashBytes(data)
 }
 

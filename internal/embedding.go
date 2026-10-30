@@ -38,27 +38,35 @@ func (c EmbeddingConfig) Validate() error {
 		return nil
 	}
 	bad := func(field string) error { return fmt.Errorf("invalid configuration at embedding.%s", field) }
-	if c.Provider != "bailian" {
+	if c.Provider != "bailian" && c.Provider != "openai-compatible" {
 		return bad("provider")
 	}
-	if c.Protocol != "dashscope" {
+	if (c.Provider == "bailian" && c.Protocol != "dashscope") ||
+		(c.Provider == "openai-compatible" && c.Protocol != "openai-compatible") {
 		return bad("protocol")
 	}
 	address, err := url.Parse(configured(c.BaseURL))
 	if err != nil || (address.Scheme != "https" && address.Scheme != "http") || address.Hostname() == "" ||
 		address.User != nil || address.RawQuery != "" || address.ForceQuery || address.Fragment != "" ||
-		address.RawPath != "" || !strings.HasSuffix(strings.TrimRight(address.Path, "/"), "/api/v1") {
+		address.RawPath != "" || address.Opaque != "" || strings.Contains(configured(c.BaseURL), "#") {
+		return bad("base_url")
+	}
+	if c.Protocol == "dashscope" && !strings.HasSuffix(strings.TrimRight(address.Path, "/"), "/api/v1") {
 		return bad("base_url")
 	}
 	key := configured(c.APIKey)
 	if key == "" || strings.ContainsFunc(key, func(r rune) bool { return r < 33 || r > 126 }) {
 		return bad("api_key")
 	}
-	if configured(c.Model) != "qwen3.7-text-embedding" {
+	if !validLLMName(configured(c.Model)) || (c.Protocol == "dashscope" && configured(c.Model) != "qwen3.7-text-embedding") {
 		return bad("model")
 	}
-	if !slices.Contains([]int{256, 512, 768, 1024, 1536, 2048, 2560}, c.Dimensions) {
+	if c.Dimensions < 1 || c.Dimensions > 16384 ||
+		(c.Protocol == "dashscope" && !slices.Contains([]int{256, 512, 768, 1024, 1536, 2048, 2560}, c.Dimensions)) {
 		return bad("dimensions")
+	}
+	if c.Protocol == "dashscope" && c.SendDimensions {
+		return bad("send_dimensions")
 	}
 	if c.BatchSize < 1 || c.BatchSize > 20 {
 		return bad("batch_size")
@@ -75,10 +83,13 @@ func (c EmbeddingConfig) Validate() error {
 	if instruction := configured(c.QueryInstruction); len(instruction) > 4096 || !utf8.ValidString(instruction) {
 		return bad("query_instruction")
 	}
+	if c.Protocol == "openai-compatible" && configured(c.QueryInstruction) != "" {
+		return bad("query_instruction")
+	}
 	return nil
 }
 
-type bailianEmbeddingClient struct {
+type embeddingClient struct {
 	config   EmbeddingConfig
 	client   *http.Client
 	requests chan struct{}
@@ -93,14 +104,14 @@ func NewEmbeddingProvider(config EmbeddingConfig) (EmbeddingProvider, error) {
 	}
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.MaxIdleConnsPerHost = config.MaxConcurrency
-	return &bailianEmbeddingClient{config: config, requests: make(chan struct{}, config.MaxConcurrency),
+	return &embeddingClient{config: config, requests: make(chan struct{}, config.MaxConcurrency),
 		client: &http.Client{Transport: transport,
 			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}, nil
 }
 
-func (c *bailianEmbeddingClient) Close() { c.client.CloseIdleConnections() }
+func (c *embeddingClient) Close() { c.client.CloseIdleConnections() }
 
-func (c *bailianEmbeddingClient) Embed(ctx context.Context, texts []string, purpose EmbeddingPurpose) (EmbeddingResult, error) {
+func (c *embeddingClient) Embed(ctx context.Context, texts []string, purpose EmbeddingPurpose) (EmbeddingResult, error) {
 	if purpose != EmbeddingDocument && purpose != EmbeddingQuery {
 		return EmbeddingResult{}, failure("INVALID_ARGUMENT", "Embedding purpose must be document or query", 422, false)
 	}
@@ -129,7 +140,7 @@ func (c *bailianEmbeddingClient) Embed(ctx context.Context, texts []string, purp
 	return result, nil
 }
 
-func (c *bailianEmbeddingClient) batch(ctx context.Context, texts []string, purpose EmbeddingPurpose) (EmbeddingResult, error) {
+func (c *embeddingClient) batch(ctx context.Context, texts []string, purpose EmbeddingPurpose) (EmbeddingResult, error) {
 	select {
 	case c.requests <- struct{}{}:
 		defer func() { <-c.requests }()
@@ -142,6 +153,13 @@ func (c *bailianEmbeddingClient) batch(ctx context.Context, texts []string, purp
 	}
 	body, _ := json.Marshal(map[string]any{"model": configured(c.config.Model),
 		"input": map[string]any{"texts": texts}, "parameters": parameters})
+	if c.config.Protocol == "openai-compatible" {
+		request := map[string]any{"model": configured(c.config.Model), "input": texts, "encoding_format": "float"}
+		if c.config.SendDimensions {
+			request["dimensions"] = c.config.Dimensions
+		}
+		body, _ = json.Marshal(request)
+	}
 	for attempt := 0; ; attempt++ {
 		result, retryAfter, err := c.request(ctx, body, len(texts))
 		if err == nil {
@@ -168,9 +186,13 @@ func retryableEmbeddingError(err error) bool {
 	return slices.Contains([]string{"EMBEDDING_UNAVAILABLE", "EMBEDDING_RATE_LIMITED"}, errorCode(err))
 }
 
-func (c *bailianEmbeddingClient) request(ctx context.Context, body []byte, count int) (EmbeddingResult, time.Duration, error) {
+func (c *embeddingClient) request(ctx context.Context, body []byte, count int) (EmbeddingResult, time.Duration, error) {
+	path := "/services/embeddings/text-embedding/text-embedding"
+	if c.config.Protocol == "openai-compatible" {
+		path = "/embeddings"
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		strings.TrimRight(configured(c.config.BaseURL), "/")+"/services/embeddings/text-embedding/text-embedding", bytes.NewReader(body))
+		strings.TrimRight(configured(c.config.BaseURL), "/")+path, bytes.NewReader(body))
 	if err != nil {
 		return EmbeddingResult{}, 0, failure("EMBEDDING_PROTOCOL", "Invalid embedding endpoint", 503, false)
 	}
@@ -203,13 +225,17 @@ func (c *bailianEmbeddingClient) request(ctx context.Context, body []byte, count
 	if len(data) > 8*1024*1024 {
 		return invalid()
 	}
+	type item struct {
+		Index     *int       `json:"index"`
+		TextIndex *int       `json:"text_index"`
+		Vector    []*float64 `json:"embedding"`
+	}
 	var raw struct {
-		Code   string `json:"code"`
+		Code   string          `json:"code"`
+		Error  json.RawMessage `json:"error"`
+		Data   []item          `json:"data"`
 		Output struct {
-			Embeddings []struct {
-				Index  *int       `json:"text_index"`
-				Vector []*float64 `json:"embedding"`
-			} `json:"embeddings"`
+			Embeddings []item `json:"embeddings"`
 		} `json:"output"`
 		Usage struct {
 			TotalTokens *int64 `json:"total_tokens"`
@@ -217,12 +243,27 @@ func (c *bailianEmbeddingClient) request(ctx context.Context, body []byte, count
 	}
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	if decoder.Decode(&raw) != nil || decoder.Decode(new(any)) != io.EOF || raw.Code != "" ||
-		len(raw.Output.Embeddings) != count || raw.Usage.TotalTokens == nil || *raw.Usage.TotalTokens < 0 {
+		(len(raw.Error) != 0 && string(raw.Error) != "null") {
 		return invalid()
 	}
-	result := EmbeddingResult{Vectors: make([][]float32, count), TotalTokens: *raw.Usage.TotalTokens}
+	items := raw.Output.Embeddings
+	if c.config.Protocol == "openai-compatible" {
+		items = raw.Data
+	} else if raw.Usage.TotalTokens == nil {
+		return invalid()
+	}
+	if len(items) != count || (raw.Usage.TotalTokens != nil && *raw.Usage.TotalTokens < 0) {
+		return invalid()
+	}
+	result := EmbeddingResult{Vectors: make([][]float32, count)}
+	if raw.Usage.TotalTokens != nil {
+		result.TotalTokens = *raw.Usage.TotalTokens
+	}
 	// Returned positions, not response order, identify the corresponding input text.
-	for _, item := range raw.Output.Embeddings {
+	for _, item := range items {
+		if c.config.Protocol == "dashscope" {
+			item.Index = item.TextIndex
+		}
 		if item.Index == nil || *item.Index < 0 || *item.Index >= count || result.Vectors[*item.Index] != nil ||
 			len(item.Vector) != c.config.Dimensions {
 			return invalid()

@@ -5964,11 +5964,11 @@
               },
               "provider": {
                 "type": "string",
-                "description": "供应商，启用时支持 bailian。"
+                "description": "供应商，启用时支持 bailian 或 openai-compatible。"
               },
               "protocol": {
                 "type": "string",
-                "description": "启用时支持 dashscope。"
+                "description": "与供应商配对使用 dashscope 或 openai-compatible。"
               },
               "base_url": {
                 "type": [
@@ -6004,7 +6004,11 @@
                   "string",
                   "null"
                 ],
-                "description": "查询指令。"
+                "description": "仅 DashScope 支持的查询指令；通用协议必须为空。"
+              },
+              "send_dimensions": {
+                "type": "boolean",
+                "description": "通用协议是否发送 dimensions，默认 false；返回维度始终校验。"
               }
             },
             "required": [
@@ -6230,11 +6234,11 @@
               },
               "provider": {
                 "type": "string",
-                "description": "供应商，启用时支持 bailian。"
+                "description": "供应商，启用时支持 bailian 或 openai-compatible。"
               },
               "protocol": {
                 "type": "string",
-                "description": "启用时支持 dashscope。"
+                "description": "与供应商配对使用 dashscope 或 openai-compatible。"
               },
               "base_url": {
                 "type": "string",
@@ -6261,7 +6265,11 @@
               },
               "query_instruction": {
                 "type": "string",
-                "description": "查询指令。"
+                "description": "仅 DashScope 支持的查询指令；通用协议必须为空。"
+              },
+              "send_dimensions": {
+                "type": "boolean",
+                "description": "通用协议是否发送 dimensions，默认 false；返回维度始终校验。"
               }
             }
           },
