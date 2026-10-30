@@ -2,7 +2,7 @@ const fields = {
   review: ['count', 'min_age_hours', 'recent_days', 'topic_limit', 'include_archived'],
   notifications: ['enabled', 'time', 'times'],
   llm: ['enabled', 'protocol', 'base_url', 'model', 'timeout_seconds', 'max_concurrency', 'max_retries', 'max_output_tokens', 'context_bytes'],
-  embedding: ['enabled', 'provider', 'protocol', 'base_url', 'model', 'dimensions', 'batch_size', 'timeout_seconds', 'max_concurrency', 'max_retries', 'query_instruction'],
+  embedding: ['enabled', 'provider', 'protocol', 'base_url', 'model', 'dimensions', 'send_dimensions', 'batch_size', 'timeout_seconds', 'max_concurrency', 'max_retries', 'query_instruction'],
   channel: ['kind', 'app_id', 'user_open_id', 'destination'],
   insights: ['default_prompt'],
 };
@@ -65,7 +65,14 @@ export function createSettingsPage({ sessionRequest, handleFailure, onSaved = ()
   let root, snapshot, form, error, status, reload, save, controller, pendingBody;
   let sequence = 0, active = false, busy = false, conflict = false;
   let controls = new Map(), secretControls = new Map(), times = [];
+  let modelViews = new Map(), modelController, modelTimer, indexText, indexProgress;
+  const checks = new Map();
 
+  function abortModels() {
+    clearTimeout(modelTimer); modelTimer = null; modelController?.abort();
+    for (const controller of checks.values()) controller.abort();
+    checks.clear();
+  }
   function clearSecrets() {
     for (const { action, input } of secretControls.values()) {
       input.value = ''; input.required = false; input.hidden = true; action.value = 'keep';
@@ -74,9 +81,9 @@ export function createSettingsPage({ sessionRequest, handleFailure, onSaved = ()
     pendingBody = null;
   }
   function destroy() {
-    active = false; sequence++; controller?.abort(); clearSecrets();
+    active = false; sequence++; controller?.abort(); abortModels(); clearSecrets();
     root?.remove(); root = snapshot = form = controller = null;
-    controls.clear(); secretControls.clear(); times = [];
+    controls.clear(); secretControls.clear(); modelViews.clear(); times = [];
   }
   function message(text = '') {
     error.textContent = text; error.hidden = !text;
@@ -200,14 +207,102 @@ export function createSettingsPage({ sessionRequest, handleFailure, onSaved = ()
     box.append(list, append, el('span', 'sub', '时段数即每日推送次数；每个时段分配不同笔记。'));
     parent.append(box);
   }
+  function modelDirty(group) {
+    for (const [path, { input, type, original }] of controls) {
+      if (!path.startsWith(`${group}.`)) continue;
+      const value = type === 'checkbox' ? input.checked : type === 'number' ? input.valueAsNumber : input.value;
+      if (!same(value, original ?? (type === 'checkbox' ? false : ''))) return true;
+    }
+    return secretControls.get(`${group}_api_key`).action.value !== 'keep';
+  }
+  function updateChecks() {
+    for (const [group, view] of modelViews) {
+      view.check.disabled = busy || conflict || checks.has(group) || modelDirty(group) || !snapshot.settings[group].enabled;
+    }
+  }
+  function modelError(node, err) {
+    const messages = {
+      EMBEDDING_DISABLED: '请先启用并保存 Embedding。', LLM_DISABLED: '请先启用并保存 LLM。',
+      EMBEDDING_AUTH: 'Embedding 密钥被拒绝，请检查密钥和模型权限。',
+      LLM_AUTH: 'LLM 密钥被拒绝，请检查密钥和模型权限。',
+      EMBEDDING_REJECTED: 'Embedding 请求被拒绝，请检查协议、地址、模型和维度。',
+      LLM_REJECTED: 'LLM 请求被拒绝，请检查协议、地址和模型。',
+      EMBEDDING_PROTOCOL: 'Embedding 返回格式或维度不符合配置。',
+      LLM_PROTOCOL: 'LLM 返回格式不符合所选协议。',
+      EMBEDDING_RATE_LIMITED: 'Embedding 调用受限，请稍后重试。',
+      LLM_RATE_LIMITED: 'LLM 调用受限，请稍后重试。',
+      EMBEDDING_UNAVAILABLE: 'Embedding 连接失败，请检查服务和地址。',
+      LLM_UNAVAILABLE: 'LLM 连接失败，请检查服务和地址。',
+      MODEL_CHECK_TIMEOUT: '连接检查超时，请稍后重试。',
+    };
+    node.hidden = false;
+    if (messages[err.code]) node.textContent = messages[err.code];
+    else handleFailure(node, err);
+  }
+  function versionConflict() {
+    abortModels(); conflict = true; save.disabled = true; updateChecks();
+    failure({ code: 'SETTINGS_CONFLICT' });
+  }
+  async function refreshModels() {
+    const ticket = sequence;
+    modelController?.abort(); modelController = new AbortController();
+    try {
+      const data = await sessionRequest('/models', { controller: modelController });
+      if (!active || sequence !== ticket) return;
+      if (data.version !== snapshot.version) { versionConflict(); return; }
+      for (const [group, view] of modelViews) {
+        view.config.textContent = !data[group].enabled ? '已关闭' : data[group].configured ? '已启用 · 已配置' : '配置不完整';
+      }
+      const labels = { disabled: '语义索引已关闭', waiting: '语义索引等待同步或构建',
+        building: '语义索引构建中', ready: '语义索引已就绪', unavailable: '语义索引构建失败，等待重试' };
+      const generation = data.vector_index?.building;
+      indexText.textContent = labels[data.index_status] || '索引状态不可用';
+      indexProgress.hidden = !generation || data.index_status === 'disabled';
+      if (!indexProgress.hidden) {
+        indexProgress.max = Math.max(1, generation.chunks);
+        indexProgress.value = generation.completed_chunks;
+        indexText.textContent += ` · ${generation.completed_chunks}/${generation.chunks} 个片段`;
+        if (generation.last_error) indexText.textContent += ` · ${generation.last_error}`;
+      }
+    } catch (err) {
+      if (!active || sequence !== ticket || err.name === 'AbortError') return;
+      modelError(indexText, err);
+    } finally {
+      if (active && sequence === ticket && !conflict) modelTimer = setTimeout(refreshModels, 5000);
+    }
+  }
+  async function checkModel(group) {
+    const view = modelViews.get(group);
+    if (view.check.disabled) return;
+    const ticket = sequence, checkController = new AbortController();
+    checks.set(group, checkController); updateChecks();
+    view.result.textContent = '正在检查已保存配置…';
+    try {
+      const result = await sessionRequest(`/models/${group}/check`, {
+        method: 'POST', body: { version: snapshot.version }, controller: checkController,
+      });
+      if (!active || sequence !== ticket || checks.get(group) !== checkController) return;
+      if (result.version !== snapshot.version) { versionConflict(); return; }
+      view.result.textContent = `连接正常 · ${result.duration_ms} 毫秒`;
+    } catch (err) {
+      if (!active || sequence !== ticket || checks.get(group) !== checkController || err.name === 'AbortError') return;
+      if (err.code === 'SETTINGS_CONFLICT') versionConflict();
+      else modelError(view.result, err);
+    } finally {
+      if (active && sequence === ticket && checks.get(group) === checkController) {
+        checks.delete(group); updateChecks();
+      }
+    }
+  }
   function model(parent, group, title) {
     const block = el('div', 'settings-model'); block.append(el('h3', '', title)); parent.append(block);
     field(block, `${group}.enabled`, `启用 ${title}`, { type: 'checkbox' });
-    if (group === 'embedding') field(block, 'embedding.provider', '供应商', { options: [['bailian', '百炼']] });
+    let provider;
+    if (group === 'embedding') provider = field(block, 'embedding.provider', '供应商', { options: [['bailian', '百炼'], ['openai-compatible', 'OpenAI 兼容']] });
     const protocols = group === 'llm'
       ? [['openai-compatible', 'OpenAI Chat Completions'], ['openai-responses', 'OpenAI Responses'], ['anthropic', 'Anthropic']]
-      : [['dashscope', 'DashScope']];
-    field(block, `${group}.protocol`, '接口协议', { options: protocols });
+      : [['dashscope', 'DashScope'], ['openai-compatible', 'OpenAI 兼容 Embedding']];
+    const protocol = field(block, `${group}.protocol`, '接口协议', { options: protocols });
     field(block, `${group}.base_url`, 'API 地址', { type: 'url' });
     field(block, `${group}.model`, '模型名称');
     secret(block, `${group}_api_key`);
@@ -219,13 +314,36 @@ export function createSettingsPage({ sessionRequest, handleFailure, onSaved = ()
       field(advanced, 'llm.max_output_tokens', '最大输出 Token', { type: 'number', min: 32, max: 16384 });
       field(advanced, 'llm.context_bytes', '上下文大小（字节）', { type: 'number', min: 1024, max: 262144 });
     } else {
-      field(advanced, 'embedding.dimensions', '向量维度', { type: 'number', min: 1 });
+      field(advanced, 'embedding.dimensions', '向量维度', { type: 'number', min: 1, max: 16384 });
+      const send = field(advanced, 'embedding.send_dimensions', '发送维度参数', { type: 'checkbox',
+        hint: '通用协议按需开启；固定维度模型可关闭，返回维度仍须一致。' });
       field(advanced, 'embedding.batch_size', '批量大小', { type: 'number', min: 1, max: 20 });
-      field(advanced, 'embedding.query_instruction', '查询指令', { type: 'textarea' });
+      const instruction = field(advanced, 'embedding.query_instruction', '查询指令', { type: 'textarea', hint: '仅百炼 DashScope 支持。' });
+      const syncProtocol = () => {
+        const generic = protocol.value === 'openai-compatible';
+        instruction.disabled = generic; send.disabled = !generic;
+        if (generic) instruction.value = '';
+        else send.checked = false;
+      };
+      provider.addEventListener('change', () => { protocol.value = provider.value === 'bailian' ? 'dashscope' : 'openai-compatible'; syncProtocol(); });
+      protocol.addEventListener('change', () => { provider.value = protocol.value === 'dashscope' ? 'bailian' : 'openai-compatible'; syncProtocol(); });
+      syncProtocol();
+    }
+    const config = el('p', 'sub', '正在读取模型状态…'), result = el('p', 'sub');
+    const check = button(`检查 ${title} 连接`, 'ghost', () => checkModel(group));
+    result.setAttribute('role', 'status'); result.id = `settings-${group}-check-result`;
+    config.id = `settings-${group}-status`;
+    block.append(config, check, result, el('p', 'sub', '连接检查使用已保存配置，会产生少量模型用量。'));
+    modelViews.set(group, { config, check, result });
+    block.addEventListener('input', changed); block.addEventListener('change', changed);
+    function changed() {
+      checks.get(group)?.abort(); checks.delete(group);
+      result.textContent = modelDirty(group) ? '模型设置有修改，请保存后检查。' : '';
+      updateChecks();
     }
   }
   function render() {
-    controls.clear(); secretControls.clear(); times = [];
+    abortModels(); controls.clear(); secretControls.clear(); modelViews.clear(); times = [];
     form = el('form', 'settings-form'); form.setAttribute('aria-label', '产品设置'); form.autocomplete = 'off';
     form.addEventListener('submit', submit);
     const review = section('每日回顾');
@@ -238,6 +356,9 @@ export function createSettingsPage({ sessionRequest, handleFailure, onSaved = ()
     const clocks = el('div', 'settings-clocks'); clocks.append(el('h3', '', '推送时段')); review.append(clocks); renderTimes(clocks);
     review.append(el('p', 'sub settings-hint', '回顾参数、时段和时区从后续日期生效，已固定的当天计划保持不变。'));
     const models = section('模型'); model(models, 'llm', 'LLM'); model(models, 'embedding', 'Embedding');
+    indexText = el('p', 'sub', '正在读取索引状态…'); indexText.id = 'settings-index-status'; indexText.setAttribute('role', 'status');
+    indexProgress = el('progress'); indexProgress.hidden = true; indexProgress.setAttribute('aria-label', '语义索引进度');
+    models.append(indexText, indexProgress);
     const insights = section('默认洞察 Prompt');
     const prompt = field(insights, 'insights.default_prompt', '一键洞察使用的 Prompt', { type: 'textarea' });
     prompt.rows = 7;
@@ -265,9 +386,10 @@ export function createSettingsPage({ sessionRequest, handleFailure, onSaved = ()
     reload = button('重新加载设置', 'ghost', load);
     footer.append(error, status, reload, save); form.append(footer);
     root.replaceChildren(form); busy = conflict = false;
+    updateChecks(); refreshModels();
   }
   async function load() {
-    const ticket = ++sequence; controller?.abort(); clearSecrets(); controller = new AbortController();
+    const ticket = ++sequence; controller?.abort(); abortModels(); clearSecrets(); controller = new AbortController();
     busy = true; conflict = false;
     root.replaceChildren(el('p', 'sub', '正在加载设置…'));
     root.setAttribute('aria-busy', 'true');
@@ -299,7 +421,7 @@ export function createSettingsPage({ sessionRequest, handleFailure, onSaved = ()
         status.textContent = '没有需要保存的修改。'; pendingBody = null; return;
       }
     } catch (err) { failure(err); return; }
-    const ticket = ++sequence; controller = new AbortController();
+    const ticket = ++sequence; abortModels(); controller = new AbortController();
     const replaced = Object.values(pendingBody.secrets).some(op => op.action === 'replace');
     busy = true; save.disabled = reload.disabled = true; form.setAttribute('aria-busy', 'true');
     // 应用设置时锁定表单，避免提交期间修改内容。
@@ -320,6 +442,8 @@ export function createSettingsPage({ sessionRequest, handleFailure, onSaved = ()
         clearSecrets(); busy = false;
         for (const input of locked) input.disabled = false;
         form.setAttribute('aria-busy', 'false'); save.disabled = conflict; reload.disabled = false;
+        updateChecks();
+        if (!modelTimer && !conflict) refreshModels();
       }
     }
   }

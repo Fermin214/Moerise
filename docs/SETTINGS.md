@@ -46,6 +46,8 @@
 
 ## 模型与索引状态
 
+Web 设置页独立管理 LLM 和 Embedding，支持选择 OpenAI 兼容 Embedding 或百炼，配置维度和是否发送维度参数。保存后可分别检查连接；表单中的模型修改须先保存。索引进度每 5 秒刷新，显示等待、构建、就绪或失败，以及完成片段数。离开页面、重新加载或保存设置会取消旧检查；其他页面更改版本后要求重新加载。漫步与地图入口显示 Embedding 或索引状态，洞察入口单独显示 LLM 状态。
+
 `GET /api/app/v1/models` 要求本人会话，返回设置 `version`、`embedding`、`llm`、`index_status` 和 `vector_index`。两类模型各包含 `enabled`、`configured`、`protocol` 和 `model`；`configured` 表示地址、密钥和模型均已填写，不表示远端可用。索引状态为 `disabled`（关闭）、`waiting`（等待完整同步或构建计划）、`building`（构建）、`ready`（配置与投影一致）、`unavailable`（构建失败并等待重试）。`vector_index` 包含活动与构建代次、片段总数、完成数和脱敏错误代码，旧代次可能与新配置不匹配，只有 `ready` 才可用于语义查询。
 
 `POST /api/app/v1/models/embedding/check` 和 `/api/app/v1/models/llm/check` 接收 `{version}`，要求本人会话、Origin 和 CSRF。版本变化返回 `SETTINGS_CONFLICT`。检查复用有效 Provider 的并发控制，Embedding 检查虚构文档与查询，LLM 检查虚构文本的流式回复；不新增笔记、设置或旧生成任务。成功返回 `{version,status:"ok",duration_ms}`，失败返回模型错误代码，不返回供应商错误正文、密钥或生成内容。检查总预算最多 55 秒，各模型仍受自身超时配置约束，超时返回 `MODEL_CHECK_TIMEOUT`。关闭的模型分别返回 `EMBEDDING_DISABLED` 或 `LLM_DISABLED`。
