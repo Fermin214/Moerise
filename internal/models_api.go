@@ -7,6 +7,35 @@ import (
 	"time"
 )
 
+const modelCheckTimeout = 55 * time.Second
+
+func isModelCheck(r *http.Request) bool {
+	return r.Method == http.MethodPost && (r.URL.Path == "/api/app/v1/models/embedding/check" ||
+		r.URL.Path == "/api/app/v1/models/llm/check")
+}
+
+func modelCheckError(ctx context.Context, err error) error {
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) || errors.Is(err, context.DeadlineExceeded) ||
+		errorCode(err) == "LLM_TIMEOUT" {
+		return failure("MODEL_CHECK_TIMEOUT", "Model connection check timed out", 503, true)
+	}
+	return err
+}
+
+func (a *ClientAPI) lockModelCheck(ctx context.Context) error {
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if a.app.runtimeMu.TryRLock() {
+			return nil
+		}
+		if err := runtimePause(ctx, 10*time.Millisecond); err != nil {
+			return err
+		}
+	}
+}
+
 func (a *ClientAPI) modelsStatus() (ClientModels, error) {
 	s := a.app.Store
 	embedding, llm := s.Settings.Embedding, s.Settings.LLM
@@ -24,12 +53,14 @@ func (a *ClientAPI) modelsStatus() (ClientModels, error) {
 		return result, err
 	}
 	if embedding.Enabled {
+		building := result.VectorIndex.Building
+		matching := building != nil && building.SpaceHash == embeddingSpace(embedding)
 		switch {
 		case result.VectorIndex.Ready:
 			result.IndexStatus = "ready"
-		case result.VectorIndex.Building != nil && result.VectorIndex.Building.LastError != nil:
+		case matching && building.LastError != nil:
 			result.IndexStatus = "unavailable"
-		case result.VectorIndex.Building != nil:
+		case matching:
 			result.IndexStatus = "building"
 		default:
 			result.IndexStatus = "waiting"
@@ -61,9 +92,7 @@ func (a *ClientAPI) modelsRoute(w http.ResponseWriter, r *http.Request) (any, in
 	if body.Version != a.app.Store.productVersion {
 		return nil, 0, failure("SETTINGS_CONFLICT", "Settings have changed; reload before checking the model", 409, false)
 	}
-	// 留出同源代理的超时余量，文档与查询检查共用一次预算。
-	ctx, cancel := context.WithTimeout(r.Context(), 55*time.Second)
-	defer cancel()
+	ctx := r.Context()
 	started := time.Now()
 	var err error
 	if r.URL.Path == "/api/app/v1/models/embedding/check" {
@@ -76,9 +105,6 @@ func (a *ClientAPI) modelsRoute(w http.ResponseWriter, r *http.Request) (any, in
 			return nil, 0, failure("LLM_DISABLED", "LLM is disabled", 503, false)
 		}
 		_, err = checkLLM(ctx, a.app.Store.Settings.LLM, a.app.AI.Provider)
-	}
-	if errors.Is(err, context.DeadlineExceeded) {
-		err = failure("MODEL_CHECK_TIMEOUT", "Model connection check timed out", 503, true)
 	}
 	if err != nil {
 		return nil, 0, err
