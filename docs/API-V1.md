@@ -14,6 +14,8 @@
 | POST | `/api/app/v1/session` | 接收 `username`、`password`，验证官方登录与续期链路，返回身份、时区、会话到期时间和 `csrf_token` |
 | GET | `/api/app/v1/session` | 核验本人身份，必要时刷新上游凭据，返回会话信息 |
 | DELETE | `/api/app/v1/session` | 先撤销本地会话，再尝试上游退出，清 Cookie 并返回 204；上游不可用仍可退出 |
+| GET | `/api/app/v1/settings` | 返回设置版本、日常配置、凭据配置状态、渠道能力及内置洞察 Prompt |
+| PATCH | `/api/app/v1/settings` | 提交版本、日常配置和密钥操作，保存并生效，返回递增版本的设置视图 |
 | GET | `/api/app/v1/notes` | 实时读取 Memos 本人笔记，默认 `state=NORMAL&order=created_desc&page_size=20` |
 | GET | `/api/app/v1/notes/{memo_id}` | 返回来源复查后的最新 Note，不记录阅读 |
 | POST | `/api/app/v1/notes` | 接收 `{content,attachments}`，必填 `Idempotency-Key`，首次 201、重放 200，均直接返回 Note |
@@ -49,6 +51,54 @@ Web 会话失效时隐藏私人界面，在页面内存中保存创建和编辑�
 Web 正文中的原生 `/file/attachments/{id}/{filename}` 引用按父笔记附件表转换为受保护的 `content_url`，未知或不属于该笔记的引用保持文字。侧栏标签按笔记状态、日历按状态和月份复用聚合结果，缓存有效期一分钟；写入、手动刷新笔记或页面重新获得焦点后刷新聚合，被替代的聚合请求会取消。
 
 客户端沿用 `error.code/message/retryable/request_id`：401 表示会话失效，403 表示身份范围或请求边界错误，503 表示来源、配置或存储故障，不返回 Bearer 认证挑战。私人响应使用 `Cache-Control: no-store`。通知确认的 `resolved_by` 为登录用户资源名；其业务决策和回执要求见[通知说明](NOTIFICATIONS.md)。
+
+### 产品设置
+
+设置接口复用本人会话与账号检查，拒绝 Authorization 和查询参数。PATCH 还要求精确匹配的 Origin、会话对应的 `X-CSRF-Token`，并在读取请求体前检查会话有效性。机器 REST 和外部 MCP 无法读写产品设置。
+
+GET 和 PATCH 的成功响应均为 `SettingsView`：
+
+| 字段 | 类型 | 含义 |
+| --- | --- | --- |
+| `version` | integer | 设置版本，初始化为 1，保存成功递增 |
+| `settings` | object | `timezone`、`review`、`notifications`、`embedding`、`llm`、`channel`、`insights` 七组日常设置 |
+| `secrets` | object | 七种凭据各自的 `{configured: boolean}` 状态，不包含凭据原文 |
+| `channel_capabilities` | object | 服务端按配置计算的 `text`、`images`、`record` 布尔能力 |
+| `default_insight_prompt` | string | 内置洞察 Prompt，可用于恢复 `settings.insights.default_prompt` |
+
+`review` 包含条数、等待时长、重复排除期及归档开关；`notifications` 包含启用状态、兼容单时段的 `time` 及多时段 `times`。模型配置含启用状态、协议、地址、模型及调用预算，均无 `api_key`；`channel` 包含类型、应用标识、用户标识及目标，无应用密钥、校验 Token、加密密钥或 Webhook 凭据。具体字段见 OpenAPI。
+
+PATCH 请求体仅接受 `version`、`settings`、`secrets`，上限 128 KiB，Content-Type 必须为 `application/json`。`version` 必填且为正整数；至少提交一个设置字段或密钥操作。设置对象递归合并，数组整体替换；省略字段保持原值。所有层级拒绝重复字段、未知字段和显式 `null`，设置对象内也不能嵌入密钥或基础设施字段。
+
+```json
+{
+  "version": 1,
+  "settings": {
+    "timezone": "Asia/Hong_Kong",
+    "review": {"count": 3, "min_age_hours": 72, "recent_days": 7},
+    "notifications": {"times": ["09:00", "18:00"]},
+    "insights": {"default_prompt": "探索所选笔记的联系"}
+  },
+  "secrets": {
+    "llm_api_key": {"action": "replace", "value": "new-secret"},
+    "embedding_api_key": {"action": "keep"},
+    "webhook_secret": {"action": "clear"}
+  }
+}
+```
+
+密钥名称仅允许 `llm_api_key`、`embedding_api_key`、`app_secret`、`verification_token`、`encrypt_key`、`webhook_url`、`webhook_secret`。操作对象只允许 `action` 和 `value`：`keep`、`clear` 禁止携带 `value`；`replace` 必须提供非空真实值，不能使用遮蔽字符。省略操作等同保持。
+
+| HTTP 状态 | 错误代码 | 含义 |
+| --- | --- | --- |
+| 401 | `SESSION_UNAUTHORIZED` | 浏览器会话缺失或失效 |
+| 403 | `FORBIDDEN`、`ACCOUNT_NOT_BOUND`、`ORIGIN_REJECTED`、`CSRF_REJECTED` | 身份、Origin 或 CSRF 不符合要求 |
+| 409 | `SETTINGS_CONFLICT` | 版本过期，重新读取并基于新版本修改 |
+| 415 | `UNSUPPORTED_MEDIA_TYPE` | 请求体不是 JSON |
+| 422 | `INVALID_ARGUMENT` | 请求超限、格式或字段错误、版本缺失或非正数、修改为空 |
+| 503 | `SETTINGS_BUSY`、`SETTINGS_UNAVAILABLE` | 应用繁忙或尚未配置状态加密密钥；会话、来源及存储故障沿用对应服务错误 |
+
+失败不发布部分配置。设置持久化、生效顺序、渠道能力及队列兼容规则见[产品设置](SETTINGS.md)。
 
 ## 资源与身份
 

@@ -70,6 +70,10 @@ func (a *ClientAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			writeClientError(w, errors.New("client handler panic"), id)
 		}
 	}()
+	if r.URL.Path != "/api/app/v1/settings" || r.Method != http.MethodPatch {
+		a.app.runtimeMu.RLock()
+		defer a.app.runtimeMu.RUnlock()
+	}
 	result, status, err := a.route(w, r)
 	if err != nil {
 		writeClientError(w, err, id)
@@ -236,6 +240,7 @@ func (a *ClientAPI) route(w http.ResponseWriter, r *http.Request) (any, int, err
 		if err != nil {
 			return nil, 0, err
 		}
+		identity.Timezone = a.app.Store.Settings.Timezone
 		a.cookie(w, rawID, identity.ExpiresAt)
 		return identity, 200, nil
 	}
@@ -284,8 +289,11 @@ func (a *ClientAPI) route(w http.ResponseWriter, r *http.Request) (any, int, err
 	switch path {
 	case "/api/app/v1/session":
 		if method == http.MethodGet {
+			identity.Timezone = a.app.Store.Settings.Timezone
 			return identity, 200, nil
 		}
+	case "/api/app/v1/settings":
+		return a.settingsRoute(w, r)
 	case "/api/app/v1/notes":
 		if method == http.MethodGet {
 			query, err := url.ParseQuery(r.URL.RawQuery)
