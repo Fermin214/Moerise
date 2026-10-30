@@ -288,6 +288,9 @@ test('model settings pair protocols, check saved versions and discard obsolete r
   state.checkFail = 'EMBEDDING_AUTH';
   await check.click();
   await page.locator('#settings-embedding-check-result').filter({ hasText: '密钥被拒绝' }).waitFor();
+  state.checkFail = 'UPSTREAM_AUTH_UNAVAILABLE';
+  await check.click();
+  await page.locator('#settings-embedding-check-result').filter({ hasText: 'Memos 连接失败' }).waitFor();
   state.checkFail = null; state.holdCheck = true;
   await check.click();
   await page.locator('#settings-embedding-check-result').filter({ hasText: '正在检查' }).waitFor();
@@ -302,6 +305,13 @@ test('model settings pair protocols, check saved versions and discard obsolete r
   assert.equal(await page.locator('#settings-page').count(), 0);
   await page.locator('a[data-route][href="/map"]').click();
   await page.locator('#capability').filter({ hasText: '语义索引构建中' }).waitFor();
+  state.holdCheck = false;
+  await page.locator('a[data-route][href="/settings"]').click(); await pageReady(page);
+  state.value.version++;
+  await check.click();
+  await page.getByRole('alert').filter({ hasText: '其他页面更新' }).waitFor();
+  assert.ok(await check.isDisabled());
+  assert.ok(await page.getByRole('button', { name: '保存设置', exact: true }).isDisabled());
   assert.deepEqual(errors, []);
 });
 

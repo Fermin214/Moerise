@@ -314,7 +314,7 @@ func TestEmbeddingConcurrencyAndPreflight(t *testing.T) {
 	}
 }
 
-// Malformed provider replies and dimension negotiation are not reproducible with real models.
+// 异常返回和维度参数使用可控服务触发，真实模型无法稳定覆盖。
 func TestCompatibleEmbeddingProtocol(t *testing.T) {
 	for _, sendDimensions := range []bool{false, true} {
 		t.Run(map[bool]string{false: "fixed-dimensions", true: "requested-dimensions"}[sendDimensions], func(t *testing.T) {

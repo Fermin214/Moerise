@@ -55,6 +55,8 @@ LLM 通过独立的协议适配器生成内容，支持 OpenAI Chat Completions�
 
 ## 连接检查
 
+Web 设置页可检查已保存的 LLM 配置，使用共享 Provider 和内置虚构文本读取流式回复，显示成功耗时或脱敏错误。检查独立于 Embedding，不新增笔记或旧生成任务；本人会话协议见[产品设置](SETTINGS.md#模型与索引状态)。
+
 原生二进制：
 
 ```bash

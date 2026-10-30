@@ -489,6 +489,11 @@ test('sidebar aggregates reuse loaded and in-flight data, cancel replaced months
   release(); await page.locator('#tags button').first().waitFor();
   await page.unroute(/\/api\/app\/v1\/(?:tags|calendar)\?/);
   const count = path => state.requests.filter(item => item.path === path).length;
+  async function aggregatesAfter(action) {
+    const responses = Promise.all(['tags', 'calendar'].map(name =>
+      page.waitForResponse(response => new URL(response.url()).pathname === `/api/app/v1/${name}` && response.ok())));
+    await action(); await responses;
+  }
   assert.equal(count('/tags'), 1); assert.equal(count('/calendar'), 1);
   await page.locator('#month-next').click();
   await page.waitForFunction(() => document.querySelector('#calendar button:not([disabled])') && document.getElementById('calendar-title').textContent === '2026年11月');
@@ -508,16 +513,16 @@ test('sidebar aggregates reuse loaded and in-flight data, cancel replaced months
   await page.waitForFunction(() => document.querySelector('#calendar button:not([disabled])') && document.getElementById('calendar-title').textContent === '2026年8月');
   const before = { tags: count('/tags'), calendar: count('/calendar') };
   await page.locator('#content').fill('写入后刷新聚合');
-  await page.locator('#save').click();
+  await aggregatesAfter(() => page.locator('#save').click());
   await page.waitForFunction(() => document.getElementById('content').value === '');
   await page.locator('#tags button').first().waitFor();
   assert.equal(count('/tags'), before.tags + 1); assert.equal(count('/calendar'), before.calendar + 1);
   const refreshed = { tags: count('/tags'), calendar: count('/calendar') };
   await page.clock.setFixedTime(new Date('2026-10-30T04:01:01Z'));
-  await page.locator('#q').fill('写入后'); await page.locator('#q').press('Enter');
+  await page.locator('#q').fill('写入后'); await aggregatesAfter(() => page.locator('#q').press('Enter'));
   await page.locator('#tags button').first().waitFor();
   assert.equal(count('/tags'), refreshed.tags + 1); assert.equal(count('/calendar'), refreshed.calendar + 1);
-  await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+  await aggregatesAfter(() => page.evaluate(() => window.dispatchEvent(new Event('focus'))));
   await page.locator('#tags button').first().waitFor();
   assert.equal(count('/tags'), refreshed.tags + 2); assert.equal(count('/calendar'), refreshed.calendar + 2);
   assert.deepEqual(errors, []);
