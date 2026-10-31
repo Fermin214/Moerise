@@ -76,9 +76,9 @@ Web 正文中的原生 `/file/attachments/{id}/{filename}` 引用按父笔记附
 
 筛选只用于寻找材料。创建和修改会话提交明确 `names` 集合，随后生成包含全部已选原文，包括归档和同文不同资源；不再次套用筛选、不补入相关历史。`POST /chat-materials/resolve` 返回 `{notes,materials,characters,limit}`，其中 `characters` 为完整原文 Unicode 码点数。即使超过 20,000 仍返回实际计数供用户调整，不截断。来源删除、失权或变动在生成时明确反馈，已有消息保持。Note 及附件使用受保护客户端路径。
 
-创建提交 `{request_id,title,names}`，标题最多 200 个 Unicode 码点；同请求 ID、同请求重放返回原会话，首次 201、重放 200，异请求复用返回 409 `IDEMPOTENCY_CONFLICT`。`request_id` 允许 1—128 个 ASCII 字母、数字、点、下划线、冒号或连字符，推荐 UUID。修改提交 `{version,title,names}`，版本匹配后递增并明确更新材料版本；删除提交 `{version}`，清理消息、材料及保存关联，不删除已主动保存的 Memos 笔记。生成中修改/删除返回 `CHAT_BUSY`，须先停止；保存与删除排空互斥。
+创建提交 `{request_id,title,names}`，至少选择一条材料，标题最多 200 个 Unicode 码点；同请求 ID、同请求重放返回原会话，首次 201、重放 200，异请求复用返回 409 `IDEMPOTENCY_CONFLICT`。`request_id` 允许 1—128 个 ASCII 字母、数字、点、下划线、冒号或连字符，推荐 UUID。修改提交 `{version,title,names}`，版本匹配后递增并明确更新材料版本；`names:[]` 移除全部材料但保留消息历史，空材料不能生成，`null` 被拒绝。删除提交 `{version}`，清理消息、材料及保存关联，不删除已主动保存的 Memos 笔记。生成中修改/删除返回 `CHAT_BUSY`，须先停止；保存与删除排空互斥。
 
-`ChatSession` 包含 `id/title/version/material_count/created_at/updated_at/materials/turns`。`materials` 是 `{name,source_hash}` 引用。每轮 `ChatTurn` 包含 `request_id`、`kind`、独立的 `user` 和 `assistant` 消息、有效 `settings_version/prompt/model/materials/usage`；每条消息有 `id/role/content/version/status/error_code/saved_name/created_at/updated_at`。助手状态为 running、completed、failed、canceled 或 interrupted，原文本和部分回复持久保留。会话版本约束选材与标题，助手消息版本用于固定主动保存内容。
+`ChatSummary` 包含 `id/title/preview/version/material_count/created_at/updated_at`，`ChatSession` 另含 `materials/turns`。`preview` 从首轮问题提取最多 80 个 Unicode 码点，一键洞察显示“一键洞察”，没有消息时使用标题；该只读摘要不改写标题或消息。`materials` 是 `{name,source_hash}` 引用。每轮 `ChatTurn` 包含 `request_id`、`kind`、独立的 `user` 和 `assistant` 消息、有效 `settings_version/prompt/model/materials/usage`；每条消息有 `id/role/content/version/status/error_code/saved_name/created_at/updated_at`。助手状态为 running、completed、failed、canceled 或 interrupted，原文本和部分回复持久保留。会话版本约束选材与标题，助手消息版本用于固定主动保存内容。
 
 生成提交 `{request_id,version,kind,content}`：`kind=insight` 时 `content=""`，使用已保存的默认洞察 Prompt；`kind=question` 使用原始问题，非空白且最多 8,000 码点、32,768 UTF-8 字节。生成前核算全部材料、系统约定、成功对话历史和当前问题的总字节数与 Provider 消息数量；材料超限为 `CHAT_MATERIAL_LIMIT`，上下文超限为 `CHAT_CONTEXT_LIMIT`，均不调用模型、不裁切材料或删除历史。超过 1,000 条材料请求为 `CHAT_RESOURCE_LIMIT`。
 

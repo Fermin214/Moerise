@@ -173,6 +173,75 @@ func TestClientChatRequiresSessionOriginCSRFAndMachineIsolation(t *testing.T) {
 	}
 }
 
+func TestClientChatRemoveLastMaterialPreservesHistory(t *testing.T) {
+	api, fixture, cookie, identity := clientChatFixture(t)
+	chat := createClientChat(t, api, fixture, cookie, identity)
+	base := "/api/app/v1/chats/" + chat.ID
+	call := func(method, path, body string) *httptest.ResponseRecorder {
+		return clientCall(api, method, path, body, cookie, fixture.settings.Web.PublicOrigin, identity.CSRFToken)
+	}
+	generated := call("POST", base+"/messages", `{"request_id":"first","version":1,"kind":"insight","content":""}`)
+	if !strings.Contains(generated.Body.String(), "event: complete") {
+		t.Fatalf("generate: %s", generated.Body.String())
+	}
+	cleared := call("PATCH", base, `{"version":1,"title":"讨论","names":[]}`)
+	var empty ChatSession
+	if cleared.Code != 200 || json.Unmarshal(cleared.Body.Bytes(), &empty) != nil || empty.MaterialCount != 0 ||
+		len(empty.Materials) != 0 || len(empty.Turns) != 1 || empty.Turns[0].Assistant.Status != "completed" {
+		t.Fatalf("empty selection lost history: %d %s", cleared.Code, cleared.Body.String())
+	}
+	aiAPIValidateJSON(t, clientChatSchema(t, "ChatSession"), cleared.Body.Bytes())
+	blocked := call("POST", base+"/messages", `{"request_id":"empty","version":2,"kind":"insight","content":""}`)
+	if blocked.Code != 422 || !strings.Contains(blocked.Body.String(), "INVALID_ARGUMENT") {
+		t.Fatalf("empty selection generated: %d %s", blocked.Code, blocked.Body.String())
+	}
+	if response := call("PATCH", base, `{"version":2,"title":"讨论","names":null}`); response.Code != 422 {
+		t.Fatalf("null names accepted: %d %s", response.Code, response.Body.String())
+	}
+	restored := call("PATCH", base, `{"version":2,"title":"讨论","names":["memos/one"]}`)
+	if restored.Code != 200 {
+		t.Fatalf("reselect: %d %s", restored.Code, restored.Body.String())
+	}
+}
+
+func TestClientChatHistoryPreviewPreservesTitleAndUnicode(t *testing.T) {
+	for _, kind := range []string{"question", "insight"} {
+		t.Run(kind, func(t *testing.T) {
+			api, fixture, cookie, identity := clientChatFixture(t)
+			chat := createClientChat(t, api, fixture, cookie, identity)
+			content, preview := strings.Repeat("😀", 90), strings.Repeat("😀", 80)
+			if kind == "insight" {
+				content, preview = "", "一键洞察"
+			}
+			input, err := json.Marshal(ChatGenerate{"preview", chat.Version, kind, content})
+			if err != nil {
+				t.Fatal(err)
+			}
+			generated := clientCall(api, "POST", "/api/app/v1/chats/"+chat.ID+"/messages", string(input),
+				cookie, fixture.settings.Web.PublicOrigin, identity.CSRFToken)
+			if !strings.Contains(generated.Body.String(), "event: complete") {
+				t.Fatalf("generate: %s", generated.Body.String())
+			}
+			listed := clientCall(api, "GET", "/api/app/v1/chats", "", cookie, "", "")
+			var page struct {
+				Chats []ChatSummary `json:"chats"`
+			}
+			if json.Unmarshal(listed.Body.Bytes(), &page) != nil || len(page.Chats) != 1 ||
+				page.Chats[0].Preview != preview || page.Chats[0].Title != chat.Title {
+				t.Fatalf("history preview: %s", listed.Body.String())
+			}
+			aiAPIValidateJSON(t, clientChatSchema(t, "ChatSummary"), canonicalJSON(page.Chats[0]))
+			loaded := clientCall(api, "GET", "/api/app/v1/chats/"+chat.ID, "", cookie, "", "")
+			var restored ChatSession
+			if json.Unmarshal(loaded.Body.Bytes(), &restored) != nil || restored.Preview != preview ||
+				restored.Turns[0].User.Content != map[string]string{"question": content, "insight": fixture.settings.Insights.DefaultPrompt}[kind] {
+				t.Fatalf("preview changed full content: %s", loaded.Body.String())
+			}
+			aiAPIValidateJSON(t, clientChatSchema(t, "ChatSession"), loaded.Body.Bytes())
+		})
+	}
+}
+
 func TestClientChatStreamErrorsAndLogoutCancellation(t *testing.T) {
 	for _, mode := range []string{"model-error", "panic", "logout", "cancel"} {
 		t.Run(mode, func(t *testing.T) {

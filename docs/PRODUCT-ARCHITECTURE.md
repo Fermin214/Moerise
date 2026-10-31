@@ -36,9 +36,11 @@ Web 通过同源 `/api/app/v1` 调用 Core，Core 只通过 Memos 官方认证�
 
 `state.sqlite3` 保存浏览器会话、持久设置、全天回顾计划与时段分配。`review_batches` 和 `review_items` 保存计划及选入历史，`review_plans` 冻结设置版本与规则，`review_plan_slots` 保存互不重叠的条目区间，通知通过 `slot_id` 绑定分配；这些关系与选入历史在同一事务中建立。无分配引用的历史通知按原整批结果恢复。漫步路径由调用方传回，不写跨入口阅读历史。
 
-向量与地图布局属于 `index.sqlite3` 的可重建状态。自然聊天的会话、消息、材料版本及主动保存关联保存在 `state.sqlite3`，不因索引重建删除；共享 Chat 编排复用 Notes、Records 和 LLM Provider，客户端按 3.7 后续节点接入。App 已停止旧结构化生成新调用，专用编排随 3.9 清理，保留 LLM Provider、流式通信、搜索、已应用迁移及未完成发送恢复。产品规则只在 PRD 维护。
+向量与地图布局属于 `index.sqlite3` 的可重建状态。自然聊天的会话、消息、材料版本及主动保存关联保存在 `state.sqlite3`，不因索引重建删除；共享 Chat 编排复用 Notes、Records 和 LLM Provider。本人客户端通过 `client_chat.go` 提供归档选材、持久会话、POST SSE、取消及原回复保存，机器 REST/MCP 不开放这些路径；Web 使用原型聊天与选材布局，接入进度见路线图。App 已停止旧结构化生成新调用，专用编排随 3.9 清理，保留 LLM Provider、流式通信、搜索、已应用迁移及未完成发送恢复。产品规则只在 PRD 维护。
 
 聊天状态使用 `chat_sessions`、`chat_materials`、`chat_turns` 和 `chat_saves`。每个 turn 保存用户与助手两条逻辑消息、稳定请求 ID、原始正文、生成状态、有效 Prompt、设置版本、模型、材料引用快照及用量；流式增量与最终状态分别持久化。单会话只允许一条 running 生成，重复请求返回原 turn，异内容重用请求 ID 报冲突。Store 启动把遗留 running 转为 interrupted，保留已落盘文本，不自动调用模型；completed、failed、canceled 等终态不改写。
+
+Web 历史列表的首轮摘要从已有消息读取，不增加独立存储状态。会话切换销毁旧页面的流和临时选材，迟到响应不能回写新页面；主动停止先请求服务端取消，再读取持久终态。删除携带会话版本，并先停止生成、等待保存排空；来源失效和空材料不触发自动删除。
 
 聊天读取与修改均按实例和作者限定。材料表只保存资源名和来源摘要，不复制 Memos 原文；新生成通过共享 Notes 读取并复查来源。会话版本约束材料/标题修改，历史 turn 保留原引用和 Prompt。删除会话级联清理消息、材料及保存关联，running 生成须先结束；Memos 笔记和 Records 的写入幂等元数据不随聊天删除。保存关联固定助手消息版本和原文摘要，预留稳定写入键，重启后仍能复用。
 

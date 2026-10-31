@@ -27,6 +27,10 @@ test('detail links only return to known application pages and preserve valid fil
     '/notes/another', '/%2f%2fevil', '/review/../settings', '/settings#fragment', ' /',
   ]) assert.equal(safeFrom(bad), '/', bad);
   assert.equal(safeFrom('/review?arbitrary=data'), '/review');
+  const chat = '/insights?chat=68f91ebc-bbed-4fc5-a82b-18e162e715d0';
+  assert.equal(safeFrom(`${chat}&arbitrary=data`), chat);
+  assert.equal(new URL(detailURL('memos/abc-123', chat), 'https://notes.example').searchParams.get('from'), chat);
+  assert.equal(safeFrom('/insights?chat=javascript:bad'), '/insights');
 });
 
 test('only protected content URLs belonging to the note are rendered as attachments', () => {

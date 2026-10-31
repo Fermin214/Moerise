@@ -68,6 +68,7 @@ async function fixture(t) {
       json({ version: body.version, status: 'ok', duration_ms: 17 }); return;
     }
     if (path === '/api/app/v1/notes') { json({ notes: [], next_page_token: '' }); return; }
+    if (path === '/api/app/v1/chats' && req.method === 'GET') { json({ chats: [], next_page_token: '' }); return; }
     if (path === '/api/app/v1/tags') { json({ tags: [] }); return; }
     if (path === '/api/app/v1/calendar') { json({ month: new URL(req.url, 'http://localhost').searchParams.get('month'), days: [] }); return; }
     if (path !== '/api/app/v1/settings') { error('SOURCE_NOT_FOUND', 404); return; }
@@ -343,7 +344,8 @@ test('model settings pair protocols, check saved versions and discard obsolete r
   await page.goto(`${url}/settings`); await login(page); await pageReady(page);
   await page.locator('#settings-index-status').filter({ hasText: '已关闭' }).waitFor();
   await page.locator('a[data-route][href="/insights"]').click();
-  await page.locator('#capability').filter({ hasText: '请在设置中启用 LLM' }).waitFor();
+  await page.locator('.insights-page[aria-busy="false"]').waitFor();
+  assert.ok(await page.locator('[data-chat="send"]').isDisabled());
   await page.locator('a[data-route][href="/settings"]').click(); await pageReady(page);
   const check = page.getByRole('button', { name: '检查 Embedding 连接', exact: true });
   assert.ok(await check.isDisabled());

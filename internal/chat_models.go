@@ -34,6 +34,7 @@ type ChatTurn struct {
 type ChatSummary struct {
 	ID            string `json:"id"`
 	Title         string `json:"title"`
+	Preview       string `json:"preview"`
 	Version       int64  `json:"version"`
 	MaterialCount int    `json:"material_count"`
 	CreatedAt     string `json:"created_at"`

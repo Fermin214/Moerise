@@ -169,9 +169,15 @@ func (s *ChatService) Update(ctx context.Context, id string, input ChatUpdate) (
 	if s.active(id) {
 		return ChatSession{}, chatBusy()
 	}
-	materials, err := s.Materials(ctx, input.Names, nil)
-	if err != nil {
-		return ChatSession{}, err
+	if input.Names == nil {
+		return ChatSession{}, failure("INVALID_ARGUMENT", "Chat names must be an array", 422, false)
+	}
+	materials := ChatMaterials{Materials: []ChatMaterial{}}
+	if len(input.Names) > 0 {
+		materials, err = s.Materials(ctx, input.Names, nil)
+		if err != nil {
+			return ChatSession{}, err
+		}
 	}
 	if err := ctx.Err(); err != nil {
 		return ChatSession{}, err

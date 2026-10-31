@@ -168,6 +168,8 @@ node --test web/test/browser.mjs
 
 `web/test/discovery-browser.mjs` 使用正式 Web 和隔离 API，在 Chromium 中检查完整回顾遍历、空池和失效来源、重新读取及失败后隐藏旧内容、重试恢复位置与跨日切换、详情往返、随机及指定起点、超过 100 条路径、耗尽与资源错误、停止及导航取消、会话失效和迟到响应。运行方法与 `browser.mjs` 相同。
 
+`web/test/insights-browser.mjs` 通过正式 Web 与隔离 API，在 Chromium 中检查正常/归档跨页选材、日期与精确标签组合、临时选择取消、Unicode 字符上限、自然 Markdown 与自由追问、固定版本原文保存、刷新及详情返回、空材料保留历史、来源失效、异常 EOF、导航断流、CSRF 更新和结果不明时原键原内容重试。会话菜单检查空草稿、历史分页选择、主动停止、删除确认、生成与保存排空、失败重试、版本冲突及迟到响应隔离。恢复及生成状态轮询时，来源问题提示优先于历史中断提示，明确重新选材后清除旧提示。`web/test/chat-stream.test.mjs` 检查分片 UTF-8、SSE 注释与 CRLF、显式完成、错误终态及非法尾随输出。运行浏览器专项使用 `node --test web/test/insights-browser.mjs`，环境变量与其他浏览器检查相同。
+
 `TestClientDiscoveryMemosAcceptance` 使用真实 Memos、Core 和可控 Embedding 服务，覆盖两时段各三条的固定计划、纯图与纯文件、受保护图片、Cookie/Origin/CSRF、重启、关闭模型后的回顾，以及随机和指定起点的语义前进：
 
 ```bash

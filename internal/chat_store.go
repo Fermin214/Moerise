@@ -21,8 +21,8 @@ func chatBusy() error {
 }
 
 func validateChat(title string, materials []ChatMaterial) error {
-	if !utf8.ValidString(title) || len(title) > 800 || utf8.RuneCountInString(title) > 200 || len(materials) == 0 {
-		return failure("INVALID_ARGUMENT", "Chat requires a title of at most 200 characters and selected materials", 422, false)
+	if !utf8.ValidString(title) || len(title) > 800 || utf8.RuneCountInString(title) > 200 {
+		return failure("INVALID_ARGUMENT", "Chat requires a title of at most 200 characters", 422, false)
 	}
 	seen := map[string]bool{}
 	for _, material := range materials {
@@ -48,6 +48,9 @@ func putChatMaterials(tx *sql.Tx, id string, materials []ChatMaterial) error {
 }
 
 func (s *Store) createChat(key, title string, materials []ChatMaterial) (ChatSession, bool, error) {
+	if len(materials) == 0 {
+		return ChatSession{}, false, failure("INVALID_ARGUMENT", "Select at least one memo", 422, false)
+	}
 	if !idempotencyPattern.MatchString(key) {
 		return ChatSession{}, false, failure("INVALID_ARGUMENT", "Chat requires a stable request_id", 422, false)
 	}
@@ -131,11 +134,15 @@ func (s *Store) chat(id string) (ChatSession, error) {
 	return result, err
 }
 
-func (s *Store) readChatSummary(tx *sql.Tx, id string, result *ChatSummary) error {
-	err := tx.QueryRow(`SELECT id, title, version,
+const chatSummaryQuery = `SELECT id, title,
+		COALESCE((SELECT CASE WHEN kind = 'insight' THEN '一键洞察' ELSE substr(user_content, 1, 80) END
+			FROM chat_turns WHERE chat_id = c.id ORDER BY position LIMIT 1), title), version,
 		(SELECT COUNT(*) FROM chat_materials WHERE chat_id = c.id), created_at, updated_at
-		FROM chat_sessions c WHERE id = ? AND instance_id = ? AND user_name = ?`,
-		id, s.Settings.Memos.InstanceID, s.Settings.Memos.User).Scan(&result.ID, &result.Title, &result.Version,
+		FROM chat_sessions c`
+
+func (s *Store) readChatSummary(tx *sql.Tx, id string, result *ChatSummary) error {
+	err := tx.QueryRow(chatSummaryQuery+` WHERE id = ? AND instance_id = ? AND user_name = ?`,
+		id, s.Settings.Memos.InstanceID, s.Settings.Memos.User).Scan(&result.ID, &result.Title, &result.Preview, &result.Version,
 		&result.MaterialCount, &result.CreatedAt, &result.UpdatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return chatNotFound()
@@ -148,9 +155,7 @@ func (s *Store) listChats(beforeTime, beforeID string, limit int) ([]ChatSummary
 	if limit < 1 || limit > 100 {
 		return result, failure("INVALID_ARGUMENT", "Invalid chat page size", 422, false)
 	}
-	rows, err := s.state.Query(`SELECT id, title, version,
-		(SELECT COUNT(*) FROM chat_materials WHERE chat_id = c.id), created_at, updated_at
-		FROM chat_sessions c WHERE instance_id = ? AND user_name = ?
+	rows, err := s.state.Query(chatSummaryQuery+` WHERE instance_id = ? AND user_name = ?
 		AND (? = '' OR updated_at < ? OR (updated_at = ? AND id < ?))
 		ORDER BY updated_at DESC, id DESC LIMIT ?`, s.Settings.Memos.InstanceID, s.Settings.Memos.User,
 		beforeTime, beforeTime, beforeTime, beforeID, limit)
@@ -160,7 +165,7 @@ func (s *Store) listChats(beforeTime, beforeID string, limit int) ([]ChatSummary
 	defer rows.Close()
 	for rows.Next() {
 		var chat ChatSummary
-		if err := rows.Scan(&chat.ID, &chat.Title, &chat.Version, &chat.MaterialCount, &chat.CreatedAt, &chat.UpdatedAt); err != nil {
+		if err := rows.Scan(&chat.ID, &chat.Title, &chat.Preview, &chat.Version, &chat.MaterialCount, &chat.CreatedAt, &chat.UpdatedAt); err != nil {
 			return result, err
 		}
 		result = append(result, chat)

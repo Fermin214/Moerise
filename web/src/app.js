@@ -3,6 +3,7 @@ import { errorText } from './errors.js';
 import { pages, notePath, filters, timelineURL, listQuery, safeFrom, detailURL, noteID, attachmentURL, rasterImage } from './routes.js';
 import { renderMarkdown } from './markdown.js';
 import { createSettingsPage } from './settings.js';
+import { createInsightsPage } from './insights.js';
 
 const $ = id => document.getElementById(id);
 const draft = new Draft(), controllers = new Set(), snapshots = new Map();
@@ -19,6 +20,7 @@ let month = '', routeReturnKey = null;
 let pageCount = 0, reloading = false;
 let lastTimeline = { path: '/', values: filters('') };
 let settingsPage = null;
+let insightsPage = null;
 let discoveryPage = null, reviewView = null, walkView = null;
 history.replaceState({ ...history.state, webKey: currentKey }, '');
 history.scrollRestoration = 'manual';
@@ -44,6 +46,7 @@ function stale(generation) { if (generation !== epoch) throw aborted(); }
 function invalidate() {
   epoch++; viewSequence++; listSequence++;
   settingsPage?.destroy(); settingsPage = null;
+  insightsPage?.destroy(); insightsPage = null;
   discoveryPage?.destroy(); discoveryPage = null;
   invalidateSidebar();
   for (const controller of controllers) controller.abort();
@@ -458,7 +461,7 @@ function renderNote(note, detail = false) {
     ...(!detail ? [['打开笔记', () => openNote(note), '']] : []),
     [note.state === 'ARCHIVED' ? '恢复到主页' : '归档', () => changeState(note), ''],
     ['从这条漫步', () => startFromNote(note), ''],
-    ['AI 洞察这条', () => navigate('/insights'), ''],
+    ['AI 洞察这条', () => navigate(`/insights?${new URLSearchParams({ note: note.name })}`), ''],
     ['删除', () => confirmDelete(card, note), 'dg'],
   ];
   for (const [label, action, cls] of actions) {
@@ -826,7 +829,7 @@ function createDiscoveryPage(kind) {
     const actions = el('div', 'discovery-actions'), current = batch.items[selected];
     if (!current.unavailable) {
       actions.append(button('从这条漫步', 'ghost', () => startFromNote(current.note)),
-        button('AI 洞察这条', 'ghost', () => navigate('/insights')));
+        button('AI 洞察这条', 'ghost', () => navigate(`/insights?${new URLSearchParams({ note: current.note.name })}`)));
     }
     actions.append(button(selected + 1 < batch.items.length ? '下一条' : '再看一遍', 'save', () => {
       reviewView.position = (selected + 1) % batch.items.length; render();
@@ -964,12 +967,13 @@ function createDiscoveryPage(kind) {
 async function showRoute() {
   if (!identity) return;
   settingsPage?.destroy(); settingsPage = null;
+  insightsPage?.destroy(); insightsPage = null;
   discoveryPage?.destroy(); discoveryPage = null;
   const generation = epoch, sequence = ++viewSequence;
   listSequence++; listController?.abort(); clearTimeout(retryTimer); pageObserver.disconnect();
   listing = reloading = false; items = []; nextToken = ''; pageCount = 0;
   $('notes').replaceChildren(); closeMenus();
-  $('notes').hidden = $('page-end').hidden = ['/settings', '/review', '/walk'].includes(location.pathname);
+  $('notes').hidden = $('page-end').hidden = ['/settings', '/review', '/walk', '/insights'].includes(location.pathname);
   for (const id of ['back', 'view-title', 'capability', 'empty', 'list-retry', 'filters', 'load-more']) $(id).hidden = true;
   showError($('list-error'), null); $('composer').hidden = location.pathname !== '/';
   const detail = notePath.exec(location.pathname);
@@ -1017,6 +1021,21 @@ async function showRoute() {
     window.scrollTo(0, 0);
     discoveryPage = createDiscoveryPage(location.pathname === '/review' ? 'review' : 'walk');
     await discoveryPage.mount($('workspace'));
+  } else if (location.pathname === '/insights') {
+    window.scrollTo(0, 0);
+    insightsPage = createInsightsPage({
+      sessionRequest, csrfToken: () => identity?.csrf_token, handleFailure, openNote,
+      navigate: (url, options) => { if (url === currentURL) showRoute(); else navigate(url, options); },
+      closeMenus,
+      renewCSRF: async () => { identity = validIdentity(await request('/session')); },
+      replaceURL: url => {
+        history.replaceState({ ...history.state }, '', url);
+        currentURL = location.pathname + location.search;
+      },
+      today: localToday, formatTime,
+      onSaved: () => { dirtySnapshots(); invalidateSidebar(); loadSidebar(); },
+    });
+    await insightsPage.mount($('workspace'));
   } else if (location.pathname === '/settings') {
     $('view-title').textContent = '设置'; $('view-title').hidden = false;
     window.scrollTo(0, 0);
@@ -1033,14 +1052,12 @@ async function showRoute() {
     $('view-title').textContent = pages.get(location.pathname) || '页面不存在'; $('view-title').hidden = false;
     $('capability').textContent = pages.has(location.pathname) ? `${pages.get(location.pathname)}尚未开放。` : '请从侧栏打开主页。';
     $('capability').hidden = false; window.scrollTo(0, 0);
-    if (['/insights', '/map'].includes(location.pathname)) {
+    if (location.pathname === '/map') {
       const page = location.pathname, label = pages.get(page);
       try {
         const models = await sessionRequest('/models');
         if (generation !== epoch || sequence !== viewSequence) return;
-        const hint = page === '/insights'
-          ? (models.llm.enabled ? 'LLM 已启用，可在设置中检查连接。' : '请在设置中启用 LLM。')
-          : ({ disabled: '请在设置中启用 Embedding。', waiting: '语义索引正在等待同步或构建。',
+        const hint = ({ disabled: '请在设置中启用 Embedding。', waiting: '语义索引正在等待同步或构建。',
             building: '语义索引构建中，可在设置中查看进度。', ready: '语义索引已就绪。',
             unavailable: '语义索引构建失败，可在设置中查看错误。' }[models.index_status] || '索引状态不可用。');
         $('capability').textContent = `${hint}${label}尚未开放。`;

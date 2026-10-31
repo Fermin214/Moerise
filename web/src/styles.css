@@ -39,6 +39,52 @@ button:disabled { cursor:default; opacity:.5; }
 #filters .ghost { height:28px; font-size:13px; padding:0 8px; }
 #load-more { align-self:center; }
 #back { align-self:flex-start; }
+.insights-page { min-width:0; }
+.insight-top { position:sticky; top:0; z-index:5; background:#FAFAF8; padding:4px 0 10px; display:flex; flex-direction:column; gap:8px; }
+.insight-heading { display:flex; align-items:baseline; justify-content:space-between; gap:8px; }
+.insight-heading-right { display:flex; align-items:center; gap:12px; }
+.insight-session > .btn { width:auto; padding:0 12px; font-size:14px; }
+.insight-session .menu { top:42px; min-width:190px; }
+.insight-material-card { padding:8px 14px 10px; }
+.insight-material-header { display:flex; align-items:center; justify-content:space-between; gap:8px; flex-wrap:wrap; }
+.btn.insight-material-toggle { width:auto; padding:0 6px; font-size:14px; color:#3A4049; }
+.insight-materials { display:flex; flex-wrap:wrap; gap:6px; padding-top:6px; }
+.insight-material { display:inline-flex; align-items:center; gap:2px; max-width:100%; }
+.insight-material .btn.s { width:28px; height:28px; font-size:16px; flex:none; }
+.insight-material .chip { overflow-wrap:anywhere; }
+.insight-warning { color:#B42318; overflow-wrap:anywhere; }
+.card .insight-over { padding-top:4px; margin:0; font-size:13px; }
+.insight-messages { flex:1; display:flex; flex-direction:column; gap:14px; min-width:0; }
+.insight-empty { flex:1; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:14px; text-align:center; padding:40px 0; }
+.insight-empty .sub { font-size:15px; }
+.insight-user { align-self:flex-end; background:#E3ECFA; color:#1E4A9A; border-radius:14px; padding:8px 16px; font-size:15px; max-width:80%; white-space:pre-wrap; overflow-wrap:anywhere; }
+.insight-assistant { display:flex; flex-direction:column; gap:2px; max-width:92%; min-width:0; }
+.insight-answer { white-space:pre-line; font-size:16px; line-height:1.9; background:#fff; border:1px solid #E8E8E4; border-radius:14px; padding:14px 18px; }
+.insight-answer > :first-child { margin-top:0; }
+.insight-answer > :last-child { margin-bottom:0; }
+.btn.s.insight-save { width:auto; padding:0 8px; font-size:12px; }
+.insight-bottom { position:sticky; bottom:0; z-index:5; background:#FAFAF8; padding:10px 0 16px; display:flex; flex-direction:column; gap:6px; }
+.insight-input { display:flex; gap:8px; align-items:center; background:#fff; border:1px solid #E8E8E4; border-radius:14px; padding:6px 6px 6px 14px; }
+.insight-input input { flex:1; border:0; outline:0; font-size:15px; height:40px; background:transparent; min-width:0; }
+.insight-input button { flex:none; }
+.insight-overlay { position:fixed; inset:0; z-index:20; background:rgba(31,35,40,.28); display:flex; align-items:center; justify-content:center; padding:16px; }
+.insight-picker { width:min(520px,100%); height:min(640px,86vh); display:flex; flex-direction:column; gap:10px; padding:16px; }
+.insight-between { display:flex; justify-content:space-between; align-items:center; gap:8px; }
+.insight-tabs { display:flex; gap:2px; background:#F4F4F1; padding:3px; border-radius:10px; align-self:flex-start; }
+.insight-picker-area { flex:1; min-height:0; overflow:auto; display:flex; flex-direction:column; gap:10px; }
+.insight-picker-list { display:flex; flex-direction:column; }
+.insight-choice { cursor:pointer; flex-wrap:wrap; }
+.insight-choice span { overflow-wrap:anywhere; min-width:0; }
+.btn.insight-month { width:auto; padding:0 10px; gap:4px; font-size:14px; font-weight:600; color:#1F2328; }
+.insight-year { display:flex; justify-content:center; align-items:center; gap:8px; font-size:14px; }
+.insight-range { min-height:32px; }
+.insight-tag-filters { display:flex; gap:6px; flex-wrap:wrap; }
+.insight-tag-filters .pbtn,.pbtn.insight-select-all { height:32px; padding:0 12px; font-size:13px; }
+.insight-done { align-self:flex-end; }
+.insight-history-row { flex:none; width:100%; border:0; background:transparent; text-align:left; cursor:pointer; }
+.insight-history-row > span { min-width:0; overflow-wrap:anywhere; white-space:pre-wrap; }
+.insight-history-date { display:block; font-size:12px; }
+@media (max-width:760px) { .insight-heading-right { gap:6px; } }
 #list-retry { align-self:flex-start; }
 .discovery-page { min-width:0; }
 .discovery-page > .sub,.discovery-page > .error { margin:0; }

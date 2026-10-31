@@ -44,8 +44,14 @@ export function safeFrom(value) {
   try {
     const url = new URL(value, 'https://moerise.invalid');
     if (url.origin !== 'https://moerise.invalid' || !pages.has(url.pathname) || url.hash) return '/';
-    return url.pathname === '/' || url.pathname === '/archived'
-      ? timelineURL(url.pathname, filters(url.search)) : url.pathname;
+    if (url.pathname === '/' || url.pathname === '/archived') return timelineURL(url.pathname, filters(url.search));
+    if (url.pathname === '/insights') {
+      const id = url.searchParams.get('chat');
+      if (/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(id || '')) {
+        return `/insights?${new URLSearchParams({ chat: id })}`;
+      }
+    }
+    return url.pathname;
   } catch { return '/'; }
 }
 
