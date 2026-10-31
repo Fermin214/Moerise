@@ -2,9 +2,9 @@
 
 Moerise 是基于 Memos 的开源自托管笔记产品，支持记录、阅读、回顾和思考。Moerise Core 提供笔记同步、文字与附件记录、每日回顾、飞书记录与定时推送，以及备份恢复。Memos 保存笔记原文与附件，并负责编辑和删除。
 
-服务提供 Web、只读 REST/MCP 和飞书入口。Web 支持 Memos 账户登录、时间线、关键词和标签日期筛选、完整笔记管理、附件、持久设置、每日回顾及随机语义漫步。聊天、地图与 Android 的开发安排见[路线图](docs/ROADMAP.md)。产品行为见[产品需求](docs/PRD.md)。
+服务提供 Web、只读 REST/MCP 和飞书入口。Web 支持 Memos 账户登录、时间线、关键词和标签日期筛选、完整笔记管理、附件、持久设置、每日回顾、随机语义漫步及自然聊天洞察。地图与 Android 的开发安排见[路线图](docs/ROADMAP.md)。产品行为见[产品需求](docs/PRD.md)。
 
-Core 已提供中文混合检索、相关笔记与语义漫步接口，见[搜索](docs/SEARCH.md)。通用及百炼向量接入、索引构建见[向量模型](docs/EMBEDDING.md)，LLM 协议及历史生成任务恢复见 [AI](docs/AI.md)。
+Core 已提供中文混合检索、相关笔记与语义漫步接口，见[搜索](docs/SEARCH.md)。通用及百炼向量接入、索引构建见[向量模型](docs/EMBEDDING.md)，自然聊天、LLM 协议及历史生成任务恢复见 [AI](docs/AI.md)。
 
 外部机器入口使用只读操作白名单。回顾与漫步复用共享服务，历史生成任务沿用持久恢复链路。
 
@@ -26,7 +26,9 @@ Core 已提供中文混合检索、相关笔记与语义漫步接口，见[搜�
 - 通过 REST 或 MCP `semantic_search` 组合中文关键词、标签与语义检索，返回命中片段、行位置和原文链接。检索无需 LLM；向量模型关闭或故障时仍可搜索关键词与标签，响应包含降级原因。
 - 通过 REST 或 MCP `get_related_memos` 查找相关笔记，排除自身并合并重复片段；复用文档向量，无需额外模型调用，原笔记与结果均复查来源。
 - 在 Web 随机或指定起点漫步，每次从有关联的语义候选中随机选择下一条；同次不重复，不按主题或历史阅读加权，不设固定路径长度。REST 与 MCP 共用选择规则，读取不更新阅读历史。
-- LLM Provider 支持 OpenAI Chat Completions、OpenAI Responses 和 Anthropic Messages，供模型连接检查及历史任务恢复使用。
+- 在 Web 手选正常与归档笔记，或按日期、标签组合选材，通过一键洞察或自由提问开展流式聊天；默认 Prompt 可编辑和恢复。会话与完整消息持久保存，可恢复、继续追问、主动停止及删除；输入超限时明确提示，不截断材料或历史。
+- 将已完成回复原样主动保存为 Memos 笔记，保留 Markdown、空白、换行与正文标签，重试不重复创建；删除聊天会话保留已保存的笔记。
+- LLM Provider 支持 OpenAI Chat Completions、OpenAI Responses 和 Anthropic Messages，供自然聊天、模型连接检查及历史任务恢复使用；聊天无需 Embedding。
 
 Moerise 的笔记接口会向 Memos 复查原文，来源服务不可用时返回错误。每个部署连接一个 Memos 实例和一个账号。
 
@@ -78,13 +80,13 @@ curl --fail http://localhost:3000/health/ready
 | --- | --- |
 | [产品需求](docs/PRD.md) | 产品行为、入口职责、首个完整版本与长期候选 |
 | [运行与恢复](docs/OPERATIONS.md) | 配置、部署、备份、恢复和版本回滚 |
-| [Web](docs/WEB.md) | 登录、时间线、创建、同源代理和 Web 构建部署 |
-| [API v1](docs/API-V1.md) | 客户端会话与原文创建、机器只读范围、分页和错误处理 |
+| [Web](docs/WEB.md) | 登录、笔记管理、回顾、漫步、聊天和 Web 构建部署 |
+| [API v1](docs/API-V1.md) | 客户端会话、笔记管理与聊天、机器只读范围、分页和错误处理 |
 | [每日回顾](docs/DAILY-REVIEW.md) | 选择参数、固定批次、近期去重与记录恢复 |
 | [飞书入口](docs/FEISHU.md) | 应用配置、身份绑定、私聊记录与事件恢复 |
 | [调度与发送队列](docs/NOTIFICATIONS.md) | 时区调度、发送尝试、结果不明处理与快照恢复 |
 | [向量模型](docs/EMBEDDING.md) | 通用及百炼配置、连接检查、索引进度与错误处理 |
-| [AI](docs/AI.md) | 三种 LLM 协议、洞察、问答、时间线、引用与故障处理 |
+| [AI](docs/AI.md) | 自然聊天、三种 LLM 协议、输入预算、原文保存与旧任务恢复 |
 | [搜索](docs/SEARCH.md) | 中文短查询、相关笔记、标签过滤、混合排名与来源复查 |
 | [开发指南](docs/DEVELOPMENT.md) | 贡献代码所需的环境、工具、运行和验证方法 |
 | [产品与架构](docs/PRODUCT-ARCHITECTURE.md) | 产品方向、模块职责、数据边界和技术依据 |

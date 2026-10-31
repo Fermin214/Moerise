@@ -184,6 +184,23 @@ node scripts/check-discovery.mjs
 
 流程创建独立账户与数据卷，覆盖全天回顾及详情图片、指定和随机起点、连续前进、Core 重启、模型关闭及窄屏显示。结束时删除自身的容器、数据卷、网络和临时凭据，仅保留 `.local/discovery-acceptance-<随机ID>/` 中的脱敏检查结果与截图。
 
+`tests/client_chat_acceptance_test.go` 的 `TestClientChatMemosAcceptance` 使用真实 Memos、Core 和可控流式 LLM，关闭 Embedding：
+
+```bash
+go test -tags=integration ./tests -run '^TestClientChatMemosAcceptance$' -v -count=1
+```
+
+该流程验证正常与归档完整分页、日期/关键词/精确 AND 标签选材、同文不同资源的完整送模、自然回复与追问、请求重放和固定回复版本的原文幂等保存，并从官方 API 读回核对 Markdown、首尾空白、换行和标签。恢复检查覆盖普通重启、索引重建及产品备份恢复后的会话、消息和保存关联。边界覆盖字符与上下文超限不截断、来源修改/删除/越权、输出后来源变化、主动取消、断流、硬重启、供应商 EOF 和退出的持久终态；删除清理聊天关联并保留 Memos 已保存笔记，机器 REST/MCP 即使有写入 Scope 也不能访问聊天。
+
+`scripts/check-chat.mjs` 将真实 Memos、Linux Core、正式 Web 和 Chromium 连接到可控 HTTP LLM，关闭 Embedding。需要 Node.js 24+、Docker Linux 引擎及已安装的 Playwright；脚本自行编译 Core 与 Web，环境变量与其他联合浏览器流程相同：
+
+```bash
+MOERISE_PLAYWRIGHT_MODULE=/absolute/path/to/playwright/index.mjs \
+node scripts/check-chat.mjs
+```
+
+流程覆盖日期与双标签组合选材、一键洞察与自由追问、原回复保存及官方读回、刷新/详情/侧栏/重启恢复、默认 Prompt 修改和恢复、超限保留完整输入、来源变化及重新选材、导航断流与供应商异常、历史分页、新建空草稿、主动停止，以及删除前等待生成取消和保存排空；同时检查 Cookie/Origin/CSRF、机器 REST/MCP 隔离和窄屏布局。结束或失败后关闭浏览器，删除自身的容器、数据卷、网络、配置凭据、二进制及数据库，仅保留 `.local/chat-acceptance-<随机ID>/` 中的脱敏检查结果与截图。
+
 `TestClientSettingsMemosAcceptance` 使用真实 Memos 和 Core 检查旧配置初始化、设置版本、模型保存生效、LLM 与向量资源隔离、Embedding 代次切换、重启及索引重建；通过 `go test -tags=integration ./tests -run '^TestClientSettingsMemosAcceptance$' -v -count=1` 执行。难以由浏览器稳定触发的排空超时、并发会话边界及旧队列密文迁移由 `internal/settings*_test.go` 和 `internal/feishu_queue_migration_test.go` 补充。
 
 该流程补充 Node 测试中的路由、草稿幂等和同源代理检查。真实 Memos 的联合浏览器流程还需覆盖来源版本、原文读回及服务重启。
@@ -202,7 +219,7 @@ node scripts/check-models.mjs
 
 省略 `MOERISE_PLAYWRIGHT_CHANNEL` 时使用 Playwright 安装的 Chromium。模型模拟器运行在宿主机，Core 通过 `host.docker.internal` 访问，Linux 引擎使用 `host-gateway` 映射。来源与 Core 使用独立 Docker 网络，发布端口只绑定回环地址。
 
-在 Linux 上，模型与回顾联合流程的编译、Core 和索引重建容器使用执行脚本的 UID/GID，使绑定目录中的缓存及临时数据归当前用户所有，结束后可直接清理。
+在 Linux 上，模型、回顾与聊天联合流程的编译、Core 和索引重建容器使用执行脚本的 UID/GID，使绑定目录中的缓存及临时数据归当前用户所有，结束后可直接清理。
 
 流程覆盖两类模型独立启停、Web 保存与连接检查、版本冲突和错误脱敏、通用文档与查询协议、部分索引持久化、Core 重启续建、未变片段复用、Embedding 空间替换时阻止混用、LLM 变更保留向量代次，以及索引重建后的设置、密钥与浏览器会话。末尾检查模型关闭后的关键词搜索、笔记写入、退出及窄屏布局。轮询间隔为 1 秒，来源同步间隔为 5 秒；来源透传代理将请求起始时间至少间隔 150 毫秒，控制联合验收的并行流量，Memos 自身的限流规则继续生效。
 
