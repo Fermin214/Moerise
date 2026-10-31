@@ -12,6 +12,7 @@ import { createWebServer } from '../web/server.mjs';
 assert.ok(process.env.MOERISE_PLAYWRIGHT_MODULE, '需要 MOERISE_PLAYWRIGHT_MODULE');
 const { chromium } = await import(pathToFileURL(process.env.MOERISE_PLAYWRIGHT_MODULE).href);
 const repo = fileURLToPath(new URL('../', import.meta.url));
+const dockerUser = process.platform === 'linux' ? ['--user', `${process.getuid()}:${process.getgid()}`] : [];
 const id = randomBytes(8).toString('hex'), name = `moerise-models-${id}`;
 const root = resolve(repo, '.local', `models-acceptance-${id}`);
 const source = `${name}-source`, core = `${name}-core`;
@@ -99,7 +100,7 @@ try {
   await mkdir(root, { recursive: true });
   await check('编译 Linux Core 与正式 Web', async () => {
     containers.add(`${name}-build`);
-    await docker(['run', '--name', `${name}-build`, '--mount', `type=bind,source=${repo},target=/src`, '-w', '/src',
+    await docker(['run', ...dockerUser, '--name', `${name}-build`, '--mount', `type=bind,source=${repo},target=/src`, '-w', '/src',
       '-e', 'GOMODCACHE=/src/.local/gomodcache', '-e', 'GOCACHE=/src/.local/linux-gocache',
       'golang:1.27.3-bookworm', 'go', 'build', '-o', `/src/.local/${basename(root)}/moerise`, '.']);
     await runProcess(process.execPath, ['web/build.mjs'], { cwd: repo, signal: cancellation.signal });
@@ -151,7 +152,7 @@ try {
     config.embedding.enabled = config.llm.enabled = config.notifications.enabled = false;
     await writeFile(resolve(root, 'config.json'), JSON.stringify(config));
     containers.add(core);
-    await docker(['run', '-dt', '--name', core, '--network', name, '--mount', `type=bind,source=${root},target=/data`,
+    await docker(['run', ...dockerUser, '-dt', '--name', core, '--network', name, '--mount', `type=bind,source=${root},target=/data`,
       '--add-host', 'host.docker.internal:host-gateway',
       '-p', `127.0.0.1:${corePort}:8787`, 'golang:1.27.3-bookworm',
       '/data/moerise', 'serve', '--config', '/data/config.json', '--host', '0.0.0.0', '--port', '8787']);
@@ -313,7 +314,7 @@ try {
     await page.locator('a[data-route][href="/"]').click();
     await docker(['stop', core]);
     containers.add(`${name}-rebuild`);
-    await docker(['run', '--name', `${name}-rebuild`, '--network', name, '--mount', `type=bind,source=${root},target=/data`,
+    await docker(['run', ...dockerUser, '--name', `${name}-rebuild`, '--network', name, '--mount', `type=bind,source=${root},target=/data`,
       'golang:1.27.3-bookworm', '/data/moerise', 'rebuild-index', '--config', '/data/config.json']);
     await docker(['start', core]);
     await wait('重建后 Core', async () => { try { await request(coreURL, '/health/ready'); return true; } catch { return false; } });

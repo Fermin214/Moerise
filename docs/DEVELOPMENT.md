@@ -160,7 +160,7 @@ node --test web/test/browser.mjs
 
 `web/test/settings-browser.mjs` 使用同一浏览器运行方式，检查设置保存、密钥移除、版本冲突、繁忙重试、时区与侧栏刷新、路由离开及退出后的迟到响应。它通过正式静态资源和同源代理加载设置模块。
 
-`web/test/discovery-browser.mjs` 使用正式 Web 和隔离 API，在 Chromium 中检查完整回顾遍历、空池和失效来源、详情往返、随机及指定起点、超过 100 条路径、耗尽与资源错误、停止及导航取消、会话失效和迟到响应。运行方法与 `browser.mjs` 相同。
+`web/test/discovery-browser.mjs` 使用正式 Web 和隔离 API，在 Chromium 中检查完整回顾遍历、空池和失效来源、重新读取及失败后隐藏旧内容、重试恢复位置与跨日切换、详情往返、随机及指定起点、超过 100 条路径、耗尽与资源错误、停止及导航取消、会话失效和迟到响应。运行方法与 `browser.mjs` 相同。
 
 `TestClientDiscoveryMemosAcceptance` 使用真实 Memos、Core 和可控 Embedding 服务，覆盖两时段各三条的固定计划、纯图与纯文件、受保护图片、Cookie/Origin/CSRF、重启、关闭模型后的回顾，以及随机和指定起点的语义前进：
 
@@ -193,6 +193,8 @@ node scripts/check-models.mjs
 ```
 
 省略 `MOERISE_PLAYWRIGHT_CHANNEL` 时使用 Playwright 安装的 Chromium。模型模拟器运行在宿主机，Core 通过 `host.docker.internal` 访问，Linux 引擎使用 `host-gateway` 映射。来源与 Core 使用独立 Docker 网络，发布端口只绑定回环地址。
+
+在 Linux 上，模型与回顾联合流程的编译、Core 和索引重建容器使用执行脚本的 UID/GID，使绑定目录中的缓存及临时数据归当前用户所有，结束后可直接清理。
 
 流程覆盖两类模型独立启停、Web 保存与连接检查、版本冲突和错误脱敏、通用文档与查询协议、部分索引持久化、Core 重启续建、未变片段复用、Embedding 空间替换时阻止混用、LLM 变更保留向量代次，以及索引重建后的设置、密钥与浏览器会话。末尾检查模型关闭后的关键词搜索、笔记写入、退出及窄屏布局。轮询间隔为 1 秒，来源同步间隔为 5 秒；来源透传代理将请求起始时间至少间隔 150 毫秒，控制联合验收的并行流量，Memos 自身的限流规则继续生效。
 

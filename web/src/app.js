@@ -795,8 +795,10 @@ function createDiscoveryPage(kind) {
     }
   }
   function renderReview() {
+    if (busy) { message('正在加载每日回顾…'); return; }
+    if (failure) return;
     const batch = reviewView?.batch;
-    if (!batch) { if (busy) message('正在加载每日回顾…'); return; }
+    if (!batch) return;
     const date = batch.date.split('-').map(Number);
     root.append(el('p', 'sub', `${date[1]}月${date[2]}日 · 今天的 ${batch.items.length} 条旧笔记`));
     if (!batch.items.length) { message('今天没有可回顾的旧笔记。'); return; }

@@ -26,7 +26,7 @@ async function fixture(t) {
   ];
   const state = {
     session: false, notes, requests: [], pending: [], aborts: [], csrf: 'csrf-1', rejectCSRF: false,
-    empty: false, reviewError: null, walkError: null, modelsError: null,
+    empty: false, reviewID: 'fixed-day', reviewDate: '2026-10-30', reviewError: null, walkError: null, modelsError: null,
     exhausted: false, technical: false, embedding: true, hold: null,
   };
   const core = http.createServer(async (req, res) => {
@@ -67,7 +67,7 @@ async function fixture(t) {
     if (path === '/reviews/daily') {
       assert.equal(req.method, 'GET');
       if (state.reviewError) { error(state.reviewError); return; }
-      reply({ id: 'fixed-day', date: '2026-10-30', timezone: 'Asia/Hong_Kong', items: state.empty ? [] :
+      reply({ id: state.reviewID, date: state.reviewDate, timezone: 'Asia/Hong_Kong', items: state.empty ? [] :
         notes.slice(0, 6).map((note, index) => index === 3 ? { name: note.name, unavailable: true } :
           { name: note.name, unavailable: false, note }) }); return;
     }
@@ -183,6 +183,55 @@ test('review empty pool differs from source failure and can retry; leaving abort
   state.pending.shift().release();
   await page.locator('#notes [data-name="memos/n0"]').waitFor();
   assert.equal(await page.locator('#discovery-page').count(), 0);
+});
+
+test('review hides cached notes during reloads and failures, restores the same plan position and resets for a new day', { timeout: 60_000 }, async t => {
+  const { page, state, url } = await fixture(t);
+  await login(page, url, '/review');
+  await page.getByRole('button', { name: '第 6 / 6 条', exact: true }).click();
+  await card(page).filter({ hasText: '末尾文字 5' }).waitFor();
+
+  const reopen = async () => {
+    await page.locator('a[data-route][href="/"]').click();
+    await page.locator('a[data-route][href="/review"]').click();
+  };
+  const assertHidden = async () => {
+    assert.equal(await page.locator('[data-review-index]').count(), 0);
+    assert.equal(await page.getByRole('button', { name: '第 6 / 6 条', exact: true }).count(), 0);
+    assert.doesNotMatch(await page.locator('#discovery-page').innerText(), /10月30日|末尾文字/);
+  };
+  state.hold = '/reviews/daily';
+  await reopen();
+  await waitFor(() => state.pending.length === 1);
+  await assertHidden();
+  await page.getByRole('status').filter({ hasText: '正在加载每日回顾' }).waitFor();
+  state.hold = null; state.pending.shift().release();
+  await card(page).filter({ hasText: '末尾文字 5' }).waitFor();
+
+  state.reviewError = 'UPSTREAM_UNAVAILABLE';
+  await reopen();
+  await page.getByRole('alert').filter({ hasText: 'Memos 服务暂时无法连接' }).waitFor();
+  await assertHidden();
+  assert.equal(await page.getByText('今天没有可回顾的旧笔记。', { exact: true }).count(), 0);
+  state.reviewError = null; state.hold = '/reviews/daily';
+  state.notes[5].content = '重试后从来源读取的新正文';
+  await page.getByRole('button', { name: '重试', exact: true }).click();
+  await waitFor(() => state.pending.length === 1);
+  await assertHidden();
+  state.hold = null; state.pending.shift().release();
+  await card(page).filter({ hasText: '重试后从来源读取的新正文' }).waitFor();
+  assert.equal(await page.getByRole('button', { name: '第 6 / 6 条', exact: true }).getAttribute('aria-pressed'), 'true');
+
+  state.reviewID = 'next-day'; state.reviewDate = '2026-10-31'; state.reviewError = 'UPSTREAM_UNAVAILABLE';
+  await reopen();
+  await page.getByRole('alert').filter({ hasText: 'Memos 服务暂时无法连接' }).waitFor();
+  await assertHidden();
+  assert.doesNotMatch(await page.locator('#discovery-page').innerText(), /重试后从来源读取的新正文/);
+  state.reviewError = null;
+  await page.getByRole('button', { name: '重试', exact: true }).click();
+  await card(page).filter({ hasText: '末尾文字 0' }).waitFor();
+  assert.match(await page.locator('#discovery-page').innerText(), /10月31日/);
+  assert.equal(await page.getByRole('button', { name: '第 1 / 6 条', exact: true }).getAttribute('aria-pressed'), 'true');
 });
 
 test('walk random start uses session CSRF, can continue past 100 notes, and restores the same path after detail return', { timeout: 120_000 }, async t => {

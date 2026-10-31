@@ -2,6 +2,8 @@
 
 Moerise 是基于 Memos 的单用户自托管笔记服务。服务端使用 Go 1.27+ 和 SQLite，支持 Linux 二进制及 Docker Linux 容器。
 
+若仓库根目录存在 `override.AGENTS.md`，读取并遵循其中的补充指引。
+
 ## 按任务查阅
 
 | 任务 | 入口 |
