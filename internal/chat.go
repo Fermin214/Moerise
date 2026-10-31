@@ -48,6 +48,10 @@ func (s *ChatService) lock(ctx context.Context) (func(), error) {
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}
+	if err := ctx.Err(); err != nil {
+		<-s.gate
+		return nil, err
+	}
 	s.mu.Lock()
 	closed := s.closed
 	s.mu.Unlock()
@@ -143,6 +147,9 @@ func (s *ChatService) Create(ctx context.Context, input ChatCreate) (ChatSession
 	if err != nil {
 		return ChatSession{}, false, err
 	}
+	if err := ctx.Err(); err != nil {
+		return ChatSession{}, false, err
+	}
 	return s.Store.createChat(input.RequestID, input.Title, materials.Materials)
 }
 
@@ -164,6 +171,9 @@ func (s *ChatService) Update(ctx context.Context, id string, input ChatUpdate) (
 	}
 	materials, err := s.Materials(ctx, input.Names, nil)
 	if err != nil {
+		return ChatSession{}, err
+	}
+	if err := ctx.Err(); err != nil {
 		return ChatSession{}, err
 	}
 	return s.Store.updateChat(id, input.Version, input.Title, materials.Materials)
@@ -324,6 +334,9 @@ func (s *ChatService) Generate(ctx context.Context, chatID string, input ChatGen
 	}
 	messages, err := chatContext(chat, materials, content, config.LLM.ContextBytes)
 	if err != nil {
+		return ChatTurn{}, err
+	}
+	if err := ctx.Err(); err != nil {
 		return ChatTurn{}, err
 	}
 	turn, created, err := s.Store.reserveChatTurn(chatID, input, s.Store.productVersion, config.Insights.DefaultPrompt, configured(config.LLM.Model))

@@ -59,6 +59,11 @@ func writeClientError(w http.ResponseWriter, err error, id string) {
 }
 
 func (a *ClientAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if isChatStream(r) {
+		request, cancel := chatRequestContext(r)
+		defer cancel()
+		r = request
+	}
 	check := isModelCheck(r)
 	if check {
 		// 会话认证、资源等待及模型调用共享代理超时以内的预算。
@@ -225,7 +230,7 @@ func (a *ClientAPI) route(w http.ResponseWriter, r *http.Request) (any, int, err
 	if len(r.Header.Values("Authorization")) != 0 {
 		return nil, 0, failure("FORBIDDEN", "Client requests require a browser session", 403, false)
 	}
-	if r.URL.RawQuery != "" && !(slices.Contains([]string{"/api/app/v1/notes", "/api/app/v1/tags", "/api/app/v1/calendar"}, r.URL.Path) && r.Method == http.MethodGet) &&
+	if r.URL.RawQuery != "" && !(slices.Contains([]string{"/api/app/v1/notes", "/api/app/v1/tags", "/api/app/v1/calendar", "/api/app/v1/chats", "/api/app/v1/chat-materials"}, r.URL.Path) && r.Method == http.MethodGet) &&
 		!(r.URL.Path == "/api/app/v1/admin/notifications" && r.Method == http.MethodGet) {
 		return nil, 0, failure("INVALID_ARGUMENT", "Unexpected query parameters", 422, false)
 	}
@@ -363,6 +368,10 @@ func (a *ClientAPI) route(w http.ResponseWriter, r *http.Request) (any, int, err
 		days, err := a.app.Notes.Calendar(r.Context(), query.Get("state"), query.Get("month"))
 		return map[string]any{"month": query.Get("month"), "days": days}, 200, err
 	default:
+		if path == "/api/app/v1/chats" || strings.HasPrefix(path, "/api/app/v1/chats/") ||
+			path == "/api/app/v1/chat-materials" || path == "/api/app/v1/chat-materials/resolve" {
+			return a.chatRoute(w, r, identity)
+		}
 		if strings.HasPrefix(path, "/api/app/v1/notes/") {
 			return a.noteRoute(w, r)
 		}

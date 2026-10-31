@@ -88,6 +88,7 @@ export function createWebServer({
   publicOrigin = process.env.PUBLIC_ORIGIN || 'http://localhost:3000',
   dist = fileURLToPath(new URL('./dist/', import.meta.url)),
   proxyTimeout = 60_000,
+  chatProxyTimeout = 125_000,
   healthTimeout = 2_000,
 } = {}) {
   const core = origin(coreOrigin, 'CORE_ORIGIN');
@@ -95,6 +96,9 @@ export function createWebServer({
   const transport = core.protocol === 'https:' ? https : http;
   if (!Number.isInteger(healthTimeout) || healthTimeout < 1 || healthTimeout > 2_147_483_647) {
     throw new Error('Invalid health timeout');
+  }
+  if (!Number.isInteger(chatProxyTimeout) || chatProxyTimeout < 1 || chatProxyTimeout > 2_147_483_647) {
+    throw new Error('Invalid chat proxy timeout');
   }
 
   return http.createServer(async (req, res) => {
@@ -168,7 +172,8 @@ export function createWebServer({
         response.on('error', () => res.destroy());
         response.pipe(res);
       });
-      upstream.setTimeout(proxyTimeout, () => upstream.destroy(new Error('timeout')));
+      const chatStream = req.method === 'POST' && /^\/api\/app\/v1\/chats\/[a-zA-Z0-9-]+\/messages$/.test(path);
+      upstream.setTimeout(chatStream ? chatProxyTimeout : proxyTimeout, () => upstream.destroy(new Error('timeout')));
       upstream.on('error', () => {
         if (res.destroyed) return;
         if (res.headersSent) res.destroy();

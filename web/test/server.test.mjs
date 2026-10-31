@@ -227,6 +227,35 @@ test('does not follow upstream redirects or send credentials to a redirect targe
   assert.equal(count, 1);
 });
 
+test('chat SSE uses its longer timeout, streams promptly and cancels Core on disconnect', async t => {
+  let release;
+  const released = new Promise(resolve => { release = resolve; });
+  let closed;
+  const coreClosed = new Promise(resolve => { closed = resolve; });
+  const { url } = await fixture(t, async (req, res) => {
+    req.resume();
+    res.on('close', closed);
+    await new Promise(resolve => setTimeout(resolve, 60));
+    res.writeHead(200, { 'Content-Type': 'text/event-stream', 'X-Accel-Buffering': 'no' });
+    res.write('event: delta\ndata: {"text":"first"}\n\n');
+    await released;
+    res.end('event: complete\ndata: {}\n\n');
+  }, { proxyTimeout: 20, chatProxyTimeout: 1000 });
+  t.after(release);
+  const controller = new AbortController();
+  const response = await fetch(`${url}/api/app/v1/chats/12345678-1234-1234-1234-123456789012/messages`, {
+    method: 'POST', headers: { Origin: 'https://notes.example.com', 'Content-Type': 'application/json' },
+    body: '{}', signal: controller.signal,
+  });
+  assert.equal(response.status, 200);
+  assert.match(response.headers.get('content-type'), /text\/event-stream/);
+  const reader = response.body.getReader();
+  const first = await reader.read();
+  assert.match(new TextDecoder().decode(first.value), /event: delta/);
+  controller.abort();
+  await coreClosed;
+});
+
 test('rejects configured origins that could add credentials or paths', () => {
   for (const coreOrigin of [
     'file:///etc/passwd', 'https://user:secret@example.com', 'http://example.com/api',

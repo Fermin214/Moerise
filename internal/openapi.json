@@ -7207,6 +7207,894 @@
           }
         }
       }
+    },
+    "/api/app/v1/chats": {
+      "get": {
+        "operationId": "client_list_chats",
+        "summary": "分页读取持久聊天会话",
+        "description": "仅绑定作者的浏览器会话；拒绝 Authorization，写入要求精确 Origin 和 X-CSRF-Token，响应禁止缓存。按更新时间和 ID 倒序，游标绑定来源与作者，索引重建不清聊天。",
+        "security": [
+          {
+            "BrowserSession": []
+          },
+          {
+            "LocalBrowserSession": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "page_size",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 20
+            }
+          },
+          {
+            "name": "page_token",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "maxLength": 4096
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatPage"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/ChatError"
+          },
+          "403": {
+            "$ref": "#/components/responses/ChatError"
+          },
+          "404": {
+            "$ref": "#/components/responses/ChatError"
+          },
+          "405": {
+            "$ref": "#/components/responses/ChatError"
+          },
+          "409": {
+            "$ref": "#/components/responses/ChatError"
+          },
+          "413": {
+            "$ref": "#/components/responses/ChatError"
+          },
+          "415": {
+            "$ref": "#/components/responses/ChatError"
+          },
+          "422": {
+            "$ref": "#/components/responses/ChatError"
+          },
+          "500": {
+            "$ref": "#/components/responses/ChatError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ChatError"
+          }
+        }
+      },
+      "post": {
+        "operationId": "client_create_chat",
+        "summary": "创建明确选材的持久聊天",
+        "description": "仅绑定作者的浏览器会话；拒绝 Authorization，写入要求精确 Origin 和 X-CSRF-Token，响应禁止缓存。请求体最多 128 KiB，同 request_id 同请求重放返回 200；创建不调用模型或写笔记。正常与归档均可选，保存来源引用与版本。",
+        "security": [
+          {
+            "BrowserSession": []
+          },
+          {
+            "LocalBrowserSession": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChatCreate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "成功。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatSession"
+                }
+              }
+            }
+          },
+          "201": {
+            "description": "成功。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatSession"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/ChatError"
+          },
+          "403": {
+            "$ref": "#/components/responses/ChatError"
+          },
+          "404": {
+            "$ref": "#/components/responses/ChatError"
+          },
+          "405": {
+            "$ref": "#/components/responses/ChatError"
+          },
+          "409": {
+            "$ref": "#/components/responses/ChatError"
+          },
+          "413": {
+            "$ref": "#/components/responses/ChatError"
+          },
+          "415": {
+            "$ref": "#/components/responses/ChatError"
+          },
+          "422": {
+            "$ref": "#/components/responses/ChatError"
+          },
+          "500": {
+            "$ref": "#/components/responses/ChatError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ChatError"
+          }
+        }
+      }
+    },
+    "/api/app/v1/chats/{chat_id}": {
+      "get": {
+        "operationId": "client_get_chat",
+        "summary": "恢复完整聊天消息与材料引用",
+        "description": "仅绑定作者的浏览器会话；拒绝 Authorization，写入要求精确 Origin 和 X-CSRF-Token，响应禁止缓存。",
+        "security": [
+          {
+            "BrowserSession": []
+          },
+          {
+            "LocalBrowserSession": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "chat_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatSession"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/ChatError"
+          },
+          "403": {
+            "$ref": "#/components/responses/ChatError"
+          },
+          "404": {
+            "$ref": "#/components/responses/ChatError"
+          },
+          "405": {
+            "$ref": "#/components/responses/ChatError"
+          },
+          "409": {
+            "$ref": "#/components/responses/ChatError"
+          },
+          "413": {
+            "$ref": "#/components/responses/ChatError"
+          },
+          "415": {
+            "$ref": "#/components/responses/ChatError"
+          },
+          "422": {
+            "$ref": "#/components/responses/ChatError"
+          },
+          "500": {
+            "$ref": "#/components/responses/ChatError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ChatError"
+          }
+        }
+      },
+      "patch": {
+        "operationId": "client_update_chat",
+        "summary": "按版本修改聊天标题与明确选材",
+        "description": "仅绑定作者的浏览器会话；拒绝 Authorization，写入要求精确 Origin 和 X-CSRF-Token，响应禁止缓存。请求体最多 128 KiB，明确重选时保存当前来源版本；历史轮次快照保持。",
+        "security": [
+          {
+            "BrowserSession": []
+          },
+          {
+            "LocalBrowserSession": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "chat_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChatUpdate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "成功。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatSession"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/ChatError"
+          },
+          "403": {
+            "$ref": "#/components/responses/ChatError"
+          },
+          "404": {
+            "$ref": "#/components/responses/ChatError"
+          },
+          "405": {
+            "$ref": "#/components/responses/ChatError"
+          },
+          "409": {
+            "$ref": "#/components/responses/ChatError"
+          },
+          "413": {
+            "$ref": "#/components/responses/ChatError"
+          },
+          "415": {
+            "$ref": "#/components/responses/ChatError"
+          },
+          "422": {
+            "$ref": "#/components/responses/ChatError"
+          },
+          "500": {
+            "$ref": "#/components/responses/ChatError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ChatError"
+          }
+        }
+      },
+      "delete": {
+        "operationId": "client_delete_chat",
+        "summary": "按版本主动删除聊天",
+        "description": "仅绑定作者的浏览器会话；拒绝 Authorization，写入要求精确 Origin 和 X-CSRF-Token，响应禁止缓存。运行中的生成须先取消，保存排空后删除；不删除已主动保存的 Memos 笔记。",
+        "security": [
+          {
+            "BrowserSession": []
+          },
+          {
+            "LocalBrowserSession": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "chat_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChatVersion"
+              }
+            }
+          }
+        },
+        "responses": {
+          "204": {
+            "description": "成功。"
+          },
+          "401": {
+            "$ref": "#/components/responses/ChatError"
+          },
+          "403": {
+            "$ref": "#/components/responses/ChatError"
+          },
+          "404": {
+            "$ref": "#/components/responses/ChatError"
+          },
+          "405": {
+            "$ref": "#/components/responses/ChatError"
+          },
+          "409": {
+            "$ref": "#/components/responses/ChatError"
+          },
+          "413": {
+            "$ref": "#/components/responses/ChatError"
+          },
+          "415": {
+            "$ref": "#/components/responses/ChatError"
+          },
+          "422": {
+            "$ref": "#/components/responses/ChatError"
+          },
+          "500": {
+            "$ref": "#/components/responses/ChatError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ChatError"
+          }
+        }
+      }
+    },
+    "/api/app/v1/chat-materials": {
+      "get": {
+        "operationId": "client_select_chat_materials",
+        "summary": "组合筛选正常及归档聊天材料",
+        "description": "仅绑定作者的浏览器会话；拒绝 Authorization，写入要求精确 Origin 和 X-CSRF-Token，响应禁止缓存。默认 page_size=100。重复 tag 精确 AND；from/until 为产品时区创建日期的半开区间。ALL 先分页正常、再分页归档；各状态内创建时间倒序。筛选只用于选材，不再次过滤明确选中的材料。",
+        "security": [
+          {
+            "BrowserSession": []
+          },
+          {
+            "LocalBrowserSession": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "state",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "ALL",
+                "NORMAL",
+                "ARCHIVED"
+              ],
+              "default": "ALL"
+            }
+          },
+          {
+            "name": "query",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "maxLength": 256
+            }
+          },
+          {
+            "name": "tag",
+            "in": "query",
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "maxLength": 100
+              },
+              "maxItems": 20
+            }
+          },
+          {
+            "name": "from",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "format": "date"
+            }
+          },
+          {
+            "name": "until",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "format": "date"
+            }
+          },
+          {
+            "name": "page_size",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 100
+            }
+          },
+          {
+            "name": "page_token",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "maxLength": 4096
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatMaterialPage"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/ChatError"
+          },
+          "403": {
+            "$ref": "#/components/responses/ChatError"
+          },
+          "404": {
+            "$ref": "#/components/responses/ChatError"
+          },
+          "405": {
+            "$ref": "#/components/responses/ChatError"
+          },
+          "409": {
+            "$ref": "#/components/responses/ChatError"
+          },
+          "413": {
+            "$ref": "#/components/responses/ChatError"
+          },
+          "415": {
+            "$ref": "#/components/responses/ChatError"
+          },
+          "422": {
+            "$ref": "#/components/responses/ChatError"
+          },
+          "500": {
+            "$ref": "#/components/responses/ChatError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ChatError"
+          }
+        }
+      }
+    },
+    "/api/app/v1/chat-materials/resolve": {
+      "post": {
+        "operationId": "client_resolve_chat_materials",
+        "summary": "复查明确选定的完整材料和字符数",
+        "description": "仅绑定作者的浏览器会话；拒绝 Authorization，写入要求精确 Origin 和 X-CSRF-Token，响应禁止缓存。请求体最多 128 KiB；不截断，超字符限制仍返回实际计数供调整；来源失效明确失败。",
+        "security": [
+          {
+            "BrowserSession": []
+          },
+          {
+            "LocalBrowserSession": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChatNames"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "成功。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatMaterials"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/ChatError"
+          },
+          "403": {
+            "$ref": "#/components/responses/ChatError"
+          },
+          "404": {
+            "$ref": "#/components/responses/ChatError"
+          },
+          "405": {
+            "$ref": "#/components/responses/ChatError"
+          },
+          "409": {
+            "$ref": "#/components/responses/ChatError"
+          },
+          "413": {
+            "$ref": "#/components/responses/ChatError"
+          },
+          "415": {
+            "$ref": "#/components/responses/ChatError"
+          },
+          "422": {
+            "$ref": "#/components/responses/ChatError"
+          },
+          "500": {
+            "$ref": "#/components/responses/ChatError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ChatError"
+          }
+        }
+      }
+    },
+    "/api/app/v1/chats/{chat_id}/messages": {
+      "post": {
+        "operationId": "client_generate_chat",
+        "summary": "持久化并流式生成自然聊天回复",
+        "description": "仅绑定作者的浏览器会话；拒绝 Authorization，写入要求精确 Origin 和 X-CSRF-Token，响应禁止缓存。请求体最多 64 KiB，认证与生成共享 115 秒期限。kind=insight 时 content 为空，使用持久默认 Prompt；question 使用原 content。预检失败为 JSON 错误；message/delta/complete 使用 ChatEvent，error 使用 ChatStreamError。增量先落盘，complete 在最终持久化后发出；EOF 不等于成功。同 request_id 重试读取原消息，不重新生成；重放 completed 无 delta。连接断开或退出为 interrupted，显式取消为 canceled，其他故障为 failed，重启不重跑。",
+        "security": [
+          {
+            "BrowserSession": []
+          },
+          {
+            "LocalBrowserSession": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "chat_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChatGenerate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "成功。",
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "SSE event: message|delta|complete|error；data 为一行 JSON。ChatEvent 或 ChatStreamError。"
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/ChatError"
+          },
+          "403": {
+            "$ref": "#/components/responses/ChatError"
+          },
+          "404": {
+            "$ref": "#/components/responses/ChatError"
+          },
+          "405": {
+            "$ref": "#/components/responses/ChatError"
+          },
+          "409": {
+            "$ref": "#/components/responses/ChatError"
+          },
+          "413": {
+            "$ref": "#/components/responses/ChatError"
+          },
+          "415": {
+            "$ref": "#/components/responses/ChatError"
+          },
+          "422": {
+            "$ref": "#/components/responses/ChatError"
+          },
+          "500": {
+            "$ref": "#/components/responses/ChatError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ChatError"
+          }
+        }
+      }
+    },
+    "/api/app/v1/chats/{chat_id}/messages/{request_id}/cancel": {
+      "post": {
+        "operationId": "client_cancel_chat",
+        "summary": "停止指定聊天请求",
+        "description": "仅绑定作者的浏览器会话；拒绝 Authorization，写入要求精确 Origin 和 X-CSRF-Token，响应禁止缓存。已结束请求返回原状态；运行中请求触发取消，读取会话取得最终 canceled 状态。",
+        "security": [
+          {
+            "BrowserSession": []
+          },
+          {
+            "LocalBrowserSession": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "chat_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "request_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "pattern": "^[A-Za-z0-9._:-]+$(?![\\s\\S])"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {},
+                "required": []
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "成功。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatTurn"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/ChatError"
+          },
+          "403": {
+            "$ref": "#/components/responses/ChatError"
+          },
+          "404": {
+            "$ref": "#/components/responses/ChatError"
+          },
+          "405": {
+            "$ref": "#/components/responses/ChatError"
+          },
+          "409": {
+            "$ref": "#/components/responses/ChatError"
+          },
+          "413": {
+            "$ref": "#/components/responses/ChatError"
+          },
+          "415": {
+            "$ref": "#/components/responses/ChatError"
+          },
+          "422": {
+            "$ref": "#/components/responses/ChatError"
+          },
+          "500": {
+            "$ref": "#/components/responses/ChatError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ChatError"
+          }
+        }
+      }
+    },
+    "/api/app/v1/chats/{chat_id}/messages/{request_id}/save": {
+      "post": {
+        "operationId": "client_save_chat",
+        "summary": "按固定版本将已完成助手回复原样保存到 Memos",
+        "description": "仅绑定作者的浏览器会话；拒绝 Authorization，写入要求精确 Origin 和 X-CSRF-Token，响应禁止缓存。请求体最多 4 KiB；稳定幂等键跨重启复用，保留 Markdown、空白和正文标签。",
+        "security": [
+          {
+            "BrowserSession": []
+          },
+          {
+            "LocalBrowserSession": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "chat_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "request_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "pattern": "^[A-Za-z0-9._:-]+$(?![\\s\\S])"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChatVersion"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "成功。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClientNote"
+                }
+              }
+            }
+          },
+          "201": {
+            "description": "成功。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClientNote"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/ChatError"
+          },
+          "403": {
+            "$ref": "#/components/responses/ChatError"
+          },
+          "404": {
+            "$ref": "#/components/responses/ChatError"
+          },
+          "405": {
+            "$ref": "#/components/responses/ChatError"
+          },
+          "409": {
+            "$ref": "#/components/responses/ChatError"
+          },
+          "413": {
+            "$ref": "#/components/responses/ChatError"
+          },
+          "415": {
+            "$ref": "#/components/responses/ChatError"
+          },
+          "422": {
+            "$ref": "#/components/responses/ChatError"
+          },
+          "500": {
+            "$ref": "#/components/responses/ChatError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ChatError"
+          }
+        }
+      }
     }
   },
   "components": {
@@ -10353,6 +11241,499 @@
             }
           }
         }
+      },
+      "ChatMaterial": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "source_hash": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$",
+            "minLength": 64,
+            "maxLength": 64
+          }
+        },
+        "required": [
+          "name",
+          "source_hash"
+        ]
+      },
+      "ChatMessage": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "role": {
+            "type": "string",
+            "enum": [
+              "user",
+              "assistant"
+            ]
+          },
+          "content": {
+            "type": "string"
+          },
+          "version": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "running",
+              "completed",
+              "failed",
+              "canceled",
+              "interrupted"
+            ]
+          },
+          "error_code": {
+            "type": "string"
+          },
+          "saved_name": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string"
+          },
+          "updated_at": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "role",
+          "content",
+          "version",
+          "status",
+          "error_code",
+          "saved_name",
+          "created_at",
+          "updated_at"
+        ]
+      },
+      "ChatTurn": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "insight",
+              "question"
+            ]
+          },
+          "user": {
+            "$ref": "#/components/schemas/ChatMessage"
+          },
+          "assistant": {
+            "$ref": "#/components/schemas/ChatMessage"
+          },
+          "settings_version": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "prompt": {
+            "type": "string"
+          },
+          "model": {
+            "type": "string"
+          },
+          "materials": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ChatMaterial"
+            }
+          },
+          "usage": {
+            "$ref": "#/components/schemas/LLMUsage"
+          }
+        },
+        "required": [
+          "id",
+          "request_id",
+          "kind",
+          "user",
+          "assistant",
+          "settings_version",
+          "prompt",
+          "model",
+          "materials",
+          "usage"
+        ]
+      },
+      "ChatSummary": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "title": {
+            "type": "string"
+          },
+          "version": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "material_count": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "created_at": {
+            "type": "string"
+          },
+          "updated_at": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "title",
+          "version",
+          "material_count",
+          "created_at",
+          "updated_at"
+        ]
+      },
+      "ChatSession": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "title": {
+            "type": "string"
+          },
+          "version": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "material_count": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "created_at": {
+            "type": "string"
+          },
+          "updated_at": {
+            "type": "string"
+          },
+          "materials": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ChatMaterial"
+            }
+          },
+          "turns": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ChatTurn"
+            }
+          }
+        },
+        "required": [
+          "id",
+          "title",
+          "version",
+          "material_count",
+          "created_at",
+          "updated_at",
+          "materials",
+          "turns"
+        ]
+      },
+      "ChatCreate": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "request_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9._:-]+$(?![\\s\\S])"
+          },
+          "title": {
+            "type": "string",
+            "maxLength": 200
+          },
+          "names": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^memos/[A-Za-z0-9_-]+$(?![\\s\\S])"
+            },
+            "minItems": 1,
+            "maxItems": 1000,
+            "uniqueItems": true
+          }
+        },
+        "required": [
+          "request_id",
+          "title",
+          "names"
+        ]
+      },
+      "ChatUpdate": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "version": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "title": {
+            "type": "string",
+            "maxLength": 200
+          },
+          "names": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^memos/[A-Za-z0-9_-]+$(?![\\s\\S])"
+            },
+            "minItems": 1,
+            "maxItems": 1000,
+            "uniqueItems": true
+          }
+        },
+        "required": [
+          "version",
+          "title",
+          "names"
+        ]
+      },
+      "ChatGenerate": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "request_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9._:-]+$(?![\\s\\S])"
+          },
+          "version": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "insight",
+              "question"
+            ]
+          },
+          "content": {
+            "type": "string",
+            "maxLength": 8000
+          }
+        },
+        "required": [
+          "request_id",
+          "version",
+          "kind",
+          "content"
+        ]
+      },
+      "ChatVersion": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "version": {
+            "type": "integer",
+            "minimum": 1
+          }
+        },
+        "required": [
+          "version"
+        ]
+      },
+      "ChatNames": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "names": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^memos/[A-Za-z0-9_-]+$(?![\\s\\S])"
+            },
+            "minItems": 1,
+            "maxItems": 1000,
+            "uniqueItems": true
+          }
+        },
+        "required": [
+          "names"
+        ]
+      },
+      "ChatMaterials": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "notes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ClientNote"
+            }
+          },
+          "materials": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ChatMaterial"
+            }
+          },
+          "characters": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "limit": {
+            "const": 20000
+          }
+        },
+        "required": [
+          "notes",
+          "materials",
+          "characters",
+          "limit"
+        ]
+      },
+      "ChatMaterialPage": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "notes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ClientNote"
+            }
+          },
+          "next_page_token": {
+            "type": "string"
+          },
+          "character_limit": {
+            "const": 20000
+          }
+        },
+        "required": [
+          "notes",
+          "next_page_token",
+          "character_limit"
+        ]
+      },
+      "ChatPage": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "chats": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ChatSummary"
+            }
+          },
+          "next_page_token": {
+            "type": "string"
+          },
+          "character_limit": {
+            "const": 20000
+          }
+        },
+        "required": [
+          "chats",
+          "next_page_token",
+          "character_limit"
+        ]
+      },
+      "ChatEvent": {
+        "oneOf": [
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "type": {
+                "const": "message"
+              },
+              "turn": {
+                "$ref": "#/components/schemas/ChatTurn"
+              }
+            },
+            "required": [
+              "type",
+              "turn"
+            ]
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "type": {
+                "const": "delta"
+              },
+              "text": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "required": [
+              "type",
+              "text"
+            ]
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "type": {
+                "const": "complete"
+              },
+              "turn": {
+                "$ref": "#/components/schemas/ChatTurn"
+              }
+            },
+            "required": [
+              "type",
+              "turn"
+            ]
+          }
+        ]
+      },
+      "ChatStreamError": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "error": {
+            "$ref": "#/components/schemas/ErrorDetail"
+          },
+          "turn": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ChatTurn"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "error",
+          "turn"
+        ]
       }
     },
     "securitySchemes": {
@@ -10371,6 +11752,31 @@
         "in": "cookie",
         "name": "moerise_local_session",
         "description": "仅回环 HTTP 开发环境使用。"
+      }
+    },
+    "responses": {
+      "ChatError": {
+        "description": "客户端聊天错误：401 SESSION_UNAUTHORIZED；403 FORBIDDEN/ORIGIN_REJECTED/CSRF_REJECTED；404 CHAT_NOT_FOUND/CHAT_MESSAGE_NOT_FOUND/SOURCE_NOT_FOUND；409 CHAT_CONFLICT/CHAT_BUSY/IDEMPOTENCY_CONFLICT/SOURCE_CHANGED/CHAT_MESSAGE_INCOMPLETE；422 INVALID_ARGUMENT/INVALID_PAGE_TOKEN/CHAT_MATERIAL_LIMIT/CHAT_CONTEXT_LIMIT/CHAT_RESOURCE_LIMIT；503 LLM_DISABLED 或来源/模型故障。流开始后的错误使用 ChatStreamError，EOF 不代表成功。",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorResponse"
+            }
+          }
+        },
+        "headers": {
+          "Cache-Control": {
+            "schema": {
+              "type": "string",
+              "const": "no-store"
+            }
+          },
+          "X-Request-ID": {
+            "schema": {
+              "type": "string"
+            }
+          }
+        }
       }
     }
   }

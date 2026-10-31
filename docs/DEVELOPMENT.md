@@ -66,6 +66,8 @@ LLM 适配验证 Chat Completions、Responses 和 Anthropic Messages 的原生�
 
 `go test -race ./internal -run '^(TestChat|TestAppChat)' -count=1` 补充共享聊天编排：关闭 Embedding 时的完整正常/归档选材、自然 Markdown、默认 Prompt 和成功对话上下文、Unicode 字符与 UTF-8 字节预算、消息数量限制、不截断、来源变化/删除/越权、供应商故障、流协议异常、消费者中断、主动取消和服务关闭、重复请求不再生成。保存验证原文幂等、固定版本及删除等待保存排空；运行设置更新验证 Chat 和历史兼容服务共享同一 Provider，App 拒绝新的结构化调用。真实 Memos 的旧 AI 集成流程显式创建旧结果夹具，继续检查已保存结果发送、确认和恢复，不重新开放 App 入口。
 
+`go test -race ./internal -run '^(TestClientChat|TestChatSelection)' -count=1` 检查客户端聊天的 Cookie、Origin/CSRF、机器凭据拒绝、严格 JSON、版本冲突、SSE 完成/错误与 OpenAPI 一致性、重放、取消、退出及组合选材分页。Web 代理测试检查生成流使用独立超时、及时透传增量和断连传递；运行 `npm --prefix web run build && npm --prefix web test`。这些可控模型测试不能代替真实 Memos 与浏览器的完整聊天验收。
+
 旧结构化 AI 业务测试直接调用共享 `AIService`，用于检查生成逻辑和旧任务恢复。证据流程验证指定来源与相关历史的边界、同文多来源、精确标签、状态及创建时间半开区间，以及过滤先于召回上限。专项测试覆盖转义后的 JSON 预算、UTF-8 裁切、微秒日期边界、无效引用和收集后来源变化；这些边界无法通过不稳定的模型输出可靠触发。证据字段和省略规则见 [AI](AI.md#证据与引用)。
 
 洞察流程使用可控模型验证事实、解释、追问与引用的映射，检查输入总预算和完整条目输出。失败路径覆盖虚构引用、无引用事实、缺少结束记录、输出后的模型故障、回调取消，以及输出前和完成前的来源修改、删除与作者变化；这些情况均不能产生成功完成事件。

@@ -21,6 +21,13 @@
 | GET | `/api/app/v1/reviews/daily` | 生成或读取完整固定日计划，返回全部条目及冻结设置版本 |
 | POST | `/api/app/v1/walks/start` | 接收 `{name?}`，返回指定或随机起点，不记录阅读 |
 | POST | `/api/app/v1/walks/next` | 接收 `{name,path}`，在语义候选中随机选择未访问的下一条 |
+| GET | `/api/app/v1/chat-materials` | 分页组合筛选聊天材料，默认包括正常与归档笔记 |
+| POST | `/api/app/v1/chat-materials/resolve` | 接收 `{names}`，复查明确选中的完整材料、引用与字符数 |
+| GET、POST | `/api/app/v1/chats` | 分页读取持久会话，或提交 `{request_id,title,names}` 幂等创建 |
+| GET、PATCH、DELETE | `/api/app/v1/chats/{chat_id}` | 恢复会话；按版本修改标题与材料；按版本主动删除 |
+| POST | `/api/app/v1/chats/{chat_id}/messages` | 提交 `{request_id,version,kind,content}`，持久化并流式生成自然回复 |
+| POST | `/api/app/v1/chats/{chat_id}/messages/{request_id}/cancel` | 接收 `{}`，停止指定请求，读取会话取得最终取消状态 |
+| POST | `/api/app/v1/chats/{chat_id}/messages/{request_id}/save` | 接收助手消息 `{version}`，原文幂等保存为 Memos 笔记 |
 | GET | `/api/app/v1/notes` | 实时读取 Memos 本人笔记，默认 `state=NORMAL&order=created_desc&page_size=20` |
 | GET | `/api/app/v1/notes/{memo_id}` | 返回来源复查后的最新 Note，不记录阅读 |
 | POST | `/api/app/v1/notes` | 接收 `{content,attachments}`，必填 `Idempotency-Key`，首次 201、重放 200，均直接返回 Note |
@@ -60,6 +67,33 @@ Web 会话失效时隐藏私人界面，在页面内存中保存创建和编辑�
 Web 正文中的原生 `/file/attachments/{id}/{filename}` 引用按父笔记附件表转换为受保护的 `content_url`，未知或不属于该笔记的引用保持文字。侧栏标签按笔记状态、日历按状态和月份复用聚合结果，缓存有效期一分钟；写入、手动刷新笔记或页面重新获得焦点后刷新聚合，被替代的聚合请求会取消。
 
 客户端沿用 `error.code/message/retryable/request_id`：401 表示会话失效，403 表示身份范围或请求边界错误，503 表示来源、配置或存储故障，不返回 Bearer 认证挑战。私人响应使用 `Cache-Control: no-store`。通知确认的 `resolved_by` 为登录用户资源名；其业务决策和回执要求见[通知说明](NOTIFICATIONS.md)。
+
+### 自然聊天
+
+聊天接口使用本人 Cookie，写操作要求 Origin 与 CSRF，不接受机器 Bearer；外部 REST/MCP 不开放会话、选材或生成。会话列表默认 `page_size=20`，范围 1—100，以 `updated_at`、ID 倒序分页；不带其他筛选参数。会话与流响应不可缓存。消息和材料引用保存在产品状态，普通重启和索引重建保留，产品快照恢复后须重新登录。
+
+`GET /chat-materials` 接受 `state=ALL/NORMAL/ARCHIVED`（默认 ALL）、`query`、重复 `tag`、`from`、`until`、`page_size`（默认 100，范围 1—100）与 `page_token`。关键词及标签规则复用笔记列表，多个标签精确 AND；日期为 `YYYY-MM-DD`，按产品时区限定创建日期半开区间 `[from,until)`。ALL 先分页正常笔记、再分页归档，每种状态内按创建时间倒序；分页游标绑定来源、作者、状态和全部筛选，不能与普通笔记列表游标互换。响应为 `{notes,next_page_token,character_limit:20000}`。
+
+筛选只用于寻找材料。创建和修改会话提交明确 `names` 集合，随后生成包含全部已选原文，包括归档和同文不同资源；不再次套用筛选、不补入相关历史。`POST /chat-materials/resolve` 返回 `{notes,materials,characters,limit}`，其中 `characters` 为完整原文 Unicode 码点数。即使超过 20,000 仍返回实际计数供用户调整，不截断。来源删除、失权或变动在生成时明确反馈，已有消息保持。Note 及附件使用受保护客户端路径。
+
+创建提交 `{request_id,title,names}`，标题最多 200 个 Unicode 码点；同请求 ID、同请求重放返回原会话，首次 201、重放 200，异请求复用返回 409 `IDEMPOTENCY_CONFLICT`。`request_id` 允许 1—128 个 ASCII 字母、数字、点、下划线、冒号或连字符，推荐 UUID。修改提交 `{version,title,names}`，版本匹配后递增并明确更新材料版本；删除提交 `{version}`，清理消息、材料及保存关联，不删除已主动保存的 Memos 笔记。生成中修改/删除返回 `CHAT_BUSY`，须先停止；保存与删除排空互斥。
+
+`ChatSession` 包含 `id/title/version/material_count/created_at/updated_at/materials/turns`。`materials` 是 `{name,source_hash}` 引用。每轮 `ChatTurn` 包含 `request_id`、`kind`、独立的 `user` 和 `assistant` 消息、有效 `settings_version/prompt/model/materials/usage`；每条消息有 `id/role/content/version/status/error_code/saved_name/created_at/updated_at`。助手状态为 running、completed、failed、canceled 或 interrupted，原文本和部分回复持久保留。会话版本约束选材与标题，助手消息版本用于固定主动保存内容。
+
+生成提交 `{request_id,version,kind,content}`：`kind=insight` 时 `content=""`，使用已保存的默认洞察 Prompt；`kind=question` 使用原始问题，非空白且最多 8,000 码点、32,768 UTF-8 字节。生成前核算全部材料、系统约定、成功对话历史和当前问题的总字节数与 Provider 消息数量；材料超限为 `CHAT_MATERIAL_LIMIT`，上下文超限为 `CHAT_CONTEXT_LIMIT`，均不调用模型、不裁切材料或删除历史。超过 1,000 条材料请求为 `CHAT_RESOURCE_LIMIT`。
+
+消息流使用 POST fetch 和 SSE。开始流之前的参数、来源、模型或预算失败返回普通 JSON 错误；开始后 HTTP 为 200，须按事件判断结果：
+
+| event | data | 含义 |
+| --- | --- | --- |
+| `message` | `{type:"message",turn:ChatTurn}` | 已持久化的请求与消息起点；重放时返回原消息快照 |
+| `delta` | `{type:"delta",text:string}` | 已落盘的自然 Markdown 增量 |
+| `complete` | `{type:"complete",turn:ChatTurn}` | 最终 completed 消息已持久化；这是成功标记 |
+| `error` | `{error:{code,message,retryable,request_id},turn:ChatTurn|null}` | 流失败；部分文本保留，不能按成功使用 |
+
+认证和生成共享 115 秒期限，Web 固定代理的生成流闲置超时为 125 秒，不缓冲 SSE。EOF 不表示成功；断开或退出取消上游调用，保存 interrupted；显式取消保存 canceled；供应商或来源失败保存 failed。Core 重启把遗留 running 转为 interrupted，不自动重跑模型。同 `request_id` 重试读取原结果：completed 重放不重复 delta，running 返回原消息及 `CHAT_BUSY`，其他终态返回原消息及失败代码。失败后只有明确提交新请求 ID 才生成下一轮，客户端可读取会话恢复最终状态。
+
+主动保存只接受 completed 助手消息的固定 `version`。Records 使用稳定幂等键创建，首次 201、重放 200；保留原 Markdown、空白、换行和正文标签，不自动加标签。会话创建/更新及材料解析的 JSON 体最多 128 KiB，消息生成最多 64 KiB，删除、取消与保存最多 4 KiB；未知/重复字段、null 和不支持的查询参数被拒绝。模型设置和默认 Prompt 的编辑/恢复沿用设置接口，聊天不依赖 Embedding。
 
 ### 产品设置
 
