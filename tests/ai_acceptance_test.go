@@ -175,7 +175,8 @@ func (r *aiAcceptanceRuntime) stop() {
 func (r *aiAcceptanceRuntime) queueSavedAI(id string) {
 	r.h.t.Helper()
 	request := moerise.AIRequest{Names: []string{r.provider.name}}
-	result, err := r.api.AI.Insight(context.Background(), request, nil)
+	// 显式构造旧结果夹具；App 的结构化生成已停用。
+	result, err := moerise.NewAIService(r.api.Search, r.provider).Insight(context.Background(), request, nil)
 	if err != nil || !result.Completed {
 		r.h.t.Fatalf("shared insight fixture: %+v %v", result, err)
 	}
@@ -308,7 +309,10 @@ func TestAISelectedSourceSharedServiceAndQueuedFeishuAcceptance(t *testing.T) {
 	if r.provider.calls.Load() != 0 {
 		t.Fatal("scope denial invoked the model")
 	}
-	rest, err := r.api.AI.Insight(context.Background(), request, nil)
+	if _, err := r.api.AI.Insight(context.Background(), request, nil); err == nil || r.provider.calls.Load() != 0 {
+		t.Fatal("application still accepts new structured generations")
+	}
+	rest, err := moerise.NewAIService(r.api.Search, r.provider).Insight(context.Background(), request, nil)
 	if err != nil || !rest.Completed {
 		t.Fatalf("shared insight: %+v %v", rest, err)
 	}

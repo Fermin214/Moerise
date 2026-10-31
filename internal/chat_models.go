@@ -69,3 +69,18 @@ type chatSave struct {
 	Key, Name string
 	Version   int64
 }
+
+const ChatCharacterLimit = 20000
+
+type ChatMaterials struct {
+	Notes      []Note         `json:"notes"`
+	Materials  []ChatMaterial `json:"materials"`
+	Characters int            `json:"characters"`
+	Limit      int            `json:"limit"`
+}
+
+type ChatEvent struct {
+	Type string    `json:"type"`
+	Turn *ChatTurn `json:"turn,omitempty"`
+	Text string    `json:"text,omitempty"`
+}

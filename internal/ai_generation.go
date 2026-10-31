@@ -49,6 +49,8 @@ type AIEvent struct {
 type AIService struct {
 	Search   *SearchService
 	Provider LLMProvider
+
+	legacyDisabled bool
 }
 
 func NewAIService(search *SearchService, provider LLMProvider) *AIService {
@@ -110,6 +112,9 @@ func (s *AIService) Insight(ctx context.Context, request AIRequest, emit func(AI
 }
 
 func (s *AIService) generate(ctx context.Context, kind string, request AIRequest, emit func(AIEvent) error) (AIResult, error) {
+	if s.legacyDisabled {
+		return AIResult{}, failure("LEGACY_AI_DISABLED", "Structured generation is retired; use natural chat", 410, false)
+	}
 	if _, err := normalizeEvidence(request); err != nil {
 		return AIResult{}, err
 	}

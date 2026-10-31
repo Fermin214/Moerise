@@ -140,6 +140,7 @@ func (a *App) UpdateSettings(ctx context.Context, update SettingsUpdate) (Settin
 	oldLLM, oldEmbedding, oldEvents, oldTransport := a.AI.Provider, a.Search.Provider, a.Feishu, a.Notifications.Transport
 	a.Store.Settings, a.Notes.Settings = settings, settings
 	a.AI.Provider, a.Search.Provider = llm, embedding
+	a.Chat.Provider = llm
 	a.Feishu, a.Notifications.Transport = events, transport
 	if embeddingChanged {
 		a.Search.mu.Lock()

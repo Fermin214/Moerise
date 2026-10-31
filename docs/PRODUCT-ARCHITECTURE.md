@@ -36,7 +36,7 @@ Web 通过同源 `/api/app/v1` 调用 Core，Core 只通过 Memos 官方认证�
 
 `state.sqlite3` 保存浏览器会话、持久设置、全天回顾计划与时段分配。`review_batches` 和 `review_items` 保存计划及选入历史，`review_plans` 冻结设置版本与规则，`review_plan_slots` 保存互不重叠的条目区间，通知通过 `slot_id` 绑定分配；这些关系与选入历史在同一事务中建立。无分配引用的历史通知按原整批结果恢复。漫步路径由调用方传回，不写跨入口阅读历史。
 
-向量与地图布局属于 `index.sqlite3` 的可重建状态。自然聊天的会话、消息、材料版本及主动保存关联保存在 `state.sqlite3`，不因索引重建删除；客户端聊天编排按 3.7 后续节点接入。旧结构化生成专用编排随 3.9 清理，保留 LLM Provider、流式通信、搜索、已应用迁移及未完成发送恢复。产品规则只在 PRD 维护。
+向量与地图布局属于 `index.sqlite3` 的可重建状态。自然聊天的会话、消息、材料版本及主动保存关联保存在 `state.sqlite3`，不因索引重建删除；共享 Chat 编排复用 Notes、Records 和 LLM Provider，客户端按 3.7 后续节点接入。App 已停止旧结构化生成新调用，专用编排随 3.9 清理，保留 LLM Provider、流式通信、搜索、已应用迁移及未完成发送恢复。产品规则只在 PRD 维护。
 
 聊天状态使用 `chat_sessions`、`chat_materials`、`chat_turns` 和 `chat_saves`。每个 turn 保存用户与助手两条逻辑消息、稳定请求 ID、原始正文、生成状态、有效 Prompt、设置版本、模型、材料引用快照及用量；流式增量与最终状态分别持久化。单会话只允许一条 running 生成，重复请求返回原 turn，异内容重用请求 ID 报冲突。Store 启动把遗留 running 转为 interrupted，保留已落盘文本，不自动调用模型；completed、failed、canceled 等终态不改写。
 
@@ -88,7 +88,7 @@ flowchart LR
 | `internal/embedding.go` | 独立的向量提供商接口、百炼调用、分批与并发限制、返回校验及连接检查 |
 | `internal/chunks.go`、`vector_index.go` | 原文分块、可恢复向量构建、缓存复用与索引代次发布 |
 | `internal/llm.go`、`ai_generation.go`、`ai_evidence.go`、`ai_timeline.go` | 模型通信、结构化分析、证据收集、引用检查与主题时间线 |
-| `internal/chat_models.go`、`chat_store.go` | 自然聊天会话、材料引用、消息状态、请求去重与主动保存关联 |
+| `internal/chat.go`、`chat_models.go`、`chat_store.go` | 自然聊天编排、完整材料与上下文预算、持久消息、取消、请求去重与主动保存 |
 | `internal/config.go`、`config_environment.go`、`main.go` | JSON 与环境配置、配置校验、服务与维护命令入口 |
 
 核心采用模块化单体，HTTP 和平台入口调用共享业务服务。

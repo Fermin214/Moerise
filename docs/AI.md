@@ -6,7 +6,19 @@ LLM 通过独立的协议适配器生成内容，支持 OpenAI Chat Completions�
 
 模型配置、连接检查、消息数组和流式输出由共享服务提供。机器 REST 的 `/api/ext/v1/insights`、`/api/ext/v1/answers` 在 Bearer 验证后返回 403 `FORBIDDEN`；`ai:generate` 不能开放生成。MCP 只注册读取工具，不注册 `analyze_memos`、`ask_memos`、`get_topic_timeline`，直接调用这些名称返回未知工具。
 
-下文描述共享 `AIService` 的结构化生成和历史渠道任务恢复。模型适配器、证据服务、持久任务和已生成结果仍参与恢复；入口限制不改写迁移或删除队列记录。机器读取协议见 [API v1](API-V1.md)。
+App 的 `AIService` 已停止接受新的结构化洞察、问答和主题时间线生成，返回 `LEGACY_AI_DISABLED`。模型适配器、证据服务、持久任务和已生成结果仍参与历史恢复；入口限制不改写迁移或删除队列记录。机器读取协议见 [API v1](API-V1.md)。
+
+## 自然聊天共享服务
+
+`ChatService` 与 App 共享 Notes、Records、Store 和唯一的有效 LLM Provider，不调用 Embedding 或结构化证据编排。创建会话保存明确选定的资源名和来源版本，每次生成从官方 Memos API 读取全部原文，包括归档笔记和同文但不同资源的笔记。不会再按日期、标签筛掉材料，也不会补入相关历史。删除、作者越界或来源变化分别报告 `SOURCE_NOT_FOUND` 或 `SOURCE_CHANGED`；用户可明确重新选择材料并更新会话，旧消息和每轮的材料引用不改写。
+
+“一键洞察”使用已保存的 `insights.default_prompt`，自由提问保留原问题；默认 Prompt 的编辑与恢复使用共享设置。模型输入包含系统约定、完整材料 JSON、全部成功对话及当前问题，输出为自然 Markdown。材料正文最多 20,000 个 Unicode 码点，另外核算输入的完整 UTF-8 字节数和 Provider 消息数量；超限在调用模型前返回 `CHAT_MATERIAL_LIMIT` 或 `CHAT_CONTEXT_LIMIT`。材料资源超过 1,000 条返回独立的 `CHAT_RESOURCE_LIMIT`，不静默截断或删除会话历史。纯附件材料只提供附件元数据，不读取图像或文件内容。
+
+生成先持久化用户与 running 助手消息，文本增量有界缓冲并在输出前落盘，完成后再发布 `complete`。首次正文输出前和最终完成前均复查全部材料。供应商异常、协议缺少完成标记或来源变化使消息为 failed；主动停止为 canceled，连接断开、消费者中断或 Core 重启为 interrupted。部分文本保留供恢复，EOF 不代表完成。同 `request_id` 的重试返回原消息，不重跑模型；失败后需明确提交新的请求 ID。一个会话同时仅有一条生成链路。
+
+生成和追问不写 Memos。主动保存固定已完成助手消息的版本，以稳定幂等键通过 Records 原样创建笔记，保留 Markdown、空白、换行与正文标签。删除会话清理其产品状态，保留已主动保存的 Memos 笔记与写入恢复元数据；进行中的生成须先停止，保存操作与删除排空互斥。会话和材料修改携带读取版本，冲突返回 `CHAT_CONFLICT`。
+
+下文的结构化分析说明仅用于理解兼容代码和旧任务恢复，不作为新的产品生成入口。
 
 ## 模型配置
 

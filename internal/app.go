@@ -18,6 +18,7 @@ type App struct {
 	Reviews       *ReviewService
 	Search        *SearchService
 	AI            *AIService
+	Chat          *ChatService
 	Feishu        *FeishuService
 	Notifications *NotificationService
 	Vector        *VectorIndexService
@@ -37,6 +38,8 @@ func NewApp(settings Settings, store *Store, source Source) *App {
 	a.Records, a.Reviews = NewRecordService(store, source), NewReviewService(store, source)
 	a.Search = NewSearchService(store, source, nil)
 	a.AI = NewAIService(a.Search, nil)
+	a.AI.legacyDisabled = true
+	a.Chat = NewChatService(store, a.Notes, a.Records, nil)
 	a.Notifications = NewNotificationService(store, a.Reviews, nil)
 	a.Feishu = NewFeishuService(store, source, a.Records, a.Reviews, a.Notifications)
 	if a.Feishu != nil {
@@ -44,7 +47,7 @@ func NewApp(settings Settings, store *Store, source Source) *App {
 	}
 	a.Notifications.Transport = NewFeishuDelivery(store, a.Reviews, a.Feishu)
 	a.Notifications.channelTransport = a.notificationTransport
-	a.closers = append(a.closers, a.closeRuntime)
+	a.closers = append(a.closers, a.closeRuntime, a.Chat.Close)
 	return a
 }
 
@@ -87,6 +90,7 @@ func OpenApp(settings Settings) (_ *App, result error) {
 			return nil, err
 		}
 		a.AI.Provider = provider
+		a.Chat.Provider = provider
 	}
 	if settings.Embedding.Enabled {
 		provider, err := NewEmbeddingProvider(settings.Embedding)

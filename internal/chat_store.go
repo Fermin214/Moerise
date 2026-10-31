@@ -256,13 +256,38 @@ func (s *Store) chatTurn(chatID, requestID string) (ChatTurn, error) {
 
 func chatGenerateHash(input ChatGenerate) string { return hashBytes(canonicalJSON(input)) }
 
-func (s *Store) reserveChatTurn(chatID string, input ChatGenerate, settingsVersion int64, prompt, model string) (ChatTurn, bool, error) {
+func validateChatGenerate(input ChatGenerate) error {
 	if !idempotencyPattern.MatchString(input.RequestID) || input.Version < 1 ||
 		(input.Kind != "insight" && input.Kind != "question") || !utf8.ValidString(input.Content) ||
 		len(input.Content) > 32768 || utf8.RuneCountInString(input.Content) > 8000 ||
 		(input.Kind == "question" && strings.TrimSpace(input.Content) == "") ||
 		(input.Kind == "insight" && input.Content != "") {
-		return ChatTurn{}, false, failure("INVALID_ARGUMENT", "Invalid chat generation request", 422, false)
+		return failure("INVALID_ARGUMENT", "Invalid chat generation request", 422, false)
+	}
+	return nil
+}
+
+func (s *Store) replayChatTurn(chatID string, input ChatGenerate) (ChatTurn, bool, error) {
+	var hash string
+	err := s.state.QueryRow(`SELECT t.request_hash FROM chat_turns t JOIN chat_sessions c ON c.id = t.chat_id
+		WHERE t.chat_id = ? AND t.request_id = ? AND c.instance_id = ? AND c.user_name = ?`,
+		chatID, input.RequestID, s.Settings.Memos.InstanceID, s.Settings.Memos.User).Scan(&hash)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ChatTurn{}, false, nil
+	}
+	if err != nil {
+		return ChatTurn{}, false, err
+	}
+	if hash != chatGenerateHash(input) {
+		return ChatTurn{}, false, failure("IDEMPOTENCY_CONFLICT", "This request_id belongs to a different message", 409, false)
+	}
+	turn, err := s.chatTurn(chatID, input.RequestID)
+	return turn, true, err
+}
+
+func (s *Store) reserveChatTurn(chatID string, input ChatGenerate, settingsVersion int64, prompt, model string) (ChatTurn, bool, error) {
+	if err := validateChatGenerate(input); err != nil {
+		return ChatTurn{}, false, err
 	}
 	created, hash := false, chatGenerateHash(input)
 	err := transaction(s.state, func(tx *sql.Tx) error {
