@@ -444,6 +444,190 @@ test('polling a recovered generation preserves unresolved source warnings until 
   assert.equal(await page.locator('[data-chat="warning"]').isHidden(), true);
 });
 
+test('recovered generation retries a temporary polling failure and stops retrying after navigation', async t => {
+  const { page, state, url } = await fixture(t);
+  await login(page, url, '/insights?note=memos%2Fnormal');
+  await page.locator('[data-chat="one"]').click();
+  await page.locator('.insights-page[aria-busy="false"]').waitFor();
+  state.chat.turns[0].assistant.status = 'running';
+  let reads = 0, failPolling = false;
+  await page.route(`**/api/app/v1/chats/${state.chat.id}`, async route => {
+    if (route.request().method() !== 'GET') { await route.continue(); return; }
+    reads++;
+    if (reads === 2 || (failPolling && reads > 1)) {
+      state.chat.turns[0].assistant.status = failPolling ? 'running' : 'completed';
+      await route.fulfill({ status: 503, contentType: 'application/json',
+        body: JSON.stringify({ error: { code: 'SESSION_UNAVAILABLE', retryable: true } }) });
+    } else await route.continue();
+  });
+  await page.reload();
+  await waitFor(() => reads >= 2);
+  await page.locator('.insights-page[aria-busy="false"]').waitFor();
+  assert.ok(reads >= 3);
+  assert.equal(await page.locator('[data-chat="send"]').textContent(), '发送');
+  assert.equal(await page.locator('[data-chat="ask"]').isDisabled(), false);
+  assert.equal(await page.locator('.insight-save').isDisabled(), false);
+  assert.equal(await page.locator('[data-chat="warning"]').isHidden(), true);
+  assert.equal(state.calls, 1);
+
+  failPolling = true; reads = 0; state.chat.turns[0].assistant.status = 'running';
+  await page.reload();
+  await waitFor(() => reads >= 2);
+  await page.locator('.side a[href="/"]').click();
+  const before = reads;
+  await page.waitForTimeout(3500);
+  assert.equal(reads, before);
+  assert.equal(await page.locator('.insights-page').count(), 0);
+});
+
+test('confirming existing choices refreshes all materials including those outside the active filter', async t => {
+  const { page, state, url, notes } = await fixture(t);
+  await login(page, url, '/insights?note=memos%2Fother');
+  notes[2].content = '😀'.repeat(20001); notes[2].source_hash = '9'.repeat(64);
+  await page.getByRole('button', { name: '添加笔记', exact: true }).click();
+  await page.getByRole('button', { name: '按标签 / 逐条', exact: true }).click();
+  await page.getByRole('dialog').getByRole('button', { name: '细分', exact: true }).click();
+  await page.getByRole('button', { name: '全选这 2 条', exact: true }).waitFor();
+  assert.equal(await page.locator('.insight-choice input:checked').count(), 0);
+  await page.getByRole('button', { name: '完成', exact: true }).click();
+  await page.getByRole('dialog').waitFor({ state: 'detached' });
+  assert.equal(state.chat.materials.length, 1);
+  assert.equal(state.chat.materials[0].source_hash, notes[2].source_hash);
+  assert.match(await page.locator('[data-chat="material-toggle"]').textContent(), /20001 \/ 20000/);
+  assert.equal(await page.locator('[data-chat="one"]').isDisabled(), true);
+
+  notes[2].content = '更新后的正文'; notes[2].source_hash = '8'.repeat(64);
+  await page.getByRole('button', { name: '添加笔记', exact: true }).click();
+  await page.getByRole('button', { name: '完成', exact: true }).click();
+  await page.getByRole('dialog').waitFor({ state: 'detached' });
+  assert.match(await page.locator('.insight-material .chip').textContent(), /更新后的正文/);
+  assert.match(await page.locator('[data-chat="material-toggle"]').textContent(), /6 \/ 20000/);
+  assert.equal(await page.locator('[data-chat="one"]').isDisabled(), false);
+
+  await page.route(`**/api/app/v1/chats/${state.chat.id}`, async route => {
+    if (route.request().method() === 'PATCH') {
+      notes[2].content = '确认期间再次变化'; notes[2].source_hash = '7'.repeat(64);
+    }
+    await route.continue();
+  }, { times: 1 });
+  await page.getByRole('button', { name: '添加笔记', exact: true }).click();
+  await page.getByRole('button', { name: '完成', exact: true }).click();
+  await page.getByRole('dialog').waitFor({ state: 'detached' });
+  await page.getByText('所选材料已修改，请重新选择这些笔记。', { exact: true }).waitFor();
+  assert.equal(await page.locator('[data-chat="one"]').isDisabled(), true);
+  await page.getByRole('button', { name: '添加笔记', exact: true }).click();
+  await page.getByRole('button', { name: '完成', exact: true }).click();
+  await page.getByRole('dialog').waitFor({ state: 'detached' });
+  assert.match(await page.locator('.insight-material .chip').textContent(), /确认期间再次变化/);
+  assert.equal(await page.locator('[data-chat="one"]').isDisabled(), false);
+  assert.equal(state.calls, 0);
+});
+
+test('stream interruption retries its first failed status read without rerunning generation', async t => {
+  const { page, state, url } = await fixture(t);
+  await login(page, url, '/insights?note=memos%2Fnormal');
+  state.stream = 'eof';
+  let reads = 0;
+  await page.route(`**/api/app/v1/chats/${state.chat.id}`, async route => {
+    if (route.request().method() !== 'GET') { await route.continue(); return; }
+    if (++reads === 1) {
+      await route.fulfill({ status: 503, contentType: 'application/json',
+        body: JSON.stringify({ error: { code: 'SESSION_UNAVAILABLE', retryable: true } }) });
+    } else await route.continue();
+  });
+  await page.locator('[data-chat="one"]').click();
+  await waitFor(() => reads >= 1);
+  await page.locator('.insights-page[aria-busy="false"]').waitFor();
+  assert.ok(reads >= 2);
+  assert.equal(await page.locator('[data-chat="send"]').textContent(), '发送');
+  assert.equal(await page.locator('[data-chat="ask"]').isDisabled(), false);
+  assert.equal(await page.locator('.insight-save').isDisabled(), true);
+  assert.match(await page.locator('[data-chat="warning"]').textContent(), /中断/);
+  assert.equal(state.calls, 1);
+});
+
+test('removing a material refreshes the remaining sources and their size limit', async t => {
+  const { page, state, url, notes } = await fixture(t);
+  await login(page, url); await pickAll(page);
+  notes[0].content = '😀'.repeat(20001); notes[0].source_hash = '9'.repeat(64);
+  await page.locator('.insight-material').filter({ hasText: '归档材料' })
+    .getByRole('button', { name: '移除这条笔记', exact: true }).click();
+  await page.locator('.insights-page[aria-busy="false"]').waitFor();
+  assert.equal(state.chat.materials.length, 2);
+  assert.match(await page.locator('[data-chat="material-toggle"]').textContent(),
+    new RegExp(`${20001 + [...notes[2].content].length} / 20000`));
+  assert.equal(await page.locator('[data-chat="one"]').isDisabled(), true);
+  await page.getByText('超过字数上限，请减少所选笔记。', { exact: true }).waitFor();
+
+  notes[0].content = '更新正文'; notes[0].source_hash = '8'.repeat(64);
+  await page.locator('.insight-material').filter({ hasText: '其他材料' })
+    .getByRole('button', { name: '移除这条笔记', exact: true }).click();
+  await page.locator('.insights-page[aria-busy="false"]').waitFor();
+  assert.match(await page.locator('[data-chat="material-toggle"]').textContent(), /1 条 · 4 \/ 20000/);
+  assert.match(await page.locator('.insight-material .chip').textContent(), /更新正文/);
+  assert.equal(await page.locator('[data-chat="one"]').isDisabled(), false);
+  assert.equal(await page.locator('[data-chat="warning"]').isHidden(), true);
+  assert.equal(state.calls, 0);
+});
+
+test('a timed out material refresh keeps temporary choices and retries in the same picker', async t => {
+  const { page, state, url } = await fixture(t);
+  await login(page, url, '/insights?note=memos%2Fnormal');
+  await page.getByRole('button', { name: '添加笔记', exact: true }).click();
+  await page.getByRole('button', { name: '按标签 / 逐条', exact: true }).click();
+  await page.getByRole('button', { name: '全选这 3 条', exact: true }).click();
+  await page.clock.install({ time: new Date('2026-10-31T00:00:00Z') });
+  let resolves = 0, release;
+  await page.route('**/api/app/v1/chat-materials/resolve', async route => {
+    if (++resolves === 1) {
+      await new Promise(resolve => { release = resolve; });
+      try { await route.continue(); } catch {}
+    } else await route.continue();
+  });
+  await page.getByRole('button', { name: '完成', exact: true }).click();
+  await waitFor(() => resolves === 1);
+  await page.clock.fastForward(65001);
+  await page.locator('.insight-picker > .insight-warning:not([hidden])').waitFor();
+  assert.equal(state.chat.version, 1);
+  assert.equal(await page.locator('.insight-choice input:checked').count(), 3);
+  release();
+  await page.getByRole('button', { name: '完成', exact: true }).click();
+  await page.getByRole('dialog').waitFor({ state: 'detached' });
+  assert.equal(resolves, 2);
+  assert.equal(state.chat.materials.length, 3);
+  assert.equal(state.chat.version, 2);
+});
+
+test('failed material refresh retains the selection and a late retry cannot update a departed chat', async t => {
+  const { page, state, url } = await fixture(t);
+  await login(page, url, '/insights?note=memos%2Fnormal');
+  await page.locator('.side a[href="/"]').click();
+  await page.goBack();
+  await page.locator('.insights-page[aria-busy="false"]').waitFor();
+  const before = structuredClone(state.chat), count = await page.locator('[data-chat="material-toggle"]').textContent();
+  state.sourceFailure = true;
+  await page.getByRole('button', { name: '添加笔记', exact: true }).click();
+  await page.getByRole('button', { name: '完成', exact: true }).click();
+  await page.locator('.insight-picker > .insight-warning:not([hidden])').waitFor();
+  assert.deepEqual(state.chat, before);
+  assert.equal(await page.locator('[data-chat="material-toggle"]').textContent(), count);
+
+  state.sourceFailure = false;
+  let release;
+  await page.route('**/api/app/v1/chat-materials/resolve', async route => {
+    const response = await route.fetch();
+    await new Promise(resolve => { release = resolve; });
+    await route.fulfill({ response });
+  });
+  await page.getByRole('button', { name: '完成', exact: true }).click();
+  await waitFor(() => !!release);
+  await page.goForward();
+  release(); await page.waitForTimeout(100);
+  assert.deepEqual(state.chat, before);
+  assert.equal(new URL(page.url()).pathname, '/');
+  assert.equal(await page.locator('.insights-page').count(), 0);
+});
+
 async function menuAction(page, name) {
   await page.getByRole('button', { name: '会话', exact: true }).click();
   await page.getByRole('menuitem', { name, exact: true }).click();

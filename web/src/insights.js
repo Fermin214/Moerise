@@ -21,7 +21,7 @@ function arrow(node, path) {
 
 export function createInsightsPage({ sessionRequest, csrfToken, renewCSRF, handleFailure, openNote, navigate, closeMenus, replaceURL, today, formatTime, onSaved }) {
   let root, active = false, chat = null, busy = false, materialOpen = true, picker = null;
-  let selected = new Map(), pendingCreate = null, pendingUpdate = null, pendingGenerate = null, controller = null, pollTimer = null;
+  let selected = new Map(), pendingCreate = null, pendingUpdate = null, pendingGenerate = null, controller = null, selectionController = null, pollTimer = null;
   let running = false, conflicted = false, sourceWarning = '', disposed = 0;
   let stopping = false, deleting = false, generationDone = null, historyDialog = null;
   const saving = new Map();
@@ -60,8 +60,9 @@ export function createInsightsPage({ sessionRequest, csrfToken, renewCSRF, handl
     running = !!chat?.turns?.some(turn => turn.assistant.status === 'running');
     root.setAttribute('aria-busy', String(busy || running || stopping || deleting));
     const over = [...selected.values()].reduce((sum, note) => sum + chars(note.content), 0) > 20000;
+    const changed = chat?.materials.some(ref => selected.get(ref.name)?.source_hash !== ref.source_hash);
     for (const node of root.querySelectorAll('[data-generate]')) {
-      node.disabled = busy || running || stopping || deleting || conflicted || !selected.size || over || (!!pendingGenerate && node.dataset.generate !== pendingGenerate.kind);
+      node.disabled = busy || running || stopping || deleting || conflicted || !selected.size || over || changed || (!!pendingGenerate && node.dataset.generate !== pendingGenerate.kind);
     }
     const send = find('send');
     send.textContent = running || stopping ? '停止' : '发送';
@@ -162,6 +163,21 @@ export function createInsightsPage({ sessionRequest, csrfToken, renewCSRF, handl
     }
   }
   async function persistSelection() {
+    const ticket = disposed;
+    if (selected.size) {
+      const resolving = selectionController = new AbortController();
+      try {
+        const materials = await sessionRequest('/chat-materials/resolve', {
+          method: 'POST', body: { names: [...selected.keys()] }, controller: resolving,
+        });
+        if (!current(ticket)) throw new DOMException('Stale chat', 'AbortError');
+        selected = new Map(materials.notes.map(note => [note.name, note]));
+      } finally { if (selectionController === resolving) selectionController = null; }
+    }
+    await persistSelectionReferences();
+    if (current(ticket) && chat?.materials.some(ref => selected.get(ref.name)?.source_hash !== ref.source_hash)) failure({ code: 'SOURCE_CHANGED' });
+  }
+  async function persistSelectionReferences() {
     const ticket = disposed, names = [...selected.keys()];
     if (!chat) {
       if (!names.length) return;
@@ -201,18 +217,23 @@ export function createInsightsPage({ sessionRequest, csrfToken, renewCSRF, handl
     if (pending && pending.assistant.status !== 'running') pendingGenerate = null;
     renderTurns();
   }
-  function scheduleRefresh() {
+  function scheduleRefresh(delay = 1500) {
     clearTimeout(pollTimer);
     const ticket = disposed;
-    pollTimer = setTimeout(() => refreshChat().catch(err => { if (current(ticket)) failure(err); }), 1500);
+    pollTimer = setTimeout(() => refreshChat(true).catch(err => {
+      if (!current(ticket) || stopping || deleting) return;
+      failure(err);
+      if (current(ticket) && err.retryable && running) scheduleRefresh(Math.min(delay * 2, 10000));
+    }), delay);
   }
-  async function refreshChat() {
+  async function refreshChat(polling = false) {
     if (!chat || !active || stopping || deleting) return;
     const ticket = disposed;
     clearTimeout(pollTimer); pollTimer = null;
     const value = await sessionRequest(`/chats/${chat.id}`);
     if (!current(ticket) || stopping || deleting) return;
     showStatus(value);
+    if (polling && !conflicted) warning(sourceWarning);
     if (chat.turns.some(turn => turn.assistant.status === 'running')) {
       scheduleRefresh();
     } else if (!conflicted) terminalWarning();
@@ -416,7 +437,10 @@ export function createInsightsPage({ sessionRequest, csrfToken, renewCSRF, handl
           const turn = chat.turns.find(value => value.request_id === pendingGenerate?.request_id);
           if ((turn && turn.assistant.status !== 'running') || (err.status && !err.retryable)) pendingGenerate = null;
           else if (pendingGenerate && !turn) warning('请求结果尚未确认，请使用原内容重试。');
-        } catch (readError) { failure(readError); }
+        } catch (readError) {
+          failure(readError);
+          if (current(generation) && readError.retryable && running) scheduleRefresh();
+        }
       }
     } finally {
       finish(); if (generationDone === done) generationDone = null;
@@ -620,6 +644,7 @@ export function createInsightsPage({ sessionRequest, csrfToken, renewCSRF, handl
 
   function destroy() {
     active = false; disposed++; controller?.abort(); controller = null;
+    selectionController?.abort(); selectionController = null;
     clearTimeout(pollTimer); picker?.abort.abort(); picker?.overlay.remove(); picker = null;
     historyDialog?.abort.abort(); historyDialog?.overlay.remove(); historyDialog = null;
     root?.remove(); root = null; selected.clear(); chat = pendingCreate = pendingUpdate = pendingGenerate = null;

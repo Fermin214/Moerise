@@ -397,10 +397,21 @@ try {
       { content: '研究材料：明确变更的完整来源。 #原始标签 #共同标签' });
     await page.reload(); await readyChat();
     await page.locator('[data-chat="warning"]').filter({ hasText: '所选材料已修改' }).waitFor();
-    await ask().fill('来源变更检查'); await send().click(); await readyChat();
+    assert.equal(await send().isDisabled(), true);
     assert.equal(evidence.llmCalls, calls);
     assert.equal(await page.locator('.insight-assistant').count(), 6);
-    await pickAll();
+    fixtures[0] = await sourceAPI('PATCH', `/${fixtures[0].name}?updateMask=content`,
+      { content: '研究材料：再次修改已勾选材料，确认时读取完整新正文。 😀 #原始标签 #共同标签' });
+    await page.getByRole('button', { name: '添加笔记', exact: true }).click();
+    await page.getByRole('button', { name: '按标签 / 逐条', exact: true }).click();
+    await page.getByRole('dialog').getByRole('button', { name: '原始标签', exact: true }).click();
+    await page.getByRole('dialog').getByRole('button', { name: '共同标签', exact: true }).click();
+    await page.getByRole('button', { name: `全选这 ${fixtures.length} 条`, exact: true }).waitFor();
+    assert.equal(await page.locator('.insight-choice input:checked').count(), fixtures.length);
+    await page.getByRole('button', { name: '完成', exact: true }).click();
+    await page.getByRole('dialog').waitFor({ state: 'detached' });
+    const count = fixtures.reduce((sum, note) => sum + [...note.content].length, 0);
+    assert.match(await page.locator('[data-chat="material-toggle"]').textContent(), new RegExp(`${count} / 20000`));
     await ask().fill('使用重新选择的来源继续'); await send().click(); await readyChat();
     assert.equal(evidence.llmCalls, calls + 1);
     const material = JSON.parse(model.requests.at(-1)[1].content.replace('本轮明确选定的全部笔记材料：\n', ''));
