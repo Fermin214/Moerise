@@ -177,7 +177,7 @@ node --test web/test/browser.mjs
 
 `web/test/discovery-browser.mjs` 使用正式 Web 和隔离 API，在 Chromium 中检查完整回顾遍历、空池和失效来源、重新读取及失败后隐藏旧内容、重试恢复位置与跨日切换、详情往返、随机及指定起点、超过 100 条路径、耗尽与资源错误、停止及导航取消、会话失效和迟到响应。运行方法与 `browser.mjs` 相同。
 
-`web/test/map-browser.mjs` 使用正式 Web、隔离 API 和真实 Chromium，检查原型地图、正常/归档/纯附件完整阅读、受保护图片及文件、独立详情与刷新返回、平移、光标锚定缩放、键盘及触摸双指、视口恢复与坐标系变化、索引状态、临时错误恢复、来源变化、退出和导航取消。`web/test/map.test.mjs` 检查点集协议、坐标适配及缩放锚点；坐标系摘要的后端测试区分增量发布和模型空间变化。浏览器专项使用 `node --test web/test/map-browser.mjs`，Playwright 和截图环境变量与其他浏览器检查相同；这些隔离 API 测试不能代替真实 Memos 地图端到端验收。
+`web/test/map-browser.mjs` 使用正式 Web、隔离 API 和真实 Chromium，检查原型地图、正常/归档/纯附件完整阅读、受保护图片及文件、独立详情与刷新返回、平移、光标锚定缩放、键盘及触摸双指、多个历史记录的后退/刷新/前进恢复与坐标系变化、索引状态、临时错误恢复、来源变化、退出和导航取消。`web/test/map.test.mjs` 检查点集协议、坐标适配及缩放锚点；坐标系摘要的后端测试区分增量发布和模型空间变化。浏览器专项使用 `node --test web/test/map-browser.mjs`，Playwright 和截图环境变量与其他浏览器检查相同；这些隔离 API 测试不能代替真实 Memos 地图端到端验收。
 
 `TestClientMapMemosAcceptance` 使用真实 Memos、Core、可控 Embedding 与流式 LLM，覆盖正常/归档/同文/纯附件的一笔记一点、完整原文标签与附件字节、邻近与刷新/重启稳定、少量增改删、来源变化/失权/故障不返回旧或部分点集、机器 REST/MCP 禁止、LLM 变化不重建、模型失败/关闭，以及重建与备份恢复保留设置、聊天完整消息、回顾和创建幂等：
 

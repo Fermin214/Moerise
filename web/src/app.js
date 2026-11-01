@@ -1045,7 +1045,8 @@ async function showRoute() {
   } else if (location.pathname === '/map') {
     $('view-title').textContent = '认知地图'; $('view-title').hidden = false;
     window.scrollTo(0, 0);
-    const saved = mapView || (history.state?.mapView?.owner === identity.user.name ? history.state.mapView : null);
+    const saved = history.state?.mapView?.owner === identity.user.name ? history.state.mapView :
+      mapView?.owner === identity.user.name ? mapView : null;
     mapPage = createMapPage({
       request: sessionRequest, handleFailure, validNote, renderNote: note => discoveryCard(note, false, 'card map-note'),
       initialView: saved,

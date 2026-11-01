@@ -192,3 +192,19 @@ test('session expiry and active logout remove private maps and cancel pending re
   state.session = false; await page.locator('#map-field').press('r'); await page.locator('#auth').waitFor({ state: 'visible' });
   assert.equal(await page.locator('.map-page').count(), 0);
 });
+
+test('each map history entry restores its own viewport and reader on back, reload and forward', async t => {
+  const { page, url } = await fixture(t); await login(page, url); await ready(page);
+  await marker(page, 0).click(); await card(page).waitFor();
+  await page.locator('#map-field').press('+'); await page.locator('#map-field').press('ArrowRight'); const first = await view(page);
+  await page.locator('nav a[href="/"]').click(); await page.waitForURL(url + '/');
+  await page.locator('nav a[href="/map"]').click(); await ready(page); assert.deepEqual(await view(page), first);
+  await marker(page, 1).click(); await page.waitForFunction(() => document.querySelector('.map-note')?.dataset.name === 'memos/n1');
+  await page.locator('#map-field').press('+'); await page.locator('#map-field').press('ArrowDown'); const second = await view(page);
+  assert.notDeepEqual(first, second);
+  await page.goBack(); await page.waitForURL(url + '/'); await page.goBack(); await ready(page);
+  await page.locator('.map-note[data-name="memos/n0"]').waitFor(); assert.deepEqual(await view(page), first);
+  await page.reload(); await ready(page); await page.locator('.map-note[data-name="memos/n0"]').waitFor(); assert.deepEqual(await view(page), first);
+  await page.goForward(); await page.waitForURL(url + '/'); await page.goForward(); await ready(page);
+  await page.locator('.map-note[data-name="memos/n1"]').waitFor(); assert.deepEqual(await view(page), second);
+});
