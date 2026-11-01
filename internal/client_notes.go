@@ -1,11 +1,37 @@
 package moerise
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 )
+
+const liveListRequestTimeout = 55 * time.Second
+
+func isLiveListRead(r *http.Request) bool {
+	if r.Method != http.MethodGet {
+		return false
+	}
+	switch r.URL.Path {
+	case "/api/app/v1/notes", "/api/app/v1/tags", "/api/app/v1/calendar", "/api/app/v1/chat-materials":
+		return true
+	}
+	return false
+}
+
+func liveListRequestError(ctx context.Context, err error) error {
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) || errors.Is(err, context.DeadlineExceeded) {
+		return failure("LIVE_LIST_LIMIT", "Source read exceeded its time budget; retry later", 503, true)
+	}
+	if errors.Is(ctx.Err(), context.Canceled) || errors.Is(err, context.Canceled) {
+		return failure("LIVE_LIST_CANCELED", "Source read was canceled", 503, true)
+	}
+	return err
+}
 
 // 客户端只接收 Core 同源文件路径，来源的内部地址和扩展字段留在服务端。
 func clientNote(note Note) Note {

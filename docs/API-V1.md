@@ -49,6 +49,8 @@
 
 创建时间相同按资源名倒序，置顶和编辑不改变创建时间排序。列表直接从 Memos 取候选并复查来源，来源新增后刷新即可读取。游标绑定列表种类、来源、作者、状态、排序及筛选，与机器索引游标不可互换，索引重建不会使实时列表游标失效。来源在跨页读取中改变可返回 409 `SOURCE_CHANGED`；资源预算耗尽返回错误。标签和日历统计覆盖对应来源范围，不从客户端已加载页推算。
 
+列表、标签、日历与聊天材料分页的认证、运行资源锁和来源读取共用最长 55 秒预算。超时返回可重试的 503 `LIVE_LIST_LIMIT`，取消为 503 `LIVE_LIST_CANCELED`，来源 429 为可重试的 503 `UPSTREAM_RATE_LIMITED`。标签/日历从两次完整官方分页核对原文版本并聚合，避免逐条 GET 全库；两次扫描发生新增、变动、删除或归属变化时整请求失败，不返回部分统计。每次扫描最多 10,000 条、32 MiB，并受部署的 `memos.max_pages` 约束；这是来源扫描资源预算，不能解释为笔记总量限制或用截断结果冒充完整统计。
+
 创建和编辑保留正文首尾空白、换行及全部 `#标签`，不接受独立标签数组。创建固定 PRIVATE。正文最多 65536 UTF-8 字节；正文非空白或至少保留一个合法附件，纯图片和纯普通文件均可保存，不补占位文字。新增 `attachments` 为 `{filename,type,content}` 数组，`content` 是 Base64 原始字节；单次最多十个，原始总大小不超过 8 MiB。
 
 每次独立提交使用新键，超时、结果不明或重新登录后的同次重试使用原键及原请求体。同键不同请求返回 409 `IDEMPOTENCY_CONFLICT`；创建结果不明返回 503 `WRITE_OUTCOME_UNKNOWN`。持久幂等属于实例，不绑定某次浏览器会话。
@@ -363,7 +365,7 @@ Authorization: Bearer <reader-token>
 | 405 | `METHOD_NOT_ALLOWED` | 检查方法和路由 |
 | 409 | `SOURCE_CHANGED` | 来源复查时原文改变；按响应 `retryable` 处理，重新读取来源后重试 |
 | 422 | `INVALID_ARGUMENT`、`INVALID_PAGE_TOKEN` | 修正参数，游标失效时重读第一页 |
-| 503 | `UPSTREAM_UNAVAILABLE`、`UPSTREAM_AUTH`、`IDENTITY_MISMATCH` | 检查来源连接与绑定 |
+| 503 | `UPSTREAM_UNAVAILABLE`、`UPSTREAM_AUTH`、`UPSTREAM_RATE_LIMITED`、`IDENTITY_MISMATCH` | 检查来源连接、限流与绑定 |
 | 503 | `UNSUPPORTED_UPSTREAM`、`UPSTREAM_PROTOCOL`、`UPSTREAM_REQUEST_REJECTED` | 检查 Memos 版本与适配层 |
 | 500 | `INTERNAL` | 通过请求标识和服务日志定位 |
 

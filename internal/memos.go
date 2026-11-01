@@ -82,6 +82,8 @@ func (m *MemosClient) do(ctx context.Context, method, path string, query url.Val
 		return upstreamError("UPSTREAM_REQUEST_REJECTED", "Memos rejected the adapter request")
 	case response.StatusCode == 409:
 		return failure("UPSTREAM_RESOURCE_EXISTS", "The Memos resource already exists", 409, false)
+	case response.StatusCode == http.StatusTooManyRequests:
+		return upstreamError("UPSTREAM_RATE_LIMITED", "Memos rate limit reached; retry later")
 	case response.StatusCode >= 300:
 		return upstreamError("UPSTREAM_UNAVAILABLE", "Memos request failed")
 	}

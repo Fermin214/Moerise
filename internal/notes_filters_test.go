@@ -63,6 +63,7 @@ type notesFilterSource struct {
 	perPage     int
 	repeatToken bool
 	gets        int
+	onPage      func(int)
 }
 
 func (s *notesFilterSource) Identity(context.Context) (string, error) {
@@ -93,6 +94,9 @@ func (s *notesFilterSource) Get(_ context.Context, name string) (*Memo, error) {
 
 func (s *notesFilterSource) ListLivePage(_ context.Context, state string, size int, token string) ([]Memo, string, error) {
 	s.pages++
+	if s.onPage != nil {
+		s.onPage(s.pages)
+	}
 	if s.pages == s.failPage {
 		return nil, "", upstreamError("UPSTREAM_UNAVAILABLE", "list failed")
 	}
@@ -232,7 +236,7 @@ func TestNotesFullSourceAggregates(t *testing.T) {
 	if err != nil || !reflect.DeepEqual(tags, []TagCount{{"Work", 5}, {"Work/Child", 4}, {"outside", 2}}) {
 		t.Fatalf("all tags: %+v %v", tags, err)
 	}
-	if source.pages != 4 || source.gets != 7 || source.checks != 2 {
+	if source.pages != 8 || source.gets != 0 || source.checks != 2 {
 		t.Fatalf("aggregation missed source pages or identity: %+v", source)
 	}
 	if names, err := service.Store.Names(); err != nil || len(names) != 0 {
@@ -253,22 +257,7 @@ func TestNotesFullSourceAggregates(t *testing.T) {
 }
 
 func TestNotesAggregatesFreshSourceAndFailures(t *testing.T) {
-	service, source := newNotesFilterFixture(t)
-	for i, mutate := range []func(*Memo){
-		func(m *Memo) { m.Tags = []string{"fresh"} },
-		func(m *Memo) { m.Creator = "users/other" },
-		func(m *Memo) { m.State = "ARCHIVED" },
-	} {
-		memo := source.rows[i]
-		mutate(&memo)
-		source.fresh[memo.Name] = &memo
-	}
-	source.fresh[source.rows[3].Name] = nil
-	tags, err := service.Tags(t.Context(), "")
-	if err != nil || !reflect.DeepEqual(tags, []TagCount{{"Work", 2}, {"Work/Child", 2}, {"fresh", 1}, {"outside", 1}}) {
-		t.Fatalf("aggregate used stale candidates: %+v %v", tags, err)
-	}
-	for _, point := range []string{"identity", "final-identity", "list", "get", "page-budget", "loop", "created"} {
+	for _, point := range []string{"identity", "final-identity", "list", "verification-page", "page-budget", "loop", "changed", "deleted", "foreign"} {
 		t.Run(point, func(t *testing.T) {
 			service, source := newNotesFilterFixture(t)
 			want := "UPSTREAM_UNAVAILABLE"
@@ -279,16 +268,27 @@ func TestNotesAggregatesFreshSourceAndFailures(t *testing.T) {
 				source.failCheck, want = 2, "UPSTREAM_AUTH"
 			case "list":
 				source.failPage = 2
-			case "get":
-				source.getError = "memos/x"
+			case "verification-page":
+				source.failPage = 5
 			case "page-budget":
 				service.Settings.Memos.MaxPages, want = 1, "UPSTREAM_PAGINATION_LIMIT"
 			case "loop":
 				source.rows, source.repeatToken, want = nil, true, "UPSTREAM_PROTOCOL"
-			case "created":
-				memo := source.rows[0]
-				memo.CreateTime = source.rows[1].CreateTime
-				source.fresh[memo.Name], want = &memo, "SOURCE_CHANGED"
+			case "changed", "deleted", "foreign":
+				want = "SOURCE_CHANGED"
+				source.onPage = func(page int) {
+					if page == 5 {
+						switch point {
+						case "changed":
+							source.rows[0].Tags = []string{"fresh"}
+						case "deleted":
+							source.rows = source.rows[1:]
+						case "foreign":
+							source.rows[0].Creator = "users/other"
+							want = "UPSTREAM_PROTOCOL"
+						}
+					}
+				}
 			}
 			tags, err := service.Tags(t.Context(), "")
 			if tags != nil || errorCode(err) != want {
@@ -326,6 +326,30 @@ func TestNotesScanBudgetsAndValidation(t *testing.T) {
 		if errorCode(err) != "LIVE_LIST_LIMIT" || checked != nil || used != 0 {
 			t.Fatalf("fresh source bypassed byte budget: %+v %d %v", checked, used, err)
 		}
+	}
+}
+
+func TestNotesAggregatesLargeCollectionUsesPagesAndNoPerNoteReads(t *testing.T) {
+	service, source := newNotesFilterFixture(t)
+	template := source.rows[0]
+	source.rows, source.perPage = nil, 100
+	for i := range 10000 {
+		memo := template
+		memo.Name = "memos/scale_" + strconv.Itoa(i)
+		memo.Tags = []string{"all", "all"}
+		source.rows = append(source.rows, memo)
+	}
+	tags, err := service.Tags(t.Context(), "NORMAL")
+	if err != nil || !reflect.DeepEqual(tags, []TagCount{{"all", 10000}}) || source.gets != 0 ||
+		source.pages != 200 || source.checks != 2 {
+		t.Fatalf("large aggregate exceeded source request budget: tags=%v pages=%d gets=%d identities=%d err=%v",
+			tags, source.pages, source.gets, source.checks, err)
+	}
+	source.pages, source.checks = 0, 0
+	days, err := service.Calendar(t.Context(), "NORMAL", "2026-03")
+	if err != nil || !reflect.DeepEqual(days, []DayCount{{"2026-03-02", 10000}}) || source.gets != 0 ||
+		source.pages != 200 || source.checks != 2 {
+		t.Fatalf("large calendar escaped source budget: days=%v pages=%d gets=%d err=%v", days, source.pages, source.gets, err)
 	}
 }
 

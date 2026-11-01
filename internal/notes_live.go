@@ -302,21 +302,31 @@ func (s *NoteService) aggregateLive(ctx context.Context, state string, filter Li
 		return err
 	}
 	limits := memosLiveLimits{memosLiveMaxRetainedMemos, memosLiveMaxRetainedBytes}
-	if err := s.walkLive(ctx, args.State, filter, limits, func(memos []Memo, bytes *int) error {
-		checked, used, err := s.checkLiveMemos(ctx, memos, args.State, filter, false, limits.maxBytes-*bytes)
-		if err != nil {
-			return err
-		}
-		*bytes += used
-		for _, memo := range checked {
-			if memo == nil {
-				continue
-			}
-			count(memo)
+	versions := map[string]string{}
+	if err := s.walkLive(ctx, args.State, filter, limits, func(memos []Memo, _ *int) error {
+		for _, memo := range memos {
+			versions[memo.Name] = hashBytes(canonicalJSON(memo))
+			count(&memo)
 		}
 		return nil
 	}); err != nil {
 		return err
+	}
+	// 两次完整官方分页核对原文版本，避免为侧栏逐条获取全库正文。
+	changed := failure("SOURCE_CHANGED", "Memos changed during source aggregation", 409, true)
+	if err := s.walkLive(ctx, args.State, filter, limits, func(memos []Memo, _ *int) error {
+		for _, memo := range memos {
+			if versions[memo.Name] != hashBytes(canonicalJSON(memo)) {
+				return changed
+			}
+			delete(versions, memo.Name)
+		}
+		return nil
+	}); err != nil {
+		return err
+	}
+	if len(versions) != 0 {
+		return changed
 	}
 	return s.Verify(ctx)
 }

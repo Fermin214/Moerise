@@ -2632,7 +2632,7 @@
             }
           }
         },
-        "description": "全部条件在服务端分页前组合，按创建时间、资源名倒序。游标绑定来源、作者、状态、排序及筛选。"
+        "description": "全部条件在服务端分页前组合，按创建时间、资源名倒序。游标绑定来源、作者、状态、排序及筛选。 认证、运行资源锁和来源读取共用最长 55 秒预算；超时返回 503 LIVE_LIST_LIMIT，取消返回 503 LIVE_LIST_CANCELED，来源 429 返回可重试的 503 UPSTREAM_RATE_LIMITED，不返回部分结果。"
       },
       "post": {
         "operationId": "client_create_note",
@@ -4478,7 +4478,8 @@
               }
             }
           }
-        }
+        },
+        "description": " 认证、运行资源锁和来源读取共用最长 55 秒预算；超时返回 503 LIVE_LIST_LIMIT，取消返回 503 LIVE_LIST_CANCELED，来源 429 返回可重试的 503 UPSTREAM_RATE_LIMITED，不返回部分结果。两次完整官方分页核对原文版本，不逐条 GET 全库笔记；两次扫描不一致返回 409 SOURCE_CHANGED。"
       }
     },
     "/api/app/v1/calendar": {
@@ -4769,7 +4770,8 @@
               }
             }
           }
-        }
+        },
+        "description": " 认证、运行资源锁和来源读取共用最长 55 秒预算；超时返回 503 LIVE_LIST_LIMIT，取消返回 503 LIVE_LIST_CANCELED，来源 429 返回可重试的 503 UPSTREAM_RATE_LIMITED，不返回部分结果。两次完整官方分页核对原文版本，不逐条 GET 全库笔记；两次扫描不一致返回 409 SOURCE_CHANGED。"
       }
     },
     "/api/app/v1/notes/{memo_id}/attachments/{attachment_id}/content": {
@@ -7603,7 +7605,7 @@
       "get": {
         "operationId": "client_select_chat_materials",
         "summary": "组合筛选正常及归档聊天材料",
-        "description": "仅绑定作者的浏览器会话；拒绝 Authorization，写入要求精确 Origin 和 X-CSRF-Token，响应禁止缓存。默认 page_size=100。重复 tag 精确 AND；from/until 为产品时区创建日期的半开区间。ALL 先分页正常、再分页归档；各状态内创建时间倒序。筛选只用于选材，不再次过滤明确选中的材料。",
+        "description": "仅绑定作者的浏览器会话；拒绝 Authorization，写入要求精确 Origin 和 X-CSRF-Token，响应禁止缓存。默认 page_size=100。重复 tag 精确 AND；from/until 为产品时区创建日期的半开区间。ALL 先分页正常、再分页归档；各状态内创建时间倒序。筛选只用于选材，不再次过滤明确选中的材料。 认证、运行资源锁和来源读取共用最长 55 秒预算；超时返回 503 LIVE_LIST_LIMIT，取消返回 503 LIVE_LIST_CANCELED，来源 429 返回可重试的 503 UPSTREAM_RATE_LIMITED，不返回部分结果。",
         "security": [
           {
             "BrowserSession": []

@@ -64,12 +64,14 @@ func (a *ClientAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		defer cancel()
 		r = request
 	}
-	check, mapRead := isModelCheck(r), isMapRead(r)
-	if check || mapRead {
+	check, mapRead, liveRead := isModelCheck(r), isMapRead(r), isLiveListRead(r)
+	if check || mapRead || liveRead {
 		// 认证、运行资源等待及业务调用共享代理超时以内的预算。
 		timeout := modelCheckTimeout
 		if mapRead {
 			timeout = mapRequestTimeout
+		} else if liveRead {
+			timeout = liveListRequestTimeout
 		}
 		ctx, cancel := context.WithTimeout(r.Context(), timeout)
 		defer cancel()
@@ -87,10 +89,12 @@ func (a *ClientAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			writeClientError(w, errors.New("client handler panic"), id)
 		}
 	}()
-	if check || mapRead {
+	if check || mapRead || liveRead {
 		if err := a.lockTimedRequest(r.Context()); err != nil {
 			if mapRead {
 				err = mapRequestError(r.Context(), err)
+			} else if liveRead {
+				err = liveListRequestError(r.Context(), err)
 			} else {
 				err = modelCheckError(r.Context(), err)
 			}
@@ -108,6 +112,9 @@ func (a *ClientAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if mapRead {
 		err = mapRequestError(r.Context(), err)
+	}
+	if liveRead {
+		err = liveListRequestError(r.Context(), err)
 	}
 	if err != nil {
 		writeClientError(w, err, id)
