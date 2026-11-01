@@ -89,6 +89,20 @@ func indexFixture(t *testing.T) (*Store, *VectorIndexService, map[string]map[str
 		if status, body, ok := identityResponse(r); ok {
 			return status, body, nil
 		}
+		if r.URL.Path == "/api/v1/memos" {
+			names := make([]string, 0, len(memos))
+			for name := range memos {
+				names = append(names, name)
+			}
+			slices.Sort(names)
+			items := []any{}
+			for _, name := range names {
+				if memos[name]["state"] == r.URL.Query().Get("state") {
+					items = append(items, memos[name])
+				}
+			}
+			return 200, map[string]any{"memos": items, "nextPageToken": ""}, nil
+		}
 		if raw := memos[strings.TrimPrefix(r.URL.Path, "/api/v1/")]; raw != nil {
 			return 200, raw, nil
 		}

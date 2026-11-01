@@ -140,11 +140,11 @@ func TestClientMapLogoutCancelsLiveSourceRead(t *testing.T) {
 	clientMapIndex(t, api)
 	started, stopped, done := make(chan struct{}), make(chan struct{}), make(chan *httptest.ResponseRecorder, 1)
 	api.app.Notes.Source = mapSource{Source: api.app.Notes.Source,
-		get: func(ctx context.Context, _ string) (*Memo, error) {
+		list: func(ctx context.Context, _ string, _ *int64, _ string) ([]Memo, string, error) {
 			close(started)
 			<-ctx.Done()
 			close(stopped)
-			return nil, ctx.Err()
+			return nil, "", ctx.Err()
 		}}
 	go func() { done <- clientCall(api, "GET", "/api/app/v1/map", "", cookie, "", "") }()
 	<-started

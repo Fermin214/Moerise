@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import { validMap, fitMapView, transformMapView } from '../src/map.js';
 
 const point = { name: 'memos/a', source_hash: 'source', x: 0, y: 0, semantic: true, tags: [] };
-const ready = () => ({ status: 'ready', algorithm: 'pca-fixed-v1', projection_revision: 1,
+const ready = () => ({ status: 'ready', algorithm: 'pca-fixed-v2', projection_revision: 1,
   layout_version: 'a'.repeat(64), layout_frame: 'b'.repeat(64), vector_generation: 'published', points: [{ ...point }] });
 
 test('map responses distinguish ready, empty and non-ready without stale points', () => {

@@ -48,7 +48,7 @@ async function fixture(t, mobile = false) {
       assert.equal(req.method, 'GET'); assert.equal(url.search, '');
       if (state.error) { error(state.error.code, state.error.status, state.error.retryable); return; }
       const ready = ['ready', 'empty'].includes(state.status);
-      reply(state.malformed || { status: state.status, algorithm: 'pca-fixed-v1', layout_version: ready ? state.version : '',
+      reply(state.malformed || { status: state.status, algorithm: 'pca-fixed-v2', layout_version: ready ? state.version : '',
         layout_frame: ready ? state.frame : '', vector_generation: ready ? 'published' : '', projection_revision: 3,
         points: state.status !== 'ready' ? [] : notes.map((note, i) => ({ name: note.name, source_hash: note.source_hash,
           x: i === 5 ? 4 : [-2, -1, 0, 1, 2][i], y: [0, 1, -1, 1, 0, 0][i], semantic: i !== 5, tags: note.tags })) }); return;

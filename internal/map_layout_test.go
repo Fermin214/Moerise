@@ -90,7 +90,7 @@ func TestMapIncrementalChangesKeepEveryUnchangedCoordinate(t *testing.T) {
 	}
 	for i, point := range second.points {
 		for _, other := range second.points[i+1:] {
-			if math.Hypot(point.X-other.X, point.Y-other.Y) < mapPointGap-1e-12 {
+			if math.Hypot(point.X-other.X, point.Y-other.Y) < mapLayoutGap(len(second.points))-1e-12 {
 				t.Fatalf("points overlap: %+v %+v", point, other)
 			}
 		}
@@ -153,7 +153,7 @@ func TestMapEmptySingletonDuplicateAndNoVectorNotes(t *testing.T) {
 				t.Fatalf("invalid point: %+v", point)
 			}
 			for _, other := range layout.points[i+1:] {
-				if math.Hypot(point.X-other.X, point.Y-other.Y) < mapPointGap-1e-12 {
+				if math.Hypot(point.X-other.X, point.Y-other.Y) < mapLayoutGap(len(layout.points))-1e-12 {
 					t.Fatalf("duplicate notes cannot be separately selected: %+v %+v", point, other)
 				}
 			}
@@ -172,7 +172,7 @@ func TestMapCalculationAndCollisionPlacementCancel(t *testing.T) {
 	if _, err := buildMapLayout(ctx, snapshot, nil); err != context.Canceled {
 		t.Fatalf("calculation ignored cancellation: %v", err)
 	}
-	grid := mapGrid{}
+	grid := newMapGrid(1)
 	grid.add(MapPoint{})
 	if _, err := grid.place(ctx, MapPoint{}); err != context.Canceled {
 		t.Fatalf("collision placement ignored cancellation: %v", err)
@@ -202,6 +202,44 @@ func BenchmarkMapLayout(b *testing.B) {
 					b.Fatalf("layout failed: %v", err)
 				}
 			}
+		})
+	}
+}
+
+func TestMapDenseSemanticClustersRemainSeparated(t *testing.T) {
+	for _, count := range []int{100, 1000, 10000} {
+		t.Run(fmt.Sprint(count), func(t *testing.T) {
+			snapshot := mapSnapshot{dimensions: 3, space: "dense-clusters"}
+			for i := range count {
+				angle := float64(i%3)*2*math.Pi/3 + float64(i%7-3)*0.001
+				snapshot.documents = append(snapshot.documents, mapTestDocument(fmt.Sprintf("%05d", i), math.Cos(angle), math.Sin(angle), 0.01))
+			}
+			layout, err := buildMapLayout(t.Context(), snapshot, nil)
+			if err != nil || len(layout.points) != count {
+				t.Fatalf("dense layout: %v", err)
+			}
+			var centers [3][2]float64
+			var counts [3]int
+			for i, point := range layout.points {
+				centers[i%3][0] += point.X
+				centers[i%3][1] += point.Y
+				counts[i%3]++
+			}
+			for i := range centers {
+				centers[i][0] /= float64(counts[i])
+				centers[i][1] /= float64(counts[i])
+			}
+			var radius float64
+			for i, point := range layout.points {
+				own := math.Hypot(point.X-centers[i%3][0], point.Y-centers[i%3][1])
+				radius = math.Max(radius, own)
+				for group, center := range centers {
+					if group != i%3 && own*2 >= math.Hypot(point.X-center[0], point.Y-center[1]) {
+						t.Fatalf("collision placement overwhelmed semantic distance: point=%d own=%f", i, own)
+					}
+				}
+			}
+			t.Logf("%d notes: maximum cluster radius %.4f", count, radius)
 		})
 	}
 }

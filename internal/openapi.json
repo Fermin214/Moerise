@@ -8100,7 +8100,7 @@
       "get": {
         "operationId": "client_cognitive_map",
         "summary": "读取本人二维认知地图",
-        "description": "只接受本人 Cookie，不接受 Authorization 或查询参数；机器 REST/MCP 不开放。返回正常与归档笔记的完整点集、布局版本和索引状态，点位不包含缓存权威正文。输出前复查所有点位原文及前后来源身份，来源变化或代次失配不返回部分结果。认证、资源锁、布局排队、计算和来源读取共享 55 秒总预算；不调用 LLM 或查询 Embedding。",
+        "description": "只接受本人 Cookie，不接受 Authorization 或查询参数；机器 REST/MCP 不开放。返回正常与归档笔记的完整点集、布局版本和索引状态，点位不包含缓存权威正文。通过官方正常与归档完整分页复查全部原文及前后来源身份，不逐点请求来源；新增、修改、缺失、分页故障或代次失配不返回旧或部分结果。全部分页成功后才修正变化来源或发布布局。认证、资源锁、布局排队、计算和来源读取共享 55 秒总预算；不调用 LLM 或查询 Embedding。",
         "security": [
           {
             "BrowserSession": []
@@ -12048,7 +12048,7 @@
           },
           "algorithm": {
             "type": "string",
-            "const": "pca-fixed-v1"
+            "const": "pca-fixed-v2"
           },
           "vector_generation": {
             "type": "string",

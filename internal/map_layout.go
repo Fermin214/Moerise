@@ -7,7 +7,7 @@ import (
 	"slices"
 )
 
-const mapAlgorithm = "pca-fixed-v1"
+const mapAlgorithm = "pca-fixed-v2"
 const mapPointGap = 0.22
 
 type mapDocument struct {
@@ -199,19 +199,30 @@ func buildMapBasis(ctx context.Context, snapshot mapSnapshot) (mapBasis, error) 
 }
 
 type mapCell struct{ x, y int }
-type mapGrid map[mapCell][]MapPoint
+type mapGrid struct {
+	gap   float64
+	cells map[mapCell][]MapPoint
+}
+
+func mapLayoutGap(count int) float64 {
+	return math.Min(mapPointGap, 0.5/math.Sqrt(float64(max(1, count))))
+}
+
+func newMapGrid(count int) mapGrid {
+	return mapGrid{gap: mapLayoutGap(count), cells: map[mapCell][]MapPoint{}}
+}
 
 func (grid mapGrid) add(point MapPoint) {
-	cell := mapCell{int(math.Floor(point.X / mapPointGap)), int(math.Floor(point.Y / mapPointGap))}
-	grid[cell] = append(grid[cell], point)
+	cell := mapCell{int(math.Floor(point.X / grid.gap)), int(math.Floor(point.Y / grid.gap))}
+	grid.cells[cell] = append(grid.cells[cell], point)
 }
 
 func (grid mapGrid) free(x, y float64) bool {
-	cell := mapCell{int(math.Floor(x / mapPointGap)), int(math.Floor(y / mapPointGap))}
+	cell := mapCell{int(math.Floor(x / grid.gap)), int(math.Floor(y / grid.gap))}
 	for dx := -1; dx <= 1; dx++ {
 		for dy := -1; dy <= 1; dy++ {
-			for _, point := range grid[mapCell{cell.x + dx, cell.y + dy}] {
-				if math.Hypot(x-point.X, y-point.Y) < mapPointGap {
+			for _, point := range grid.cells[mapCell{cell.x + dx, cell.y + dy}] {
+				if math.Hypot(x-point.X, y-point.Y) < grid.gap {
 					return false
 				}
 			}
@@ -226,7 +237,7 @@ func (grid mapGrid) place(ctx context.Context, point MapPoint) (MapPoint, error)
 		if step%64 == 0 && ctx.Err() != nil {
 			return MapPoint{}, ctx.Err()
 		}
-		radius := mapPointGap * math.Sqrt(float64(step+1))
+		radius := grid.gap * math.Sqrt(float64(step+1))
 		angle := float64(step) * math.Pi * (3 - math.Sqrt(5))
 		point.X, point.Y = x+radius*math.Cos(angle), y+radius*math.Sin(angle)
 	}
@@ -252,7 +263,8 @@ func buildMapLayout(ctx context.Context, snapshot mapSnapshot, previous *mapLayo
 			old[point.Name] = point
 		}
 	}
-	grid := mapGrid{}
+	// Density-scaled spacing keeps collision offsets local instead of expanding dense semantic clusters.
+	grid := newMapGrid(len(snapshot.documents))
 	// Reserve every unchanged position before placing new or edited documents.
 	for _, document := range snapshot.documents {
 		if point, ok := old[document.name]; ok && point.vectorHash == document.vectorHash {

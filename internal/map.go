@@ -76,31 +76,8 @@ func (s *MapService) Read(ctx context.Context) (_ MapResponse, result error) {
 	if err != nil {
 		return MapResponse{}, err
 	}
-	// Coordinates carry source hashes, not authoritative text. Validate every referenced note before publication.
-	for i, point := range layout.points {
-		if err := ctx.Err(); err != nil {
-			return MapResponse{}, err
-		}
-		memo, err := s.Notes.Source.Get(ctx, point.Name)
-		if err != nil {
-			if cause := context.Cause(ctx); cause != nil {
-				return MapResponse{}, cause
-			}
-			if healthErr := s.Store.SourceHealthContext(ctx, false, errorCode(err), ""); healthErr != nil {
-				return MapResponse{}, healthErr
-			}
-			return MapResponse{}, err
-		}
-		if memo != nil && memo.Creator != s.Store.Settings.Memos.User {
-			memo = nil
-		}
-		if memo == nil || memo.SourceHash != point.SourceHash {
-			if err := s.Store.RefreshContext(ctx, point.Name, memo); err != nil {
-				return MapResponse{}, err
-			}
-			return MapResponse{}, failure("MAP_SOURCE_CHANGED", "A map note changed; retry after indexing completes", 409, true)
-		}
-		layout.points[i].Tags = append([]string{}, memo.Tags...)
+	if err := s.verifyPoints(ctx, layout.points); err != nil {
+		return MapResponse{}, err
 	}
 	if err := s.Notes.Verify(ctx); err != nil {
 		return MapResponse{}, err
@@ -117,4 +94,76 @@ func (s *MapService) Read(ctx context.Context) (_ MapResponse, result error) {
 	response.VectorGeneration, response.ProjectionRevision = snapshot.generation, snapshot.revision
 	response.Points = layout.points
 	return response, ctx.Err()
+}
+
+// Full official pagination verifies originals without spending one upstream request per map point.
+func (s *MapService) verifyPoints(ctx context.Context, points []MapPoint) error {
+	positions, seen := map[string]int{}, map[string]bool{}
+	for i, point := range points {
+		positions[point.Name] = i
+	}
+	var changed *Memo
+	for _, state := range []string{"NORMAL", "ARCHIVED"} {
+		token, visited := "", map[string]bool{}
+		for page := 0; ; page++ {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			if page >= s.Store.Settings.Memos.MaxPages {
+				return upstreamError("PAGINATION_LIMIT", "Memos pagination exceeded the configured limit")
+			}
+			memos, next, err := s.Notes.Source.ListPage(ctx, state, nil, token)
+			if err != nil {
+				if cause := context.Cause(ctx); cause != nil {
+					return cause
+				}
+				if healthErr := s.Store.SourceHealthContext(ctx, false, errorCode(err), ""); healthErr != nil {
+					return healthErr
+				}
+				return err
+			}
+			for _, memo := range memos {
+				if memo.Creator != s.Store.Settings.Memos.User {
+					continue
+				}
+				if seen[memo.Name] {
+					return upstreamError("PAGINATION_LOOP", "Memos repeated a source resource")
+				}
+				seen[memo.Name] = true
+				position, exists := positions[memo.Name]
+				if !exists || points[position].SourceHash != memo.SourceHash {
+					if changed == nil {
+						changed = &memo
+					}
+				} else {
+					points[position].Tags = append([]string{}, memo.Tags...)
+				}
+			}
+			if next == "" {
+				break
+			}
+			if visited[next] {
+				return upstreamError("PAGINATION_LOOP", "Memos repeated a pagination token")
+			}
+			visited[next], token = true, next
+		}
+	}
+	name := ""
+	if changed != nil {
+		name = changed.Name
+	} else {
+		for _, point := range points {
+			if !seen[point.Name] {
+				name = point.Name
+				break
+			}
+		}
+	}
+	if name != "" {
+		if err := s.Store.RefreshContext(ctx, name, changed); err != nil {
+			return err
+		}
+		return failure("MAP_SOURCE_CHANGED", "Map sources changed; retry after indexing completes", 409, true)
+	}
+	return ctx.Err()
 }

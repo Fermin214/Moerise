@@ -103,7 +103,17 @@ func TestFeishuFullReviewDeliveryWithRealMemosAcceptance(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	expectedImage, err := source.DownloadAttachment(ctx, note.Attachments[0])
+	var imageAttachment map[string]any
+	for _, attachment := range note.Attachments {
+		if attachment["type"] == "image/png" {
+			imageAttachment = attachment
+			break
+		}
+	}
+	if imageAttachment == nil {
+		t.Fatal("created Memos note has no original image")
+	}
+	expectedImage, err := source.DownloadAttachment(ctx, imageAttachment)
 	if err != nil {
 		t.Fatal(err)
 	}

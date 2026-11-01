@@ -99,6 +99,27 @@ func TestMapStorageSnapshotRestartIncrementalAndSpaceIsolation(t *testing.T) {
 	}
 }
 
+func TestMapAlgorithmUpgradeRebuildsOnlyDerivedLayout(t *testing.T) {
+	store, index, _, _ := indexFixture(t)
+	finishIndex(t, index)
+	snapshot, initial := indexedMapLayout(t, store)
+	if _, err := store.index.Exec("UPDATE map_layouts SET algorithm = 'pca-fixed-v1'"); err != nil {
+		t.Fatal(err)
+	}
+	previous, err := store.loadMapLayout(t.Context(), snapshot)
+	if err != nil || previous != nil {
+		t.Fatalf("algorithm upgrade reused old density layout: %v", err)
+	}
+	_, rebuilt := indexedMapLayout(t, store)
+	if !reflect.DeepEqual(initial.points, rebuilt.points) {
+		t.Fatal("deterministic derived rebuild changed the source point set")
+	}
+	var algorithm string
+	if err := store.index.QueryRow("SELECT algorithm FROM map_layouts").Scan(&algorithm); err != nil || algorithm != mapAlgorithm {
+		t.Fatalf("algorithm metadata not replaced: %q %v", algorithm, err)
+	}
+}
+
 func TestMapSnapshotAveragesDistinctNormalizedChunks(t *testing.T) {
 	store, index, _, _ := indexFixture(t)
 	finishIndex(t, index)

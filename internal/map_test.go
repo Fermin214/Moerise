@@ -16,15 +16,15 @@ import (
 
 type mapSource struct {
 	Source
-	get      func(context.Context, string) (*Memo, error)
+	list     func(context.Context, string, *int64, string) ([]Memo, string, error)
 	identity func(context.Context) (string, error)
 }
 
-func (s mapSource) Get(ctx context.Context, name string) (*Memo, error) {
-	if s.get != nil {
-		return s.get(ctx, name)
+func (s mapSource) ListPage(ctx context.Context, state string, since *int64, token string) ([]Memo, string, error) {
+	if s.list != nil {
+		return s.list(ctx, state, since, token)
 	}
-	return s.Source.Get(ctx, name)
+	return s.Source.ListPage(ctx, state, since, token)
 }
 
 func (s mapSource) Identity(ctx context.Context) (string, error) {
@@ -87,9 +87,12 @@ func TestMapServiceChecksAllSourcesAndBothIdentitiesWithoutModelCalls(t *testing
 	calls, identities, gets := len(provider.texts), 0, map[string]int{}
 	source := service.Notes.Source
 	service.Notes.Source = mapSource{Source: source,
-		get: func(ctx context.Context, name string) (*Memo, error) {
-			gets[name]++
-			return source.Get(ctx, name)
+		list: func(ctx context.Context, state string, since *int64, token string) ([]Memo, string, error) {
+			memos, next, err := source.ListPage(ctx, state, since, token)
+			for _, memo := range memos {
+				gets[memo.Name]++
+			}
+			return memos, next, err
 		}, identity: func(ctx context.Context) (string, error) {
 			identities++
 			return source.Identity(ctx)
@@ -207,11 +210,11 @@ func TestMapServiceSourceFaultAndLateIndexRaceNeverPublishPartialLayout(t *testi
 			source := service.Notes.Source
 			identities := 0
 			service.Notes.Source = mapSource{Source: source,
-				get: func(ctx context.Context, name string) (*Memo, error) {
-					if cause == "get" && name == "memos/c" {
-						return nil, upstreamError("UPSTREAM_UNAVAILABLE", "unavailable")
+				list: func(ctx context.Context, state string, since *int64, token string) ([]Memo, string, error) {
+					if cause == "get" && state == "ARCHIVED" {
+						return nil, "", upstreamError("UPSTREAM_UNAVAILABLE", "unavailable")
 					}
-					return source.Get(ctx, name)
+					return source.ListPage(ctx, state, since, token)
 				}, identity: func(ctx context.Context) (string, error) {
 					identities++
 					if identities == 2 {
@@ -239,16 +242,81 @@ func TestMapServiceSourceFaultAndLateIndexRaceNeverPublishPartialLayout(t *testi
 	}
 }
 
+func TestMapFullPaginationFailuresNeverRefreshOrPublishPartialSources(t *testing.T) {
+	for _, fault := range []string{"later-page", "archive", "token-loop", "duplicate", "limit"} {
+		t.Run(fault, func(t *testing.T) {
+			service, index, _, _ := mapServiceFixture(t)
+			finishIndex(t, index)
+			before, err := service.Store.mapSnapshot(t.Context())
+			if err != nil {
+				t.Fatal(err)
+			}
+			source := service.Notes.Source
+			service.Store.Settings.Memos.MaxPages = 2
+			service.Notes.Source = mapSource{Source: source, list: func(ctx context.Context, state string, since *int64, token string) ([]Memo, string, error) {
+				if state == "ARCHIVED" {
+					return nil, "", upstreamError("UPSTREAM_UNAVAILABLE", "archive unavailable")
+				}
+				if token == "" {
+					memo := testMemo(t, "a", "changed source in first page")
+					next := "next"
+					if fault == "archive" {
+						next = ""
+					}
+					return []Memo{memo}, next, nil
+				}
+				switch fault {
+				case "later-page":
+					return nil, "", upstreamError("UPSTREAM_UNAVAILABLE", "page unavailable")
+				case "duplicate":
+					return []Memo{testMemo(t, "a", "duplicate")}, "", nil
+				case "limit":
+					return nil, "third", nil
+				default:
+					return nil, "next", nil
+				}
+			}}
+			result, err := service.Read(t.Context())
+			if err == nil || result.Points != nil {
+				t.Fatalf("pagination fault returned points: %v", err)
+			}
+			after, snapshotErr := service.Store.mapSnapshot(t.Context())
+			if snapshotErr != nil || !reflect.DeepEqual(before, after) {
+				t.Fatalf("partial source scan changed the index: %v", snapshotErr)
+			}
+			var count int
+			if err := service.Store.index.QueryRow("SELECT COUNT(*) FROM map_layouts").Scan(&count); err != nil || count != 0 {
+				t.Fatalf("partial source scan published layout: %d %v", count, err)
+			}
+		})
+	}
+}
+
+func TestMapSourceAdditionCannotReturnAnEmptyOrIncompleteMap(t *testing.T) {
+	service, index, memos, _ := mapServiceFixture(t)
+	finishIndex(t, index)
+	memos["memos/new"] = rawMemo("new", "unindexed source")
+	result, err := service.Read(t.Context())
+	if errorCode(err) != "MAP_SOURCE_CHANGED" || result.Points != nil {
+		t.Fatalf("unindexed source disappeared from a successful map: %+v %v", result, err)
+	}
+	finishIndex(t, index)
+	result, err = service.Read(t.Context())
+	if err != nil || len(result.Points) != 6 {
+		t.Fatalf("source addition did not recover: %+v %v", result, err)
+	}
+}
+
 func TestMapServiceDeadlineAndQueueCancellation(t *testing.T) {
 	service, index, _, _ := mapServiceFixture(t)
 	finishIndex(t, index)
 	entered, done := make(chan struct{}), make(chan error, 1)
 	var gets atomic.Int32
-	service.Notes.Source = mapSource{Source: service.Notes.Source, get: func(ctx context.Context, _ string) (*Memo, error) {
+	service.Notes.Source = mapSource{Source: service.Notes.Source, list: func(ctx context.Context, state string, _ *int64, _ string) ([]Memo, string, error) {
 		gets.Add(1)
 		close(entered)
 		<-ctx.Done()
-		return nil, ctx.Err()
+		return nil, "", ctx.Err()
 	}}
 	ctx, cancel := context.WithCancel(t.Context())
 	go func() { _, err := service.Read(ctx); done <- err }()
@@ -286,11 +354,14 @@ func TestMapDatabaseWaitsRespectTheRequestBudget(t *testing.T) {
 					t.Fatal(err)
 				}
 			} else {
-				service.Notes.Source = mapSource{Source: service.Notes.Source, get: func(ctx context.Context, _ string) (*Memo, error) {
+				service.Notes.Source = mapSource{Source: service.Notes.Source, list: func(ctx context.Context, state string, _ *int64, _ string) ([]Memo, string, error) {
+					if state == "ARCHIVED" {
+						return nil, "", nil
+					}
 					var err error
 					held, err = service.Store.index.BeginTx(ctx, nil)
 					memo := testMemo(t, "a", "external edit")
-					return &memo, err
+					return []Memo{memo}, "", err
 				}}
 			}
 			var once sync.Once
@@ -364,6 +435,19 @@ func clientMapIndex(t *testing.T, api *ClientAPI) *VectorIndexService {
 	source := fakeClient(store.Settings, func(r *http.Request) (int, any, error) {
 		if status, body, ok := identityResponse(r); ok {
 			return status, body, nil
+		}
+		if r.URL.Path == "/api/v1/memos" {
+			items := []any{}
+			for _, name := range []string{"a", "b", "archived"} {
+				raw := rawMemo(name, "private body "+name)
+				if name == "archived" {
+					raw["state"] = "ARCHIVED"
+				}
+				if raw["state"] == r.URL.Query().Get("state") {
+					items = append(items, raw)
+				}
+			}
+			return 200, map[string]any{"memos": items}, nil
 		}
 		name := strings.TrimPrefix(r.URL.Path, "/api/v1/memos/")
 		raw := rawMemo(name, "private body "+name)
