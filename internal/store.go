@@ -139,7 +139,11 @@ func appliedMigrations(db *sql.DB) (map[string]string, error) {
 }
 
 func transaction(db *sql.DB, action func(*sql.Tx) error) error {
-	tx, err := db.BeginTx(context.Background(), nil)
+	return transactionContext(context.Background(), db, action)
+}
+
+func transactionContext(ctx context.Context, db *sql.DB, action func(*sql.Tx) error) error {
+	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
@@ -337,6 +341,10 @@ func (s *Store) Status() (SyncStatus, error) {
 }
 
 func (s *Store) SourceHealth(ok bool, code, version string) error {
+	return s.SourceHealthContext(context.Background(), ok, code, version)
+}
+
+func (s *Store) SourceHealthContext(ctx context.Context, ok bool, code, version string) error {
 	var errorValue, versionValue any
 	if code != "" {
 		errorValue = code
@@ -344,7 +352,7 @@ func (s *Store) SourceHealth(ok bool, code, version string) error {
 	if version != "" {
 		versionValue = version
 	}
-	_, err := s.state.Exec("UPDATE sync_state SET source_ok = ?, last_error = ?, upstream_version = COALESCE(?, upstream_version), updated_at = ? WHERE instance_id = ?", ok, errorValue, versionValue, nowText(), s.Settings.Memos.InstanceID)
+	_, err := s.state.ExecContext(ctx, "UPDATE sync_state SET source_ok = ?, last_error = ?, upstream_version = COALESCE(?, upstream_version), updated_at = ? WHERE instance_id = ?", ok, errorValue, versionValue, nowText(), s.Settings.Memos.InstanceID)
 	return err
 }
 
@@ -575,7 +583,11 @@ func (s *Store) Publish(run string, absent map[string]bool) (map[string]any, err
 }
 
 func (s *Store) Refresh(name string, memo *Memo) error {
-	return transaction(s.index, func(tx *sql.Tx) error {
+	return s.RefreshContext(context.Background(), name, memo)
+}
+
+func (s *Store) RefreshContext(ctx context.Context, name string, memo *Memo) error {
+	return transactionContext(ctx, s.index, func(tx *sql.Tx) error {
 		if memo == nil {
 			result, err := tx.Exec("DELETE FROM memos WHERE instance_id = ? AND user_name = ? AND name = ?", s.Settings.Memos.InstanceID, s.Settings.Memos.User, name)
 			if err != nil {

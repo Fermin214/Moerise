@@ -22,20 +22,6 @@ func modelCheckError(ctx context.Context, err error) error {
 	return err
 }
 
-func (a *ClientAPI) lockModelCheck(ctx context.Context) error {
-	for {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		if a.app.runtimeMu.TryRLock() {
-			return nil
-		}
-		if err := runtimePause(ctx, 10*time.Millisecond); err != nil {
-			return err
-		}
-	}
-}
-
 func (a *ClientAPI) modelsStatus() (ClientModels, error) {
 	s := a.app.Store
 	embedding, llm := s.Settings.Embedding, s.Settings.LLM

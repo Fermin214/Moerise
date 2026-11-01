@@ -19,6 +19,7 @@ type App struct {
 	Search        *SearchService
 	AI            *AIService
 	Chat          *ChatService
+	Map           *MapService
 	Feishu        *FeishuService
 	Notifications *NotificationService
 	Vector        *VectorIndexService
@@ -40,6 +41,7 @@ func NewApp(settings Settings, store *Store, source Source) *App {
 	a.AI = NewAIService(a.Search, nil)
 	a.AI.legacyDisabled = true
 	a.Chat = NewChatService(store, a.Notes, a.Records, nil)
+	a.Map = NewMapService(store, a.Notes)
 	a.Notifications = NewNotificationService(store, a.Reviews, nil)
 	a.Feishu = NewFeishuService(store, source, a.Records, a.Reviews, a.Notifications)
 	if a.Feishu != nil {

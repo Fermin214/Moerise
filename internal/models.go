@@ -95,6 +95,25 @@ type Note struct {
 	URL         string           `json:"url"`
 }
 
+type MapPoint struct {
+	Name       string   `json:"name"`
+	SourceHash string   `json:"source_hash"`
+	X          float64  `json:"x"`
+	Y          float64  `json:"y"`
+	Semantic   bool     `json:"semantic"`
+	Tags       []string `json:"tags"`
+	vectorHash string
+}
+
+type MapResponse struct {
+	Status             string     `json:"status"`
+	LayoutVersion      string     `json:"layout_version"`
+	Algorithm          string     `json:"algorithm"`
+	VectorGeneration   string     `json:"vector_generation"`
+	ProjectionRevision int64      `json:"projection_revision"`
+	Points             []MapPoint `json:"points"`
+}
+
 type CreateNote struct {
 	Content     string             `json:"content"`
 	Tags        []string           `json:"tags"`

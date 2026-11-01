@@ -8095,6 +8095,248 @@
           }
         }
       }
+    },
+    "/api/app/v1/map": {
+      "get": {
+        "operationId": "client_cognitive_map",
+        "summary": "读取本人二维认知地图",
+        "description": "只接受本人 Cookie，不接受 Authorization 或查询参数；机器 REST/MCP 不开放。返回正常与归档笔记的完整点集、布局版本和索引状态，点位不包含缓存权威正文。输出前复查所有点位原文及前后来源身份，来源变化或代次失配不返回部分结果。认证、资源锁、布局排队、计算和来源读取共享 55 秒总预算；不调用 LLM 或查询 Embedding。",
+        "security": [
+          {
+            "BrowserSession": []
+          },
+          {
+            "LocalBrowserSession": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "完整点集或明确的 disabled/waiting/building/unavailable/empty 状态；不返回旧空间点集。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MapResponse"
+                }
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                },
+                "description": "禁止缓存。"
+              },
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "请求标识。"
+              }
+            }
+          },
+          "401": {
+            "description": "SESSION_UNAUTHORIZED：浏览器会话缺失或失效；不返回 Bearer 认证挑战。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                },
+                "description": "禁止缓存。"
+              },
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "请求标识。"
+              }
+            }
+          },
+          "403": {
+            "description": "FORBIDDEN、ACCOUNT_NOT_BOUND、ORIGIN_REJECTED 或 CSRF_REJECTED：客户端拒绝 Authorization；账号必须匹配绑定作者，写入必须通过 Origin 和 CSRF 检查。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                },
+                "description": "禁止缓存。"
+              },
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "请求标识。"
+              }
+            }
+          },
+          "404": {
+            "description": "NOT_FOUND：未启用浏览器入口。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                },
+                "description": "禁止缓存。"
+              },
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "请求标识。"
+              }
+            }
+          },
+          "405": {
+            "description": "METHOD_NOT_ALLOWED：该路径仅支持 GET。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                },
+                "description": "禁止缓存。"
+              },
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "请求标识。"
+              }
+            }
+          },
+          "422": {
+            "description": "INVALID_ARGUMENT：拒绝查询参数。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                },
+                "description": "禁止缓存。"
+              },
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "请求标识。"
+              }
+            }
+          },
+          "500": {
+            "description": "INTERNAL：内部服务错误，响应不包含凭据或输入值。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                },
+                "description": "禁止缓存。"
+              },
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "请求标识。"
+              }
+            }
+          },
+          "503": {
+            "description": "来源故障、MAP_RESOURCE_LIMIT（55 秒预算耗尽）、MAP_REQUEST_CANCELED、MAP_LAYOUT_INVALID 或 EMBEDDING_PROTOCOL；不返回部分结果。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                },
+                "description": "禁止缓存。"
+              },
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "请求标识。"
+              }
+            }
+          },
+          "409": {
+            "description": "MAP_SOURCE_CHANGED 或 MAP_INDEX_CHANGED：来源、投影或向量代次变化，请等待索引后重试；不返回部分点集。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                },
+                "description": "禁止缓存。"
+              },
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "请求标识。"
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -11743,6 +11985,94 @@
         "required": [
           "error",
           "turn"
+        ]
+      },
+      "MapPoint": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "type": "string",
+            "pattern": "^memos/[A-Za-z0-9_-]+$"
+          },
+          "source_hash": {
+            "type": "string"
+          },
+          "x": {
+            "type": "number",
+            "description": "有限的 Core 布局坐标，不是页面百分比。"
+          },
+          "y": {
+            "type": "number",
+            "description": "有限的 Core 布局坐标，不是页面百分比。"
+          },
+          "semantic": {
+            "type": "boolean",
+            "description": "是否有可用文本向量；false 的笔记独立放置，不伪造语义关系。"
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "来源复查读取的原生标签，只供客户端点位配色，不参与语义权重。"
+          }
+        },
+        "required": [
+          "name",
+          "source_hash",
+          "x",
+          "y",
+          "semantic",
+          "tags"
+        ]
+      },
+      "MapResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "disabled",
+              "waiting",
+              "building",
+              "unavailable",
+              "ready",
+              "empty"
+            ]
+          },
+          "layout_version": {
+            "type": "string",
+            "description": "ready/empty 为算法、空间、投影基底和完整点集的 SHA-256 摘要，其余状态为空。"
+          },
+          "algorithm": {
+            "type": "string",
+            "const": "pca-fixed-v1"
+          },
+          "vector_generation": {
+            "type": "string",
+            "description": "ready/empty 的已发布向量代次，其余状态为空。"
+          },
+          "projection_revision": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "points": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MapPoint"
+            },
+            "description": "按资源名排序的完整点集，正常与归档笔记各占一点；非就绪状态为空数组。"
+          }
+        },
+        "required": [
+          "status",
+          "layout_version",
+          "algorithm",
+          "vector_generation",
+          "projection_revision",
+          "points"
         ]
       }
     },

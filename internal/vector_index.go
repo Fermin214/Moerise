@@ -43,14 +43,18 @@ func embeddingSpace(config EmbeddingConfig) string {
 }
 
 func (s *Store) VectorStatus() (*VectorIndexStatus, error) {
+	return s.VectorStatusContext(context.Background())
+}
+
+func (s *Store) VectorStatusContext(ctx context.Context) (*VectorIndexStatus, error) {
 	result := &VectorIndexStatus{}
 	// One read transaction prevents combining counts and pointers from different publications.
-	err := transaction(s.index, func(tx *sql.Tx) error {
-		if err := tx.QueryRow("SELECT revision FROM projection_meta WHERE instance_id = ?", s.Settings.Memos.InstanceID).
+	err := transactionContext(ctx, s.index, func(tx *sql.Tx) error {
+		if err := tx.QueryRowContext(ctx, "SELECT revision FROM projection_meta WHERE instance_id = ?", s.Settings.Memos.InstanceID).
 			Scan(&result.ProjectionRevision); err != nil {
 			return err
 		}
-		rows, err := tx.Query(`SELECT g.id, g.space_hash, g.model, g.dimensions, g.chunk_version,
+		rows, err := tx.QueryContext(ctx, `SELECT g.id, g.space_hash, g.model, g.dimensions, g.chunk_version,
 			g.projection_revision, g.last_error, g.status,
 			(SELECT COUNT(*) FROM vector_notes n WHERE n.generation_id = g.id),
 			(SELECT COUNT(*) FROM vector_chunks c WHERE c.generation_id = g.id),

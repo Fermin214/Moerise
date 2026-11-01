@@ -10,15 +10,6 @@ import (
 const mapAlgorithm = "pca-fixed-v1"
 const mapPointGap = 0.22
 
-type MapPoint struct {
-	Name       string  `json:"name"`
-	SourceHash string  `json:"source_hash"`
-	X          float64 `json:"x"`
-	Y          float64 `json:"y"`
-	Semantic   bool    `json:"semantic"`
-	vectorHash string
-}
-
 type mapDocument struct {
 	name, sourceHash, vectorHash string
 	vector                       []float64

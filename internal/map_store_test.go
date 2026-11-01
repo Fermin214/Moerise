@@ -78,7 +78,7 @@ func TestMapStorageSnapshotRestartIncrementalAndSpaceIsolation(t *testing.T) {
 	}
 	for _, point := range initial.points {
 		after := mapPointByName(t, incremental, strings.TrimPrefix(point.Name, "memos/"))
-		if after != point {
+		if !reflect.DeepEqual(after, point) {
 			t.Fatalf("generation replacement moved old point: %+v %+v", point, after)
 		}
 	}

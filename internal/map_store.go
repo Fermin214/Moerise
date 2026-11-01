@@ -13,21 +13,9 @@ func mapIndexChanged() error {
 	return failure("MAP_INDEX_CHANGED", "Map index changed; retry after indexing completes", 409, true)
 }
 
-func (s *Store) mapTransaction(ctx context.Context, action func(*sql.Tx) error) error {
-	tx, err := s.index.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	if err := action(tx); err != nil {
-		return err
-	}
-	return tx.Commit()
-}
-
 func (s *Store) mapSnapshot(ctx context.Context) (mapSnapshot, error) {
 	snapshot := mapSnapshot{dimensions: s.Settings.Embedding.Dimensions, documents: []mapDocument{}}
-	err := s.mapTransaction(ctx, func(tx *sql.Tx) error {
+	err := transactionContext(ctx, s.index, func(tx *sql.Tx) error {
 		if err := tx.QueryRowContext(ctx, `SELECT g.id, g.space_hash, g.projection_revision
 			FROM vector_generations g JOIN projection_meta p USING (instance_id)
 			WHERE g.instance_id = ? AND g.user_name = ? AND g.status = 'active'
@@ -102,7 +90,7 @@ func (s *Store) mapSnapshot(ctx context.Context) (mapSnapshot, error) {
 
 func (s *Store) loadMapLayout(ctx context.Context, snapshot mapSnapshot) (*mapLayout, error) {
 	layout := &mapLayout{points: []MapPoint{}}
-	err := s.mapTransaction(ctx, func(tx *sql.Tx) error {
+	err := transactionContext(ctx, s.index, func(tx *sql.Tx) error {
 		var basis []byte
 		err := tx.QueryRowContext(ctx, `SELECT version, basis_json FROM map_layouts
 			WHERE instance_id = ? AND user_name = ? AND space_hash = ? AND algorithm = ?`,
@@ -138,7 +126,7 @@ func (s *Store) loadMapLayout(ctx context.Context, snapshot mapSnapshot) (*mapLa
 }
 
 func (s *Store) publishMapLayout(ctx context.Context, snapshot mapSnapshot, layout *mapLayout) error {
-	return s.mapTransaction(ctx, func(tx *sql.Tx) error {
+	return transactionContext(ctx, s.index, func(tx *sql.Tx) error {
 		var generation string
 		err := tx.QueryRowContext(ctx, `SELECT g.id FROM vector_generations g JOIN projection_meta p USING (instance_id)
 			WHERE g.instance_id = ? AND g.user_name = ? AND g.status = 'active'

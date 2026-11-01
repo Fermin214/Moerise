@@ -64,10 +64,14 @@ func (a *ClientAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		defer cancel()
 		r = request
 	}
-	check := isModelCheck(r)
-	if check {
-		// 会话认证、资源等待及模型调用共享代理超时以内的预算。
-		ctx, cancel := context.WithTimeout(r.Context(), modelCheckTimeout)
+	check, mapRead := isModelCheck(r), isMapRead(r)
+	if check || mapRead {
+		// 认证、运行资源等待及业务调用共享代理超时以内的预算。
+		timeout := modelCheckTimeout
+		if mapRead {
+			timeout = mapRequestTimeout
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), timeout)
 		defer cancel()
 		r = r.WithContext(ctx)
 	}
@@ -83,9 +87,14 @@ func (a *ClientAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			writeClientError(w, errors.New("client handler panic"), id)
 		}
 	}()
-	if check {
-		if err := a.lockModelCheck(r.Context()); err != nil {
-			writeClientError(w, modelCheckError(r.Context(), err), id)
+	if check || mapRead {
+		if err := a.lockTimedRequest(r.Context()); err != nil {
+			if mapRead {
+				err = mapRequestError(r.Context(), err)
+			} else {
+				err = modelCheckError(r.Context(), err)
+			}
+			writeClientError(w, err, id)
 			return
 		}
 		defer a.app.runtimeMu.RUnlock()
@@ -96,6 +105,9 @@ func (a *ClientAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	result, status, err := a.route(w, r)
 	if check {
 		err = modelCheckError(r.Context(), err)
+	}
+	if mapRead {
+		err = mapRequestError(r.Context(), err)
 	}
 	if err != nil {
 		writeClientError(w, err, id)
@@ -126,6 +138,20 @@ func (a *ClientAPI) cookie(w http.ResponseWriter, rawID string, expires time.Tim
 		cookie.MaxAge = max(1, int(time.Until(expires).Seconds()))
 	}
 	http.SetCookie(w, cookie)
+}
+
+func (a *ClientAPI) lockTimedRequest(ctx context.Context) error {
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if a.app.runtimeMu.TryRLock() {
+			return nil
+		}
+		if err := runtimePause(ctx, 10*time.Millisecond); err != nil {
+			return err
+		}
+	}
 }
 
 func (a *ClientAPI) rawSession(r *http.Request) (string, error) {
@@ -318,6 +344,8 @@ func (a *ClientAPI) route(w http.ResponseWriter, r *http.Request) (any, int, err
 		return a.settingsRoute(w, r)
 	case "/api/app/v1/models", "/api/app/v1/models/embedding/check", "/api/app/v1/models/llm/check":
 		return a.modelsRoute(w, r)
+	case "/api/app/v1/map":
+		return a.mapRoute(r)
 	case "/api/app/v1/reviews/daily", "/api/app/v1/walks/start", "/api/app/v1/walks/next":
 		return a.discoveryRoute(w, r)
 	case "/api/app/v1/notes":

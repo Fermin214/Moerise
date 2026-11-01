@@ -21,6 +21,7 @@
 | GET | `/api/app/v1/reviews/daily` | 生成或读取完整固定日计划，返回全部条目及冻结设置版本 |
 | POST | `/api/app/v1/walks/start` | 接收 `{name?}`，返回指定或随机起点，不记录阅读 |
 | POST | `/api/app/v1/walks/next` | 接收 `{name,path}`，在语义候选中随机选择未访问的下一条 |
+| GET | `/api/app/v1/map` | 读取本人正常与归档笔记的完整二维点集、布局版本及索引状态 |
 | GET | `/api/app/v1/chat-materials` | 分页组合筛选聊天材料，默认包括正常与归档笔记 |
 | POST | `/api/app/v1/chat-materials/resolve` | 接收 `{names}`，复查明确选中的完整材料、引用与字符数 |
 | GET、POST | `/api/app/v1/chats` | 分页读取持久会话，或提交 `{request_id,title,names}` 幂等创建 |
@@ -67,6 +68,18 @@ Web 会话失效时隐藏私人界面，在页面内存中保存创建和编辑�
 Web 正文中的原生 `/file/attachments/{id}/{filename}` 引用按父笔记附件表转换为受保护的 `content_url`，未知或不属于该笔记的引用保持文字。侧栏标签按笔记状态、日历按状态和月份复用聚合结果，缓存有效期一分钟；写入、手动刷新笔记或页面重新获得焦点后刷新聚合，被替代的聚合请求会取消。
 
 客户端沿用 `error.code/message/retryable/request_id`：401 表示会话失效，403 表示身份范围或请求边界错误，503 表示来源、配置或存储故障，不返回 Bearer 认证挑战。私人响应使用 `Cache-Control: no-store`。通知确认的 `resolved_by` 为登录用户资源名；其业务决策和回执要求见[通知说明](NOTIFICATIONS.md)。
+
+### 认知地图
+
+`GET /api/app/v1/map` 只接受本人 Cookie，不接受查询参数或 Authorization。读取不要求 CSRF；机器 REST/MCP 不提供地图获取或重建操作，写入 Scope 不能开放这些入口。响应使用 `no-store`，不设置新 Cookie，也不返回缓存笔记正文、附件地址、模型密钥或配置地址。
+
+响应字段为 `status`、`layout_version`、`algorithm`、`vector_generation`、`projection_revision` 和 `points`。`status` 区分 `disabled`（Embedding 关闭）、`waiting`（等待同步或构建）、`building`、`unavailable`（当前空间构建失败）、`ready` 和 `empty`（已就绪但没有笔记）。前四种状态不返回旧点集，布局版本和向量代次为空；`empty` 返回有效版本及空数组，不等同于未配置。
+
+`points` 以资源名排序，每项包含 `name`、`source_hash`、有限二维坐标 `x/y`、`semantic` 和来源复查时读取的原生 `tags`。正常与归档笔记各占一点，重复正文不合并。`semantic=false` 表示没有可用的文本向量，例如纯附件；这些点独立放置，不声称语义相近。标签只用于沿用客户端的点位配色，不参与向量或距离加权。坐标为 Core 的布局单位，不是页面百分比。客户端可按可见区域平移、缩放，但不能把浏览器坐标当作权威布局。点击后使用现有本人笔记接口读取完整原文及受保护附件。
+
+布局采用 `pca-fixed-v1`，只使用同一已发布代次的文档向量。`layout_version` 是算法、向量空间、固定投影基底和完整点集的摘要，未变点集的刷新与普通重启保持版本及坐标；增量发布保留聚合向量未变的坐标。正文、归档状态或附件等来源变化可改变布局版本而不移动其余点。切换向量空间或重建索引可以重新布局，产品状态不受影响。二维压缩有信息损失，详情始终以实时来源为准。
+
+输出前复查来源身份及每个点位的原文，结束时再次核验来源身份和活动代次；来源变动或失权返回可重试的 409 `MAP_SOURCE_CHANGED` 并修正投影，代次或投影竞争返回可重试的 409 `MAP_INDEX_CHANGED`。来源故障不返回部分点集；存储向量或布局无效分别返回 503 `EMBEDDING_PROTOCOL`、`MAP_LAYOUT_INVALID`。会话认证、资源锁等待、布局计算和来源复查共用最长 55 秒总期限；超过期限返回可重试的 503 `MAP_RESOURCE_LIMIT`，不冒充空池或构建完成。主动退出或断开请求取消正在进行的来源读取，不发布未完成布局；仍可收到的取消响应为 503 `MAP_REQUEST_CANCELED`，退出后的旧 Cookie 返回 401。
 
 ### 自然聊天
 

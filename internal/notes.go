@@ -27,12 +27,12 @@ func NewNoteService(settings Settings, store *Store, source Source) *NoteService
 func (s *NoteService) Verify(ctx context.Context) error {
 	version, err := s.Source.Identity(ctx)
 	if err != nil {
-		if healthErr := s.Store.SourceHealth(false, errorCode(err), ""); healthErr != nil {
+		if healthErr := s.Store.SourceHealthContext(ctx, false, errorCode(err), ""); healthErr != nil {
 			return healthErr
 		}
 		return err
 	}
-	return s.Store.SourceHealth(true, "", version)
+	return s.Store.SourceHealthContext(ctx, true, "", version)
 }
 
 func (s *NoteService) fresh(ctx context.Context, name string) (*Memo, error) {

@@ -124,11 +124,11 @@ go test -tags=integration ./tests -v -count=1
 地图存储与算法的专项检查使用：
 
 ```bash
-go test ./internal -run '^TestMap' -count=1
+go test ./internal -run '^(TestMap|TestClientMap)' -count=1
 go test ./internal -run '^$' -bench '^BenchmarkMapLayout$' -benchtime=1x
 ```
 
-检查覆盖二维语义邻近、确定性重建、重复正文独立点选、空池及纯附件、归档、增量坐标保持、重启、向量空间切换、分块去重与等权归一化，以及来源投影与向量代次失配、无效向量、取消和失败发布的事务回滚。地图坐标只在 `index.sqlite3`，索引重建检查持久设置保持；真实服务和正式浏览器的接入范围见路线图 3.8。
+检查覆盖二维语义邻近、确定性重建、重复正文独立点选、空池及纯附件、归档、增量坐标保持、重启、向量空间切换、分块去重与等权归一化，以及来源投影与向量代次失配、无效向量、取消和失败发布的事务回滚。地图坐标只在 `index.sqlite3`，索引重建检查持久设置保持。共享服务补充所有点位原文及前后身份复查、来源修改/删除/失权、故障无部分结果、代次竞争、计算排队，以及健康状态、索引查询和投影修正的数据库等待期限；`TestClientMap` 覆盖本人协议、OpenAPI、无缓存/无凭据、认证和资源锁期限、退出取消。机器 REST/MCP 不开放地图。真实服务和正式浏览器的接入范围见路线图 3.8。
 
 `tests/client_acceptance_test.go` 的 `TestClientMemosAcceptance` 使用真实 Memos 和 Core 进程，通过 HTTP 验证原生客户端 API：
 
