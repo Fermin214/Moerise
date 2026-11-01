@@ -163,13 +163,39 @@ func TestMapNativeTagsAreLiveMetadataNotLayoutWeights(t *testing.T) {
 	finishIndex(t, index)
 	second, err := service.Read(t.Context())
 	if err != nil || !reflect.DeepEqual(second.Points[0].Tags, tags) || second.LayoutVersion == first.LayoutVersion ||
-		len(provider.texts) != calls {
+		second.LayoutFrame != first.LayoutFrame || len(provider.texts) != calls {
 		t.Fatalf("native tags not preserved or triggered model: %+v %v", second, err)
 	}
 	for i, point := range first.Points {
 		if point.X != second.Points[i].X || point.Y != second.Points[i].Y {
 			t.Fatal("tags changed layout weights")
 		}
+	}
+}
+
+func TestMapLayoutFrameChangesWithVectorSpaceNotIncrementalPublication(t *testing.T) {
+	service, index, memos, _ := mapServiceFixture(t)
+	finishIndex(t, index)
+	first, err := service.Read(t.Context())
+	if err != nil || len(first.LayoutFrame) != 64 {
+		t.Fatalf("missing layout frame: %+v %v", first, err)
+	}
+	memo := testMemo(t, "new", "new note")
+	memos[memo.Name] = rawMemo("new", "new note")
+	if err := service.Store.Refresh(memo.Name, &memo); err != nil {
+		t.Fatal(err)
+	}
+	finishIndex(t, index)
+	incremental, err := service.Read(t.Context())
+	if err != nil || incremental.LayoutFrame != first.LayoutFrame || incremental.LayoutVersion == first.LayoutVersion {
+		t.Fatalf("incremental update reset frame: %+v %v", incremental, err)
+	}
+	model := "new-space"
+	service.Store.Settings.Embedding.Model = &model
+	finishIndex(t, index)
+	switched, err := service.Read(t.Context())
+	if err != nil || switched.LayoutFrame == first.LayoutFrame || switched.LayoutFrame == "" {
+		t.Fatalf("space change retained old frame: %+v %v", switched, err)
 	}
 }
 

@@ -12064,6 +12064,10 @@
               "$ref": "#/components/schemas/MapPoint"
             },
             "description": "按资源名排序的完整点集，正常与归档笔记各占一点；非就绪状态为空数组。"
+          },
+          "layout_frame": {
+            "type": "string",
+            "description": "ready/empty 为来源、作者、算法、向量空间与固定投影基底的摘要；同一基底的增量更新保持，空间或基底变化时客户端重置视口。其他状态为空。"
           }
         },
         "required": [
@@ -12072,7 +12076,8 @@
           "algorithm",
           "vector_generation",
           "projection_revision",
-          "points"
+          "points",
+          "layout_frame"
         ]
       }
     },

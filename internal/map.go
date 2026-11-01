@@ -109,6 +109,8 @@ func (s *MapService) Read(ctx context.Context) (_ MapResponse, result error) {
 		return MapResponse{}, err
 	}
 	response.Status, response.LayoutVersion = "ready", layout.version
+	response.LayoutFrame = hashBytes(canonicalJSON([]any{s.Store.Settings.Memos.InstanceID,
+		s.Store.Settings.Memos.User, mapAlgorithm, snapshot.space, layout.basis}))
 	if len(layout.points) == 0 {
 		response.Status = "empty"
 	}

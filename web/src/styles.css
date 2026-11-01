@@ -113,6 +113,13 @@ button:disabled { cursor:default; opacity:.5; }
   .walk-start { min-height:280px; }
 }
 .mobile-filter-toggle { display:none; }
+.map-page { display:flex; flex-direction:column; gap:14px; min-width:0; }
+.map-field { position:relative; height:440px; padding:0; background:#FBFCFE; overflow:hidden; overflow:clip; touch-action:none; cursor:grab; }
+.map-field.dragging { cursor:grabbing; }
+.map-dot { position:absolute; left:50%; top:50%; width:22px; height:22px; padding:0; border-radius:50%; border:0; cursor:pointer; }
+.map-dot.on { box-shadow:0 0 0 5px #DCE8FB; }
+.map-reader { min-width:0; }
+.map-note .hd { gap:8px; flex-wrap:wrap; }
 .attachment-list .dlink { font-size:13px; }
 .settings-page,.settings-form { display:flex; flex-direction:column; gap:14px; min-width:0; }
 .settings-card h2 { margin:0 0 4px; font-size:16px; font-weight:600; }

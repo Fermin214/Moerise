@@ -108,6 +108,7 @@ type MapPoint struct {
 type MapResponse struct {
 	Status             string     `json:"status"`
 	LayoutVersion      string     `json:"layout_version"`
+	LayoutFrame        string     `json:"layout_frame"`
 	Algorithm          string     `json:"algorithm"`
 	VectorGeneration   string     `json:"vector_generation"`
 	ProjectionRevision int64      `json:"projection_revision"`

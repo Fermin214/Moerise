@@ -73,11 +73,11 @@ Web 正文中的原生 `/file/attachments/{id}/{filename}` 引用按父笔记附
 
 `GET /api/app/v1/map` 只接受本人 Cookie，不接受查询参数或 Authorization。读取不要求 CSRF；机器 REST/MCP 不提供地图获取或重建操作，写入 Scope 不能开放这些入口。响应使用 `no-store`，不设置新 Cookie，也不返回缓存笔记正文、附件地址、模型密钥或配置地址。
 
-响应字段为 `status`、`layout_version`、`algorithm`、`vector_generation`、`projection_revision` 和 `points`。`status` 区分 `disabled`（Embedding 关闭）、`waiting`（等待同步或构建）、`building`、`unavailable`（当前空间构建失败）、`ready` 和 `empty`（已就绪但没有笔记）。前四种状态不返回旧点集，布局版本和向量代次为空；`empty` 返回有效版本及空数组，不等同于未配置。
+响应字段为 `status`、`layout_version`、`layout_frame`、`algorithm`、`vector_generation`、`projection_revision` 和 `points`。`status` 区分 `disabled`（Embedding 关闭）、`waiting`（等待同步或构建）、`building`、`unavailable`（当前空间构建失败）、`ready` 和 `empty`（已就绪但没有笔记）。前四种状态不返回旧点集，布局版本、坐标系摘要和向量代次为空；`empty` 返回有效版本及空数组，不等同于未配置。
 
 `points` 以资源名排序，每项包含 `name`、`source_hash`、有限二维坐标 `x/y`、`semantic` 和来源复查时读取的原生 `tags`。正常与归档笔记各占一点，重复正文不合并。`semantic=false` 表示没有可用的文本向量，例如纯附件；这些点独立放置，不声称语义相近。标签只用于沿用客户端的点位配色，不参与向量或距离加权。坐标为 Core 的布局单位，不是页面百分比。客户端可按可见区域平移、缩放，但不能把浏览器坐标当作权威布局。点击后使用现有本人笔记接口读取完整原文及受保护附件。
 
-布局采用 `pca-fixed-v1`，只使用同一已发布代次的文档向量。`layout_version` 是算法、向量空间、固定投影基底和完整点集的摘要，未变点集的刷新与普通重启保持版本及坐标；增量发布保留聚合向量未变的坐标。正文、归档状态或附件等来源变化可改变布局版本而不移动其余点。切换向量空间或重建索引可以重新布局，产品状态不受影响。二维压缩有信息损失，详情始终以实时来源为准。
+布局采用 `pca-fixed-v1`，只使用同一已发布代次的文档向量。`layout_version` 是算法、向量空间、固定投影基底和完整点集的摘要，未变点集的刷新与普通重启保持版本及坐标；增量发布保留聚合向量未变的坐标。正文、归档状态或附件等来源变化可改变布局版本而不移动其余点。`layout_frame` 仅绑定来源、作者、算法、向量空间和投影基底；同一基底的增量发布保持该摘要，客户端据此保留平移缩放，摘要变化后重新适配全图。切换向量空间或重建索引可以重新布局，产品状态不受影响。二维压缩有信息损失，详情始终以实时来源为准。
 
 输出前复查来源身份及每个点位的原文，结束时再次核验来源身份和活动代次；来源变动或失权返回可重试的 409 `MAP_SOURCE_CHANGED` 并修正投影，代次或投影竞争返回可重试的 409 `MAP_INDEX_CHANGED`。来源故障不返回部分点集；存储向量或布局无效分别返回 503 `EMBEDDING_PROTOCOL`、`MAP_LAYOUT_INVALID`。会话认证、资源锁等待、布局计算和来源复查共用最长 55 秒总期限；超过期限返回可重试的 503 `MAP_RESOURCE_LIMIT`，不冒充空池或构建完成。主动退出或断开请求取消正在进行的来源读取，不发布未完成布局；仍可收到的取消响应为 503 `MAP_REQUEST_CANCELED`，退出后的旧 Cookie 返回 401。
 

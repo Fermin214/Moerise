@@ -4,6 +4,7 @@ import { pages, notePath, filters, timelineURL, listQuery, safeFrom, detailURL, 
 import { renderMarkdown } from './markdown.js';
 import { createSettingsPage } from './settings.js';
 import { createInsightsPage } from './insights.js';
+import { createMapPage } from './map.js';
 
 const $ = id => document.getElementById(id);
 const draft = new Draft(), controllers = new Set(), snapshots = new Map();
@@ -21,6 +22,7 @@ let pageCount = 0, reloading = false;
 let lastTimeline = { path: '/', values: filters('') };
 let settingsPage = null;
 let insightsPage = null;
+let mapPage = null, mapView = null;
 let discoveryPage = null, reviewView = null, walkView = null;
 history.replaceState({ ...history.state, webKey: currentKey }, '');
 history.scrollRestoration = 'manual';
@@ -47,6 +49,7 @@ function invalidate() {
   epoch++; viewSequence++; listSequence++;
   settingsPage?.destroy(); settingsPage = null;
   insightsPage?.destroy(); insightsPage = null;
+  mapPage?.destroy(); mapPage = null;
   discoveryPage?.destroy(); discoveryPage = null;
   invalidateSidebar();
   for (const controller of controllers) controller.abort();
@@ -138,6 +141,7 @@ function hidePrivate({ resume = false } = {}) {
   items = []; nextToken = '';
   snapshots.clear();
   reviewView = walkView = null;
+  mapView = null;
   month = ''; identity = null; routeReturnKey = null;
   pageCount = 0; reloading = false; lastTimeline = { path: '/', values: filters('') };
   closeMenus();
@@ -270,6 +274,7 @@ async function logout() {
   if (authBusy) return;
   logoutCSRF ||= identity?.csrf_token;
   if (!logoutCSRF) return;
+  history.replaceState({ ...history.state, mapView: null }, '');
   const generation = invalidate();
   hidePrivate(); authControls({ busy: true, login: false }); showError($('auth-error'), null);
   try {
@@ -752,8 +757,8 @@ function discoveryText(value) {
     REQUEST_TIMEOUT: '读取超时，请重试。',
   }[code] || (typeof value === 'string' ? `服务提示：${value}` : errorText(value));
 }
-function discoveryCard(note, review = false) {
-  const card = el('article', `card big discovery-note${review ? ' rv' : ''}`);
+function discoveryCard(note, review = false, className = 'card big discovery-note') {
+  const card = el('article', `${className}${review ? ' rv' : ''}`);
   card.dataset.name = note.name;
   const header = el('div', 'hd'), time = el('time', '', formatTime(note.create_time));
   time.dateTime = note.create_time;
@@ -968,12 +973,13 @@ async function showRoute() {
   if (!identity) return;
   settingsPage?.destroy(); settingsPage = null;
   insightsPage?.destroy(); insightsPage = null;
+  mapPage?.destroy(); mapPage = null;
   discoveryPage?.destroy(); discoveryPage = null;
   const generation = epoch, sequence = ++viewSequence;
   listSequence++; listController?.abort(); clearTimeout(retryTimer); pageObserver.disconnect();
   listing = reloading = false; items = []; nextToken = ''; pageCount = 0;
   $('notes').replaceChildren(); closeMenus();
-  $('notes').hidden = $('page-end').hidden = ['/settings', '/review', '/walk', '/insights'].includes(location.pathname);
+  $('notes').hidden = $('page-end').hidden = ['/settings', '/review', '/walk', '/insights', '/map'].includes(location.pathname);
   for (const id of ['back', 'view-title', 'capability', 'empty', 'list-retry', 'filters', 'load-more']) $(id).hidden = true;
   showError($('list-error'), null); $('composer').hidden = location.pathname !== '/';
   const detail = notePath.exec(location.pathname);
@@ -1036,6 +1042,20 @@ async function showRoute() {
       onSaved: () => { dirtySnapshots(); invalidateSidebar(); loadSidebar(); },
     });
     await insightsPage.mount($('workspace'));
+  } else if (location.pathname === '/map') {
+    $('view-title').textContent = '认知地图'; $('view-title').hidden = false;
+    window.scrollTo(0, 0);
+    const saved = mapView || (history.state?.mapView?.owner === identity.user.name ? history.state.mapView : null);
+    mapPage = createMapPage({
+      request: sessionRequest, handleFailure, validNote, renderNote: note => discoveryCard(note, false, 'card map-note'),
+      initialView: saved,
+      onViewChange: value => {
+        if (!identity || generation !== epoch || sequence !== viewSequence) return;
+        mapView = { ...value, owner: identity.user.name };
+        history.replaceState({ ...history.state, mapView }, '');
+      },
+    });
+    await mapPage.mount($('workspace'));
   } else if (location.pathname === '/settings') {
     $('view-title').textContent = '设置'; $('view-title').hidden = false;
     window.scrollTo(0, 0);
@@ -1052,19 +1072,6 @@ async function showRoute() {
     $('view-title').textContent = pages.get(location.pathname) || '页面不存在'; $('view-title').hidden = false;
     $('capability').textContent = pages.has(location.pathname) ? `${pages.get(location.pathname)}尚未开放。` : '请从侧栏打开主页。';
     $('capability').hidden = false; window.scrollTo(0, 0);
-    if (location.pathname === '/map') {
-      const page = location.pathname, label = pages.get(page);
-      try {
-        const models = await sessionRequest('/models');
-        if (generation !== epoch || sequence !== viewSequence) return;
-        const hint = ({ disabled: '请在设置中启用 Embedding。', waiting: '语义索引正在等待同步或构建。',
-            building: '语义索引构建中，可在设置中查看进度。', ready: '语义索引已就绪。',
-            unavailable: '语义索引构建失败，可在设置中查看错误。' }[models.index_status] || '索引状态不可用。');
-        $('capability').textContent = `${hint}${label}尚未开放。`;
-      } catch (err) {
-        if (generation === epoch && sequence === viewSequence) handleFailure($('capability'), err);
-      }
-    }
   }
 }
 function updateComposer() {

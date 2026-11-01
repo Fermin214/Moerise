@@ -19,6 +19,7 @@ const assets = new Map([
   ['/markdown.js', ['markdown.js', 'text/javascript; charset=utf-8']],
   ['/settings.js', ['settings.js', 'text/javascript; charset=utf-8']],
   ['/insights.js', ['insights.js', 'text/javascript; charset=utf-8']],
+  ['/map.js', ['map.js', 'text/javascript; charset=utf-8']],
   ['/chat-stream.js', ['chat-stream.js', 'text/javascript; charset=utf-8']],
   ['/styles.css', ['styles.css', 'text/css; charset=utf-8']],
   ['/prototype.css', ['prototype.css', 'text/css; charset=utf-8']],
