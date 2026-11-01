@@ -141,7 +141,7 @@ func TestAnthropicLLMRequest(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			aiAPIValidateJSON(t, aiAPISchema(t, "LLMUsage"), usageJSON)
+			aiAPIValidateJSON(t, clientChatSchema(t, "LLMUsage"), usageJSON)
 		})
 	}
 }

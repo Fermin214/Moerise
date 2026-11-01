@@ -13,9 +13,9 @@ import (
 
 const (
 	feishuAIPartBytes    = 8 * 1024
-	feishuAIFailed       = "AI 服务暂时无法完成请求。请稍后重新发送请求。"
-	feishuAIInterrupted  = "AI 生成已中断，结果不明，已终止此任务。需要继续时请重新发送请求。"
-	feishuAISourceFailed = "笔记来源已变化、删除或无法核实，AI 回复已终止。请重新发送请求。"
+	feishuAIFailed       = "历史 AI 任务未完成。"
+	feishuAIInterrupted  = "历史 AI 生成已中断，结果不明，已终止此任务。"
+	feishuAISourceFailed = "笔记来源已变化、删除或无法核实，历史 AI 回复已终止。"
 )
 
 type feishuAIGeneration struct {
@@ -23,36 +23,6 @@ type feishuAIGeneration struct {
 	Status    string
 	Code      string
 	Result    []byte
-}
-
-func parseFeishuAI(text string) (string, AIRequest, error) {
-	fields := strings.Fields(text)
-	request := AIRequest{}
-	if len(fields) == 0 {
-		return "", request, failure("INVALID_ARGUMENT", "Missing AI command", 422, false)
-	}
-	operation := map[string]string{"洞察": "insight", "问答": "answer", "历程": "timeline"}[fields[0]]
-	if operation == "" {
-		return "", request, failure("INVALID_ARGUMENT", "Invalid AI command", 422, false)
-	}
-	if operation == "insight" {
-		for _, name := range strings.Split(strings.TrimSpace(strings.TrimPrefix(text, fields[0])), ",") {
-			request.Names = append(request.Names, strings.TrimSpace(name))
-		}
-	} else {
-		words := []string{}
-		for _, word := range fields[1:] {
-			if strings.HasPrefix(word, "#") {
-				request.Tags = append(request.Tags, strings.TrimPrefix(word, "#"))
-			} else {
-				words = append(words, word)
-			}
-		}
-		request.Question = strings.Join(words, " ")
-		request.Timeline = operation == "timeline"
-	}
-	_, err := normalizeEvidence(request)
-	return operation, request, err
 }
 
 func (s *FeishuService) aiGeneration(messageID string) (feishuAIGeneration, error) {
@@ -73,85 +43,6 @@ func (s *FeishuService) recoverAI() error {
 		AND message_id IN (SELECT message_id FROM channel_events WHERE app_id = ? AND sender_open_id = ?)`,
 		nowText(), configured(config.AppID), configured(config.UserOpenID))
 	return err
-}
-
-func (s *FeishuService) executeAI(ctx context.Context, messageID, text string) (string, string, error) {
-	operation, request, err := parseFeishuAI(text)
-	if err != nil {
-		return "", "", err
-	}
-	body, err := json.Marshal(request)
-	if err != nil {
-		return "", "", err
-	}
-	sealed, err := s.seal("ai-request:"+messageID, body)
-	if err != nil {
-		return "", "", err
-	}
-	// The insert commits before entering the shared service. An existing running
-	// generation is an uncertain outcome, never permission to call the model again.
-	status, code := "running", ""
-	var restored bool
-	config := s.Store.Settings.Channel
-	if err := s.Store.state.QueryRow(`SELECT COALESCE(last_error = 'STATE_RESTORED', 0)
-		FROM channel_events WHERE message_id = ? AND app_id = ? AND sender_open_id = ?`,
-		messageID, configured(config.AppID), configured(config.UserOpenID)).Scan(&restored); err != nil {
-		return "", "", err
-	}
-	if restored {
-		status, code = "interrupted", "STATE_RESTORED"
-	}
-	stamp := nowText()
-	inserted, err := s.Store.state.Exec(`INSERT OR IGNORE INTO feishu_ai_generations
-		(message_id, operation, request, status, error_code, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?)`, messageID, operation, sealed, status, nullable(code), stamp, stamp)
-	if err != nil {
-		return "", "", err
-	}
-	count, err := inserted.RowsAffected()
-	if err != nil {
-		return "", "", err
-	}
-	if count == 0 {
-		if _, err := s.Store.state.Exec(`UPDATE feishu_ai_generations SET status = 'interrupted',
-			error_code = 'GENERATION_INTERRUPTED', updated_at = ? WHERE message_id = ? AND status = 'running'`,
-			nowText(), messageID); err != nil {
-			return "", "", err
-		}
-		return "ai", messageID, nil
-	}
-	if restored {
-		return "ai", messageID, nil
-	}
-	result := AIResult{}
-	if s.AI == nil {
-		err = failure("LLM_DISABLED", "AI is unavailable", 503, false)
-	} else if operation == "insight" {
-		result, err = s.AI.Insight(ctx, request, nil)
-	} else {
-		result, err = s.AI.Answer(ctx, request, nil)
-	}
-	var saved []byte
-	status, code = "completed", ""
-	if err != nil || !result.Completed {
-		status, code = "failed", "AI_GENERATION_FAILED"
-		// Keep only a fixed classification, never provider/source error text.
-		if err != nil && strings.HasPrefix(errorCode(err), "SOURCE_") {
-			code = "AI_SOURCE_FAILED"
-		}
-	} else {
-		body, err = json.Marshal(result)
-		if err == nil {
-			saved, err = s.seal("ai-result:"+messageID, body)
-		}
-		if err != nil {
-			return "", "", err
-		}
-	}
-	_, err = s.Store.state.Exec(`UPDATE feishu_ai_generations SET status = ?, result = ?,
-		error_code = ?, updated_at = ? WHERE message_id = ? AND status = 'running'`,
-		status, saved, nullable(code), nowText(), messageID)
-	return "ai", messageID, err
 }
 
 func (s *FeishuService) aiResult(messageID string, item feishuAIGeneration) (AIResult, error) {

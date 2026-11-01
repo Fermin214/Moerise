@@ -176,6 +176,8 @@ PATCH 请求体仅接受 `version`、`settings`、`secrets`，上限 128 KiB，C
 
 机器 REST 不提供笔记写入、手动同步、创建或更换回顾、阅读标记、通知管理、洞察或问答生成。`/api/ext/v1/notifications` 及其子路径、`/api/ext/v1/insights` 和 `/api/ext/v1/answers` 也遵循上述拒绝规则。未列入白名单的方法和路径返回 403。
 
+OpenAPI 只描述可调用的产品协议，不提供已关闭结构化生成的请求、结果或 SSE Schema。旧路径仍由统一的只读白名单拒绝，不保留可被误挂载的生成 Handler。
+
 ## 路由
 
 | 方法 | 路径 | Scope | 结果 |

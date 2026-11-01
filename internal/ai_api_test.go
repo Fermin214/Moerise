@@ -3,7 +3,6 @@ package moerise
 import (
 	"context"
 	"encoding/json"
-	"io"
 	"net/http/httptest"
 	"strings"
 	"sync/atomic"
@@ -66,37 +65,6 @@ func TestAIAPINewAPISharedService(t *testing.T) {
 	}
 }
 
-func aiAPISchema(t *testing.T, name string) *jsonschema.Resolved {
-	t.Helper()
-	var spec struct {
-		Components struct {
-			Schemas map[string]json.RawMessage `json:"schemas"`
-		} `json:"components"`
-	}
-	if err := json.Unmarshal(openAPIJSON, &spec); err != nil {
-		t.Fatal(err)
-	}
-	definitions := map[string]json.RawMessage{}
-	for _, key := range []string{"AIResult", "AIStatement", "Evidence", "AITimelinePeriod",
-		"SearchSemantic", "LLMUsage", "AIMetrics", "AIStreamEvent", "ErrorDetail"} {
-		definitions[key] = json.RawMessage(strings.ReplaceAll(string(spec.Components.Schemas[key]),
-			"#/components/schemas/", "#/$defs/"))
-	}
-	raw, err := json.Marshal(map[string]any{"$ref": "#/$defs/" + name, "$defs": definitions})
-	if err != nil {
-		t.Fatal(err)
-	}
-	var schema jsonschema.Schema
-	if err := json.Unmarshal(raw, &schema); err != nil {
-		t.Fatal(err)
-	}
-	resolved, err := schema.Resolve(nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return resolved
-}
-
 func aiAPIValidateJSON(t *testing.T, schema *jsonschema.Resolved, data []byte) {
 	t.Helper()
 	var value any
@@ -133,6 +101,22 @@ func TestExternalAIEndpointsRejectEveryCredential(t *testing.T) {
 	}
 }
 
+func TestOpenAPIDoesNotAdvertiseRetiredGeneration(t *testing.T) {
+	var spec struct {
+		Components struct {
+			Schemas map[string]json.RawMessage `json:"schemas"`
+		} `json:"components"`
+	}
+	if err := json.Unmarshal(openAPIJSON, &spec); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"AIRequest", "AIResult", "AIStatement", "Evidence", "EvidenceSet", "AIMetrics", "AITimelinePeriod", "AIStreamEvent"} {
+		if spec.Components.Schemas[name] != nil || strings.Contains(string(openAPIJSON), "#/components/schemas/"+name+`"`) {
+			t.Fatalf("retired generation schema remains public: %s", name)
+		}
+	}
+}
+
 func TestAIAPIMCPVisibilityAndDirectCalls(t *testing.T) {
 	api := aiAPIFixture(t, aiLLMFunc(func(context.Context, []LLMMessage, func(string) error) (LLMResult, error) {
 		t.Fatal("removed MCP tool called the model")
@@ -160,20 +144,6 @@ func TestAIAPIMCPVisibilityAndDirectCalls(t *testing.T) {
 	}
 }
 
-func TestLegacyAIRequestParser(t *testing.T) {
-	for _, body := range []string{
-		`{"Names":["memos/seed"]}`, `{"question":"first","question":"basil"}`,
-		`{"question":null}`, `{"timeline":null}`, `{"stream":null}`, `{"tags":null}`, `{"names":null}`,
-		`{"state":null}`, `{"from":null}`, `{"until":null}`, `{"names":[null]}`,
-		`{"question":"basil","source":"private"}`, `{"question":"basil"} {}`,
-		"{\"question\":\"\xff\"}",
-	} {
-		if _, err := readAIRequest(strings.NewReader(body)); errorCode(err) != "INVALID_ARGUMENT" {
-			t.Fatalf("legacy parser accepted %q: %v", body, err)
-		}
-	}
-}
-
 func aiMCPCall(t *testing.T, api *API, token, method string, params any) map[string]any {
 	t.Helper()
 	body, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 1, "method": method, "params": params})
@@ -189,19 +159,4 @@ func aiMCPCall(t *testing.T, api *API, token, method string, params any) map[str
 		t.Fatalf("MCP response: %d %s", response.Code, response.Body.String())
 	}
 	return rpc
-}
-
-func TestAIAPIRequestSizeBoundary(t *testing.T) {
-	base := `{"question":"basil"}`
-	for _, size := range []int{aiRequestBytes, aiRequestBytes + 1} {
-		body := base + strings.Repeat(" ", size-len(base))
-		_, err := readAIRequest(strings.NewReader(body))
-		if (err == nil) != (size == aiRequestBytes) {
-			t.Fatalf("request byte boundary %d: %v", size, err)
-		}
-	}
-	_, err := readAIRequest(io.LimitReader(strings.NewReader(`{"question":"basil"}`), 5))
-	if errorCode(err) != "INVALID_ARGUMENT" {
-		t.Fatalf("truncated JSON accepted: %v", err)
-	}
 }

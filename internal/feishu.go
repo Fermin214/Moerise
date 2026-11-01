@@ -397,7 +397,7 @@ func (s *FeishuService) render(ctx context.Context, kind, resource string) (stri
 		if err != nil {
 			return "", err
 		}
-		return renderReview(batch, true), nil
+		return renderReview(batch), nil
 	default:
 		return "", fmt.Errorf("invalid Feishu event result")
 	}
@@ -421,7 +421,7 @@ func renderSearchResults(results []SearchHit, semantic SearchSemantic) string {
 	return text.String()
 }
 
-func renderReview(batch ReviewBatch, interactive bool) string {
+func renderReview(batch ReviewBatch) string {
 	var text strings.Builder
 	fmt.Fprintf(&text, "%s 每日回顾\n批次：%s\n", batch.Date, batch.ID)
 	if len(batch.Items) == 0 {
@@ -432,9 +432,6 @@ func renderReview(batch ReviewBatch, interactive bool) string {
 			continue
 		}
 		fmt.Fprintf(&text, "\n%s\n%s\n%s\n%s\n", item.Note.CreateTime, excerpt(item.Note.Content, 300), item.Name, item.Note.URL)
-	}
-	if interactive {
-		text.WriteString("\n回复“换一组”，或使用“打开/略过 批次标识 memos/资源标识”。")
 	}
 	return text.String()
 }

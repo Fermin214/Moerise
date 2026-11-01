@@ -91,7 +91,7 @@ func processLegacyFeishuAI(t *testing.T, service *FeishuService) {
 		t.Fatal(err)
 	}
 	if count == 0 {
-		if _, _, err := service.executeAI(context.Background(), "om_ai", "洞察 memos/seed"); err != nil {
+		if _, _, err := service.seedLegacyAI(context.Background(), "om_ai"); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -144,11 +144,21 @@ func TestFeishuAITimelineRendering(t *testing.T) {
 	}
 }
 
+func TestLegacyRepliesDoNotSuggestRetiredCommands(t *testing.T) {
+	for _, text := range []string{feishuAIFailed, feishuAIInterrupted, feishuAISourceFailed, renderReview(ReviewBatch{})} {
+		for _, hint := range []string{"重新发送", "换一组", "打开/略过"} {
+			if strings.Contains(text, hint) {
+				t.Fatalf("legacy reply still suggests a retired command: %s", text)
+			}
+		}
+	}
+}
+
 func TestFeishuAIResultPrecedesEventCompletionAndSurvivesRedelivery(t *testing.T) {
 	service, platform, _, calls := feishuAIFixture(t, insightOutput)
 	message := receiveFeishuAI(t, service, "洞察 memos/seed")
 	receiveFeishuAI(t, service, "洞察 memos/seed")
-	if kind, _, err := service.executeAI(context.Background(), message.ID, "洞察 memos/seed"); err != nil || kind != "ai" {
+	if kind, _, err := service.seedLegacyAI(context.Background(), message.ID); err != nil || kind != "ai" {
 		t.Fatal(err)
 	}
 	var status string
@@ -395,4 +405,81 @@ func TestFeishuAIRestoredPendingGenerationDoesNotRun(t *testing.T) {
 	if !strings.Contains(platform.texts[0], feishuAIInterrupted) || *calls != 0 {
 		t.Fatal("restored event did not return a terminal interruption notice")
 	}
+}
+
+// seedLegacyAI 只构造旧生成夹具，不参与产品入口或后台工作循环。
+func (s *FeishuService) seedLegacyAI(ctx context.Context, messageID string) (string, string, error) {
+	operation, request := "insight", AIRequest{Names: []string{"memos/seed"}}
+	body, err := json.Marshal(request)
+	if err != nil {
+		return "", "", err
+	}
+	sealed, err := s.seal("ai-request:"+messageID, body)
+	if err != nil {
+		return "", "", err
+	}
+	// The insert commits before entering the shared service. An existing running
+	// generation is an uncertain outcome, never permission to call the model again.
+	status, code := "running", ""
+	var restored bool
+	config := s.Store.Settings.Channel
+	if err := s.Store.state.QueryRow(`SELECT COALESCE(last_error = 'STATE_RESTORED', 0)
+		FROM channel_events WHERE message_id = ? AND app_id = ? AND sender_open_id = ?`,
+		messageID, configured(config.AppID), configured(config.UserOpenID)).Scan(&restored); err != nil {
+		return "", "", err
+	}
+	if restored {
+		status, code = "interrupted", "STATE_RESTORED"
+	}
+	stamp := nowText()
+	inserted, err := s.Store.state.Exec(`INSERT OR IGNORE INTO feishu_ai_generations
+		(message_id, operation, request, status, error_code, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?)`, messageID, operation, sealed, status, nullable(code), stamp, stamp)
+	if err != nil {
+		return "", "", err
+	}
+	count, err := inserted.RowsAffected()
+	if err != nil {
+		return "", "", err
+	}
+	if count == 0 {
+		if _, err := s.Store.state.Exec(`UPDATE feishu_ai_generations SET status = 'interrupted',
+			error_code = 'GENERATION_INTERRUPTED', updated_at = ? WHERE message_id = ? AND status = 'running'`,
+			nowText(), messageID); err != nil {
+			return "", "", err
+		}
+		return "ai", messageID, nil
+	}
+	if restored {
+		return "ai", messageID, nil
+	}
+	result := AIResult{}
+	if s.AI == nil {
+		err = failure("LLM_DISABLED", "AI is unavailable", 503, false)
+	} else if operation == "insight" {
+		result, err = s.AI.Insight(ctx, request, nil)
+	} else {
+		result, err = s.AI.Answer(ctx, request, nil)
+	}
+	var saved []byte
+	status, code = "completed", ""
+	if err != nil || !result.Completed {
+		status, code = "failed", "AI_GENERATION_FAILED"
+		// Keep only a fixed classification, never provider/source error text.
+		if err != nil && strings.HasPrefix(errorCode(err), "SOURCE_") {
+			code = "AI_SOURCE_FAILED"
+		}
+	} else {
+		body, err = json.Marshal(result)
+		if err == nil {
+			saved, err = s.seal("ai-result:"+messageID, body)
+		}
+		if err != nil {
+			return "", "", err
+		}
+	}
+	_, err = s.Store.state.Exec(`UPDATE feishu_ai_generations SET status = ?, result = ?,
+		error_code = ?, updated_at = ? WHERE message_id = ? AND status = 'running'`,
+		status, saved, nullable(code), nowText(), messageID)
+	return "ai", messageID, err
 }

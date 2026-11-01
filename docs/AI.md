@@ -8,6 +8,8 @@ LLM 通过独立的协议适配器生成内容，支持 OpenAI Chat Completions�
 
 App 的 `AIService` 已停止接受新的结构化洞察、问答和主题时间线生成，返回 `LEGACY_AI_DISABLED`。模型适配器、证据服务、持久任务和已生成结果仍参与历史恢复；入口限制不改写迁移或删除队列记录。机器读取协议见 [API v1](API-V1.md)。
 
+旧机器生成 Handler 和飞书新生成编排已移除，公开 OpenAPI 不再包含其孤立请求、结果或流事件 Schema。飞书仅识别并恢复已有生成记录，不解析文字来创建 AI 任务。旧失败/中断通知不再提示重新发送 AI 命令，历史回顾回复也不再提示换组、打开或略过。
+
 ## 自然聊天共享服务
 
 `ChatService` 与 App 共享 Notes、Records、Store 和唯一的有效 LLM Provider，不调用 Embedding 或结构化证据编排。创建会话保存明确选定的资源名和来源版本，每次生成从官方 Memos API 读取全部原文，包括归档笔记和同文但不同资源的笔记。不会再按日期、标签筛掉材料，也不会补入相关历史。删除、作者越界或来源变化分别报告 `SOURCE_NOT_FOUND` 或 `SOURCE_CHANGED`；用户可明确重新选择材料并更新会话，旧消息和每轮的材料引用不改写。

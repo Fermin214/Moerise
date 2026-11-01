@@ -64,7 +64,7 @@ LLM 适配验证 Chat Completions、Responses 和 Anthropic Messages 的原生�
 
 自然聊天持久化使用 `go test ./internal -run '^TestChatStore' -count=1` 检查会话/消息原文、材料与 Prompt 快照、并发请求去重、版本冲突、运行中修改/删除拒绝、生成终态及迟到增量、固定版本保存关联、来源/作者隔离、事务回滚和同时间分页。重启、索引重建和产品备份恢复检查消息与保存关联保留，遗留 running 转为 interrupted，不重跑模型；主动删除级联清理聊天状态，不允许迟到写入复活。此组只检查状态层，不代替后续聊天编排、客户端 SSE 或真实浏览器流程。
 
-`go test -race ./internal -run '^(TestChat|TestAppChat)' -count=1` 补充共享聊天编排：关闭 Embedding 时的完整正常/归档选材、自然 Markdown、默认 Prompt 和成功对话上下文、Unicode 字符与 UTF-8 字节预算、消息数量限制、不截断、来源变化/删除/越权、供应商故障、流协议异常、消费者中断、主动取消和服务关闭、重复请求不再生成。保存验证原文幂等、固定版本及删除等待保存排空；运行设置更新验证 Chat 和历史兼容服务共享同一 Provider，App 拒绝新的结构化调用。真实 Memos 的旧 AI 集成流程显式创建旧结果夹具，继续检查已保存结果发送、确认和恢复，不重新开放 App 入口。
+`go test -race ./internal -run '^(TestChat|TestAppChat)' -count=1` 补充共享聊天编排：关闭 Embedding 时的完整正常/归档选材、自然 Markdown、默认 Prompt 和成功对话上下文、Unicode 字符与 UTF-8 字节预算、消息数量限制、不截断、来源变化/删除/越权、供应商故障、流协议异常、消费者中断、主动取消和服务关闭、重复请求不再生成。保存验证原文幂等、固定版本及删除等待保存排空；运行设置更新验证 Chat 和历史兼容服务共享同一 Provider，App 拒绝新的结构化调用。真实 Memos 的旧 AI 集成流程显式创建旧结果夹具，继续检查已保存结果发送、确认和恢复，不重新开放 App 入口。飞书生成夹具只存在于测试文件，产品代码不再保留其新生成编排。
 
 `go test -race ./internal -run '^(TestClientChat|TestChatSelection)' -count=1` 检查客户端聊天的 Cookie、Origin/CSRF、机器凭据拒绝、严格 JSON、版本冲突、SSE 完成/错误与 OpenAPI 一致性、重放、取消、退出及组合选材分页。Web 代理测试检查生成流使用独立超时、及时透传增量和断连传递；运行 `npm --prefix web run build && npm --prefix web test`。这些可控模型测试不能代替真实 Memos 与浏览器的完整聊天验收。
 
@@ -78,7 +78,7 @@ LLM 适配验证 Chat Completions、Responses 和 Anthropic Messages 的原生�
 
 时间线流程使用超过单次笔记上限的近期记录验证早期来源仍被召回，检查空时间段、半开区间、创建与修改及正文日期的区别、跨段引用索引和合并后的总预算。因预算丢失整个时间段时，结果必须指出缺失并使用证据不足状态。
 
-AI 入口隔离由 `TestExternalAIEndpointsRejectEveryCredential` 和 `TestAIAPIMCPVisibilityAndDirectCalls` 验证：机器 REST 拒绝生成请求，MCP 不公布生成工具且拒绝直接调用，持有 `notes:read` 与 `ai:generate` 也不能调用模型。共享服务测试检查引用、内容和完成事件、错误及取消传播；旧请求解析器单独检查严格 JSON 和请求大小。App 装配保证 AI、搜索和飞书复用服务实例、模型提供商与并发限制。
+AI 入口隔离由 `TestExternalAIEndpointsRejectEveryCredential` 和 `TestAIAPIMCPVisibilityAndDirectCalls` 验证：机器 REST 拒绝生成请求，MCP 不公布生成工具且拒绝直接调用，持有 `notes:read` 与 `ai:generate` 也不能调用模型。共享服务测试检查引用、内容和完成事件、错误及取消传播；旧机器生成 Handler、请求解析器及其专用测试已删除。App 装配保证 AI、搜索和飞书复用服务实例、模型提供商与并发限制。
 
 飞书 AI 队列的恢复流程验证生成结果先落库、事件重投和重启复用结果、生成中断终止、长结果按序分片，以及独立回执和结果不明处理。每片发送前复查来源，失效后只发送固定提示；数据库迁移和快照恢复检查任务与分片状态。专用私聊文字全部走记录入口，不以 AI 命令触发生成。
 
