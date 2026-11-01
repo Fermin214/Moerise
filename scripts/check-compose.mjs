@@ -9,16 +9,16 @@ import {
 } from 'node:fs';
 import { createServer } from 'node:net';
 import { setTimeout as delay } from 'node:timers/promises';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import assert from 'node:assert/strict';
 
-const usage = 'node scripts/check-compose.mjs [--skip-build] [--keep]';
+const usage = 'node scripts/check-compose.mjs [--skip-build] [--keep] [--browser]';
 const flags = new Set(process.argv.slice(2));
 if (flags.has('--help')) {
   console.log(usage);
   process.exit(0);
 }
-if ([...flags].some(flag => !['--skip-build', '--keep'].includes(flag))) {
+if ([...flags].some(flag => !['--skip-build', '--keep', '--browser'].includes(flag))) {
   console.error(usage);
   process.exit(1);
 }
@@ -37,6 +37,12 @@ assert.match(imageTag, /^[\w][\w.-]{0,127}$/, 'MOERISE_IMAGE_TAG 必须是镜像
 const sourceName = `${project}-source`;
 const oneOffNames = [`${project}-rebuild`, `${project}-backup`, `${project}-restore`];
 const evidence = { project, imageTag, startedAt: new Date().toISOString(), scenarios: [], checks: [] };
+const screenshots = new Map();
+let chromium;
+if (flags.has('--browser')) {
+  assert.ok(process.env.MOERISE_PLAYWRIGHT_MODULE, '--browser 需要 MOERISE_PLAYWRIGHT_MODULE');
+  ({ chromium } = await import(pathToFileURL(process.env.MOERISE_PLAYWRIGHT_MODULE).href));
+}
 const cancellation = new AbortController();
 for (const signal of ['SIGINT', 'SIGTERM']) {
   process.on(signal, () => cancellation.abort(new Error(signal)));
@@ -379,6 +385,44 @@ async function runScenario(kind) {
     await ready(url);
     await retained();
   });
+  if (chromium) await check('真实浏览器登录、原文/附件、筛选、详情返回和扩展页', async () => {
+    const browser = await chromium.launch({ headless: true, channel: process.env.MOERISE_PLAYWRIGHT_CHANNEL || undefined });
+    try {
+      const page = await browser.newPage({ viewport: { width: 1360, height: 960 } });
+      const pageErrors = [];
+      page.on('pageerror', error => pageErrors.push(error.message));
+      await page.goto(url);
+      await page.locator('#username').fill(username); await page.locator('#password').fill(password);
+      await page.locator('#login').click();
+      const card = page.locator(`#notes article[data-name="${note.name}"]`);
+      await card.waitFor();
+      assert.match(await card.innerText(), /Edited text/);
+      const attachment = page.locator(`#notes article[data-name="${pure.name}"] a.attachment`);
+      await attachment.waitFor();
+      assert.ok((await (await page.request.get(url + await attachment.getAttribute('href'))).body()).equals(attachmentBytes));
+      await page.locator('#tags .tag-row').filter({ hasText: '#edited' }).click();
+      await page.waitForFunction(() => document.querySelectorAll('#notes article.card').length === 1);
+      await card.locator('a[data-route]').click(); await page.locator('article.note').waitFor();
+      await page.reload(); await page.locator('article.note').waitFor(); await page.locator('#back').click();
+      await card.waitFor(); assert.match(page.url(), /tag=edited/);
+      screenshots.set(`browser-${kind}-desktop.png`, await page.screenshot({ fullPage: true }));
+      await page.goto(url + '/review'); await page.locator('.review-page').waitFor();
+      await page.goto(url + '/walk'); await page.locator('.walk-page').waitFor();
+      await page.goto(url + '/insights'); await page.locator('.insights-page').waitFor();
+      await page.goto(url + '/map'); await page.locator('.map-page').waitFor();
+      await page.getByRole('status').filter({ hasText: '请在设置中启用 Embedding' }).waitFor();
+      await page.goto(url + '/settings'); await page.locator('.settings-form').waitFor();
+      await page.setViewportSize({ width: 390, height: 844 }); await page.goto(url);
+      await page.locator('#notes article.card').first().waitFor();
+      assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1));
+      screenshots.set(`browser-${kind}-mobile.png`, await page.screenshot({ fullPage: true }));
+      await page.reload(); await card.waitFor();
+      await page.locator('#user-menu').click(); await page.locator('#logout').click();
+      await page.locator('#login-form').waitFor({ state: 'visible' });
+      assert.equal(await page.locator('#notes article').count(), 0);
+      assert.deepEqual(pageErrors, []);
+    } finally { await browser.close(); }
+  });
   await check('停止 Core 并重建索引后保留产品状态', async () => {
     await compose(['stop', 'moerise']);
     await compose(['run', '--rm', '--no-deps', '--name', oneOffNames[0], 'moerise', 'rebuild-index']);
@@ -529,6 +573,7 @@ try {
   evidence.passed = succeeded;
   evidence.kept = kept;
   evidence.finishedAt = new Date().toISOString();
+  for (const [filename, bytes] of screenshots) writeFileSync(resolve(root, filename), bytes, { mode: 0o600 });
   saveEvidence();
   console.log(`证据：${resolve(root, 'checks.json')}`);
   if (kept) console.log(`浏览器验收：${runtime.url}\n运行信息：${resolve(root, 'runtime.json')}`);

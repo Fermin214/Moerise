@@ -30,7 +30,7 @@ Core 已提供中文混合检索、相关笔记与语义漫步接口，见[搜�
 - 将已完成回复原样主动保存为 Memos 笔记，保留 Markdown、空白、换行与正文标签，重试不重复创建；删除聊天会话保留已保存的笔记。
 - LLM Provider 支持 OpenAI Chat Completions、OpenAI Responses 和 Anthropic Messages，供自然聊天、模型连接检查及历史任务恢复使用；聊天无需 Embedding。
 
-Moerise 的笔记接口会向 Memos 复查原文，来源服务不可用时返回错误。每个部署连接一个 Memos 实例和一个账号。
+Moerise 的笔记接口会向 Memos 复查原文，来源服务不可用、限流或超出读取预算时返回明确错误；标签和日历不会返回部分统计。每个部署连接一个 Memos 实例和一个账号。
 
 飞书记录方式、回顾参数和推送说明见[每日回顾](docs/DAILY-REVIEW.md)、[飞书入口](docs/FEISHU.md)与[调度说明](docs/NOTIFICATIONS.md)。
 
@@ -80,7 +80,7 @@ curl --fail http://localhost:3000/health/ready
 | --- | --- |
 | [产品需求](docs/PRD.md) | 产品行为、入口职责、首个完整版本与长期候选 |
 | [运行与恢复](docs/OPERATIONS.md) | 配置、部署、备份、恢复和版本回滚 |
-| [Web](docs/WEB.md) | 登录、笔记管理、回顾、漫步、聊天和 Web 构建部署 |
+| [Web](docs/WEB.md) | 登录、笔记管理、回顾、漫步、聊天、地图和 Web 构建部署 |
 | [API v1](docs/API-V1.md) | 客户端会话、笔记管理与聊天、机器只读范围、分页和错误处理 |
 | [每日回顾](docs/DAILY-REVIEW.md) | 选择参数、固定批次、近期去重与记录恢复 |
 | [飞书入口](docs/FEISHU.md) | 应用配置、身份绑定、私聊记录与事件恢复 |

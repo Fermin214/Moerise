@@ -1,4 +1,5 @@
 ALTER TABLE feishu_ai_generations ADD COLUMN content_cleaned_at TEXT;
+CREATE INDEX notifications_source_event ON notifications(source_event) WHERE source_event IS NOT NULL;
 
 -- Keep part identities, ordering, receipts and resolutions after dropping content.
 CREATE TRIGGER feishu_ai_content_cleanup
@@ -16,6 +17,13 @@ BEGIN
             WHERE p.message_id = NEW.message_id
                 AND (n.id IS NULL OR n.status <> 'sent' OR n.kind <> 'reply'
                     OR n.source_event IS NOT p.message_id)
+        )
+        AND NOT EXISTS (
+            SELECT 1 FROM notifications n
+            WHERE n.source_event = NEW.message_id AND NOT EXISTS (
+                SELECT 1 FROM feishu_ai_parts p
+                WHERE p.notification_id = n.id AND p.message_id = NEW.message_id
+            )
         );
     UPDATE feishu_ai_parts SET payload = X''
     WHERE message_id = NEW.message_id AND EXISTS (

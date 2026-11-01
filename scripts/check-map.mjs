@@ -16,8 +16,10 @@ const scaleCount = Number(process.env.MOERISE_MAP_SCALE || 1000);
 assert.ok(Number.isSafeInteger(scaleCount) && scaleCount >= 100 && scaleCount <= 10000, 'MOERISE_MAP_SCALE 为 100—10000 的验证规模，不是产品数量上限');
 const { chromium } = await import(pathToFileURL(process.env.MOERISE_PLAYWRIGHT_MODULE).href);
 const repo = fileURLToPath(new URL('../', import.meta.url));
+const baselineBinary = process.env.MOERISE_BASELINE_BINARY ? resolve(process.env.MOERISE_BASELINE_BINARY) : '';
 const id = randomBytes(8).toString('hex'), sourceName = `moerise-map-${id}`;
 const root = resolve(repo, '.local', `map-acceptance-${id}`), binary = resolve(root, 'moerise');
+let servingBinary = baselineBinary || binary;
 const cancellation = new AbortController();
 for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, () => cancellation.abort(new Error(signal)));
 const username = 'map-owner', password = randomBytes(24).toString('hex');
@@ -95,7 +97,7 @@ async function stopCore() {
   child.kill('SIGTERM'); await coreExit; clearTimeout(timer); processCore = null;
 }
 async function startCore() {
-  processCore = spawn(binary, ['serve', '--config', resolve(root, 'config.json'), '--host', '127.0.0.1', '--port', new URL(coreURL).port],
+  processCore = spawn(servingBinary, ['serve', '--config', resolve(root, 'config.json'), '--host', '127.0.0.1', '--port', new URL(coreURL).port],
     { cwd: repo, stdio: ['ignore', log.fd, log.fd] });
   coreExit = new Promise((resolve, reject) => { processCore.once('error', reject); processCore.once('close', resolve); });
   await wait('Core 就绪', async () => { try { await request(coreURL, '/health/ready'); return true; } catch { return false; } });
@@ -214,7 +216,15 @@ try {
     model = http.createServer(async (req, res) => {
       let raw = ''; for await (const chunk of req) raw += chunk;
       try {
-        const body = JSON.parse(raw); assert.equal(req.url, '/v1/embeddings'); assert.equal(req.headers.authorization, `Bearer ${modelKey}`);
+        const body = JSON.parse(raw); assert.equal(req.headers.authorization, `Bearer ${modelKey}`);
+        if (baselineBinary && req.url === '/v1/chat/completions') {
+          assert.equal(body.model, 'upgrade-fixture'); assert.equal(body.stream, true);
+          res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+          res.end(`data: ${JSON.stringify({ model: 'upgrade-fixture', choices: [{ index: 0, delta: { content: '升级前保存的完整回复\n\n保留原始正文与材料引用。' }, finish_reason: null }] })}\n\n` +
+            `data: ${JSON.stringify({ model: 'upgrade-fixture', choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] })}\n\ndata: [DONE]\n\n`);
+          return;
+        }
+        assert.equal(req.url, '/v1/embeddings');
         assert.match(body.model, /^map-fixture/); assert.ok(Array.isArray(body.input)); evidence.embeddingCalls++;
         const data = body.input.map((text, index) => {
           let angle = text.includes('bicycle') ? 2 * Math.PI / 3 : text.includes('reading') ? 4 * Math.PI / 3 : 0;
@@ -235,6 +245,8 @@ try {
     config.review = { ...config.review, min_age_hours: 0, recent_days: 0 }; config.notifications.enabled = false; config.llm.enabled = false;
     config.embedding = { ...config.embedding, enabled: true, provider: 'openai-compatible', protocol: 'openai-compatible',
       base_url: `http://127.0.0.1:${model.address().port}/v1`, api_key: modelKey, model: 'map-fixture', dimensions: 3, max_retries: 0 };
+    if (baselineBinary) config.llm = { ...config.llm, enabled: true, protocol: 'openai-compatible',
+      base_url: `http://127.0.0.1:${model.address().port}/v1`, api_key: modelKey, model: 'upgrade-fixture', max_retries: 0 };
     await writeFile(resolve(root, 'config.json'), JSON.stringify(config), { mode: 0o600 });
   });
   await check('本人 Cookie、机器禁止和正式浏览器真实点集', async () => {
@@ -258,6 +270,33 @@ try {
     await page.screenshot({ path: resolve(root, 'map-desktop.png'), fullPage: true });
     const saved = await view(); await reader().getByRole('button', { name: '打开笔记', exact: true }).click(); await page.locator('article.note').waitFor();
     await browse(); await page.locator('article.note').waitFor(); await page.locator('#back').click(); await ready(); await reader().waitFor(); assert.deepEqual(await view(), saved);
+  });
+  if (baselineBinary) await check('旧二进制原目录升级保留会话、设置、分时回顾、聊天、向量与地图', async () => {
+    let settings = await api('GET', '/settings');
+    settings = await api('PATCH', '/settings', { version: settings.version,
+      settings: { review: { count: 3 }, notifications: { times: ['09:00', '18:00'] } } });
+    const plan = await api('GET', '/reviews/daily');
+    assert.ok(plan.items.length > 0);
+    let chat = await api('POST', '/chats', { request_id: randomUUID(), title: '升级保留', names: [fixtures[0].name] }, 201);
+    const response = await fetch(url + `/api/app/v1/chats/${chat.id}/messages`, {
+      method: 'POST', headers: { Cookie: cookie, Origin: url, 'X-CSRF-Token': csrf, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ request_id: randomUUID(), version: chat.version, kind: 'question', content: '升级前的问题' }),
+      signal: AbortSignal.any([cancellation.signal, AbortSignal.timeout(60_000)]),
+    });
+    assert.equal(response.status, 200);
+    assert.match(await response.text(), /event: complete/);
+    chat = await api('GET', `/chats/${chat.id}`);
+    assert.equal(chat.turns.length, 1); assert.equal(chat.turns[0].assistant.status, 'completed');
+    assert.equal(chat.turns[0].assistant.content, '升级前保存的完整回复\n\n保留原始正文与材料引用。');
+    const map = await api('GET', '/map'), calls = evidence.embeddingCalls, saved = await view();
+    await stopCore(); servingBinary = binary; await startCore();
+    await api('GET', '/session');
+    assert.deepEqual(await api('GET', '/settings'), settings);
+    assert.deepEqual(await api('GET', '/reviews/daily'), plan);
+    assert.deepEqual(await api('GET', `/chats/${chat.id}`), chat);
+    await vectorsReady(); assert.deepEqual(await api('GET', '/map'), map);
+    assert.equal(evidence.embeddingCalls, calls, '升级复用已有向量，不重跑模型');
+    await browse(); await ready(); assert.deepEqual(await view(), saved);
   });
   await check('鼠标平移、滚轮锚定、键盘、刷新与 Core 重启不跳变', async () => {
     const field = page.locator('#map-field'), box = await field.boundingBox(), before = await view();

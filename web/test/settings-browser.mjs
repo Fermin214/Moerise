@@ -59,6 +59,11 @@ async function fixture(t) {
           ? { chunks: 12, completed_chunks: 4, last_error: null } : null } });
       return;
     }
+    if (path === '/api/app/v1/map') {
+      json({ status: state.value.settings.embedding.enabled ? state.index === 'building' ? 'building' : 'waiting' : 'disabled',
+        algorithm: 'pca-fixed-v2', projection_revision: 0, layout_version: '', layout_frame: '', vector_generation: '', points: [] });
+      return;
+    }
     if (/^\/api\/app\/v1\/models\/(embedding|llm)\/check$/.test(path)) {
       assert.equal(req.headers['x-csrf-token'], 'csrf-settings');
       const body = JSON.parse(raw); state.checks.push({ path, ...body });
@@ -389,7 +394,7 @@ test('model settings pair protocols, check saved versions and discard obsolete r
   await page.locator('a[data-route][href="/review"]').click();
   assert.equal(await page.locator('#settings-page').count(), 0);
   await page.locator('a[data-route][href="/map"]').click();
-  await page.locator('#capability').filter({ hasText: '语义索引构建中' }).waitFor();
+  await page.locator('.map-page [role="status"]').filter({ hasText: '语义索引构建中' }).waitFor();
   state.holdCheck = false;
   await page.locator('a[data-route][href="/settings"]').click(); await pageReady(page);
   state.value.version++;

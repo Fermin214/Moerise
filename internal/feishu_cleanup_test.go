@@ -118,6 +118,7 @@ func TestLegacyAICleanupUpgradePreservesUnfinishedOrDamagedRecords(t *testing.T)
 			service, platform, _, _ := feishuAIFixture(t, insightOutput)
 			store := service.Store
 			if _, err := store.state.Exec(`DROP TRIGGER feishu_ai_content_cleanup;
+				DROP INDEX notifications_source_event;
 				ALTER TABLE feishu_ai_generations DROP COLUMN content_cleaned_at;
 				DELETE FROM schema_migrations WHERE version = '020'`); err != nil {
 				t.Fatal(err)
@@ -158,4 +159,39 @@ func TestLegacyAICleanupUpgradePreservesUnfinishedOrDamagedRecords(t *testing.T)
 			assertLegacyAIContent(t, store, state == "sent")
 		})
 	}
+}
+
+func TestLegacyAICleanupRetainsOrphanedNotification(t *testing.T) {
+	service, _, _, _ := feishuAIFixture(t, longFeishuAIOutput())
+	receiveFeishuAI(t, service, "洞察 memos/seed")
+	processLegacyFeishuAI(t, service)
+	store := service.Store
+	var orphan string
+	if err := store.state.QueryRow(`SELECT notification_id FROM feishu_ai_parts
+		WHERE message_id = 'om_ai' ORDER BY ordinal DESC LIMIT 1`).Scan(&orphan); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.state.Exec("DELETE FROM feishu_ai_parts WHERE notification_id = ?", orphan); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.state.Exec(`UPDATE notifications SET status = 'sent'
+		WHERE source_event = 'om_ai' AND id <> ?`, orphan); err != nil {
+		t.Fatal(err)
+	}
+	assertLegacyAIContent(t, store, false)
+	var status string
+	if err := store.state.QueryRow("SELECT status FROM notifications WHERE id = ?", orphan).Scan(&status); err != nil || status != "pending" {
+		t.Fatalf("orphaned notification status changed: %q %v", status, err)
+	}
+	if _, err := store.state.Exec(`DROP TRIGGER feishu_ai_content_cleanup;
+		DROP INDEX notifications_source_event;
+		ALTER TABLE feishu_ai_generations DROP COLUMN content_cleaned_at;
+		DELETE FROM schema_migrations WHERE version = '020'`); err != nil {
+		t.Fatal(err)
+	}
+	settings := store.Settings
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	assertLegacyAIContent(t, testStore(t, settings), false)
 }

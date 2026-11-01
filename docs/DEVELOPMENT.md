@@ -82,7 +82,7 @@ AI 入口隔离由 `TestExternalAIEndpointsRejectEveryCredential` 和 `TestAIAPI
 
 飞书 AI 队列的恢复流程验证生成结果先落库、事件重投和重启复用结果、生成中断终止、长结果按序分片，以及独立回执和结果不明处理。每片发送前复查来源，失效后只发送固定提示；数据库迁移和快照恢复检查任务与分片状态。专用私聊文字全部走记录入口，不以 AI 命令触发生成。
 
-`go test ./internal -run '^TestLegacyAICleanup' -count=1` 检查全部分片完成前保留内容、最后确认与清理共用事务、回滚、重复事件、队列密钥迁移、旧库升级及分片损坏边界，同时确认 Web 聊天保留。真实 Memos 的 `TestAICachedDeliveryRebuildAndRestoreWithRealMemosAcceptance` 覆盖已清理任务不重发、未发任务在重建/恢复后继续保留结果、恢复后人工确认触发回收。
+`go test ./internal -run '^TestLegacyAICleanup' -count=1` 检查全部分片完成前保留内容、最后确认与清理共用事务、回滚、重复事件、队列密钥迁移、旧库升级及分片损坏和孤立通知边界，同时确认 Web 聊天保留。真实 Memos 的 `TestAICachedDeliveryRebuildAndRestoreWithRealMemosAcceptance` 覆盖已清理任务不重发、未发任务在重建/恢复后继续保留结果、恢复后人工确认触发回收。
 
 向量索引流程测试覆盖分批持久化、模型失败、重启续建、归档及正文增量更新、删除清理、向量空间切换、构建期间投影变化、取消，以及索引重建和状态恢复。分块来源位置、UTF-8 边界、来源复查和错误向量的专项测试用于覆盖完整流程难以稳定触发的边界。真实 Memos 验收搭配 DashScope 模拟服务，验证服务进程自动构建、状态接口、故障恢复、空间替换和产品状态保留。
 
@@ -202,6 +202,16 @@ node scripts/check-map.mjs
 
 联合脚本将来源预置创建间隔设为 550 毫秒、来源读取至少间隔 150 毫秒，为并行侧栏请求保留默认用户额度，遵守 Memos 0.31 的写入和读取限额，不禁用或绕过其限流；千条预置约需十分钟。点集通过官方分页复查，仍受 Core 55 秒预算约束。结束或失败后删除自身的容器、匿名数据卷、凭据、二进制、产品快照及数据库，仅保留 `.local/map-acceptance-<随机ID>/` 中的脱敏检查、日志和截图。
 
+升级验证可另行编译待兼容版本的 Linux 二进制，将绝对路径传给 `MOERISE_BASELINE_BINARY`：
+
+```bash
+MOERISE_PLAYWRIGHT_MODULE=/absolute/path/to/playwright/index.mjs \
+MOERISE_BASELINE_BINARY=/absolute/path/to/baseline-moerise \
+MOERISE_MAP_SCALE=100 node scripts/check-map.mjs
+```
+
+脚本先使用旧二进制在隔离目录中建立真实会话、持久设置、分时回顾、完整聊天及向量地图，再停止 Core，用当前代码构建的二进制连接原目录。升级后检查原 Cookie 和浏览器阅读位置、设置版本、回顾、消息与材料引用、向量代次及地图原样保留，已有向量不重新请求模型。旧二进制需支持 3.8 的地图、聊天和设置接口；其路径只用于启动，不被改写或删除。
+
 `web/test/insights-browser.mjs` 通过正式 Web 与隔离 API，在 Chromium 中检查正常/归档跨页选材、日期与精确标签组合、临时选择取消、Unicode 字符上限、自然 Markdown 与自由追问、固定版本原文保存、刷新及详情返回、空材料保留历史、来源失效、异常 EOF、导航断流、CSRF 更新和结果不明时原键原内容重试。会话菜单检查空草稿、历史分页选择、主动停止、删除确认、生成与保存排空、失败重试、版本冲突及迟到响应隔离。恢复及生成状态轮询时，来源问题提示优先于历史中断提示，临时读取失败按退避间隔继续读取，包括断流后的首次状态核对；成功后解除临时错误，离开页面停止重试。确认选材或移除材料会刷新全部剩余原文及字符数，包括当前筛选外的材料；刷新失败保留原选择，超时后可在同窗口使用新请求重试，来源在确认期间再次改变时提示重选并禁止生成。`web/test/chat-stream.test.mjs` 检查分片 UTF-8、SSE 注释与 CRLF、显式完成、错误终态及非法尾随输出。运行浏览器专项使用 `node --test web/test/insights-browser.mjs`，环境变量与其他浏览器检查相同。
 
 `TestClientDiscoveryMemosAcceptance` 使用真实 Memos、Core 和可控 Embedding 服务，覆盖两时段各三条的固定计划、纯图与纯文件、受保护图片、Cookie/Origin/CSRF、重启、关闭模型后的回顾，以及随机和指定起点的语义前进：
@@ -267,7 +277,11 @@ node scripts/check-models.mjs
 node scripts/check-compose.mjs
 node scripts/check-compose.mjs --skip-build
 node scripts/check-compose.mjs --skip-build --keep
+MOERISE_PLAYWRIGHT_MODULE=/absolute/path/to/playwright/index.mjs \
+node scripts/check-compose.mjs --browser
 ```
+
+`--browser` 额外使用 Playwright Chromium，在两种拓扑分别走通正式登录、原文与纯附件阅读、标签筛选、详情刷新返回、扩展页面导航、390 px 窄屏、刷新恢复会话和退出，并保存脱敏截图。默认关闭模型及飞书；模型、完整回顾/漫步、聊天与地图行为分别使用 `check-models.mjs`、`check-discovery.mjs`、`check-chat.mjs` 和 `check-map.mjs` 的真实来源联合流程。
 
 默认构建 Core 与 Web，镜像标签使用独立项目名。`--skip-build` 使用环境变量 `MOERISE_IMAGE_TAG` 指定的已有镜像标签，省略时使用 `stage34`；Core 与 Web 必须同时具有该标签。PowerShell 示例：
 
