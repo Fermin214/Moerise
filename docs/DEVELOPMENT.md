@@ -196,7 +196,7 @@ node scripts/check-map.mjs
 
 脚本默认创建 100 和 1000 条真实笔记，按正文生成三组可控语义向量，经正式索引和点集接口验证簇关系、未变坐标及密集区域缩放点选，记录请求时间、响应字节、Core RSS/峰值和浏览器加载时间。`MOERISE_MAP_SCALE=10000` 可扩大完整部署验证规模；该变量只控制测试数据，不是产品数量上限。另用 `go test ./internal -run '^TestMapDenseSemanticClusters' -v -count=1` 检查 100/1000/10000 条簇避让，`go test ./internal -run '^$' -bench '^BenchmarkMapLayout$' -benchtime=1x -benchmem` 测量对应规模的 1024 维布局；后者不包含来源网络和完整部署内存，不能作为部署性能承诺。可控向量证明算法及协议行为，不评价真实模型的语义质量。
 
-同一真实数据集还检查默认列表/关键词搜索、完整标签与日历、聊天材料分页、回顾及漫步起点，浏览器加载时间线和下一页并等待完整侧栏；记录每次 API 的耗时、响应字节和 Core RSS。实验约束为响应小于 8 MiB、Core RSS 小于 768 MiB、请求在代理 60 秒期限内返回，不作为硬件无关的性能承诺。标签与日历断言没有逐条 GET；可控来源 429 检查列表、侧栏和材料读取不输出部分数据，来源恢复后可重新读取。`TestNotesAggregatesLargeCollectionUsesPagesAndNoPerNoteReads` 另用万条可控来源覆盖全量计数、去重标签和分页请求预算；`TestClientSourceRead` 检查认证与资源锁共享期限、取消和超时。
+同一真实数据集还检查默认列表/关键词搜索、完整标签与日历、聊天材料分页、回顾及漫步起点，浏览器加载时间线和下一页并等待完整侧栏；记录每次 API 的耗时、响应字节和 Core RSS。实验约束为响应小于 8 MiB、Core RSS 小于 768 MiB、请求在代理 60 秒期限内返回，不作为硬件无关的性能承诺。标签与日历断言没有逐条 GET；可控来源 429 检查列表、侧栏和材料读取不输出部分数据，来源恢复后可重新读取。统计直接沿官方页游标完成两轮扫描，不复用单页列表的同时间排序扫描。`TestNotesAggregatesMemosAdapterUsesLinearOfficialPagination` 使用正式 Memos 适配器检查万条不同时间和千条同时间笔记：100 条一页时分别只请求 200 和 20 个官方页，无逐条 GET，并核对标签和日历。`TestNotesAggregatesLargeCollectionUsesPagesAndNoPerNoteReads` 另检查万条简化来源的计数和去重标签；`TestClientSourceRead` 检查成功读取时的认证与资源锁共享期限、索引连接等待的取消及超时，`TestNotesSourceFailureCancelsHealthConnectionWait` 检查失败健康状态写入也响应取消。联合脚本固定使用 UTC，跨月预置时只将对应月份的笔记计入日历预期。
 
 索引重建和产品快照恢复会重新生成派生布局，检查来源、摘要、标签和语义状态完整、坐标有效且重建后刷新稳定；不要求重新投影后的坐标与旧布局逐值相等。普通重启、升级和相同坐标系内的未变笔记仍检查原坐标与阅读位置保留。
 

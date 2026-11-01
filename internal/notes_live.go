@@ -347,7 +347,9 @@ func (s *NoteService) walkLive(ctx context.Context, state string, filter LiveFil
 		var memos []Memo
 		var next string
 		var err error
-		if filtered, ok := s.Source.(FilteredLiveSource); ok {
+		if aggregate, ok := s.Source.(AggregateSource); ok {
+			memos, next, err = aggregate.ListAggregatePage(ctx, state, 100, token, filter)
+		} else if filtered, ok := s.Source.(FilteredLiveSource); ok {
 			memos, next, err = filtered.ListFilteredLivePage(ctx, state, 100, token, filter)
 		} else {
 			memos, next, err = source.ListLivePage(ctx, state, 100, token)

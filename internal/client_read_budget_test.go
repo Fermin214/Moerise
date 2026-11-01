@@ -14,8 +14,21 @@ func TestClientSourceReadBudgetIncludesAuthenticationAndRuntimeWait(t *testing.T
 		t.Run(path, func(t *testing.T) {
 			api, _ := clientFixture(t)
 			cookie, _ := settingsSession(t, api)
+			memo := rawMemo("one", "#tag original")
+			memo["createTime"], memo["updateTime"] = "2026-11-01T00:00:00Z", "2026-11-01T00:00:00Z"
+			source := fakeClient(api.app.Store.Settings, func(r *http.Request) (int, any, error) {
+				if status, body, ok := identityResponse(r); ok {
+					return status, body, nil
+				}
+				if r.URL.Path == "/api/v1/memos" {
+					return 200, map[string]any{"memos": []any{memo}}, nil
+				}
+				return 200, memo, nil
+			})
+			api.app.Notes.Source = source
+			api.app.Chat.Notes = api.app.Notes
 			var deadlines []time.Time
-			for _, client := range []*http.Client{api.app.Sessions.auth.client, api.app.Notes.Source.(*MemosClient).client} {
+			for _, client := range []*http.Client{api.app.Sessions.auth.client, source.client} {
 				client.Timeout = 0
 				transport := client.Transport
 				client.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
@@ -31,7 +44,7 @@ func TestClientSourceReadBudgetIncludesAuthenticationAndRuntimeWait(t *testing.T
 			r.AddCookie(cookie)
 			w := httptest.NewRecorder()
 			api.ServeHTTP(w, r)
-			if len(deadlines) < 2 {
+			if w.Code != 200 || len(deadlines) < 2 {
 				t.Fatalf("source read did not authenticate and read source: %d %s", w.Code, w.Body.String())
 			}
 			for _, deadline := range deadlines {
@@ -97,5 +110,75 @@ func TestClientSourceReadRateLimitDoesNotReturnPartialContent(t *testing.T) {
 				t.Fatalf("rate limit returned partial content or raw source error: %d %s (%d pages)", w.Code, w.Body.String(), pages)
 			}
 		})
+	}
+}
+
+func TestClientSourceReadCancelsIndexConnectionWait(t *testing.T) {
+	for _, path := range []string{"/notes", "/chat-materials"} {
+		for _, deadline := range []bool{false, true} {
+			t.Run(path+map[bool]string{false: "/cancel", true: "/deadline"}[deadline], func(t *testing.T) {
+				api, _ := clientFixture(t)
+				cookie, _ := settingsSession(t, api)
+				started := make(chan struct{})
+				source := fakeClient(api.app.Store.Settings, func(r *http.Request) (int, any, error) {
+					if status, body, ok := identityResponse(r); ok {
+						return status, body, nil
+					}
+					if r.URL.Path == "/api/v1/memos" {
+						return 200, map[string]any{"memos": []any{rawMemo("one", "original")}}, nil
+					}
+					close(started)
+					return 200, rawMemo("one", "original"), nil
+				})
+				api.app.Notes.Source = source
+				api.app.Chat.Notes = api.app.Notes
+				connection, err := api.app.Store.index.Conn(t.Context())
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer connection.Close()
+				ctx, cancel := context.WithCancel(t.Context())
+				if deadline {
+					cancel()
+					ctx, cancel = context.WithTimeout(t.Context(), 100*time.Millisecond)
+				}
+				defer cancel()
+				r := httptest.NewRequest("GET", "/api/app/v1"+path, nil).WithContext(ctx)
+				r.AddCookie(cookie)
+				w := httptest.NewRecorder()
+				done := make(chan struct{})
+				go func() { api.ServeHTTP(w, r); close(done) }()
+				select {
+				case <-started:
+				case <-time.After(2 * time.Second):
+					connection.Close()
+					<-done
+					t.Fatal("source read did not reach the index refresh")
+				}
+				if !deadline {
+					cancel()
+				}
+				<-ctx.Done()
+				select {
+				case <-done:
+				case <-time.After(300 * time.Millisecond):
+					connection.Close()
+					<-done
+					t.Fatal("canceled request kept waiting for the index connection")
+				}
+				want := "LIVE_LIST_CANCELED"
+				if deadline {
+					want = "LIVE_LIST_LIMIT"
+				}
+				if w.Code != 503 || !strings.Contains(w.Body.String(), want) {
+					t.Fatalf("index wait escaped request cancellation: %d %s", w.Code, w.Body.String())
+				}
+				connection.Close()
+				var count int
+				if err := api.app.Store.index.QueryRow("SELECT COUNT(*) FROM memos").Scan(&count); err != nil || count != 0 {
+					t.Fatalf("canceled request refreshed the index: count=%d err=%v", count, err)
+				}
+			})
+		}
 	}
 }

@@ -28,8 +28,13 @@ type FilteredLiveSource interface {
 	ListFilteredLivePage(context.Context, string, int, string, LiveFilter) ([]Memo, string, error)
 }
 
+type AggregateSource interface {
+	ListAggregatePage(context.Context, string, int, string, LiveFilter) ([]Memo, string, error)
+}
+
 var _ LiveSource = (*MemosClient)(nil)
 var _ FilteredLiveSource = (*MemosClient)(nil)
+var _ AggregateSource = (*MemosClient)(nil)
 
 func (f LiveFilter) empty() bool {
 	return f.Query == "" && len(f.Tags) == 0 && f.CreatedFrom.IsZero() && f.CreatedUntil.IsZero()
@@ -98,6 +103,42 @@ type memosLiveCursor struct {
 	Binding string `json:"binding"`
 	Created string `json:"created"`
 	Name    string `json:"name"`
+}
+
+// 全量统计直接遍历官方游标，两次完整扫描由调用方核对。
+func (m *MemosClient) ListAggregatePage(ctx context.Context, state string, size int, token string, filter LiveFilter) ([]Memo, string, error) {
+	if (state != "NORMAL" && state != "ARCHIVED") || size < 1 || size > 1000 {
+		return nil, "", failure("INVALID_ARGUMENT", "Invalid aggregate state or page size", 422, false)
+	}
+	if !userPattern.MatchString(m.config.User) || m.config.PageSize < 1 || m.config.PageSize > 1000 || m.config.MaxPages < 1 {
+		return nil, "", upstreamError("UPSTREAM_PROTOCOL", "Invalid Memos aggregate configuration")
+	}
+	query := url.Values{
+		"state": {state}, "filter": {"creator == '" + m.config.User + "'" + filter.cel()},
+		"orderBy": {"create_time desc"}, "pageSize": {strconv.Itoa(min(size, m.config.PageSize))},
+	}
+	if token != "" {
+		query.Set("pageToken", token)
+	}
+	var response struct {
+		Memos         []map[string]any `json:"memos"`
+		NextPageToken string           `json:"nextPageToken"`
+	}
+	if err := m.request(ctx, "/api/v1/memos", query, &response); err != nil {
+		return nil, "", err
+	}
+	items := make([]Memo, 0, len(response.Memos))
+	for _, raw := range response.Memos {
+		memo, err := normalizeMemo(raw)
+		if err != nil {
+			return nil, "", err
+		}
+		if memo.Creator != m.config.User || memo.State != state || !filter.matches(&memo) {
+			return nil, "", upstreamError("UPSTREAM_PROTOCOL", "Memos returned an invalid aggregate scope")
+		}
+		items = append(items, memo)
+	}
+	return items, response.NextPageToken, nil
 }
 
 // ListLivePage 按创建时间、资源名依次倒序；调用方须签名封装对外返回的游标。

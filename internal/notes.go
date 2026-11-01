@@ -41,7 +41,7 @@ func (s *NoteService) fresh(ctx context.Context, name string) (*Memo, error) {
 		if cause := context.Cause(ctx); cause != nil {
 			return nil, cause
 		}
-		if healthErr := s.Store.SourceHealth(false, errorCode(err), ""); healthErr != nil {
+		if healthErr := s.Store.SourceHealthContext(ctx, false, errorCode(err), ""); healthErr != nil {
 			return nil, healthErr
 		}
 		return nil, err
@@ -49,7 +49,7 @@ func (s *NoteService) fresh(ctx context.Context, name string) (*Memo, error) {
 	if memo != nil && memo.Creator != s.Settings.Memos.User {
 		memo = nil
 	}
-	if err := s.Store.Refresh(name, memo); err != nil {
+	if err := s.Store.RefreshContext(ctx, name, memo); err != nil {
 		return nil, err
 	}
 	return memo, nil

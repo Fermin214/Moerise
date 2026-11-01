@@ -242,6 +242,7 @@ try {
     config.state_dir = resolve(root, 'state'); config.index_dir = resolve(root, 'index'); config.cursor_secret = randomBytes(32).toString('hex');
     config.access_tokens = [{ name: 'machine', token: machineKey, scopes: ['notes:read', 'notes:write', 'reviews:write', 'ai:generate'] }];
     config.sync = { ...config.sync, poll_seconds: 5, full_seconds: 60, retry_seconds: 3 };
+    config.timezone = 'UTC';
     config.review = { ...config.review, min_age_hours: 0, recent_days: 0 }; config.notifications.enabled = false; config.llm.enabled = false;
     config.embedding = { ...config.embedding, enabled: true, provider: 'openai-compatible', protocol: 'openai-compatible',
       base_url: `http://127.0.0.1:${model.address().port}/v1`, api_key: modelKey, model: 'map-fixture', dimensions: 3, max_retries: 0 };
@@ -365,7 +366,8 @@ try {
       const tags = await api('GET', '/tags'), month = new Date(dense.at(-1).createTime).toISOString().slice(0, 7);
       assert.equal(tags.tags.find(item => item.tag === '原生')?.count, dense.length);
       const calendar = await api('GET', `/calendar?month=${month}`);
-      assert.ok(calendar.days.reduce((sum, day) => sum + day.count, 0) >= dense.length);
+      const monthNotes = dense.filter(note => note.createTime.startsWith(month)).length;
+      assert.ok(calendar.days.reduce((sum, day) => sum + day.count, 0) >= monthNotes);
       assert.equal(evidence.sourceRequests.notes, beforeNotes, '全量侧栏只使用官方分页，不逐条 GET');
       const materials = await api('GET', '/chat-materials?page_size=20');
       assert.equal(materials.notes.length, 20);
