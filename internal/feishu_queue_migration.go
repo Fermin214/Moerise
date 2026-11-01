@@ -25,15 +25,18 @@ func (s *Store) migrateFeishuQueue() error {
 			update string
 		}{
 			{`SELECT g.message_id, e.app_id, e.sender_open_id, 'ai-request:' || g.message_id, g.request
-				FROM feishu_ai_generations g JOIN channel_events e ON e.message_id = g.message_id`,
+				FROM feishu_ai_generations g JOIN channel_events e ON e.message_id = g.message_id
+				WHERE g.content_cleaned_at IS NULL`,
 				"UPDATE feishu_ai_generations SET request = ? WHERE message_id = ?"},
 			{`SELECT g.message_id, e.app_id, e.sender_open_id, 'ai-result:' || g.message_id, g.result
 				FROM feishu_ai_generations g JOIN channel_events e ON e.message_id = g.message_id
-				WHERE g.result IS NOT NULL`,
+				WHERE g.result IS NOT NULL AND g.content_cleaned_at IS NULL`,
 				"UPDATE feishu_ai_generations SET result = ? WHERE message_id = ?"},
 			{`SELECT p.notification_id, e.app_id, e.sender_open_id,
 				'ai-part:' || p.message_id || ':' || p.ordinal, p.payload
-				FROM feishu_ai_parts p JOIN channel_events e ON e.message_id = p.message_id`,
+				FROM feishu_ai_parts p JOIN channel_events e ON e.message_id = p.message_id
+				JOIN feishu_ai_generations g ON g.message_id = p.message_id
+				WHERE g.content_cleaned_at IS NULL`,
 				"UPDATE feishu_ai_parts SET payload = ? WHERE notification_id = ?"},
 		} {
 			if err := s.migrateFeishuField(tx, field.query, field.update); err != nil {

@@ -23,16 +23,17 @@ type feishuAIGeneration struct {
 	Status    string
 	Code      string
 	Result    []byte
+	CleanedAt *string
 }
 
 func (s *FeishuService) aiGeneration(messageID string) (feishuAIGeneration, error) {
 	var item feishuAIGeneration
 	config := s.Store.Settings.Channel
-	err := s.Store.state.QueryRow(`SELECT g.operation, g.status, COALESCE(g.error_code, ''), g.result
+	err := s.Store.state.QueryRow(`SELECT g.operation, g.status, COALESCE(g.error_code, ''), g.result, g.content_cleaned_at
 		FROM feishu_ai_generations g JOIN channel_events e ON e.message_id = g.message_id
 		WHERE g.message_id = ? AND e.app_id = ? AND e.sender_open_id = ?`,
 		messageID, configured(config.AppID), configured(config.UserOpenID)).
-		Scan(&item.Operation, &item.Status, &item.Code, &item.Result)
+		Scan(&item.Operation, &item.Status, &item.Code, &item.Result, &item.CleanedAt)
 	return item, err
 }
 
@@ -154,6 +155,9 @@ func (s *FeishuService) enqueueReply(messageID string) error {
 	item, err := s.aiGeneration(messageID)
 	if err != nil {
 		return err
+	}
+	if item.CleanedAt != nil {
+		return nil
 	}
 	text := feishuAIError(item)
 	if item.Status == "completed" {

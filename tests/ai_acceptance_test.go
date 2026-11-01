@@ -346,6 +346,7 @@ func TestAISelectedSourceSharedServiceAndQueuedFeishuAcceptance(t *testing.T) {
 
 type aiAcceptanceCachedGeneration struct {
 	request, result []byte
+	cleaned         *string
 }
 
 func aiAcceptanceCache(t *testing.T, h *harness, id string) aiAcceptanceCachedGeneration {
@@ -354,11 +355,12 @@ func aiAcceptanceCache(t *testing.T, h *harness, id string) aiAcceptanceCachedGe
 	defer db.Close()
 	var cached aiAcceptanceCachedGeneration
 	var status string
-	if err := db.QueryRow("SELECT status, request, result FROM feishu_ai_generations WHERE message_id = ?", id).
-		Scan(&status, &cached.request, &cached.result); err != nil {
+	if err := db.QueryRow("SELECT status, request, result, content_cleaned_at FROM feishu_ai_generations WHERE message_id = ?", id).
+		Scan(&status, &cached.request, &cached.result, &cached.cleaned); err != nil {
 		t.Fatal(err)
 	}
-	if status != "completed" || len(cached.request) == 0 || len(cached.result) == 0 {
+	if status != "completed" || cached.cleaned == nil && (len(cached.request) == 0 || len(cached.result) == 0) ||
+		cached.cleaned != nil && (len(cached.request) != 0 || cached.result != nil) {
 		t.Fatalf("generation was not durably completed: status=%s request=%d result=%d",
 			status, len(cached.request), len(cached.result))
 	}
@@ -376,6 +378,9 @@ func TestAICachedDeliveryRebuildAndRestoreWithRealMemosAcceptance(t *testing.T) 
 	cached := r.queued("om_ai_cached")
 	sentGeneration := aiAcceptanceCache(t, h, "om_ai_sent")
 	cachedGeneration := aiAcceptanceCache(t, h, "om_ai_cached")
+	if sentGeneration.cleaned == nil || cachedGeneration.cleaned != nil {
+		t.Fatal("cleanup did not distinguish confirmed and pending sends")
+	}
 	if r.provider.calls.Load() != 2 || r.platform.replyCount() != 1 {
 		t.Fatal("unexpected model/send count before online backup")
 	}
@@ -455,7 +460,10 @@ func TestAICachedDeliveryRebuildAndRestoreWithRealMemosAcceptance(t *testing.T) 
 	h.call(h.memos, "/api/v1/"+r.provider.name+"?updateMask=content", "PATCH", h.upstream,
 		map[string]string{"content": "原有观察已删除，改为全新内容。"}, 200)
 	r.deliver(true)
-	want := "AI 回复（第 1 片）\n笔记来源已变化、删除或无法核实，AI 回复已终止。请重新发送请求。"
+	if aiAcceptanceCache(t, h, "om_ai_cached").cleaned == nil {
+		t.Fatal("final restored confirmation did not clean the old result")
+	}
+	want := "AI 回复（第 1 片）\n笔记来源已变化、删除或无法核实，历史 AI 回复已终止。"
 	if text := r.platform.reply("om_ai_source_changed"); text != want ||
 		strings.Contains(text, strings.Split(r.provider.content, "\n")[0]) {
 		t.Fatalf("changed official source leaked cached private content: %q", text)

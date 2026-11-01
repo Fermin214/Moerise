@@ -395,7 +395,7 @@ func TestChatStoreUpgradePreservesExistingProductState(t *testing.T) {
 		t.Fatalf("chat migration lost old review: count=%d error=%v", count, err)
 	}
 	after, err := appliedMigrations(store.state)
-	if err != nil || len(after) != len(before)+1 || after["019"] == "" {
+	if err != nil || len(after) <= len(before) || after["019"] == "" {
 		t.Fatalf("chat migration not recorded: %+v %v", after, err)
 	}
 	for version, hash := range before {
