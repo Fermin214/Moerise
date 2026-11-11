@@ -204,7 +204,7 @@ try {
     assert.equal(planNames(batch).includes(file.name), false);
     evidence.plan = { id: batch.id, names: planNames(batch) };
     browser = await chromium.launch({ headless: true, channel: process.env.MOERISE_PLAYWRIGHT_CHANNEL || undefined });
-    page = await browser.newPage({ viewport: { width: 1360, height: 960 } });
+    page = await browser.newPage({ locale: 'zh-CN', viewport: { width: 1360, height: 960 } });
     page.on('pageerror', error => evidence.pageErrors.push(error.message));
     page.on('request', req => {
       if (!new URL(req.url()).pathname.startsWith('/api/app/v1/')) return;

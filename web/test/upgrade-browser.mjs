@@ -47,13 +47,13 @@ test('an open page recovers lazy modules after replacing the deployed build', { 
   const url = `http://127.0.0.1:${web.address().port}`;
   const browser = await chromium.launch({ headless: true, channel: process.env.MOERISE_PLAYWRIGHT_CHANNEL || undefined });
   t.after(() => browser.close());
-  const page = await browser.newPage(), failures = [], errors = [];
+  const page = await browser.newPage({ locale: 'zh-CN' }), failures = [], errors = [];
   page.on('pageerror', err => errors.push(err.message));
   page.on('response', response => {
     if (response.status() === 404) failures.push(new URL(response.url()).pathname);
   });
   await page.goto(url); await page.locator('#empty').waitFor({ state: 'visible' });
-  await writeFile(join(build, 'src/styles.css'), (await readFile(join(build, 'src/styles.css'), 'utf8')) + '\n/* upgrade */\n');
+  await writeFile(join(build, 'build.mjs'), (await readFile(join(build, 'build.mjs'), 'utf8')) + '\n// Upgraded build pipeline.\n');
   const after = await deploy();
   assert.notEqual(before, after);
   await page.locator('nav a[href="/map"]').click();

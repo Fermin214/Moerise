@@ -35,6 +35,7 @@ type ChatSummary struct {
 	ID            string `json:"id"`
 	Title         string `json:"title"`
 	Preview       string `json:"preview"`
+	PreviewKind   string `json:"preview_kind"`
 	Version       int64  `json:"version"`
 	MaterialCount int    `json:"material_count"`
 	CreatedAt     string `json:"created_at"`
@@ -64,6 +65,7 @@ type ChatGenerate struct {
 	Version   int64  `json:"version"`
 	Kind      string `json:"kind"`
 	Content   string `json:"content"`
+	Language  string `json:"language,omitempty"`
 }
 
 type chatSave struct {

@@ -1,99 +1,58 @@
 # Moerise
 
-Moerise 是基于 Memos 的开源自托管个人笔记产品，支持记录、阅读、回顾和思考。Memos 保存原文、标签、附件和账户；Moerise Core 负责同步、检索、每日回顾、飞书记录与定时推送，以及产品状态的备份恢复。笔记的创建、编辑和删除均通过 Memos 官方 API 完成。
+**Write a thought. Come back to it. See where it leads.**
 
-服务提供 Web、只读 REST/MCP 和飞书入口。Web 支持 Memos 账户登录、笔记与附件管理、时间线、关键词／语义／混合搜索、标签与日期组合筛选，以及持久设置。每日回顾、随机语义漫步、自然聊天洞察和认知地图提供不同的阅读方式。地图由后台生成每日快照，打开时直接读取，点选笔记获取实时原文。后续开发安排见[路线图](docs/ROADMAP.md)，产品行为见[产品需求](docs/PRD.md)。
+[简体中文](README.zh-CN.md) · [Get started](docs/GETTING-STARTED.md) · [Contribute](CONTRIBUTING.md)
 
-Core 已提供中文混合检索、相关笔记与语义漫步接口，见[搜索](docs/SEARCH.md)。通用及百炼向量接入、索引构建见[向量模型](docs/EMBEDDING.md)，自然聊天、LLM 协议及历史生成任务恢复见 [AI](docs/AI.md)。
+Moerise is a self-hosted home for your personal notes, built on Memos. Capture an idea in a few lines, revisit something you wrote months ago, or follow a thread between notes you had forgotten were connected.
 
-外部机器入口按白名单开放只读操作。各入口共用回顾与漫步服务；已有生成任务和发送结果可从持久记录恢复。
+Writing is only the beginning. Moerise gives your notes a way back into your day.
 
-## 可以使用的功能
+## A few ways to spend time with your notes
 
-- 在 Web 使用绑定的 Memos 账户登录，刷新页面和 Core 重启后保持登录，退出使该会话失效。
-- 实时浏览本人正常笔记，按创建时间倒序分页；组合关键词、标签与创建日期筛选，通过独立入口管理归档笔记。
-- 在卡片内编辑，使用 Ctrl+Enter 保存、Esc 取消；打开独立详情地址，返回来源页面，删除前二次确认。
-- 保留原文空白、换行和正文标签创建私有笔记，支持纯图片和纯文件附件、受保护图片预览与下载；网络重试使用同一幂等键。
-- 在 Web 设置回顾、推送时段、时区、模型、默认洞察 Prompt 和飞书渠道；保存后生效，凭据加密保管，重启和索引重建保留设置；两类模型可分别检查连接，语义索引展示构建进度。
-- 同步 Memos 0.31.x 中本人创建的正常与归档笔记，修复修改、归档和删除带来的索引变化。
-- 通过独立的机器访问令牌读取笔记、查看同步状态和持久任务结果。
-- 通过只读 REST 或 MCP 获取、列出和搜索本人笔记，读取已有回顾；写入 Scope 也不能开放写操作或生成。
-- 通过绑定身份的飞书应用机器人，在专用私聊直接记录文字、图片与文件。
-- 简单随机选取每日回顾，默认选取创建满 72 小时的笔记，排除最近 7 天已选内容；固定全天计划，各推送时段分配不同笔记，Web 随时阅读全部条目，纯普通文件笔记不占名额。
-- 通过飞书应用机器人或自定义机器人 Webhook 推送回顾：每次先单独发送一次 `「今日回顾」`，再逐篇发送完整正文和原图，末尾显示标签与创建日期。日期按配置时区显示，长文按序分片，重启后继续发送。不附加链接、片号或状态提示，普通文件不推送；没有可发送内容时保持静默。
-- 服务重启后恢复同步任务；需要时重建索引或从备份恢复产品状态。
-- 可选启用 OpenAI 兼容或百炼 Embedding，按段落分块并在后台分批构建向量索引，复用正文未变的向量并恢复中断进度。
-- 通过 REST 或 MCP `semantic_search` 组合中文关键词、标签与语义检索，返回命中片段、行位置和原文链接。检索无需 LLM；向量模型关闭或故障时仍可搜索关键词与标签，响应包含降级原因。
-- 通过 REST 或 MCP `get_related_memos` 查找相关笔记，排除自身并合并重复片段；复用文档向量，无需额外模型调用，原笔记与结果均复查来源。
-- 在 Web 随机或指定起点漫步，每次从有关联的语义候选中随机选择下一条；同次不重复，不按主题或历史阅读加权，不设固定路径长度。REST 与 MCP 共用选择规则，读取不更新阅读历史。
-- 在 Web 手选正常与归档笔记，或按日期、标签组合选材，通过一键洞察或自由提问开展流式聊天；默认 Prompt 可编辑和恢复。会话与完整消息持久保存，可恢复、继续追问、主动停止及删除；输入超限时明确提示，不截断材料或历史。
-- 将已完成回复原样主动保存为 Memos 笔记，保留 Markdown、空白、换行与正文标签，重试不重复创建；删除聊天会话保留已保存的笔记。
-- LLM Provider 支持 OpenAI Chat Completions、OpenAI Responses 和 Anthropic Messages，用于自然聊天与模型连接检查；历史结果发送使用持久记录恢复，聊天无需 Embedding。
+- **Capture the moment.** Write in Markdown, add tags, drop in images or files. Browse your timeline and filter by date or tag when you want to find something again.
+- **Meet an old thought.** Daily review brings a small selection of older notes back to you. Read them in the browser, or have them delivered through Feishu.
+- **Take a walk.** Start anywhere, or from a particular note, and wander through related ideas. Each step offers another note you haven't visited on that walk.
+- **See the shape of your collection.** The note map places similar notes closer together. Its daily snapshots show broad patterns; opening a point reads the live note.
+- **Think with your notes.** Select the notes you want an AI to read, then ask questions, explore connections and follow up. Conversations are saved, and you can turn a completed reply into a new note.
 
-Moerise 的笔记接口会向 Memos 复查原文，来源服务不可用、限流或超出读取预算时返回明确错误；标签和日历不会返回部分统计。每个部署连接一个 Memos 实例和一个账号。
+Keyword search works on its own. Add an embedding model for semantic search, hybrid search, walks and the map. Add an LLM for AI conversations. Basic writing, reading and daily review work without either.
 
-飞书记录方式、回顾参数和推送说明见[每日回顾](docs/DAILY-REVIEW.md)、[飞书入口](docs/FEISHU.md)与[调度说明](docs/NOTIFICATIONS.md)。
+## Your notes stay in Memos
 
-## 运行条件
+Memos holds your original notes, tags, attachments and account. Moerise reads and writes through its official API, so an existing Memos collection can be your starting point. Each Moerise instance connects to one author on a Memos 0.31.x instance.
 
-- 官方 Memos 0.31.x 及对应账号的个人访问令牌（PAT），可由随附 Compose 部署，也可连接已有实例。
-- 服务端支持 Linux 原生二进制和 Docker Linux 容器。
-- 从源码构建需要 Go 1.27+；容器部署需要支持 Linux 容器的 Docker Engine 与 Compose 插件。
-- 分别用于产品状态和可重建索引的持久目录。
+Moerise Core handles search indexes, review schedules, conversations and settings. Product state can be backed up; indexes can be rebuilt. External tools can read through REST or MCP. If you enable a model provider, the notes needed for that feature are sent to the provider you configure.
 
-## 安装与使用
+The Web interface supports **English and Simplified Chinese**. It follows your browser's language on first visit, and you can switch languages from the login page or sidebar.
 
-容器部署在仓库根目录执行。先复制环境模板并启动官方 Memos：
+## Make it yours
+
+You can run the full stack with Docker Compose or connect Moerise to Memos you already host. Linux binaries are also supported. Resource profiles are included for small servers, from 1 core / 1 GiB to 4 cores / 8 GiB.
 
 ```bash
+git clone https://github.com/Fermin214/Moerise.git
+cd Moerise
 cp .env.example .env
 docker compose up -d memos
 ```
 
-打开 `http://localhost:5231`，按 Memos 官方流程创建账户，在账户设置中创建 PAT。使用该 PAT 请求 `GET http://localhost:5231/api/v1/auth/me`，将响应 `user.name` 填入 `.env` 的 `MOERISE_MEMOS_USER`，PAT 填入 `MOERISE_MEMOS_TOKEN`。
+Create your Memos account, bind it in `.env`, then start Moerise. The [getting started guide](docs/GETTING-STARTED.md) walks through these steps, including existing Memos instances and HTTPS deployment. After setup, open `http://localhost:3000` and sign in with your Memos account.
 
-在 `.env` 中填写稳定且唯一的 `MOERISE_MEMOS_INSTANCE_ID`，分别生成机器令牌、分页密钥与状态加密密钥：
+## Build with us
 
-```bash
-openssl rand -hex 32     # MOERISE_ACCESS_TOKEN
-openssl rand -hex 32     # MOERISE_CURSOR_SECRET
-openssl rand -base64 32  # MOERISE_STATE_ENCRYPTION_KEY
-```
+Moerise uses Go, SQLite and a small JavaScript frontend with no runtime dependencies. Bug reports, design feedback, translations and code contributions are welcome in English or Chinese.
 
-填写后启动完整服务：
+Start with [CONTRIBUTING.md](CONTRIBUTING.md). The [roadmap](docs/ROADMAP.md) covers future work, including an Android app.
 
-```bash
-docker compose up -d --build
-docker compose ps
-curl --fail http://localhost:3000/health/ready
-```
-
-打开 `http://localhost:3000`，使用同一 Memos 账户登录。基础笔记操作无需模型或飞书配置；日常设置在 Web 保存后生效。Memos、产品状态、索引与备份使用独立数据卷。
-
-连接已有 Memos 时，将 `.env` 中 `COMPOSE_PROFILES` 留空，填写容器可达的 `MOERISE_MEMOS_BASE_URL`、浏览器可达的 `MOERISE_MEMOS_PUBLIC_URL` 及本人 PAT、资源名和独立密钥，再执行相同启动命令。详细首启、外部 Memos、HTTPS、旧配置迁移、备份与升级见[运行与恢复](docs/OPERATIONS.md#容器部署)。
-
-Core 自动按进程配额控制 Go 内存、来源读取批量和计算并发。随附 1 核 1 GiB、2 核 1–4 GiB、4 核 4–8 GiB 的资源配置文件，选择方法见[服务器资源](docs/OPERATIONS.md#服务器资源)。
-
-对外访问使用 HTTPS，并将 `MOERISE_PUBLIC_ORIGIN` 设置为浏览器访问的完整来源。Core 的 `/docs`、机器 REST/MCP 与飞书回调使用独立的 `8787` 回环端口，Web 只代理客户端 API。Web 独立构建见 [Web 指南](docs/WEB.md)，Linux 二进制运行见[运行与恢复](docs/OPERATIONS.md#二进制运行)，机器接口见 [API v1](docs/API-V1.md)。
-
-## 文档
-
-| 文档 | 用途 |
+| Read more | |
 | --- | --- |
-| [产品需求](docs/PRD.md) | 产品行为、入口职责、首个完整版本与长期候选 |
-| [运行与恢复](docs/OPERATIONS.md) | 配置、部署、备份、恢复和版本回滚 |
-| [Web](docs/WEB.md) | 登录、笔记管理、回顾、漫步、聊天、地图和 Web 构建部署 |
-| [API v1](docs/API-V1.md) | 客户端会话、笔记管理与聊天、机器只读范围、分页和错误处理 |
-| [每日回顾](docs/DAILY-REVIEW.md) | 选择参数、固定批次、近期去重与记录恢复 |
-| [飞书入口](docs/FEISHU.md) | 应用配置、身份绑定、私聊记录与事件恢复 |
-| [调度与发送队列](docs/NOTIFICATIONS.md) | 时区调度、发送尝试、结果不明处理与快照恢复 |
-| [向量模型](docs/EMBEDDING.md) | 通用及百炼配置、连接检查、索引进度与错误处理 |
-| [AI](docs/AI.md) | 自然聊天、三种 LLM 协议、输入预算、原文保存与旧任务恢复 |
-| [搜索](docs/SEARCH.md) | 中文短查询、相关笔记、标签过滤、混合排名与来源复查 |
-| [开发指南](docs/DEVELOPMENT.md) | 贡献代码所需的环境、工具、运行和验证方法 |
-| [产品与架构](docs/PRODUCT-ARCHITECTURE.md) | 产品方向、模块职责、数据边界和技术依据 |
-| [路线图](docs/ROADMAP.md) | 可用能力、产品阶段与后续开发任务 |
+| [Getting started](docs/GETTING-STARTED.md) | Installation and first use, in English |
+| [Operations](docs/OPERATIONS.md) | Deployment, resource profiles, backups and upgrades, in Chinese |
+| [Web](docs/WEB.md) | Interface behavior and Web deployment, in Chinese |
+| [API v1](docs/API-V1.md) | Client APIs and read-only REST/MCP, in Chinese |
+| [Architecture](docs/PRODUCT-ARCHITECTURE.md) | Components and data boundaries, in Chinese |
 
-## 开源协议
+## License
 
-Moerise 使用 [MIT 协议](LICENSE)，Copyright (c) 2026 Fermin214。
+[MIT](LICENSE) · Copyright (c) 2026 Fermin214. Memos styles retain their [upstream license](web/MEMOS-LICENSE).

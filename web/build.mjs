@@ -36,12 +36,13 @@ const contents = new Map([
   ...modules, ['favicon.svg', await readFile(`${source}/favicon.svg`, 'utf8')],
 ]);
 const hash = createHash('sha256');
+hash.update(await readFile(fileURLToPath(import.meta.url)));
 for (const [name, body] of contents) hash.update(name + '\0' + body + '\0');
 const version = hash.digest('hex').slice(0, 20);
 const versioned = name => name.replace(/(\.[a-z]+)$/, `.${version}$1`);
 const preload = new Set();
 function dependencies(name) {
-  for (const match of modules.get(name).matchAll(/\bfrom\s+['"]\.\/([a-z-]+\.js)['"]/g)) {
+  for (const match of modules.get(name).matchAll(/\bfrom\s+['"]\.\/([a-z][a-z0-9-]*\.js)['"]/g)) {
     if (preload.has(match[1])) continue;
     preload.add(match[1]); dependencies(match[1]);
   }
@@ -55,7 +56,7 @@ contents.set('index.html', html);
 const compressBrotli = promisify(brotliCompress), compressGzip = promisify(gzip);
 await Promise.all([...contents].map(async ([name, content]) => {
   if (name.endsWith('.js')) {
-    content = content.replace(/(['"])\.\/([a-z-]+\.js)\1/g,
+    content = content.replace(/(['"])\.\/([a-z][a-z0-9-]*\.js)\1/g,
       (_, quote, dependency) => `${quote}./${versioned(dependency)}${quote}`);
   }
   const body = Buffer.from(content);

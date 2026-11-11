@@ -1,3 +1,4 @@
+import { t } from './i18n.js';
 const messages = {
   SESSION_UNAUTHORIZED: '账户信息无效或登录已失效，请检查账户后重新登录。',
   ACCOUNT_NOT_BOUND: '此账户不是该实例绑定的作者。',
@@ -42,5 +43,7 @@ const messages = {
 };
 
 export function errorText(err) {
-  return messages[err.code] || '请求未能完成，请稍后重试。';
+  return t(messages[err.code] || '请求未能完成，请稍后重试。');
 }
+
+export const errorMessage = err => () => errorText(err);

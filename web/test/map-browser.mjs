@@ -12,7 +12,7 @@ const runtime = process.env.MOERISE_PLAYWRIGHT_MODULE;
 const { chromium } = runtime ? await import(pathToFileURL(runtime).href) : await import('playwright');
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aP9sAAAAASUVORK5CYII=', 'base64');
 
-async function fixture(t, mobile = false) {
+async function fixture(t, mobile = false, language = 'zh-CN') {
   const notes = Array.from({ length: 6 }, (_, i) => ({ name: `memos/n${i}`, content: `\u5b8c\u6574\u7b14\u8bb0 ${i}\n\n${'\u957f\u6b63\u6587'.repeat(120)}\n\n\u539f\u6587\u672b\u5c3e`,
     state: i === 1 ? 'ARCHIVED' : 'NORMAL', tags: ['\u60f3\u6cd5', '\u7075\u611f', '\u6458\u5f55', '\u6559\u8bad', 'constructor', 'other'].slice(i, i + 1),
     source_hash: `hash-${i}`, create_time: '2026-10-20T08:00:00Z', attachments: [] }));
@@ -71,7 +71,7 @@ async function fixture(t, mobile = false) {
     await Promise.all([web, core].map(server => new Promise(resolve => { server.close(resolve); server.closeAllConnections(); })));
   });
   browser = await chromium.launch({ headless: true, channel: process.env.MOERISE_PLAYWRIGHT_CHANNEL || undefined });
-  const context = await browser.newContext({ viewport: mobile ? { width: 390, height: 844 } : { width: 1360, height: 960 }, hasTouch: mobile, isMobile: mobile });
+  const context = await browser.newContext({ locale: language, viewport: mobile ? { width: 390, height: 844 } : { width: 1360, height: 960 }, hasTouch: mobile, isMobile: mobile });
   const page = await context.newPage(), errors = [];
   page.on('pageerror', error => errors.push(error.message)); t.after(() => assert.deepEqual(errors, []));
   return { state, page, url, context };
@@ -226,4 +226,22 @@ test('focus and live note changes keep the daily snapshot without automatic refr
   assert.equal(state.requests.filter(req => req.path === '/map').length, count);
   assert.equal((await view(page)).scale, saved.scale);
   assert.equal(await page.locator('.map-dot').count(), 6);
+});
+
+test('English map labels and dates update without refetching notes or losing the viewport', async t => {
+  const { page, state, url } = await fixture(t, false, 'en-US');
+  await login(page, url); await ready(page);
+  await page.getByRole('group', { name: 'Note map', exact: true }).waitFor();
+  await page.getByRole('button', { name: 'Note n0', exact: true }).click(); await card(page).waitFor();
+  const saved = await view(page), reads = state.requests.length;
+  await page.locator('#app [data-language]').selectOption('zh-CN');
+  await page.getByRole('group', { name: '认知地图', exact: true }).waitFor();
+  assert.deepEqual(await view(page), saved); assert.equal(state.requests.length, reads);
+  await page.locator('#app [data-language]').selectOption('en');
+  assert.match(await card(page).locator('time').textContent(), /Oct/);
+  assert.match(await card(page).locator('.note-content').textContent(), /完整笔记/);
+  await page.setViewportSize({ width: 390, height: 844 });
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
+  await page.getByRole('button', { name: 'Calendar and tags', exact: true }).click();
+  await page.getByRole('region', { name: 'Calendar', exact: true }).waitFor({ state: 'visible' });
 });

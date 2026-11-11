@@ -1,6 +1,7 @@
+import { l } from './i18n.js';
 export const pages = new Map([
-  ['/', '主页'], ['/archived', '归档笔记'], ['/review', '每日回顾'],
-  ['/walk', '随机漫步'], ['/insights', 'AI 洞察'], ['/map', '认知地图'], ['/settings', '设置'],
+  ['/', l("主页")], ['/archived', l("归档笔记")], ['/review', l("每日回顾")],
+  ['/walk', l("随机漫步")], ['/insights', l("AI 洞察")], ['/map', l("认知地图")], ['/settings', l("设置")],
 ]);
 export const notePath = /^\/notes\/([A-Za-z0-9_-]+)$/;
 

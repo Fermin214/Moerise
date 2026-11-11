@@ -240,7 +240,7 @@ try {
     await request(url, '/api/app/v1/chats', {}, 401);
     await request(url, '/api/app/v1/chats', { headers: { Authorization: `Bearer ${machineKey}` } }, 403);
     browser = await chromium.launch({ headless: true, channel: process.env.MOERISE_PLAYWRIGHT_CHANNEL || undefined });
-    page = await browser.newPage({ viewport: { width: 1360, height: 960 } });
+    page = await browser.newPage({ locale: 'zh-CN', viewport: { width: 1360, height: 960 } });
     await page.clock.setFixedTime('2026-10-31T00:00:00Z');
     page.on('pageerror', error => evidence.pageErrors.push(error.message));
     page.on('request', req => {

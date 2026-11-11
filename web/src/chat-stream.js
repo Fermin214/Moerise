@@ -1,11 +1,12 @@
+import { l } from './i18n.js';
 function streamFailure(code = 'CHAT_INTERRUPTED') {
-  return Object.assign(new Error('聊天流未完成，请重新读取会话状态。'), { code, retryable: false });
+  return Object.assign(new Error(l("聊天流未完成，请重新读取会话状态。")), { code, retryable: false });
 }
 
 export async function readChatStream(response, onEvent) {
   if (!response.ok) {
     const value = await response.json();
-    throw Object.assign(new Error(value?.error?.message || '聊天请求失败。'), value?.error, { status: response.status });
+    throw Object.assign(new Error(value?.error?.message || l("聊天请求失败。")), value?.error, { status: response.status });
   }
   if (!/^text\/event-stream(?:;|$)/i.test(response.headers.get('content-type') || '') || !response.body) {
     throw streamFailure('CHAT_PROTOCOL');
@@ -28,7 +29,7 @@ export async function readChatStream(response, onEvent) {
     if (kind === 'error') {
       if (!event?.error?.code) throw streamFailure('CHAT_PROTOCOL');
       if (event.turn?.id) await onEvent({ type: 'message', turn: event.turn });
-      throw Object.assign(new Error(event.error.message || '聊天生成失败。'), event.error);
+      throw Object.assign(new Error(event.error.message || l("聊天生成失败。")), event.error);
     }
     if (event?.type !== kind ||
         (kind === 'delta' && (typeof event.text !== 'string' || !event.text)) ||

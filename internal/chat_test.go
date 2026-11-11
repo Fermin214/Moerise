@@ -88,7 +88,7 @@ func TestChatFullMaterialsArchivedHistoryAndDurableEvents(t *testing.T) {
 	})
 	var events []string
 	var delivered strings.Builder
-	result, err := service.Generate(ctx, chat.ID, ChatGenerate{"first", chat.Version, "insight", ""}, func(event ChatEvent) error {
+	result, err := service.Generate(ctx, chat.ID, ChatGenerate{RequestID: "first", Version: chat.Version, Kind: "insight", Content: ""}, func(event ChatEvent) error {
 		events = append(events, event.Type)
 		switch event.Type {
 		case "message":
@@ -113,11 +113,11 @@ func TestChatFullMaterialsArchivedHistoryAndDurableEvents(t *testing.T) {
 		delivered.String() != reply || events[0] != "message" || events[len(events)-1] != "complete" || calls != 1 {
 		t.Fatalf("chat: %+v events=%v error=%v", result, events, err)
 	}
-	if _, err := service.Generate(ctx, chat.ID, ChatGenerate{"follow", 1, "question", "还有其他解释吗？"}, nil); err != nil || calls != 2 {
+	if _, err := service.Generate(ctx, chat.ID, ChatGenerate{RequestID: "follow", Version: 1, Kind: "question", Content: "还有其他解释吗？"}, nil); err != nil || calls != 2 {
 		t.Fatalf("followup: %v calls=%d", err, calls)
 	}
 	delete(memos, "memos/one")
-	replay, err := service.Generate(ctx, chat.ID, ChatGenerate{"first", 1, "insight", ""}, nil)
+	replay, err := service.Generate(ctx, chat.ID, ChatGenerate{RequestID: "first", Version: 1, Kind: "insight", Content: ""}, nil)
 	if err != nil || replay.ID != result.ID || calls != 2 {
 		t.Fatalf("replay rechecked or regenerated old response: %v", err)
 	}
@@ -186,7 +186,7 @@ func TestChatMaterialLimitExcludesConversationAndDoesNotTruncate(t *testing.T) {
 			if mode == "characters" || mode == "combined" {
 				expected = "CHAT_MATERIAL_LIMIT"
 			}
-			_, err = service.Generate(context.Background(), chat.ID, ChatGenerate{"budget", 1, "question", question}, nil)
+			_, err = service.Generate(context.Background(), chat.ID, ChatGenerate{RequestID: "budget", Version: 1, Kind: "question", Content: question}, nil)
 			if expected == "" {
 				if err != nil || calls != 1 {
 					t.Fatalf("valid material or conversation rejected: %v", err)
@@ -249,7 +249,7 @@ func TestChatSourceChangesAndFailuresNeverComplete(t *testing.T) {
 			case "disabled":
 				service.Store.Settings.LLM.Enabled = false
 			}
-			input := ChatGenerate{"first", 1, "question", "问题"}
+			input := ChatGenerate{RequestID: "first", Version: 1, Kind: "question", Content: "问题"}
 			turn, err := service.Generate(context.Background(), chat.ID, input, func(event ChatEvent) error {
 				if event.Type == "complete" {
 					completes++
@@ -304,7 +304,7 @@ func TestChatCancelDisconnectAndConcurrentReplay(t *testing.T) {
 				<-ctx.Done()
 				return LLMResult{}, ctx.Err()
 			})
-			input := ChatGenerate{"first", 1, "question", "问题"}
+			input := ChatGenerate{RequestID: "first", Version: 1, Kind: "question", Content: "问题"}
 			type outcome struct {
 				turn ChatTurn
 				err  error
@@ -357,7 +357,7 @@ func TestChatCancelDisconnectAndConcurrentReplay(t *testing.T) {
 func TestChatSaveIsVerbatimIdempotentAndDeletionDrainsIt(t *testing.T) {
 	service := chatFixture(t, map[string]map[string]any{"memos/one": rawMemo("one", "原文")}, textChatProvider("  ## 标题\n\n回复 #原生标签\n "))
 	chat := createTestChat(t, service, "memos/one")
-	turn, err := service.Generate(context.Background(), chat.ID, ChatGenerate{"first", 1, "question", "问题"}, nil)
+	turn, err := service.Generate(context.Background(), chat.ID, ChatGenerate{RequestID: "first", Version: 1, Kind: "question", Content: "问题"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -444,7 +444,7 @@ func TestChatCreationReplayAndExplicitMaterialRefresh(t *testing.T) {
 	if err != nil || updated.Version != 2 || reflect.DeepEqual(updated.Materials, chat.Materials) {
 		t.Fatalf("explicit refresh failed: %+v %v", updated, err)
 	}
-	if _, err := service.Generate(context.Background(), chat.ID, ChatGenerate{"new", 2, "question", "继续"}, nil); err != nil {
+	if _, err := service.Generate(context.Background(), chat.ID, ChatGenerate{RequestID: "new", Version: 2, Kind: "question", Content: "继续"}, nil); err != nil {
 		t.Fatalf("refreshed material could not generate: %v", err)
 	}
 }

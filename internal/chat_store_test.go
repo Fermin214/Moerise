@@ -92,7 +92,7 @@ func TestChatStoreLifecycleAndFrozenTurn(t *testing.T) {
 	if err := store.deleteChat(chat.ID, 1); errorCode(err) != "CHAT_CONFLICT" {
 		t.Fatalf("stale deletion: %v", err)
 	}
-	insight, created, err := store.reserveChatTurn(chat.ID, ChatGenerate{"insight", 2, "insight", ""}, 8, "新的默认 Prompt\n", "other-model")
+	insight, created, err := store.reserveChatTurn(chat.ID, ChatGenerate{RequestID: "insight", Version: 2, Kind: "insight", Content: ""}, 8, "新的默认 Prompt\n", "other-model")
 	if err != nil || !created || insight.User.Content != "新的默认 Prompt\n" || insight.Model != "other-model" {
 		t.Fatalf("insight prompt not persisted: %+v %v", insight, err)
 	}
@@ -101,7 +101,7 @@ func TestChatStoreLifecycleAndFrozenTurn(t *testing.T) {
 func TestChatStoreConcurrentRequestsAreAtomic(t *testing.T) {
 	store := testStore(t, testSettings(t))
 	chat := testChat(t, store, "concurrent")
-	input := ChatGenerate{"same", 1, "question", "问题"}
+	input := ChatGenerate{RequestID: "same", Version: 1, Kind: "question", Content: "问题"}
 	type outcome struct {
 		turn    ChatTurn
 		created bool
@@ -148,7 +148,7 @@ func TestChatStoreConcurrentRequestsAreAtomic(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	replayed, created, err := store.reserveChatTurn(chat.ID, ChatGenerate{"same", 1, "question", "问题"}, 4, "new", "new")
+	replayed, created, err := store.reserveChatTurn(chat.ID, ChatGenerate{RequestID: "same", Version: 1, Kind: "question", Content: "问题"}, 4, "new", "new")
 	if err != nil || created || replayed.ID != id || replayed.Assistant.Status != "failed" || replayed.SettingsVersion != 3 {
 		t.Fatalf("retry restarted failed turn or lost original settings: %+v %v", replayed, err)
 	}
@@ -272,7 +272,7 @@ func TestChatStoreScopeValidationAndSaveBoundaries(t *testing.T) {
 		if err := other.deleteChat(chat.ID, 1); errorCode(err) != "CHAT_NOT_FOUND" {
 			t.Fatalf("%s deleted chat: %v", change, err)
 		}
-		if _, _, err := other.reserveChatTurn(chat.ID, ChatGenerate{"other", 1, "question", "other"}, 1, "prompt", "model"); errorCode(err) != "CHAT_NOT_FOUND" {
+		if _, _, err := other.reserveChatTurn(chat.ID, ChatGenerate{RequestID: "other", Version: 1, Kind: "question", Content: "other"}, 1, "prompt", "model"); errorCode(err) != "CHAT_NOT_FOUND" {
 			t.Fatalf("%s generated chat: %v", change, err)
 		}
 		if err := other.appendChatText(chat.ID, turn.ID, "foreign"); errorCode(err) != "CHAT_STREAM_CLOSED" {
@@ -312,7 +312,7 @@ func TestChatStoreScopeValidationAndSaveBoundaries(t *testing.T) {
 	if _, _, err := store.createChat("invalid", strings.Repeat("字", 201), chat.Materials); errorCode(err) != "INVALID_ARGUMENT" {
 		t.Fatalf("accepted oversized title: %v", err)
 	}
-	if _, _, err := store.reserveChatTurn(chat.ID, ChatGenerate{"bad", 1, "insight", "not empty"}, 1, "prompt", "model"); errorCode(err) != "INVALID_ARGUMENT" {
+	if _, _, err := store.reserveChatTurn(chat.ID, ChatGenerate{RequestID: "bad", Version: 1, Kind: "insight", Content: "not empty"}, 1, "prompt", "model"); errorCode(err) != "INVALID_ARGUMENT" {
 		t.Fatalf("accepted contradictory insight input: %v", err)
 	}
 }

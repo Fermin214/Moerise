@@ -1,4 +1,5 @@
-import { errorText } from './errors.js';
+import { l, setText, setAttr, resolveText, locale, localize, monthLabel, weekdays } from './i18n.js';
+import { errorMessage as errorText } from './errors.js';
 import { renderMarkdown } from './markdown.js';
 import { readChatStream } from './chat-stream.js';
 
@@ -7,7 +8,7 @@ const chars = value => [...(value || '')].length;
 const date = (year, month, day) => `${String(year).padStart(4, '0')}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
 const nextDate = value => new Date(Date.parse(`${value}T12:00:00Z`) + 86400000).toISOString().slice(0, 10);
 function el(tag, className = '', text = '') {
-  const node = document.createElement(tag); node.className = className; node.textContent = text; return node;
+  const node = document.createElement(tag); node.className = className; setText(node, text); return node;
 }
 function button(text, className, action) {
   const node = el('button', className, text); node.type = 'button'; node.addEventListener('click', action); return node;
@@ -32,23 +33,23 @@ export function createInsightsPage({ sessionRequest, csrfToken, renewCSRF, handl
 
   function warning(text = '') {
     if (!active) return;
-    const node = find('warning'); node.textContent = text; node.hidden = !text;
+    const node = find('warning'); setText(node, text); node.hidden = !text;
   }
   function failure(err) {
     if (!active || err.name === 'AbortError') return;
     const messages = {
-      CHAT_MATERIAL_LIMIT: '超过字数上限，请减少所选笔记。',
-      CHAT_RESOURCE_LIMIT: '材料请求超过资源限制，请减少选择范围。',
-      SOURCE_CHANGED: '所选材料已修改，请重新选择这些笔记。',
-      SOURCE_NOT_FOUND: '所选材料已删除或无法访问，请调整材料。',
-      CHAT_INTERRUPTED: '回复已中断，已保留收到的内容。请重新读取会话后继续。',
-      CHAT_PROTOCOL: '聊天流未完整结束，请重新读取会话状态。',
-      CHAT_CANCELED: '已停止生成，已保留收到的内容。',
-      CHAT_BUSY: '该会话正在生成，请等待或停止后继续。',
-      CHAT_CONFLICT: '会话已在其他页面更改，请重新进入后继续。',
-      LLM_DISABLED: '请在设置中启用 LLM。',
-      LLM_PROTOCOL: '模型返回的内容未完整结束，已保留部分回复。',
-      CHAT_NOT_FOUND: '该会话已删除或无法访问。',
+      CHAT_MATERIAL_LIMIT: l("超过字数上限，请减少所选笔记。"),
+      CHAT_RESOURCE_LIMIT: l("材料请求超过资源限制，请减少选择范围。"),
+      SOURCE_CHANGED: l("所选材料已修改，请重新选择这些笔记。"),
+      SOURCE_NOT_FOUND: l("所选材料已删除或无法访问，请调整材料。"),
+      CHAT_INTERRUPTED: l("回复已中断，已保留收到的内容。请重新读取会话后继续。"),
+      CHAT_PROTOCOL: l("聊天流未完整结束，请重新读取会话状态。"),
+      CHAT_CANCELED: l("已停止生成，已保留收到的内容。"),
+      CHAT_BUSY: l("该会话正在生成，请等待或停止后继续。"),
+      CHAT_CONFLICT: l("会话已在其他页面更改，请重新进入后继续。"),
+      LLM_DISABLED: l("请在设置中启用 LLM。"),
+      LLM_PROTOCOL: l("模型返回的内容未完整结束，已保留部分回复。"),
+      CHAT_NOT_FOUND: l("该会话已删除或无法访问。"),
     };
     const text = messages[err.code] || errorText(err);
     if (err.code === 'SOURCE_CHANGED' || err.code === 'SOURCE_NOT_FOUND') sourceWarning = text;
@@ -65,7 +66,7 @@ export function createInsightsPage({ sessionRequest, csrfToken, renewCSRF, handl
       node.disabled = busy || running || stopping || deleting || conflicted || !selected.size || over || changed || (!!pendingGenerate && node.dataset.generate !== pendingGenerate.kind);
     }
     const send = find('send');
-    send.textContent = running || stopping ? '停止' : '发送';
+    setText(send, running || stopping ? l("停止") : l("发送"));
     if (running || stopping) send.disabled = stopping || deleting;
     find('ask').disabled = busy || running || stopping || deleting || conflicted;
     find('ask').readOnly = !!pendingGenerate;
@@ -76,7 +77,7 @@ export function createInsightsPage({ sessionRequest, csrfToken, renewCSRF, handl
   function renderMaterials() {
     if (!active) return;
     const count = [...selected.values()].reduce((sum, note) => sum + chars(note.content), 0);
-    find('material-toggle').textContent = `材料 · ${selected.size} 条 · ${count} / 20000 字 · ${materialOpen ? '收起' : '展开'}`;
+    setText(find('material-toggle'), l("材料 · {0} 条 · {1} / 20000 字 · {2}", { 0: selected.size, 1: count, 2: materialOpen ? l("收起") : l("展开") }));
     find('materials').hidden = !materialOpen;
     find('over').hidden = count <= 20000;
     const list = find('materials'); list.replaceChildren();
@@ -84,7 +85,7 @@ export function createInsightsPage({ sessionRequest, csrfToken, renewCSRF, handl
       const chip = el('span', 'tag insight-material');
       const label = [...(note.content || note.name)].slice(0, 12).join('');
       const open = button(`${label}…`, 'chip', () => openNote(note));
-      open.title = '打开笔记';
+      setAttr(open, 'title', l("打开笔记"));
       const remove = button('×', 'btn s', async () => {
         if (busy || running || stopping || deleting || conflicted || pendingGenerate) return;
         busy = true; controls();
@@ -95,10 +96,10 @@ export function createInsightsPage({ sessionRequest, csrfToken, renewCSRF, handl
         catch (err) { if (current(ticket)) { selected = previous; failure(err); } }
         finally { if (current(ticket)) { busy = false; renderMaterials(); } }
       });
-      remove.setAttribute('aria-label', '移除这条笔记'); remove.disabled = busy || running || stopping || deleting || conflicted || !!pendingGenerate;
+      setAttr(remove, 'aria-label', l("移除这条笔记")); remove.disabled = busy || running || stopping || deleting || conflicted || !!pendingGenerate;
       chip.append(open, remove); list.append(chip);
     }
-    if (!selected.size) list.append(el('span', 'sub', '还没有添加笔记'));
+    if (!selected.size) list.append(el('span', 'sub', l("还没有添加笔记")));
     controls();
   }
   function renderTurns() {
@@ -109,8 +110,8 @@ export function createInsightsPage({ sessionRequest, csrfToken, renewCSRF, handl
     if (!turns.length) {
       turnNodes.clear(); list.replaceChildren();
       const empty = el('div', 'insight-empty');
-      empty.append(el('p', 'sub', '添加材料后，一键洞察，或直接提问。'));
-      const start = button('一键洞察', 'save', () => generate('insight'));
+      empty.append(el('p', 'sub', l("添加材料后，一键洞察，或直接提问。")));
+      const start = button(l("一键洞察"), 'save', () => generate('insight'));
       start.dataset.generate = 'insight'; empty.append(start); list.append(empty);
       controls(); return;
     }
@@ -128,7 +129,7 @@ export function createInsightsPage({ sessionRequest, csrfToken, renewCSRF, handl
           const turn = entry.turn;
           if (deleting || saving.has(turn.id) || turn.assistant.saved_name || turn.assistant.status !== 'completed') return;
           if (new TextEncoder().encode(turn.assistant.content).length > 65536) {
-            warning('回复超过笔记正文上限，无法完整保存。请让 AI 总结后保存总结。'); return;
+            warning(l("回复超过笔记正文上限，无法完整保存。请让 AI 总结后保存总结。")); return;
           }
           const ticket = disposed, chatID = chat.id;
           action.disabled = true;
@@ -148,14 +149,14 @@ export function createInsightsPage({ sessionRequest, csrfToken, renewCSRF, handl
         turnNodes.set(turn.id, entry);
       }
       entry.turn = turn;
-      const question = turn.kind === 'insight' ? '一键洞察' : turn.user.content;
-      if (entry.user.textContent !== question) entry.user.textContent = question;
+      const question = turn.kind === 'insight' ? l("一键洞察") : turn.user.content;
+      if (entry.user.textContent !== question) setText(entry.user, question);
       const content = turn.assistant.content || '';
       if (entry.text !== content) {
         entry.content.replaceChildren(renderMarkdown(content, { attachments: [] })); entry.text = content;
       }
-      const label = turn.assistant.saved_name ? '已保存为笔记' : '保存为笔记';
-      if (entry.action.textContent !== label) entry.action.textContent = label;
+      const label = turn.assistant.saved_name ? l("已保存为笔记") : l("保存为笔记");
+      if (entry.action.textContent !== label) setText(entry.action, label);
       entry.action.disabled = deleting || turn.assistant.status !== 'completed' || !!turn.assistant.saved_name || saving.has(turn.id);
     }
     let cursor = list.firstElementChild;
@@ -214,7 +215,7 @@ export function createInsightsPage({ sessionRequest, csrfToken, renewCSRF, handl
     const ticket = disposed, names = [...selected.keys()];
     if (!chat) {
       if (!names.length) return;
-      pendingCreate ||= { request_id: crypto.randomUUID(), title: 'AI 洞察', names };
+      pendingCreate ||= { request_id: crypto.randomUUID(), title: resolveText(l("AI 洞察")), names };
       const created = await writeSelection('/chats', 'POST', pendingCreate, ticket);
       if (!current(ticket)) throw new DOMException('Stale chat', 'AbortError');
       chat = created; pendingCreate = null; sourceWarning = ''; warning(); setURL(); renderTurns();
@@ -244,7 +245,7 @@ export function createInsightsPage({ sessionRequest, csrfToken, renewCSRF, handl
   function showStatus(value) {
     if (value.version !== chat.version) {
       conflicted = true; chat.turns = value.turns;
-      warning('会话已在其他页面更改，请重新进入后继续。');
+      warning(l("会话已在其他页面更改，请重新进入后继续。"));
     } else chat = value;
     const pending = chat.turns.find(turn => turn.request_id === pendingGenerate?.request_id);
     if (pending && pending.assistant.status !== 'running') pendingGenerate = null;
@@ -292,7 +293,7 @@ export function createInsightsPage({ sessionRequest, csrfToken, renewCSRF, handl
       if (!current(ticket)) throw new DOMException('Stale chat', 'AbortError');
       showStatus(value);
       if (!value.turns.some(turn => turn.assistant.status === 'running')) return value;
-      if (performance.now() >= deadline) throw Object.assign(new Error('停止结果尚未确认，请重试。'), { code: 'REQUEST_TIMEOUT', retryable: true });
+      if (performance.now() >= deadline) throw Object.assign(new Error(l("停止结果尚未确认，请重试。")), { code: 'REQUEST_TIMEOUT', retryable: true });
       await new Promise(resolve => setTimeout(resolve, 150));
     }
   }
@@ -322,10 +323,10 @@ export function createInsightsPage({ sessionRequest, csrfToken, renewCSRF, handl
     if (!chat || deleting || find('delete-confirm')) return;
     const ticket = disposed, id = chat.id, version = chat.version;
     const confirm = el('div', 'cfm'); confirm.dataset.chat = 'delete-confirm'; confirm.setAttribute('role', 'alert');
-    confirm.append(el('span', '', '删除这个会话？已保存的笔记会保留。'));
+    confirm.append(el('span', '', l("删除这个会话？已保存的笔记会保留。")));
     const actions = el('span', 'editor-actions');
-    const cancel = button('取消', 'ghost', () => { confirm.remove(); find('menu').focus(); });
-    const remove = button('删除', 'danger', async () => {
+    const cancel = button(l("取消"), 'ghost', () => { confirm.remove(); find('menu').focus(); });
+    const remove = button(l("删除"), 'danger', async () => {
       if (deleting) return;
       deleting = true; cancel.disabled = remove.disabled = true; warning(); renderTurns(); renderMaterials();
       try {
@@ -364,17 +365,17 @@ export function createInsightsPage({ sessionRequest, csrfToken, renewCSRF, handl
     if (historyDialog || deleting) return;
     const ticket = disposed, abort = new AbortController();
     const overlay = el('div', 'insight-overlay'), dialog = el('div', 'card insight-picker insight-history');
-    dialog.setAttribute('role', 'dialog'); dialog.setAttribute('aria-modal', 'true'); dialog.setAttribute('aria-label', '历史会话');
+    dialog.setAttribute('role', 'dialog'); dialog.setAttribute('aria-modal', 'true'); setAttr(dialog, 'aria-label', l("历史会话"));
     const header = el('div', 'insight-between'), close = button('×', 'btn s', () => {
       abort.abort(); overlay.remove(); historyDialog = null; find('menu').focus();
     });
-    close.setAttribute('aria-label', '关闭');
-    header.append(el('b', '', '历史会话'), close);
+    setAttr(close, 'aria-label', l("关闭"));
+    header.append(el('b', '', l("历史会话")), close);
     const list = el('div', 'insight-picker-area'), error = el('p', 'sub insight-warning');
     error.hidden = true;
     const seen = new Set();
     let next = '', loading = false;
-    const more = button('加载更多', 'pbtn insight-done', load);
+    const more = button(l("加载更多"), 'pbtn insight-done', load);
     dialog.append(header, list, error, more); overlay.append(dialog); root.append(overlay);
     historyDialog = { overlay, abort };
     async function load() {
@@ -389,15 +390,15 @@ export function createInsightsPage({ sessionRequest, csrfToken, renewCSRF, handl
           seen.add(value.id);
           const row = button('', `ent insight-history-row${value.id === chat?.id ? ' on' : ''}`,
             () => navigate(`/insights?${new URLSearchParams({ chat: value.id })}`));
-          const label = el('span', '', value.preview || value.title || 'AI 洞察');
-          label.append(el('small', 'sub insight-history-date', `${formatTime(value.updated_at)} · ${value.material_count} 条材料`));
+          const label = el('span', '', value.preview_kind === 'insight' ? l("一键洞察") : value.preview || value.title || l("AI 洞察"));
+          label.append(el('small', 'sub insight-history-date', l("{0} · {1} 条材料", { 0: formatTime(value.updated_at), 1: value.material_count })));
           row.append(label); list.append(row);
         }
-        if (!seen.size) list.replaceChildren(el('p', 'sub', '还没有会话'));
+        if (!seen.size) list.replaceChildren(el('p', 'sub', l("还没有会话")));
         next = page.next_page_token; more.hidden = !next;
       } catch (err) {
         if (current(ticket) && historyDialog?.overlay === overlay && err.name !== 'AbortError') {
-          error.textContent = errorText(err); error.hidden = false;
+          setText(error, errorText(err)); error.hidden = false;
           if (err.status === 401) handleFailure(error, err);
         }
       } finally {
@@ -426,7 +427,7 @@ export function createInsightsPage({ sessionRequest, csrfToken, renewCSRF, handl
     try {
       await persistSelectionIfNew();
       if (!active || generation !== disposed) return;
-      pendingGenerate ||= { request_id: crypto.randomUUID(), version: chat.version, kind, content };
+      pendingGenerate ||= { request_id: crypto.randomUUID(), version: chat.version, kind, content, language: locale() };
       const input = pendingGenerate;
       controller = new AbortController();
       const timer = setTimeout(() => controller?.abort(), 125000);
@@ -466,7 +467,7 @@ export function createInsightsPage({ sessionRequest, csrfToken, renewCSRF, handl
           if (!current(generation)) return;
           const turn = chat.turns.find(value => value.request_id === pendingGenerate?.request_id);
           if ((turn && turn.assistant.status !== 'running') || (err.status && !err.retryable)) pendingGenerate = null;
-          else if (pendingGenerate && !turn) warning('请求结果尚未确认，请使用原内容重试。');
+          else if (pendingGenerate && !turn) warning(l("请求结果尚未确认，请使用原内容重试。"));
         } catch (readError) {
           failure(readError);
           if (current(generation) && readError.retryable && running) scheduleRefresh();
@@ -484,15 +485,15 @@ export function createInsightsPage({ sessionRequest, csrfToken, renewCSRF, handl
     const generation = disposed;
     const overlay = el('div', 'insight-overlay');
     const dialog = el('div', 'card insight-picker'); dialog.setAttribute('role', 'dialog');
-    dialog.setAttribute('aria-modal', 'true'); dialog.setAttribute('aria-label', '选择笔记');
+    dialog.setAttribute('aria-modal', 'true'); setAttr(dialog, 'aria-label', l("选择笔记"));
     const header = el('div', 'insight-between'), summary = el('span', 'sub');
-    header.append(el('b', '', '选择笔记'), summary);
-    const tabs = el('div', 'insight-tabs'), dateTab = button('按日期', 'tab on', () => setTab('date'));
-    const tagTab = button('按标签 / 逐条', 'tab', () => setTab('tag'));
+    header.append(el('b', '', l("选择笔记")), summary);
+    const tabs = el('div', 'insight-tabs'), dateTab = button(l("按日期"), 'tab on', () => setTab('date'));
+    const tagTab = button(l("按标签 / 逐条"), 'tab', () => setTab('tag'));
     tabs.append(dateTab, tagTab);
     const area = el('div', 'insight-picker-area'), error = el('p', 'sub insight-warning');
     error.hidden = true;
-    const done = button('完成', 'save insight-done', async () => {
+    const done = button(l("完成"), 'save insight-done', async () => {
       if (busy) return;
       done.disabled = true; busy = true; controls();
       const previous = selected;
@@ -502,7 +503,7 @@ export function createInsightsPage({ sessionRequest, csrfToken, renewCSRF, handl
         if (current(generation)) { renderMaterials(); closePicker(true); }
       } catch (err) {
         if (current(generation)) {
-          selected = previous; failure(err); error.textContent = errorText(err); error.hidden = false; done.disabled = false;
+          selected = previous; failure(err); setText(error, errorText(err)); error.hidden = false; done.disabled = false;
         }
       } finally { if (current(generation)) { busy = false; renderMaterials(); } }
     });
@@ -513,7 +514,7 @@ export function createInsightsPage({ sessionRequest, csrfToken, renewCSRF, handl
     const calendarDays = new Map();
     const abort = new AbortController(), previousFocus = document.activeElement;
     picker = { overlay, abort, previousFocus };
-    function summaryText() { summary.textContent = `已选 ${choices.size} 条 · ${[...choices.values()].reduce((sum, note) => sum + chars(note.content), 0)} / 20000 字`; }
+    function summaryText() { setText(summary, l("已选 {0} 条 · {1} / 20000 字", { 0: choices.size, 1: [...choices.values()].reduce((sum, note) => sum + chars(note.content), 0) })); }
     function closePicker(force = false) {
       if (busy && !force) return;
       abort.abort(); overlay.remove(); picker = null;
@@ -542,7 +543,7 @@ export function createInsightsPage({ sessionRequest, csrfToken, renewCSRF, handl
         candidates = all; loading = false; render();
       } catch (err) {
         if (!active || picker?.overlay !== overlay || seq !== loadSequence || err.name === 'AbortError') return;
-        loading = false; error.textContent = errorText(err); error.hidden = false;
+        loading = false; setText(error, errorText(err)); error.hidden = false;
         if (err.status === 401) handleFailure(error, err);
       }
     }
@@ -550,8 +551,8 @@ export function createInsightsPage({ sessionRequest, csrfToken, renewCSRF, handl
       const section = el('div', 'insight-picker-list'), count = candidates.length;
       if (loading) return section;
       const head = el('div', 'insight-between');
-      head.append(el('span', 'sub', tab === 'date' ? '这段时间的笔记，勾选要用的' : `共 ${count} 条，勾选要用的`),
-        button(`全选这 ${count} 条`, 'pbtn insight-select-all', () => {
+      head.append(el('span', 'sub', tab === 'date' ? l("这段时间的笔记，勾选要用的") : l("共 {0} 条，勾选要用的", { 0: count })),
+        button(l("全选这 {0} 条", { 0: count }), 'pbtn insight-select-all', () => {
           for (const note of candidates) choices.set(note.name, note);
           summaryText(); render();
         }));
@@ -564,7 +565,7 @@ export function createInsightsPage({ sessionRequest, csrfToken, renewCSRF, handl
           summaryText();
         });
         row.append(input, el('span', '', [...note.content || note.name].slice(0, 24).join('')),
-          el('em', '', `${formatTime(note.create_time)}${note.tags?.length ? ` · #${note.tags.join(' #')}` : ''}`));
+          el('em', '', () => `${resolveText(formatTime(note.create_time))}${note.tags?.length ? ` · #${note.tags.join(' #')}` : ''}`));
         section.append(row);
       }
       return section;
@@ -578,24 +579,24 @@ export function createInsightsPage({ sessionRequest, csrfToken, renewCSRF, handl
       };
       const prev = arrow(button('', 'btn s', () => shift(-1)), 'M14 6l-6 6 6 6');
       const next = arrow(button('', 'btn s', () => shift(1)), 'M10 6l6 6-6 6');
-      prev.setAttribute('aria-label', '上个月'); next.setAttribute('aria-label', '下个月');
-      const title = button(`${year} 年 ${month} 月`, 'btn insight-month', () => { years = !years; render(); });
+      setAttr(prev, 'aria-label', l("上个月")); setAttr(next, 'aria-label', l("下个月"));
+      const title = button(monthLabel(year, month), 'btn insight-month', () => { years = !years; render(); });
       arrow(title, 'M6 9l6 6 6-6');
-      title.setAttribute('aria-label', '选择年月'); header.append(prev, title, next); section.append(header);
+      setAttr(title, 'aria-label', l("选择年月")); header.append(prev, title, next); section.append(header);
       if (years) {
         const row = el('div', 'insight-year');
         const older = arrow(button('', 'btn s', () => { if (year > 1000) { year--; render(); } }), 'M14 6l-6 6 6 6');
         const newer = arrow(button('', 'btn s', () => { if (year < 9999) { year++; render(); } }), 'M10 6l6 6-6 6');
-        older.setAttribute('aria-label', '上一年'); newer.setAttribute('aria-label', '下一年');
-        row.append(older, el('b', '', `${year} 年`), newer); section.append(row);
+        setAttr(older, 'aria-label', l("上一年")); setAttr(newer, 'aria-label', l("下一年"));
+        row.append(older, el('b', '', l("{0} 年", { 0: year })), newer); section.append(row);
         const grid = el('div', 'mg');
-        for (let value = 1; value <= 12; value++) grid.append(button(`${value}月`, value === month ? 'ed' : '', () => {
+        for (let value = 1; value <= 12; value++) grid.append(button(() => new Intl.DateTimeFormat(locale(), { month: 'short', timeZone: 'UTC' }).format(new Date(Date.UTC(year, value - 1, 1))), value === month ? 'ed' : '', () => {
           month = value; years = false; render(); loadCalendar();
         }));
         section.append(grid);
       } else {
         const grid = el('div', 'pc');
-        for (const day of ['一', '二', '三', '四', '五', '六', '日']) grid.append(el('span', '', day));
+        for (const day of weekdays) grid.append(el('span', '', day));
         const offset = (new Date(Date.UTC(year, month - 1, 1)).getUTCDay() + 6) % 7;
         for (let i = 0; i < offset; i++) { const empty = button('', 'blank', () => {}); empty.disabled = true; grid.append(empty); }
         const days = new Date(Date.UTC(year, month, 0)).getUTCDate();
@@ -608,16 +609,16 @@ export function createInsightsPage({ sessionRequest, csrfToken, renewCSRF, handl
             else { through = value < from ? from : value; from = value < from ? value : from; }
             render(); load();
           });
-          cell.setAttribute('aria-label', value); grid.append(cell);
+          setAttr(cell, 'aria-label', value); grid.append(cell);
         }
         section.append(grid);
       }
       const range = el('div', 'insight-between insight-range');
-      range.append(el('span', 'sub', !from ? '点选起止日期，筛出这段时间的笔记' : through ? `${from} – ${through} · ${candidates.length} 条` : `${from} – 请选择结束日`));
-      if (from) range.append(button('清除', 'pbtn insight-select-all', () => { from = through = ''; render(); load(); }));
+      range.append(el('span', 'sub', !from ? l("点选起止日期，筛出这段时间的笔记") : through ? l("{0} – {1} · {2} 条", { 0: from, 1: through, 2: candidates.length }) : l("{0} – 请选择结束日", { 0: from })));
+      if (from) range.append(button(l("清除"), 'pbtn insight-select-all', () => { from = through = ''; render(); load(); }));
       section.append(range);
       if (from && candidates.length) section.append(list());
-      else if (from && !loading) section.append(el('p', 'sub', '这段时间没有笔记。'));
+      else if (from && !loading) section.append(el('p', 'sub', l("这段时间没有笔记。")));
       return section;
     }
     function render() {
@@ -626,7 +627,7 @@ export function createInsightsPage({ sessionRequest, csrfToken, renewCSRF, handl
       if (tab === 'date') area.append(calendar());
       else {
         const filters = el('div', 'insight-tag-filters');
-        filters.append(button('全部', `pbtn${chosenTags.size ? '' : ' on'}`, () => { chosenTags.clear(); load(); }));
+        filters.append(button(l("全部"), `pbtn${chosenTags.size ? '' : ' on'}`, () => { chosenTags.clear(); load(); }));
         for (const tag of tags) filters.append(button(tag, `pbtn${chosenTags.has(tag) ? ' on' : ''}`, () => {
           if (chosenTags.has(tag)) chosenTags.delete(tag); else chosenTags.add(tag);
           load();
@@ -645,7 +646,7 @@ export function createInsightsPage({ sessionRequest, csrfToken, renewCSRF, handl
         render();
       } catch (err) {
         if (current(generation) && picker?.overlay === overlay && err.name !== 'AbortError') {
-          error.textContent = errorText(err); error.hidden = false;
+          setText(error, errorText(err)); error.hidden = false;
           if (err.status === 401) handleFailure(error, err);
         }
       }
@@ -666,7 +667,7 @@ export function createInsightsPage({ sessionRequest, csrfToken, renewCSRF, handl
       render();
     } catch (err) {
       if (current(generation) && picker?.overlay === overlay && err.name !== 'AbortError') {
-        error.textContent = errorText(err); error.hidden = false;
+        setText(error, errorText(err)); error.hidden = false;
         if (err.status === 401) handleFailure(error, err);
       }
     }
@@ -686,25 +687,26 @@ export function createInsightsPage({ sessionRequest, csrfToken, renewCSRF, handl
       active = true;
       root = el('div', 'stage insights-page');
       root.innerHTML = `<div class="insight-top" data-chat="top">
-        <div class="insight-heading"><h1 class="vt">AI 洞察</h1><div class="insight-heading-right"><span class="sub">带笔记上下文的对话</span>
-          <div class="mw insight-session"><button class="btn" type="button" data-chat="menu" aria-label="会话" aria-haspopup="menu" aria-expanded="false">会话 ▾</button>
+        <div class="insight-heading"><h1 class="vt" data-i18n="AI 洞察">AI 洞察</h1><div class="insight-heading-right"><span class="sub" data-i18n="带笔记上下文的对话">带笔记上下文的对话</span>
+          <div class="mw insight-session"><button class="btn" type="button" data-chat="menu" aria-label="会话" aria-haspopup="menu" aria-expanded="false" data-i18n-aria-label="会话" data-i18n="会话 ▾">会话 ▾</button>
             <div class="menu" data-chat="session-menu" role="menu" hidden>
-              <button class="mi" type="button" role="menuitem" data-chat="new">新建会话</button>
-              <button class="mi" type="button" role="menuitem" data-chat="history">历史会话</button>
-              <button class="mi dg" type="button" role="menuitem" data-chat="delete">删除当前会话</button>
+              <button class="mi" type="button" role="menuitem" data-chat="new" data-i18n="新建会话">新建会话</button>
+              <button class="mi" type="button" role="menuitem" data-chat="history" data-i18n="历史会话">历史会话</button>
+              <button class="mi dg" type="button" role="menuitem" data-chat="delete" data-i18n="删除当前会话">删除当前会话</button>
             </div></div></div></div>
         <div class="card insight-material-card"><div class="insight-material-header">
           <button class="btn insight-material-toggle" type="button" data-chat="material-toggle"></button>
-          <button class="pbtn" type="button" data-chat="add">添加笔记</button>
+          <button class="pbtn" type="button" data-chat="add" data-i18n="添加笔记">添加笔记</button>
         </div><div class="insight-materials" data-chat="materials"></div>
-        <p class="sub insight-warning insight-over" data-chat="over" hidden>超过字数上限，请减少所选笔记。</p></div>
+        <p class="sub insight-warning insight-over" data-chat="over" hidden data-i18n="超过字数上限，请减少所选笔记。">超过字数上限，请减少所选笔记。</p></div>
       </div><div class="insight-messages" data-chat="messages"></div>
       <div class="insight-bottom"><span class="sub insight-warning" role="status" data-chat="warning" hidden></span>
-        <form class="insight-input" data-chat="form"><label class="sr" for="ask">向 AI 提问</label>
-          <input id="ask" data-chat="ask" placeholder="围绕所选笔记提问或追问…">
-          <button class="pbtn" data-chat="one" data-generate="insight" type="button">一键洞察</button>
-          <button class="save" data-chat="send" data-generate="question" type="submit">发送</button>
+        <form class="insight-input" data-chat="form"><label class="sr" for="ask" data-i18n="向 AI 提问">向 AI 提问</label>
+          <input id="ask" data-chat="ask" placeholder="围绕所选笔记提问或追问…" data-i18n-placeholder="围绕所选笔记提问或追问…">
+          <button class="pbtn" data-chat="one" data-generate="insight" type="button" data-i18n="一键洞察">一键洞察</button>
+          <button class="save" data-chat="send" data-generate="question" type="submit" data-i18n="发送">发送</button>
         </form></div>`;
+      localize(root);
       container.append(root);
       find('material-toggle').addEventListener('click', () => { materialOpen = !materialOpen; renderMaterials(); });
       find('add').addEventListener('click', openPicker);

@@ -1,5 +1,6 @@
+import { l, setText, setAttr, resolveText, locale, monthLabel, weekdays, initI18n } from './i18n.js';
 import { Draft, readAttachments } from './draft.js';
-import { errorText } from './errors.js';
+import { errorMessage as errorText } from './errors.js';
 import { pages, notePath, filters, timelineURL, listQuery, enhancedSearch, searchBody, safeFrom, detailURL, noteID, attachmentURL, rasterImage } from './routes.js';
 import { renderMarkdown } from './markdown.js';
 
@@ -28,7 +29,7 @@ history.scrollRestoration = 'manual';
 function el(tag, className = '', text = '') {
   const node = document.createElement(tag);
   node.className = className;
-  if (text) node.textContent = text;
+  if (text) setText(node, text);
   return node;
 }
 function button(text, className, action) {
@@ -38,7 +39,7 @@ function button(text, className, action) {
   return node;
 }
 function showError(element, err) {
-  element.textContent = err ? errorText(err) : '';
+  setText(element, err ? errorText(err) : '');
   element.hidden = !err;
 }
 function aborted() { return new DOMException('Stale request', 'AbortError'); }
@@ -74,7 +75,7 @@ async function request(path, { method = 'GET', body, headers = {}, controller = 
     stale(generation);
     if (!response.ok) {
       const failure = data?.error || {};
-      throw Object.assign(new Error(failure.message || '请求失败，请重试。'), {
+      throw Object.assign(new Error(failure.message || l("请求失败，请重试。")), {
         code: failure.code || 'HTTP_ERROR', status: response.status,
         retryable: failure.retryable === true, requestId: failure.request_id,
       });
@@ -134,7 +135,7 @@ function hidePrivate({ resume = false } = {}) {
   for (const id of ['content', 'q', 'attachment-input', 'username', 'password']) $(id).value = '';
   for (const id of ['save-error', 'list-error', 'sidebar-error']) showError($(id), null);
   $('empty').hidden = $('account').hidden = true;
-  $('account-name').textContent = $('calendar-title').textContent = '';
+  setText($('account-name'), setText($('calendar-title'), ''));
   pageObserver.disconnect();
   items = []; nextToken = '';
   searchStatus = ''; $('search-mode').value = 'keyword';
@@ -173,8 +174,10 @@ function formatTime(value, full = false) {
   if (!Number.isFinite(Date.parse(value))) return '';
   const options = { timeZone: identity?.timezone, month: 'long', day: 'numeric', weekday: 'short' };
   if (full) Object.assign(options, { year: 'numeric', hour: '2-digit', minute: '2-digit' });
-  try { return new Intl.DateTimeFormat('zh-CN', options).format(new Date(value)); }
-  catch { return value.slice(0, 10); }
+  return () => {
+    try { return new Intl.DateTimeFormat(locale(), options).format(new Date(value)); }
+    catch { return value.slice(0, 10); }
+  };
 }
 const isTimeline = () => location.pathname === '/' || location.pathname === '/archived';
 function sourceTimeline() {
@@ -231,7 +234,7 @@ async function enter(value) {
   $('auth').hidden = true;
   $('app').hidden = $('workspace').hidden = false;
   $('password').value = '';
-  $('account-name').textContent = identity.user.display_name || identity.user.name;
+  setText($('account-name'), identity.user.display_name || identity.user.name);
   $('account').hidden = false;
   month = localToday().slice(0, 7);
   $('content').value = draft.content;
@@ -290,20 +293,20 @@ function renderFilters() {
   box.replaceChildren();
   const chips = [
     ...(values.query ? [{ label: `“${values.query}”`, remove: () => sidebarFilter({ query: '' }) }] : []),
-    ...(values.mode !== 'keyword' ? [{ label: values.mode === 'semantic' ? '语义搜索' : '混合搜索', remove: () => sidebarFilter({ mode: 'keyword' }) }] : []),
+    ...(values.mode !== 'keyword' ? [{ label: values.mode === 'semantic' ? l("语义搜索") : l("混合搜索"), remove: () => sidebarFilter({ mode: 'keyword' }) }] : []),
     ...values.tags.map(tag => ({ label: `#${tag}`, remove: () => sidebarFilter({ tags: values.tags.filter(item => item !== tag) }) })),
     ...(values.date ? [{ label: values.date, remove: () => sidebarFilter({ date: '' }) }] : []),
   ];
   box.hidden = !chips.length;
   if (!chips.length) return;
-  box.append(el('span', '', '筛选'));
+  box.append(el('span', '', l("筛选")));
   for (const chip of chips) {
     const span = el('span', 'fc', chip.label);
     const remove = button('×', '', chip.remove);
-    remove.setAttribute('aria-label', `移除筛选 ${chip.label}`);
+    setAttr(remove, 'aria-label', l("移除筛选 {0}", { 0: chip.label }));
     span.append(remove); box.append(span);
   }
-  box.append(button('清除全部', 'ghost', () => navigate(location.pathname)));
+  box.append(button(l("清除全部"), 'ghost', () => navigate(location.pathname)));
 }
 function invalidateSidebar() {
   sidebarSequence++;
@@ -368,7 +371,7 @@ async function loadSidebar() {
       link.append(el('span', '', `#${item.tag}`), el('em', '', String(item.count)));
       $('tags').append(link);
     }
-    if (!tags.tags.length) $('tags').append(el('p', 'sub', '暂无标签'));
+    if (!tags.tags.length) $('tags').append(el('p', 'sub', l("暂无标签")));
     renderCalendar(calendar.days, values.date);
   } catch (err) {
     if (generation !== epoch || sequence !== sidebarSequence) return;
@@ -378,9 +381,9 @@ async function loadSidebar() {
 }
 function renderCalendar(days, selected, disabled = false) {
   const [year, number] = month.split('-').map(Number);
-  $('calendar-title').textContent = `${year}年${number}月`;
+  setText($('calendar-title'), monthLabel(year, number, true));
   const calendar = $('calendar');
-  calendar.replaceChildren(...Array.from('一二三四五六日', label => el('span', '', label)));
+  calendar.replaceChildren(...weekdays.map(label => el('span', '', label)));
   const counts = new Map(days.map(day => [day.date, day.count]));
   const offset = (new Date(year, number - 1, 1).getDay() + 6) % 7, size = new Date(year, number, 0).getDate();
   for (let i = 0; i < offset; i++) {
@@ -392,7 +395,7 @@ function renderCalendar(days, selected, disabled = false) {
     const cell = button(String(day), [selected === date ? 'sel' : count > 1 ? 'h2' : count ? 'h1' : '', date === today ? 'today' : ''].join(' '),
       () => sidebarFilter({ date: sourceTimeline().values.date === date ? '' : date }));
     cell.disabled = disabled;
-    cell.setAttribute('aria-label', `${date} · ${count} 条笔记`);
+    setAttr(cell, 'aria-label', l("{0} · {1} 条笔记", { 0: date, 1: count }));
     cell.setAttribute('aria-pressed', String(selected === date));
     calendar.append(cell);
   }
@@ -414,20 +417,20 @@ function renderAttachments(note) {
   const box = el('div', 'attachment-list');
   for (const item of note.attachments || []) {
     const url = attachmentURL(note, item);
-    if (!url) { box.append(el('span', 'attachment sub', `${item.filename || '附件'} · 暂时无法打开`)); continue; }
+    if (!url) { box.append(el('span', 'attachment sub', l("{0} · 暂时无法打开", { 0: item.filename || l("附件") }))); continue; }
     const link = el('a', rasterImage(item.type) ? 'image-link' : 'attachment');
     link.href = url;
     if (rasterImage(item.type)) {
       link.target = '_blank'; link.rel = 'noopener noreferrer';
       const image = el('img');
-      image.src = url; image.alt = item.filename || '图片'; image.loading = 'lazy';
+      image.src = url; setAttr(image, 'alt', item.filename || l("图片")); image.loading = 'lazy';
       image.addEventListener('error', () => {
-        image.remove(); link.className = 'attachment'; link.textContent = `${item.filename || '图片'} · 打开原图`;
+        image.remove(); link.className = 'attachment'; setText(link, l("{0} · 打开原图", { 0: item.filename || l("图片") }));
       }, { once: true });
       link.append(image);
     } else {
       link.download = item.filename || 'attachment';
-      link.textContent = item.filename || '下载附件';
+      setText(link, item.filename || l("下载附件"));
       if (Number.isFinite(item.size)) link.append(el('span', 'sub', item.size < 1024 ? `${item.size} B` : `${Math.ceil(item.size / 1024)} KiB`));
     }
     box.append(link);
@@ -454,7 +457,7 @@ function renderNote(note, detail = false) {
     more.setAttribute('aria-expanded', String(open));
     if (open) menu.querySelector('button')?.focus();
   });
-  more.setAttribute('aria-label', '更多操作');
+  setAttr(more, 'aria-label', l("更多操作"));
   more.setAttribute('aria-haspopup', 'menu'); more.setAttribute('aria-expanded', 'false');
   const content = el('div', 'note-content'); content.append(renderMarkdown(note.content, note));
   const tags = el('div', 'note-tags');
@@ -463,12 +466,12 @@ function renderNote(note, detail = false) {
     sidebarFilter({ tags: [...new Set([...source.values.tags, tag])] });
   }));
   const actions = [
-    ['编辑', () => startEdit(note), ''],
-    ...(!detail ? [['打开笔记', () => openNote(note), '']] : []),
-    [note.state === 'ARCHIVED' ? '恢复到主页' : '归档', () => changeState(note), ''],
-    ...(note.state === 'NORMAL' ? [['从这条漫步', () => startFromNote(note), '']] : []),
-    ['AI 洞察这条', () => navigate(`/insights?${new URLSearchParams({ note: note.name })}`), ''],
-    ['删除', () => confirmDelete(card, note), 'dg'],
+    [l("编辑"), () => startEdit(note), ''],
+    ...(!detail ? [[l("打开笔记"), () => openNote(note), '']] : []),
+    [note.state === 'ARCHIVED' ? l("恢复到主页") : l("归档"), () => changeState(note), ''],
+    ...(note.state === 'NORMAL' ? [[l("从这条漫步"), () => startFromNote(note), '']] : []),
+    [l("AI 洞察这条"), () => navigate(`/insights?${new URLSearchParams({ note: note.name })}`), ''],
+    [l("删除"), () => confirmDelete(card, note), 'dg'],
   ];
   for (const [label, action, cls] of actions) {
     const control = button(label, `mi ${cls}`, () => { closeMenus(); action(); });
@@ -519,8 +522,8 @@ function replaceCard(note) {
 function appendNoteError(card, note, err) {
   const box = el('div', 'note-error'), message = el('p', 'error');
   message.setAttribute('role', 'alert'); showError(message, err); box.append(message);
-  if (pendingWrites.has(note.name)) box.append(button('重试原提交', 'ghost', () => performWrite(note)));
-  box.append(button('刷新笔记', 'ghost', () => refreshNote(note))); card.append(box);
+  if (pendingWrites.has(note.name)) box.append(button(l("重试原提交"), 'ghost', () => performWrite(note)));
+  box.append(button(l("刷新笔记"), 'ghost', () => refreshNote(note))); card.append(box);
 }
 async function refreshNote(note) {
   const generation = epoch, sequence = viewSequence;
@@ -542,10 +545,10 @@ async function refreshNote(note) {
 function confirmDelete(card, note) {
   if (card.querySelector('.cfm') || pendingWrites.has(note.name)) return;
   const confirm = el('div', 'cfm'); confirm.setAttribute('role', 'alert');
-  confirm.append(el('span', '', '删除这条笔记？删除后无法恢复。'));
+  confirm.append(el('span', '', l("删除这条笔记？删除后无法恢复。")));
   const controls = el('span', 'editor-actions');
-  const cancel = button('取消', 'ghost', () => { confirm.remove(); card.querySelector('.more, .note-actions button')?.focus(); });
-  const remove = button('删除', 'danger', () => {
+  const cancel = button(l("取消"), 'ghost', () => { confirm.remove(); card.querySelector('.more, .note-actions button')?.focus(); });
+  const remove = button(l("删除"), 'danger', () => {
     pendingWrites.set(note.name, { method: 'DELETE', body: Object.freeze({ source_hash: note.source_hash }), busy: false });
     performWrite(note);
   });
@@ -605,7 +608,7 @@ function selectedFiles(box, model, locked, update) {
   model.attachments.forEach((item, index) => {
     const row = el('span', 'attachment', item.filename);
     const remove = button('×', 'dlink', () => { if (!locked()) { model.attachments.splice(index, 1); update(); } });
-    remove.setAttribute('aria-label', `移除附件 ${item.filename}`); remove.disabled = locked(); row.append(remove); box.append(row);
+    setAttr(remove, 'aria-label', l("移除附件 {0}", { 0: item.filename })); remove.disabled = locked(); row.append(remove); box.append(row);
   });
 }
 function startEdit(note) {
@@ -616,22 +619,22 @@ function startEdit(note) {
   const removed = new Set();
   let reading = false, readSequence = 0;
   const form = el('form', 'card composer editing editor');
-  form.dataset.name = note.name; form.setAttribute('aria-label', '编辑笔记');
+  form.dataset.name = note.name; setAttr(form, 'aria-label', l("编辑笔记"));
   const text = el('textarea'); text.value = note.content; text.rows = notePath.test(location.pathname) ? 5 : 3;
-  text.setAttribute('aria-label', '编辑笔记内容');
+  setAttr(text, 'aria-label', l("编辑笔记内容"));
   const retained = el('div', 'attachment-list'), added = el('div', 'attachment-list');
   const bar = el('div', 'bar'), actions = el('div', 'editor-actions'), input = el('input', 'sr');
   input.type = 'file'; input.multiple = true; input.tabIndex = -1;
-  const add = button('+', 'btn', () => input.click()); add.setAttribute('aria-label', '添加附件');
-  const cancel = button('取消', 'ghost', () => {
+  const add = button('+', 'btn', () => input.click()); setAttr(add, 'aria-label', l("添加附件"));
+  const cancel = button(l("取消"), 'ghost', () => {
     if (pendingWrites.get(note.name)?.busy) return;
     readSequence++; model.clear(); editors.delete(note.name);
     if (!pendingWrites.has(note.name)) failures.delete(note.name);
     replaceCard(note);
   });
-  const save = button('保存', 'save', () => form.requestSubmit()); save.append(el('small', '', 'Ctrl ↵'));
+  const save = button(l("保存"), 'save', () => form.requestSubmit()); save.append(el('small', '', 'Ctrl ↵'));
   const message = el('p', 'error'); message.hidden = true; message.setAttribute('role', 'alert');
-  const refresh = button('刷新笔记', 'ghost', () => refreshNote(note)); refresh.hidden = true;
+  const refresh = button(l("刷新笔记"), 'ghost', () => refreshNote(note)); refresh.hidden = true;
   function update() {
     const busy = !!pendingWrites.get(note.name)?.busy;
     text.readOnly = model.locked || busy;
@@ -644,9 +647,9 @@ function startEdit(note) {
     retained.replaceChildren();
     for (const item of note.attachments || []) {
       if (removed.has(item.name)) continue;
-      const row = el('span', 'attachment', item.filename || '附件');
+      const row = el('span', 'attachment', item.filename || l("附件"));
       const remove = button('×', 'dlink', () => { if (!model.locked && !busy) { removed.add(item.name); update(); } });
-      remove.setAttribute('aria-label', `移除附件 ${item.filename || '附件'}`); remove.disabled = model.locked || busy;
+      setAttr(remove, 'aria-label', l("移除附件 {0}", { 0: item.filename || l("附件") })); remove.disabled = model.locked || busy;
       row.append(remove); retained.append(row);
     }
   }
@@ -724,9 +727,9 @@ async function loadNotes(reset = false, retry = false) {
     if (!enhanced) items.sort(compareNotes);
     renderList();
     searchStatus = enhanced && page.mode === 'keyword'
-      ? '语义检索暂不可用，当前显示按相关度排列的关键词结果。'
-      : enhanced ? '搜索结果按相关度排列。' : '';
-    $('capability').textContent = searchStatus; $('capability').hidden = !searchStatus;
+      ? l("语义检索暂不可用，当前显示按相关度排列的关键词结果。")
+      : enhanced ? l("搜索结果按相关度排列。") : '';
+    setText($('capability'), searchStatus); $('capability').hidden = !searchStatus;
     pageCount = reset ? 1 : pageCount + 1;
     const previousToken = nextToken;
     nextToken = typeof page.next_page_token === 'string' ? page.next_page_token : '';
@@ -737,7 +740,7 @@ async function loadNotes(reset = false, retry = false) {
     handleFailure($('list-error'), err.code === 'SOURCE_CHANGED' ? { ...err, code: 'SEARCH_SOURCE_CHANGED' } : err);
     if (!identity) return;
     retryReset = reset || ['INVALID_PAGE_TOKEN', 'SOURCE_CHANGED'].includes(err.code);
-    $('list-retry').textContent = retryReset ? '刷新主页' : '重试加载'; $('list-retry').hidden = false;
+    setText($('list-retry'), retryReset ? l("刷新主页") : l("重试加载")); $('list-retry').hidden = false;
     if (err.retryable) {
       retryTimer = setTimeout(() => {
         if (generation === epoch && view === viewSequence && sequence === listSequence) loadNotes(retryReset, true);
@@ -757,20 +760,20 @@ function startFromNote(note) {
 function discoveryText(value) {
   const code = typeof value === 'string' ? value : value?.code;
   return {
-    EMBEDDING_DISABLED: '请在设置中启用 Embedding。',
-    EMBEDDING_UNAVAILABLE: 'Embedding 暂时无法连接，请重试或在设置中检查连接。',
-    EMBEDDING_RATE_LIMITED: 'Embedding 调用受限，请稍后重试。',
-    EMBEDDING_PROTOCOL: 'Embedding 返回格式或维度与配置不符，请在设置中检查连接。',
-    INDEX_NOT_READY: '语义索引尚未就绪，请在设置中查看构建进度后重试。',
-    NO_SOURCE_VECTORS: '这条笔记没有可用的正文向量，请从其他笔记开始。',
-    SEMANTIC_UNAVAILABLE: '语义索引暂时不可用，请稍后重试。',
-    WALK_RESOURCE_LIMIT: '漫步暂时达到技术资源限制，请重试。',
-    WALK_ARCHIVED: '归档笔记不参与漫步，请选择其他笔记。',
-    RESOURCE_LIMIT: '漫步暂时达到技术资源限制，请重试。',
-    WALK_RESPONSE_INVALID: '服务返回的漫步内容不完整，请重试。',
-    REVIEW_RESPONSE_INVALID: '服务返回的回顾内容不完整，请重试。',
-    REQUEST_TIMEOUT: '读取超时，请重试。',
-  }[code] || (typeof value === 'string' ? `服务提示：${value}` : errorText(value));
+    EMBEDDING_DISABLED: l("请在设置中启用 Embedding。"),
+    EMBEDDING_UNAVAILABLE: l("Embedding 暂时无法连接，请重试或在设置中检查连接。"),
+    EMBEDDING_RATE_LIMITED: l("Embedding 调用受限，请稍后重试。"),
+    EMBEDDING_PROTOCOL: l("Embedding 返回格式或维度与配置不符，请在设置中检查连接。"),
+    INDEX_NOT_READY: l("语义索引尚未就绪，请在设置中查看构建进度后重试。"),
+    NO_SOURCE_VECTORS: l("这条笔记没有可用的正文向量，请从其他笔记开始。"),
+    SEMANTIC_UNAVAILABLE: l("语义索引暂时不可用，请稍后重试。"),
+    WALK_RESOURCE_LIMIT: l("漫步暂时达到技术资源限制，请重试。"),
+    WALK_ARCHIVED: l("归档笔记不参与漫步，请选择其他笔记。"),
+    RESOURCE_LIMIT: l("漫步暂时达到技术资源限制，请重试。"),
+    WALK_RESPONSE_INVALID: l("服务返回的漫步内容不完整，请重试。"),
+    REVIEW_RESPONSE_INVALID: l("服务返回的回顾内容不完整，请重试。"),
+    REQUEST_TIMEOUT: l("读取超时，请重试。"),
+  }[code] || (typeof value === 'string' ? l("服务提示：{0}", { 0: value }) : errorText(value));
 }
 function discoveryCard(note, review = false, className = 'card big discovery-note') {
   const card = el('article', `${className}${review ? ' rv' : ''}`);
@@ -778,7 +781,7 @@ function discoveryCard(note, review = false, className = 'card big discovery-not
   const header = el('div', 'hd'), time = el('time', '', formatTime(note.create_time));
   time.dateTime = note.create_time;
   const open = button('', 'btn s', () => openNote(note));
-  open.setAttribute('aria-label', '打开笔记'); open.title = '打开笔记';
+  setAttr(open, 'aria-label', l("打开笔记")); setAttr(open, 'title', l("打开笔记"));
   const icon = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
   icon.setAttribute('class', 'i'); icon.setAttribute('viewBox', '0 0 24 24'); icon.setAttribute('aria-hidden', 'true');
   const arrow = document.createElementNS('http://www.w3.org/2000/svg', 'path');
@@ -786,7 +789,7 @@ function discoveryCard(note, review = false, className = 'card big discovery-not
   const metadata = el('div', 'discovery-meta');
   if (review && Number.isFinite(Date.parse(note.create_time))) {
     const days = Math.max(0, Math.floor((Date.now() - Date.parse(note.create_time)) / 86_400_000));
-    header.append(el('span', 'pill', days ? `${days} 天前` : '今天')); metadata.append(time);
+    header.append(el('span', 'pill', days ? l("{0} 天前", { 0: days }) : l("今天"))); metadata.append(time);
   } else header.append(time);
   for (const tag of note.tags || []) metadata.append(el('span', 'tag', `#${tag}`));
   metadata.append(open); header.append(metadata);
@@ -814,17 +817,16 @@ function createDiscoveryPage(kind) {
     else renderWalk();
     if (failure) {
       message(discoveryText(failure), true);
-      root.append(button('重试', 'ghost discovery-retry', () => retry?.()));
+      root.append(button(l("重试"), 'ghost discovery-retry', () => retry?.()));
     }
   }
   function renderReview() {
-    if (busy) { message('正在加载每日回顾…'); return; }
+    if (busy) { message(l("正在加载每日回顾…")); return; }
     if (failure) return;
     const batch = reviewView?.batch;
     if (!batch) return;
-    const date = batch.date.split('-').map(Number);
-    root.append(el('p', 'sub', `${date[1]}月${date[2]}日 · 今天的 ${batch.items.length} 条旧笔记`));
-    if (!batch.items.length) { message('今天没有可回顾的旧笔记。'); return; }
+    root.append(el('p', 'sub', l("{0} · 今天的 {1} 条旧笔记", { 0: () => new Intl.DateTimeFormat(locale(), { month: 'long', day: 'numeric', timeZone: 'UTC' }).format(new Date(`${batch.date}T12:00:00Z`)), 1: batch.items.length })));
+    if (!batch.items.length) { message(l("今天没有可回顾的旧笔记。")); return; }
     const selected = reviewView.position;
     const stack = el('div', 'review-stack');
     for (let i = 0; i < Math.min(2, batch.items.length - selected - 1); i++) {
@@ -834,24 +836,24 @@ function createDiscoveryPage(kind) {
       let card;
       if (item.unavailable) {
         card = el('article', 'card big rv discovery-note');
-        card.append(el('p', 'sub', '这条笔记已不存在或无法访问。'));
+        card.append(el('p', 'sub', l("这条笔记已不存在或无法访问。")));
       } else card = discoveryCard(item.note, true);
       card.hidden = index !== selected; card.dataset.reviewIndex = String(index); stack.append(card);
     });
     root.append(stack);
     const controls = el('div', 'discovery-controls'), positions = el('div', 'pg review-positions');
-    positions.setAttribute('role', 'group'); positions.setAttribute('aria-label', '回顾条目');
+    positions.setAttribute('role', 'group'); setAttr(positions, 'aria-label', l("回顾条目"));
     batch.items.forEach((_, index) => {
       const dot = button('', `dt${index === selected ? ' on' : ''}`, () => { reviewView.position = index; render(); });
-      dot.setAttribute('aria-label', `第 ${index + 1} / ${batch.items.length} 条`);
+      setAttr(dot, 'aria-label', l("第 {0} / {1} 条", { 0: index + 1, 1: batch.items.length }));
       dot.setAttribute('aria-pressed', String(index === selected)); positions.append(dot);
     });
     const actions = el('div', 'discovery-actions'), current = batch.items[selected];
     if (!current.unavailable) {
-      if (current.note.state === 'NORMAL') actions.append(button('从这条漫步', 'ghost', () => startFromNote(current.note)));
-      actions.append(button('AI 洞察这条', 'ghost', () => navigate(`/insights?${new URLSearchParams({ note: current.note.name })}`)));
+      if (current.note.state === 'NORMAL') actions.append(button(l("从这条漫步"), 'ghost', () => startFromNote(current.note)));
+      actions.append(button(l("AI 洞察这条"), 'ghost', () => navigate(`/insights?${new URLSearchParams({ note: current.note.name })}`)));
     }
-    actions.append(button(selected + 1 < batch.items.length ? '下一条' : '再看一遍', 'save', () => {
+    actions.append(button(selected + 1 < batch.items.length ? l("下一条") : l("再看一遍"), 'save', () => {
       reviewView.position = (selected + 1) % batch.items.length; render();
     }));
     controls.append(positions, actions); root.append(controls);
@@ -881,10 +883,10 @@ function createDiscoveryPage(kind) {
     failure = retry = null; render();
   }
   function renderWalk() {
-    root.append(el('p', 'sub', '随意走走，看会遇见什么'));
+    root.append(el('p', 'sub', l("随意走走，看会遇见什么")));
     if (modelHint) {
       message(modelHint);
-      const settings = el('a', 'dlink', '打开设置'); settings.href = '/settings'; settings.dataset.route = ''; root.append(settings);
+      const settings = el('a', 'dlink', l("打开设置")); settings.href = '/settings'; settings.dataset.route = ''; root.append(settings);
     }
     const result = walkView?.result;
     if (result?.item) {
@@ -898,18 +900,18 @@ function createDiscoveryPage(kind) {
       notes.append(discoveryCard(result.item.note)); root.append(notes);
     } else if (!result?.exhausted) {
       const start = el('div', 'walk-start');
-      const control = button(busy ? '翻找中…' : '随机开始', 'save', () => walkRequest('/walks/start', {}));
+      const control = button(busy ? l("翻找中…") : l("随机开始"), 'save', () => walkRequest('/walks/start', {}));
       control.disabled = busy || !configured; start.append(control); root.append(start);
-      if (!busy) message('也可以从笔记详情出发');
+      if (!busy) message(l("也可以从笔记详情出发"));
     }
     for (const warning of walkView?.warnings || []) message(discoveryText(warning));
-    if (result?.exhausted) message(result.item ? '能走的路都走完了。' : '没有可漫步的笔记。');
+    if (result?.exhausted) message(result.item ? l("能走的路都走完了。") : l("没有可漫步的笔记。"));
     if (result || ((busy || failure) && retry !== loadWalk)) {
       const controls = el('div', 'discovery-controls'), actions = el('div', 'discovery-actions');
-      controls.append(el('span', 'sub', `已漫步 ${result?.path.length || 0} 条`));
-      actions.append(button('停止', 'pbtn', stopWalk));
+      controls.append(el('span', 'sub', l("已漫步 {0} 条", { 0: result?.path.length || 0 })));
+      actions.append(button(l("停止"), 'pbtn', stopWalk));
       if (result?.item && !result.exhausted) {
-        const next = button(busy ? '翻找中…' : '继续漫步', 'save', () => walkRequest('/walks/next', {
+        const next = button(busy ? l("翻找中…") : l("继续漫步"), 'save', () => walkRequest('/walks/next', {
           name: result.item.note.name, path: [...result.path],
         }));
         next.disabled = busy || !configured; actions.append(next);
@@ -958,7 +960,7 @@ function createDiscoveryPage(kind) {
       const models = await sessionRequest('/models', { controller });
       if (!active(ticket)) return;
       configured = models.embedding?.enabled === true;
-      modelHint = configured ? '' : '请在设置中启用 Embedding，再开始随机漫步。';
+      modelHint = configured ? '' : l("请在设置中启用 Embedding，再开始随机漫步。");
       busy = false;
       const name = new URLSearchParams(location.search).get('name');
       if (configured && name && walkView.key !== currentKey) {
@@ -992,7 +994,7 @@ async function routeModule(load, generation, sequence) {
     if (identity && generation === epoch && sequence === viewSequence) {
       moduleReload = true;
       handleFailure($('list-error'), { code: 'WEB_MODULE_UNAVAILABLE' });
-      $('list-retry').textContent = '刷新页面'; $('list-retry').hidden = false;
+      setText($('list-retry'), l("刷新页面")); $('list-retry').hidden = false;
     }
     return null;
   }
@@ -1011,7 +1013,7 @@ async function showRoute() {
   for (const id of ['back', 'view-title', 'capability', 'empty', 'list-retry', 'filters', 'load-more']) $(id).hidden = true;
   showError($('list-error'), null); $('composer').hidden = location.pathname !== '/';
   const detail = notePath.exec(location.pathname);
-  document.title = `${detail ? '笔记' : pages.get(location.pathname) || '页面不存在'} · Moerise`;
+  setText(document.querySelector('title'), () => `${resolveText(detail ? l("笔记") : pages.get(location.pathname) || l("页面不存在"))} · Moerise`);
   $('q').value = sourceTimeline().values.query;
   $('search-mode').value = sourceTimeline().values.mode;
   lastTimeline = sourceTimeline();
@@ -1022,13 +1024,13 @@ async function showRoute() {
   });
   loadSidebar(); updateListControls();
   if (isTimeline()) {
-    if (location.pathname === '/archived') { $('view-title').hidden = false; $('view-title').textContent = '归档笔记'; }
+    if (location.pathname === '/archived') { $('view-title').hidden = false; setText($('view-title'), l("归档笔记")); }
     renderFilters();
     const snapshot = snapshots.get(currentKey);
     if (snapshot?.url === currentURL && !snapshot.dirty) {
       items = [...snapshot.items]; nextToken = snapshot.nextToken; pageCount = snapshot.pages; renderList(); $('empty').hidden = !!items.length || !!nextToken;
       searchStatus = snapshot.searchStatus || '';
-      $('capability').textContent = searchStatus; $('capability').hidden = !searchStatus;
+      setText($('capability'), searchStatus); $('capability').hidden = !searchStatus;
       updateListControls();
       if (nextToken) pageObserver.observe($('page-end'));
       restoreScroll(snapshot.scroll);
@@ -1040,9 +1042,9 @@ async function showRoute() {
     }
   } else if (detail) {
     const from = safeFrom(new URLSearchParams(location.search).get('from'));
-    const label = pages.get(new URL(from, location.origin).pathname) || '主页';
+    const label = pages.get(new URL(from, location.origin).pathname) || l("主页");
     routeReturnKey = history.state?.returnKey || null;
-    $('back').textContent = `‹ 返回${label}`; $('back').hidden = false; window.scrollTo(0, 0);
+    setText($('back'), l("‹ 返回{0}", { 0: label })); $('back').hidden = false; window.scrollTo(0, 0);
     try {
       const note = await request(`/notes/${detail[1]}`);
       if (generation !== epoch || sequence !== viewSequence) return;
@@ -1051,10 +1053,10 @@ async function showRoute() {
     } catch (err) {
       if (generation !== epoch || sequence !== viewSequence) return;
       handleFailure($('list-error'), err);
-      if (identity) { $('list-retry').textContent = '重新加载笔记'; $('list-retry').hidden = false; }
+      if (identity) { setText($('list-retry'), l("重新加载笔记")); $('list-retry').hidden = false; }
     }
   } else if (location.pathname === '/review' || location.pathname === '/walk') {
-    $('view-title').textContent = pages.get(location.pathname); $('view-title').hidden = false;
+    setText($('view-title'), pages.get(location.pathname)); $('view-title').hidden = false;
     window.scrollTo(0, 0);
     discoveryPage = createDiscoveryPage(location.pathname === '/review' ? 'review' : 'walk');
     await discoveryPage.mount($('workspace'));
@@ -1076,7 +1078,7 @@ async function showRoute() {
     });
     await insightsPage.mount($('workspace'));
   } else if (location.pathname === '/map') {
-    $('view-title').textContent = '认知地图'; $('view-title').hidden = false;
+    setText($('view-title'), l("认知地图")); $('view-title').hidden = false;
     window.scrollTo(0, 0);
     const module = await routeModule(() => import('./map.js'), generation, sequence);
     if (!module) return;
@@ -1093,7 +1095,7 @@ async function showRoute() {
     });
     await mapPage.mount($('workspace'));
   } else if (location.pathname === '/settings') {
-    $('view-title').textContent = '设置'; $('view-title').hidden = false;
+    setText($('view-title'), l("设置")); $('view-title').hidden = false;
     window.scrollTo(0, 0);
     const module = await routeModule(() => import('./settings.js'), generation, sequence);
     if (!module) return;
@@ -1107,8 +1109,8 @@ async function showRoute() {
     });
     await settingsPage.mount($('workspace'));
   } else {
-    $('view-title').textContent = pages.get(location.pathname) || '页面不存在'; $('view-title').hidden = false;
-    $('capability').textContent = pages.has(location.pathname) ? `${pages.get(location.pathname)}尚未开放。` : '请从侧栏打开主页。';
+    setText($('view-title'), pages.get(location.pathname) || l("页面不存在")); $('view-title').hidden = false;
+    setText($('capability'), pages.has(location.pathname) ? l("{0}尚未开放。", { 0: pages.get(location.pathname) }) : l("请从侧栏打开主页。"));
     $('capability').hidden = false; window.scrollTo(0, 0);
   }
 }
@@ -1181,11 +1183,6 @@ $('user-menu').addEventListener('click', () => {
   const open = $('account-menu').hidden; closeMenus(); $('account-menu').hidden = !open;
   $('user-menu').setAttribute('aria-expanded', String(open)); if (open) $('account-menu').querySelector('[role="menuitem"]')?.focus();
 });
-const extensionPaths = new Map([['每日回顾', '/review'], ['随机漫步', '/walk'], ['AI 洞察', '/insights'], ['认知地图', '/map'], ['设置', '/settings']]);
-document.querySelectorAll('a[aria-disabled="true"]').forEach(link => {
-  const path = extensionPaths.get(link.textContent.trim());
-  if (path) { link.href = path; link.dataset.route = ''; link.removeAttribute('aria-disabled'); }
-});
 document.addEventListener('click', event => {
   const link = event.target.closest('a[data-route]');
   if (link && !event.ctrlKey && !event.metaKey && !event.shiftKey && !event.altKey && event.button === 0) {
@@ -1218,4 +1215,5 @@ window.addEventListener('pagehide', () => { invalidate(); hidePrivate(); });
 window.addEventListener('pageshow', event => { if (event.persisted) restore(); });
 window.addEventListener('focus', refreshSidebarOnFocus);
 document.addEventListener('visibilitychange', refreshSidebarOnFocus);
+initI18n();
 restore();

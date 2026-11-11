@@ -10,7 +10,7 @@ import (
 	"unicode/utf8"
 )
 
-const chatSystemPrompt = `你是帮助用户思考和头脑风暴的笔记对话伙伴，使用简体中文，以自然的 Markdown 交流。
+const chatSystemPrompt = `你是帮助用户思考和头脑风暴的笔记对话伙伴，以自然的 Markdown 交流。
 从用户选中的笔记出发，自由探索联系、思想变化、潜在矛盾、盲点和新的可能性。
 鼓励联想、质疑、跨领域类比、提出假设和多种解释，可以结合常识与想象发展新想法，不要求每个想法都有原文依据。
 顺着用户的问题展开讨论；材料简短或不完整时，也可以提出有启发的角度、问题或小尝试。
@@ -329,18 +329,27 @@ func (s *ChatService) Generate(ctx context.Context, chatID string, input ChatGen
 	if err != nil {
 		return ChatTurn{}, err
 	}
+	prompt := config.Insights.DefaultPrompt
+	if input.Language == "en" && prompt == DefaultInsightPrompt {
+		prompt = DefaultInsightPromptEnglish
+	}
 	content := input.Content
 	if input.Kind == "insight" {
-		content = config.Insights.DefaultPrompt
+		content = prompt
 	}
 	messages, err := chatContext(chat, materials, content)
 	if err != nil {
 		return ChatTurn{}, err
 	}
+	if input.Language == "en" {
+		messages[0].Content += "\nReply in English unless the user explicitly requests another language."
+	} else {
+		messages[0].Content += "\n使用简体中文回复，除非用户明确要求其他语言。"
+	}
 	if err := ctx.Err(); err != nil {
 		return ChatTurn{}, err
 	}
-	turn, created, err := s.Store.reserveChatTurn(chatID, input, s.Store.productVersion, config.Insights.DefaultPrompt, configured(config.LLM.Model))
+	turn, created, err := s.Store.reserveChatTurn(chatID, input, s.Store.productVersion, prompt, configured(config.LLM.Model))
 	if err != nil || !created {
 		return turn, err
 	}

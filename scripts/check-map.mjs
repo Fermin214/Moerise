@@ -272,7 +272,7 @@ try {
     const map = await api('GET', '/map'); assert.equal(map.points.length, total); assert.equal(new Set(map.points.map(point => point.name)).size, total);
     assert.deepEqual(map.points.filter(point => !point.semantic).map(point => point.name).sort(), fixtures.slice(7).map(note => note.name).sort());
     browser = await chromium.launch({ headless: true, channel: process.env.MOERISE_PLAYWRIGHT_CHANNEL || undefined });
-    page = await browser.newPage({ viewport: { width: 1360, height: 960 } }); page.on('pageerror', error => evidence.pageErrors.push(error.message));
+    page = await browser.newPage({ locale: 'zh-CN', viewport: { width: 1360, height: 960 } }); page.on('pageerror', error => evidence.pageErrors.push(error.message));
     await browse(`${url}/map`); await page.locator('#username').fill(username); await page.locator('#password').fill(password); await page.locator('#login').click(); await ready();
     await readPoint(fixtures[0]); assert.match(await reader().innerText(), /原文末尾/); assert.match(await reader().innerText(), new RegExp('完整原文'));
     await readPoint(fixtures[7]); await page.waitForFunction(() => document.querySelector('.map-note img')?.naturalWidth > 0);
@@ -342,7 +342,7 @@ try {
     assert.equal(await page.locator('.map-page').count(), 0); await browse(url + '/map'); await ready();
   });
   await check('真实窄屏单指、双指缩放、取消与完整阅读', async () => {
-    const context = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
+    const context = await browser.newContext({ locale: 'zh-CN', viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
     await context.addCookies(await page.context().cookies()); const desktop = page; page = await context.newPage();
     page.on('pageerror', error => evidence.pageErrors.push(error.message)); await browse(url + '/map'); await ready();
     const field = page.locator('#map-field'); await field.scrollIntoViewIfNeeded(); const box = await field.boundingBox(), before = await view();

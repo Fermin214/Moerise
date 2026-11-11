@@ -40,7 +40,7 @@ function raw(url, path) {
 
 test('build assets are served with no-store and a same-origin CSP', async t => {
   const { url } = await fixture(t, () => assert.fail('Static files must not reach Core'));
-  for (const path of ['/', '/app.js', '/draft.js', '/errors.js', '/routes.js', '/markdown.js', '/insights.js', '/map.js', '/chat-stream.js', '/styles.css', '/favicon.svg']) {
+  for (const path of ['/', '/app.js', '/i18n.js', '/en.js', '/draft.js', '/errors.js', '/routes.js', '/markdown.js', '/insights.js', '/map.js', '/chat-stream.js', '/styles.css', '/favicon.svg']) {
     const response = await fetch(url + path);
     assert.equal(response.status, 200);
     assert.equal(response.headers.get('cache-control'), 'no-store');
@@ -62,6 +62,16 @@ test('versioned public assets negotiate compression and cache without caching pr
   assert.ok(entry);
   const original = await fetch(url + entry, { headers: { 'Accept-Encoding': 'identity' } });
   const source = await original.text();
+  const version = /app\.([a-f0-9]{20})\.js/.exec(entry)[1];
+  for (const name of ['i18n', 'en']) {
+    const dependency = `/${name}.${version}.js`;
+    assert.ok(html.includes(`rel="modulepreload" href="${dependency}"`));
+    const response = await fetch(url + dependency);
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get('cache-control'), 'public, max-age=31536000, immutable');
+    assert.ok((await response.text()).length > 100);
+  }
+  assert.ok(source.includes(`'./i18n.${version}.js'`));
   for (const [accept, expected] of [
     ['br', 'br'], ['gzip', 'gzip'], ['BR, gzip;q=0', 'br'],
     ['br;q=0, gzip;q=0', null], ['br;q=0.5, gzip, identity;q=0', 'gzip'],

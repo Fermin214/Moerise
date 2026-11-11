@@ -20,6 +20,7 @@ import (
 )
 
 const DefaultInsightPrompt = "请围绕所选笔记探索它们之间的联系、思想变化、潜在矛盾和新的可能性。区分笔记原意与新提出的联想和假设。"
+const DefaultInsightPromptEnglish = "Explore connections, changes in thinking, possible contradictions and new possibilities across the selected notes. Distinguish what the notes say from new associations and hypotheses."
 
 type InsightsConfig struct {
 	DefaultPrompt string `json:"default_prompt"`

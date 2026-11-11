@@ -160,7 +160,7 @@ func (a *ClientAPI) chatRoute(w http.ResponseWriter, r *http.Request, identity *
 		}
 		if len(parts) == 3 && parts[2] == "messages" && r.Method == http.MethodPost {
 			var input ChatGenerate
-			if err := readClientJSON(w, r, 64*1024, []string{"request_id", "version", "kind", "content"}, &input); err != nil {
+			if err := readClientJSON(w, r, 64*1024, []string{"request_id", "version", "kind", "content", "language"}, &input); err != nil {
 				return nil, 0, err
 			}
 			if err := a.app.Sessions.CheckActive(r.Context(), identity); err != nil {

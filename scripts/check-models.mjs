@@ -193,7 +193,7 @@ try {
   mock.listen(0, '0.0.0.0'); await once(mock, 'listening');
   const modelURL = `http://host.docker.internal:${mock.address().port}/v1`;
   browser = await chromium.launch({ headless: true, channel: process.env.MOERISE_PLAYWRIGHT_CHANNEL || undefined });
-  page = await browser.newPage({ viewport: { width: 1360, height: 960 } });
+  page = await browser.newPage({ locale: 'zh-CN', viewport: { width: 1360, height: 960 } });
   page.on('pageerror', error => evidence.pageErrors.push(error.message));
   page.on('response', async response => {
     if (!/\/models\/(embedding|llm)\/check$/.test(response.url())) return;

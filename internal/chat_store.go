@@ -136,13 +136,14 @@ func (s *Store) chat(id string) (ChatSession, error) {
 
 const chatSummaryQuery = `SELECT id, title,
 		COALESCE((SELECT CASE WHEN kind = 'insight' THEN '一键洞察' ELSE substr(user_content, 1, 80) END
-			FROM chat_turns WHERE chat_id = c.id ORDER BY position LIMIT 1), title), version,
+			FROM chat_turns WHERE chat_id = c.id ORDER BY position LIMIT 1), title),
+		COALESCE((SELECT kind FROM chat_turns WHERE chat_id = c.id ORDER BY position LIMIT 1), ''), version,
 		(SELECT COUNT(*) FROM chat_materials WHERE chat_id = c.id), created_at, updated_at
 		FROM chat_sessions c`
 
 func (s *Store) readChatSummary(tx *sql.Tx, id string, result *ChatSummary) error {
 	err := tx.QueryRow(chatSummaryQuery+` WHERE id = ? AND instance_id = ? AND user_name = ?`,
-		id, s.Settings.Memos.InstanceID, s.Settings.Memos.User).Scan(&result.ID, &result.Title, &result.Preview, &result.Version,
+		id, s.Settings.Memos.InstanceID, s.Settings.Memos.User).Scan(&result.ID, &result.Title, &result.Preview, &result.PreviewKind, &result.Version,
 		&result.MaterialCount, &result.CreatedAt, &result.UpdatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return chatNotFound()
@@ -165,7 +166,7 @@ func (s *Store) listChats(beforeTime, beforeID string, limit int) ([]ChatSummary
 	defer rows.Close()
 	for rows.Next() {
 		var chat ChatSummary
-		if err := rows.Scan(&chat.ID, &chat.Title, &chat.Preview, &chat.Version, &chat.MaterialCount, &chat.CreatedAt, &chat.UpdatedAt); err != nil {
+		if err := rows.Scan(&chat.ID, &chat.Title, &chat.Preview, &chat.PreviewKind, &chat.Version, &chat.MaterialCount, &chat.CreatedAt, &chat.UpdatedAt); err != nil {
 			return result, err
 		}
 		result = append(result, chat)
@@ -265,7 +266,8 @@ func validateChatGenerate(input ChatGenerate) error {
 	if !idempotencyPattern.MatchString(input.RequestID) || input.Version < 1 ||
 		(input.Kind != "insight" && input.Kind != "question") || !utf8.ValidString(input.Content) ||
 		(input.Kind == "question" && strings.TrimSpace(input.Content) == "") ||
-		(input.Kind == "insight" && input.Content != "") {
+		(input.Kind == "insight" && input.Content != "") ||
+		(input.Language != "" && input.Language != "en" && input.Language != "zh-CN") {
 		return failure("INVALID_ARGUMENT", "Invalid chat generation request", 422, false)
 	}
 	return nil

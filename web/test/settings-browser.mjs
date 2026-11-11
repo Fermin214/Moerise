@@ -31,7 +31,7 @@ function settings() {
     channel_capabilities: { text: false, images: false, record: false },
   };
 }
-async function fixture(t) {
+async function fixture(t, language = 'zh-CN') {
   const state = { value: settings(), session: false, gets: 0, patches: [], fail: null, hold: false, pending: [], csrf: false,
     checks: [], checkFail: null, holdCheck: false, modelPending: [], index: 'disabled' };
   const core = http.createServer(async (req, res) => {
@@ -137,7 +137,7 @@ async function fixture(t) {
     args: [`--log-file=${join(dist, 'chromium.log')}`],
     env: { ...process.env, CHROME_LOG_FILE: join(dist, 'chromium.log') },
   });
-  const page = await browser.newPage({ viewport: { width: 1360, height: 960 } }), errors = [];
+  const page = await browser.newPage({ locale: language, viewport: { width: 1360, height: 960 } }), errors = [];
   page.on('pageerror', err => errors.push(err.message));
   return { page, state, url, errors };
 }
@@ -488,5 +488,32 @@ test('conflict requires reload, busy can retry, and leaving or expiring removes 
   await page.getByRole('button', { name: '重新加载设置' }).click();
   await page.locator('#login-form').waitFor({ state: 'visible' });
   assert.equal(await page.locator('#settings-page').count(), 0);
+  assert.deepEqual(errors, []);
+});
+
+test('English settings switch language without clearing secrets, changing values or saving implicitly', async t => {
+  const { page, state, errors, url } = await fixture(t, 'en-US');
+  await page.goto(url + '/settings'); await login(page);
+  await page.getByRole('button', { name: 'Save settings', exact: true }).waitFor();
+  await setting(page, 'review.count').fill('7');
+  await page.getByRole('combobox', { name: 'LLM API Key operation', exact: true }).selectOption('replace');
+  await page.getByLabel('New LLM API Key value', { exact: true }).fill('new-private-key');
+  await page.locator('#app [data-language]').selectOption('zh-CN');
+  assert.equal(await setting(page, 'review.count').inputValue(), '7');
+  assert.equal(await secret(page, 'LLM API Key').inputValue(), 'new-private-key');
+  assert.equal(await setting(page, 'insights.default_prompt').inputValue(), '用户自定义 Prompt');
+  assert.equal(state.patches.length, 0);
+  await page.locator('#app [data-language]').selectOption('en');
+  await page.getByRole('button', { name: 'Save settings', exact: true }).click();
+  await page.getByText('Settings saved.', { exact: true }).waitFor();
+  assert.equal(state.patches.length, 1);
+  assert.equal(state.patches[0].settings.review.count, 7);
+  assert.equal(state.patches[0].secrets.llm_api_key.value, 'new-private-key');
+  assert.equal(await page.getByLabel('New LLM API Key value', { exact: true }).inputValue(), '');
+  await mkdir('.local/i18n-review', { recursive: true });
+  await page.screenshot({ path: '.local/i18n-review/settings-en.png', fullPage: true });
+  await page.setViewportSize({ width: 390, height: 844 });
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
+  await page.screenshot({ path: '.local/i18n-review/settings-en-mobile.png', fullPage: true });
   assert.deepEqual(errors, []);
 });

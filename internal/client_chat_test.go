@@ -213,7 +213,7 @@ func TestClientChatHistoryPreviewPreservesTitleAndUnicode(t *testing.T) {
 			if kind == "insight" {
 				content, preview = "", "一键洞察"
 			}
-			input, err := json.Marshal(ChatGenerate{"preview", chat.Version, kind, content})
+			input, err := json.Marshal(ChatGenerate{RequestID: "preview", Version: chat.Version, Kind: kind, Content: content})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -473,5 +473,58 @@ func TestClientChatRevocationDuringBodyCannotCreateState(t *testing.T) {
 	if err := api.app.Store.state.QueryRow("SELECT COUNT(*) FROM chat_sessions").Scan(&count); err != nil ||
 		count != 0 || response.Code >= 200 && response.Code < 300 {
 		t.Fatalf("revoked request created chat state: count=%d status=%d error=%v", count, response.Code, err)
+	}
+}
+
+func TestClientChatReplyLanguagePreservesPromptsMaterialsAndIdempotency(t *testing.T) {
+	api, fixture, cookie, identity := clientChatFixture(t)
+	chat := createClientChat(t, api, fixture, cookie, identity)
+	path := "/api/app/v1/chats/" + chat.ID + "/messages"
+	var calls [][]LLMMessage
+	api.app.Chat.Provider = aiLLMFunc(func(_ context.Context, messages []LLMMessage, emit func(string) error) (LLMResult, error) {
+		calls = append(calls, messages)
+		return LLMResult{Content: "A new connection", FinishReason: "stop"}, emit("A new connection")
+	})
+	send := func(body string) *httptest.ResponseRecorder {
+		return clientCall(api, "POST", path, body, cookie, fixture.settings.Web.PublicOrigin, identity.CSRFToken)
+	}
+	english := `{"request_id":"english","version":1,"kind":"insight","content":"","language":"en"}`
+	response := send(english)
+	if response.Code != 200 || !strings.Contains(response.Body.String(), "event: complete") || len(calls) != 1 {
+		t.Fatalf("English generation failed: %d %s", response.Code, response.Body.String())
+	}
+	if !strings.Contains(calls[0][0].Content, "Reply in English") ||
+		calls[0][len(calls[0])-1].Content != DefaultInsightPromptEnglish ||
+		!strings.Contains(calls[0][1].Content, "原文 #标签") {
+		t.Fatalf("language changed selected material or used the wrong prompt: %+v", calls[0])
+	}
+	response = send(english)
+	if response.Code != 200 || len(calls) != 1 {
+		t.Fatal("same-language replay generated another reply")
+	}
+	response = send(strings.Replace(english, `"language":"en"`, `"language":"zh-CN"`, 1))
+	if response.Code != 409 || !strings.Contains(response.Body.String(), "IDEMPOTENCY_CONFLICT") || len(calls) != 1 {
+		t.Fatal("changing the language reused an existing request ID")
+	}
+	for _, language := range []string{`"fr"`, `null`, `"EN"`} {
+		response = send(`{"request_id":"bad-language","version":1,"kind":"insight","content":"","language":` + language + `}`)
+		if response.Code != 422 || len(calls) != 1 {
+			t.Fatalf("invalid language accepted: %s: %d", language, response.Code)
+		}
+	}
+	custom := "保留自定义 Prompt exactly."
+	api.app.Store.Settings.Insights.DefaultPrompt = custom
+	response = send(`{"request_id":"custom","version":1,"kind":"insight","content":"","language":"en"}`)
+	if response.Code != 200 || len(calls) != 2 || calls[1][len(calls[1])-1].Content != custom {
+		t.Fatal("custom prompt was translated or discarded")
+	}
+	response = send(`{"request_id":"legacy","version":1,"kind":"question","content":"继续"}`)
+	if response.Code != 200 || len(calls) != 3 || !strings.Contains(calls[2][0].Content, "使用简体中文回复") {
+		t.Fatal("omitted language did not preserve the Chinese default")
+	}
+	loaded, err := api.app.Store.chat(chat.ID)
+	if err != nil || loaded.PreviewKind != "insight" || loaded.Turns[0].Prompt != DefaultInsightPromptEnglish ||
+		loaded.Turns[1].Prompt != custom || api.app.Store.Settings.Insights.DefaultPrompt != custom {
+		t.Fatalf("stored prompts or preview kind changed: %+v %v", loaded, err)
 	}
 }

@@ -12,6 +12,8 @@ const notePath = /^\/notes\/[A-Za-z0-9_-]+$/;
 const assets = new Map([
   ['/', ['index.html', 'text/html; charset=utf-8']],
   ['/index.html', ['index.html', 'text/html; charset=utf-8']],
+  ['/i18n.js', ['i18n.js', 'text/javascript; charset=utf-8']],
+  ['/en.js', ['en.js', 'text/javascript; charset=utf-8']],
   ['/app.js', ['app.js', 'text/javascript; charset=utf-8']],
   ['/draft.js', ['draft.js', 'text/javascript; charset=utf-8']],
   ['/errors.js', ['errors.js', 'text/javascript; charset=utf-8']],
@@ -198,7 +200,7 @@ export function createWebServer({
       req.pipe(upstream);
       return;
     }
-    const versioned = /^\/([a-z][a-z-]*)\.([a-f0-9]{20})\.(js|css|svg)$/.exec(path);
+    const versioned = /^\/([a-z][a-z0-9-]*)\.([a-f0-9]{20})\.(js|css|svg)$/.exec(path);
     const original = versioned && assets.get(`/${versioned[1]}.${versioned[3]}`);
     const asset = assets.get(path) || (original ? [path.slice(1), original[1]] : null) ||
       (pages.has(path) || notePath.test(path) ? assets.get('/') : null);

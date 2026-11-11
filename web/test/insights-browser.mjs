@@ -13,7 +13,7 @@ const { chromium } = runtime ? await import(pathToFileURL(runtime).href) : await
 const chatID = '68f91ebc-bbed-4fc5-a82b-18e162e715d0';
 const reply = '## 新的解释\n\n**完整回复**，保留换行。 #联想\n\n<script>unsafe</script>\n';
 
-async function fixture(t) {
+async function fixture(t, language = 'zh-CN') {
   const notes = [
     { name: 'memos/normal', content: '正常材料 😀 #共同 #细分', state: 'NORMAL' },
     { name: 'memos/archive', content: '归档材料 #共同 #细分', state: 'ARCHIVED' },
@@ -66,7 +66,7 @@ async function fixture(t) {
         const offset = Number(url.searchParams.get('page_token') || 0), size = Math.min(state.pageSize, Number(url.searchParams.get('page_size') || 20));
         json({ chats: all.slice(offset, offset + size).map(chat => ({ ...chat,
           preview: chat.turns[0]?.kind === 'insight' ? '一键洞察' : chat.turns[0]?.user.content || chat.title,
-          material_count: chat.materials.length,
+          material_count: chat.materials.length, preview_kind: chat.turns[0]?.kind || '',
         })), next_page_token: offset + size < all.length ? String(offset + size) : '' }); return;
       }
       let chat = state.creations.get(body.request_id);
@@ -165,7 +165,7 @@ async function fixture(t) {
     await Promise.all([web, core].map(server => new Promise(resolve => { server.close(resolve); server.closeAllConnections(); })));
   });
   browser = await chromium.launch({ headless: true, channel: process.env.MOERISE_PLAYWRIGHT_CHANNEL || undefined });
-  const page = await browser.newPage({ viewport: { width: 1360, height: 960 } }), errors = [];
+  const page = await browser.newPage({ locale: language, viewport: { width: 1360, height: 960 } }), errors = [];
   await page.clock.setFixedTime('2026-10-31T00:00:00Z');
   page.on('pageerror', error => errors.push(error.message));
   t.after(() => assert.deepEqual(errors, []));
@@ -321,9 +321,11 @@ test('an unconfirmed generate request freezes its content and reuses the origina
   await page.getByText('请求结果尚未确认，请使用原内容重试。', { exact: true }).waitFor();
   assert.equal(await page.locator('[data-chat="ask"]').getAttribute('readonly'), '');
   assert.equal(await page.getByRole('button', { name: '添加笔记', exact: true }).isDisabled(), true);
-  await page.getByRole('button', { name: '发送', exact: true }).click();
+  await page.locator('#app [data-language]').selectOption('en');
+  await page.getByRole('button', { name: 'Send', exact: true }).click();
   await page.locator('.insights-page[aria-busy="false"]').waitFor();
   assert.deepEqual(sent[0], sent[1]);
+  assert.equal(sent[1].language, 'zh-CN');
   assert.equal(state.calls, 1);
 });
 
@@ -838,4 +840,43 @@ test('history page failures retain loaded rows and retry the unchanged cursor', 
   await dialog.locator('.insight-history-row').nth(1).waitFor();
   assert.deepEqual(tokens, ['1', '1']);
   assert.equal(state.calls, 0);
+});
+
+test('English chat keeps its running stream and material picker through language switches', async t => {
+  const { page, state, url, notes } = await fixture(t, 'en-US');
+  await login(page, url, '/insights?note=memos%2Fnormal');
+  await page.getByRole('button', { name: 'Add notes', exact: true }).click();
+  await page.getByRole('dialog', { name: 'Select notes', exact: true }).waitFor();
+  await page.getByRole('button', { name: 'By tag / individually', exact: true }).click();
+  await page.getByRole('button', { name: 'Select all 3 notes', exact: true }).click();
+  await page.locator('#app [data-language]').selectOption('zh-CN');
+  await page.getByRole('dialog', { name: '选择笔记', exact: true }).waitFor();
+  assert.equal(await page.locator('.insight-choice input:checked').count(), 3);
+  await page.locator('#app [data-language]').selectOption('en');
+  await page.getByRole('button', { name: 'Done', exact: true }).click();
+  state.stream = 'hold';
+  await page.getByRole('button', { name: 'Generate insight', exact: true }).first().click();
+  await page.getByRole('button', { name: 'Stop', exact: true }).waitFor();
+  await page.locator('.insight-answer strong').waitFor();
+  const original = state.requests.find(request => request.path.endsWith('/messages')).body;
+  assert.equal(original.language, 'en');
+  await page.locator('#app [data-language]').selectOption('zh-CN');
+  await page.getByRole('button', { name: '停止', exact: true }).waitFor();
+  assert.equal(state.chat.turns[0].assistant.status, 'running');
+  state.finish(); await page.locator('.insights-page[aria-busy="false"]').waitFor();
+  await page.locator('#app [data-language]').selectOption('en');
+  await page.getByRole('button', { name: 'Save as note', exact: true }).click();
+  await page.getByRole('button', { name: 'Saved as note', exact: true }).waitFor();
+  assert.equal(state.lastSave.content, reply); assert.equal(state.calls, 1);
+  assert.equal(state.chat.materials.length, notes.length);
+  await page.locator('[data-chat="menu"]').click();
+  await page.getByRole('menuitem', { name: 'Chat history', exact: true }).click();
+  await page.getByRole('dialog', { name: 'Chat history', exact: true }).waitFor();
+  assert.match(await page.locator('.insight-history').textContent(), /Generate insight/);
+  await page.getByRole('button', { name: 'Close', exact: true }).click();
+  await mkdir('.local/i18n-review', { recursive: true });
+  await page.screenshot({ path: '.local/i18n-review/chat-en.png', fullPage: true });
+  await page.setViewportSize({ width: 390, height: 844 });
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
+  await page.screenshot({ path: '.local/i18n-review/chat-en-mobile.png', fullPage: true });
 });

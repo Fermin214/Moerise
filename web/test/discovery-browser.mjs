@@ -12,7 +12,7 @@ const runtime = process.env.MOERISE_PLAYWRIGHT_MODULE;
 const { chromium } = runtime ? await import(pathToFileURL(runtime).href) : await import('playwright');
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aP9sAAAAASUVORK5CYII=', 'base64');
 
-async function fixture(t) {
+async function fixture(t, language = 'zh-CN') {
   const notes = Array.from({ length: 110 }, (_, i) => ({
     name: `memos/n${i}`, content: `真实笔记 ${i}\n\n${i === 0 ? '完整正文'.repeat(120) : '第二段内容'}\n\n末尾文字 ${i}`,
     state: 'NORMAL', tags: ['原始标签', '第二标签'], source_hash: `hash-${i}`,
@@ -108,7 +108,7 @@ async function fixture(t) {
     await Promise.all([web, core].map(server => new Promise(resolve => { server.close(resolve); server.closeAllConnections(); })));
   });
   browser = await chromium.launch({ headless: true, channel: process.env.MOERISE_PLAYWRIGHT_CHANNEL || undefined });
-  const page = await browser.newPage({ viewport: { width: 1360, height: 960 } }), errors = [];
+  const page = await browser.newPage({ locale: language, viewport: { width: 1360, height: 960 } }), errors = [];
   page.on('pageerror', error => errors.push(error.message));
   t.after(() => assert.deepEqual(errors, []));
   return { page, state, url };
@@ -396,4 +396,23 @@ test('model availability can retry, disabled Embedding links to configuration, a
   state.session = false; await next(page).click();
   await page.locator('#login-form').waitFor({ state: 'visible' });
   assert.equal(await page.locator('#discovery-page').count(), 0);
+});
+
+test('English review and walk localize dates, navigation, errors and singular note counts', async t => {
+  const { page, state, url } = await fixture(t, 'en-US');
+  await login(page, url, '/review');
+  await page.getByRole('button', { name: 'Note 6 of 6', exact: true }).waitFor();
+  assert.match(await page.locator('#discovery-page').textContent(), /October 30 · 6 old notes for today/);
+  await page.locator('#app [data-language]').selectOption('zh-CN');
+  await page.getByRole('button', { name: '第 6 / 6 条', exact: true }).click();
+  await page.locator('#app [data-language]').selectOption('en');
+  assert.equal(await page.getByRole('button', { name: 'Note 6 of 6', exact: true }).getAttribute('aria-pressed'), 'true');
+  await page.locator('nav a[href="/walk"]').click();
+  await page.getByRole('button', { name: 'Start anywhere', exact: true }).click();
+  await page.getByText('1 note visited', { exact: true }).waitFor();
+  state.walkError = 'INDEX_NOT_READY';
+  await page.getByRole('button', { name: 'Keep walking', exact: true }).click();
+  await page.getByRole('alert').filter({ hasText: 'The semantic index is not ready.' }).waitFor();
+  await page.setViewportSize({ width: 390, height: 844 });
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
 });

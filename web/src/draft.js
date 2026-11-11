@@ -1,3 +1,4 @@
+import { l } from './i18n.js';
 export const attachmentLimit = 8 * 1024 * 1024;
 export const attachmentCountLimit = 10;
 const byteSize = item => Math.floor(item.content.length * 3 / 4) -
@@ -5,22 +6,22 @@ const byteSize = item => Math.floor(item.content.length * 3 / 4) -
 
 export function validateAttachments(attachments) {
   if (attachments.length > attachmentCountLimit) {
-    throw Object.assign(new Error('最多添加 10 个附件。'), { code: 'ATTACHMENT_COUNT' });
+    throw Object.assign(new Error(l("最多添加 10 个附件。")), { code: 'ATTACHMENT_COUNT' });
   }
   const bytes = attachments.reduce((sum, item) => sum + byteSize(item), 0);
   if (bytes > attachmentLimit) {
-    throw Object.assign(new Error('新增附件总大小不能超过 8 MiB。'), { code: 'ATTACHMENT_SIZE' });
+    throw Object.assign(new Error(l("新增附件总大小不能超过 8 MiB。")), { code: 'ATTACHMENT_SIZE' });
   }
 }
 
 export async function readAttachments(files, existing = []) {
   if (files.length + existing.length > attachmentCountLimit) {
-    throw Object.assign(new Error('最多添加 10 个附件。'), { code: 'ATTACHMENT_COUNT' });
+    throw Object.assign(new Error(l("最多添加 10 个附件。")), { code: 'ATTACHMENT_COUNT' });
   }
   validateAttachments(existing);
   const existingBytes = existing.reduce((sum, item) => sum + byteSize(item), 0);
   if (Array.from(files).reduce((sum, file) => sum + file.size, existingBytes) > attachmentLimit) {
-    throw Object.assign(new Error('新增附件总大小不能超过 8 MiB。'), { code: 'ATTACHMENT_SIZE' });
+    throw Object.assign(new Error(l("新增附件总大小不能超过 8 MiB。")), { code: 'ATTACHMENT_SIZE' });
   }
   const result = [];
   for (const file of files) {
@@ -45,10 +46,10 @@ export class Draft {
   begin(extra = {}, { retained = 0 } = {}) {
     if (!this.pending) {
       if (!this.content.trim() && !this.attachments.length && !retained) {
-        throw Object.assign(new Error('请写下正文或添加附件。'), { code: 'CONTENT_EMPTY' });
+        throw Object.assign(new Error(l("请写下正文或添加附件。")), { code: 'CONTENT_EMPTY' });
       }
       if (new TextEncoder().encode(this.content).length > 65536) {
-        throw Object.assign(new Error('正文不能超过 64 KiB。'), { code: 'CONTENT_TOO_LARGE' });
+        throw Object.assign(new Error(l("正文不能超过 64 KiB。")), { code: 'CONTENT_TOO_LARGE' });
       }
       validateAttachments(this.attachments);
       const attachments = Object.freeze(this.attachments.map(item => Object.freeze({ ...item })));

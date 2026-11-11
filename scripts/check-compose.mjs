@@ -409,7 +409,7 @@ async function runScenario(kind) {
   if (chromium) await check('真实浏览器登录、原文/附件、筛选、详情返回和扩展页', async () => {
     const browser = await chromium.launch({ headless: true, channel: process.env.MOERISE_PLAYWRIGHT_CHANNEL || undefined });
     try {
-      const page = await browser.newPage({ viewport: { width: 1360, height: 960 } });
+      const page = await browser.newPage({ locale: 'zh-CN', viewport: { width: 1360, height: 960 } });
       const pageErrors = [];
       page.on('pageerror', error => pageErrors.push(error.message));
       await page.goto(url);

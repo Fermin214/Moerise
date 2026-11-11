@@ -102,9 +102,11 @@ GET 只读取已发布快照，不核对全库正文，不读取全量向量或�
 
 创建提交 `{request_id,title,names}`，至少选择一条材料，标题最多 200 个 Unicode 码点；同请求 ID、同请求重放返回原会话，首次 201、重放 200，异请求复用返回 409 `IDEMPOTENCY_CONFLICT`。`request_id` 允许 1—128 个 ASCII 字母、数字、点、下划线、冒号或连字符，推荐 UUID。修改提交 `{version,title,names}`，版本匹配后递增并明确更新材料版本；`names:[]` 移除全部材料但保留消息历史，空材料不能生成，`null` 被拒绝。删除提交 `{version}`，清理消息、材料及保存关联，不删除已主动保存的 Memos 笔记。生成中修改/删除返回 `CHAT_BUSY`，须先停止；保存与删除排空互斥。
 
-`ChatSummary` 包含 `id/title/preview/version/material_count/created_at/updated_at`，`ChatSession` 另含 `materials/turns`。`preview` 从首轮问题提取最多 80 个 Unicode 码点，一键洞察显示“一键洞察”，没有消息时使用标题；该只读摘要不改写标题或消息。`materials` 是 `{name,source_hash}` 引用。每轮 `ChatTurn` 包含 `request_id`、`kind`、独立的 `user` 和 `assistant` 消息、有效 `settings_version/prompt/model/materials/usage`；每条消息有 `id/role/content/version/status/error_code/saved_name/created_at/updated_at`。助手状态为 running、completed、failed、canceled 或 interrupted，原文本和部分回复持久保留。会话版本约束选材与标题，助手消息版本用于固定主动保存内容。
+`ChatSummary` 包含 `id/title/preview/preview_kind/version/material_count/created_at/updated_at`，`ChatSession` 另含 `materials/turns`。`preview` 从首轮问题提取最多 80 个 Unicode 码点，一键洞察显示“一键洞察”，没有消息时使用标题；该只读摘要不改写标题或消息。`preview_kind` 为首轮的 `question` 或 `insight`，无消息时为空；客户端按此字段翻译洞察标签，不翻译用户问题。`materials` 是 `{name,source_hash}` 引用。每轮 `ChatTurn` 包含 `request_id`、`kind`、独立的 `user` 和 `assistant` 消息、有效 `settings_version/prompt/model/materials/usage`；每条消息有 `id/role/content/version/status/error_code/saved_name/created_at/updated_at`。助手状态为 running、completed、failed、canceled 或 interrupted，原文本和部分回复持久保留。会话版本约束选材与标题，助手消息版本用于固定主动保存内容。
 
-生成提交 `{request_id,version,kind,content}`：`kind=insight` 时 `content=""`，使用已保存的默认洞察 Prompt；`kind=question` 使用非空白的原始问题。20,000 个 Unicode 码点上限只计算明确选中的全部笔记正文，恰好达到上限可生成；超过时返回 `CHAT_MATERIAL_LIMIT`，不调用模型。系统约定、Prompt、材料元数据、问题和后续对话不计入此上限，不另设对话总字节数或 Provider 消息条数限制，不裁切材料或删除历史。旧 `llm.context_bytes` 保留兼容但不生效。超过 1,000 条材料请求为 `CHAT_RESOURCE_LIMIT`。
+生成提交 `{request_id,version,kind,content,language?}`：`kind=insight` 时 `content=""`，使用已保存的默认洞察 Prompt；`kind=question` 使用非空白的原始问题。20,000 个 Unicode 码点上限只计算明确选中的全部笔记正文，恰好达到上限可生成；超过时返回 `CHAT_MATERIAL_LIMIT`，不调用模型。系统约定、Prompt、材料元数据、问题和后续对话不计入此上限，不另设对话总字节数或 Provider 消息条数限制，不裁切材料或删除历史。旧 `llm.context_bytes` 保留兼容但不生效。超过 1,000 条材料请求为 `CHAT_RESOURCE_LIMIT`。
+
+`language` 可选 `en` 或 `zh-CN`，省略或空字符串时使用简体中文；系统提示按该值设置回复语言，用户明确指定其他语言时可覆盖。英语请求使用英文内置洞察 Prompt，自定义 Prompt 保持原文。语言参与幂等校验，同一 `request_id` 改变语言返回 `IDEMPOTENCY_CONFLICT`。
 
 消息流使用 POST fetch 和 SSE。开始流之前的参数、来源、模型或预算失败返回普通 JSON 错误；开始后 HTTP 为 200，须按事件判断结果：
 

@@ -11219,6 +11219,11 @@
             "type": "string",
             "maxLength": 200
           },
+          "preview_kind": {
+            "type": "string",
+            "enum": ["", "question", "insight"],
+            "description": "First turn kind; empty for a chat without messages. Clients can localize the insight label without translating user text."
+          },
           "version": {
             "type": "integer",
             "minimum": 1
@@ -11238,6 +11243,7 @@
           "id",
           "title",
           "preview",
+          "preview_kind",
           "version",
           "material_count",
           "created_at",
@@ -11258,6 +11264,11 @@
           "preview": {
             "type": "string",
             "maxLength": 200
+          },
+          "preview_kind": {
+            "type": "string",
+            "enum": ["", "question", "insight"],
+            "description": "First turn kind; empty for a chat without messages. Clients can localize the insight label without translating user text."
           },
           "version": {
             "type": "integer",
@@ -11290,6 +11301,7 @@
           "id",
           "title",
           "preview",
+          "preview_kind",
           "version",
           "material_count",
           "created_at",
@@ -11378,6 +11390,11 @@
               "insight",
               "question"
             ]
+          },
+          "language": {
+            "type": "string",
+            "enum": ["", "en", "zh-CN"],
+            "description": "Reply language for this request. Omitted or empty values use Simplified Chinese. Included in request_id idempotency checks."
           },
           "content": {
             "type": "string",

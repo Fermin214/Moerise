@@ -86,7 +86,12 @@ button:disabled { cursor:default; opacity:.5; }
 .insight-history-row { flex:none; width:100%; border:0; background:transparent; text-align:left; cursor:pointer; }
 .insight-history-row > span { min-width:0; overflow-wrap:anywhere; white-space:pre-wrap; }
 .insight-history-date { display:block; font-size:12px; }
-@media (max-width:760px) { .insight-heading-right { gap:6px; } }
+@media (max-width:760px) {
+  .insight-heading-right { gap:6px; }
+  html[lang="en"] .insight-input { flex-wrap:wrap; }
+  html[lang="en"] .insight-input input { flex-basis:100%; }
+  html[lang="en"] .insight-input button:first-of-type { margin-left:auto; }
+}
 #list-retry { align-self:flex-start; }
 .discovery-page { min-width:0; }
 .discovery-page > .sub,.discovery-page > .error { margin:0; }
@@ -155,8 +160,8 @@ button:disabled { cursor:default; opacity:.5; }
   .side { max-height:none; padding:12px; gap:10px; }
   .side nav { display:flex; flex-direction:row !important; flex-wrap:wrap; }
   .side nav .sep { display:none; }
-  .side section[aria-label="日历"],.side section[aria-label="标签"] { display:none !important; }
-  .side.filters-open section[aria-label="日历"],.side.filters-open section[aria-label="标签"] { display:flex !important; }
+  .side #sidebar-calendar,.side #sidebar-tags { display:none !important; }
+  .side.filters-open #sidebar-calendar,.side.filters-open #sidebar-tags { display:flex !important; }
   .mobile-filter-toggle { display:block; align-self:flex-start; height:32px; font-size:13px; }
   .side #account { position:static; flex-direction:row !important; align-items:center; padding-top:0 !important; border-top:0 !important; }
   .side #account > a { margin-right:auto; }
@@ -169,3 +174,6 @@ button:disabled { cursor:default; opacity:.5; }
   .settings-row > input[type="checkbox"] { align-self:flex-start; }
   .settings-secret { justify-content:flex-start; }
 }
+
+.language-select { margin-left:auto; max-width:110px; padding:4px; border:1px solid #E3E3DE; border-radius:6px; background:transparent; color:var(--muted); font:inherit; font-size:12px; }
+.memos-login > .language-select { display:block; margin:0 0 16px auto; }

@@ -12,7 +12,7 @@ const runtime = process.env.MOERISE_PLAYWRIGHT_MODULE;
 const { chromium } = runtime ? await import(pathToFileURL(runtime).href) : await import('playwright');
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aP9sAAAAASUVORK5CYII=', 'base64');
 
-async function fixture(t) {
+async function fixture(t, language = 'zh-CN') {
   const notes = new Map();
   for (let i = 0; i < 47; i++) {
     const id = `n${String(i).padStart(2, '0')}`;
@@ -153,7 +153,7 @@ async function fixture(t) {
     await Promise.all([core, live].map(server => new Promise(resolve => { server.close(resolve); server.closeAllConnections(); })));
   });
   browser = await chromium.launch({ headless: true, channel: process.env.MOERISE_PLAYWRIGHT_CHANNEL || undefined });
-  const context = await browser.newContext({ viewport: { width: 1360, height: 960 } });
+  const context = await browser.newContext({ locale: language, viewport: { width: 1360, height: 960 } });
   const page = await context.newPage(), errors = [];
   await page.clock.setFixedTime(new Date('2026-10-30T04:00:00Z'));
   page.on('pageerror', err => errors.push(err.message));
@@ -674,5 +674,51 @@ test('reordering multiple editors keeps the focused editor connected', { timeout
     focused: document.activeElement.closest('form.editor') === globalThis.focusedForm,
   })), { removed: false, focused: true });
   assert.equal(await text.inputValue(), '连续输入中的草稿');
+  assert.deepEqual(errors, []);
+});
+
+test('English fallback, live language switching and stored preference preserve original notes and unsaved forms', { timeout: 60_000 }, async t => {
+  const { page, state, errors, url } = await fixture(t, 'fr-FR');
+  await page.goto(url);
+  await page.getByRole('button', { name: 'Sign in', exact: true }).waitFor();
+  assert.equal(await page.locator('html').getAttribute('lang'), 'en');
+  await login(page);
+  const note = page.locator('[data-name="memos/n00"]'); await note.waitFor();
+  await page.getByRole('button', { name: 'Previous month' }).waitFor();
+  assert.equal(await page.locator('#calendar-title').textContent(), 'October 2026');
+  assert.match(await note.locator('time').first().textContent(), /Oct/);
+  await page.locator('#content').fill('未保存的想法 #标签');
+  await page.locator('#attachment-input').setInputFiles({ name: '图片.png', mimeType: 'image/png', buffer: png });
+  await note.getByRole('button', { name: 'More actions' }).click();
+  await note.getByRole('menuitem', { name: 'Edit', exact: true }).click();
+  const editor = page.locator('form.editor'); await editor.locator('textarea').fill('Editing 原文');
+  await page.evaluate(() => { globalThis.languageEditor = document.querySelector('form.editor'); });
+  await page.locator('#app [data-language]').selectOption('zh-CN');
+  assert.equal(await page.locator('#add-attachment').getAttribute('aria-label'), '添加附件');
+  assert.equal(await page.locator('#calendar-title').textContent(), '2026年10月');
+  assert.equal(await page.evaluate(() => globalThis.languageEditor === document.querySelector('form.editor')), true);
+  assert.equal(await editor.locator('textarea').inputValue(), 'Editing 原文');
+  assert.equal(await page.locator('#content').inputValue(), '未保存的想法 #标签');
+  assert.match(await page.locator('#draft-attachments').textContent(), /图片.png/);
+  await page.locator('#app [data-language]').selectOption('en');
+  assert.match(await page.locator('#draft-attachments').getByRole('button').getAttribute('aria-label'), /Remove attachment 图片.png/);
+  await editor.getByRole('button', { name: 'Cancel', exact: true }).click();
+  assert.deepEqual(await note.locator('.note-content p').allTextContents(), state.notes.get('n00').content.split('\n\n'));
+  await page.route('**/api/app/v1/search', route => route.fulfill({ status: 503, json: {
+    error: { code: 'EMBEDDING_DISABLED', message: '敏感诊断 must not appear' },
+  } }));
+  await page.locator('#q').fill('test'); await page.locator('#search-mode').selectOption('semantic');
+  await page.locator('#list-error').filter({ hasText: 'Enable embeddings in Settings' }).waitFor();
+  assert.doesNotMatch(await page.locator('#list-error').textContent(), /敏感诊断/);
+  await page.locator('#app [data-language]').selectOption('zh-CN');
+  assert.match(await page.locator('#list-error').textContent(), /请在设置中启用/);
+  await page.reload(); await page.locator('#workspace').waitFor({ state: 'visible' });
+  assert.equal(await page.locator('html').getAttribute('lang'), 'zh-CN');
+  assert.deepEqual(await page.evaluate(() => Object.entries(localStorage)), [['moerise.language', 'zh-CN']]);
+  await page.addInitScript(() => Object.defineProperty(window, 'localStorage', { get() { throw new Error('Storage blocked'); } }));
+  await page.reload(); await page.locator('#workspace').waitFor({ state: 'visible' });
+  assert.equal(await page.locator('html').getAttribute('lang'), 'en');
+  await page.locator('#app [data-language]').selectOption('zh-CN');
+  assert.equal(await page.locator('html').getAttribute('lang'), 'zh-CN');
   assert.deepEqual(errors, []);
 });

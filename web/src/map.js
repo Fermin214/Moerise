@@ -1,3 +1,4 @@
+import { l, setText, setAttr } from './i18n.js';
 const statuses = new Set(['disabled', 'waiting', 'building', 'unavailable', 'ready', 'empty']);
 const resource = /^memos\/[A-Za-z0-9_-]+$/;
 const digest = /^[a-f0-9]{64}$/;
@@ -45,7 +46,7 @@ function validView(value) {
 
 function node(tag, className = '', text = '') {
   const element = document.createElement(tag);
-  element.className = className; element.textContent = text;
+  element.className = className; setText(element, text);
   return element;
 }
 
@@ -54,10 +55,10 @@ export function createMapPage({ request, handleFailure, validNote, renderNote, i
   let result = null, view = null, selected = initialView?.selected || '', readName = '', loading = false;
   let candidate = '', dragged = false, origin = null;
   const markers = new Map(), pointers = new Map();
-  const root = node('div', 'map-page'), description = node('p', 'sub', '\u6bcf\u4e2a\u70b9\u662f\u4e00\u6761\u7b14\u8bb0\uff0c\u8bed\u4e49\u76f8\u8fd1\u7684\u9760\u5f97\u66f4\u8fd1 \u00b7 \u70b9\u51fb\u9605\u8bfb');
+  const root = node('div', 'map-page'), description = node('p', 'sub', l("每个点是一条笔记，语义相近的靠得更近 · 点击阅读"));
   const field = node('div', 'card map-field'), message = node('p', 'sub'), reader = node('div', 'map-reader');
-  field.id = 'map-field'; field.tabIndex = 0; field.setAttribute('role', 'group'); field.setAttribute('aria-label', '\u8ba4\u77e5\u5730\u56fe');
-  field.setAttribute('aria-description', '\u62d6\u52a8\u5e73\u79fb\uff0c\u6eda\u8f6e\u6216\u53cc\u6307\u7f29\u653e\u3002\u65b9\u5411\u952e\u5e73\u79fb\uff0c\u52a0\u51cf\u952e\u7f29\u653e\uff0cHome \u663e\u793a\u5168\u56fe\uff0cR \u5237\u65b0\u3002Tab \u9009\u70b9\uff0cEnter \u9605\u8bfb\u3002');
+  field.id = 'map-field'; field.tabIndex = 0; field.setAttribute('role', 'group'); setAttr(field, 'aria-label', l("认知地图"));
+  setAttr(field, 'aria-description', l("拖动平移，滚轮或双指缩放。方向键平移，加减键缩放，Home 显示全图，R 刷新。Tab 选点，Enter 阅读。"));
   message.hidden = true; reader.hidden = true; root.append(description, field, message, reader);
   const activeMap = ticket => alive && mapSequence === ticket;
   const activeNote = ticket => alive && noteSequence === ticket;
@@ -66,7 +67,7 @@ export function createMapPage({ request, handleFailure, validNote, renderNote, i
     if (alive && result && view) onViewChange({ frame: result.layout_frame, ...view, selected });
   }
   function say(text = '', error = false) {
-    message.textContent = text; message.hidden = !text;
+    setText(message, text); message.hidden = !text;
     message.className = error ? 'error' : 'sub'; message.setAttribute('role', error ? 'alert' : 'status');
   }
   function busy() { root.setAttribute('aria-busy', String(loading || !!noteController)); field.setAttribute('aria-busy', String(loading)); }
@@ -100,11 +101,11 @@ export function createMapPage({ request, handleFailure, validNote, renderNote, i
     if (alive) timer = setTimeout(() => load(false), delay);
   }
   const errorMessages = {
-    MAP_RESPONSE_INVALID: '\u670d\u52a1\u8fd4\u56de\u7684\u5730\u56fe\u683c\u5f0f\u65e0\u6548\uff0c\u8bf7\u5237\u65b0\u9875\u9762\u3002',
-    MAP_RESOURCE_LIMIT: '\u5730\u56fe\u8bfb\u53d6\u8d85\u8fc7\u6280\u672f\u8d44\u6e90\u9884\u7b97\uff0c\u8bf7\u7a0d\u540e\u5237\u65b0\u3002',
-    MAP_LAYOUT_INVALID: '\u5730\u56fe\u5e03\u5c40\u65e0\u6548\uff0c\u8bf7\u91cd\u5efa\u7d22\u5f15\u3002',
-    MAP_REQUEST_CANCELED: '\u5730\u56fe\u8bfb\u53d6\u5df2\u53d6\u6d88\u3002',
-    REQUEST_TIMEOUT: '\u5730\u56fe\u8bfb\u53d6\u8d85\u65f6\uff0c\u8bf7\u7a0d\u540e\u5237\u65b0\u3002',
+    MAP_RESPONSE_INVALID: l("服务返回的地图格式无效，请刷新页面。"),
+    MAP_RESOURCE_LIMIT: l("地图读取超过技术资源预算，请稍后刷新。"),
+    MAP_LAYOUT_INVALID: l("地图布局无效，请重建索引。"),
+    MAP_REQUEST_CANCELED: l("地图读取已取消。"),
+    REQUEST_TIMEOUT: l("地图读取超时，请稍后刷新。"),
   };
   function fail(error) {
     const text = errorMessages[error.code];
@@ -116,7 +117,7 @@ export function createMapPage({ request, handleFailure, validNote, renderNote, i
     if (!alive || !point) return;
     clearReader(); const ticket = noteSequence;
     selected = name; saveView(); positionMarkers(); noteController = new AbortController(); busy();
-    say('\u6b63\u5728\u8bfb\u53d6\u7b14\u8bb0\u2026');
+    say(l("正在读取笔记…"));
     try {
       const note = await request(`/notes/${name.slice(6)}`, { controller: noteController });
       if (!activeNote(ticket)) return;
@@ -135,8 +136,8 @@ export function createMapPage({ request, handleFailure, validNote, renderNote, i
     result = next; field.replaceChildren(); markers.clear(); resetPointers();
     if (!['ready', 'empty'].includes(next.status)) {
       clearReader();
-      say({ disabled: '\u8bf7\u5728\u8bbe\u7f6e\u4e2d\u542f\u7528 Embedding\u3002', waiting: '\u8bed\u4e49\u7d22\u5f15\u6b63\u5728\u7b49\u5f85\u540c\u6b65\u6216\u6784\u5efa\u3002',
-        building: '\u8bed\u4e49\u7d22\u5f15\u6784\u5efa\u4e2d\uff0c\u53ef\u5728\u8bbe\u7f6e\u4e2d\u67e5\u770b\u8fdb\u5ea6\u3002', unavailable: '\u8bed\u4e49\u7d22\u5f15\u6784\u5efa\u5931\u8d25\uff0c\u53ef\u5728\u8bbe\u7f6e\u4e2d\u67e5\u770b\u9519\u8bef\u3002' }[next.status]);
+      say({ disabled: l("请在设置中启用 Embedding。"), waiting: l("语义索引正在等待同步或构建。"),
+        building: l("语义索引构建中，可在设置中查看进度。"), unavailable: l("语义索引构建失败，可在设置中查看错误。") }[next.status]);
       if (next.status !== 'disabled') refreshLater(next.status === 'unavailable' ? 10000 : 3000);
       return;
     }
@@ -148,7 +149,7 @@ export function createMapPage({ request, handleFailure, validNote, renderNote, i
     const fragment = document.createDocumentFragment();
     for (const point of next.points) {
       const marker = node('button', 'map-dot'); marker.type = 'button'; marker.dataset.name = point.name;
-      marker.setAttribute('aria-label', `\u7b14\u8bb0 ${point.name.slice(6)}`);
+      setAttr(marker, 'aria-label', l("笔记 {0}", { 0: point.name.slice(6) }));
       marker.style.backgroundColor = colors.get(point.tags[0]) || '#9AA3AF';
       marker.addEventListener('click', event => { if (event.detail === 0) readPoint(point.name); });
       marker.addEventListener('focus', () => {
@@ -160,7 +161,7 @@ export function createMapPage({ request, handleFailure, validNote, renderNote, i
       markers.set(point.name, marker); fragment.append(marker);
     }
     field.append(fragment); positionMarkers();
-    say(next.status === 'empty' ? '\u8fd8\u6ca1\u6709\u53ef\u663e\u793a\u7684\u7b14\u8bb0\u3002' : '');
+    say(next.status === 'empty' ? l("还没有可显示的笔记。") : '');
     if (selected && markers.has(selected)) {
       if (readName !== selected && !noteController) readPoint(selected);
     } else { selected = ''; clearReader(); saveView(); }
@@ -168,7 +169,7 @@ export function createMapPage({ request, handleFailure, validNote, renderNote, i
   async function load(initial = true) {
     clearTimeout(timer); timer = null; mapSequence++; const ticket = mapSequence;
     mapController?.abort(); mapController = new AbortController(); loading = true; busy();
-    if (initial) say('\u6b63\u5728\u52a0\u8f7d\u8ba4\u77e5\u5730\u56fe\u2026');
+    if (initial) say(l("正在加载认知地图…"));
     try {
       const next = await request('/map', { controller: mapController });
       if (!activeMap(ticket)) return;
