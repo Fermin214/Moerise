@@ -24,6 +24,7 @@ const messages = {
   IDENTITY_MISMATCH: 'Memos 身份校验失败。',
   CORE_UNAVAILABLE: '服务暂时无法连接，请稍后重试。',
   NETWORK_ERROR: '网络连接中断，请稍后重试。',
+  WEB_MODULE_UNAVAILABLE: '页面文件加载失败，请刷新页面后重试。',
   REQUEST_TIMEOUT: '请求超时，保存结果可能尚未确认。',
   CONTENT_EMPTY: '请写下正文或添加附件。',
   CONTENT_TOO_LARGE: '正文不能超过 64 KiB。',

@@ -18,7 +18,7 @@ import (
 	_ "time/tzdata"
 )
 
-const Version = "0.2.0"
+const Version = "0.1.0"
 
 type MemosConfig struct {
 	InstanceID     string  `json:"instance_id"`

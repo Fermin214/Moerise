@@ -15,7 +15,7 @@ let retryTimer = null, retryDelay = 1000, searchTimer = null;
 let currentURL = location.pathname + location.search;
 let currentKey = history.state?.webKey || crypto.randomUUID();
 let month = '', routeReturnKey = null;
-let pageCount = 0, reloading = false;
+let pageCount = 0, reloading = false, moduleReload = false;
 let searchStatus = '';
 let lastTimeline = { path: '/', values: filters('') };
 let settingsPage = null;
@@ -990,8 +990,9 @@ async function routeModule(load, generation, sequence) {
     return identity && generation === epoch && sequence === viewSequence ? module : null;
   } catch {
     if (identity && generation === epoch && sequence === viewSequence) {
-      handleFailure($('list-error'), { code: 'NETWORK_ERROR', retryable: true });
-      $('list-retry').textContent = '重试'; $('list-retry').hidden = false;
+      moduleReload = true;
+      handleFailure($('list-error'), { code: 'WEB_MODULE_UNAVAILABLE' });
+      $('list-retry').textContent = '刷新页面'; $('list-retry').hidden = false;
     }
     return null;
   }
@@ -1004,7 +1005,7 @@ async function showRoute() {
   discoveryPage?.destroy(); discoveryPage = null;
   const generation = epoch, sequence = ++viewSequence;
   listSequence++; listController?.abort(); clearTimeout(retryTimer); pageObserver.disconnect();
-  listing = reloading = false; items = []; nextToken = ''; pageCount = 0; searchStatus = '';
+  listing = reloading = moduleReload = false; items = []; nextToken = ''; pageCount = 0; searchStatus = '';
   $('notes').replaceChildren(); closeMenus();
   $('notes').hidden = $('page-end').hidden = ['/settings', '/review', '/walk', '/insights', '/map'].includes(location.pathname);
   for (const id of ['back', 'view-title', 'capability', 'empty', 'list-retry', 'filters', 'load-more']) $(id).hidden = true;
@@ -1166,7 +1167,11 @@ $('month-prev').addEventListener('click', () => changeMonth(-1));
 $('month-next').addEventListener('click', () => changeMonth(1));
 $('sidebar-retry').addEventListener('click', loadSidebar);
 $('load-more').addEventListener('click', () => loadNotes());
-$('list-retry').addEventListener('click', () => isTimeline() ? loadNotes(retryReset) : showRoute());
+$('list-retry').addEventListener('click', () => {
+  if (moduleReload) location.reload();
+  else if (isTimeline()) loadNotes(retryReset);
+  else showRoute();
+});
 $('back').addEventListener('click', () => {
   if (routeReturnKey) history.back();
   else navigate(safeFrom(new URLSearchParams(location.search).get('from')));

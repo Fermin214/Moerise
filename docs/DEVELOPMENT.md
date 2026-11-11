@@ -94,7 +94,7 @@ AI 入口隔离由 `TestExternalAIEndpointsRejectEveryCredential` 和 `TestAIAPI
 go test -race ./...
 ```
 
-资源预算的专项测试覆盖 cgroup v1/v2、挂载命名空间、父级限制、原生运行和显式 Go 内存限制，以及后台和来源排队期间的取消。此类宿主机布局与精确取消时机难以通过单一 Docker 环境的业务流程覆盖。`TestMemosLiveSmallFirstPageAndLargeBoundary` 检查短首屏、同时间组重读、来源变更和额外请求的预算。`TestMemosNativeAggregates` 检查官方统计的作者和状态、时区、总数与时间戳完整性、两次元数据变化、空池及失败无部分结果。
+资源预算的专项测试覆盖 cgroup v1/v2、挂载命名空间、父级限制、原生运行和显式 Go 内存限制，以及后台和来源排队期间的取消。此类宿主机布局与精确取消时机难以通过单一 Docker 环境的业务流程覆盖。`TestBackgroundQueueHandsOffBeforeNextBatch` 用虚拟调度检查批次间按队列交接及取消清理，`TestMemosOversizedPagesShrinkWithoutLosingNotes` 用长正文检查响应超限后的缩批、游标连续性和完整笔记集合。`TestMemosLiveSmallFirstPageAndLargeBoundary` 检查短首屏、同时间组重读、来源变更和额外请求的预算。`TestMemosNativeAggregates` 检查官方统计的作者和状态、时区、总数与时间戳完整性、两次元数据变化、空池及失败无部分结果。
 
 同步、Memos 协议和恢复改动使用真实接口验收。先启动 Docker Engine，再执行：
 
@@ -165,7 +165,7 @@ npm --prefix web start
 
 Web 使用两栏布局，侧栏关键词、搜索方式、日历和标签在任意页面跳回时间线并组合筛选。关键词默认直接读来源并按创建时间倒序，语义/混合通过本人搜索接口按相关度分页；混合降级显式提示。归档入口位于用户菜单；详情路由 `/notes/{id}` 支持直接访问和登录后恢复，返回来源页时恢复筛选及浏览位置。卡片内编辑支持 Ctrl+Enter 保存、Esc 取消；附件与正文分别编辑，正文中的标签保持原样。
 
-`web/test/browser.mjs` 使用正式 Web 和隔离 HTTP 来源，在真实 Chromium 中检查页面交互、附件、来源返回、冲突提示及迟到响应隔离。浏览器依赖由 `web/package-lock.json` 固定，安装后可运行全部五组测试；也可用 `MOERISE_PLAYWRIGHT_MODULE` 指定其他已安装模块：
+`web/test/browser.mjs` 使用正式 Web 和隔离 HTTP 来源，在真实 Chromium 中检查页面交互、附件、来源返回、冲突提示及迟到响应隔离。`web/test/upgrade-browser.mjs` 通过两次独立构建与静态产物替换，检查旧页面在模块失效后刷新恢复。浏览器依赖由 `web/package-lock.json` 固定，安装后可运行全部浏览器套件；也可用 `MOERISE_PLAYWRIGHT_MODULE` 指定其他已安装模块：
 
 ```bash
 (cd web && npx playwright install --with-deps chromium)
@@ -211,9 +211,9 @@ MOERISE_BASELINE_BINARY=/absolute/path/to/baseline-moerise \
 MOERISE_MAP_SCALE=100 node scripts/check-map.mjs
 ```
 
-脚本先使用旧二进制在隔离目录中建立真实会话、持久设置、分时回顾、完整聊天及向量地图，再停止 Core，用当前代码构建的二进制连接原目录。升级后检查原 Cookie 和浏览器阅读位置、设置版本、回顾、消息与材料引用、向量代次及地图点位保持，旧布局由后台补齐快照时间和标签，已有向量不重新请求模型。旧二进制需支持 3.8 的地图、聊天和设置接口；其路径只用于启动，不被改写或删除。
+脚本先使用旧二进制在隔离目录中建立真实会话、持久设置、分时回顾、完整聊天及向量地图，再停止 Core，用新版本代码构建的二进制连接原目录。升级后检查原 Cookie 和浏览器阅读位置、设置版本、回顾、消息与材料引用、向量代次及地图点位保持，旧布局由后台补齐快照时间和标签，已有向量不重新请求模型。旧二进制需支持 3.8 的地图、聊天和设置接口；其路径只用于启动，不被改写或删除。
 
-`web/test/insights-browser.mjs` 通过正式 Web 与隔离 API，在 Chromium 中检查正常/归档跨页选材、日期与精确标签组合、临时选择取消、Unicode 字符上限、自然 Markdown 与自由追问、固定版本原文保存、刷新及详情返回、空材料保留历史、来源失效、异常 EOF、导航断流、CSRF 更新和结果不明时原键原内容重试。会话菜单检查空草稿、历史分页选择、主动停止、删除确认、生成与保存排空、失败重试、版本冲突及迟到响应隔离。恢复及生成状态轮询时，来源问题提示优先于历史中断提示，临时读取失败按退避间隔继续读取，包括断流后的首次状态核对；成功后解除临时错误，离开页面停止重试。确认选材或移除材料会刷新全部剩余原文及字符数，包括当前筛选外的材料；刷新失败保留原选择，超时后可在同窗口使用新请求重试，来源在确认期间再次改变时提示重选并禁止生成。`web/test/chat-stream.test.mjs` 检查分片 UTF-8、SSE 注释与 CRLF、显式完成、错误终态及非法尾随输出。运行浏览器专项使用 `node --test web/test/insights-browser.mjs`，环境变量与其他浏览器检查相同。
+`web/test/insights-browser.mjs` 通过正式 Web 与隔离 API，在 Chromium 中检查正常/归档跨页选材、日期与精确标签组合、临时选择取消、Unicode 字符上限、自然 Markdown 与自由追问、固定版本原文保存、刷新及详情返回、空材料保留历史、来源失效、异常 EOF、导航断流、CSRF 更新和结果不明时原键原内容重试。会话菜单检查空草稿、历史分页选择、主动停止、删除确认、生成与保存排空、失败重试、版本冲突及迟到响应隔离。恢复及生成状态轮询时，来源问题提示优先于历史中断提示，临时读取失败按退避间隔继续读取，包括断流后的首次状态核对；成功后解除临时错误，离开页面停止重试。确认选材或移除材料会刷新全部剩余原文及字符数，包括筛选范围外的材料；刷新失败保留原选择，超时后可在同窗口使用新请求重试，来源在确认期间再次改变时提示重选并禁止生成。`web/test/chat-stream.test.mjs` 检查分片 UTF-8、SSE 注释与 CRLF、显式完成、错误终态及非法尾随输出。运行浏览器专项使用 `node --test web/test/insights-browser.mjs`，环境变量与其他浏览器检查相同。
 
 `TestClientDiscoveryMemosAcceptance` 使用真实 Memos、Core 和可控 Embedding 服务，覆盖两时段各三条的固定计划、纯图与纯文件、受保护图片、Cookie/Origin/CSRF、重启、关闭模型后的回顾，以及随机和指定起点的语义前进、归档起点与候选排除：
 
@@ -264,7 +264,7 @@ node scripts/check-models.mjs
 
 省略 `MOERISE_PLAYWRIGHT_CHANNEL` 时使用 Playwright 安装的 Chromium。模型模拟器运行在宿主机，Core 通过 `host.docker.internal` 访问，Linux 引擎使用 `host-gateway` 映射。来源与 Core 使用独立 Docker 网络，发布端口只绑定回环地址。
 
-在 Linux 上，模型、回顾与聊天联合流程的编译、Core 和索引重建容器使用执行脚本的 UID/GID，使绑定目录中的缓存及临时数据归当前用户所有，结束后可直接清理。
+在 Linux 上，模型、回顾与聊天联合流程的编译、Core 和索引重建容器使用执行脚本的 UID/GID，使绑定目录中的缓存及临时数据归执行用户所有，结束后可直接清理。
 
 流程覆盖两类模型独立启停、Web 保存与连接检查、版本冲突和错误脱敏、通用文档与查询协议、部分索引持久化、Core 重启续建、未变片段复用、Embedding 空间替换时阻止混用、LLM 变更保留向量代次，以及索引重建后的设置、密钥与浏览器会话。末尾检查模型关闭后的关键词搜索、笔记写入、退出及窄屏布局。轮询间隔为 1 秒，来源同步间隔为 5 秒；来源透传代理将请求起始时间至少间隔 150 毫秒，控制联合验收的并行流量，Memos 自身的限流规则继续生效。
 
@@ -396,7 +396,7 @@ python3 scripts/benchmark-search.py --docker-image golang:1.27.3-bookworm \
 
 ## 自然聊天质量评测
 
-`TestChatQualityLiveAcceptance` 使用 AI 洞察当前的本人聊天 API 和配置中的 `llm`。它创建独立的真实 Memos、账号、状态与服务进程，导入 `tests/testdata/chat-quality.json` 的固定虚构材料，并按每例明确的资源集合创建持久会话；关闭 Embedding，不补入全库历史。一键洞察使用产品本身的默认 Prompt，自由提问覆盖跨笔记联想、重复与重新发现、工程与记忆类比、矛盾的多种解释、时间与写作，以及反直觉提案。每例均继续追问，让最初的想法发展为新玩法、小工具或可讨论的提案，同时检查显式 SSE 完成、恢复读取、同请求重放、主动保存及官方原文读回。
+`TestChatQualityLiveAcceptance` 使用 AI 洞察的本人聊天 API 和配置中的 `llm`。它创建独立的真实 Memos、账号、状态与服务进程，导入 `tests/testdata/chat-quality.json` 的固定虚构材料，并按每例明确的资源集合创建持久会话；关闭 Embedding，不补入全库历史。一键洞察使用产品本身的默认 Prompt，自由提问覆盖跨笔记联想、重复与重新发现、工程与记忆类比、矛盾的多种解释、时间与写作，以及反直觉提案。每例均继续追问，让最初的想法发展为新玩法、小工具或可讨论的提案，同时检查显式 SSE 完成、恢复读取、同请求重放、主动保存及官方原文读回。
 
 ```bash
 MOERISE_CHAT_QUALITY_CONFIG="$PWD/.local/config.json" \

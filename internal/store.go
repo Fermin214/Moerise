@@ -12,8 +12,8 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"time"
 
+	"golang.org/x/sync/semaphore"
 	_ "modernc.org/sqlite"
 )
 
@@ -25,24 +25,17 @@ type Store struct {
 	state          *sql.DB
 	index          *sql.DB
 	reviewMu       sync.Mutex
-	backgroundMu   sync.Mutex
+	background     *semaphore.Weighted
 	productVersion int64
 	runtimeMu      *sync.RWMutex
 }
 
-// 同步和向量构建共用后台执行名额，交互读取仍通过各自的数据库事务执行。
+// 同步、向量构建和地图生成按等待顺序共用后台名额，交互读取独立执行。
 func (s *Store) lockBackground(ctx context.Context) (func(), error) {
-	for {
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
-		if s.backgroundMu.TryLock() {
-			return s.backgroundMu.Unlock, nil
-		}
-		if err := runtimePause(ctx, 10*time.Millisecond); err != nil {
-			return nil, err
-		}
+	if err := s.background.Acquire(ctx, 1); err != nil {
+		return nil, err
 	}
+	return func() { s.background.Release(1) }, nil
 }
 
 func openDB(path string, readonly bool) (*sql.DB, error) {
@@ -196,7 +189,7 @@ func NewStore(settings Settings) (*Store, error) {
 		state.Close()
 		return nil, err
 	}
-	store := &Store{Settings: settings, state: state, index: index}
+	store := &Store{Settings: settings, state: state, index: index, background: semaphore.NewWeighted(1)}
 	for _, migration := range []struct {
 		db   *sql.DB
 		kind string

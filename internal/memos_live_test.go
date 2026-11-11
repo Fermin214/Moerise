@@ -148,8 +148,9 @@ func TestMemosLiveCursorBinding(t *testing.T) {
 		func(m *MemosClient) { m.config.InstanceID = "other" },
 		func(m *MemosClient) { m.config.BaseURL = "http://other:5230" },
 	} {
-		other := *client
-		mutate(&other)
+		other := NewMemosClient(client.config)
+		other.client = client.client
+		mutate(other)
 		if _, _, err := other.ListLivePage(context.Background(), "NORMAL", 1, token); errorCode(err) != "INVALID_PAGE_TOKEN" {
 			t.Fatalf("cross-binding cursor accepted: %v", err)
 		}

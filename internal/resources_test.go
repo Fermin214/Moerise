@@ -8,6 +8,7 @@ import (
 	"runtime"
 	"runtime/debug"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
@@ -110,4 +111,49 @@ func TestBackgroundAndSourceQueuesRespectCancellation(t *testing.T) {
 	if _, err := source.Get(ctx, "memos/one"); !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("source queue lost deadline: %v", err)
 	}
+}
+
+// 虚拟调度保证等待者已进入队列，避免靠真实时钟碰运气复现饥饿。
+func TestBackgroundQueueHandsOffBeforeNextBatch(t *testing.T) {
+	store := testStore(t, testSettings(t))
+	synctest.Test(t, func(t *testing.T) {
+		release, err := store.lockBackground(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+		order := make(chan string, 2)
+		go func() {
+			unlock, err := store.lockBackground(t.Context())
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			order <- "sync"
+			unlock()
+		}()
+		synctest.Wait()
+		ctx, cancel := context.WithCancel(t.Context())
+		go func() {
+			unlock, err := store.lockBackground(ctx)
+			if err == nil {
+				unlock()
+				t.Error("canceled waiter acquired background slot")
+			} else if !errors.Is(err, context.Canceled) {
+				t.Error(err)
+			}
+		}()
+		synctest.Wait()
+		cancel()
+		synctest.Wait()
+		release()
+		next, err := store.lockBackground(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+		order <- "next vector batch"
+		next()
+		if first, second := <-order, <-order; first != "sync" || second != "next vector batch" {
+			t.Fatalf("background work overtook its waiter: %q, %q", first, second)
+		}
+	})
 }

@@ -11,8 +11,11 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 )
+
+var errMemosResponseTooLarge = upstreamError("UPSTREAM_PROTOCOL", "Memos response exceeded the size limit")
 
 type Source interface {
 	Identity(context.Context) (string, error)
@@ -22,9 +25,10 @@ type Source interface {
 }
 
 type MemosClient struct {
-	config MemosConfig
-	client *http.Client
-	slots  chan struct{}
+	config   MemosConfig
+	client   *http.Client
+	slots    chan struct{}
+	pageSize atomic.Int64
 }
 
 func NewMemosClient(config MemosConfig) *MemosClient {
@@ -33,16 +37,38 @@ func NewMemosClient(config MemosConfig) *MemosClient {
 	}
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.Proxy = nil
-	return &MemosClient{config: config, client: &http.Client{
+	client := &MemosClient{config: config, client: &http.Client{
 		Transport: transport, Timeout: time.Duration(config.TimeoutSeconds * float64(time.Second)),
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}, slots: make(chan struct{}, min(4, max(2, processCPUs())))}
+	client.pageSize.Store(int64(config.PageSize))
+	return client
 }
 
 func (m *MemosClient) Close() { m.client.CloseIdleConnections() }
 
 func (m *MemosClient) request(ctx context.Context, path string, query url.Values, target any) error {
-	return m.do(ctx, http.MethodGet, path, query, nil, target)
+	if path != "/api/v1/memos" || query.Get("pageSize") == "" {
+		return m.do(ctx, http.MethodGet, path, query, nil, target)
+	}
+	size, err := strconv.Atoi(query.Get("pageSize"))
+	if err != nil || size < 1 {
+		return upstreamError("UPSTREAM_PROTOCOL", "Invalid Memos page size")
+	}
+	for {
+		size = min(size, int(m.pageSize.Load()))
+		query.Set("pageSize", strconv.Itoa(size))
+		err := m.do(ctx, http.MethodGet, path, query, nil, target)
+		if err != errMemosResponseTooLarge || size <= 1 {
+			return err
+		}
+		size = max(1, size/2)
+		for limit := m.pageSize.Load(); int64(size) < limit; limit = m.pageSize.Load() {
+			if m.pageSize.CompareAndSwap(limit, int64(size)) {
+				break
+			}
+		}
+	}
 }
 
 func (m *MemosClient) do(ctx context.Context, method, path string, query url.Values, body []byte, target any) error {
@@ -98,8 +124,11 @@ func (m *MemosClient) do(ctx context.Context, method, path string, query url.Val
 		return upstreamError("UPSTREAM_UNAVAILABLE", "Memos request failed")
 	}
 	data, err := io.ReadAll(io.LimitReader(response.Body, 32*1024*1024+1))
-	if err != nil || len(data) > 32*1024*1024 {
+	if err != nil {
 		return upstreamError("UPSTREAM_PROTOCOL", "Invalid Memos response")
+	}
+	if len(data) > 32*1024*1024 {
+		return errMemosResponseTooLarge
 	}
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.UseNumber()
