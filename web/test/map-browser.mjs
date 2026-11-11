@@ -177,9 +177,10 @@ test('mobile touch drag and pinch zoom preserve the prototype frame and never se
   assert.equal(await field.evaluate(element => element.getBoundingClientRect().height), 440);
   assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1));
   await capture(page, 'map-mobile.png');
-  const count = state.requests.filter(req => req.path.startsWith('/notes/n')).length;
+  const noteReads = () => state.requests.filter(req => /^\/notes\/[^/]+$/.test(req.path)).map(req => req.path);
+  const readsBeforeCancel = noteReads();
   await touch('touchStart', [{ x: rect.x + 40, y: rect.y + 40, id: 1 }]); await touch('touchCancel', []);
-  assert.equal(state.requests.filter(req => req.path.startsWith('/notes/n')).length, count);
+  assert.deepEqual(noteReads(), readsBeforeCancel);
 });
 
 test('session expiry and active logout remove private maps and cancel pending reads', async t => {
