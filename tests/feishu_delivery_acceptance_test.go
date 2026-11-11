@@ -67,6 +67,7 @@ func TestFeishuFullReviewDeliveryWithRealMemosAcceptance(t *testing.T) {
 	settings.Review.Count, settings.Review.MinAgeHours = 2, 0
 	settings.Notifications.Enabled, settings.Notifications.Time = true, "00:00"
 	pointer := func(value string) *string { return &value }
+	settings.Channel.Kind = "feishu-app"
 	settings.Channel.AppID, settings.Channel.AppSecret = pointer("cli_acceptance"), pointer(strings.Repeat("s", 32))
 	settings.Channel.VerificationToken, settings.Channel.UserOpenID = pointer(strings.Repeat("v", 32)), pointer("ou_owner")
 	source := moerise.NewMemosClient(settings.Memos)

@@ -12,6 +12,7 @@ import (
 
 func TestAppSharesServicesAndClosesOnce(t *testing.T) {
 	settings := testSettings(t)
+	settings.Channel.Kind = "feishu-app"
 	appID := "app-test"
 	settings.Channel.AppID = &appID
 	store := testStore(t, settings)

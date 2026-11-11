@@ -53,6 +53,8 @@ func (s *Settings) loadEnvironment() error {
 		{"FEISHU_USER_OPEN_ID", &s.Channel.UserOpenID},
 		{"FEISHU_WEBHOOK_URL", &s.Channel.WebhookURL},
 		{"FEISHU_WEBHOOK_SECRET", &s.Channel.WebhookSecret},
+		{"TELEGRAM_BOT_TOKEN", &s.Channel.BotToken},
+		{"TELEGRAM_CHAT_ID", &s.Channel.Destination},
 	}
 	for _, field := range fields {
 		name := "MOERISE_" + field.name

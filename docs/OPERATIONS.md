@@ -23,7 +23,7 @@ Moerise 支持 Linux 原生二进制和 Docker Linux 容器部署，两者都需
 | `sync` | 增量轮询、全量修复、重叠时间、退避及任务租约 |
 | `review` | 随机回顾数量、等待期、近期排除期与归档范围，默认 3 条、72 小时、7 天，详见[每日回顾](DAILY-REVIEW.md) |
 | `notifications` | 主动推送开关和 `times` 时段列表，默认关闭、每天 `09:00` 一次；使用顶层时区 |
-| `channel` | 飞书应用凭据、事件验证、绑定身份及推送渠道，详见[飞书入口](FEISHU.md) |
+| `channel` | 默认 `none`，由用户选择飞书或 Telegram，见[飞书入口](FEISHU.md)和 [Telegram](TELEGRAM.md) |
 | `embedding` | 独立的向量模型配置，默认关闭；通用及百炼配置与连接检查见[向量模型](EMBEDDING.md) |
 | `llm` | 独立的对话模型配置，默认关闭；协议、限额与连接检查见 [AI](AI.md) |
 
@@ -37,7 +37,7 @@ MCP 使用相同的 Moerise 令牌，连接服务的 `/mcp`；具体工具和语
 
 调度记录已处理的日期和时段，恢复运行后处理当天到期时段，不补建往日推送。关闭推送仍生成当天回顾。发送结果不明时通过通知 API 查看并确认，见[调度与发送队列](NOTIFICATIONS.md)。恢复产品状态快照将等待及执行中的通知、未完成事件的回复标为 `unknown`。
 
-每日回顾每次先单独发送一次 `「今日回顾」`，再逐篇发送完整正文、原图及尾注 `#标签  创建于YYYY-MM-DD`；无标签时尾注只有 `创建于YYYY-MM-DD`。日期取来源 `create_time`，按顶层 `timezone` 换算。不附加链接、片号或状态提示，普通文件不推送。没有可发送内容的笔记不发尾注，整次均无内容时不发标题。长文按请求大小限制切分，按正文片顺序拼接可还原完整原文。Webhook 发送图片需额外配置应用的 `app_id`、`app_secret` 及图片资源权限，见[飞书入口](FEISHU.md#自定义机器人-webhook)。发送途中笔记变更时，跳过该笔记的剩余分片。
+飞书每日回顾每次先单独发送一次 `「今日回顾」`，再逐篇发送完整正文、原图及尾注 `#标签  创建于YYYY-MM-DD`；无标签时尾注只有 `创建于YYYY-MM-DD`。日期取来源 `create_time`，按顶层 `timezone` 换算。不附加链接、片号或状态提示，普通文件不推送。没有可发送内容的笔记不发尾注，整次均无内容时不发标题。长文按请求大小限制切分，按正文片顺序拼接可还原完整原文。Webhook 发送图片需额外配置应用的 `app_id`、`app_secret` 及图片资源权限，见[飞书入口](FEISHU.md#自定义机器人-webhook)。发送途中笔记变更时，跳过该笔记的剩余分片。Telegram 共用相同队列，标题与日期说明使用英文，图片作为原文件发送，接入步骤见 [Telegram](TELEGRAM.md)。
 
 服务绑定来源根地址和账号。更换来源或账号时使用新的 `instance_id` 和数据卷。根地址不包含账号密码、路径、查询参数或片段；Memos 请求直接连接来源，不读取环境中的 HTTP 代理设置。
 
@@ -62,11 +62,13 @@ MCP 使用相同的 Moerise 令牌，连接服务的 `/mcp`；具体工具和语
 | `MOERISE_REVIEW_INCLUDE_ARCHIVED` | 是否包含归档，`true` 或 `false` |
 | `MOERISE_NOTIFICATIONS_ENABLED`、`MOERISE_NOTIFICATIONS_TIMES` | 推送开关、逗号分隔时段，例如 `09:00,18:00` |
 | `MOERISE_NOTIFICATIONS_TIME` | 单时段时间；配置了 `times` 时以列表为准 |
-| `MOERISE_CHANNEL_KIND` | `feishu-app` 或 `feishu-webhook` |
+| `MOERISE_CHANNEL_KIND` | 默认 `none`，可选 `telegram`、`feishu-app` 或 `feishu-webhook` |
 | `MOERISE_FEISHU_APP_ID`、`MOERISE_FEISHU_APP_SECRET` | 应用凭据 |
 | `MOERISE_FEISHU_VERIFICATION_TOKEN`、`MOERISE_FEISHU_ENCRYPT_KEY` | 回调校验及可选加密 |
 | `MOERISE_FEISHU_USER_OPEN_ID` | 专用私聊身份与主动推送接收者 |
 | `MOERISE_FEISHU_WEBHOOK_URL`、`MOERISE_FEISHU_WEBHOOK_SECRET` | 自定义机器人地址与可选签名密钥 |
+| `MOERISE_TELEGRAM_BOT_TOKEN` | `channel.bot_token`，Telegram 机器人密钥 |
+| `MOERISE_TELEGRAM_CHAT_ID` | `channel.destination`，Telegram 数字 Chat ID |
 
 只通过环境运行二进制时，填写全部必要来源、鉴权及密钥变量即可省略 JSON 文件。Compose 使用 `.env`，不要求宿主机配置文件或备份目录。基础设施变化通过重新创建容器生效；日常字段通过 Web 设置保存，已有持久值不再由部署文件覆盖。
 

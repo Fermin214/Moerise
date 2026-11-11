@@ -8424,6 +8424,9 @@
               },
               "webhook_secret": {
                 "$ref": "#/components/schemas/SettingsSecretStatus"
+              },
+              "bot_token": {
+                "$ref": "#/components/schemas/SettingsSecretStatus"
               }
             },
             "required": [
@@ -8433,7 +8436,8 @@
               "verification_token",
               "encrypt_key",
               "webhook_url",
-              "webhook_secret"
+              "webhook_secret",
+              "bot_token"
             ]
           },
           "channel_capabilities": {
@@ -8668,9 +8672,12 @@
               "kind": {
                 "type": "string",
                 "enum": [
+                  "none",
                   "feishu-app",
-                  "feishu-webhook"
-                ]
+                  "feishu-webhook",
+                  "telegram"
+                ],
+                "description": "消息渠道；默认 none，由用户选择飞书或 Telegram。"
               },
               "app_id": {
                 "type": [
@@ -8688,7 +8695,8 @@
                 "type": [
                   "string",
                   "null"
-                ]
+                ],
+                "description": "Telegram 使用非零数字 Chat ID；飞书应用可省略以使用绑定用户 Open ID。"
               }
             },
             "required": [
@@ -8918,9 +8926,12 @@
               "kind": {
                 "type": "string",
                 "enum": [
+                  "none",
                   "feishu-app",
-                  "feishu-webhook"
-                ]
+                  "feishu-webhook",
+                  "telegram"
+                ],
+                "description": "消息渠道；默认 none，由用户选择飞书或 Telegram。"
               },
               "app_id": {
                 "type": "string"
@@ -8971,6 +8982,9 @@
             "$ref": "#/components/schemas/SettingsSecretOperation"
           },
           "webhook_secret": {
+            "$ref": "#/components/schemas/SettingsSecretOperation"
+          },
+          "bot_token": {
             "$ref": "#/components/schemas/SettingsSecretOperation"
           }
         }

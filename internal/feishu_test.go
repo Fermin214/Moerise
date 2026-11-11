@@ -21,6 +21,7 @@ func stringPointer(value string) *string { return &value }
 func feishuSettings(t *testing.T) Settings {
 	t.Helper()
 	settings := testSettings(t)
+	settings.Channel.Kind = "feishu-app"
 	settings.Channel.AppID = stringPointer("cli_test_app")
 	settings.Channel.AppSecret = stringPointer(strings.Repeat("s", 32))
 	settings.Channel.VerificationToken = stringPointer(strings.Repeat("v", 32))

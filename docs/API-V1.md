@@ -135,7 +135,7 @@ GET 和 PATCH 的成功响应均为 `SettingsView`：
 | `channel_capabilities` | object | 服务端按配置计算的 `text`、`images`、`record` 布尔能力 |
 | `default_insight_prompt` | string | 内置洞察 Prompt，可用于恢复 `settings.insights.default_prompt` |
 
-`review` 包含条数、等待时长、重复排除期及归档开关；`notifications` 包含启用状态、兼容单时段的 `time` 及多时段 `times`。模型配置含启用状态、协议、地址、模型及调用预算，均无 `api_key`；`channel` 包含类型、应用标识、用户标识及目标，无应用密钥、校验 Token、加密密钥或 Webhook 凭据。具体字段见 OpenAPI。
+`review` 包含条数、等待时长、重复排除期及归档开关；`notifications` 包含启用状态、兼容单时段的 `time` 及多时段 `times`。模型配置含启用状态、协议、地址、模型及调用预算，均无 `api_key`；`channel` 包含类型、应用标识、用户标识及目标，默认类型为 `none`，用户可选 `telegram`、`feishu-app` 或 `feishu-webhook`。Telegram 的目标为数字 Chat ID；配置不含 Bot Token、应用密钥、校验 Token、加密密钥或 Webhook 凭据。具体字段见 OpenAPI。
 
 PATCH 请求体仅接受 `version`、`settings`、`secrets`，上限 128 KiB，Content-Type 必须为 `application/json`。`version` 必填且为正整数；至少提交一个设置字段或密钥操作。设置对象递归合并，数组整体替换；省略字段保持原值。所有层级拒绝重复字段、未知字段和显式 `null`，设置对象内也不能嵌入密钥或基础设施字段。
 

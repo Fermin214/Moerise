@@ -1,5 +1,21 @@
 package moerise
 
+import "time"
+
+type notificationRetryError struct {
+	error
+	after time.Duration
+}
+
+func (e *notificationRetryError) Unwrap() error { return e.error }
+
+func newNotificationTransport(channel ChannelConfig, store *Store, reviews *ReviewService, events *FeishuService) NotificationTransport {
+	if channel.Kind == "telegram" {
+		return newTelegramDelivery(channel, store, reviews)
+	}
+	return newFeishuDelivery(channel, store, reviews, events)
+}
+
 // 只保存尚需发送或确认的渠道；凭据随产品设置加密持久化。
 func (s *Store) retainNotificationChannels(settings *Settings) error {
 	rows, err := s.state.Query(`SELECT DISTINCT channel_key FROM notifications
@@ -57,6 +73,6 @@ func (a *App) notificationTransport(channel ChannelConfig) (NotificationTranspor
 	if events != nil {
 		events.Search = a.Search
 	}
-	transport := newFeishuDelivery(channel, store, a.Reviews, events)
+	transport := newNotificationTransport(channel, store, a.Reviews, events)
 	return transport, func() { closeChannel(events, transport) }
 }

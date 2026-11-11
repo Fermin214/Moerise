@@ -27,6 +27,9 @@ func closeChannel(events *FeishuService, transport NotificationTransport) {
 			client.http.CloseIdleConnections()
 		}
 	}
+	if delivery, ok := transport.(*TelegramDelivery); ok {
+		delivery.http.CloseIdleConnections()
+	}
 }
 
 func (a *App) closeRuntime() {
@@ -111,7 +114,7 @@ func (a *App) UpdateSettings(ctx context.Context, update SettingsUpdate) (Settin
 		if events != nil {
 			events.Search = a.Search
 		}
-		transport = newFeishuDelivery(settings.Channel, a.Store, a.Reviews, events)
+		transport = newNotificationTransport(settings.Channel, a.Store, a.Reviews, events)
 	}
 	now := time.Now()
 	if old.daily != nil && now.Before(old.daily.Until) {

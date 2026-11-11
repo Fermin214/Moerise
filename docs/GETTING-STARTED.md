@@ -67,7 +67,7 @@ Start with ordinary notes, attachments, tags, keyword search and daily review. O
 
 - **Embeddings:** choose a supported provider and model, save, check the connection, then wait for the semantic index to finish. This enables semantic search, hybrid search, random walks and the note map.
 - **LLM:** configure OpenAI Chat Completions, OpenAI Responses or Anthropic Messages. Save and check the connection. In AI insights, select notes and ask a question or choose Generate insight. Embeddings are not required for chat.
-- **Feishu:** configure a bot or webhook for optional review delivery. Feishu's bot commands and delivery messages use Chinese; the Web interface works independently of this integration.
+- **Messaging:** no channel is selected by default. Choose [Telegram](TELEGRAM.md) for English review delivery or a [Feishu](FEISHU.md) bot/webhook for Chinese delivery. Telegram needs a Bot Token and numeric Chat ID; Feishu also supports note capture. Set the channel and review schedule in Web settings.
 
 Model features send the necessary note content to the provider you configure. Notes, tags, custom prompts and existing conversations retain their original language. New AI requests carry the interface's reply language; an explicit user request can ask for another language.
 

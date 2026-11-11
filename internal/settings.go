@@ -219,6 +219,7 @@ func secretFields(product *ProductSettings) map[string]**string {
 		"app_secret": &product.Channel.AppSecret, "verification_token": &product.Channel.VerificationToken,
 		"encrypt_key": &product.Channel.EncryptKey, "webhook_url": &product.Channel.WebhookURL,
 		"webhook_secret": &product.Channel.WebhookSecret,
+		"bot_token":      &product.Channel.BotToken,
 	}
 }
 
@@ -235,7 +236,7 @@ func publicProduct(product ProductSettings) map[string]any {
 		delete(result[section].(map[string]any), "api_key")
 	}
 	channel := result["channel"].(map[string]any)
-	for _, key := range []string{"app_secret", "verification_token", "encrypt_key", "webhook_url", "webhook_secret"} {
+	for _, key := range []string{"app_secret", "verification_token", "encrypt_key", "webhook_url", "webhook_secret", "bot_token"} {
 		delete(channel, key)
 	}
 	return result
@@ -264,8 +265,10 @@ func (s *Store) settingsView() SettingsView {
 	app := configured(channel.AppID) != "" && configured(channel.AppSecret) != ""
 	record := channel.Kind == "feishu-app" && app && configured(channel.VerificationToken) != "" && configured(channel.UserOpenID) != ""
 	text := record || channel.Kind == "feishu-webhook" && configured(channel.WebhookURL) != ""
+	telegram := channel.Kind == "telegram" && validTelegramToken(configured(channel.BotToken)) &&
+		validTelegramChat(configured(channel.Destination))
 	return SettingsView{s.productVersion, publicProduct(product), secrets,
-		ChannelCapabilities{text, text && app, record}, DefaultInsightPrompt}
+		ChannelCapabilities{text || telegram, text && app || telegram, record}, DefaultInsightPrompt}
 }
 
 func mergeSettings(target map[string]any, changes map[string]json.RawMessage) error {

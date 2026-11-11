@@ -112,7 +112,7 @@ func TestClientSettingsViewHidesEverySecret(t *testing.T) {
 		t.Fatalf("settings read: %d %s", response.Code, response.Body.String())
 	}
 	if view.Version != 1 || view.DefaultInsightPrompt != DefaultInsightPrompt ||
-		len(view.Secrets) != 7 || len(view.Settings) != 7 {
+		len(view.Secrets) != 8 || len(view.Settings) != 7 {
 		t.Fatalf("incomplete settings view: %s", response.Body.String())
 	}
 	for name := range secretFields(&product) {

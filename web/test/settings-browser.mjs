@@ -23,11 +23,11 @@ function settings() {
       embedding: { enabled: false, provider: 'bailian', protocol: 'dashscope', base_url: null,
         model: 'qwen3.7-text-embedding', dimensions: 1024, send_dimensions: false, batch_size: 20, timeout_seconds: 30,
         max_concurrency: 2, max_retries: 2, query_instruction: null },
-      channel: { kind: 'feishu-app', app_id: null, user_open_id: null, destination: null },
+      channel: { kind: 'none', app_id: null, user_open_id: null, destination: null },
       insights: { default_prompt: '用户自定义 Prompt' },
     },
     secrets: Object.fromEntries(['llm_api_key', 'embedding_api_key', 'app_secret', 'verification_token',
-      'encrypt_key', 'webhook_url', 'webhook_secret'].map(name => [name, { configured: name === 'llm_api_key' }])),
+      'encrypt_key', 'webhook_url', 'webhook_secret', 'bot_token'].map(name => [name, { configured: name === 'llm_api_key' }])),
     channel_capabilities: { text: false, images: false, record: false },
   };
 }
@@ -100,8 +100,10 @@ async function fixture(t, language = 'zh-CN') {
       if (operation.action !== 'keep') state.value.secrets[key].configured = operation.action === 'replace';
     }
     state.value.version++;
-    const webhook = state.value.secrets.webhook_url.configured;
-    state.value.channel_capabilities = { text: webhook, images: false, record: false };
+    const kind = state.value.settings.channel.kind;
+    const webhook = kind === 'feishu-webhook' && state.value.secrets.webhook_url.configured;
+    const telegram = kind === 'telegram' && state.value.secrets.bot_token.configured && !!state.value.settings.channel.destination;
+    state.value.channel_capabilities = { text: webhook || telegram, images: telegram, record: false };
     const reply = structuredClone(state.value);
     if (state.hold) { state.pending.push(() => json(reply)); return; }
     json(reply);
@@ -515,5 +517,41 @@ test('English settings switch language without clearing secrets, changing values
   await page.setViewportSize({ width: 390, height: 844 });
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
   await page.screenshot({ path: '.local/i18n-review/settings-en-mobile.png', fullPage: true });
+  assert.deepEqual(errors, []);
+});
+
+test('messaging channels start unselected and save Telegram through localized settings without exposing its token', async t => {
+  const { page, state, errors, url } = await fixture(t, 'en-US');
+  await page.goto(url + '/settings'); await login(page);
+  await page.getByRole('button', { name: 'Save settings', exact: true }).waitFor();
+  assert.equal(await setting(page, 'channel.kind').inputValue(), 'none');
+  await page.getByText('Choose a messaging channel to receive scheduled reviews, or read them in the Web app.', { exact: true }).waitFor();
+  assert.equal(await page.getByRole('combobox', { name: 'Telegram Bot Token operation', exact: true }).isVisible(), false);
+  await setting(page, 'channel.kind').selectOption('telegram');
+  await page.getByText(/Create a bot with @BotFather/).waitFor();
+  assert.equal(await page.getByRole('combobox', { name: 'App Secret operation', exact: true }).isVisible(), false);
+  await setting(page, 'channel.destination').fill('789');
+  await page.getByRole('combobox', { name: 'Telegram Bot Token operation', exact: true }).selectOption('replace');
+  await page.getByLabel('New Telegram Bot Token value', { exact: true }).fill('123456:abcdefghijklmnopqrstuvwxyz_0123456789');
+  await page.locator('#app [data-language]').selectOption('zh-CN');
+  assert.equal(await secret(page, 'Telegram Bot Token').inputValue(), '123456:abcdefghijklmnopqrstuvwxyz_0123456789');
+  await setting(page, 'notifications.enabled').check();
+  await page.getByRole('button', { name: '保存设置', exact: true }).click();
+  await page.getByText('设置已保存。', { exact: true }).waitFor();
+  const patch = state.patches[0];
+  assert.deepEqual(patch.settings.channel, { kind: 'telegram', destination: '789' });
+  assert.equal(patch.settings.notifications.enabled, true);
+  assert.deepEqual(patch.secrets.bot_token, { action: 'replace', value: '123456:abcdefghijklmnopqrstuvwxyz_0123456789' });
+  assert.equal(patch.secrets.app_secret, undefined);
+  await page.getByText('图文推送：可用', { exact: true }).waitFor();
+  assert.equal(await secret(page, 'Telegram Bot Token').inputValue(), '');
+  assert.equal(await page.locator('body').textContent().then(text => text.includes('123456:abcdefghijklmnopqrstuvwxyz_0123456789')), false);
+  await setting(page, 'channel.kind').selectOption('none');
+  assert.equal(await setting(page, 'notifications.enabled').isChecked(), false);
+  await page.getByRole('button', { name: '保存设置', exact: true }).click();
+  await page.getByText('设置已保存。', { exact: true }).waitFor();
+  assert.deepEqual(state.patches.at(-1).settings.channel, { kind: 'none' });
+  assert.deepEqual(state.patches.at(-1).settings.notifications, { enabled: false });
+  assert.equal(state.patches.at(-1).secrets.bot_token, undefined);
   assert.deepEqual(errors, []);
 });

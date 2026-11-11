@@ -13,6 +13,7 @@ import (
 	"regexp"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 	_ "time/tzdata"
@@ -104,6 +105,7 @@ type ChannelConfig struct {
 	Destination       *string `json:"destination"`
 	WebhookURL        *string `json:"webhook_url"`
 	WebhookSecret     *string `json:"webhook_secret"`
+	BotToken          *string `json:"bot_token"`
 }
 
 func configured(value *string) string {
@@ -145,7 +147,7 @@ func DefaultSettings() Settings {
 			Dimensions: 1024, BatchSize: 20, TimeoutSeconds: 30, MaxConcurrency: 2, MaxRetries: 2},
 		LLM: LLMConfig{Protocol: "openai-compatible", TimeoutSeconds: 90, MaxConcurrency: 2,
 			MaxRetries: 2, MaxOutputTokens: 2048, ContextBytes: 24000},
-		Channel:  ChannelConfig{Kind: "feishu-app"},
+		Channel:  ChannelConfig{Kind: "none"},
 		Insights: InsightsConfig{DefaultPrompt: DefaultInsightPrompt},
 	}
 }
@@ -236,6 +238,21 @@ var instancePattern = regexp.MustCompile(`^[a-zA-Z0-9_-]{8,128}$`)
 var userPattern = regexp.MustCompile(`^users/[a-zA-Z0-9_-]+$`)
 var memoPattern = regexp.MustCompile(`^memos/[a-zA-Z0-9_-]+$`)
 var uuidPattern = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
+var telegramTokenPattern = regexp.MustCompile(`^[1-9][0-9]{0,18}:[a-zA-Z0-9_-]{20,256}$`)
+
+func validTelegramToken(value string) bool {
+	if !telegramTokenPattern.MatchString(value) {
+		return false
+	}
+	bot, _, _ := strings.Cut(value, ":")
+	_, err := strconv.ParseInt(bot, 10, 64)
+	return err == nil
+}
+
+func validTelegramChat(value string) bool {
+	id, err := strconv.ParseInt(value, 10, 64)
+	return err == nil && id != 0 && strconv.FormatInt(id, 10) == value
+}
 
 func validOrigin(value string) bool {
 	parsed, err := url.Parse(value)
@@ -310,10 +327,20 @@ func (s *Settings) Validate() error {
 		s.Sync.LeaseSeconds < 10 || s.Sync.LeaseSeconds > 3600 {
 		return bad("sync")
 	}
-	if s.Channel.Kind != "feishu-app" && s.Channel.Kind != "feishu-webhook" {
+	if !slices.Contains([]string{"none", "feishu-app", "feishu-webhook", "telegram"}, s.Channel.Kind) {
 		return bad("channel.kind")
 	}
 	channel := s.Channel
+	if channel.Kind == "none" && s.Notifications.Enabled {
+		return bad("notifications require a messaging channel")
+	}
+	if channel.Kind == "telegram" {
+		token, chat := configured(channel.BotToken), configured(channel.Destination)
+		if token != "" && !validTelegramToken(token) || chat != "" && !validTelegramChat(chat) ||
+			s.Notifications.Enabled && (token == "" || chat == "") {
+			return bad("channel Telegram bot token or chat ID")
+		}
+	}
 	appFields := []string{configured(channel.AppID), configured(channel.AppSecret),
 		configured(channel.VerificationToken), configured(channel.UserOpenID)}
 	appEnabled := slices.ContainsFunc(appFields, func(value string) bool { return value != "" }) || configured(channel.EncryptKey) != ""

@@ -10,7 +10,7 @@ const snapshot = {
     notifications: { enabled: false, time: '09:00', times: ['09:00'] },
     llm: { enabled: false, model: null },
     embedding: { enabled: false, dimensions: 1024 },
-    channel: { kind: 'feishu-app', app_id: null },
+    channel: { kind: 'none', app_id: null },
     insights: { default_prompt: '默认提示词' },
   },
 };
@@ -24,6 +24,7 @@ test('settings patch merges only changed public fields and replaces time arrays'
   draft.llm.api_key = 'must-not-leak';
   draft.channel.app_secret = 'must-not-leak';
   draft.channel.webhook_url = 'must-not-leak';
+  draft.channel.bot_token = 'must-not-leak';
   draft.memos = { token: 'must-not-leak' };
   assert.deepEqual(buildSettingsPatch(snapshot, draft), {
     version: 4,

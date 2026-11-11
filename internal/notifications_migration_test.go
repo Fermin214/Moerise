@@ -219,13 +219,13 @@ func TestReviewPartsMigrationPreservesUploadedImageAndContinuation(t *testing.T)
 		t.Fatal(err)
 	}
 	upgradeNotificationFixture(t, service)
-	part, err := (&FeishuDelivery{Store: service.Store}).reviewPart(child)
+	part, err := (&reviewDelivery{Store: service.Store}).reviewPart(child)
 	if err != nil || part.Kind != "image" || part.Root != root || part.Position != 1 ||
 		part.Attachment != "attachments/saved-image" || part.ImageKey != "saved-image-key" ||
 		part.Version != "saved-version" {
 		t.Fatalf("migration lost the prepared image: %+v %v", part, err)
 	}
-	part, err = (&FeishuDelivery{Store: service.Store}).reviewPart(root)
+	part, err = (&reviewDelivery{Store: service.Store}).reviewPart(root)
 	if err != nil || part.Kind != "text" || part.Start != 2 || part.End != 12 {
 		t.Fatalf("migration changed the saved body range: %+v %v", part, err)
 	}

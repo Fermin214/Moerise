@@ -11,7 +11,7 @@ Writing is only the beginning. Moerise gives your notes a way back into your day
 ## A few ways to spend time with your notes
 
 - **Capture the moment.** Write in Markdown, add tags, drop in images or files. Browse your timeline and filter by date or tag when you want to find something again.
-- **Meet an old thought.** Daily review brings a small selection of older notes back to you. Read them in the browser, or have them delivered through Feishu.
+- **Meet an old thought.** Daily review brings a small selection of older notes back to you. Read them in the browser, or have them delivered through Telegram or Feishu.
 - **Take a walk.** Start anywhere, or from a particular note, and wander through related ideas. Each step offers another note you haven't visited on that walk.
 - **See the shape of your collection.** The note map places similar notes closer together. Its daily snapshots show broad patterns; opening a point reads the live note.
 - **Think with your notes.** Select the notes you want an AI to read, then ask questions, explore connections and follow up. Conversations are saved, and you can turn a completed reply into a new note.
@@ -25,6 +25,8 @@ Memos holds your original notes, tags, attachments and account. Moerise reads an
 Moerise Core handles search indexes, review schedules, conversations and settings. Product state can be backed up; indexes can be rebuilt. External tools can read through REST or MCP. If you enable a model provider, the notes needed for that feature are sent to the provider you configure.
 
 The Web interface supports **English and Simplified Chinese**. It follows your browser's language on first visit, and you can switch languages from the login page or sidebar.
+
+Messaging is optional. Choose [Telegram](docs/TELEGRAM.md) for English review delivery or [Feishu](docs/FEISHU.md) for Chinese delivery and note capture. New installations have no messaging channel selected.
 
 ## Make it yours
 

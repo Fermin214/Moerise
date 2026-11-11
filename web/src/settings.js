@@ -11,6 +11,7 @@ const secretLabels = {
   llm_api_key: 'LLM API Key', embedding_api_key: 'Embedding API Key',
   app_secret: 'App Secret', verification_token: 'Verification Token',
   encrypt_key: 'Encrypt Key', webhook_url: 'Webhook URL', webhook_secret: 'Webhook Secret',
+  bot_token: 'Telegram Bot Token',
 };
 function invalid(message) {
   return Object.assign(new Error(resolveText(message)), { code: 'SETTINGS_INPUT_INVALID', localizedMessage: message });
@@ -166,6 +167,7 @@ export function createSettingsPage({ sessionRequest, handleFailure, onSaved = ()
   function readDraft() {
     const draft = {};
     for (const [path, { input, type, original }] of controls) {
+      if (input.disabled && input.closest('[data-channel-fields]')) continue;
       let value = type === 'checkbox' ? input.checked : type === 'number' ? input.valueAsNumber : input.value;
       if (type === 'number' && !Number.isFinite(value)) throw invalid(l("请填写有效的数字。"));
       if (value === '' && original == null) continue;
@@ -383,18 +385,43 @@ export function createSettingsPage({ sessionRequest, handleFailure, onSaved = ()
     });
     restore.disabled = typeof snapshot.default_insight_prompt !== 'string'; insights.append(restore);
     const channel = section(l("消息渠道"));
-    field(channel, 'channel.kind', l("发送方式"), { options: [['feishu-app', l("飞书应用机器人")], ['feishu-webhook', l("飞书 Webhook")]] });
+    const channelKind = field(channel, 'channel.kind', l("发送方式"), { options: [
+      ['none', l("不启用消息渠道")], ['feishu-app', l("飞书应用机器人")],
+      ['feishu-webhook', l("飞书 Webhook")], ['telegram', 'Telegram'],
+    ] });
     const capabilities = el('div', 'settings-capabilities');
     for (const [key, text] of [['text', l("文字推送")], ['images', l("图文推送")], ['record', l("双向记录")]]) {
       const enabled = snapshot.channel_capabilities?.[key] === true;
       capabilities.append(el('span', enabled ? 'tag' : 'sub', () => `${resolveText(text)}${locale() === 'en' ? ': ' : '：'}${resolveText(enabled ? l("可用") : l("不可用"))}`));
     }
-    channel.append(capabilities, el('p', 'sub settings-hint', l("仅配置 Webhook URL 可发送文字。图文还需 App ID 和 App Secret；双向记录还需 Verification Token 和用户 Open ID。能力在保存后更新。")));
-    field(channel, 'channel.app_id', 'App ID');
-    secret(channel, 'app_secret'); secret(channel, 'verification_token'); secret(channel, 'encrypt_key');
-    field(channel, 'channel.user_open_id', l("用户 Open ID"));
-    field(channel, 'channel.destination', l("推送目标"));
-    secret(channel, 'webhook_url'); secret(channel, 'webhook_secret');
+    channel.append(capabilities);
+    const noChannel = el('p', 'sub settings-hint', l("选择消息渠道后可开启回顾推送，也可以只在 Web 阅读。"));
+    const feishu = el('div'), telegram = el('div'), destination = el('div');
+    for (const block of [feishu, telegram, destination]) block.dataset.channelFields = '';
+    feishu.append(el('p', 'sub settings-hint', l("仅配置 Webhook URL 可发送文字。图文还需 App ID 和 App Secret；双向记录还需 Verification Token 和用户 Open ID。能力在保存后更新。")));
+    field(feishu, 'channel.app_id', 'App ID');
+    secret(feishu, 'app_secret'); secret(feishu, 'verification_token'); secret(feishu, 'encrypt_key');
+    field(feishu, 'channel.user_open_id', l("用户 Open ID"));
+    secret(feishu, 'webhook_url'); secret(feishu, 'webhook_secret');
+    telegram.append(el('p', 'sub settings-hint', l("通过 @BotFather 创建机器人，向它发送 /start，再从 getUpdates 获取自己的数字 Chat ID。支持英文回顾和图片原文件；无需公开回调地址。")));
+    secret(telegram, 'bot_token');
+    field(destination, 'channel.destination', l("推送目标"), {
+      hint: l("Telegram 填写数字 Chat ID；飞书应用可留空，使用绑定用户的 Open ID。"),
+    });
+    channel.append(noChannel, feishu, telegram, destination);
+    function updateChannel() {
+      noChannel.hidden = channelKind.value !== 'none';
+      for (const [block, visible] of [
+        [feishu, channelKind.value.startsWith('feishu-')],
+        [telegram, channelKind.value === 'telegram'],
+        [destination, ['feishu-app', 'telegram'].includes(channelKind.value)],
+      ]) {
+        block.hidden = !visible;
+        for (const input of block.querySelectorAll('input, select')) input.disabled = !visible;
+      }
+      if (channelKind.value === 'none') controls.get('notifications.enabled').input.checked = false;
+    }
+    channelKind.addEventListener('change', updateChannel); updateChannel();
     const footer = el('div', 'settings-footer');
     error = el('p', 'error sub'); error.setAttribute('role', 'alert'); error.hidden = true;
     status = el('p', 'sub'); status.setAttribute('role', 'status');
@@ -433,7 +460,7 @@ export function createSettingsPage({ sessionRequest, handleFailure, onSaved = ()
     if (busy || conflict) return;
     message(); setText(status, '');
     try {
-      const operations = Object.fromEntries([...secretControls].map(([name, { action, input }]) =>
+      const operations = Object.fromEntries([...secretControls].filter(([, { action }]) => !action.disabled).map(([name, { action, input }]) =>
         [name, { action: action.value, ...(action.value === 'replace' ? { value: input.value } : {}) }]));
       pendingBody = buildSettingsPatch(snapshot, readDraft(), operations);
       if (!Object.keys(pendingBody.settings).length && !Object.values(pendingBody.secrets).some(op => op.action !== 'keep')) {

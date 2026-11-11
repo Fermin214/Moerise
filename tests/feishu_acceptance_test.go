@@ -122,6 +122,7 @@ func TestFeishuProactiveReviewWithRealMemosAcceptance(t *testing.T) {
 	settings.AccessTokens[0].Scopes = append(settings.AccessTokens[0].Scopes, "reviews:read")
 	settings.AccessTokens[1].Scopes = append(settings.AccessTokens[1].Scopes, "reviews:read", "reviews:write")
 	pointer := func(value string) *string { return &value }
+	settings.Channel.Kind = "feishu-app"
 	settings.Channel.AppID, settings.Channel.AppSecret = pointer("cli_acceptance"), pointer(strings.Repeat("s", 32))
 	settings.Channel.VerificationToken, settings.Channel.UserOpenID = pointer(strings.Repeat("v", 32)), pointer("ou_owner")
 	if err := settings.Validate(); err != nil {
@@ -271,6 +272,7 @@ func TestFeishuEventsWithRealMemosAcceptance(t *testing.T) {
 	settings.AccessTokens[0].Scopes = append(settings.AccessTokens[0].Scopes, "reviews:read")
 	settings.AccessTokens[1].Scopes = append(settings.AccessTokens[1].Scopes, "reviews:read", "reviews:write")
 	pointer := func(value string) *string { return &value }
+	settings.Channel.Kind = "feishu-app"
 	settings.Channel.AppID, settings.Channel.AppSecret = pointer("cli_acceptance"), pointer(strings.Repeat("s", 32))
 	settings.Channel.VerificationToken, settings.Channel.UserOpenID = pointer(strings.Repeat("v", 32)), pointer("ou_owner")
 	source := moerise.NewMemosClient(settings.Memos)

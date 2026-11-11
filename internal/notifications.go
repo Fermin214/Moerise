@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 )
@@ -73,6 +74,10 @@ func (s *NotificationService) channelKey() string {
 }
 
 func notificationChannelKey(channel ChannelConfig) string {
+	if channel.Kind == "telegram" {
+		bot, _, _ := strings.Cut(configured(channel.BotToken), ":")
+		return hashBytes(canonicalJSON([]string{channel.Kind, bot, configured(channel.Destination)}))
+	}
 	destination := configured(channel.Destination)
 	if channel.Kind == "feishu-app" && destination == "" {
 		destination = configured(channel.UserOpenID)
@@ -436,6 +441,11 @@ func (s *NotificationService) Deliver(ctx context.Context) (bool, error) {
 	} else {
 		savedReceipt = receipt
 	}
+	retryDelay := time.Duration(int64(1)<<min(item.Attempts, 8)) * time.Second
+	var delayed *notificationRetryError
+	if errors.As(sendErr, &delayed) {
+		retryDelay = max(retryDelay, delayed.after)
+	}
 	err = transaction(s.Store.state, func(tx *sql.Tx) error {
 		stamp := nowText()
 		if _, err := tx.Exec(`UPDATE notification_attempts SET completed_at = ?, outcome = ?, receipt = ?, error_code = ?
@@ -447,7 +457,7 @@ func (s *NotificationService) Deliver(ctx context.Context) (bool, error) {
 		}
 		_, err := tx.Exec(`UPDATE notifications SET status = ?, receipt = ?, last_error = ?,
 			available_at = ?, updated_at = ? WHERE id = ?`, status, savedReceipt, nullable(code),
-			nowSeconds()+float64(int64(1)<<min(item.Attempts, 8)), stamp, item.ID)
+			nowSeconds()+retryDelay.Seconds(), stamp, item.ID)
 		return err
 	})
 	return true, err

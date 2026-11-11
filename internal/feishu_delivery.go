@@ -60,7 +60,7 @@ func (s *FeishuDelivery) Send(ctx context.Context, item Notification) (string, e
 	if item.BatchID == nil {
 		return "", failure("INVALID_ARGUMENT", "Review notification has no batch", 422, false)
 	}
-	return s.sendReviewPart(ctx, item)
+	return s.reviewDelivery().sendReviewPart(ctx, item)
 }
 
 func (s *FeishuDelivery) Check(ctx context.Context, item Notification, receipt string) (bool, error) {
@@ -120,7 +120,7 @@ func (s *FeishuDelivery) Check(ctx context.Context, item Notification, receipt s
 		}
 		return true, nil
 	}
-	part, err := s.reviewPart(item.ID)
+	part, err := s.reviewDelivery().reviewPart(item.ID)
 	if errors.Is(err, sql.ErrNoRows) || item.BatchID == nil {
 		return false, nil
 	}
@@ -136,13 +136,13 @@ func (s *FeishuDelivery) Check(ctx context.Context, item Notification, receipt s
 	if part.Kind != "text" && part.Kind != "footer" {
 		return false, nil
 	}
-	note, err := s.reviewNote(ctx, part)
+	note, err := s.reviewDelivery().reviewNote(ctx, part)
 	if err != nil {
 		return false, err
 	}
 	var text string
 	if part.Kind == "footer" {
-		text, err = s.reviewFooter(note)
+		text, err = s.reviewDelivery().reviewFooter(note)
 	} else {
 		text, err = reviewPartText(part, note)
 	}

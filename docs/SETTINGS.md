@@ -22,7 +22,7 @@
 
 只提交 `notifications.time` 时，将有效推送时段替换为该单时段。提交非空 `notifications.times` 时以列表为准，`time` 与最早时段保持一致；同时提交两个字段也遵循此规则。空 `times` 回退到 `time`，省略 `time` 时回退到保存前的最早时段。响应中的 `times` 始终列出有效时段。
 
-密钥名称为 `llm_api_key`、`embedding_api_key`、`app_secret`、`verification_token`、`encrypt_key`、`webhook_url`、`webhook_secret`。每个操作是以下形式之一：
+密钥名称为 `llm_api_key`、`embedding_api_key`、`app_secret`、`verification_token`、`encrypt_key`、`webhook_url`、`webhook_secret`、`bot_token`。每个操作是以下形式之一：
 
 ```json
 {"action":"keep"}
@@ -42,7 +42,11 @@
 
 修改应用、接收目标或 Webhook 不重复处理已经入队或已处理的日期时段。旧通知仍可查询和确认，结果不明的任务须经人工确认后才能继续；其发送与回执核对使用原渠道。尚需恢复的旧渠道凭据随产品设置加密保存，不在设置响应中返回，重启后继续可用。新入队的通知使用新渠道。
 
-只有 Webhook URL 的渠道支持文字。配置应用图片上传凭据后支持图文；应用机器人具备完整记录凭据后支持记录。能力由服务端按实际配置计算。
+消息渠道默认 `none`，不启用任何平台。用户可选择 `telegram`、`feishu-app` 或 `feishu-webhook`。保存 `none` 时须同时关闭 `notifications.enabled`，Web 设置页自动处理。
+
+Telegram 使用 `channel.destination` 保存非零数字 Chat ID，支持私聊正数和群聊负数；Bot Token 只能通过 `secrets.bot_token` 操作，不出现在 `settings.channel`。Token 和目标完整后支持文字与图片原文件，不提供双向记录。接入步骤见 [Telegram](TELEGRAM.md)。
+
+只有 Webhook URL 的飞书渠道支持文字。配置应用图片上传凭据后支持图文；应用机器人具备完整记录凭据后支持记录。能力由服务端按实际配置计算，未选中的平台凭据不会激活渠道。
 
 ## 模型与索引状态
 

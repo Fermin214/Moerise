@@ -72,6 +72,7 @@ func newAIAcceptanceRuntime(t *testing.T) (*aiAcceptanceRuntime, string) {
 	settings.LLM.Enabled = true
 	settings.LLM.BaseURL, settings.LLM.APIKey, settings.LLM.Model = &address, &key, &model
 	app, secret, verification, owner := "cli_acceptance", strings.Repeat("s", 32), strings.Repeat("v", 32), "ou_owner"
+	settings.Channel.Kind = "feishu-app"
 	settings.Channel.AppID, settings.Channel.AppSecret = &app, &secret
 	settings.Channel.VerificationToken, settings.Channel.UserOpenID = &verification, &owner
 	if err := settings.Validate(); err != nil {
