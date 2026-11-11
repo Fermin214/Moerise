@@ -43,9 +43,9 @@ jobs:
           cache: npm
           cache-dependency-path: web/package-lock.json
       - run: npm --prefix web ci
+      - run: npm --prefix web run build
       - run: npm --prefix web test
       - run: node --test scripts/test/*.test.mjs
-      - run: npm --prefix web run build
       - name: Install Chromium
         working-directory: web
         run: npx playwright install --with-deps chromium
