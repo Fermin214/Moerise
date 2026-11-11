@@ -216,9 +216,17 @@ func (m *MemosClient) ListFilteredLivePage(ctx context.Context, state string, si
 }
 
 func (m *MemosClient) scanFilteredLivePage(ctx context.Context, state string, size int, cursor memosLiveCursor, limits memosLiveLimits, options LiveFilter) ([]Memo, int, error) {
-	// 普通首屏只读取短页；跨页的同时间组改用完整批量重新收集。
-	batch := min(m.config.PageSize, max(100, size+1))
-	return m.scanLiveBatch(ctx, state, size, cursor, limits, options, batch, m.config.MaxPages)
+	pages := 0
+	for pages < m.config.MaxPages {
+		// 普通首屏只读取短页；跨页的同时间组改用完整批量重新收集。
+		batch := min(int(m.pageSize.Load()), max(100, size+1))
+		items, used, err := m.scanLiveBatch(ctx, state, size, cursor, limits, options, batch, m.config.MaxPages-pages)
+		pages += used
+		if err != errMemosPaginationRestart {
+			return items, pages, err
+		}
+	}
+	return nil, pages, upstreamError("UPSTREAM_PAGINATION_LIMIT", "Memos live list exceeded the page budget")
 }
 
 func (m *MemosClient) scanLiveBatch(ctx context.Context, state string, size int, cursor memosLiveCursor, limits memosLiveLimits, options LiveFilter, batch, maxPages int) ([]Memo, int, error) {
@@ -301,11 +309,12 @@ func (m *MemosClient) scanLiveBatch(ctx context.Context, state string, size int,
 		if response.NextPageToken == "" {
 			return finishLivePage(result, size), page, nil
 		}
-		if batch < m.config.PageSize {
+		fullBatch := int(m.pageSize.Load())
+		if batch < fullBatch {
 			if maxPages == 1 {
 				break
 			}
-			items, pages, err := m.scanLiveBatch(ctx, state, size, cursor, limits, options, m.config.PageSize, maxPages-1)
+			items, pages, err := m.scanLiveBatch(ctx, state, size, cursor, limits, options, fullBatch, maxPages-1)
 			return items, pages + 1, err
 		}
 		if seenTokens[response.NextPageToken] {

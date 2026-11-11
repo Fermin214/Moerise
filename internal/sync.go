@@ -78,15 +78,25 @@ func (s *SyncService) Sync(ctx context.Context, job Job) (map[string]any, error)
 		since = &value
 	}
 	defer s.Store.DiscardScan(run)
-	if err := s.scan(ctx, run, job.ID, since); err != nil {
-		return nil, err
+	for {
+		err := s.scan(ctx, run, job.ID, since)
+		if err == nil && full {
+			catchup := started.Unix() - int64(s.Store.Settings.Sync.OverlapSeconds)
+			err = s.scan(ctx, run, job.ID, &catchup)
+		}
+		if err != errMemosPaginationRestart {
+			if err != nil {
+				return nil, err
+			}
+			break
+		}
+		// 重扫包含全量与追补两遍；清除旧暂存，避免发布重试前已删除的笔记。
+		if err := s.Store.DiscardScan(run); err != nil {
+			return nil, err
+		}
 	}
 	absent := map[string]bool{}
 	if full {
-		catchup := started.Unix() - int64(s.Store.Settings.Sync.OverlapSeconds)
-		if err := s.scan(ctx, run, job.ID, &catchup); err != nil {
-			return nil, err
-		}
 		names, err := s.Store.Names()
 		if err != nil {
 			return nil, err

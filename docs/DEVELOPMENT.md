@@ -94,7 +94,7 @@ AI 入口隔离由 `TestExternalAIEndpointsRejectEveryCredential` 和 `TestAIAPI
 go test -race ./...
 ```
 
-资源预算的专项测试覆盖 cgroup v1/v2、挂载命名空间、父级限制、原生运行和显式 Go 内存限制，以及后台和来源排队期间的取消。此类宿主机布局与精确取消时机难以通过单一 Docker 环境的业务流程覆盖。`TestBackgroundQueueHandsOffBeforeNextBatch` 用虚拟调度检查批次间按队列交接及取消清理，`TestMemosOversizedPagesShrinkWithoutLosingNotes` 用长正文检查响应超限后的缩批、游标连续性和完整笔记集合。`TestMemosLiveSmallFirstPageAndLargeBoundary` 检查短首屏、同时间组重读、来源变更和额外请求的预算。`TestMemosNativeAggregates` 检查官方统计的作者和状态、时区、总数与时间戳完整性、两次元数据变化、空池及失败无部分结果。
+资源预算的专项测试覆盖 cgroup v1/v2、挂载命名空间、父级限制、原生运行和显式 Go 内存限制，以及后台和来源排队期间的取消。此类宿主机布局与精确取消时机难以通过单一 Docker 环境的业务流程覆盖。`TestBackgroundQueueHandsOffBeforeNextBatch` 用虚拟调度检查批次间按队列交接及取消清理；`TestSyncPaginationRestartDiscardsBothScanPasses` 检查全量和追补重扫时清除旧暂存、保留完整来源及最后推进水位。`TestMemosLiveSmallFirstPageAndLargeBoundary` 检查短首屏、同时间组重读、来源变更和额外请求的预算。`TestMemosNativeAggregates` 检查官方统计的作者和状态、时区、总数与时间戳完整性、两次元数据变化、空池及失败无部分结果。
 
 同步、Memos 协议和恢复改动使用真实接口验收。先启动 Docker Engine，再执行：
 
@@ -106,6 +106,7 @@ go test -tags=integration ./tests -v -count=1
 
 - 凭据、只读范围、管理员 PAT 的作者隔离，以及读取时的原文复查。
 - 首次同步、分页游标、新增、修改、归档、删除和回溯时间修改。
+- `TestMemosOversizedPaginationAcceptance` 保留真实 Memos 游标，通过合法 JSON 前缀触发响应预算，覆盖首屏、全量续页和追补续页的缩批重扫与完整发布。
 - 来源断连、服务重启后的任务恢复、在线备份、恢复互斥和索引重建。
 - 文本与标签记录、幂等重放与冲突、原文修改和删除，以及写入状态跨重启、索引重建和备份恢复。
 - 通过代理模拟上游写入成功后响应丢失、写入前返回 503，验证结果不明时先复查原资源、重发沿用同一资源标识，Memos 中只有一条笔记。
