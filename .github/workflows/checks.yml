@@ -46,10 +46,10 @@ jobs:
       - run: npm --prefix web run build
       - run: npm --prefix web test
       - run: node --test scripts/test/*.test.mjs
-      - name: Install Chromium
-        working-directory: web
-        run: npx playwright install --with-deps chromium
+      - name: Verify preinstalled Chrome
+        run: google-chrome --version
       - name: Run browser suites
         env:
           MOERISE_PLAYWRIGHT_MODULE: ${{ github.workspace }}/web/node_modules/playwright/index.mjs
+          MOERISE_PLAYWRIGHT_CHANNEL: chrome
         run: npm --prefix web run test:browser

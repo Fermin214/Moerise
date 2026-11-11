@@ -173,7 +173,7 @@ Web 使用两栏布局，侧栏关键词、搜索方式、日历和标签在任�
 npm --prefix web run test:browser
 ```
 
-CI 的独立 Web 作业强制执行 Node 单元/代理测试、脚本测试、正式构建和全部浏览器套件；缺少浏览器会失败。默认使用 Playwright 安装的 Chromium；设置 `MOERISE_PLAYWRIGHT_CHANNEL=chrome` 可复用本机 Chrome。
+CI 的独立 Web 作业在 Ubuntu 24.04 上强制执行 Node 单元/代理测试、脚本测试、正式构建和全部浏览器套件，使用 Runner 镜像预装的 Chrome，缺少浏览器会失败。本地默认使用 Playwright 安装的 Chromium；设置 `MOERISE_PLAYWRIGHT_CHANNEL=chrome` 可复用本机 Chrome。
 
 `web/test/settings-browser.mjs` 使用同一浏览器运行方式，检查设置保存、密钥移除、版本冲突、繁忙重试、时区与侧栏刷新、路由离开及退出后的迟到响应。它通过正式静态资源和同源代理加载设置模块。
 
