@@ -352,10 +352,8 @@ func (s *Settings) Validate() error {
 			return bad("channel application credentials or identity")
 		}
 	}
-	if appEnabled && channel.Kind == "feishu-webhook" {
-		if configured(channel.AppID) == "" || len(configured(channel.AppSecret)) < 16 ||
-			configured(channel.VerificationToken) != "" || configured(channel.UserOpenID) != "" ||
-			configured(channel.EncryptKey) != "" || configured(channel.Destination) != "" {
+	if channel.Kind == "feishu-webhook" && (configured(channel.AppID) != "" || configured(channel.AppSecret) != "") {
+		if configured(channel.AppID) == "" || len(configured(channel.AppSecret)) < 16 {
 			return bad("channel Webhook image upload credentials")
 		}
 	}

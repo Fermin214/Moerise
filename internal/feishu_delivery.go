@@ -142,7 +142,7 @@ func (s *FeishuDelivery) Check(ctx context.Context, item Notification, receipt s
 	}
 	var text string
 	if part.Kind == "footer" {
-		text, err = s.reviewDelivery().reviewFooter(note)
+		text, err = s.reviewDelivery().reviewFooterText(part, note)
 	} else {
 		text, err = reviewPartText(part, note)
 	}

@@ -367,3 +367,92 @@ func TestNotificationChannelDefaultsAndTelegramEnvironment(t *testing.T) {
 		t.Fatal("changing the bot retained the old channel identity")
 	}
 }
+
+func TestTelegramLongFooterDelivery(t *testing.T) {
+	reviews, memos := reviewFixture(t, 1)
+	store := reviews.Store
+	store.Settings.Channel = telegramTestChannel()
+	store.Settings.Notifications.Enabled = true
+	content := "begin" + strings.Repeat("\n", 8192) + "end"
+	for _, raw := range memos {
+		raw["content"] = content
+		raw["tags"] = []string{strings.Repeat("tag", 1800)}
+	}
+	var texts []string
+	var bodyParts []string
+	documents := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/sendDocument") {
+			if err := r.ParseMultipartForm(1 << 20); err != nil {
+				t.Error(err)
+				return
+			}
+			defer r.MultipartForm.RemoveAll()
+			file, header, err := r.FormFile("document")
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			data, _ := io.ReadAll(file)
+			file.Close()
+			if header.Filename != "note-part.txt" || strings.TrimSpace(string(data)) != "" {
+				t.Error("whitespace-only part was not preserved as a text file")
+			}
+			bodyParts = append(bodyParts, string(data))
+			documents++
+			_ = json.NewEncoder(w).Encode(telegramTestResponse(len(texts)+documents, true))
+			return
+		}
+		var body struct {
+			Text string `json:"text"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil || len(utf16.Encode([]rune(body.Text))) > 4096 {
+			t.Error("oversized Telegram footer")
+		}
+		texts = append(texts, body.Text)
+		if !strings.HasPrefix(body.Text, "#tag") && body.Text != "Daily review" && !strings.HasSuffix(body.Text, "Created on 2020-01-01") {
+			bodyParts = append(bodyParts, body.Text)
+		}
+		_ = json.NewEncoder(w).Encode(telegramTestResponse(len(texts)+documents, false))
+	}))
+	defer server.Close()
+	delivery := newTelegramDelivery(store.Settings.Channel, store, reviews).(*TelegramDelivery)
+	defer delivery.http.CloseIdleConnections()
+	delivery.baseURL = server.URL
+	queue := NewNotificationService(store, reviews, delivery)
+	batch, err := reviews.Daily(t.Context(), time.Date(2026, 10, 26, 2, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := queue.enqueue("review", "long-footer", batch.Date, &batch.ID, nil); err != nil {
+		t.Fatal(err)
+	}
+	for range 10 {
+		worked, err := queue.Deliver(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !worked {
+			break
+		}
+	}
+	if documents == 0 || len(texts) != 5 || texts[0] != "Daily review" || strings.Join(bodyParts, "") != content ||
+		strings.Join(texts[3:], "") != "#"+strings.Repeat("tag", 1800)+"  Created on 2020-01-01" {
+		t.Fatal("long Telegram footer was truncated, reordered or left pending")
+	}
+	legacy, err := delivery.reviewDelivery().reviewFooterText(reviewDeliveryPart{Kind: "footer"}, *batch.Items[0].Note)
+	if err != nil || legacy != strings.Join(texts[3:], "") {
+		t.Fatal("existing footer parts no longer render the entire footer")
+	}
+}
+
+func TestFeishuWebhookIgnoresOtherChannelFields(t *testing.T) {
+	settings := feishuSettings(t)
+	settings.Channel.Kind = "feishu-webhook"
+	settings.Channel.WebhookURL = new("https://hooks.example.com/review")
+	settings.Channel.BotToken, settings.Channel.Destination = new(telegramTestToken), new("789")
+	settings.Notifications.Enabled = true
+	if err := settings.Validate(); err != nil {
+		t.Fatalf("saved fields for other channels prevented selecting a Feishu webhook: %v", err)
+	}
+}

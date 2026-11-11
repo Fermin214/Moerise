@@ -51,7 +51,7 @@ In JSON, use `channel.kind: "telegram"`, `channel.bot_token` and `channel.destin
 
 ## Delivery and recovery
 
-Text messages stay within 4,096 UTF-16 units and preserve the full original content across parts. Moerise sends plain text without Telegram Markdown parsing or automatic link previews. Images use `sendDocument` to preserve the source file bytes and support image-only notes, with a 10 MiB limit per image. Telegram may present these images as downloadable files.
+Text messages, including long tag and date footers, stay within 4,096 UTF-16 units and preserve the full original content across parts. Moerise sends plain text without Telegram Markdown parsing or automatic link previews. Telegram rejects messages containing only whitespace; if a long blank region becomes a separate part, Moerise sends that part as a UTF-8 text file to preserve every byte and continue delivery. Images use `sendDocument` to preserve the source file bytes and support image-only notes, with a 10 MiB limit per image. Telegram may present these images as downloadable files.
 
 Each part has its own persistent status and receipt. Later parts wait for the previous one to finish. Rate limits follow Telegram's `retry_after`, with a fallback wait when that field is absent. An explicit rejection remains queued for retry.
 

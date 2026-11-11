@@ -81,8 +81,19 @@ func (s *reviewDelivery) prepareReview(ctx context.Context, item Notification) (
 			}
 		}
 		if len(parts) != before {
-			parts = append(parts, reviewDeliveryPart{Root: item.ID, Kind: "footer", Name: note.Name,
-				Version: note.SourceHash})
+			footer, err := s.reviewFooter(note)
+			if err != nil {
+				return part, err
+			}
+			for start := 0; start < len(footer); {
+				length, err := s.platform.reviewTextEnd(footer[start:])
+				if err != nil {
+					return part, err
+				}
+				parts = append(parts, reviewDeliveryPart{Root: item.ID, Kind: "footer", Name: note.Name,
+					Version: note.SourceHash, Start: start, End: start + length})
+				start += length
+			}
 		}
 	}
 	if len(parts) == 0 {
@@ -177,6 +188,18 @@ func (s *reviewDelivery) reviewFooter(note Note) (string, error) {
 	return footer, nil
 }
 
+func (s *reviewDelivery) reviewFooterText(part reviewDeliveryPart, note Note) (string, error) {
+	footer, err := s.reviewFooter(note)
+	if err != nil || part.End == 0 {
+		// Existing footer parts store no range and continue to send the whole footer.
+		return footer, err
+	}
+	if part.Start < 0 || part.End <= part.Start || part.End > len(footer) {
+		return "", upstreamError("CHANNEL_PROTOCOL", "Invalid saved review footer range")
+	}
+	return footer[part.Start:part.End], nil
+}
+
 func (s *reviewDelivery) skipReviewNote(part reviewDeliveryPart) error {
 	_, err := s.Store.state.Exec(`UPDATE feishu_review_parts SET kind = 'empty'
 		WHERE root_id = ? AND memo_name = ? AND position >= ? AND notification_id IN
@@ -245,7 +268,7 @@ func (s *reviewDelivery) sendReviewPart(ctx context.Context, item Notification) 
 		if !delivered {
 			return "empty:" + item.ID, nil
 		}
-		footer, err := s.reviewFooter(note)
+		footer, err := s.reviewFooterText(part, note)
 		if err != nil {
 			return "", err
 		}

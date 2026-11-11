@@ -143,6 +143,29 @@ func (s *TelegramDelivery) receipt(message telegramMessage) string {
 }
 
 func (s *TelegramDelivery) sendReviewText(ctx context.Context, _ Notification, text string) (string, error) {
+	if strings.TrimSpace(text) == "" {
+		// Telegram rejects whitespace-only messages; a text file preserves this part verbatim.
+		var body bytes.Buffer
+		writer := multipart.NewWriter(&body)
+		if err := writer.WriteField("chat_id", configured(s.config.Destination)); err != nil {
+			return "", err
+		}
+		file, err := writer.CreateFormFile("document", "note-part.txt")
+		if err != nil {
+			return "", err
+		}
+		if _, err := io.WriteString(file, text); err != nil {
+			return "", err
+		}
+		if err := writer.Close(); err != nil {
+			return "", err
+		}
+		message, err := s.request(ctx, "sendDocument", writer.FormDataContentType(), &body)
+		if err != nil {
+			return "", err
+		}
+		return s.receipt(message), nil
+	}
 	body, _ := json.Marshal(map[string]any{"chat_id": configured(s.config.Destination), "text": text,
 		"link_preview_options": map[string]bool{"is_disabled": true}})
 	message, err := s.request(ctx, "sendMessage", "application/json", bytes.NewReader(body))
