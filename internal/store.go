@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	_ "modernc.org/sqlite"
 )
@@ -24,9 +25,24 @@ type Store struct {
 	state          *sql.DB
 	index          *sql.DB
 	reviewMu       sync.Mutex
-	vectorMu       sync.Mutex
+	backgroundMu   sync.Mutex
 	productVersion int64
 	runtimeMu      *sync.RWMutex
+}
+
+// 同步和向量构建共用后台执行名额，交互读取仍通过各自的数据库事务执行。
+func (s *Store) lockBackground(ctx context.Context) (func(), error) {
+	for {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		if s.backgroundMu.TryLock() {
+			return s.backgroundMu.Unlock, nil
+		}
+		if err := runtimePause(ctx, 10*time.Millisecond); err != nil {
+			return nil, err
+		}
+	}
 }
 
 func openDB(path string, readonly bool) (*sql.DB, error) {

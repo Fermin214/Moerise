@@ -56,7 +56,7 @@ func TestChatFullMaterialsArchivedHistoryAndDurableEvents(t *testing.T) {
 	service := chatFixture(t, memos, nil)
 	chat := createTestChat(t, service, "memos/one", "memos/two")
 	calls := 0
-	reply := "## 笔记原意\n\n叶片生长。\n\n可能的解释：光照或许有关。 #联想\n"
+	reply := "## 把窗台当作一座微型城市\n\n可以把新叶类比成冒出的想法，让不同窗位扮演不同的信息环境。\n\n一个大胆的小尝试：轮流给每盆写一封信，看看观察植物会不会改变自己的注意力。这是由笔记引出的新玩法。 #联想\n"
 	service.Provider = aiLLMFunc(func(_ context.Context, messages []LLMMessage, emit func(string) error) (LLMResult, error) {
 		calls++
 		var input []struct {
@@ -123,47 +123,33 @@ func TestChatFullMaterialsArchivedHistoryAndDurableEvents(t *testing.T) {
 	}
 }
 
-func TestChatMaterialAndContextLimitsDoNotTruncate(t *testing.T) {
-	for _, mode := range []string{"characters", "unicode-bytes", "history", "messages", "exact-limit"} {
+func TestChatMaterialLimitExcludesConversationAndDoesNotTruncate(t *testing.T) {
+	for _, mode := range []string{"characters", "combined", "unicode-bytes", "history", "messages", "question", "exact-limit"} {
 		t.Run(mode, func(t *testing.T) {
-			text := strings.Repeat("字", ChatCharacterLimit+1)
-			if mode != "characters" && mode != "exact-limit" {
-				text = strings.Repeat("😀", 6000)
+			text, question := strings.Repeat("字", ChatCharacterLimit), "问题"
+			if mode == "characters" || mode == "combined" {
+				text += "字"
+			} else if mode == "unicode-bytes" {
+				text = strings.Repeat("😀", ChatCharacterLimit)
+			} else if mode == "question" {
+				question = strings.Repeat("😀", ChatCharacterLimit+1)
 			}
-			if mode == "exact-limit" {
-				text = strings.Repeat("字", ChatCharacterLimit)
+			memos := map[string]map[string]any{"memos/one": rawMemo("one", text)}
+			names := []string{"memos/one"}
+			if mode == "combined" {
+				text = strings.Repeat("字", 10000)
+				memos["memos/one"] = rawMemo("one", text)
+				memos["memos/two"] = rawMemo("two", text+"字")
+				names = append(names, "memos/two")
 			}
-			if mode == "history" {
-				text = strings.Repeat("字", 1500)
-			}
-			service := chatFixture(t, map[string]map[string]any{"memos/one": rawMemo("one", text)}, nil)
-			chat := createTestChat(t, service, "memos/one")
-			calls := 0
-			service.Provider = aiLLMFunc(func(_ context.Context, messages []LLMMessage, emit func(string) error) (LLMResult, error) {
-				calls++
-				if !strings.Contains(messages[1].Content, text) {
-					t.Fatal("material was truncated")
-				}
-				if err := emit("回复"); err != nil {
-					return LLMResult{}, err
-				}
-				return LLMResult{Content: "回复", FinishReason: "stop"}, nil
-			})
-			expected := "CHAT_MATERIAL_LIMIT"
-			switch mode {
-			case "unicode-bytes":
-				service.Store.Settings.LLM.ContextBytes = 24000
-				expected = "CHAT_CONTEXT_LIMIT"
-			case "history", "messages":
-				material, err := service.Materials(context.Background(), []string{"memos/one"}, nil)
-				if err != nil {
-					t.Fatal(err)
-				}
-				n := 1
-				content := strings.Repeat("旧回复", 3000)
+			service := chatFixture(t, memos, nil)
+			chat := createTestChat(t, service, names...)
+			// Legacy byte budgets must not reject valid materials or later discussion.
+			service.Store.Settings.LLM.ContextBytes = 1024
+			if mode == "history" || mode == "messages" {
+				n, content := 2, strings.Repeat("旧回复", 50000)
 				if mode == "messages" {
 					n, content = 127, "短回复"
-					service.Store.Settings.LLM.ContextBytes = 262144
 				}
 				for range n {
 					turn := testChatTurn(t, service.Store, chat, newID())
@@ -174,19 +160,36 @@ func TestChatMaterialAndContextLimitsDoNotTruncate(t *testing.T) {
 						t.Fatal(err)
 					}
 				}
-				before, _ := service.Store.chat(chat.ID)
-				if _, err := chatContext(before, material, "问题", service.Store.Settings.LLM.ContextBytes); errorCode(err) != "CHAT_CONTEXT_LIMIT" {
-					t.Fatalf("history budget accepted: %v", err)
-				}
-				expected = "CHAT_CONTEXT_LIMIT"
-			case "exact-limit":
-				service.Store.Settings.LLM.ContextBytes = 262144
-				expected = ""
 			}
-			_, err := service.Generate(context.Background(), chat.ID, ChatGenerate{"budget", 1, "question", "问题"}, nil)
+			before, err := service.Store.chat(chat.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			calls := 0
+			service.Provider = aiLLMFunc(func(_ context.Context, messages []LLMMessage, emit func(string) error) (LLMResult, error) {
+				calls++
+				if !strings.Contains(messages[1].Content, text) || len(messages) != 3+2*len(before.Turns) ||
+					messages[len(messages)-1].Content != question {
+					t.Fatal("material, question or history was truncated")
+				}
+				for i, turn := range before.Turns {
+					if messages[2+2*i].Content != turn.User.Content || messages[3+2*i].Content != turn.Assistant.Content {
+						t.Fatal("conversation history changed")
+					}
+				}
+				if err := emit("回复"); err != nil {
+					return LLMResult{}, err
+				}
+				return LLMResult{Content: "回复", FinishReason: "stop"}, nil
+			})
+			expected := ""
+			if mode == "characters" || mode == "combined" {
+				expected = "CHAT_MATERIAL_LIMIT"
+			}
+			_, err = service.Generate(context.Background(), chat.ID, ChatGenerate{"budget", 1, "question", question}, nil)
 			if expected == "" {
 				if err != nil || calls != 1 {
-					t.Fatalf("exact character limit rejected: %v", err)
+					t.Fatalf("valid material or conversation rejected: %v", err)
 				}
 			} else if errorCode(err) != expected || calls != 0 {
 				t.Fatalf("budget %s: code=%s calls=%d", mode, errorCode(err), calls)
@@ -194,6 +197,9 @@ func TestChatMaterialAndContextLimitsDoNotTruncate(t *testing.T) {
 			persisted, _ := service.Store.chat(chat.ID)
 			if expected != "" && slices.ContainsFunc(persisted.Turns, func(turn ChatTurn) bool { return turn.RequestID == "budget" }) {
 				t.Fatal("budget failure inserted a new turn")
+			}
+			if !reflect.DeepEqual(persisted.Turns[:len(before.Turns)], before.Turns) {
+				t.Fatal("generation changed existing history")
 			}
 		})
 	}
@@ -443,7 +449,7 @@ func TestChatCreationReplayAndExplicitMaterialRefresh(t *testing.T) {
 	}
 }
 
-func TestAppChatSharesProviderAndRejectsLegacyGeneration(t *testing.T) {
+func TestAppChatSharesProvider(t *testing.T) {
 	settings, store := settingsFixture(t)
 	source := fakeClient(settings, func(*http.Request) (int, any, error) {
 		t.Fatal("retired generation accessed source")
@@ -454,17 +460,11 @@ func TestAppChatSharesProviderAndRejectsLegacyGeneration(t *testing.T) {
 	if app.Chat.Notes != app.Notes || app.Chat.Records != app.Records || app.Chat.Store != app.Store {
 		t.Fatal("chat does not share Notes and Records")
 	}
-	if _, err := app.AI.Insight(context.Background(), AIRequest{Names: []string{"memos/one"}}, nil); errorCode(err) != "LEGACY_AI_DISABLED" {
-		t.Fatalf("legacy insight accepted: %v", err)
-	}
-	if _, err := app.AI.Answer(context.Background(), AIRequest{Question: "question"}, nil); errorCode(err) != "LEGACY_AI_DISABLED" {
-		t.Fatalf("legacy answer accepted: %v", err)
-	}
 	update := settingsChange(1, `{"llm":{"enabled":true,"base_url":"https://llm.invalid/v1","model":"new-model"}}`)
 	key := "private-test-key"
 	update.Secrets = map[string]SecretUpdate{"llm_api_key": {Action: "replace", Value: &key}}
 	view, err := app.UpdateSettings(context.Background(), update)
-	if err != nil || app.Chat.Provider == nil || app.Chat.Provider != app.AI.Provider || view.Version != 2 {
+	if err != nil || app.Chat.Provider == nil || app.Chat.Provider != app.LLM || view.Version != 2 {
 		t.Fatalf("runtime chat provider not shared: %v", err)
 	}
 }

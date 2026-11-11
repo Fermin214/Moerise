@@ -8,15 +8,6 @@ import (
 	"time"
 )
 
-func (s *SearchService) recentReads() (map[string]bool, error) {
-	settings := s.Store.Settings
-	return namesQuery(s.Store.state, `SELECT memo_name FROM discovery_reads WHERE instance_id = ? AND user_name = ?
-		AND julianday(opened_at) >= julianday('now', '-7 days') UNION SELECT i.memo_name FROM review_items i
-		JOIN review_batches b ON b.id = i.batch_id WHERE b.instance_id = ? AND b.user_name = ?
-		AND julianday(i.opened_at) >= julianday('now', '-7 days')`,
-		settings.Memos.InstanceID, settings.Memos.User, settings.Memos.InstanceID, settings.Memos.User)
-}
-
 func (s *SearchService) randomWalkCandidates(ctx context.Context, request WalkRequest, path []string) ([]searchCandidate, error) {
 	visited := make(map[string]bool, len(path))
 	for _, name := range path {
@@ -105,6 +96,9 @@ func (s *SearchService) StartWalk(ctx context.Context, name string) (result Walk
 	}
 	if seed == nil {
 		return result, failure("SOURCE_NOT_FOUND", "Memo is unavailable", 404, false)
+	}
+	if seed.State != "NORMAL" {
+		return result, failure("WALK_ARCHIVED", "Archived memos do not participate in walks", 422, false)
 	}
 	if err := s.walkIndexReady(ctx); err != nil {
 		return result, err

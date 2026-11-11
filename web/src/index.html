@@ -12,7 +12,7 @@
 <body>
   <section id="auth" class="memos-auth" aria-labelledby="auth-title">
     <div class="memos-login">
-      <div class="memos-brand"><img src="/memos-logo.webp" alt=""><span>Memos</span></div>
+      <div class="memos-brand"><span>Moerise</span></div>
       <h1 id="auth-title">登录</h1>
       <p class="memos-welcome">欢迎回来。</p>
       <p id="auth-error" class="error" role="alert" hidden></p>
@@ -40,6 +40,13 @@
         <label class="sr" for="q">搜索笔记</label><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6"></circle><path d="M20 20l-4.5-4.5"></path></svg>
         <input id="q" type="search" placeholder="搜索笔记">
       </div>
+      <label class="search-mode" for="search-mode">搜索方式
+        <select id="search-mode">
+          <option value="keyword">关键词</option>
+          <option value="semantic">语义</option>
+          <option value="hybrid">混合</option>
+        </select>
+      </label>
       <button id="mobile-filters" class="ghost mobile-filter-toggle" type="button" aria-expanded="false">日历与标签</button>
       <section aria-label="日历" style="display:flex;flex-direction:column;gap:4px">
         <div class="lab"><b id="calendar-title" style="font-size:13px;font-weight:600;color:#3A4049"></b><span style="display:flex">

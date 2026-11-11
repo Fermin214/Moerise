@@ -3,8 +3,6 @@ package moerise
 import (
 	"bytes"
 	"context"
-	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http/httptest"
 	"path/filepath"
@@ -15,10 +13,13 @@ import (
 
 type feishuAIPlatform struct {
 	unknownFeishuReply
-	mode     string
-	texts    []string
-	uuids    []string
-	messages map[string]FeishuSentMessage
+	mode          string
+	texts         []string
+	uuids         []string
+	messages      map[string]FeishuSentMessage
+	fixture       AIResult
+	fixtureStatus string
+	fixtureWrites *int
 }
 
 func (p *feishuAIPlatform) Reply(_ context.Context, parent, uuid, text string) (string, error) {
@@ -44,33 +45,24 @@ func (p *feishuAIPlatform) GetMessage(_ context.Context, receipt string) (Feishu
 	return p.messages[receipt], nil
 }
 
-func feishuAIFixture(t *testing.T, output string) (*FeishuService, *feishuAIPlatform, map[string]map[string]any, *int) {
+func feishuAIFixture(t *testing.T, result AIResult) (*FeishuService, *feishuAIPlatform, map[string]map[string]any, *int) {
 	t.Helper()
-	calls := new(int)
+	writes := new(int)
 	memos := map[string]map[string]any{"memos/seed": rawMemo("seed", "fictional basil")}
 	memos["memos/seed"]["tags"] = []string{"topic"}
-	ai := insightFixture(t, memos, nil)
-	ai.Provider = aiLLMFunc(func(_ context.Context, _ []LLMMessage, emit func(string) error) (LLMResult, error) {
-		*calls++
-		var status string
-		if err := ai.Search.Store.state.QueryRow("SELECT status FROM feishu_ai_generations").Scan(&status); err != nil || status != "running" {
-			t.Fatalf("model started before its running state was durable: %q %v", status, err)
-		}
-		if err := emit(output); err != nil {
-			return LLMResult{}, err
-		}
-		return LLMResult{Content: output, Model: "fictional-model", FinishReason: "stop"}, nil
-	})
-	store := ai.Search.Store
+	evidence := evidenceFixture(t, memos)
+	result.References = []Evidence{legacyEvidence(t, evidence.Search, "memos/seed", "E1")}
+	result.UsedSources = []string{"memos/seed"}
+	store := evidence.Search.Store
 	store.Settings.Channel = feishuSettings(t).Channel
-	reviews := NewReviewService(store, ai.Search.Source)
+	reviews := NewReviewService(store, evidence.Search.Source)
 	notifications := NewNotificationService(store, reviews, nil)
-	service := NewFeishuService(store, ai.Search.Source, NewRecordService(store, ai.Search.Source), reviews, notifications)
-	service.Search, service.AI = ai.Search, ai
-	platform := &feishuAIPlatform{messages: map[string]FeishuSentMessage{}}
+	service := NewFeishuService(store, evidence.Search.Source, NewRecordService(store, evidence.Search.Source), reviews, notifications)
+	service.Search = evidence.Search
+	platform := &feishuAIPlatform{messages: map[string]FeishuSentMessage{}, fixture: result, fixtureWrites: writes}
 	service.Client = platform
 	notifications.Transport = NewFeishuDelivery(store, reviews, service)
-	return service, platform, memos, calls
+	return service, platform, memos, writes
 }
 
 func receiveFeishuAI(t *testing.T, service *FeishuService, text string) feishuMessage {
@@ -109,22 +101,31 @@ func deliverFeishuAI(t *testing.T, service *FeishuService) {
 
 func restartFeishuAI(t *testing.T, service *FeishuService) {
 	t.Helper()
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	if err := service.Run(ctx); !errors.Is(err, context.Canceled) {
+	if err := service.prepare(); err != nil {
 		t.Fatalf("restart recovery: %v", err)
 	}
 }
 
-func longFeishuAIOutput() string {
-	var output strings.Builder
-	for i := range 12 {
-		kind := []string{"fact", "interpretation", "question"}[i%3]
-		body, _ := json.Marshal(map[string]any{"type": kind, "text": strings.Repeat("虚构的长正文。", 90), "citations": []string{"E1"}})
-		fmt.Fprintln(&output, string(body))
+func legacyInsightResult() AIResult {
+	return AIResult{Kind: "single", Status: "answered", Completed: true,
+		Statements: []AIStatement{
+			{Kind: "fact", Text: "The fictional note records basil.", Citations: []string{"E1"}},
+			{Kind: "interpretation", Text: "A possible gardening topic.", Citations: []string{"E1"}},
+			{Kind: "question", Text: "What would be useful to record next?", Citations: []string{}},
+		}, Model: "historical-fixture", Omitted: []string{}, Missing: []string{}, Timeline: []AITimelinePeriod{},
 	}
-	fmt.Fprintln(&output, `{"type":"result","status":"insufficient","missing":["缺少后续记录。"]}`)
-	return output.String()
+}
+
+func longFeishuAIOutput() AIResult {
+	result := legacyInsightResult()
+	result.Status, result.Missing = "insufficient", []string{"缺少后续记录。"}
+	result.Statements = nil
+	for i := range 12 {
+		result.Statements = append(result.Statements, AIStatement{
+			Kind: []string{"fact", "interpretation", "question"}[i%3], Text: strings.Repeat("虚构的长正文。", 90), Citations: []string{"E1"},
+		})
+	}
+	return result
 }
 
 func TestFeishuAITimelineRendering(t *testing.T) {
@@ -155,7 +156,7 @@ func TestLegacyRepliesDoNotSuggestRetiredCommands(t *testing.T) {
 }
 
 func TestFeishuAIResultPrecedesEventCompletionAndSurvivesRedelivery(t *testing.T) {
-	service, platform, _, calls := feishuAIFixture(t, insightOutput)
+	service, platform, _, fixtures := feishuAIFixture(t, legacyInsightResult())
 	message := receiveFeishuAI(t, service, "洞察 memos/seed")
 	receiveFeishuAI(t, service, "洞察 memos/seed")
 	if kind, _, err := service.seedLegacyAI(context.Background(), message.ID); err != nil || kind != "ai" {
@@ -177,12 +178,11 @@ func TestFeishuAIResultPrecedesEventCompletionAndSurvivesRedelivery(t *testing.T
 		}
 	}
 	// Completed results remain deliverable without an active generation service.
-	service.AI = nil
 	deliverFeishuAI(t, service)
 	restartFeishuAI(t, service)
 	receiveFeishuAI(t, service, "洞察 memos/seed")
-	if progress, err := service.processOne(context.Background()); progress || err != nil || *calls != 1 || platform.calls != 1 {
-		t.Fatalf("redelivery repeated a paid generation or confirmed send: %v %v %d %d", progress, err, *calls, platform.calls)
+	if progress, err := service.processOne(context.Background()); progress || err != nil || *fixtures != 1 || platform.calls != 1 {
+		t.Fatalf("redelivery reconstructed a historical fixture or confirmed send: %v %v %d %d", progress, err, *fixtures, platform.calls)
 	}
 	if !strings.Contains(platform.texts[0], "[事实]") || !strings.Contains(platform.texts[0], "[解释]") ||
 		!strings.Contains(platform.texts[0], "[追问]") || !strings.Contains(platform.texts[0], "memos/seed 第 1-1 行") {
@@ -190,26 +190,20 @@ func TestFeishuAIResultPrecedesEventCompletionAndSurvivesRedelivery(t *testing.T
 	}
 }
 
-func TestFeishuAIGenerationInterruptionAndFailureAreTerminal(t *testing.T) {
+func TestFeishuAILegacyInterruptionAndFailureAreTerminal(t *testing.T) {
 	for _, interrupted := range []bool{true, false} {
 		t.Run(fmt.Sprintf("interrupted=%t", interrupted), func(t *testing.T) {
-			service, platform, _, calls := feishuAIFixture(t, insightOutput)
-			service.AI.Provider = aiLLMFunc(func(context.Context, []LLMMessage, func(string) error) (LLMResult, error) {
-				*calls++
-				if interrupted {
-					panic("generation interrupted")
-				}
-				return LLMResult{}, upstreamError("LLM_UNAVAILABLE", "private vendor error details")
-			})
-			receiveFeishuAI(t, service, "洞察 memos/seed")
-			func() {
-				defer func() { _ = recover() }()
-				processLegacyFeishuAI(t, service)
-			}()
-			restartFeishuAI(t, service)
+			service, platform, _, writes := feishuAIFixture(t, legacyInsightResult())
+			platform.fixtureStatus = "failed"
 			if interrupted {
-				processLegacyFeishuAI(t, service)
+				platform.fixtureStatus = "running"
 			}
+			receiveFeishuAI(t, service, "洞察 memos/seed")
+			if _, _, err := service.seedLegacyAI(t.Context(), "om_ai"); err != nil {
+				t.Fatal(err)
+			}
+			restartFeishuAI(t, service)
+			processLegacyFeishuAI(t, service)
 			platform.mode = "rejected"
 			deliverFeishuAI(t, service)
 			if _, err := service.Store.state.Exec("UPDATE notifications SET available_at = 0"); err != nil {
@@ -221,16 +215,15 @@ func TestFeishuAIGenerationInterruptionAndFailureAreTerminal(t *testing.T) {
 			if interrupted {
 				expected = feishuAIInterrupted
 			}
-			if *calls != 1 || len(platform.texts) != 1 || !strings.Contains(platform.texts[0], expected) ||
-				strings.Contains(platform.texts[0], "private") {
-				t.Fatalf("failure was replayed or exposed internal output: %d %v", *calls, platform.texts)
+			if *writes != 1 || len(platform.texts) != 1 || !strings.Contains(platform.texts[0], expected) {
+				t.Fatalf("legacy terminal state was reconstructed or lost: fixtures=%d texts=%v", *writes, platform.texts)
 			}
 		})
 	}
 }
 
 func TestFeishuAILongPartsRetryAndUnknownResolution(t *testing.T) {
-	service, platform, _, calls := feishuAIFixture(t, longFeishuAIOutput())
+	service, platform, _, fixtures := feishuAIFixture(t, longFeishuAIOutput())
 	receiveFeishuAI(t, service, "洞察 memos/seed")
 	processLegacyFeishuAI(t, service)
 	deliverFeishuAI(t, service)
@@ -269,7 +262,7 @@ func TestFeishuAILongPartsRetryAndUnknownResolution(t *testing.T) {
 			break
 		}
 	}
-	if *calls != 1 || platform.uuids[0] == platform.uuids[1] || platform.uuids[1] != platform.uuids[2] {
+	if *fixtures != 1 || platform.uuids[0] == platform.uuids[1] || platform.uuids[1] != platform.uuids[2] {
 		t.Fatal("part UUIDs were reused across parts or changed on a known retry")
 	}
 	for _, text := range platform.texts {
@@ -291,7 +284,7 @@ func TestFeishuAILongPartsRetryAndUnknownResolution(t *testing.T) {
 func TestFeishuAISourceChangesStopCachedParts(t *testing.T) {
 	for _, mode := range []string{"edited", "deleted", "foreign"} {
 		t.Run(mode, func(t *testing.T) {
-			service, platform, memos, calls := feishuAIFixture(t, longFeishuAIOutput())
+			service, platform, memos, fixtures := feishuAIFixture(t, longFeishuAIOutput())
 			receiveFeishuAI(t, service, "洞察 memos/seed")
 			processLegacyFeishuAI(t, service)
 			deliverFeishuAI(t, service)
@@ -306,7 +299,7 @@ func TestFeishuAISourceChangesStopCachedParts(t *testing.T) {
 			deliverFeishuAI(t, service)
 			if platform.calls != 2 || !strings.Contains(platform.texts[1], feishuAISourceFailed) ||
 				strings.Contains(platform.texts[1], "虚构") || strings.Contains(platform.texts[1], "memos/seed") ||
-				*calls != 1 {
+				*fixtures != 1 {
 				t.Fatalf("cached private output survived a source change: %v", platform.texts)
 			}
 			if progress, err := service.Notifications.Deliver(context.Background()); progress || err != nil {
@@ -317,7 +310,7 @@ func TestFeishuAISourceChangesStopCachedParts(t *testing.T) {
 }
 
 func TestFeishuAIResolvedPartsCannotSendOldContent(t *testing.T) {
-	service, platform, memos, calls := feishuAIFixture(t, longFeishuAIOutput())
+	service, platform, memos, fixtures := feishuAIFixture(t, longFeishuAIOutput())
 	receiveFeishuAI(t, service, "洞察 memos/seed")
 	processLegacyFeishuAI(t, service)
 	if _, err := service.Store.state.Exec("UPDATE notifications SET status = 'unknown', last_error = 'STATE_RESTORED'"); err != nil {
@@ -362,15 +355,15 @@ func TestFeishuAIResolvedPartsCannotSendOldContent(t *testing.T) {
 			t.Fatalf("resolved parts sent invalidated output: %s", text)
 		}
 	}
-	if *calls != 1 {
-		t.Fatal("resolving a part repeated AI generation")
+	if *fixtures != 1 {
+		t.Fatal("resolving a part reconstructed a historical fixture")
 	}
 }
 
 func TestFeishuAIRestoredPendingGenerationDoesNotRun(t *testing.T) {
-	service, platform, _, calls := feishuAIFixture(t, insightOutput)
+	service, platform, _, fixtures := feishuAIFixture(t, legacyInsightResult())
 	receiveFeishuAI(t, service, "洞察 memos/seed")
-	request, err := service.seal("ai-request:om_ai", canonicalJSON(AIRequest{Names: []string{"memos/seed"}}))
+	request, err := service.seal("ai-request:om_ai", canonicalJSON(legacyAIRequest{Names: []string{"memos/seed"}}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -395,46 +388,55 @@ func TestFeishuAIRestoredPendingGenerationDoesNotRun(t *testing.T) {
 	restartFeishuAI(t, service)
 	processLegacyFeishuAI(t, service)
 	unknown, err := service.Notifications.List("unknown")
-	if err != nil || len(unknown) != 1 || *calls != 0 || platform.calls != 0 {
+	if err != nil || len(unknown) != 1 || *fixtures != 0 || platform.calls != 0 {
 		t.Fatalf("restoring an older snapshot invoked the model: %+v %v", unknown, err)
 	}
 	if _, err := service.Notifications.Resolve(context.Background(), unknown[0].ID, "not_sent", "", "operator"); err != nil {
 		t.Fatal(err)
 	}
 	deliverFeishuAI(t, service)
-	if !strings.Contains(platform.texts[0], feishuAIInterrupted) || *calls != 0 {
+	if !strings.Contains(platform.texts[0], feishuAIInterrupted) || *fixtures != 0 {
 		t.Fatal("restored event did not return a terminal interruption notice")
 	}
 }
 
-// seedLegacyAI 只构造旧生成夹具，不参与产品入口或后台工作循环。
+type legacyAIRequest struct {
+	Names []string `json:"names"`
+}
+
+// seedLegacyAI writes a fixed historical result; it never invokes a model.
 func (s *FeishuService) seedLegacyAI(ctx context.Context, messageID string) (string, string, error) {
-	operation, request := "insight", AIRequest{Names: []string{"memos/seed"}}
-	body, err := json.Marshal(request)
+	request := legacyAIRequest{Names: []string{"memos/seed"}}
+	sealed, err := s.seal("ai-request:"+messageID, canonicalJSON(request))
 	if err != nil {
 		return "", "", err
 	}
-	sealed, err := s.seal("ai-request:"+messageID, body)
-	if err != nil {
-		return "", "", err
+	platform := s.Client.(*feishuAIPlatform)
+	status, code := "completed", ""
+	if platform.fixtureStatus != "" {
+		status = platform.fixtureStatus
 	}
-	// The insert commits before entering the shared service. An existing running
-	// generation is an uncertain outcome, never permission to call the model again.
-	status, code := "running", ""
 	var restored bool
 	config := s.Store.Settings.Channel
-	if err := s.Store.state.QueryRow(`SELECT COALESCE(last_error = 'STATE_RESTORED', 0)
-		FROM channel_events WHERE message_id = ? AND app_id = ? AND sender_open_id = ?`,
+	if err := s.Store.state.QueryRowContext(ctx, `SELECT COALESCE(last_error = 'STATE_RESTORED', 0)
+        FROM channel_events WHERE message_id = ? AND app_id = ? AND sender_open_id = ?`,
 		messageID, configured(config.AppID), configured(config.UserOpenID)).Scan(&restored); err != nil {
 		return "", "", err
 	}
 	if restored {
 		status, code = "interrupted", "STATE_RESTORED"
 	}
+	var saved []byte
+	if status == "completed" {
+		saved, err = s.seal("ai-result:"+messageID, canonicalJSON(platform.fixture))
+		if err != nil {
+			return "", "", err
+		}
+	}
 	stamp := nowText()
-	inserted, err := s.Store.state.Exec(`INSERT OR IGNORE INTO feishu_ai_generations
-		(message_id, operation, request, status, error_code, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?)`, messageID, operation, sealed, status, nullable(code), stamp, stamp)
+	inserted, err := s.Store.state.ExecContext(ctx, `INSERT OR IGNORE INTO feishu_ai_generations
+        (message_id,operation,request,result,status,error_code,created_at,updated_at)
+        VALUES (?, 'insight', ?, ?, ?, ?, ?, ?)`, messageID, sealed, saved, status, nullable(code), stamp, stamp)
 	if err != nil {
 		return "", "", err
 	}
@@ -442,44 +444,8 @@ func (s *FeishuService) seedLegacyAI(ctx context.Context, messageID string) (str
 	if err != nil {
 		return "", "", err
 	}
-	if count == 0 {
-		if _, err := s.Store.state.Exec(`UPDATE feishu_ai_generations SET status = 'interrupted',
-			error_code = 'GENERATION_INTERRUPTED', updated_at = ? WHERE message_id = ? AND status = 'running'`,
-			nowText(), messageID); err != nil {
-			return "", "", err
-		}
-		return "ai", messageID, nil
+	if count > 0 {
+		*platform.fixtureWrites++
 	}
-	if restored {
-		return "ai", messageID, nil
-	}
-	result := AIResult{}
-	if s.AI == nil {
-		err = failure("LLM_DISABLED", "AI is unavailable", 503, false)
-	} else if operation == "insight" {
-		result, err = s.AI.Insight(ctx, request, nil)
-	} else {
-		result, err = s.AI.Answer(ctx, request, nil)
-	}
-	var saved []byte
-	status, code = "completed", ""
-	if err != nil || !result.Completed {
-		status, code = "failed", "AI_GENERATION_FAILED"
-		// Keep only a fixed classification, never provider/source error text.
-		if err != nil && strings.HasPrefix(errorCode(err), "SOURCE_") {
-			code = "AI_SOURCE_FAILED"
-		}
-	} else {
-		body, err = json.Marshal(result)
-		if err == nil {
-			saved, err = s.seal("ai-result:"+messageID, body)
-		}
-		if err != nil {
-			return "", "", err
-		}
-	}
-	_, err = s.Store.state.Exec(`UPDATE feishu_ai_generations SET status = ?, result = ?,
-		error_code = ?, updated_at = ? WHERE message_id = ? AND status = 'running'`,
-		status, saved, nullable(code), nowText(), messageID)
-	return "ai", messageID, err
+	return "ai", messageID, nil
 }

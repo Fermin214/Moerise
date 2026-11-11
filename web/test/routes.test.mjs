@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { filters, listQuery, detailURL, safeFrom, attachmentURL, rasterImage } from '../src/routes.js';
+import { filters, timelineURL, listQuery, enhancedSearch, searchBody, detailURL, safeFrom, attachmentURL, rasterImage } from '../src/routes.js';
 import { safeLink } from '../src/markdown.js';
 
 test('combines URL keyword, AND tags, date and opaque page token without losing encoding', () => {
@@ -31,6 +31,22 @@ test('detail links only return to known application pages and preserve valid fil
   assert.equal(safeFrom(`${chat}&arbitrary=data`), chat);
   assert.equal(new URL(detailURL('memos/abc-123', chat), 'https://notes.example').searchParams.get('from'), chat);
   assert.equal(safeFrom('/insights?chat=javascript:bad'), '/insights');
+});
+
+test('enhanced search preserves mode and filters across pagination and detail return', () => {
+  const values = filters('?query=garden&mode=semantic&tag=C%2B%2B&tag=%F0%9F%8C%B1&date=2026-10-29');
+  assert.equal(enhancedSearch(values), true);
+  assert.deepEqual(searchBody('/archived', values, 'opaque+/='), {
+    query: 'garden', mode: 'semantic', tags: ['C++', '🌱'], date: '2026-10-29',
+    state: 'ARCHIVED', page_size: 20, page_token: 'opaque+/=',
+  });
+  const from = timelineURL('/archived', values);
+  assert.equal(safeFrom(from), from);
+  assert.equal(new URL(detailURL('memos/a', from), 'https://notes.example').searchParams.get('from'), from);
+  assert.equal(filters('?mode=unknown').mode, 'keyword');
+  assert.equal(enhancedSearch(filters('?mode=hybrid&query=%20')), false);
+  assert.equal(enhancedSearch(filters('?query=garden')), false);
+  assert.equal(listQuery('/', values).has('mode'), false);
 });
 
 test('only protected content URLs belonging to the note are rendered as attachments', () => {

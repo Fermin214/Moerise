@@ -112,6 +112,7 @@ type MapResponse struct {
 	Algorithm          string     `json:"algorithm"`
 	VectorGeneration   string     `json:"vector_generation"`
 	ProjectionRevision int64      `json:"projection_revision"`
+	GeneratedAt        string     `json:"generated_at,omitempty"`
 	Points             []MapPoint `json:"points"`
 }
 

@@ -101,8 +101,6 @@ export function createMapPage({ request, handleFailure, validNote, renderNote, i
   }
   const errorMessages = {
     MAP_RESPONSE_INVALID: '\u670d\u52a1\u8fd4\u56de\u7684\u5730\u56fe\u683c\u5f0f\u65e0\u6548\uff0c\u8bf7\u5237\u65b0\u9875\u9762\u3002',
-    MAP_SOURCE_CHANGED: '\u7b14\u8bb0\u5df2\u66f4\u65b0\uff0c\u6b63\u5728\u7b49\u5f85\u5730\u56fe\u7d22\u5f15\u66f4\u65b0\u3002',
-    MAP_INDEX_CHANGED: '\u7d22\u5f15\u5df2\u53d8\u5316\uff0c\u6b63\u5728\u91cd\u65b0\u8bfb\u53d6\u5730\u56fe\u3002',
     MAP_RESOURCE_LIMIT: '\u5730\u56fe\u8bfb\u53d6\u8d85\u8fc7\u6280\u672f\u8d44\u6e90\u9884\u7b97\uff0c\u8bf7\u7a0d\u540e\u5237\u65b0\u3002',
     MAP_LAYOUT_INVALID: '\u5730\u56fe\u5e03\u5c40\u65e0\u6548\uff0c\u8bf7\u91cd\u5efa\u7d22\u5f15\u3002',
     MAP_REQUEST_CANCELED: '\u5730\u56fe\u8bfb\u53d6\u5df2\u53d6\u6d88\u3002',
@@ -124,11 +122,9 @@ export function createMapPage({ request, handleFailure, validNote, renderNote, i
       if (!activeNote(ticket)) return;
       if (!validNote(note) || note.name !== name) throw Object.assign(new Error('Invalid map note'), { code: 'MAP_RESPONSE_INVALID' });
       reader.replaceChildren(renderNote(note)); reader.hidden = false; readName = name; say();
-      if (note.source_hash !== point.source_hash) { say(errorMessages.MAP_SOURCE_CHANGED); refreshLater(3000); }
     } catch (error) {
       if (!activeNote(ticket) || error.name === 'AbortError') return;
       fail(error);
-      if (error.code === 'SOURCE_NOT_FOUND') refreshLater(3000);
     } finally { if (activeNote(ticket)) { noteController = null; busy(); } }
   }
   function resetPointers() {
@@ -184,7 +180,7 @@ export function createMapPage({ request, handleFailure, validNote, renderNote, i
     } catch (error) {
       if (!activeMap(ticket) || error.name === 'AbortError') return;
       field.replaceChildren(); markers.clear(); clearReader(); result = null; resetPointers(); fail(error);
-      if (alive && (error.retryable || ['MAP_SOURCE_CHANGED', 'MAP_INDEX_CHANGED'].includes(error.code))) refreshLater(3000);
+      if (alive && error.retryable) refreshLater(3000);
     } finally { if (activeMap(ticket)) { mapController = null; loading = false; busy(); } }
   }
 
@@ -237,12 +233,10 @@ export function createMapPage({ request, handleFailure, validNote, renderNote, i
     }
   });
   const resize = new ResizeObserver(() => { if (view && !initialView) fit(); else if (view) positionMarkers(); });
-  function onFocus() { if (alive && !mapController && !pointers.size && document.visibilityState === 'visible') load(false); }
   return {
-    async mount(parent) { parent.append(root); resize.observe(field); window.addEventListener('focus', onFocus); document.addEventListener('visibilitychange', onFocus); await load(); },
+    async mount(parent) { parent.append(root); resize.observe(field); await load(); },
     destroy() {
       alive = false; mapSequence++; clearTimeout(timer); mapController?.abort(); clearReader(); resetPointers(); resize.disconnect();
-      window.removeEventListener('focus', onFocus); document.removeEventListener('visibilitychange', onFocus);
       if (animation !== null) cancelAnimationFrame(animation);
       root.remove();
     },

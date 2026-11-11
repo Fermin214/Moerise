@@ -90,7 +90,7 @@ function inlineMatch(text, i, next) {
 }
 
 function inline(parent, text, attachments, depth = 0) {
-  if (depth > 8) { parent.append(document.createTextNode(text)); return; }
+  if (depth > 8 || !/[`*_~\[]/.test(text)) { parent.append(document.createTextNode(text)); return; }
   const next = inlineIndex(text);
   let last = 0;
   for (let i = 0; i < text.length;) {
@@ -140,8 +140,9 @@ export function renderMarkdown(text, note) {
     const fence = /^ {0,3}(`{3,}|~{3,})/.exec(line);
     if (fence) {
       const content = [];
+      const closing = new RegExp(`^ {0,3}${fence[1][0]}{${fence[1].length},}\\s*$`);
       i++;
-      while (i < lines.length && !new RegExp(`^ {0,3}${fence[1][0]}{${fence[1].length},}\\s*$`).test(lines[i])) content.push(lines[i++]);
+      while (i < lines.length && !closing.test(lines[i])) content.push(lines[i++]);
       i++;
       const pre = document.createElement('pre');
       const code = document.createElement('code');

@@ -13,19 +13,16 @@ import (
 
 func aiAPIFixture(t *testing.T, provider LLMProvider) *API {
 	t.Helper()
-	service := insightFixture(t, map[string]map[string]any{"memos/seed": rawMemo("seed", "fictional basil")}, provider)
-	settings := service.Search.Store.Settings
+	evidence := evidenceFixture(t, map[string]map[string]any{"memos/seed": rawMemo("seed", "fictional basil")})
+	settings := evidence.Search.Store.Settings
 	settings.AccessTokens = append(settings.AccessTokens,
 		AccessToken{"generator", strings.Repeat("g", 40), []string{"notes:read", "ai:generate"}},
 		AccessToken{"model-only", strings.Repeat("a", 40), []string{"ai:generate"}})
-	api, err := NewAPI(NewApp(settings, service.Search.Store, service.Search.Source))
+	api, err := NewAPI(NewApp(settings, evidence.Search.Store, evidence.Search.Source))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if api.AI == nil || api.AI.Search != api.Search || api.AI.Provider != nil {
-		t.Fatal("NewAPI did not initialize the shared AI service")
-	}
-	api.Search, api.AI = service.Search, service
+	api.LLM, api.Chat.Provider = provider, provider
 	return api
 }
 
@@ -40,28 +37,17 @@ func aiAPICall(api *API, method, path, token, body string) *httptest.ResponseRec
 	return response
 }
 
-func aiAPIProvider(_ context.Context, _ []LLMMessage, emit func(string) error) (LLMResult, error) {
-	if err := emit(insightOutput); err != nil {
-		return LLMResult{}, err
-	}
-	return LLMResult{Content: insightOutput, Model: "fictional-model", FinishReason: "stop"}, nil
-}
-
-func TestAIAPINewAPISharedService(t *testing.T) {
-	service := insightFixture(t, map[string]map[string]any{"memos/seed": rawMemo("seed", "fictional basil")}, nil)
-	store := service.Search.Store
+func TestAIAPIChatAndHistoricalDeliveryShareSources(t *testing.T) {
+	evidence := evidenceFixture(t, map[string]map[string]any{"memos/seed": rawMemo("seed", "fictional basil")})
+	store := evidence.Search.Store
 	appID := "fictional-app"
 	store.Settings.Channel.Kind, store.Settings.Channel.AppID = "feishu-app", &appID
-	api, err := NewAPI(NewApp(store.Settings, store, service.Search.Source))
+	api, err := NewAPI(NewApp(store.Settings, store, evidence.Search.Source))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if api.Feishu == nil || api.Feishu.AI != api.AI || api.Feishu.Search != api.Search || api.AI.Search != api.Search {
-		t.Fatal("NewAPI must share the AI and search instances across entry points")
-	}
-	api.AI.Provider = aiLLMFunc(aiAPIProvider)
-	if api.Feishu.AI.Provider == nil {
-		t.Fatal("provider injection was not visible to Feishu")
+	if api.Feishu == nil || api.Feishu.Search != api.Search || api.Chat.Notes != api.Notes || api.LLM != nil {
+		t.Fatal("chat and historical delivery do not share application sources")
 	}
 }
 
@@ -110,7 +96,7 @@ func TestOpenAPIDoesNotAdvertiseRetiredGeneration(t *testing.T) {
 	if err := json.Unmarshal(openAPIJSON, &spec); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"AIRequest", "AIResult", "AIStatement", "Evidence", "EvidenceSet", "AIMetrics", "AITimelinePeriod", "AIStreamEvent"} {
+	for _, name := range []string{"AIRequest", "AIResult", "AIStatement", "Evidence", "EvidenceSet", "AIMetrics", "AITimelinePeriod", "AIStreamEvent", "CreateNoteRequest", "SyncRequest"} {
 		if spec.Components.Schemas[name] != nil || strings.Contains(string(openAPIJSON), "#/components/schemas/"+name+`"`) {
 			t.Fatalf("retired generation schema remains public: %s", name)
 		}

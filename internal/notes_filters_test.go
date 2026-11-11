@@ -332,6 +332,7 @@ func TestNotesScanBudgetsAndValidation(t *testing.T) {
 
 func TestNotesAggregatesLargeCollectionUsesPagesAndNoPerNoteReads(t *testing.T) {
 	service, source := newNotesFilterFixture(t)
+	service.Settings.Memos.PageSize = 100
 	template := source.rows[0]
 	source.rows, source.perPage = nil, 100
 	for i := range 10000 {
@@ -390,60 +391,68 @@ func TestNotesFilterDSTAndExactSemantics(t *testing.T) {
 	}
 }
 
+type pagedAggregateSource struct {
+	Source
+	LiveSource
+	AggregateSource
+}
+
 func TestNotesAggregatesMemosAdapterUsesLinearOfficialPagination(t *testing.T) {
-	for _, sameTime := range []bool{false, true} {
-		t.Run(strconv.FormatBool(sameTime), func(t *testing.T) {
-			settings := testSettings(t)
-			settings.Memos.User, settings.Memos.PageSize = "users/owner", 100
-			settings.Timezone = "UTC"
-			total := 10000
-			if sameTime {
-				total = 1000
-			}
-			lists, gets := 0, 0
-			source := fakeClient(settings, func(r *http.Request) (int, any, error) {
-				if status, body, ok := identityResponse(r); ok {
-					return status, body, nil
+	for _, pageSize := range []int{100, 500} {
+		for _, sameTime := range []bool{false, true} {
+			t.Run(strconv.Itoa(pageSize)+"/"+strconv.FormatBool(sameTime), func(t *testing.T) {
+				settings := testSettings(t)
+				settings.Memos.User, settings.Memos.PageSize = "users/owner", pageSize
+				settings.Timezone = "UTC"
+				total := 10000
+				if sameTime {
+					total = 1000
 				}
-				if r.URL.Path != "/api/v1/memos" {
-					gets++
-					return 500, nil, nil
-				}
-				lists++
-				query := r.URL.Query()
-				if query.Get("orderBy") != "create_time desc" || query.Get("pageSize") != "100" ||
-					!strings.Contains(query.Get("filter"), "creator == 'users/owner'") {
-					t.Errorf("unexpected aggregate page: %s", r.URL)
-				}
-				offset, _ := strconv.Atoi(query.Get("pageToken"))
-				rows := []any{}
-				for i := offset; i < min(offset+100, total); i++ {
-					raw := liveRawMemo("same_"+strconv.Itoa(i), "#all")
-					raw["tags"] = []string{"all", "all"}
-					created := time.Date(2020, 1, 2, 12, 0, 0, 0, time.UTC)
-					if !sameTime {
-						created = created.Add(-time.Duration(i) * time.Second)
+				lists, gets := 0, 0
+				source := fakeClient(settings, func(r *http.Request) (int, any, error) {
+					if status, body, ok := identityResponse(r); ok {
+						return status, body, nil
 					}
-					raw["createTime"], raw["updateTime"] = created.Format(time.RFC3339Nano), created.Format(time.RFC3339Nano)
-					rows = append(rows, raw)
+					if r.URL.Path != "/api/v1/memos" {
+						gets++
+						return 500, nil, nil
+					}
+					lists++
+					query := r.URL.Query()
+					if query.Get("orderBy") != "create_time desc" || query.Get("pageSize") != strconv.Itoa(pageSize) ||
+						!strings.Contains(query.Get("filter"), "creator == 'users/owner'") {
+						t.Errorf("unexpected aggregate page: %s", r.URL)
+					}
+					offset, _ := strconv.Atoi(query.Get("pageToken"))
+					rows := []any{}
+					for i := offset; i < min(offset+pageSize, total); i++ {
+						raw := liveRawMemo("same_"+strconv.Itoa(i), "#all")
+						raw["tags"] = []string{"all", "all"}
+						created := time.Date(2020, 1, 2, 12, 0, 0, 0, time.UTC)
+						if !sameTime {
+							created = created.Add(-time.Duration(i) * time.Second)
+						}
+						raw["createTime"], raw["updateTime"] = created.Format(time.RFC3339Nano), created.Format(time.RFC3339Nano)
+						rows = append(rows, raw)
+					}
+					next := ""
+					if offset+pageSize < total {
+						next = strconv.Itoa(offset + pageSize)
+					}
+					return 200, map[string]any{"memos": rows, "nextPageToken": next}, nil
+				})
+				service := NewNoteService(settings, testStore(t, settings), pagedAggregateSource{source, source, source})
+				tags, err := service.Tags(t.Context(), "NORMAL")
+				if err != nil || !reflect.DeepEqual(tags, []TagCount{{"all", total}}) || lists != 2*((total+pageSize-1)/pageSize) || gets != 0 {
+					t.Fatalf("same-time collection rescanned: tags=%v lists=%d gets=%d err=%v", tags, lists, gets, err)
 				}
-				next := ""
-				if offset+100 < total {
-					next = strconv.Itoa(offset + 100)
+				lists = 0
+				days, err := service.Calendar(t.Context(), "NORMAL", "2020-01")
+				if err != nil || !reflect.DeepEqual(days, []DayCount{{"2020-01-02", total}}) || lists != 2*((total+pageSize-1)/pageSize) || gets != 0 {
+					t.Fatalf("same-time calendar rescanned: days=%v lists=%d gets=%d err=%v", days, lists, gets, err)
 				}
-				return 200, map[string]any{"memos": rows, "nextPageToken": next}, nil
 			})
-			service := NewNoteService(settings, testStore(t, settings), source)
-			tags, err := service.Tags(t.Context(), "NORMAL")
-			if err != nil || !reflect.DeepEqual(tags, []TagCount{{"all", total}}) || lists != total/50 || gets != 0 {
-				t.Fatalf("same-time collection rescanned: tags=%v lists=%d gets=%d err=%v", tags, lists, gets, err)
-			}
-			lists = 0
-			days, err := service.Calendar(t.Context(), "NORMAL", "2020-01")
-			if err != nil || !reflect.DeepEqual(days, []DayCount{{"2020-01-02", total}}) || lists != total/50 || gets != 0 {
-				t.Fatalf("same-time calendar rescanned: days=%v lists=%d gets=%d err=%v", days, lists, gets, err)
-			}
-		})
+		}
 	}
 }
 
@@ -486,7 +495,7 @@ func TestNotesAggregatesMemosAdapterRejectsPartialOrChangingPages(t *testing.T) 
 					}
 					return 200, map[string]any{"memos": []any{raw}, "nextPageToken": next}, nil
 				})
-				service := NewNoteService(settings, testStore(t, settings), source)
+				service := NewNoteService(settings, testStore(t, settings), pagedAggregateSource{source, source, source})
 				var err error
 				if operation == "tags" {
 					var tags []TagCount

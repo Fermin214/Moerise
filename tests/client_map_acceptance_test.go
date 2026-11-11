@@ -18,18 +18,24 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	moerise "moerise/internal"
 )
 
 func acceptanceMap(t *testing.T, c *clientHarness) moerise.MapResponse {
 	t.Helper()
-	value := c.call("GET", "/api/app/v1/map", nil, 200)
-	data, err := json.Marshal(value)
 	var result moerise.MapResponse
-	if err != nil || json.Unmarshal(data, &result) != nil || result.Status != "ready" ||
-		len(result.LayoutVersion) != 64 || len(result.LayoutFrame) != 64 {
-		t.Fatalf("invalid ready map: status=%s err=%v", result.Status, err)
+	wait(t, "published map snapshot", func() bool {
+		value := c.call("GET", "/api/app/v1/map", nil, 200)
+		data, err := json.Marshal(value)
+		if err != nil || json.Unmarshal(data, &result) != nil {
+			t.Fatalf("invalid map response: %v", err)
+		}
+		return result.Status == "ready"
+	})
+	if len(result.LayoutVersion) != 64 || len(result.LayoutFrame) != 64 || result.GeneratedAt == "" {
+		t.Fatal("invalid snapshot metadata")
 	}
 	return result
 }
@@ -38,12 +44,20 @@ func TestClientMapMemosAcceptance(t *testing.T) {
 	var faultName atomic.Value
 	faultName.Store("")
 	var faultStatus atomic.Int32
-	var wrongAuthor atomic.Bool
 	h := newHarnessWithUpstream(t, func(upstream string) string {
 		target, _ := url.Parse(upstream)
 		proxy := httputil.NewSingleHostReverseProxy(target)
 		proxy.ModifyResponse = func(response *http.Response) error {
 			name := faultName.Load().(string)
+			if name != "" && response.Request.Method == "GET" && response.Request.URL.Path == "/api/v1/"+name && response.StatusCode == 200 {
+				if status := int(faultStatus.Load()); status != 0 {
+					response.Body.Close()
+					response.StatusCode, response.ContentLength = status, -1
+					response.Body = io.NopCloser(strings.NewReader(`{"message":"controlled source failure"}`))
+					response.Header.Del("Content-Length")
+					return nil
+				}
+			}
 			if name == "" || response.Request.Method != "GET" || response.Request.URL.Path != "/api/v1/memos" || response.StatusCode != 200 {
 				return nil
 			}
@@ -57,9 +71,6 @@ func TestClientMapMemosAcceptance(t *testing.T) {
 				memo := value.(map[string]any)
 				if memo["name"] == name {
 					found = true
-					if wrongAuthor.Load() {
-						memo["creator"] = "users/9999"
-					}
 				}
 			}
 			if status := int(faultStatus.Load()); found && status != 0 {
@@ -224,69 +235,67 @@ func TestClientMapMemosAcceptance(t *testing.T) {
 	}
 	t.Log("PASS real paginated normal/archive/duplicate/pure-attachment projection, full reading, semantic neighbors and stable restart")
 
-	// A fault on the last sorted source must discard the whole response, not its suffix.
+	// Trend snapshots remain readable when individual source reads fail.
 	faultName.Store(first.Points[len(first.Points)-1].Name)
 	for _, status := range []int32{503, 403} {
 		faultStatus.Store(status)
-		rejected := c.call("GET", "/api/app/v1/map", nil, 503)
-		if rejected["points"] != nil || rejected["status"] != nil {
-			t.Fatal("source fault exposed a partial or cached map")
+		if snapshot := acceptanceMap(t, c); !reflect.DeepEqual(first, snapshot) {
+			t.Fatal("source list fault changed published snapshot")
 		}
+		c.call("GET", "/api/app/v1/notes/"+strings.TrimPrefix(faultName.Load().(string), "memos/"), nil, 503)
 	}
 	faultStatus.Store(0)
-	wrongAuthor.Store(true)
-	rejected := c.call("GET", "/api/app/v1/map", nil, 409)
-	if rejected["error"].(map[string]any)["code"] != "MAP_SOURCE_CHANGED" || rejected["points"] != nil {
-		t.Fatal("changed author exposed its cached map point")
-	}
-	wrongAuthor.Store(false)
 	faultName.Store("")
-	h.sync("full")
-	h.vectorsReady()
-	first = acceptanceMap(t, c)
-	initial = points(first)
 	h.call(h.memos, "/api/v1/"+notes[2]["name"].(string)+"?updateMask=content", "PATCH", h.upstream, map[string]string{"content": "reading changed subject #原生"}, 200)
-	rejected = c.call("GET", "/api/app/v1/map", nil, 409)
-	if rejected["error"].(map[string]any)["code"] != "MAP_SOURCE_CHANGED" {
-		t.Fatal("unindexed source edit returned the old point set")
+	detail := c.call("GET", clientNotePath(notes[2]), nil, 200)
+	if detail["content"] != "reading changed subject #原生" || detail["source_hash"] == initial[notes[2]["name"].(string)].SourceHash {
+		t.Fatal("snapshot reader did not fetch latest original")
 	}
 	h.call(h.memos, "/api/v1/"+notes[4]["name"].(string), "DELETE", h.upstream, nil, 200)
+	c.call("GET", clientNotePath(notes[4]), nil, 404)
 	c.key = "map-added"
 	added := c.call("POST", "/api/app/v1/notes", map[string]string{"content": "balcony herbs new observation"}, 201)
 	h.sync("full")
 	h.vectorsReady()
-	incremental := acceptanceMap(t, c)
+	if stable := acceptanceMap(t, c); !reflect.DeepEqual(first, stable) {
+		t.Fatal("ordinary edits bypassed daily snapshot interval")
+	}
+	// Age only the derived snapshot to exercise a day boundary without a production test switch.
+	h.stop()
+	db := h.database("index")
+	_, err := db.Exec("UPDATE map_layouts SET generated_at = ?", time.Now().UTC().Add(-48*time.Hour).Format(time.RFC3339Nano))
+	db.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.start()
+	var incremental moerise.MapResponse
+	wait(t, "daily combined snapshot", func() bool {
+		incremental = acceptanceMap(t, c)
+		return incremental.LayoutVersion != first.LayoutVersion
+	})
 	updated := points(incremental)
-	if incremental.LayoutFrame != first.LayoutFrame || incremental.LayoutVersion == first.LayoutVersion ||
-		len(updated) != len(initial) || updated[added["name"].(string)].Name == "" || updated[notes[4]["name"].(string)].Name != "" {
-		t.Fatal("incremental edit/add/delete reset frame or returned the wrong complete set")
+	if incremental.LayoutFrame != first.LayoutFrame || len(updated) != len(initial) || updated[added["name"].(string)].Name == "" || updated[notes[4]["name"].(string)].Name != "" {
+		t.Fatal("daily update lost combined changes or reset the frame")
 	}
 	for name, old := range initial {
 		if name == notes[2]["name"] || name == notes[4]["name"] {
 			continue
 		}
-		if now := updated[name]; now.X != old.X || now.Y != old.Y {
-			t.Fatalf("unrelated point moved after a small update: %s", name)
+		if point := updated[name]; point.X != old.X || point.Y != old.Y {
+			t.Fatalf("daily update moved unchanged point: %s", name)
 		}
 	}
-	h.call(h.memos, "/api/v1/"+added["name"].(string), "DELETE", h.upstream, nil, 200)
-	rejected = c.call("GET", "/api/app/v1/map", nil, 409)
-	if rejected["error"].(map[string]any)["code"] != "MAP_SOURCE_CHANGED" || rejected["points"] != nil {
-		t.Fatal("deleted source returned cached or partial map points")
-	}
-	h.sync("full")
-	h.vectorsReady()
-	incremental = acceptanceMap(t, c)
 	docker(t, "stop", h.container)
 	c.call("GET", "/api/app/v1/map", nil, 503)
 	docker(t, "start", h.container)
 	h.sync("full")
 	h.ready()
 	h.vectorsReady()
-	if recovered := acceptanceMap(t, c); !reflect.DeepEqual(recovered.Points, incremental.Points) {
-		t.Fatal("source outage recovery moved points")
+	if recovered := acceptanceMap(t, c); !reflect.DeepEqual(recovered, incremental) {
+		t.Fatal("source recovery changed the daily snapshot")
 	}
-	t.Log("PASS source edit/deletion/author loss/credential rejection/outage never expose stale or partial results; small updates keep unrelated coordinates")
+	t.Log("PASS daily snapshots combine edits/additions/deletions; originals stay live and source authentication stays required")
 
 	chatModel := &chatAcceptanceModel{key: randomToken(), release: make(chan struct{}, 1)}
 	chatServer := httptest.NewServer(chatModel)

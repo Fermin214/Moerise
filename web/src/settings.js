@@ -1,7 +1,7 @@
 const fields = {
   review: ['count', 'min_age_hours', 'recent_days', 'topic_limit', 'include_archived'],
   notifications: ['enabled', 'time', 'times'],
-  llm: ['enabled', 'protocol', 'base_url', 'model', 'timeout_seconds', 'max_concurrency', 'max_retries', 'max_output_tokens', 'context_bytes'],
+  llm: ['enabled', 'protocol', 'base_url', 'model', 'timeout_seconds', 'max_concurrency', 'max_retries', 'max_output_tokens'],
   embedding: ['enabled', 'provider', 'protocol', 'base_url', 'model', 'dimensions', 'send_dimensions', 'batch_size', 'timeout_seconds', 'max_concurrency', 'max_retries', 'query_instruction'],
   channel: ['kind', 'app_id', 'user_open_id', 'destination'],
   insights: ['default_prompt'],
@@ -326,7 +326,6 @@ export function createSettingsPage({ sessionRequest, handleFailure, onSaved = ()
     field(advanced, `${group}.max_retries`, '重试次数', { type: 'number', min: 0, max: 3 });
     if (group === 'llm') {
       field(advanced, 'llm.max_output_tokens', '最大输出 Token', { type: 'number', min: 32, max: 16384 });
-      field(advanced, 'llm.context_bytes', '上下文大小（字节）', { type: 'number', min: 1024, max: 262144 });
     } else {
       field(advanced, 'embedding.dimensions', '向量维度', { type: 'number', min: 1, max: 16384 });
       const send = field(advanced, 'embedding.send_dimensions', '发送维度参数', { type: 'checkbox',

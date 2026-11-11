@@ -24,15 +24,19 @@ type Source interface {
 type MemosClient struct {
 	config MemosConfig
 	client *http.Client
+	slots  chan struct{}
 }
 
 func NewMemosClient(config MemosConfig) *MemosClient {
+	if config.PageSize == 0 {
+		config.PageSize = sourcePageSize(0)
+	}
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.Proxy = nil
-	return &MemosClient{config, &http.Client{
+	return &MemosClient{config: config, client: &http.Client{
 		Transport: transport, Timeout: time.Duration(config.TimeoutSeconds * float64(time.Second)),
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
-	}}
+	}, slots: make(chan struct{}, min(4, max(2, processCPUs())))}
 }
 
 func (m *MemosClient) Close() { m.client.CloseIdleConnections() }
@@ -42,6 +46,12 @@ func (m *MemosClient) request(ctx context.Context, path string, query url.Values
 }
 
 func (m *MemosClient) do(ctx context.Context, method, path string, query url.Values, body []byte, target any) error {
+	select {
+	case m.slots <- struct{}{}:
+		defer func() { <-m.slots }()
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 	address := m.config.BaseURL + path
 	if len(query) > 0 {
 		address += "?" + query.Encode()
@@ -232,7 +242,7 @@ func (m *MemosClient) ListPage(ctx context.Context, state string, since *int64, 
 	if err := m.request(ctx, "/api/v1/memos", query, &response); err != nil {
 		return nil, "", err
 	}
-	result := []Memo{}
+	result := make([]Memo, 0, len(response.Memos))
 	for _, raw := range response.Memos {
 		memo, err := normalizeMemo(raw)
 		if err != nil {

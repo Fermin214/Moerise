@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"math"
 	"slices"
+	"time"
 )
 
 const mapAlgorithm = "pca-fixed-v2"
@@ -13,6 +14,7 @@ const mapPointGap = 0.22
 type mapDocument struct {
 	name, sourceHash, vectorHash string
 	vector                       []float64
+	tags                         []string
 }
 
 type mapSnapshot struct {
@@ -29,9 +31,12 @@ type mapBasis struct {
 }
 
 type mapLayout struct {
-	version string
-	basis   mapBasis
-	points  []MapPoint
+	version     string
+	basis       mapBasis
+	points      []MapPoint
+	generation  string
+	revision    int64
+	generatedAt time.Time
 }
 
 func mapNorm(vector []float64) float64 {
@@ -295,6 +300,7 @@ func buildMapLayout(ctx context.Context, snapshot mapSnapshot, previous *mapLayo
 			}
 		}
 		point.SourceHash, point.vectorHash = document.sourceHash, document.vectorHash
+		point.Tags = append([]string{}, document.tags...)
 		layout.points = append(layout.points, point)
 	}
 	version, err := json.Marshal([]any{mapAlgorithm, snapshot.space, layout.basis, layout.points})

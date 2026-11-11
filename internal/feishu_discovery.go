@@ -30,7 +30,7 @@ func (s *FeishuService) renderWalk(ctx context.Context, resource string) (string
 	case "SOURCE_NOT_FOUND":
 		return "笔记已删除或不可访问。", nil
 	case "EMBEDDING_DISABLED", "INDEX_NOT_READY", "NO_SOURCE_VECTORS":
-		return "语义漫步暂不可用（" + errorCode(err) + "）。可发送“随机跳转”继续浏览。", nil
+		return "语义漫步暂不可用（" + errorCode(err) + "）。", nil
 	}
 	if err != nil {
 		return "", err
@@ -44,9 +44,7 @@ func (s *FeishuService) renderWalk(ctx context.Context, resource string) (string
 		text.WriteString("没有符合条件的可访问笔记。\n")
 	}
 	if len(result.Path) > 0 {
-		text.WriteString("\n路径：" + strings.Join(result.Path, ",") +
-			"\n继续时将路径复制到命令末尾，可避免重复。\n")
+		text.WriteString("\n路径：" + strings.Join(result.Path, ",") + "\n")
 	}
-	text.WriteString("\n回复“查看 memos/资源标识”打开并记录阅读。")
 	return text.String(), nil
 }

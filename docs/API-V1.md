@@ -21,7 +21,7 @@
 | GET | `/api/app/v1/reviews/daily` | 生成或读取完整固定日计划，返回全部条目及冻结设置版本 |
 | POST | `/api/app/v1/walks/start` | 接收 `{name?}`，返回指定或随机起点，不记录阅读 |
 | POST | `/api/app/v1/walks/next` | 接收 `{name,path}`，在语义候选中随机选择未访问的下一条 |
-| GET | `/api/app/v1/map` | 读取本人正常与归档笔记的完整二维点集、布局版本及索引状态 |
+| GET | `/api/app/v1/map` | 读取本人正常与归档笔记的每日趋势快照、布局版本及索引状态 |
 | GET | `/api/app/v1/chat-materials` | 分页组合筛选聊天材料，默认包括正常与归档笔记 |
 | POST | `/api/app/v1/chat-materials/resolve` | 接收 `{names}`，复查明确选中的完整材料、引用与字符数 |
 | GET、POST | `/api/app/v1/chats` | 分页读取持久会话，或提交 `{request_id,title,names}` 幂等创建 |
@@ -30,6 +30,7 @@
 | POST | `/api/app/v1/chats/{chat_id}/messages/{request_id}/cancel` | 接收 `{}`，停止指定请求，读取会话取得最终取消状态 |
 | POST | `/api/app/v1/chats/{chat_id}/messages/{request_id}/save` | 接收助手消息 `{version}`，原文幂等保存为 Memos 笔记 |
 | GET | `/api/app/v1/notes` | 实时读取 Memos 本人笔记，默认 `state=NORMAL&order=created_desc&page_size=20` |
+| POST | `/api/app/v1/search` | 本人关键词／语义／混合搜索；返回完整笔记分页、实际模式和语义状态 |
 | GET | `/api/app/v1/notes/{memo_id}` | 返回来源复查后的最新 Note，不记录阅读 |
 | POST | `/api/app/v1/notes` | 接收 `{content,attachments}`，必填 `Idempotency-Key`，首次 201、重放 200，均直接返回 Note |
 | PATCH | `/api/app/v1/notes/{memo_id}` | 原文编辑、归档或恢复、添加或移除附件；提交 `source_hash` 和 `Idempotency-Key` |
@@ -49,7 +50,13 @@
 
 创建时间相同按资源名倒序，置顶和编辑不改变创建时间排序。列表直接从 Memos 取候选并复查来源，来源新增后刷新即可读取。游标绑定列表种类、来源、作者、状态、排序及筛选，与机器索引游标不可互换，索引重建不会使实时列表游标失效。来源在跨页读取中改变可返回 409 `SOURCE_CHANGED`；资源预算耗尽返回错误。标签和日历统计覆盖对应来源范围，不从客户端已加载页推算。
 
-列表、标签、日历与聊天材料分页的认证、运行资源锁和来源读取共用最长 55 秒预算。超时返回可重试的 503 `LIVE_LIST_LIMIT`，取消为 503 `LIVE_LIST_CANCELED`，来源 429 为可重试的 503 `UPSTREAM_RATE_LIMITED`。标签/日历从两次完整官方分页核对原文版本并聚合，避免逐条 GET 全库；两次扫描发生新增、变动、删除或归属变化时整请求失败，不返回部分统计。每次扫描最多 10,000 条、32 MiB，并受部署的 `memos.max_pages` 约束；这是来源扫描资源预算，不能解释为笔记总量限制或用截断结果冒充完整统计。
+列表、标签、日历与聊天材料分页的认证、运行资源锁和来源读取共用最长 55 秒预算。超时返回可重试的 503 `LIVE_LIST_LIMIT`，取消为 503 `LIVE_LIST_CANCELED`，来源 429 为可重试的 503 `UPSTREAM_RATE_LIMITED`。标签/日历两次读取官方 `ListAllUserStats`，固定作者、状态及月份条件，并在前后核验来源身份。逐篇创建/更新时间的数量必须与总数相符，标签计数必须处于有效范围；两次统计的计数或时间元数据集合不一致时返回 409 `SOURCE_CHANGED`，不输出部分统计。每次统计最多 10,000 篇、32 MiB 校验数据；来源分页扫描另受 `memos.max_pages` 约束。资源预算不限制来源笔记总量，超过预算返回错误。
+
+`POST /search` 接收 `{query,mode,tags,state,date,page_size,page_token}`，默认 `mode=keyword`、`state=NORMAL`、`page_size=20`，范围 1—100。关键词、原生标签和日期校验与实时列表相同；`tags` 是精确 AND 数组。关键词模式直接调用实时来源列表并按创建时间倒序，不依赖模型。`semantic` 和 `hybrid` 要求非空查询，通过共享索引按相关度分页，日期、状态、标签在各召回通道限额之前组合。返回 `{notes,next_page_token,mode,semantic:{used,reason}}`，Note 使用受保护的客户端地址。
+
+增强搜索复用每通道前 100 个片段的召回与融合规则，按笔记去重，不代表笔记总数上限。语义成功时 `used=true`；混合模式的语义不可用时明确返回 `mode=keyword` 与原因，仍按索引相关度排列；显式语义模式返回 503 及对应原因。默认 Web 关键词仍走 `GET /notes`。
+
+增强游标只携带签名的排序资源名和版本摘要，不保存正文；有效期十分钟，绑定来源、作者、查询、模式、筛选、时区、投影和向量空间。翻页沿用同一排序，不再次调用查询模型。筛选、索引或配置变化及过期返回 `INVALID_PAGE_TOKEN`；读取中来源变更使投影变化时整页返回 `SOURCE_CHANGED`，须刷新搜索。每页从官方来源核验展示的完整原文、作者及版本，故障不返回部分文本。POST 使用本人 Cookie、Origin 和 CSRF，共用 55 秒总预算；请求体最多 192 KiB、增强游标最多 128 KiB，拒绝查询参数、未知/重复字段及 null。
 
 创建和编辑保留正文首尾空白、换行及全部 `#标签`，不接受独立标签数组。创建固定 PRIVATE。正文最多 65536 UTF-8 字节；正文非空白或至少保留一个合法附件，纯图片和纯普通文件均可保存，不补占位文字。新增 `attachments` 为 `{filename,type,content}` 数组，`content` 是 Base64 原始字节；单次最多十个，原始总大小不超过 8 MiB。
 
@@ -65,7 +72,7 @@ Web 会话失效时隐藏私人界面，在页面内存中保存创建和编辑�
 
 回顾响应沿用 `ReviewBatch`，`items` 返回全天计划的全部条目，最多 480 条；`settings_version` 为冻结规则的产品设置版本，历史批次或缺少版本信息的过渡规则为 0。Note 使用客户端详情及附件路径。缺失来源保留 `unavailable` 位置，不补抽。客户端不提供换组、打开、略过或完成接口。
 
-漫步起点和前进均返回 `WalkResponse`。指定起点的首个响应包含该笔记，`path=[name]`；省略 `name` 时随机开始。前进提交正在阅读的资源名及完整已访问 `path`，成功后路径追加下一条，`exhausted=true` 仅表示合格候选全部耗尽。标签和跨入口阅读不改变选取概率。漫步要求已启用且就绪的 Embedding，关闭返回 `EMBEDDING_DISABLED`，构建中返回 `INDEX_NOT_READY`。JSON 请求体上限 1 MiB，超出返回可重试的 413 `WALK_RESOURCE_LIMIT`；技术资源错误不表示候选耗尽，也不推进路径。请求支持取消，停止或离开页面会取消进行中的请求。
+漫步起点和前进均返回 `WalkResponse`。指定正常起点的首个响应包含该笔记，`path=[name]`；省略 `name` 时随机开始。起点和后续候选均排除归档笔记，指定归档起点返回 422 `WALK_ARCHIVED`。前进提交正在阅读的资源名及完整已访问 `path`，成功后路径追加下一条，`exhausted=true` 仅表示合格候选全部耗尽。标签和跨入口阅读不改变选取概率。漫步要求已启用且就绪的 Embedding，关闭返回 `EMBEDDING_DISABLED`，构建中返回 `INDEX_NOT_READY`。JSON 请求体上限 1 MiB，超出返回可重试的 413 `WALK_RESOURCE_LIMIT`；技术资源错误不表示候选耗尽，也不推进路径。请求支持取消，停止或离开页面会取消进行中的请求。
 
 Web 正文中的原生 `/file/attachments/{id}/{filename}` 引用按父笔记附件表转换为受保护的 `content_url`，未知或不属于该笔记的引用保持文字。侧栏标签按笔记状态、日历按状态和月份复用聚合结果，缓存有效期一分钟；写入、手动刷新笔记或页面重新获得焦点后刷新聚合，被替代的聚合请求会取消。
 
@@ -75,13 +82,15 @@ Web 正文中的原生 `/file/attachments/{id}/{filename}` 引用按父笔记附
 
 `GET /api/app/v1/map` 只接受本人 Cookie，不接受查询参数或 Authorization。读取不要求 CSRF；机器 REST/MCP 不提供地图获取或重建操作，写入 Scope 不能开放这些入口。响应使用 `no-store`，不设置新 Cookie，也不返回缓存笔记正文、附件地址、模型密钥或配置地址。
 
-响应字段为 `status`、`layout_version`、`layout_frame`、`algorithm`、`vector_generation`、`projection_revision` 和 `points`。`status` 区分 `disabled`（Embedding 关闭）、`waiting`（等待同步或构建）、`building`、`unavailable`（当前空间构建失败）、`ready` 和 `empty`（已就绪但没有笔记）。前四种状态不返回旧点集，布局版本、坐标系摘要和向量代次为空；`empty` 返回有效版本及空数组，不等同于未配置。
+响应字段为 `status`、`layout_version`、`layout_frame`、`algorithm`、`vector_generation`、`projection_revision`、`generated_at` 和 `points`。`status` 区分 `disabled`（Embedding 关闭）、`waiting`（等待同步或构建）、`building`、`unavailable`（向量空间构建失败且没有可用快照）、`ready` 和 `empty`（已就绪但没有笔记）。前四种状态不返回旧点集，布局版本、坐标系摘要和向量代次为空；`empty` 返回有效版本及空数组，不等同于未配置。
 
-`points` 以资源名排序，每项包含 `name`、`source_hash`、有限二维坐标 `x/y`、`semantic` 和来源复查时读取的原生 `tags`。正常与归档笔记各占一点，重复正文不合并。`semantic=false` 表示没有可用的文本向量，例如纯附件；这些点独立放置，不声称语义相近。标签只用于沿用客户端的点位配色，不参与向量或距离加权。坐标为 Core 的布局单位，不是页面百分比。客户端可按可见区域平移、缩放，但不能把浏览器坐标当作权威布局。点击后使用现有本人笔记接口读取完整原文及受保护附件。
+`points` 以资源名排序，每项包含 `name`、`source_hash`、有限二维坐标 `x/y`、`semantic` 和快照中的原生 `tags`。正常与归档笔记各占一点，重复正文不合并。`semantic=false` 表示没有可用的文本向量，例如纯附件；这些点独立放置，不声称语义相近。标签只用于沿用客户端的点位配色，不参与向量或距离加权。坐标为 Core 的布局单位，不是页面百分比。客户端可按可见区域平移、缩放，但不能把浏览器坐标当作权威布局。点击后使用现有本人笔记接口读取完整原文及受保护附件。
 
 布局采用 `pca-fixed-v2`，只使用同一已发布代次的文档向量。`layout_version` 是算法、向量空间、固定投影基底和完整点集的摘要，未变点集的刷新与普通重启保持版本及坐标；增量发布保留聚合向量未变的坐标。正文、归档状态或附件等来源变化可改变布局版本而不移动其余点。`layout_frame` 仅绑定来源、作者、算法、向量空间和投影基底；同一基底的增量发布保持该摘要，客户端据此保留平移缩放，摘要变化后重新适配全图。切换向量空间或重建索引可以重新布局，产品状态不受影响。二维压缩有信息损失，详情始终以实时来源为准。
 
-输出前复查来源身份，通过官方正常与归档的完整分页核对全部原文和标签，结束时再次核验来源身份和活动代次；不逐点消耗单条获取的来源请求限额。发现新增未入索引、变动、删除或失权时返回可重试的 409 `MAP_SOURCE_CHANGED` 并修正投影，代次或投影竞争返回可重试的 409 `MAP_INDEX_CHANGED`。全部分页成功前不修正投影或发布点集；来源故障、分页循环或超过已配置分页预算不返回部分点集。存储向量或布局无效分别返回 503 `EMBEDDING_PROTOCOL`、`MAP_LAYOUT_INVALID`。会话认证、资源锁等待、布局计算和来源复查共用最长 55 秒总期限；超过期限返回可重试的 503 `MAP_RESOURCE_LIMIT`，不冒充空池或构建完成。主动退出或断开请求取消正在进行的来源读取，不发布未完成布局；仍可收到的取消响应为 503 `MAP_REQUEST_CANCELED`，退出后的旧 Cookie 返回 401。
+地图是允许滞后的趋势快照。后台在完整向量索引就绪后预先生成，普通新增、修改和删除每 24 小时最多合并发布一次；向量代次和投影修订没有变化时，不读取全量向量或重算布局。`generated_at` 为 RFC 3339 格式的快照生成时间，`vector_generation` 和 `projection_revision` 对应快照使用的索引版本，可能早于最新索引。已有同空间快照在同步或构建期间继续返回 `ready/empty`；首次生成、模型空间变化或索引重建需要等待后台准备。点位和标签可以滞后，点选详情始终实时读取，删除或失权的笔记不能读出旧正文。
+
+GET 只读取已发布快照，不核对全库正文，不读取全量向量或执行布局计算。会话和来源身份继续实时认证，认证失败不返回私有点集。快照持久化在可重建索引中，重启可直接恢复；内存只缓存不可变点集。认证、资源锁等待和快照读取共用最长 55 秒期限，超时返回可重试的 503 `MAP_RESOURCE_LIMIT`；无效布局返回 `MAP_LAYOUT_INVALID`。主动退出或断开请求取消该请求的读取，仍可收到的取消响应为 503 `MAP_REQUEST_CANCELED`，退出后的旧 Cookie 返回 401。后台预建属于应用任务，页面关闭和退出不取消其他会话共用的任务。
 
 ### 自然聊天
 
@@ -95,7 +104,7 @@ Web 正文中的原生 `/file/attachments/{id}/{filename}` 引用按父笔记附
 
 `ChatSummary` 包含 `id/title/preview/version/material_count/created_at/updated_at`，`ChatSession` 另含 `materials/turns`。`preview` 从首轮问题提取最多 80 个 Unicode 码点，一键洞察显示“一键洞察”，没有消息时使用标题；该只读摘要不改写标题或消息。`materials` 是 `{name,source_hash}` 引用。每轮 `ChatTurn` 包含 `request_id`、`kind`、独立的 `user` 和 `assistant` 消息、有效 `settings_version/prompt/model/materials/usage`；每条消息有 `id/role/content/version/status/error_code/saved_name/created_at/updated_at`。助手状态为 running、completed、failed、canceled 或 interrupted，原文本和部分回复持久保留。会话版本约束选材与标题，助手消息版本用于固定主动保存内容。
 
-生成提交 `{request_id,version,kind,content}`：`kind=insight` 时 `content=""`，使用已保存的默认洞察 Prompt；`kind=question` 使用原始问题，非空白且最多 8,000 码点、32,768 UTF-8 字节。生成前核算全部材料、系统约定、成功对话历史和当前问题的总字节数与 Provider 消息数量；材料超限为 `CHAT_MATERIAL_LIMIT`，上下文超限为 `CHAT_CONTEXT_LIMIT`，均不调用模型、不裁切材料或删除历史。超过 1,000 条材料请求为 `CHAT_RESOURCE_LIMIT`。
+生成提交 `{request_id,version,kind,content}`：`kind=insight` 时 `content=""`，使用已保存的默认洞察 Prompt；`kind=question` 使用非空白的原始问题。20,000 个 Unicode 码点上限只计算明确选中的全部笔记正文，恰好达到上限可生成；超过时返回 `CHAT_MATERIAL_LIMIT`，不调用模型。系统约定、Prompt、材料元数据、问题和后续对话不计入此上限，不另设对话总字节数或 Provider 消息条数限制，不裁切材料或删除历史。旧 `llm.context_bytes` 保留兼容但不生效。超过 1,000 条材料请求为 `CHAT_RESOURCE_LIMIT`。
 
 消息流使用 POST fetch 和 SSE。开始流之前的参数、来源、模型或预算失败返回普通 JSON 错误；开始后 HTTP 为 200，须按事件判断结果：
 

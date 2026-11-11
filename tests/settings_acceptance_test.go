@@ -130,7 +130,7 @@ func TestClientSettingsMemosAcceptance(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := app.AI.Provider.Generate(t.Context(), []moerise.LLMMessage{{Role: "user", Content: "虚构设置检查"}}, nil)
+	result, err := app.LLM.Generate(t.Context(), []moerise.LLMMessage{{Role: "user", Content: "虚构设置检查"}}, nil)
 	app.Close()
 	if err != nil || result.Content != "OK" {
 		t.Fatalf("saved LLM provider was not usable: %v", err)

@@ -10,19 +10,11 @@ import (
 type SyncService struct {
 	Store  *Store
 	Source Source
-	wake   chan struct{}
 	alive  atomic.Bool
 }
 
 func NewSyncService(store *Store, source Source) *SyncService {
-	return &SyncService{Store: store, Source: source, wake: make(chan struct{}, 1)}
-}
-
-func (s *SyncService) Wake() {
-	select {
-	case s.wake <- struct{}{}:
-	default:
-	}
+	return &SyncService{Store: store, Source: source}
 }
 
 func (s *SyncService) scan(ctx context.Context, run, job string, since *int64) error {
@@ -58,6 +50,11 @@ func (s *SyncService) scan(ctx context.Context, run, job string, since *int64) e
 }
 
 func (s *SyncService) Sync(ctx context.Context, job Job) (map[string]any, error) {
+	unlock, err := s.Store.lockBackground(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer unlock()
 	version, err := s.Source.Identity(ctx)
 	if err != nil {
 		return nil, err
@@ -185,7 +182,6 @@ func (s *SyncService) Run(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-s.wake:
 		case <-timer.C:
 		}
 	}

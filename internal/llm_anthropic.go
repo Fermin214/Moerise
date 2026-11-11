@@ -45,8 +45,8 @@ type anthropicMessage struct {
 }
 
 func (c *anthropicLLMClient) payload(messages []LLMMessage, stream bool) ([]byte, error) {
-	if len(messages) == 0 || len(messages) > 256 {
-		return nil, failure("INVALID_ARGUMENT", "LLM requires 1 to 256 messages", 422, false)
+	if len(messages) == 0 {
+		return nil, failure("INVALID_ARGUMENT", "LLM requires at least one message", 422, false)
 	}
 	body := struct {
 		Model     string             `json:"model"`
@@ -55,16 +55,11 @@ func (c *anthropicLLMClient) payload(messages []LLMMessage, stream bool) ([]byte
 		System    []anthropicText    `json:"system,omitempty"`
 		Stream    bool               `json:"stream,omitempty"`
 	}{Model: configured(c.config.Model), MaxTokens: c.config.MaxOutputTokens, Stream: stream}
-	size := 0
 	for _, message := range messages {
 		if !slices.Contains([]string{"system", "developer", "user", "assistant"}, message.Role) ||
 			!utf8.ValidString(message.Content) || strings.TrimSpace(message.Content) == "" {
 			return nil, failure("INVALID_ARGUMENT", "LLM requires nonempty text messages with a supported role", 422, false)
 		}
-		if len(message.Content) > c.config.ContextBytes-size {
-			return nil, failure("LLM_CONTEXT_LIMIT", "LLM context exceeds the configured byte limit", 422, false)
-		}
-		size += len(message.Content)
 		text := anthropicText{Type: "text", Text: message.Content}
 		if message.Role == "system" || message.Role == "developer" {
 			// Messages has one system tier; keep developer instructions out of conversation turns.

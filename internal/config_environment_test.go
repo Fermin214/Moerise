@@ -88,6 +88,8 @@ func TestEnvironmentOnlyConfiguration(t *testing.T) {
 		"MOERISE_MEMOS_PUBLIC_URL":  settings.Memos.PublicURL,
 		"MOERISE_MEMOS_USER":        settings.Memos.User,
 		"MOERISE_MEMOS_TOKEN":       settings.Memos.Token,
+		"MOERISE_MEMOS_PAGE_SIZE":   "500",
+		"MOERISE_SYNC_POLL_SECONDS": "120",
 		"MOERISE_ACCESS_TOKEN":      settings.AccessTokens[0].Token,
 		"MOERISE_CURSOR_SECRET":     settings.CursorSecret,
 		"MOERISE_STATE_DIR":         settings.StateDir,
@@ -96,7 +98,8 @@ func TestEnvironmentOnlyConfiguration(t *testing.T) {
 		t.Setenv(name, value)
 	}
 	loaded, err := LoadSettings(filepath.Join(t.TempDir(), "absent.json"))
-	if err != nil || loaded.Review.MinAgeHours != 72 || loaded.Review.RecentDays != 7 {
+	if err != nil || loaded.Review.MinAgeHours != 72 || loaded.Review.RecentDays != 7 ||
+		loaded.Memos.PageSize != 500 || loaded.Sync.PollSeconds != 120 {
 		t.Fatalf("environment-only defaults: %+v %v", loaded.Review, err)
 	}
 }

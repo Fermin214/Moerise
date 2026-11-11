@@ -9,6 +9,7 @@ import (
 	"math"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -560,7 +561,6 @@ func TestLLMValidationBoundaries(t *testing.T) {
 		func(c *LLMConfig) { c.MaxConcurrency = 9 },
 		func(c *LLMConfig) { c.MaxRetries = 4 },
 		func(c *LLMConfig) { c.MaxOutputTokens = 16385 },
-		func(c *LLMConfig) { c.ContextBytes = 262145 },
 	} {
 		config := llmTestConfig("https://example.com")
 		mutate(&config)
@@ -575,11 +575,107 @@ func TestLLMValidationBoundaries(t *testing.T) {
 	if _, err := NewLLMProvider(disabled); errorCode(err) != "LLM_DISABLED" {
 		t.Fatalf("disabled provider: %v", err)
 	}
-	config := llmTestConfig("https://example.com")
-	config.ContextBytes = 1024
-	provider := llmTestProvider(t, config)
-	_, err := provider.Generate(context.Background(), []LLMMessage{{Role: "user", Content: strings.Repeat("x", 1025)}}, nil)
-	if errorCode(err) != "LLM_CONTEXT_LIMIT" {
-		t.Fatalf("oversized input was sent: %v", err)
+}
+
+func TestLLMProtocolsSendFullConversationWithoutLocalInputBudgets(t *testing.T) {
+	messages := []LLMMessage{{Role: "system", Content: "自由探索"},
+		{Role: "user", Content: strings.Repeat("😀", ChatCharacterLimit)}}
+	for i := range 127 {
+		messages = append(messages,
+			LLMMessage{Role: "user", Content: fmt.Sprintf("第%d个问题：%s", i, strings.Repeat("想法", 300))},
+			LLMMessage{Role: "assistant", Content: fmt.Sprintf("第%d个回复：%s", i, strings.Repeat("联想", 300))})
+	}
+	messages = append(messages, LLMMessage{Role: "user", Content: strings.Repeat("😀", ChatCharacterLimit+1)})
+	for _, protocol := range []string{"openai-compatible", "openai-responses", "anthropic"} {
+		t.Run(protocol, func(t *testing.T) {
+			var calls atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls.Add(1)
+				var body struct {
+					Messages json.RawMessage `json:"messages"`
+					Input    []LLMMessage    `json:"input"`
+					System   []anthropicText `json:"system"`
+					Stream   bool            `json:"stream"`
+				}
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+					t.Error(err)
+					w.WriteHeader(400)
+					return
+				}
+				var received []LLMMessage
+				switch protocol {
+				case "anthropic":
+					for _, text := range body.System {
+						received = append(received, LLMMessage{Role: "system", Content: text.Text})
+					}
+					var turns []anthropicMessage
+					if err := json.Unmarshal(body.Messages, &turns); err != nil {
+						t.Error(err)
+					}
+					for _, turn := range turns {
+						if len(turn.Content) != 1 {
+							t.Error("conversation turn was split or removed")
+							continue
+						}
+						received = append(received, LLMMessage{Role: turn.Role, Content: turn.Content[0].Text})
+					}
+				case "openai-responses":
+					received = body.Input
+				default:
+					if err := json.Unmarshal(body.Messages, &received); err != nil {
+						t.Error(err)
+					}
+				}
+				if !reflect.DeepEqual(received, messages) {
+					t.Error("provider did not receive the full material, history and question")
+				}
+				if body.Stream {
+					w.Header().Set("Content-Type", "text/event-stream")
+					switch protocol {
+					case "anthropic":
+						_, _ = io.WriteString(w, anthropicTestStream())
+					case "openai-responses":
+						writeResponsesEvents(w, responsesEvents("OK"))
+					default:
+						_, _ = io.WriteString(w, llmTestStream)
+					}
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				switch protocol {
+				case "anthropic":
+					_, _ = io.WriteString(w, anthropicTestJSON)
+				case "openai-responses":
+					_ = json.NewEncoder(w).Encode(responsesFixture("OK"))
+				default:
+					writeLLMJSON(w)
+				}
+			}))
+			defer server.Close()
+			config := llmTestConfig(server.URL)
+			config.Protocol, config.ContextBytes, config.MaxRetries = protocol, 1024, 0
+			provider := llmTestProvider(t, config)
+			for _, stream := range []bool{false, true} {
+				var received strings.Builder
+				var emit func(string) error
+				if stream {
+					emit = func(text string) error { received.WriteString(text); return nil }
+				}
+				result, err := provider.Generate(t.Context(), messages, emit)
+				if err != nil || result.Content == "" || stream && received.String() != result.Content {
+					t.Fatalf("full conversation failed (stream=%v): %v", stream, err)
+				}
+			}
+			if calls.Load() != 2 {
+				t.Fatal("full conversation did not reach the provider exactly once per request")
+			}
+		})
 	}
 }
+
+type aiLLMFunc func(context.Context, []LLMMessage, func(string) error) (LLMResult, error)
+
+func (f aiLLMFunc) Generate(ctx context.Context, messages []LLMMessage, emit func(string) error) (LLMResult, error) {
+	return f(ctx, messages, emit)
+}
+func (aiLLMFunc) Close() {}

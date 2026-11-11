@@ -1,10 +1,7 @@
 import { Draft, readAttachments } from './draft.js';
 import { errorText } from './errors.js';
-import { pages, notePath, filters, timelineURL, listQuery, safeFrom, detailURL, noteID, attachmentURL, rasterImage } from './routes.js';
+import { pages, notePath, filters, timelineURL, listQuery, enhancedSearch, searchBody, safeFrom, detailURL, noteID, attachmentURL, rasterImage } from './routes.js';
 import { renderMarkdown } from './markdown.js';
-import { createSettingsPage } from './settings.js';
-import { createInsightsPage } from './insights.js';
-import { createMapPage } from './map.js';
 
 const $ = id => document.getElementById(id);
 const draft = new Draft(), controllers = new Set(), snapshots = new Map();
@@ -19,6 +16,7 @@ let currentURL = location.pathname + location.search;
 let currentKey = history.state?.webKey || crypto.randomUUID();
 let month = '', routeReturnKey = null;
 let pageCount = 0, reloading = false;
+let searchStatus = '';
 let lastTimeline = { path: '/', values: filters('') };
 let settingsPage = null;
 let insightsPage = null;
@@ -139,6 +137,7 @@ function hidePrivate({ resume = false } = {}) {
   $('account-name').textContent = $('calendar-title').textContent = '';
   pageObserver.disconnect();
   items = []; nextToken = '';
+  searchStatus = ''; $('search-mode').value = 'keyword';
   snapshots.clear();
   reviewView = walkView = null;
   mapView = null;
@@ -191,7 +190,7 @@ function sidebarFilter(change) {
 function rememberView(writeHistory = true) {
   if (!identity || !['/', '/archived'].includes(new URL(currentURL, location.origin).pathname)) return;
   const previous = snapshots.get(currentKey);
-  snapshots.set(currentKey, { url: currentURL, items: [...items], nextToken, scroll: window.scrollY, pages: pageCount, dirty: previous?.dirty });
+  snapshots.set(currentKey, { url: currentURL, items: [...items], nextToken, searchStatus, scroll: window.scrollY, pages: pageCount, dirty: previous?.dirty });
   if (writeHistory) history.replaceState({ ...history.state, scroll: window.scrollY, pages: pageCount }, '');
   if (snapshots.size > 12) snapshots.delete(snapshots.keys().next().value);
 }
@@ -291,6 +290,7 @@ function renderFilters() {
   box.replaceChildren();
   const chips = [
     ...(values.query ? [{ label: `“${values.query}”`, remove: () => sidebarFilter({ query: '' }) }] : []),
+    ...(values.mode !== 'keyword' ? [{ label: values.mode === 'semantic' ? '语义搜索' : '混合搜索', remove: () => sidebarFilter({ mode: 'keyword' }) }] : []),
     ...values.tags.map(tag => ({ label: `#${tag}`, remove: () => sidebarFilter({ tags: values.tags.filter(item => item !== tag) }) })),
     ...(values.date ? [{ label: values.date, remove: () => sidebarFilter({ date: '' }) }] : []),
   ];
@@ -386,9 +386,10 @@ function renderCalendar(days, selected, disabled = false) {
   for (let i = 0; i < offset; i++) {
     const blank = button('', 'blank', () => {}); blank.disabled = true; blank.tabIndex = -1; calendar.append(blank);
   }
+  const today = localToday();
   for (let day = 1; day <= size; day++) {
     const date = `${month}-${String(day).padStart(2, '0')}`, count = counts.get(date) || 0;
-    const cell = button(String(day), [selected === date ? 'sel' : count > 1 ? 'h2' : count ? 'h1' : '', date === localToday() ? 'today' : ''].join(' '),
+    const cell = button(String(day), [selected === date ? 'sel' : count > 1 ? 'h2' : count ? 'h1' : '', date === today ? 'today' : ''].join(' '),
       () => sidebarFilter({ date: sourceTimeline().values.date === date ? '' : date }));
     cell.disabled = disabled;
     cell.setAttribute('aria-label', `${date} · ${count} 条笔记`);
@@ -465,7 +466,7 @@ function renderNote(note, detail = false) {
     ['编辑', () => startEdit(note), ''],
     ...(!detail ? [['打开笔记', () => openNote(note), '']] : []),
     [note.state === 'ARCHIVED' ? '恢复到主页' : '归档', () => changeState(note), ''],
-    ['从这条漫步', () => startFromNote(note), ''],
+    ...(note.state === 'NORMAL' ? [['从这条漫步', () => startFromNote(note), '']] : []),
     ['AI 洞察这条', () => navigate(`/insights?${new URLSearchParams({ note: note.name })}`), ''],
     ['删除', () => confirmDelete(card, note), 'dg'],
   ];
@@ -704,15 +705,28 @@ async function loadNotes(reset = false, retry = false) {
   $('list-retry').hidden = $('empty').hidden = true;
   let succeeded = false;
   try {
-    const page = await request(`/notes?${listQuery(location.pathname, filters(location.search), reset ? '' : nextToken)}`, { controller: listController });
+    const values = filters(location.search), enhanced = enhancedSearch(values);
+    const page = enhanced
+      ? await sessionRequest('/search', { method: 'POST', body: searchBody(location.pathname, values, reset ? '' : nextToken), controller: listController })
+      : await request(`/notes?${listQuery(location.pathname, values, reset ? '' : nextToken)}`, { controller: listController });
     if (generation !== epoch || view !== viewSequence || sequence !== listSequence) return;
     const state = location.pathname === '/archived' ? 'ARCHIVED' : 'NORMAL';
-    if (!Array.isArray(page?.notes) || page.notes.some(note => !validNote(note) || note.state !== state)) {
+    if (!Array.isArray(page?.notes) || page.notes.some(note => !validNote(note) || note.state !== state) ||
+        (enhanced && (!['keyword', values.mode].includes(page.mode) ||
+          typeof page.semantic?.used !== 'boolean' || typeof page.semantic?.reason !== 'string' ||
+          (page.mode === 'keyword' && (values.mode !== 'hybrid' || page.semantic.used)) ||
+          (page.mode !== 'keyword' && !page.semantic.used)))) {
       throw Object.assign(new Error('Invalid note list response'), { code: 'NOTE_LIST_INVALID' });
     }
     const merged = new Map((reset ? [] : items).map(note => [note.name, note]));
     for (const note of page.notes) merged.set(note.name, note);
-    items = [...merged.values()].sort(compareNotes); renderList();
+    items = [...merged.values()];
+    if (!enhanced) items.sort(compareNotes);
+    renderList();
+    searchStatus = enhanced && page.mode === 'keyword'
+      ? '语义检索暂不可用，当前显示按相关度排列的关键词结果。'
+      : enhanced ? '搜索结果按相关度排列。' : '';
+    $('capability').textContent = searchStatus; $('capability').hidden = !searchStatus;
     pageCount = reset ? 1 : pageCount + 1;
     const previousToken = nextToken;
     nextToken = typeof page.next_page_token === 'string' ? page.next_page_token : '';
@@ -720,13 +734,13 @@ async function loadNotes(reset = false, retry = false) {
     retryDelay = 1000; $('empty').hidden = !!items.length || !!nextToken; succeeded = true;
   } catch (err) {
     if (generation !== epoch || view !== viewSequence || sequence !== listSequence) return;
-    handleFailure($('list-error'), err);
+    handleFailure($('list-error'), err.code === 'SOURCE_CHANGED' ? { ...err, code: 'SEARCH_SOURCE_CHANGED' } : err);
     if (!identity) return;
-    retryReset = reset || err.code === 'INVALID_PAGE_TOKEN';
+    retryReset = reset || ['INVALID_PAGE_TOKEN', 'SOURCE_CHANGED'].includes(err.code);
     $('list-retry').textContent = retryReset ? '刷新主页' : '重试加载'; $('list-retry').hidden = false;
     if (err.retryable) {
       retryTimer = setTimeout(() => {
-        if (generation === epoch && view === viewSequence && sequence === listSequence) loadNotes(reset, true);
+        if (generation === epoch && view === viewSequence && sequence === listSequence) loadNotes(retryReset, true);
       }, retryDelay);
       retryDelay = Math.min(retryDelay * 2, 30_000);
     }
@@ -751,6 +765,7 @@ function discoveryText(value) {
     NO_SOURCE_VECTORS: '这条笔记没有可用的正文向量，请从其他笔记开始。',
     SEMANTIC_UNAVAILABLE: '语义索引暂时不可用，请稍后重试。',
     WALK_RESOURCE_LIMIT: '漫步暂时达到技术资源限制，请重试。',
+    WALK_ARCHIVED: '归档笔记不参与漫步，请选择其他笔记。',
     RESOURCE_LIMIT: '漫步暂时达到技术资源限制，请重试。',
     WALK_RESPONSE_INVALID: '服务返回的漫步内容不完整，请重试。',
     REVIEW_RESPONSE_INVALID: '服务返回的回顾内容不完整，请重试。',
@@ -833,8 +848,8 @@ function createDiscoveryPage(kind) {
     });
     const actions = el('div', 'discovery-actions'), current = batch.items[selected];
     if (!current.unavailable) {
-      actions.append(button('从这条漫步', 'ghost', () => startFromNote(current.note)),
-        button('AI 洞察这条', 'ghost', () => navigate(`/insights?${new URLSearchParams({ note: current.note.name })}`)));
+      if (current.note.state === 'NORMAL') actions.append(button('从这条漫步', 'ghost', () => startFromNote(current.note)));
+      actions.append(button('AI 洞察这条', 'ghost', () => navigate(`/insights?${new URLSearchParams({ note: current.note.name })}`)));
     }
     actions.append(button(selected + 1 < batch.items.length ? '下一条' : '再看一遍', 'save', () => {
       reviewView.position = (selected + 1) % batch.items.length; render();
@@ -969,6 +984,18 @@ function createDiscoveryPage(kind) {
     destroy() { alive = false; cancel(); root.remove(); },
   };
 }
+async function routeModule(load, generation, sequence) {
+  try {
+    const module = await load();
+    return identity && generation === epoch && sequence === viewSequence ? module : null;
+  } catch {
+    if (identity && generation === epoch && sequence === viewSequence) {
+      handleFailure($('list-error'), { code: 'NETWORK_ERROR', retryable: true });
+      $('list-retry').textContent = '重试'; $('list-retry').hidden = false;
+    }
+    return null;
+  }
+}
 async function showRoute() {
   if (!identity) return;
   settingsPage?.destroy(); settingsPage = null;
@@ -977,7 +1004,7 @@ async function showRoute() {
   discoveryPage?.destroy(); discoveryPage = null;
   const generation = epoch, sequence = ++viewSequence;
   listSequence++; listController?.abort(); clearTimeout(retryTimer); pageObserver.disconnect();
-  listing = reloading = false; items = []; nextToken = ''; pageCount = 0;
+  listing = reloading = false; items = []; nextToken = ''; pageCount = 0; searchStatus = '';
   $('notes').replaceChildren(); closeMenus();
   $('notes').hidden = $('page-end').hidden = ['/settings', '/review', '/walk', '/insights', '/map'].includes(location.pathname);
   for (const id of ['back', 'view-title', 'capability', 'empty', 'list-retry', 'filters', 'load-more']) $(id).hidden = true;
@@ -985,6 +1012,7 @@ async function showRoute() {
   const detail = notePath.exec(location.pathname);
   document.title = `${detail ? '笔记' : pages.get(location.pathname) || '页面不存在'} · Moerise`;
   $('q').value = sourceTimeline().values.query;
+  $('search-mode').value = sourceTimeline().values.mode;
   lastTimeline = sourceTimeline();
   if (sourceTimeline().values.date) month = sourceTimeline().values.date.slice(0, 7);
   document.querySelectorAll('[data-route]').forEach(link => {
@@ -998,6 +1026,8 @@ async function showRoute() {
     const snapshot = snapshots.get(currentKey);
     if (snapshot?.url === currentURL && !snapshot.dirty) {
       items = [...snapshot.items]; nextToken = snapshot.nextToken; pageCount = snapshot.pages; renderList(); $('empty').hidden = !!items.length || !!nextToken;
+      searchStatus = snapshot.searchStatus || '';
+      $('capability').textContent = searchStatus; $('capability').hidden = !searchStatus;
       updateListControls();
       if (nextToken) pageObserver.observe($('page-end'));
       restoreScroll(snapshot.scroll);
@@ -1029,7 +1059,9 @@ async function showRoute() {
     await discoveryPage.mount($('workspace'));
   } else if (location.pathname === '/insights') {
     window.scrollTo(0, 0);
-    insightsPage = createInsightsPage({
+    const module = await routeModule(() => import('./insights.js'), generation, sequence);
+    if (!module) return;
+    insightsPage = module.createInsightsPage({
       sessionRequest, csrfToken: () => identity?.csrf_token, handleFailure, openNote,
       navigate: (url, options) => { if (url === currentURL) showRoute(); else navigate(url, options); },
       closeMenus,
@@ -1045,9 +1077,11 @@ async function showRoute() {
   } else if (location.pathname === '/map') {
     $('view-title').textContent = '认知地图'; $('view-title').hidden = false;
     window.scrollTo(0, 0);
+    const module = await routeModule(() => import('./map.js'), generation, sequence);
+    if (!module) return;
     const saved = history.state?.mapView?.owner === identity.user.name ? history.state.mapView :
       mapView?.owner === identity.user.name ? mapView : null;
-    mapPage = createMapPage({
+    mapPage = module.createMapPage({
       request: sessionRequest, handleFailure, validNote, renderNote: note => discoveryCard(note, false, 'card map-note'),
       initialView: saved,
       onViewChange: value => {
@@ -1060,7 +1094,9 @@ async function showRoute() {
   } else if (location.pathname === '/settings') {
     $('view-title').textContent = '设置'; $('view-title').hidden = false;
     window.scrollTo(0, 0);
-    settingsPage = createSettingsPage({
+    const module = await routeModule(() => import('./settings.js'), generation, sequence);
+    if (!module) return;
+    settingsPage = module.createSettingsPage({
       sessionRequest, handleFailure,
       onSaved: data => {
         identity.timezone = data.settings.timezone;
@@ -1121,6 +1157,10 @@ $('composer').addEventListener('submit', async event => {
 $('q').addEventListener('input', () => { clearTimeout(searchTimer); searchTimer = setTimeout(() => sidebarFilter({ query: $('q').value }), 250); });
 $('q').addEventListener('keydown', event => {
   if (event.key === 'Enter') { event.preventDefault(); clearTimeout(searchTimer); sidebarFilter({ query: $('q').value }); }
+});
+$('search-mode').addEventListener('change', () => {
+  clearTimeout(searchTimer);
+  sidebarFilter({ mode: $('search-mode').value });
 });
 $('month-prev').addEventListener('click', () => changeMonth(-1));
 $('month-next').addEventListener('click', () => changeMonth(1));

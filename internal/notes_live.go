@@ -243,15 +243,22 @@ type DayCount struct {
 
 func (s *NoteService) Tags(ctx context.Context, state string) ([]TagCount, error) {
 	counts := map[string]int{}
-	err := s.aggregateLive(ctx, state, LiveFilter{}, func(memo *Memo) {
-		seen := map[string]bool{}
-		for _, tag := range memo.Tags {
-			if !seen[tag] {
-				counts[tag]++
-				seen[tag] = true
+	var err error
+	if _, ok := s.Source.(AggregateStatsSource); ok {
+		var stats SourceStats
+		stats, err = s.aggregateStats(ctx, state, LiveFilter{})
+		counts = stats.Tags
+	} else {
+		err = s.aggregateLive(ctx, state, LiveFilter{}, func(memo *Memo) {
+			seen := map[string]bool{}
+			for _, tag := range memo.Tags {
+				if !seen[tag] {
+					counts[tag]++
+					seen[tag] = true
+				}
 			}
-		}
-	})
+		})
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -278,10 +285,21 @@ func (s *NoteService) Calendar(ctx context.Context, state, month string) ([]DayC
 	}
 	filter.CreatedUntil = productDayStart(date.AddDate(0, 1, 0), location)
 	counts := map[string]int{}
-	err = s.aggregateLive(ctx, state, filter, func(memo *Memo) {
-		created, _ := time.Parse(time.RFC3339Nano, memo.CreateTime)
-		counts[created.In(location).Format(time.DateOnly)]++
-	})
+	if _, ok := s.Source.(AggregateStatsSource); ok {
+		stats, statsErr := s.aggregateStats(ctx, state, filter)
+		err = statsErr
+		if err == nil {
+			for _, text := range stats.Created {
+				created, _ := time.Parse(time.RFC3339Nano, text)
+				counts[created.In(location).Format(time.DateOnly)]++
+			}
+		}
+	} else {
+		err = s.aggregateLive(ctx, state, filter, func(memo *Memo) {
+			created, _ := time.Parse(time.RFC3339Nano, memo.CreateTime)
+			counts[created.In(location).Format(time.DateOnly)]++
+		})
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -303,9 +321,13 @@ func (s *NoteService) aggregateLive(ctx context.Context, state string, filter Li
 	}
 	limits := memosLiveLimits{memosLiveMaxRetainedMemos, memosLiveMaxRetainedBytes}
 	versions := map[string]string{}
+	version := func(memo Memo) string {
+		data, _ := json.Marshal(memo)
+		return hashBytes(data)
+	}
 	if err := s.walkLive(ctx, args.State, filter, limits, func(memos []Memo, _ *int) error {
 		for _, memo := range memos {
-			versions[memo.Name] = hashBytes(canonicalJSON(memo))
+			versions[memo.Name] = version(memo)
 			count(&memo)
 		}
 		return nil
@@ -316,7 +338,7 @@ func (s *NoteService) aggregateLive(ctx context.Context, state string, filter Li
 	changed := failure("SOURCE_CHANGED", "Memos changed during source aggregation", 409, true)
 	if err := s.walkLive(ctx, args.State, filter, limits, func(memos []Memo, _ *int) error {
 		for _, memo := range memos {
-			if versions[memo.Name] != hashBytes(canonicalJSON(memo)) {
+			if versions[memo.Name] != version(memo) {
 				return changed
 			}
 			delete(versions, memo.Name)
@@ -340,6 +362,7 @@ func (s *NoteService) walkLive(ctx context.Context, state string, filter LiveFil
 	seenNames, seenTokens := map[string]bool{}, map[string]bool{}
 	token, previous := "", ""
 	count, bytes := 0, 0
+	pageSize := sourcePageSize(s.Settings.Memos.PageSize)
 	for range min(s.Settings.Memos.MaxPages, limits.maxMemos+1) {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -348,11 +371,11 @@ func (s *NoteService) walkLive(ctx context.Context, state string, filter LiveFil
 		var next string
 		var err error
 		if aggregate, ok := s.Source.(AggregateSource); ok {
-			memos, next, err = aggregate.ListAggregatePage(ctx, state, 100, token, filter)
+			memos, next, err = aggregate.ListAggregatePage(ctx, state, pageSize, token, filter)
 		} else if filtered, ok := s.Source.(FilteredLiveSource); ok {
-			memos, next, err = filtered.ListFilteredLivePage(ctx, state, 100, token, filter)
+			memos, next, err = filtered.ListFilteredLivePage(ctx, state, pageSize, token, filter)
 		} else {
-			memos, next, err = source.ListLivePage(ctx, state, 100, token)
+			memos, next, err = source.ListLivePage(ctx, state, pageSize, token)
 		}
 		if err != nil {
 			return err

@@ -220,6 +220,11 @@ func TestClientDiscoveryMemosAcceptance(t *testing.T) {
 		}
 	}
 	c.call("POST", "/api/app/v1/walks/start", map[string]any{}, 503)
+	c.key = "archived-walk-candidate"
+	archived := c.call("POST", "/api/app/v1/notes", map[string]any{"content": "归档笔记不参与漫步。"}, 201)
+	c.key = "archive-walk-candidate"
+	archived = c.call("PATCH", clientNotePath(archived),
+		map[string]any{"state": "ARCHIVED", "source_hash": archived["source_hash"]}, 200)
 	settings := c.call("GET", "/api/app/v1/settings", nil, 200)
 	c.call("PATCH", "/api/app/v1/settings", map[string]any{
 		"version": settings["version"], "settings": map[string]any{"embedding": map[string]any{
@@ -234,6 +239,10 @@ func TestClientDiscoveryMemosAcceptance(t *testing.T) {
 	})
 	c.call("POST", "/api/app/v1/walks/next", map[string]any{"path": []string{textNames[0]}}, 422)
 	c.call("POST", "/api/app/v1/walks/start", map[string]any{"name": "invalid"}, 422)
+	rejected := c.call("POST", "/api/app/v1/walks/start", map[string]any{"name": archived["name"]}, 422)
+	if rejected["error"].(map[string]any)["code"] != "WALK_ARCHIVED" {
+		t.Fatal("archived memo was not explicitly excluded from walk starts")
+	}
 	start := c.call("POST", "/api/app/v1/walks/start", map[string]string{"name": textNames[0]}, 200)
 	if start["item"].(map[string]any)["note"].(map[string]any)["name"] != textNames[0] ||
 		!reflect.DeepEqual(start["path"], []any{textNames[0]}) {
@@ -261,8 +270,9 @@ func TestClientDiscoveryMemosAcceptance(t *testing.T) {
 			break
 		}
 		newName := next["item"].(map[string]any)["note"].(map[string]any)["name"]
-		if slices.Contains(path, newName) || !reflect.DeepEqual(next["path"], append(slices.Clone(path), newName)) {
-			t.Fatalf("walk repeated or lost its path: %v", next)
+		if newName == archived["name"] || slices.Contains(path, newName) ||
+			!reflect.DeepEqual(next["path"], append(slices.Clone(path), newName)) {
+			t.Fatalf("walk included an archived memo, repeated or lost its path: %v", next)
 		}
 		walk = next
 	}

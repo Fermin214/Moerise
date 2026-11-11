@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import { once } from 'node:events';
+import { text as readRequestText } from 'node:stream/consumers';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { mkdir, readFile, writeFile, rm, realpath, lstat } from 'node:fs/promises';
 import { resolve, dirname, basename } from 'node:path';
@@ -188,7 +189,7 @@ try {
     });
     sourceProxy.listen(0, '0.0.0.0'); await once(sourceProxy, 'listening');
     mock = http.createServer(async (req, res) => {
-      let raw = ''; for await (const chunk of req) raw += chunk;
+      const raw = await readRequestText(req);
       try {
         const body = JSON.parse(raw);
         assert.equal(req.url, '/v1/chat/completions'); assert.equal(req.headers.authorization, `Bearer ${modelKey}`);
@@ -222,7 +223,7 @@ try {
     config.sync = { ...config.sync, poll_seconds: 60, full_seconds: 300, retry_seconds: 3 };
     config.notifications.enabled = false; config.embedding.enabled = false;
     config.llm = { ...config.llm, enabled: true, base_url: `http://host.docker.internal:${mock.address().port}/v1`,
-      api_key: modelKey, model: 'chat-fixture', max_retries: 0, context_bytes: 128000 };
+      api_key: modelKey, model: 'chat-fixture', max_retries: 0 };
     config.insights.default_prompt = '请完整阅读所有已选笔记，区分原意与新的联想。';
     await writeFile(resolve(root, 'config.json'), JSON.stringify(config));
   });
@@ -327,18 +328,8 @@ try {
     current = await api('GET', `/chats/${selectedChat.id}`);
     assert.equal(current.turns.length, 3);
   });
-  await check('真实上下文与材料超限保留原输入、历史和完整选材', async () => {
+  await check('材料超限保留历史和完整选材', async () => {
     const calls = evidence.llmCalls, initial = await api('GET', `/chats/${selectedChat.id}`);
-    let settings = await api('GET', '/settings');
-    await api('PATCH', '/settings', { version: settings.version, settings: { llm: { context_bytes: 1024 } } });
-    const question = '上下文预算检查。' + '长'.repeat(1000);
-    await ask().fill(question); await send().click(); await readyChat();
-    await page.locator('[data-chat="warning"]').filter({ hasText: '上下文上限' }).waitFor();
-    assert.equal(await ask().inputValue(), question);
-    assert.equal(evidence.llmCalls, calls);
-    assert.deepEqual((await api('GET', `/chats/${selectedChat.id}`)).turns, initial.turns);
-    settings = await api('GET', '/settings');
-    await api('PATCH', '/settings', { version: settings.version, settings: { llm: { context_bytes: 128000 } } });
     const budgetNotes = [];
     for (let i = 0; i < 3; i++) budgetNotes.push(await sourceAPI('POST', '/memos', {
       content: `${'m'.repeat(7000)} #预算边界`, visibility: 'PRIVATE',

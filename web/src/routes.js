@@ -13,6 +13,7 @@ export function filters(search) {
   const query = new URLSearchParams(search);
   return {
     query: query.get('query') || '',
+    mode: ['semantic', 'hybrid'].includes(query.get('mode')) ? query.get('mode') : 'keyword',
     tags: [...new Set(query.getAll('tag').filter(Boolean))],
     date: validDate(query.get('date')) ? query.get('date') : '',
   };
@@ -21,6 +22,7 @@ export function filters(search) {
 export function timelineURL(path, values) {
   const query = new URLSearchParams();
   if (values.query) query.set('query', values.query);
+  if (['semantic', 'hybrid'].includes(values.mode)) query.set('mode', values.mode);
   for (const tag of values.tags || []) query.append('tag', tag);
   if (validDate(values.date)) query.set('date', values.date);
   return `${path === '/archived' ? path : '/'}${query.size ? `?${query}` : ''}`;
@@ -35,6 +37,17 @@ export function listQuery(path, values, token = '') {
   if (values.date) query.set('date', values.date);
   if (token) query.set('page_token', token);
   return query;
+}
+
+export function enhancedSearch(values) {
+  return !!values.query.trim() && ['semantic', 'hybrid'].includes(values.mode);
+}
+
+export function searchBody(path, values, token = '') {
+  return {
+    query: values.query, mode: values.mode, tags: values.tags, date: values.date,
+    state: path === '/archived' ? 'ARCHIVED' : 'NORMAL', page_size: 20, page_token: token,
+  };
 }
 
 // Only application pages can be a detail's return destination.

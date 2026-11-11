@@ -53,6 +53,8 @@ Moerise 支持 Linux 原生二进制和 Docker Linux 容器部署，两者都需
 | --- | --- |
 | `MOERISE_MEMOS_INSTANCE_ID`、`MOERISE_MEMOS_BASE_URL`、`MOERISE_MEMOS_PUBLIC_URL` | `memos.instance_id`、`base_url`、`public_url` |
 | `MOERISE_MEMOS_USER`、`MOERISE_MEMOS_TOKEN` | `memos.user`、`token` |
+| `MOERISE_MEMOS_PAGE_SIZE` | `memos.page_size`；`0` 按进程内存预算选择，`1` 至 `1000` 固定批量 |
+| `MOERISE_SYNC_POLL_SECONDS`、`MOERISE_SYNC_FULL_SECONDS`、`MOERISE_SYNC_OVERLAP_SECONDS` | 增量间隔、全量间隔和水位重叠秒数 |
 | `MOERISE_ACCESS_TOKEN`、`MOERISE_CURSOR_SECRET` | 机器接口令牌、分页及幂等密钥 |
 | `MOERISE_WEB_ENABLED`、`MOERISE_PUBLIC_ORIGIN`、`MOERISE_STATE_ENCRYPTION_KEY` | `web.enabled`、`web.public_origin`、`web.state_encryption_key` |
 | `MOERISE_TIMEZONE`、`MOERISE_STATE_DIR`、`MOERISE_INDEX_DIR` | 时区、状态目录、索引目录 |
@@ -136,6 +138,39 @@ curl --fail http://localhost:3000/health/ready
 
 打开 `http://localhost:3000` 使用同一 Memos 用户名和密码登录。首次构建会下载锁定摘要的基础镜像与 Go 依赖。后续代码更新后使用 `docker compose up -d --build`；仅更改 `.env` 时使用 `docker compose up -d`，单纯 `restart` 不会重新读取容器环境。
 
+### 服务器资源
+
+Compose 的 CPU 和内存参数是各服务的上限，不是预留资源。默认 Core 为 2 核、384 MiB，Memos 为 2 核、256 MiB，Web 为 0.5 核、128 MiB。CPU 上限可以大于服务器的可用核数，操作系统仍按实际资源调度。
+
+通过 `.env` 的 `MOERISE_CPU_LIMIT`、`MOERISE_MEMORY_LIMIT`、`MEMOS_CPU_LIMIT`、`MEMOS_MEMORY_LIMIT`、`WEB_CPU_LIMIT` 和 `WEB_MEMORY_LIMIT` 调整上限。以下配置适用于模型使用外部 API 的单用户实例；附件、备份和本地模型需要额外磁盘或内存。
+
+| 服务器 | 配置文件 | Core CPU / 内存上限 | Memos 内存上限 | Web 内存上限 |
+| --- | --- | --- | --- | --- |
+| 1 核、1 GiB | `deploy/resources/1c1g.env` | 1 / 256 MiB | 192 MiB | 96 MiB |
+| 2 核、1 GiB | `deploy/resources/2c1g.env` | 2 / 384 MiB | 192 MiB | 96 MiB |
+| 2 核、2–4 GiB | `deploy/resources/2c2g.env` | 2 / 512 MiB | 256 MiB | 128 MiB |
+| 4 核、4–8 GiB | `deploy/resources/4c4g.env` | 2 / 768 MiB | 256 MiB | 128 MiB |
+
+保留包含身份与密钥的 `.env`，追加资源文件选择服务器档位。例如：
+
+```bash
+docker compose --env-file .env --env-file deploy/resources/2c2g.env up -d --build
+```
+
+后一个文件覆盖资源上限，Core 仍从 `.env` 加载来源身份和产品初始化参数。使用自定义环境文件时，沿用 `MOERISE_ENV_FILE` 的路径设置。
+
+2 核、4 GiB 的服务器使用 `2c2g.env` 即可，三个服务的内存上限合计为 896 MiB，其余内存供操作系统、文件缓存和其他服务使用。额外内存有助于容纳系统缓存，但增大 Core 上限不会自动缩短来源读取时间。
+
+Core 启动时读取 Linux 物理内存、cgroup v1/v2 及可见父级配额。存在容器内存上限时，Go 软内存限制取有效上限的三分之二；原生运行且无 cgroup 内存上限时，进程预算取物理内存的四分之一、最多 1 GiB，再取其中三分之二作为 Go 软限制。其余空间用于文件缓存、数据库及临时缓冲。设置 `GOMEMLIMIT=256MiB` 可覆盖自动值，`GOMEMLIMIT=off` 使用 Go 的默认无软限制行为；容器硬上限仍有效。启动日志记录 CPU、进程内存预算和 Go 软限制。
+
+`memos.page_size` 默认为 `0`。自动模式按进程预算和 Go 软限制中较小的值选择上游批量：小于 64 MiB 时每页 100 篇，64 至不足 128 MiB 时每页 500 篇，至少 128 MiB 时每页 1000 篇。固定设置 `1` 至 `1000` 可覆盖自动选择。同步使用完整批量；时间线先读取 100 篇或客户端所需条数加一，以较大者为准，并受批量上限限制。同时间组跨页时，使用完整批量重新收集并核对，额外请求计入分页预算。
+
+标签和日历两次读取 Memos 官方统计接口，固定作者、状态及月份条件，核对返回作者、总数、逐篇创建/更新时间和标签计数，并在前后验证来源身份。时间戳数量必须与总数相符，单标签计数不能超过总数；元数据或计数变化、来源故障和超限均返回错误。统计只处理所需的官方元数据，不加载全库正文。笔记展示、搜索结果和地图点选详情继续复查官方原文。地图点集读取每日快照，不分页核对全库。
+
+Memos 笔记 JSON 接口按有效 CPU 数选择 2 至 4 个并发名额，单核也保留两个名额以重叠网络等待。有效 CPU 同时受容器及父级配额、进程可用 CPU 和 Go 执行线程限制。同步和向量构建共用一个后台执行名额，每个向量批次结束后释放。交互读取不等待该后台名额，数据库事务仍按单连接执行。搜索保留精确 float32 计算，按有效 CPU 数选择最多 4 个分片。
+
+增量同步仍默认为 60 秒，全量修复为 6 小时，水位重叠为 5 分钟。低配实例可将 `MOERISE_SYNC_POLL_SECONDS` 调到 `120` 或 `300`；从 Memos 外部修改的笔记进入搜索索引也会相应变慢。浏览原文继续访问官方来源。
+
 ### 外部 Memos
 
 将 `COMPOSE_PROFILES` 留空，设置外部 Memos 的根地址、公开地址、实例标识、本人资源名和 PAT。其余密钥及 Origin 与一体化部署相同，执行 `docker compose up -d --build` 只启动 Core 和 Web。容器中的 `localhost` 指向容器自身；外部根地址必须从 Core 容器可达，并放通官方 REST 与 Connect 认证路径。
@@ -195,7 +230,9 @@ notes.example.com {
 
 服务启动后执行全量同步。就绪检查返回 503 时，通过同步状态与服务日志检查来源连接、版本、账号及任务错误。请求方式与错误代码见 [API v1](API-V1.md)。
 
-来源列表、标签/日历侧栏和聊天材料分页共用每请求 55 秒预算，包含认证、设置资源锁等待和来源读取；地图同为 55 秒，聊天生成使用独立的 115 秒预算。Web 普通代理超时为 60 秒，聊天流为 125 秒。来源请求遇到 429 返回 `UPSTREAM_RATE_LIMITED`，稍后重试；Core 不绕过 Memos 的来源限流，也不以缓存原文或部分结果替代失败。标签/日历按完整官方分页两次核对，每次最多扫描 10,000 条、32 MiB，同时受 `memos.max_pages` 约束；`LIVE_LIST_LIMIT` 或分页预算错误需缩小筛选范围、检查来源响应大小与访问量。基础分页仍可在较大总库中读取单页，统计预算耗尽不代表笔记被删除。
+地图在完整向量索引就绪后由后台预建，普通新增、修改和删除每 24 小时最多合并一次；没有变化不读取全量向量或重算布局。打开地图只读取已发布快照，重启也可直接恢复。首次生成和每日更新与同步、向量构建串行，减少小核数服务器的 CPU 及内存竞争；已有同空间快照在索引更新期间继续可读，模型空间切换和索引重建需要重新准备。点选原文与附件继续实时读取。
+
+来源列表、标签/日历侧栏和聊天材料分页共用每请求 55 秒预算，包含认证、设置资源锁等待和来源读取；地图同为 55 秒，聊天生成使用独立的 115 秒预算。Web 普通代理超时为 60 秒，聊天流为 125 秒。来源请求遇到 429 返回 `UPSTREAM_RATE_LIMITED`，稍后重试；Core 不绕过 Memos 的来源限流，也不以缓存原文或部分结果替代失败。标签/日历两次核对官方统计，每次最多 10,000 篇、32 MiB 校验数据；来源分页扫描另受 `memos.max_pages` 约束。`LIVE_LIST_LIMIT` 或分页预算错误需缩小筛选范围、检查来源响应大小与访问量。基础分页仍可在较大总库中读取单页。
 
 对外访问时，通过反向代理配置 HTTPS，并按 API 契约提供扩展令牌。同一产品目录只允许一个服务写入进程，恢复和索引重建需停止服务。
 

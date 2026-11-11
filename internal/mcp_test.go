@@ -211,7 +211,7 @@ func TestMCPFetchListAndRESTPagination(t *testing.T) {
 	}
 	mcpReadError(t, api, reader, "list_memos", map[string]any{"page_token": "invalid"}, "INVALID_PAGE_TOKEN")
 	mcpReadError(t, api, reader, "list_memos", map[string]any{"page_token": strings.Repeat("x", 4097)}, "INVALID_PAGE_TOKEN")
-	cursor := api.encodeCursor("NORMAL", []string{"2020-01-01T00:00:00Z", "memos/review-00"})
+	cursor := api.Notes.encodeCursor("NORMAL", []string{"2020-01-01T00:00:00Z", "memos/review-00"})
 	mcpReadError(t, api, reader, "list_memos", map[string]any{"state": "ARCHIVED", "page_token": cursor}, "INVALID_PAGE_TOKEN")
 	mcpReadError(t, api, reader, "get_memo", map[string]any{"name": "../users/foreign"}, "INVALID_RESOURCE")
 	mcpReadError(t, api, reader, "get_memo", map[string]any{"name": "memos/missing"}, "SOURCE_NOT_FOUND")

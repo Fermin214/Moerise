@@ -24,16 +24,6 @@ func NewAPI(app *App) (*API, error) {
 	return api, nil
 }
 
-func (a *API) cursorContext() []string {
-	return a.Notes.cursorContext()
-}
-func (a *API) encodeCursor(state string, after []string) string {
-	return a.Notes.encodeCursor(state, after)
-}
-func (a *API) decodeCursor(token, state string) ([]string, error) {
-	return a.Notes.decodeCursor(token, state)
-}
-
 func (a *API) authenticate(request *http.Request, scope string) (*AccessToken, error) {
 	parts := strings.Fields(request.Header.Get("Authorization"))
 	if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") {
@@ -59,10 +49,6 @@ func (a *API) authenticate(request *http.Request, scope string) (*AccessToken, e
 func (a *API) verifySource(ctx context.Context) error {
 	return a.Notes.Verify(ctx)
 }
-func (a *API) liveMemo(ctx context.Context, name string) (*Memo, error) {
-	return a.Notes.fresh(ctx, name)
-}
-
 func writeJSON(writer http.ResponseWriter, status int, value any) {
 	var buffer bytes.Buffer
 	encoder := json.NewEncoder(&buffer)

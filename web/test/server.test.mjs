@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import { once } from 'node:events';
+import { text as readRequestText } from 'node:stream/consumers';
 import { test } from 'node:test';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -52,6 +53,42 @@ test('build assets are served with no-store and a same-origin CSP', async t => {
   assert.equal(await head.text(), '');
 });
 
+test('versioned public assets negotiate compression and cache without caching private API or HTML', async t => {
+  const { url } = await fixture(t, (req, res) => res.end('{}'));
+  const page = await fetch(url);
+  const html = await page.text();
+  assert.equal(page.headers.get('cache-control'), 'no-store');
+  const entry = /src="(\/app\.[a-f0-9]{20}\.js)"/.exec(html)?.[1];
+  assert.ok(entry);
+  const original = await fetch(url + entry, { headers: { 'Accept-Encoding': 'identity' } });
+  const source = await original.text();
+  for (const [accept, expected] of [
+    ['br', 'br'], ['gzip', 'gzip'], ['BR, gzip;q=0', 'br'],
+    ['br;q=0, gzip;q=0', null], ['br;q=0.5, gzip, identity;q=0', 'gzip'],
+  ]) {
+    const headers = { 'Accept-Encoding': accept };
+    const response = await fetch(url + entry, { headers });
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get('content-encoding'), expected);
+    assert.equal(response.headers.get('vary'), 'Accept-Encoding');
+    assert.equal(response.headers.get('cache-control'), 'public, max-age=31536000, immutable');
+    assert.equal(await response.text(), source);
+    const head = await fetch(url + entry, { method: 'HEAD', headers });
+    assert.equal(head.headers.get('content-length'), response.headers.get('content-length'));
+    assert.equal(head.headers.get('content-encoding'), expected);
+    assert.equal(await head.text(), '');
+  }
+  const unsupported = await fetch(url + entry, { headers: { 'Accept-Encoding': '*;q=0' } });
+  assert.equal(unsupported.status, 406);
+  const missing = await fetch(url + entry.replace(/\.[a-f0-9]{20}\./, '.00000000000000000000.'));
+  assert.equal(missing.status, 404);
+  assert.equal(missing.headers.get('cache-control'), 'no-store');
+  for (const path of ['/app.js', '/api/app/v1/session', '/api/app/v1/notes']) {
+    const response = await fetch(url + path);
+    assert.equal(response.headers.get('cache-control'), 'no-store');
+  }
+});
+
 test('only the raw fixed client API prefix can reach Core', async t => {
   let count = 0;
   const { url } = await fixture(t, (req, res) => { count++; res.end('{}'); });
@@ -71,8 +108,7 @@ test('only the raw fixed client API prefix can reach Core', async t => {
 test('forwards raw content, cookie, origin, csrf and idempotency without machine headers', async t => {
   let received;
   const { url } = await fixture(t, async (req, res) => {
-    let body = '';
-    for await (const chunk of req) body += chunk;
+    const body = await readRequestText(req);
     received = { headers: req.headers, path: req.url, body };
     res.writeHead(201, {
       'Content-Type': 'application/json', 'Set-Cookie': ['session=opaque; HttpOnly; Path=/'],
@@ -141,8 +177,7 @@ test('deep links serve the application only for whitelisted pages', async t => {
 test('PATCH forwards full JSON, version, CSRF and retry key and rejects other origins', async t => {
   let received;
   const { url } = await fixture(t, async (req, res) => {
-    let body = '';
-    for await (const chunk of req) body += chunk;
+    const body = await readRequestText(req);
     received = { method: req.method, body: JSON.parse(body), headers: req.headers };
     res.end('{}');
   });

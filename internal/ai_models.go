@@ -1,14 +1,44 @@
 package moerise
 
-type AIRequest struct {
-	Names    []string `json:"names,omitempty"`
-	Question string   `json:"question,omitempty"`
-	Tags     []string `json:"tags,omitempty"`
-	State    string   `json:"state,omitempty"`
-	From     string   `json:"from,omitempty"`
-	Until    string   `json:"until,omitempty"`
-	Timeline bool     `json:"timeline,omitempty"`
-	Stream   bool     `json:"stream,omitempty"`
+// Historical wire types remain readable while queued channel results recover.
+type AIStatement struct {
+	Kind      string   `json:"kind"`
+	Text      string   `json:"text"`
+	Citations []string `json:"citations"`
+}
+
+type AIMetrics struct {
+	RetrievalMS    int64  `json:"retrieval_ms"`
+	FirstContentMS *int64 `json:"first_content_ms"`
+	GenerationMS   int64  `json:"generation_ms"`
+	TotalMS        int64  `json:"total_ms"`
+}
+
+type AIResult struct {
+	Kind        string             `json:"kind"`
+	Status      string             `json:"status"`
+	Completed   bool               `json:"completed"`
+	Statements  []AIStatement      `json:"statements"`
+	References  []Evidence         `json:"references"`
+	UsedSources []string           `json:"used_sources"`
+	Omitted     []string           `json:"omitted"`
+	Missing     []string           `json:"missing"`
+	Timeline    []AITimelinePeriod `json:"timeline"`
+	Semantic    SearchSemantic     `json:"semantic"`
+	Model       string             `json:"model"`
+	Usage       LLMUsage           `json:"usage"`
+	Metrics     AIMetrics          `json:"metrics"`
+}
+
+type AITimelinePeriod struct {
+	ID                  string         `json:"id"`
+	From                string         `json:"from"`
+	Until               string         `json:"until"`
+	RepresentativeNames []string       `json:"representative_names"`
+	StatementIndexes    []int          `json:"statement_indexes"`
+	Empty               bool           `json:"empty"`
+	MissingReason       string         `json:"missing_reason,omitempty"`
+	Semantic            SearchSemantic `json:"semantic"`
 }
 
 type Evidence struct {
@@ -23,10 +53,4 @@ type Evidence struct {
 	URL        string `json:"url"`
 	CreateTime string `json:"create_time"`
 	UpdateTime string `json:"update_time"`
-}
-
-type EvidenceSet struct {
-	Items    []Evidence     `json:"items"`
-	Omitted  []string       `json:"omitted"`
-	Semantic SearchSemantic `json:"semantic"`
 }

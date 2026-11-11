@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import { once } from 'node:events';
+import { text as readRequestText } from 'node:stream/consumers';
 import { pathToFileURL } from 'node:url';
 import { mkdir } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
@@ -8,8 +9,7 @@ import { test } from 'node:test';
 import { createWebServer } from '../server.mjs';
 
 const runtime = process.env.MOERISE_PLAYWRIGHT_MODULE;
-if (!runtime) throw new Error('Set MOERISE_PLAYWRIGHT_MODULE to the installed playwright/index.mjs');
-const { chromium } = await import(pathToFileURL(runtime).href);
+const { chromium } = runtime ? await import(pathToFileURL(runtime).href) : await import('playwright');
 const chatID = '68f91ebc-bbed-4fc5-a82b-18e162e715d0';
 const reply = '## 新的解释\n\n**完整回复**，保留换行。 #联想\n\n<script>unsafe</script>\n';
 
@@ -27,7 +27,7 @@ async function fixture(t) {
   const touch = chat => { chat.updated_at = new Date(Date.UTC(2026, 9, 31, 0, 0, clock++)).toISOString(); };
   const core = http.createServer(async (req, res) => {
     const url = new URL(req.url, 'http://localhost'), path = url.pathname.replace('/api/app/v1', '');
-    let raw = ''; for await (const chunk of req) raw += chunk;
+    const raw = await readRequestText(req);
     const body = raw ? JSON.parse(raw) : undefined;
     state.requests.push({ path, query: url.searchParams, body, method: req.method });
     const json = (value, status = 200) => {
@@ -383,15 +383,17 @@ test('the material count uses Unicode code points and oversize input never start
   await page.getByText('超过字数上限，请减少所选笔记。', { exact: true }).waitFor();
 });
 
-test('oversize questions remain intact for correction rather than being silently cut by the input', async t => {
+test('follow-up questions do not count toward the material character limit', async t => {
   const { page, state, url } = await fixture(t);
   await login(page, url, '/insights?note=memos%2Fnormal');
-  const question = '😀'.repeat(8001);
+  const question = '😀'.repeat(20001);
   await page.locator('[data-chat="ask"]').fill(question);
   await page.getByRole('button', { name: '发送', exact: true }).click();
-  await page.getByText('问题超过 8000 字或 32768 UTF-8 字节上限，请调整后重试。', { exact: true }).waitFor();
-  assert.equal(await page.locator('[data-chat="ask"]').inputValue(), question);
-  assert.equal(state.calls, 0);
+  await page.getByRole('button', { name: '保存为笔记', exact: true }).waitFor();
+  assert.equal(state.chat.turns[0].user.content, question);
+  assert.equal(state.calls, 1);
+  assert.equal(await page.locator('[data-chat="ask"]').inputValue(), '');
+  assert.equal(await page.locator('[data-chat="one"]').isDisabled(), false);
 });
 
 test('recovery never adopts materials changed by another page without showing a version conflict', async t => {

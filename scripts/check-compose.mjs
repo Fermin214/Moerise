@@ -87,6 +87,23 @@ function saveEvidence() {
   writeFileSync(resolve(root, 'checks.json'), `${JSON.stringify(evidence, null, 2)}\n`, { mode: 0o600 });
 }
 
+async function sourceProvenance() {
+  const options = { cwd: repo, timeout: 10_000 };
+  const revision = await runProcess('git', ['rev-parse', 'HEAD'], options);
+  const status = await runProcess('git', ['status', '--porcelain'], options);
+  const files = await runProcess('git', ['ls-files', '--cached', '--others', '--exclude-standard', '-z'], options);
+  const hash = createHash('sha256');
+  let count = 0;
+  for (const file of [...new Set(files.split('\0').filter(Boolean))].sort()) {
+    const target = resolve(repo, file);
+    if (!existsSync(target) || !lstatSync(target).isFile()) continue;
+    hash.update(file).update('\0').update(readFileSync(target)).update('\0');
+    count++;
+  }
+  return { baseCommit: revision.trim(), dirty: !!status.trim(), sourceSha256: hash.digest('hex'),
+    files: count, node: process.version, skipBuild };
+}
+
 async function check(label, action) {
   step = label;
   console.log(`[${scenario || 'compose'}] ${label}`);
@@ -235,6 +252,10 @@ async function runScenario(kind) {
     await check('构建 Core 与 Web', async () => {
       buildAttempted = true;
       await compose(['build', 'moerise', 'web'], { timeout: 1_200_000 });
+      evidence.images = {};
+      for (const image of [`moerise:${imageTag}`, `moerise-web:${imageTag}`]) {
+        evidence.images[image] = (await docker(['image', 'inspect', '--format', '{{.Id}}', image])).trim();
+      }
     });
   }
   await check('启动独立 Memos 来源', async () => {
@@ -511,6 +532,7 @@ mkdirSync(resolve(repo, '.local'), { recursive: true });
 assert.equal(realpathSync(resolve(repo, '.local')), resolve(repo, '.local'), '.local 不能重定向到其他目录');
 mkdirSync(root, { mode: 0o700 });
 try {
+  evidence.provenance = await sourceProvenance();
   await docker(['compose', 'version']);
   await docker(['info', '--format', '{{.ServerVersion}}']);
   await runScenario('bundled');

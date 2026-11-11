@@ -30,7 +30,7 @@ func assertLegacyAIContent(t *testing.T, store *Store, cleaned bool) {
 }
 
 func TestLegacyAICleanupOnlyAfterAllPartsConfirmed(t *testing.T) {
-	service, platform, _, calls := feishuAIFixture(t, longFeishuAIOutput())
+	service, platform, _, fixtures := feishuAIFixture(t, longFeishuAIOutput())
 	receiveFeishuAI(t, service, "洞察 memos/seed")
 	processLegacyFeishuAI(t, service)
 	chat := testChat(t, service.Store, "retained-chat")
@@ -68,8 +68,8 @@ func TestLegacyAICleanupOnlyAfterAllPartsConfirmed(t *testing.T) {
 	beforeCalls := platform.calls
 	restartFeishuAI(t, service)
 	receiveFeishuAI(t, service, "洞察 memos/seed")
-	if progress, err := service.processOne(t.Context()); progress || err != nil || platform.calls != beforeCalls || *calls != 1 {
-		t.Fatalf("cleaned event replayed: progress=%v calls=%d err=%v", progress, platform.calls, err)
+	if progress, err := service.processOne(t.Context()); progress || err != nil || platform.calls != beforeCalls || *fixtures != 1 {
+		t.Fatalf("cleaned event replayed: progress=%v fixtures=%d err=%v", progress, platform.calls, err)
 	}
 	service.Store.Settings.Web.StateEncryptionKey = feishuQueueMigrationKey()
 	if err := service.Store.migrateFeishuQueue(); err != nil {
@@ -79,7 +79,7 @@ func TestLegacyAICleanupOnlyAfterAllPartsConfirmed(t *testing.T) {
 }
 
 func TestLegacyAICleanupSharesFinalNotificationTransaction(t *testing.T) {
-	service, platform, _, _ := feishuAIFixture(t, insightOutput)
+	service, platform, _, _ := feishuAIFixture(t, legacyInsightResult())
 	receiveFeishuAI(t, service, "洞察 memos/seed")
 	processLegacyFeishuAI(t, service)
 	platform.mode = "unknown"
@@ -115,7 +115,7 @@ func TestLegacyAICleanupSharesFinalNotificationTransaction(t *testing.T) {
 func TestLegacyAICleanupUpgradePreservesUnfinishedOrDamagedRecords(t *testing.T) {
 	for _, state := range []string{"sent", "unknown", "pending", "missing-part", "ordinal-gap"} {
 		t.Run(state, func(t *testing.T) {
-			service, platform, _, _ := feishuAIFixture(t, insightOutput)
+			service, platform, _, _ := feishuAIFixture(t, legacyInsightResult())
 			store := service.Store
 			if _, err := store.state.Exec(`DROP TRIGGER feishu_ai_content_cleanup;
 				DROP INDEX notifications_source_event;

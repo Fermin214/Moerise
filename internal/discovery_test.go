@@ -39,14 +39,17 @@ func discoveryFixture(t *testing.T) (*SearchService, *VectorIndexService, map[st
 func TestDiscoveryStartWalk(t *testing.T) {
 	service, _, memos := discoveryFixture(t)
 	ctx := context.Background()
-	for _, name := range []string{"memos/a", "memos/e"} {
+	for _, name := range []string{"memos/a", "memos/b"} {
 		start, err := service.StartWalk(ctx, name)
 		if err != nil || start.Item == nil || start.Item.Note.Name != name || start.Exhausted ||
 			!slices.Equal(start.Path, []string{name}) || start.Mode != "continue" ||
 			start.Item.Note.Content != memos[name]["content"] || start.Item.Score != 0 ||
 			len(start.Item.Matches) != 0 || start.Item.Matches == nil || start.Warnings == nil {
-			t.Fatalf("specified start must return the exact memo, including archived: %+v %v", start, err)
+			t.Fatalf("specified start must return the exact normal memo: %+v %v", start, err)
 		}
+	}
+	if result, err := service.StartWalk(ctx, "memos/e"); errorCode(err) != "WALK_ARCHIVED" || result.Item != nil {
+		t.Fatalf("archived starting memo entered a walk: %+v %v", result, err)
 	}
 	start, err := service.StartWalk(ctx, "")
 	if err != nil || start.Item == nil || start.Exhausted || start.Mode != "random" ||

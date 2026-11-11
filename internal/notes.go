@@ -46,7 +46,7 @@ func (s *NoteService) fresh(ctx context.Context, name string) (*Memo, error) {
 		}
 		return nil, err
 	}
-	if memo != nil && memo.Creator != s.Settings.Memos.User {
+	if memo != nil && (memo.Creator != s.Settings.Memos.User || memo.Name != name) {
 		memo = nil
 	}
 	if err := s.Store.RefreshContext(ctx, name, memo); err != nil {
@@ -169,9 +169,16 @@ func (s *NoteService) signCursor(value any) string {
 }
 
 func (s *NoteService) readCursor(token string, target any) error {
+	return s.readCursorLimit(token, target, 4096)
+}
+
+func (s *NoteService) readCursorLimit(token string, target any, limit int) error {
 	invalid := failure("INVALID_PAGE_TOKEN", "Page token is invalid or expired", 422, false)
+	if len(token) > limit {
+		return invalid
+	}
 	data, err := base64.RawURLEncoding.Strict().DecodeString(token)
-	if err != nil || len(data) < sha256.Size || len(token) > 4096 {
+	if err != nil || len(data) < sha256.Size {
 		return invalid
 	}
 	sign := hmac.New(sha256.New, []byte(s.Settings.CursorSecret))

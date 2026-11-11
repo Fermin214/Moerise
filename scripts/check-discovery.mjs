@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import { once } from 'node:events';
+import { text as readRequestText } from 'node:stream/consumers';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { mkdir, readFile, writeFile, rm, realpath, lstat } from 'node:fs/promises';
 import { resolve, dirname, basename } from 'node:path';
@@ -146,7 +147,7 @@ try {
     });
     sourceProxy.listen(0, '0.0.0.0'); await once(sourceProxy, 'listening');
     mock = http.createServer(async (req, res) => {
-      let raw = ''; for await (const chunk of req) raw += chunk;
+      const raw = await readRequestText(req);
       try {
         const body = JSON.parse(raw);
         assert.equal(req.url, '/v1/embeddings'); assert.equal(req.headers.authorization, `Bearer ${modelKey}`);

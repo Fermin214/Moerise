@@ -30,8 +30,8 @@ func closeChannel(events *FeishuService, transport NotificationTransport) {
 }
 
 func (a *App) closeRuntime() {
-	if a.AI.Provider != nil {
-		a.AI.Provider.Close()
+	if a.LLM != nil {
+		a.LLM.Close()
 	}
 	if a.Search.Provider != nil {
 		a.Search.Provider.Close()
@@ -63,7 +63,7 @@ func (a *App) UpdateSettings(ctx context.Context, update SettingsUpdate) (Settin
 	llmChanged := !reflect.DeepEqual(old.LLM, settings.LLM)
 	embeddingChanged := !reflect.DeepEqual(old.Embedding, settings.Embedding)
 	channelChanged := !reflect.DeepEqual(old.Channel, settings.Channel)
-	llm, embedding := a.AI.Provider, a.Search.Provider
+	llm, embedding := a.LLM, a.Search.Provider
 	events, transport := a.Feishu, a.Notifications.Transport
 	if llmChanged {
 		llm = nil
@@ -109,7 +109,7 @@ func (a *App) UpdateSettings(ctx context.Context, update SettingsUpdate) (Settin
 	if channelChanged {
 		events = newFeishuService(settings.Channel, a.Store, a.Source, a.Records, a.Reviews, a.Notifications)
 		if events != nil {
-			events.Search, events.AI = a.Search, a.AI
+			events.Search = a.Search
 		}
 		transport = newFeishuDelivery(settings.Channel, a.Store, a.Reviews, events)
 	}
@@ -137,12 +137,15 @@ func (a *App) UpdateSettings(ctx context.Context, update SettingsUpdate) (Settin
 	if err := a.Store.persistSettings(settings); err != nil {
 		return SettingsView{}, err
 	}
-	oldLLM, oldEmbedding, oldEvents, oldTransport := a.AI.Provider, a.Search.Provider, a.Feishu, a.Notifications.Transport
+	oldLLM, oldEmbedding, oldEvents, oldTransport := a.LLM, a.Search.Provider, a.Feishu, a.Notifications.Transport
 	a.Store.Settings, a.Notes.Settings = settings, settings
-	a.AI.Provider, a.Search.Provider = llm, embedding
+	a.LLM, a.Search.Provider = llm, embedding
 	a.Chat.Provider = llm
 	a.Feishu, a.Notifications.Transport = events, transport
 	if embeddingChanged {
+		if a.Map != nil {
+			a.Map.Reset()
+		}
 		a.Search.mu.Lock()
 		a.Search.matrix = nil
 		a.Search.mu.Unlock()
@@ -186,6 +189,11 @@ func (a *App) runVector(ctx context.Context) error {
 		if a.Vector != nil {
 			worked, err = a.Vector.Step(ctx)
 		}
+		if !worked && err == nil && a.Map != nil {
+			if mapErr := a.Map.Update(ctx); mapErr != nil && ctx.Err() == nil {
+				slog.Warn("map snapshot failed", "code", errorCode(mapErr))
+			}
+		}
 		retry := time.Duration(a.Store.Settings.Sync.RetrySeconds) * time.Second
 		unlock()
 		if ctx.Err() != nil {
@@ -203,7 +211,8 @@ func (a *App) runVector(ctx context.Context) error {
 	}
 }
 
-func (a *App) runFeishu(ctx context.Context) error {
+// RunFeishu processes channel work with the same runtime replacement lock as serving.
+func (a *App) RunFeishu(ctx context.Context) error {
 	var initialized *FeishuService
 	for {
 		unlock := a.Store.lockRuntime()

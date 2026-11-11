@@ -142,7 +142,7 @@ func TestFeishuProactiveReviewWithRealMemosAcceptance(t *testing.T) {
 	api.Feishu.Client = platform
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
-	go func() { done <- api.Feishu.Run(ctx) }()
+	go func() { done <- api.RunFeishu(ctx) }()
 	defer func() {
 		cancel()
 		if err := <-done; err != nil && !errors.Is(err, context.Canceled) {
@@ -300,7 +300,7 @@ func TestFeishuEventsWithRealMemosAcceptance(t *testing.T) {
 			ctx, cancel = context.WithCancel(context.Background())
 			workerDone = make(chan error, 1)
 			notificationDone = make(chan error, 1)
-			go func() { workerDone <- api.Feishu.Run(ctx) }()
+			go func() { workerDone <- api.RunFeishu(ctx) }()
 			go func() { notificationDone <- api.Notifications.Run(ctx) }()
 		}
 	}

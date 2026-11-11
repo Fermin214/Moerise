@@ -64,21 +64,13 @@ LLM 适配验证 Chat Completions、Responses 和 Anthropic Messages 的原生�
 
 自然聊天持久化使用 `go test ./internal -run '^TestChatStore' -count=1` 检查会话/消息原文、材料与 Prompt 快照、并发请求去重、版本冲突、运行中修改/删除拒绝、生成终态及迟到增量、固定版本保存关联、来源/作者隔离、事务回滚和同时间分页。重启、索引重建和产品备份恢复检查消息与保存关联保留，遗留 running 转为 interrupted，不重跑模型；主动删除级联清理聊天状态，不允许迟到写入复活。此组只检查状态层，不代替后续聊天编排、客户端 SSE 或真实浏览器流程。
 
-`go test -race ./internal -run '^(TestChat|TestAppChat)' -count=1` 补充共享聊天编排：关闭 Embedding 时的完整正常/归档选材、自然 Markdown、默认 Prompt 和成功对话上下文、Unicode 字符与 UTF-8 字节预算、消息数量限制、不截断、来源变化/删除/越权、供应商故障、流协议异常、消费者中断、主动取消和服务关闭、重复请求不再生成。保存验证原文幂等、固定版本及删除等待保存排空；运行设置更新验证 Chat 和历史兼容服务共享同一 Provider，App 拒绝新的结构化调用。真实 Memos 的旧 AI 集成流程显式创建旧结果夹具，继续检查已保存结果发送、确认和恢复，不重新开放 App 入口。飞书生成夹具只存在于测试文件，产品代码不再保留其新生成编排。
+`go test -race ./internal -run '^(TestChat|TestAppChat)' -count=1` 补充共享聊天编排：关闭 Embedding 时的完整正常/归档选材、自然 Markdown、默认 Prompt 和成功对话上下文、所选笔记 20,000 Unicode 字符边界、超长追问与完整历史不计入限额、三种模型协议均不按字节或消息数量拦截、不截断、来源变化/删除/越权、供应商故障、流协议异常、消费者中断、主动取消和服务关闭、重复请求不再生成。保存验证原文幂等、固定版本及删除等待保存排空；运行设置更新验证 Chat、连接检查和 App 共用有效 Provider 及正确的关闭生命周期。真实 Memos 的旧 AI 集成流程显式创建旧结果夹具，继续检查已保存结果发送、确认和恢复，不重新开放 App 入口。飞书生成夹具只存在于测试文件，产品代码不再保留其新生成编排。
 
 `go test -race ./internal -run '^(TestClientChat|TestChatSelection)' -count=1` 检查客户端聊天的 Cookie、Origin/CSRF、机器凭据拒绝、严格 JSON、版本冲突、SSE 完成/错误与 OpenAPI 一致性、重放、取消、退出及组合选材分页。Web 代理测试检查生成流使用独立超时、及时透传增量和断连传递；运行 `npm --prefix web run build && npm --prefix web test`。这些可控模型测试不能代替真实 Memos 与浏览器的完整聊天验收。
 
-旧结构化 AI 业务测试直接调用共享 `AIService`，用于检查生成逻辑和旧任务恢复。证据流程验证指定来源与相关历史的边界、同文多来源、精确标签、状态及创建时间半开区间，以及过滤先于召回上限。专项测试覆盖转义后的 JSON 预算、UTF-8 裁切、微秒日期边界、无效引用和收集后来源变化；这些边界无法通过不稳定的模型输出可靠触发。证据字段和省略规则见 [AI](AI.md#证据与引用)。
+历史结果测试使用固定 `AIResult` 和官方来源摘要构造加密待发夹具，验证 `EvidenceService.Verify` 对原文、位置、作者及版本的复查，不调用模型生成旧结果。字段见 [AI](AI.md#历史结果与证据复查)。旧结构化生成算法及其专用测试已移除。
 
-洞察流程使用可控模型验证事实、解释、追问与引用的映射，检查输入总预算和完整条目输出。失败路径覆盖虚构引用、无引用事实、缺少结束记录、输出后的模型故障、回调取消，以及输出前和完成前的来源修改、删除与作者变化；这些情况均不能产生成功完成事件。
-
-多条洞察检查只使用选定来源、相同正文的独立资源标识、跨笔记解释引用双方、实际使用来源，以及选定来源被过滤时返回证据不足。
-
-问答流程验证问题和标签、状态、日期筛选传入共享检索，区分有据回答、部分证据不足、零命中及模型不可用；零命中不调用模型，普通问答不新增来源笔记。
-
-时间线流程使用超过单次笔记上限的近期记录验证早期来源仍被召回，检查空时间段、半开区间、创建与修改及正文日期的区别、跨段引用索引和合并后的总预算。因预算丢失整个时间段时，结果必须指出缺失并使用证据不足状态。
-
-AI 入口隔离由 `TestExternalAIEndpointsRejectEveryCredential` 和 `TestAIAPIMCPVisibilityAndDirectCalls` 验证：机器 REST 拒绝生成请求，MCP 不公布生成工具且拒绝直接调用，持有 `notes:read` 与 `ai:generate` 也不能调用模型。共享服务测试检查引用、内容和完成事件、错误及取消传播；旧机器生成 Handler、请求解析器及其专用测试已删除。App 装配保证 AI、搜索和飞书复用服务实例、模型提供商与并发限制。
+AI 入口隔离由 `TestExternalAIEndpointsRejectEveryCredential` 和 `TestAIAPIMCPVisibilityAndDirectCalls` 验证：机器 REST 拒绝生成请求，MCP 不公布生成工具且拒绝直接调用，持有 `notes:read` 与 `ai:generate` 也不能调用模型。
 
 飞书 AI 队列的恢复流程验证生成结果先落库、事件重投和重启复用结果、生成中断终止、长结果按序分片，以及独立回执和结果不明处理。每片发送前复查来源，失效后只发送固定提示；数据库迁移和快照恢复检查任务与分片状态。专用私聊文字全部走记录入口，不以 AI 命令触发生成。
 
@@ -90,6 +82,10 @@ AI 入口隔离由 `TestExternalAIEndpointsRejectEveryCredential` 和 `TestAIAPI
 
 搜索的模型与索引检查覆盖活动代次内存 float32 缓存复用、配置空间和投影修订失配、模型关闭及失败的显式降级、取消不降级，以及独立于 embedding 的关键词和片段构建。索引检查涵盖启动补建、增量修改删除和重建。仅对完整流程难以可靠触发的边界补充专项测试。
 
+`TestSemanticCandidateSelectionMatchesFullSort` 将有界语义候选与完整排序比较，覆盖数量边界、同分、升序、降序及万条候选；`BenchmarkSemanticCandidateSelection` 比较候选选择开销，`BenchmarkSemanticCache10000x1024` 测量万条 1024 维向量的完整缓存扫描。`TestSearchSourceDatabaseWaitRespectsDeadline` 检查身份与原文读取成功或失败后等待数据库的期限，`TestNoteReadersRejectMismatchedSourceName` 检查笔记和搜索共用的资源名隔离。
+
+`TestSemanticVectorPartitionsMatchFullScan` 逐项比较 1–4 个分片与完整串行扫描的结果，覆盖同分、数量边界、正负余弦、标签、状态及日期；`TestSemanticVectorPartitionsCancelDuringScan` 检查扫描中取消。`TestSemanticBatchDotsMatchScalar` 比较交错点积与逐维累加的浮点位模式，覆盖不同维度、符号及数量级。这些不变量难以通过少量笔记的真实 Memos 流程稳定触发。`BenchmarkSemanticVectorKernel` 隔离纯内存扫描，不包含建库、索引生成和模型通信。
+
 相关笔记验证覆盖 REST 重复 `tags` 的精确 AND、默认值和边界、未知参数及重复 `state`/`limit` 的 422、机器只读白名单拒绝非 GET 请求的 403、Scope，以及 MCP `RelatedRequest` 输入校验与只读工具提示。召回检查涵盖全量长正文词项、超长词项排除、共同标签数量排序、自身排除、最多三个片段与重复正文合并。语义检查覆盖同代次文档向量逐片段归一化、去重后等权平均并归一化、正余弦，以及无额外模型调用和三种降级原因。相关契约见[搜索](SEARCH.md#相关笔记)。
 
 支持竞争检测的环境还可执行：
@@ -97,6 +93,8 @@ AI 入口隔离由 `TestExternalAIEndpointsRejectEveryCredential` 和 `TestAIAPI
 ```bash
 go test -race ./...
 ```
+
+资源预算的专项测试覆盖 cgroup v1/v2、挂载命名空间、父级限制、原生运行和显式 Go 内存限制，以及后台和来源排队期间的取消。此类宿主机布局与精确取消时机难以通过单一 Docker 环境的业务流程覆盖。`TestMemosLiveSmallFirstPageAndLargeBoundary` 检查短首屏、同时间组重读、来源变更和额外请求的预算。`TestMemosNativeAggregates` 检查官方统计的作者和状态、时区、总数与时间戳完整性、两次元数据变化、空池及失败无部分结果。
 
 同步、Memos 协议和恢复改动使用真实接口验收。先启动 Docker Engine，再执行：
 
@@ -130,7 +128,7 @@ go test ./internal -run '^(TestMap|TestClientMap)' -count=1
 go test ./internal -run '^$' -bench '^BenchmarkMapLayout$' -benchtime=1x
 ```
 
-检查覆盖二维语义邻近、确定性重建、重复正文独立点选、空池及纯附件、归档、增量坐标保持、重启、向量空间切换、分块去重与等权归一化，以及来源投影与向量代次失配、无效向量、取消和失败发布的事务回滚。地图坐标只在 `index.sqlite3`，索引重建检查持久设置保持。共享服务补充所有点位原文及前后身份复查、来源修改/删除/失权、故障无部分结果、代次竞争、计算排队，以及健康状态、索引查询和投影修正的数据库等待期限；`TestClientMap` 覆盖本人协议、OpenAPI、无缓存/无凭据、认证和资源锁期限、退出取消。机器 REST/MCP 不开放地图。真实服务和正式浏览器的接入范围见路线图 3.8。
+检查覆盖二维语义邻近、确定性重建、重复正文独立点选、空池及纯附件、归档、增量坐标保持、重启、向量空间切换、分块去重与等权归一化，以及来源投影与向量代次失配、无效向量、取消和失败发布的事务回滚。地图坐标只在 `index.sqlite3`，索引重建检查持久设置保持。共享服务补充每日合并、跨重启的生成间隔、无变化跳过向量扫描、同空间旧快照复用、新空间隔离、并发更新合并及读取与后台生成的取消；`TestClientMap` 覆盖本人协议、OpenAPI、无缓存/无凭据、认证和资源锁期限、退出取消。机器 REST/MCP 不开放地图。真实服务和正式浏览器的接入范围见路线图 3.8。
 
 `tests/client_acceptance_test.go` 的 `TestClientMemosAcceptance` 使用真实 Memos 和 Core 进程，通过 HTTP 验证原生客户端 API：
 
@@ -151,6 +149,7 @@ go test -tags=integration ./tests -run '^TestClient(Management|NativeExactTags|M
 使用 Node.js 24+ 构建并检查正式 Web：
 
 ```bash
+npm --prefix web ci
 npm --prefix web run build
 npm --prefix web test
 ```
@@ -164,22 +163,24 @@ npm --prefix web start
 
 正式浏览器流程使用构建后的 Web 和真实 Memos，关闭 Embedding、LLM 与飞书，完成登录、本人正常笔记分页、原文创建、刷新、Core 重启后继续访问及退出。创建内容包含首尾空白、换行和正文标签，并从 Memos 官方 API 读回核对；同一创建请求重试复用原幂等键且只产生一条笔记。管理流程覆盖纯图片与纯文件、附件增删、归档恢复、删除确认、跨页组合筛选、详情刷新及返回来源页，并检查桌面和窄屏布局。从 Memos 编辑旧笔记后检查 Web 的创建时间排序，从 Memos 新增后刷新应可见；来源断连时请求失败，恢复后可继续访问。退出后旧 Cookie 不能访问客户端 API，机器令牌不能代替浏览器会话。登录后的可见文案、元素、布局与样式严格以原型为准，产品行为遵循 PRD。
 
-Web 使用两栏布局，侧栏关键词、日历和标签在任意页面跳回时间线并组合筛选。归档入口位于用户菜单；详情路由 `/notes/{id}` 支持直接访问和登录后恢复，返回来源页时恢复筛选及浏览位置。卡片内编辑支持 Ctrl+Enter 保存、Esc 取消；附件与正文分别编辑，正文中的标签保持原样。
+Web 使用两栏布局，侧栏关键词、搜索方式、日历和标签在任意页面跳回时间线并组合筛选。关键词默认直接读来源并按创建时间倒序，语义/混合通过本人搜索接口按相关度分页；混合降级显式提示。归档入口位于用户菜单；详情路由 `/notes/{id}` 支持直接访问和登录后恢复，返回来源页时恢复筛选及浏览位置。卡片内编辑支持 Ctrl+Enter 保存、Esc 取消；附件与正文分别编辑，正文中的标签保持原样。
 
-`web/test/browser.mjs` 使用正式 Web 和隔离 HTTP 来源，在真实 Chromium 中检查页面交互、附件、来源返回、冲突提示及迟到响应隔离。它从 `MOERISE_PLAYWRIGHT_MODULE` 指定的已安装 Playwright 模块加载浏览器运行时：
+`web/test/browser.mjs` 使用正式 Web 和隔离 HTTP 来源，在真实 Chromium 中检查页面交互、附件、来源返回、冲突提示及迟到响应隔离。浏览器依赖由 `web/package-lock.json` 固定，安装后可运行全部五组测试；也可用 `MOERISE_PLAYWRIGHT_MODULE` 指定其他已安装模块：
 
 ```bash
-MOERISE_PLAYWRIGHT_MODULE=/absolute/path/to/playwright/index.mjs \
-node --test web/test/browser.mjs
+(cd web && npx playwright install --with-deps chromium)
+npm --prefix web run test:browser
 ```
 
-默认使用 Playwright 安装的 Chromium；设置 `MOERISE_PLAYWRIGHT_CHANNEL=chrome` 可复用本机 Chrome。
+CI 的独立 Web 作业强制执行 Node 单元/代理测试、脚本测试、正式构建和全部浏览器套件；缺少浏览器会失败。默认使用 Playwright 安装的 Chromium；设置 `MOERISE_PLAYWRIGHT_CHANNEL=chrome` 可复用本机 Chrome。
 
 `web/test/settings-browser.mjs` 使用同一浏览器运行方式，检查设置保存、密钥移除、版本冲突、繁忙重试、时区与侧栏刷新、路由离开及退出后的迟到响应。它通过正式静态资源和同源代理加载设置模块。
 
+浏览器流程还检查功能模块下载期间离开页面的隔离，以及下载失败后重试；代理检查区分带构建摘要的公共静态缓存和私人 API、HTML 的 `no-store`，覆盖 Brotli、gzip、编码禁用和 HEAD 响应。聊天流按动画帧更新变化的回复，终态立即刷新，历史消息节点复用；完整聊天回归覆盖中断、取消、保存版本和导航清理。
+
 `web/test/discovery-browser.mjs` 使用正式 Web 和隔离 API，在 Chromium 中检查完整回顾遍历、空池和失效来源、重新读取及失败后隐藏旧内容、重试恢复位置与跨日切换、详情往返、随机及指定起点、超过 100 条路径、耗尽与资源错误、停止及导航取消、会话失效和迟到响应。运行方法与 `browser.mjs` 相同。
 
-`web/test/map-browser.mjs` 使用正式 Web、隔离 API 和真实 Chromium，检查原型地图、正常/归档/纯附件完整阅读、受保护图片及文件、独立详情与刷新返回、平移、光标锚定缩放、键盘及触摸双指、多个历史记录的后退/刷新/前进恢复与坐标系变化、索引状态、临时错误恢复、来源变化、退出和导航取消。`web/test/map.test.mjs` 检查点集协议、坐标适配及缩放锚点；坐标系摘要的后端测试区分增量发布和模型空间变化。浏览器专项使用 `node --test web/test/map-browser.mjs`，Playwright 和截图环境变量与其他浏览器检查相同；这些隔离 API 测试不能代替真实 Memos 地图端到端验收。
+`web/test/map-browser.mjs` 使用正式 Web、隔离 API 和真实 Chromium，检查原型地图、正常/归档/纯附件完整阅读、受保护图片及文件、独立详情与刷新返回、平移、光标锚定缩放、键盘及触摸双指、多个历史记录的后退/刷新/前进恢复与坐标系变化、索引状态、临时错误恢复、实时原文变化、窗口焦点不刷新、退出和导航取消。`web/test/map.test.mjs` 检查点集协议、坐标适配及缩放锚点；坐标系摘要的后端测试区分增量发布和模型空间变化。浏览器专项使用 `node --test web/test/map-browser.mjs`，Playwright 和截图环境变量与其他浏览器检查相同；这些隔离 API 测试不能代替真实 Memos 地图端到端验收。
 
 `TestClientMapMemosAcceptance` 使用真实 Memos、Core、可控 Embedding 与流式 LLM，覆盖正常/归档/同文/纯附件的一笔记一点、完整原文标签与附件字节、邻近与刷新/重启稳定、少量增改删、来源变化/失权/故障不返回旧或部分点集、机器 REST/MCP 禁止、LLM 变化不重建、模型失败/关闭，以及重建与备份恢复保留设置、聊天完整消息、回顾和创建幂等：
 
@@ -187,7 +188,7 @@ node --test web/test/browser.mjs
 go test -tags=integration ./tests -run '^TestClientMapMemosAcceptance$' -v -count=1
 ```
 
-`scripts/check-map.mjs` 连接真实 Memos、Linux 原生 Core、正式 Web 和 Chromium，检查桌面/390px、单指/双指、平移缩放、完整阅读、详情刷新返回、来源故障与导航取消、Core 重启、空间切换和恢复。需要 Linux、Go 1.27+、Node.js 24+、Docker 引擎和 Playwright，环境变量与其他联合浏览器流程相同：
+`scripts/check-map.mjs` 连接真实 Memos、Linux 原生 Core、正式 Web 和 Chromium，检查桌面/390px、单指/双指、平移缩放、完整阅读、详情刷新返回、趋势快照容忍列表故障、原文实时读取与导航取消、每日合并、Core 重启、空间切换和恢复。需要 Linux、Go 1.27+、Node.js 24+、Docker 引擎和 Playwright，环境变量与其他联合浏览器流程相同：
 
 ```bash
 MOERISE_PLAYWRIGHT_MODULE=/absolute/path/to/playwright/index.mjs \
@@ -196,11 +197,11 @@ node scripts/check-map.mjs
 
 脚本默认创建 100 和 1000 条真实笔记，按正文生成三组可控语义向量，经正式索引和点集接口验证簇关系、未变坐标及密集区域缩放点选，记录请求时间、响应字节、Core RSS/峰值和浏览器加载时间。`MOERISE_MAP_SCALE=10000` 可扩大完整部署验证规模；该变量只控制测试数据，不是产品数量上限。另用 `go test ./internal -run '^TestMapDenseSemanticClusters' -v -count=1` 检查 100/1000/10000 条簇避让，`go test ./internal -run '^$' -bench '^BenchmarkMapLayout$' -benchtime=1x -benchmem` 测量对应规模的 1024 维布局；后者不包含来源网络和完整部署内存，不能作为部署性能承诺。可控向量证明算法及协议行为，不评价真实模型的语义质量。
 
-同一真实数据集还检查默认列表/关键词搜索、完整标签与日历、聊天材料分页、回顾及漫步起点，浏览器加载时间线和下一页并等待完整侧栏；记录每次 API 的耗时、响应字节和 Core RSS。实验约束为响应小于 8 MiB、Core RSS 小于 768 MiB、请求在代理 60 秒期限内返回，不作为硬件无关的性能承诺。标签与日历断言没有逐条 GET；可控来源 429 检查列表、侧栏和材料读取不输出部分数据，来源恢复后可重新读取。统计直接沿官方页游标完成两轮扫描，不复用单页列表的同时间排序扫描。`TestNotesAggregatesMemosAdapterUsesLinearOfficialPagination` 使用正式 Memos 适配器检查万条不同时间和千条同时间笔记：100 条一页时分别只请求 200 和 20 个官方页，无逐条 GET，并核对标签和日历。`TestNotesAggregatesLargeCollectionUsesPagesAndNoPerNoteReads` 另检查万条简化来源的计数和去重标签；`TestClientSourceRead` 检查成功读取时的认证与资源锁共享期限、索引连接等待的取消及超时，`TestNotesSourceFailureCancelsHealthConnectionWait` 检查失败健康状态写入也响应取消。联合脚本固定使用 UTC，跨月预置时只将对应月份的笔记计入日历预期。
+同一真实数据集还检查默认列表/关键词搜索、完整标签与日历、聊天材料分页、回顾及漫步起点，浏览器加载时间线和下一页并等待完整侧栏；记录每次 API 的耗时、响应字节和 Core RSS。实验约束为响应小于 8 MiB、Core RSS 小于 768 MiB、请求在代理 60 秒期限内返回。标签与日历使用官方统计接口，核对作者、范围、元数据完整性和两次结果；可控来源 429 检查列表、侧栏和材料读取不输出部分数据，来源恢复后可重新读取。`TestNotesAggregatesMemosAdapterUsesLinearOfficialPagination` 和 `TestNotesAggregatesLargeCollectionUsesPagesAndNoPerNoteReads` 覆盖未提供原生统计能力的来源适配器，检查完整分页、同时间笔记和去重计数。`TestClientSourceRead` 检查成功读取时的认证与资源锁共享期限、索引连接等待的取消及超时，`TestNotesSourceFailureCancelsHealthConnectionWait` 检查失败健康状态写入也响应取消。联合脚本固定使用 UTC，跨月预置时只将对应月份的笔记计入日历预期。
 
 索引重建和产品快照恢复会重新生成派生布局，检查来源、摘要、标签和语义状态完整、坐标有效且重建后刷新稳定；不要求重新投影后的坐标与旧布局逐值相等。普通重启、升级和相同坐标系内的未变笔记仍检查原坐标与阅读位置保留。
 
-联合脚本将来源预置创建间隔设为 550 毫秒、来源读取至少间隔 150 毫秒，为并行侧栏请求保留默认用户额度，遵守 Memos 0.31 的写入和读取限额，不禁用或绕过其限流；千条预置约需十分钟。点集通过官方分页复查，仍受 Core 55 秒预算约束。结束或失败后删除自身的容器、匿名数据卷、凭据、二进制、产品快照及数据库，仅保留 `.local/map-acceptance-<随机ID>/` 中的脱敏检查、日志和截图。
+联合脚本将来源预置创建间隔设为 550 毫秒、来源读取至少间隔 150 毫秒，为并行侧栏请求保留默认用户额度，遵守 Memos 0.31 的写入和读取限额，不禁用或绕过其限流；千条预置约需十分钟。点集读取后台预建快照，不访问来源列表；认证与快照读取共用 Core 55 秒预算。脚本在 Core 停止时修改隔离索引的快照生成时间，验证每日边界，不开放生产测试接口。结束或失败后删除自身的容器、匿名数据卷、凭据、二进制、产品快照及数据库，仅保留 `.local/map-acceptance-<随机ID>/` 中的脱敏检查、日志和截图。
 
 升级验证可另行编译待兼容版本的 Linux 二进制，将绝对路径传给 `MOERISE_BASELINE_BINARY`：
 
@@ -210,11 +211,11 @@ MOERISE_BASELINE_BINARY=/absolute/path/to/baseline-moerise \
 MOERISE_MAP_SCALE=100 node scripts/check-map.mjs
 ```
 
-脚本先使用旧二进制在隔离目录中建立真实会话、持久设置、分时回顾、完整聊天及向量地图，再停止 Core，用当前代码构建的二进制连接原目录。升级后检查原 Cookie 和浏览器阅读位置、设置版本、回顾、消息与材料引用、向量代次及地图原样保留，已有向量不重新请求模型。旧二进制需支持 3.8 的地图、聊天和设置接口；其路径只用于启动，不被改写或删除。
+脚本先使用旧二进制在隔离目录中建立真实会话、持久设置、分时回顾、完整聊天及向量地图，再停止 Core，用当前代码构建的二进制连接原目录。升级后检查原 Cookie 和浏览器阅读位置、设置版本、回顾、消息与材料引用、向量代次及地图点位保持，旧布局由后台补齐快照时间和标签，已有向量不重新请求模型。旧二进制需支持 3.8 的地图、聊天和设置接口；其路径只用于启动，不被改写或删除。
 
 `web/test/insights-browser.mjs` 通过正式 Web 与隔离 API，在 Chromium 中检查正常/归档跨页选材、日期与精确标签组合、临时选择取消、Unicode 字符上限、自然 Markdown 与自由追问、固定版本原文保存、刷新及详情返回、空材料保留历史、来源失效、异常 EOF、导航断流、CSRF 更新和结果不明时原键原内容重试。会话菜单检查空草稿、历史分页选择、主动停止、删除确认、生成与保存排空、失败重试、版本冲突及迟到响应隔离。恢复及生成状态轮询时，来源问题提示优先于历史中断提示，临时读取失败按退避间隔继续读取，包括断流后的首次状态核对；成功后解除临时错误，离开页面停止重试。确认选材或移除材料会刷新全部剩余原文及字符数，包括当前筛选外的材料；刷新失败保留原选择，超时后可在同窗口使用新请求重试，来源在确认期间再次改变时提示重选并禁止生成。`web/test/chat-stream.test.mjs` 检查分片 UTF-8、SSE 注释与 CRLF、显式完成、错误终态及非法尾随输出。运行浏览器专项使用 `node --test web/test/insights-browser.mjs`，环境变量与其他浏览器检查相同。
 
-`TestClientDiscoveryMemosAcceptance` 使用真实 Memos、Core 和可控 Embedding 服务，覆盖两时段各三条的固定计划、纯图与纯文件、受保护图片、Cookie/Origin/CSRF、重启、关闭模型后的回顾，以及随机和指定起点的语义前进：
+`TestClientDiscoveryMemosAcceptance` 使用真实 Memos、Core 和可控 Embedding 服务，覆盖两时段各三条的固定计划、纯图与纯文件、受保护图片、Cookie/Origin/CSRF、重启、关闭模型后的回顾，以及随机和指定起点的语义前进、归档起点与候选排除：
 
 ```bash
 go test -tags=integration ./tests -run '^TestClientDiscoveryMemosAcceptance$' -v -count=1
@@ -228,13 +229,13 @@ node scripts/check-discovery.mjs
 
 流程创建独立账户与数据卷，覆盖全天回顾及详情图片、指定和随机起点、连续前进、Core 重启、模型关闭及窄屏显示。结束时删除自身的容器、数据卷、网络和临时凭据，仅保留 `.local/discovery-acceptance-<随机ID>/` 中的脱敏检查结果与截图。
 
-`tests/client_chat_acceptance_test.go` 的 `TestClientChatMemosAcceptance` 使用真实 Memos、Core 和可控流式 LLM，关闭 Embedding：
+`tests/client_chat_acceptance_test.go` 的聊天与材料字符边界专项使用真实 Memos、Core 和可控流式 LLM，关闭 Embedding：
 
 ```bash
-go test -tags=integration ./tests -run '^TestClientChatMemosAcceptance$' -v -count=1
+go test -tags=integration ./tests -run '^TestClientChat(MemosAcceptance|MaterialCharacterLimitMemosAcceptance)$' -v -count=1
 ```
 
-该流程验证正常与归档完整分页、日期/关键词/精确 AND 标签选材、同文不同资源的完整送模、自然回复与追问、请求重放和固定回复版本的原文幂等保存，并从官方 API 读回核对 Markdown、首尾空白、换行和标签。恢复检查覆盖普通重启、索引重建及产品备份恢复后的会话、消息和保存关联。边界覆盖字符与上下文超限不截断、来源修改/删除/越权、输出后来源变化、主动取消、断流、硬重启、供应商 EOF 和退出的持久终态；删除清理聊天关联并保留 Memos 已保存笔记，机器 REST/MCP 即使有写入 Scope 也不能访问聊天。
+该流程验证正常与归档完整分页、日期/关键词/精确 AND 标签选材、同文不同资源的完整送模、自然回复与追问、请求重放和固定回复版本的原文幂等保存，并从官方 API 读回核对 Markdown、首尾空白、换行和标签。恢复检查覆盖普通重启、索引重建及产品备份恢复后的会话、消息和保存关联。边界覆盖材料超限不截断、20,000 Unicode 字符及完整追问不受旧字节预算影响、来源修改/删除/越权、输出后来源变化、主动取消、断流、硬重启、供应商 EOF 和退出的持久终态；删除清理聊天关联并保留 Memos 已保存笔记，机器 REST/MCP 即使有写入 Scope 也不能访问聊天。
 
 `scripts/check-chat.mjs` 将真实 Memos、Linux Core、正式 Web 和 Chromium 连接到可控 HTTP LLM，关闭 Embedding。需要 Node.js 24+、Docker Linux 引擎及已安装的 Playwright；脚本自行编译 Core 与 Web，环境变量与其他联合浏览器流程相同：
 
@@ -346,7 +347,7 @@ go test -tags=integration ./tests -run '^TestFeishuLiveReviewAcceptance$' -v -co
 
 测试读取应用消息核对标题、完整正文和标签日期尾注，并下载图片检查原始尺寸，同时验证状态库重开后的续发。它创建独立 Docker Memos 和临时状态。可选设置 `MOERISE_FEISHU_LIVE_WEBHOOK` 为包含 `url`、`secret` 的 JSON 文件路径，增加 Webhook 标题、正文、图片及尾注实发，上传图片共用应用凭据。子测试可用 `-run 'TestFeishuLiveReviewAcceptance/feishu-webhook$'` 单独执行。不设置 `MOERISE_FEISHU_LIVE_CONFIG` 时跳过测试。
 
-CI 在 Linux 上执行模块校验、格式检查、静态检查、基础测试、无 cgo 构建、竞争检测、漏洞检查及真实 Memos 验收。漏洞检查也可单独运行：
+CI 在 Linux 上执行模块校验、格式检查、静态检查、基础测试、无 cgo 构建、竞争检测及真实 Memos 验收，Web 作业另行执行 Node 和浏览器门禁。全量竞争检测设置 `-timeout=30m`，为整套测试累计执行保留预算。漏洞检查也可单独运行：
 
 ```bash
 go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
@@ -387,40 +388,29 @@ python3 scripts/benchmark-search.py --docker-image golang:1.27.3-bookworm \
 
 工具默认 `GOMAXPROCS=2`，分进程测量首次索引批量 5/20、应用缓存冷启动、热候选扫描，以及 1/2/4 路语义和混合 Search 服务调用。可用 `--cpu` 调整运行线程，用可重复的 `--phase` 选择场景。数据库位于临时目录，结束后自动清理；JSON 保留工作负载、源码摘要、原始基准输出和 RSS 等指标。
 
+`--cpu` 设置 Go 执行线程数。验证服务器 CPU 配额时，需额外通过容器 `--cpus` 等内核机制限制 CPU 时间，并记录 cgroup `cpu.max`、`cpu.stat` 和实际 `GOMAXPROCS`。同机配额实验适合比较算力缩减的影响，独立双核服务器仍需结合处理器型号、内存和其他服务负载测量。
+
 `BenchmarkSemanticCache10000x1024` 的构建与预热不计入查询耗时，可用 `go test ./internal -run '^$' -bench '^BenchmarkSemanticCache10000x1024$' -benchmem` 单独执行。合成向量基准使用进程内模型与来源，不含远端模型和 Memos 网络成本；应用缓存冷启动不清理操作系统文件缓存。
 
 `TestDiscoveryAcrossEntrypointsAcceptance` 覆盖 REST、MCP 的 Scope、路径去重及相同候选约束；显式阅读由共享 `SearchService.Open` 写入，机器 REST 拒绝阅读写入，MCP 不提供阅读写工具；队列中的飞书漫步结果按持久状态恢复发送。专项测试使用可控随机源检查全部合格候选可被选中、多片段不增权、标签及近期阅读不改概率、长路径、超过 100 个候选和连续失效来源，以及取消、读取记录的重建与备份恢复。
 
-## AI 评测
+## 自然聊天质量评测
 
-`TestStage4LiveAcceptance` 采用配置中的 `llm`，创建独立 Memos、账号、状态、索引与服务进程，导入 `tests/testdata/stage4-cases.json` 中的固定虚构语料。同步并核对来源后关闭服务进程，打开共享 App，直接调用 `AIService.Insight` 或 `AIService.Answer`，不通过机器 REST 或 MCP 生成。笔记创建时间、修改时间及归档状态通过官方 API 设置并读回核对。向量模型关闭，检索明确返回关键词和标签降级；来源请求按 125 毫秒间隔发送，间隔计入端到端延迟。
-
-```bash
-MOERISE_STAGE4_CONFIG="$PWD/.local/config.json" \
-MOERISE_STAGE4_OUTPUT="$PWD/.local/stage4-live.json" \
-MOERISE_STAGE4_CONCURRENCY=true \
-go test -tags=integration ./tests -run '^TestStage4LiveAcceptance$' -v -count=1 -timeout=30m
-```
-
-测试校验数据集摘要。时间线案例通过问题、标签和日期筛选召回，期望来源写在 `expected.sources`，不使用 `AIRequest.names` 参数。`MOERISE_STAGE4_CASES` 可指定逗号分隔的案例 ID；`MOERISE_STAGE4_CONCURRENCY=false` 跳过附加并发测量，`true` 使用同一案例分别执行并发 1、2、4。
-
-每次调用通过业务事件回调收集引用、内容和完成事件，检查来源版本、原文字节与行号、引用归属、实际使用来源、时间段和完成结构。报告逐例落盘，包含原始业务事件、完整业务结果、期望要点、检索与首段及总延迟、供应商用量、执行共享服务的测试进程 CPU 与 RSS。供应商缺少的用量为 `null`；缓存用量与输入缓存命中分别按供应商字段记录。报告输出路径必须不存在。内容需逐项对照原文，核对事实、遗漏、错引和无依据结论；字符串命中与模型自评仅作辅助。
-
-`tests/ai_acceptance_test.go` 中的 `TestAISelectedSourceSharedServiceAndQueuedFeishuAcceptance` 采用真实 Memos、可控模型和飞书平台模拟器，验证机器 REST/MCP 拒绝生成且不调用模型、共享 `AIService` 的选定来源结果及已入队飞书结果的发送与去重。`TestAICachedDeliveryRebuildAndRestoreWithRealMemosAcceptance` 覆盖已完成生成缓存、索引重建、Store 重开、快照恢复、回执确认和来源修改后的发送限制。
-
-多次执行的结果使用标准库脚本汇总：
+`TestChatQualityLiveAcceptance` 使用 AI 洞察当前的本人聊天 API 和配置中的 `llm`。它创建独立的真实 Memos、账号、状态与服务进程，导入 `tests/testdata/chat-quality.json` 的固定虚构材料，并按每例明确的资源集合创建持久会话；关闭 Embedding，不补入全库历史。一键洞察使用产品本身的默认 Prompt，自由提问覆盖跨笔记联想、重复与重新发现、工程与记忆类比、矛盾的多种解释、时间与写作，以及反直觉提案。每例均继续追问，让最初的想法发展为新玩法、小工具或可讨论的提案，同时检查显式 SSE 完成、恢复读取、同请求重放、主动保存及官方原文读回。
 
 ```bash
-python3 scripts/summarize-ai.py \
-  --dataset tests/testdata/stage4-cases.json \
-  --reports .local/stage4-live.json \
-  --reviews .local/stage4-review.json \
-  --output .local/stage4-summary.json
+MOERISE_CHAT_QUALITY_CONFIG="$PWD/.local/config.json" \
+MOERISE_CHAT_QUALITY_OUTPUT="$PWD/.local/chat-quality-live.json" \
+go test -tags=integration ./tests -run '^TestChatQualityLiveAcceptance$' -v -count=1 -timeout=30m
 ```
 
-`--reports` 和 `--reviews` 均可指定多个文件。脚本核对固定问题、筛选、期望、来源快照与片段，保留每次尝试及报告摘要，为每例选择时间上最后一个完整有效结果；后续失败单独记录。供应商缺失用量保留 `null`，中位数采用标准中位数，P95 使用 nearest-rank。
+配置只用于复制 LLM 设置到隔离环境，不连接其中的生产 Memos 或数据库。启用此测试会调用配置中的真实模型，每例两轮；没有显式配置时跳过。报告必须写入不存在的路径，包含数据集与测试二进制摘要、Git 基准和工作区差异摘要、模型协议/名称、来源原文与版本、问题、完整 SSE 事件、回复、首段/总耗时和供应商用量。运行中逐例落盘，失败保留原始状态；凭据不写入报告。
 
-审阅文件可为数组或包含 `reviews` 的对象，每条使用 `id`、`source_report`、`verdict` 和 `notes`。`source_report` 绑定报告文件名，可用 `result_sha256` 进一步绑定完整原始 `AIResult` 的规范 JSON 指纹；重新生成的结果须匹配对应审阅。汇总中的 `complete` 表示完整执行覆盖，内容评价另存 `agent_review`，人工评分栏独立保留。汇总拒绝覆盖已有文件。
+报告的 `protocol_passed` 只表示协议和恢复通过，`review` 初始为 `pending`。内容审阅按固定 `review_points` 判断联想是否有启发、视角是否丰富、是否顺着用户意图大胆探索，以及追问是否把想法继续展开。允许使用常识、想象和原文没有证明的假设；自然区分原意与新想法即可，不因缺少原文依据就把创意判为失败，也不要求固定事实分类、逐项引用或反复声明证据不足。若回复只复述或因材料有限而停止发散，应记录为与洞察目标的偏差；不把想象的结果说成笔记已经记录或操作已经执行。不以字符串命中、模型自评或受控回复代替质量结论。真实供应商协议输出失败会使测试失败，但仍保留该例报告。
+
+`TestChatQualityEvaluationAcceptance` 用可控流式模型跑相同评测器，验证选材完整性、未选来源隔离、追问历史、报告及保存恢复；它不评价真实模型质量。超限不截断、来源失效、供应商故障、取消和重启中断仍由 `TestClientChatMemosAcceptance` 及聊天编排测试稳定触发。
+
+`TestLegacyAIQueuedFeishuAndExternalBoundaryAcceptance` 使用固定历史结果，检查机器 REST/MCP 拒绝生成且模型调用数为零、旧结果按序发送和去重；`TestAICachedDeliveryRebuildAndRestoreWithRealMemosAcceptance` 检查索引重建、Store 重开、快照恢复、回执确认和来源修改。它们不重新执行旧算法。
 
 ## 接口与提交
 

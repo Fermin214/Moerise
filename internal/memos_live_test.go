@@ -205,6 +205,64 @@ func TestMemosLiveStopsAfterBoundaryGroup(t *testing.T) {
 	}
 }
 
+// 检查普通时间线的小页和跨页同时间组的重读，防止批量优化拖慢首屏或绕过一致性校验。
+func TestMemosLiveSmallFirstPageAndLargeBoundary(t *testing.T) {
+	for _, mode := range []string{"distinct", "same-time", "changed", "page-limit"} {
+		t.Run(mode, func(t *testing.T) {
+			settings := liveProbeSettings()
+			settings.Memos.PageSize = 1000
+			if mode == "page-limit" {
+				settings.Memos.MaxPages = 1
+			}
+			batches := []int{}
+			client := liveProbeClient(t, settings, func(r *http.Request) (int, any, error) {
+				q := r.URL.Query()
+				batch, _ := strconv.Atoi(q.Get("pageSize"))
+				batches = append(batches, batch)
+				offset, _ := strconv.Atoi(q.Get("pageToken"))
+				rows := []any{}
+				for i := offset; i < min(offset+batch, 250); i++ {
+					raw := liveRawMemo("r"+strconv.Itoa(10000+i), "source")
+					if mode == "distinct" {
+						raw["createTime"] = time.Date(2020, 1, 2, 0, 0, 0, 0, time.UTC).Add(-time.Duration(i) * time.Second).Format(time.RFC3339)
+					}
+					if mode == "changed" && len(batches) == 4 && i == 249 {
+						raw["content"] = "changed during boundary check"
+					}
+					rows = append(rows, raw)
+				}
+				next := ""
+				if offset+batch < 250 {
+					next = strconv.Itoa(offset + batch)
+				}
+				return 200, map[string]any{"memos": rows, "nextPageToken": next}, nil
+			})
+			items, token, err := client.ListLivePage(t.Context(), "NORMAL", 20, "")
+			switch mode {
+			case "distinct":
+				if err != nil || len(items) != 20 || items[0].Name != "memos/r10000" ||
+					token == "" || !reflect.DeepEqual(batches, []int{100}) {
+					t.Fatalf("first page read too much: batches=%v items=%d err=%v", batches, len(items), err)
+				}
+			case "same-time":
+				if err != nil || len(items) != 20 || items[0].Name != "memos/r10249" ||
+					token == "" || !reflect.DeepEqual(batches, []int{100, 1000, 100, 1000}) {
+					t.Fatalf("boundary lost stable order or bounded reads: batches=%v items=%d err=%v", batches, len(items), err)
+				}
+			case "changed":
+				if errorCode(err) != "SOURCE_CHANGED" || items != nil || token != "" {
+					t.Fatalf("changed boundary escaped: items=%d token=%q err=%v", len(items), token, err)
+				}
+			case "page-limit":
+				if errorCode(err) != "UPSTREAM_PAGINATION_LIMIT" || items != nil || token != "" ||
+					!reflect.DeepEqual(batches, []int{100}) {
+					t.Fatalf("restart exceeded page budget: batches=%v items=%d err=%v", batches, len(items), err)
+				}
+			}
+		})
+	}
+}
+
 func TestMemosLiveRetainedBudget(t *testing.T) {
 	rowBytes, err := json.Marshal(liveRawMemo("z", "same-size"))
 	if err != nil {
@@ -239,7 +297,7 @@ func TestMemosLiveRetainedBudget(t *testing.T) {
 				}
 				return 200, map[string]any{"memos": []any{liveRawMemo("z", "same-size"), liveRawMemo("y", "same-size")}, "nextPageToken": next}, nil
 			})
-			items, _, err := client.scanLivePage(context.Background(), "NORMAL", 1, tc.cursor, tc.limits)
+			items, _, err := client.scanFilteredLivePage(context.Background(), "NORMAL", 1, tc.cursor, tc.limits, LiveFilter{})
 			if tc.wantErr {
 				if errorCode(err) != "LIVE_LIST_LIMIT" || items != nil {
 					t.Fatalf("budget returned partial success: %v %v", liveProbeNames(items), err)

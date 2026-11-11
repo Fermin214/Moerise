@@ -29,47 +29,12 @@ type aiAcceptanceLLM struct {
 
 func (p *aiAcceptanceLLM) Close() {}
 
-func (p *aiAcceptanceLLM) Generate(ctx context.Context, messages []moerise.LLMMessage, emit func(string) error) (moerise.LLMResult, error) {
+func (p *aiAcceptanceLLM) Generate(context.Context, []moerise.LLMMessage, func(string) error) (moerise.LLMResult, error) {
 	p.calls.Add(1)
-	var input struct {
-		Mode      string             `json:"mode"`
-		Requested int                `json:"requested_sources"`
-		Evidence  []moerise.Evidence `json:"evidence"`
-	}
-	if len(messages) != 2 || messages[1].Role != "user" ||
-		json.Unmarshal([]byte(messages[1].Content), &input) != nil ||
-		input.Mode != "single" || input.Requested != 1 || len(input.Evidence) != 1 ||
-		input.Evidence[0].Name != p.name || input.Evidence[0].Content != p.content {
-		return moerise.LLMResult{}, fmt.Errorf("model did not receive the selected live source")
-	}
-	if err := ctx.Err(); err != nil {
-		return moerise.LLMResult{}, err
-	}
-	citations := []string{input.Evidence[0].ID}
-	records := []any{
-		map[string]any{"type": "fact", "text": strings.Split(p.content, "\n")[0], "citations": citations},
-		map[string]any{"type": "interpretation", "text": "这条记录可能适合与后续观察对照。", "citations": citations},
-		map[string]any{"type": "question", "text": "后续是否继续记录薄荷变化？", "citations": []string{}},
-		map[string]any{"type": "result", "status": "answered", "missing": []string{}},
-	}
-	var output strings.Builder
-	for _, record := range records {
-		data, err := json.Marshal(record)
-		if err != nil {
-			return moerise.LLMResult{}, err
-		}
-		output.Write(data)
-		output.WriteByte('\n')
-	}
-	if emit != nil {
-		if err := emit(output.String()); err != nil {
-			return moerise.LLMResult{}, err
-		}
-	}
-	return moerise.LLMResult{Content: output.String(), Model: "acceptance-controlled", FinishReason: "stop"}, nil
+	return moerise.LLMResult{}, errors.New("legacy delivery must never invoke the LLM")
 }
 
-// Notification delivery is manual so generation, restart and source edits have
+// Notification delivery is manual so saved results, restart and source edits have
 // deterministic boundaries while the actual Feishu and sync workers run.
 type aiAcceptanceRuntime struct {
 	h        *harness
@@ -132,17 +97,17 @@ func (r *aiAcceptanceRuntime) start() {
 	if err != nil {
 		r.h.t.Fatal(err)
 	}
-	if r.api.AI == nil || r.api.Feishu == nil || r.api.Feishu.AI != r.api.AI || r.api.AI.Search != r.api.Search {
-		r.h.t.Fatal("App and Feishu do not share AI and evidence services")
+	if r.api.Feishu == nil || r.api.Feishu.Search != r.api.Search || r.api.Chat.Notes != r.api.Notes {
+		r.h.t.Fatal("App and Feishu do not share source services")
 	}
-	r.api.AI.Provider, r.api.Feishu.Client = r.provider, r.platform
+	r.api.LLM, r.api.Chat.Provider, r.api.Feishu.Client = r.provider, r.provider, r.platform
 	r.server = httptest.NewServer(r.api)
 	r.h.base = r.server.URL
 	ctx, cancel := context.WithCancel(context.Background())
 	r.cancel = cancel
 	r.done = []chan error{make(chan error, 1), make(chan error, 1)}
 	go func() { r.done[0] <- r.api.Worker.Run(ctx) }()
-	go func() { r.done[1] <- r.api.Feishu.Run(ctx) }()
+	go func() { r.done[1] <- r.api.RunFeishu(ctx) }()
 	r.h.ready()
 }
 
@@ -174,12 +139,8 @@ func (r *aiAcceptanceRuntime) stop() {
 
 func (r *aiAcceptanceRuntime) queueSavedAI(id string) {
 	r.h.t.Helper()
-	request := moerise.AIRequest{Names: []string{r.provider.name}}
-	// 显式构造旧结果夹具；App 的结构化生成已停用。
-	result, err := moerise.NewAIService(r.api.Search, r.provider).Insight(context.Background(), request, nil)
-	if err != nil || !result.Completed {
-		r.h.t.Fatalf("shared insight fixture: %+v %v", result, err)
-	}
+	request := map[string]any{"names": []string{r.provider.name}}
+	result := r.savedResult()
 	// Seed a completed encrypted result to exercise recovery independently of text input.
 	key := sha256.Sum256([]byte("moerise-feishu-events-v1\x00" + *r.settings.Channel.AppSecret))
 	block, _ := aes.NewCipher(key[:])
@@ -220,7 +181,6 @@ func (r *aiAcceptanceRuntime) queueSavedAI(id string) {
 	if err := tx.Commit(); err != nil {
 		r.h.t.Fatal(err)
 	}
-	r.api.Feishu.Wake()
 }
 
 func (r *aiAcceptanceRuntime) queued(id string) moerise.Notification {
@@ -250,23 +210,6 @@ func (r *aiAcceptanceRuntime) deliver(want bool) {
 	}
 }
 
-func aiAcceptanceResult(t *testing.T, raw any) moerise.AIResult {
-	t.Helper()
-	data, err := json.Marshal(raw)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var result moerise.AIResult
-	if err := json.Unmarshal(data, &result); err != nil {
-		t.Fatal(err)
-	}
-	if !result.Completed || result.Status != "answered" || result.Kind != "single" ||
-		len(result.Statements) != 3 || len(result.References) != 1 || len(result.UsedSources) != 1 {
-		t.Fatalf("incomplete insight result: %+v", result)
-	}
-	return result
-}
-
 func aiAcceptanceRendered(t *testing.T, text string, result moerise.AIResult) {
 	t.Helper()
 	labels := map[string]string{"fact": "事实", "interpretation": "解释", "question": "追问"}
@@ -291,10 +234,10 @@ func aiAcceptanceRendered(t *testing.T, text string, result moerise.AIResult) {
 	}
 }
 
-func TestAISelectedSourceSharedServiceAndQueuedFeishuAcceptance(t *testing.T) {
+func TestLegacyAIQueuedFeishuAndExternalBoundaryAcceptance(t *testing.T) {
 	r, aiOnly := newAIAcceptanceRuntime(t)
 	h := r.h
-	request := moerise.AIRequest{Names: []string{r.provider.name}}
+	request := map[string]any{"names": []string{r.provider.name}}
 	for _, token := range []string{h.reader, aiOnly, h.operator} {
 		h.call(r.server.URL, "/api/ext/v1/insights", "POST", token, request, 403)
 		rpc, status, err := h.requestWithHeaders(r.server.URL, "/mcp", "POST", token,
@@ -309,13 +252,7 @@ func TestAISelectedSourceSharedServiceAndQueuedFeishuAcceptance(t *testing.T) {
 	if r.provider.calls.Load() != 0 {
 		t.Fatal("scope denial invoked the model")
 	}
-	if _, err := r.api.AI.Insight(context.Background(), request, nil); err == nil || r.provider.calls.Load() != 0 {
-		t.Fatal("application still accepts new structured generations")
-	}
-	rest, err := moerise.NewAIService(r.api.Search, r.provider).Insight(context.Background(), request, nil)
-	if err != nil || !rest.Completed {
-		t.Fatalf("shared insight: %+v %v", rest, err)
-	}
+	rest := r.savedResult()
 	reference := rest.References[0]
 	if reference.ID != "E1" || reference.Name != r.provider.name || reference.SourceHash == "" ||
 		reference.ByteStart != 0 || reference.ByteEnd != len(r.provider.content) ||
@@ -338,7 +275,7 @@ func TestAISelectedSourceSharedServiceAndQueuedFeishuAcceptance(t *testing.T) {
 	r.deliver(false)
 	detail, err := r.api.Notifications.Detail(item.ID)
 	if err != nil || detail.Notification.Status != "sent" || len(detail.Attempts) != 1 ||
-		r.provider.calls.Load() != 2 || r.platform.replyCount() != 1 {
+		r.provider.calls.Load() != 0 || r.platform.replyCount() != 1 {
 		t.Fatalf("saved reply regenerated or resent insight: calls=%d sends=%d detail=%+v err=%v",
 			r.provider.calls.Load(), r.platform.replyCount(), detail, err)
 	}
@@ -381,7 +318,7 @@ func TestAICachedDeliveryRebuildAndRestoreWithRealMemosAcceptance(t *testing.T) 
 	if sentGeneration.cleaned == nil || cachedGeneration.cleaned != nil {
 		t.Fatal("cleanup did not distinguish confirmed and pending sends")
 	}
-	if r.provider.calls.Load() != 2 || r.platform.replyCount() != 1 {
+	if r.provider.calls.Load() != 0 || r.platform.replyCount() != 1 {
 		t.Fatal("unexpected model/send count before online backup")
 	}
 	snapshot := filepath.Join(h.root, "ai-online-backup")
@@ -403,7 +340,7 @@ func TestAICachedDeliveryRebuildAndRestoreWithRealMemosAcceptance(t *testing.T) 
 		}
 	}
 	r.deliver(true)
-	if r.platform.reply("om_ai_cached") != sentText || r.platform.replyCount() != 2 || r.provider.calls.Load() != 2 {
+	if r.platform.reply("om_ai_cached") != sentText || r.platform.replyCount() != 2 || r.provider.calls.Load() != 0 {
 		t.Fatalf("Store/Feishu reopen did not reuse the cached result: calls=%d sends=%d text=%s",
 			r.provider.calls.Load(), r.platform.replyCount(), r.platform.reply("om_ai_cached"))
 	}
@@ -437,7 +374,7 @@ func TestAICachedDeliveryRebuildAndRestoreWithRealMemosAcceptance(t *testing.T) 
 		t.Fatalf("older snapshot did not hold uncertain send outcome: %+v %v", uncertain, err)
 	}
 	r.deliver(false)
-	if r.provider.calls.Load() != 2 || r.platform.replyCount() != 2 {
+	if r.provider.calls.Load() != 0 || r.platform.replyCount() != 2 {
 		t.Fatal("restore automatically regenerated or resent a saved result")
 	}
 	// The platform confirms the send made after the snapshot. Resolving it must
@@ -454,8 +391,8 @@ func TestAICachedDeliveryRebuildAndRestoreWithRealMemosAcceptance(t *testing.T) 
 
 	r.queueSavedAI("om_ai_source_changed")
 	changed := r.queued("om_ai_source_changed")
-	if r.provider.calls.Load() != 3 {
-		t.Fatal("shared insight fixture did not generate exactly once")
+	if r.provider.calls.Load() != 0 {
+		t.Fatal("loading a historical result invoked the model")
 	}
 	h.call(h.memos, "/api/v1/"+r.provider.name+"?updateMask=content", "PATCH", h.upstream,
 		map[string]string{"content": "原有观察已删除，改为全新内容。"}, 200)
@@ -470,9 +407,28 @@ func TestAICachedDeliveryRebuildAndRestoreWithRealMemosAcceptance(t *testing.T) 
 	}
 	detail, err := r.api.Notifications.Detail(changed.ID)
 	if err != nil || detail.Notification.Status != "sent" || len(detail.Attempts) != 1 ||
-		r.provider.calls.Load() != 3 || r.platform.replyCount() != 3 {
+		r.provider.calls.Load() != 0 || r.platform.replyCount() != 3 {
 		t.Fatalf("source protection regenerated or resent content: calls=%d sends=%d detail=%+v err=%v",
 			r.provider.calls.Load(), r.platform.replyCount(), detail, err)
 	}
 	r.deliver(false)
+}
+
+func (r *aiAcceptanceRuntime) savedResult() moerise.AIResult {
+	r.h.t.Helper()
+	note, err := r.api.Notes.Get(r.h.t.Context(), r.provider.name)
+	if err != nil {
+		r.h.t.Fatal(err)
+	}
+	return moerise.AIResult{Kind: "single", Status: "answered", Completed: true, Model: "historical-fixture",
+		Statements: []moerise.AIStatement{
+			{Kind: "fact", Text: strings.Split(r.provider.content, "\n")[0], Citations: []string{"E1"}},
+			{Kind: "interpretation", Text: "这条记录可能适合与后续观察对照。", Citations: []string{"E1"}},
+			{Kind: "question", Text: "后续是否继续记录薄荷变化？", Citations: []string{}},
+		},
+		References: []moerise.Evidence{{ID: "E1", Name: note.Name, SourceHash: note.SourceHash,
+			Content: note.Content, ByteStart: 0, ByteEnd: len(note.Content), LineStart: 1, LineEnd: 2,
+			URL: note.URL, CreateTime: note.CreateTime, UpdateTime: note.UpdateTime}},
+		UsedSources: []string{note.Name}, Omitted: []string{}, Missing: []string{}, Timeline: []moerise.AITimelinePeriod{},
+	}
 }

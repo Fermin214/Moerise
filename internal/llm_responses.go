@@ -37,8 +37,8 @@ func (c *responsesLLMClient) Generate(ctx context.Context, messages []LLMMessage
 	ctx, cancel := context.WithTimeout(ctx, time.Duration(c.config.TimeoutSeconds*float64(time.Second)))
 	defer cancel()
 	size := 0
-	if len(messages) == 0 || len(messages) > 256 {
-		return LLMResult{}, failure("INVALID_ARGUMENT", "LLM requires 1 to 256 messages", 422, false)
+	if len(messages) == 0 {
+		return LLMResult{}, failure("INVALID_ARGUMENT", "LLM requires at least one message", 422, false)
 	}
 	for _, message := range messages {
 		if !slices.Contains([]string{"system", "developer", "user", "assistant"}, message.Role) ||
@@ -46,9 +46,6 @@ func (c *responsesLLMClient) Generate(ctx context.Context, messages []LLMMessage
 			return LLMResult{}, failure("INVALID_ARGUMENT", "Invalid LLM text message", 422, false)
 		}
 		size += len(message.Content)
-		if size > c.config.ContextBytes {
-			return LLMResult{}, failure("LLM_CONTEXT_LIMIT", "LLM context exceeds the configured byte limit", 422, false)
-		}
 	}
 	if size == 0 {
 		return LLMResult{}, failure("INVALID_ARGUMENT", "LLM context must not be empty", 422, false)

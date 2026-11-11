@@ -331,4 +331,71 @@ func TestSearchAcceptance(t *testing.T) {
 		}
 	}
 	t.Log("PASS persistent restart and REST/MCP search parity")
+
+	{
+		c := managedClient(t, h)
+		input := moerise.ClientSearchRequest{Query: "月港", Mode: "hybrid", PageSize: 3}
+		before := queryCalls.Load()
+		seen := map[string]bool{}
+		firstToken := ""
+		for page := 0; page < 10; page++ {
+			raw := c.call("POST", "/api/app/v1/search", input, 200)
+			if raw["mode"] != "hybrid" || raw["semantic"].(map[string]any)["used"] != true {
+				t.Fatal("native search lost semantic status", raw)
+			}
+			for _, value := range raw["notes"].([]any) {
+				note := value.(map[string]any)
+				name := note["name"].(string)
+				if seen[name] || !slices.Contains(moonNames, name) ||
+					note["url"] != "/notes/"+strings.TrimPrefix(name, "memos/") {
+					t.Fatal("native ranked page duplicated or exposed an unprotected note", note)
+				}
+				seen[name] = true
+			}
+			input.PageToken = raw["next_page_token"].(string)
+			if page == 0 {
+				firstToken = input.PageToken
+			}
+			if input.PageToken == "" {
+				break
+			}
+		}
+		if len(seen) != len(moonNames) || queryCalls.Load()-before != 1 || firstToken == "" {
+			t.Fatal("native search omitted a page or repeated model calls", len(seen), queryCalls.Load()-before)
+		}
+		c.call("POST", "/api/app/v1/search", moerise.ClientSearchRequest{
+			Query: semanticQuery, Mode: "semantic", Tags: []string{"庭院"}, PageSize: 20}, 200)
+		dated := c.call("POST", "/api/app/v1/search", moerise.ClientSearchRequest{
+			Query: "月港", Mode: "hybrid", Date: "1900-01-01", PageSize: 20}, 200)
+		if len(dated["notes"].([]any)) != 0 {
+			t.Fatal("native enhanced search ignored the date")
+		}
+		archive := c.call("POST", "/api/app/v1/search", moerise.ClientSearchRequest{
+			Query: "琥珀", Mode: "hybrid", State: "ARCHIVED", PageSize: 20}, 200)
+		if items := archive["notes"].([]any); len(items) != 1 || items[0].(map[string]any)["name"] != archived {
+			t.Fatal("native enhanced search ignored archive scope", archive)
+		}
+		sourceFailure.Store(true)
+		unavailable := c.call("POST", "/api/app/v1/search", input, 503)
+		sourceFailure.Store(false)
+		if unavailable["notes"] != nil {
+			t.Fatal("source outage exposed a partial native page")
+		}
+		settings := c.call("GET", "/api/app/v1/settings", nil, 200)
+		c.call("PATCH", "/api/app/v1/settings", map[string]any{
+			"version": settings["version"], "settings": map[string]any{"embedding": map[string]any{"enabled": false}},
+		}, 200)
+		input.PageToken = firstToken
+		c.call("POST", "/api/app/v1/search", input, 422)
+		input.PageToken = ""
+		fallback := c.call("POST", "/api/app/v1/search", input, 200)
+		if fallback["mode"] != "keyword" || fallback["semantic"].(map[string]any)["reason"] != "EMBEDDING_DISABLED" {
+			t.Fatal("native hybrid search silently degraded", fallback)
+		}
+		input.Mode = "semantic"
+		c.call("POST", "/api/app/v1/search", input, 503)
+		input.Mode = "keyword"
+		c.call("POST", "/api/app/v1/search", input, 200)
+		t.Log("PASS native session search: one query embedding, protected complete pages, filters, archive, outage and model switching")
+	}
 }

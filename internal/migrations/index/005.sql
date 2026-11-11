@@ -1,0 +1,2 @@
+ALTER TABLE map_layouts ADD COLUMN generated_at TEXT NOT NULL DEFAULT '';
+ALTER TABLE map_points ADD COLUMN tags_json TEXT NOT NULL DEFAULT '[]';

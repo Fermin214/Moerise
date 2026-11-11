@@ -28,8 +28,28 @@ jobs:
           CGO_ENABLED: "0"
         run: go build -trimpath -o build/moerise .
       - name: Check races
-        run: go test -race ./... -count=1
+        run: go test -race ./... -count=1 -timeout=30m
       - name: Check vulnerabilities
         run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
       - name: Run Memos acceptance scenarios
         run: go test -tags=integration ./tests -v -count=1
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@v6.5.0
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm --prefix web ci
+      - run: npm --prefix web test
+      - run: node --test scripts/test/*.test.mjs
+      - run: npm --prefix web run build
+      - name: Install Chromium
+        working-directory: web
+        run: npx playwright install --with-deps chromium
+      - name: Run browser suites
+        env:
+          MOERISE_PLAYWRIGHT_MODULE: ${{ github.workspace }}/web/node_modules/playwright/index.mjs
+        run: npm --prefix web run test:browser

@@ -25,7 +25,6 @@ const assets = new Map([
   ['/prototype.css', ['prototype.css', 'text/css; charset=utf-8']],
   ['/memos.css', ['memos.css', 'text/css; charset=utf-8']],
   ['/layout.css', ['layout.css', 'text/css; charset=utf-8']],
-  ['/memos-logo.webp', ['memos-logo.webp', 'image/webp']],
   ['/favicon.svg', ['favicon.svg', 'image/svg+xml']],
 ]);
 const hopHeaders = new Set([
@@ -84,6 +83,18 @@ function coreReady(core, transport, timeout) {
 function error(res, status, code, message) {
   res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' });
   res.end(JSON.stringify({ error: { code, message, retryable: status >= 500, request_id: randomUUID() } }));
+}
+
+function acceptedEncodings(header = '') {
+  const qualities = new Map();
+  for (const item of String(header).toLowerCase().split(',')) {
+    const [name, ...parameters] = item.trim().split(';').map(part => part.trim());
+    const q = parameters.find(part => part.startsWith('q='));
+    const value = q === undefined ? 1 : /^q=(?:0(?:\.\d{0,3})?|1(?:\.0{0,3})?)$/.test(q) ? Number(q.slice(2)) : 0;
+    qualities.set(name, value);
+  }
+  const quality = name => qualities.get(name) ?? (name === 'identity' ? (qualities.get('*') === 0 ? 0 : 1) : qualities.get('*') ?? 0);
+  return ['br', 'gzip', 'identity'].filter(name => quality(name) > 0).sort((a, b) => quality(b) - quality(a));
 }
 
 export function createWebServer({
@@ -187,17 +198,37 @@ export function createWebServer({
       req.pipe(upstream);
       return;
     }
-    const asset = assets.get(path) || (pages.has(path) || notePath.test(path) ? assets.get('/') : null);
+    const versioned = /^\/([a-z][a-z-]*)\.([a-f0-9]{20})\.(js|css|svg)$/.exec(path);
+    const original = versioned && assets.get(`/${versioned[1]}.${versioned[3]}`);
+    const asset = assets.get(path) || (original ? [path.slice(1), original[1]] : null) ||
+      (pages.has(path) || notePath.test(path) ? assets.get('/') : null);
     if (!asset || !['GET', 'HEAD'].includes(req.method)) {
       error(res, 404, 'NOT_FOUND', '页面不存在。');
       return;
     }
     try {
-      const body = await readFile(resolve(dist, asset[0]));
+      let body, encoding;
+      for (const accepted of acceptedEncodings(req.headers['accept-encoding'])) {
+        try {
+          body = await readFile(resolve(dist, asset[0] + (accepted === 'identity' ? '' : `.${accepted === 'gzip' ? 'gz' : 'br'}`)));
+          encoding = accepted;
+          break;
+        } catch (err) {
+          if (accepted === 'identity' || err.code !== 'ENOENT') throw err;
+        }
+      }
+      if (!body) {
+        error(res, 406, 'ENCODING_NOT_ACCEPTABLE', '没有可接受的响应编码。');
+        return;
+      }
+      res.setHeader('Vary', 'Accept-Encoding');
+      if (encoding !== 'identity') res.setHeader('Content-Encoding', encoding);
+      if (versioned) res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
       res.writeHead(200, { 'Content-Type': asset[1], 'Content-Length': body.length });
       res.end(req.method === 'HEAD' ? undefined : body);
     } catch {
-      error(res, 503, 'WEB_BUILD_MISSING', '页面文件缺失，请先运行 npm run build。');
+      if (versioned) error(res, 404, 'NOT_FOUND', '页面不存在。');
+      else error(res, 503, 'WEB_BUILD_MISSING', '页面文件缺失，请先运行 npm run build。');
     }
   });
 }

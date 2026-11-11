@@ -1,16 +1,15 @@
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import { once } from 'node:events';
+import { text as readRequestText } from 'node:stream/consumers';
 import { pathToFileURL } from 'node:url';
 import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { createWebServer } from '../server.mjs';
 
-// Optional browser runtime: MOERISE_PLAYWRIGHT_MODULE points at an installed playwright/index.mjs.
 const runtime = process.env.MOERISE_PLAYWRIGHT_MODULE;
-if (!runtime) throw new Error('Set MOERISE_PLAYWRIGHT_MODULE to the installed playwright/index.mjs');
-const { chromium } = await import(pathToFileURL(runtime).href);
+const { chromium } = runtime ? await import(pathToFileURL(runtime).href) : await import('playwright');
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aP9sAAAAASUVORK5CYII=', 'base64');
 
 async function fixture(t) {
@@ -29,15 +28,15 @@ async function fixture(t) {
   ];
   notes.get('n02').content += '\n\n[资料](/file/attachments/doc/document.pdf) ![原图](/file/attachments/pic/image.png)';
   notes.set('old', { ...notes.get('n00'), name: 'memos/old', state: 'ARCHIVED', content: '归档原文 #想法', source_hash: 'v-old' });
-  const state = { notes, requests: [], unknownCreate: false, unknownPatch: false, conflict: false, csrfRejected: false, created: 0, session: false };
+  const state = { notes, requests: [], unknownCreate: false, unknownPatch: false, conflict: false, csrfRejected: false,
+    created: 0, session: false, embedding: true, searchChanged: false, searchDelay: 0 };
   const idempotency = new Map();
   const core = http.createServer(async (req, res) => {
     const url = new URL(req.url, 'http://localhost');
     const path = url.pathname.replace('/api/app/v1', '');
     let body;
     if (['POST', 'PATCH', 'DELETE'].includes(req.method)) {
-      let raw = '';
-      for await (const chunk of req) raw += chunk;
+      const raw = await readRequestText(req);
       body = raw ? JSON.parse(raw) : null;
     }
     state.requests.push({ method: req.method, path, query: url.searchParams, body, headers: req.headers });
@@ -76,6 +75,20 @@ async function fixture(t) {
         .sort((a, b) => Date.parse(b.create_time) - Date.parse(a.create_time) || (a.name < b.name ? 1 : a.name > b.name ? -1 : 0));
       const start = Number(url.searchParams.get('page_token') || 0);
       json({ notes: result.slice(start, start + 20), next_page_token: start + 20 < result.length ? String(start + 20) : '' }); return;
+    }
+    if (path === '/search' && req.method === 'POST') {
+      if (!state.embedding && body.mode === 'semantic') { error('EMBEDDING_DISABLED', 503); return; }
+      if (state.searchChanged && body.page_token) {
+        state.searchChanged = false; error('SOURCE_CHANGED'); return;
+      }
+      if (state.searchDelay) await new Promise(resolve => setTimeout(resolve, state.searchDelay));
+      const result = [...notes.values()].filter(note => note.state === body.state &&
+        body.tags.every(tag => note.tags.includes(tag)) &&
+        (!body.date || note.create_time.startsWith(body.date)))
+        .sort((a, b) => b.name.localeCompare(a.name));
+      const start = Number(body.page_token || 0);
+      json({ notes: result.slice(start, start + 20), next_page_token: start + 20 < result.length ? String(start + 20) : '',
+        mode: state.embedding ? body.mode : 'keyword', semantic: { used: state.embedding, reason: state.embedding ? '' : 'EMBEDDING_DISABLED' } }); return;
     }
     if (path === '/reviews/daily' && req.method === 'GET') {
       json({ id: 'browser-daily', date: '2026-10-30', timezone: 'Asia/Hong_Kong',
@@ -148,11 +161,76 @@ async function fixture(t) {
 }
 async function login(page) {
   await page.locator('#login-form').waitFor({ state: 'visible' });
+  assert.equal(await page.locator('.memos-brand').innerText(), 'Moerise');
+  assert.equal(await page.locator('#auth img').count(), 0);
   await page.locator('#username').fill('test');
   await page.locator('#password').fill('test');
   await page.locator('#login').click();
   await page.locator('#workspace').waitFor({ state: 'visible' });
 }
+
+test('browser explicit search modes, relevance pagination, filters, return and model fallback', { timeout: 120_000 }, async t => {
+  const { page, state, errors, url } = await fixture(t);
+  await page.goto(url);
+  await login(page);
+  await page.locator('[data-name="memos/n00"]').waitFor();
+  assert.equal(await page.locator('#search-mode').inputValue(), 'keyword');
+  assert.equal(state.requests.some(request => request.path === '/search'), false);
+  await page.locator('#q').fill('园艺联想');
+  await page.locator('#search-mode').selectOption('semantic');
+  await page.locator('[data-name="memos/n46"]').waitFor();
+  assert.equal(await page.locator('#notes [data-name]').first().getAttribute('data-name'), 'memos/n46');
+  const first = state.requests.findLast(request => request.path === '/search');
+  assert.deepEqual(first.body, { query: '园艺联想', mode: 'semantic', tags: [], date: '', state: 'NORMAL', page_size: 20, page_token: '' });
+  await page.locator('#load-more').click();
+  await page.locator('[data-name="memos/n07"]').waitFor();
+  await page.locator('[data-name="memos/n07"] .dlink').click();
+  await page.locator('article.note').waitFor();
+  await page.reload();
+  await page.locator('article.note').waitFor();
+  await page.locator('#back').click();
+  await page.locator('[data-name="memos/n46"]').waitFor();
+  assert.equal(new URL(page.url()).searchParams.get('mode'), 'semantic');
+  assert.equal(await page.locator('#search-mode').inputValue(), 'semantic');
+  await page.locator('#tags button', { hasText: '#灵感' }).click();
+  await page.locator('#calendar button[aria-label^="2026-10-29"]').click();
+  await page.waitForFunction(() => new URL(location.href).searchParams.get('date') === '2026-10-29');
+  await page.waitForFunction(() => new URL(location.href).searchParams.get('date') === '2026-10-29' &&
+    document.querySelector('#notes [data-name]') && document.getElementById('notes').getAttribute('aria-busy') === 'false');
+  const combined = state.requests.findLast(request => request.path === '/search');
+  assert.deepEqual(combined.body.tags, ['灵感']);
+  assert.equal(combined.body.date, '2026-10-29');
+  assert.equal(combined.body.mode, 'semantic');
+  state.embedding = false;
+  await page.locator('#search-mode').selectOption('hybrid');
+  await page.locator('#capability', { hasText: '语义检索暂不可用' }).waitFor();
+  await page.locator('#search-mode').selectOption('semantic');
+  await page.locator('#list-error', { hasText: 'Embedding' }).waitFor();
+  await page.locator('#search-mode').selectOption('keyword');
+  await page.locator('#q').fill('笔记 4');
+  await page.locator('#q').press('Enter');
+  await page.locator('[data-name="memos/n40"]').waitFor();
+  assert.equal(await page.locator('#capability').isHidden(), true);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.locator('#search-mode').selectOption('hybrid');
+  await page.locator('#capability', { hasText: '语义检索暂不可用' }).waitFor();
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+  await screenshot(page, 'search-mobile.png');
+  state.embedding = true;
+  await page.goto(`${url}/archived?query=归档&mode=semantic`);
+  await page.locator('[data-name="memos/old"]').waitFor();
+  assert.equal(state.requests.findLast(request => request.path === '/search').body.state, 'ARCHIVED');
+  state.searchDelay = 250;
+  const delayed = page.waitForRequest(request => request.url().endsWith('/search'));
+  await page.locator('#q').fill('迟到的查询');
+  await page.locator('#q').press('Enter');
+  await delayed;
+  await page.locator('a[href="/"]').click();
+  await page.locator('[data-name="memos/n00"]').waitFor();
+  await page.waitForTimeout(350);
+  assert.equal(await page.locator('[data-name="memos/old"]').count(), 0);
+  assert.deepEqual(errors, []);
+});
 async function menu(page, id, label) {
   const card = page.locator(`[data-name="memos/${id}"]`);
   await card.getByRole('button', { name: '更多操作' }).click();

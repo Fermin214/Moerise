@@ -5,6 +5,8 @@ services:
     profiles: [memos, local]
     image: neosmemo/memos:0.31.0@sha256:24c2707ddd8fbd2ceaa7a61ecab86a53cdcde640b24ce572b73da14b00b5785f
     restart: unless-stopped
+    mem_limit: ${MEMOS_MEMORY_LIMIT:-256m}
+    cpus: ${MEMOS_CPU_LIMIT:-2.0}
     ports:
       - "127.0.0.1:${MEMOS_PORT:-5231}:5230"
     volumes:
@@ -28,6 +30,7 @@ services:
       - path: ${MOERISE_ENV_FILE:-.env}
         required: false
     environment:
+      GOMEMLIMIT: ${GOMEMLIMIT:-}
       MOERISE_WEB_ENABLED: ${MOERISE_WEB_ENABLED:-true}
       MOERISE_PUBLIC_ORIGIN: ${MOERISE_PUBLIC_ORIGIN:-http://localhost:3000}
       MOERISE_STATE_DIR: /data/state
@@ -45,8 +48,8 @@ services:
     cap_drop: [ALL]
     read_only: true
     tmpfs: ["/tmp:size=16m"]
-    mem_limit: 384m
-    cpus: 1.0
+    mem_limit: ${MOERISE_MEMORY_LIMIT:-384m}
+    cpus: ${MOERISE_CPU_LIMIT:-2.0}
     logging:
       options:
         max-size: "5m"
@@ -70,8 +73,8 @@ services:
     cap_drop: [ALL]
     read_only: true
     tmpfs: ["/tmp:size=16m"]
-    mem_limit: 128m
-    cpus: 0.5
+    mem_limit: ${WEB_MEMORY_LIMIT:-128m}
+    cpus: ${WEB_CPU_LIMIT:-0.5}
     logging:
       options:
         max-size: "5m"

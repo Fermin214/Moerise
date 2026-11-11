@@ -87,10 +87,10 @@ func (a *ClientAPI) modelsRoute(w http.ResponseWriter, r *http.Request) (any, in
 		}
 		_, err = checkEmbedding(ctx, a.app.Store.Settings.Embedding, a.app.Search.Provider)
 	} else {
-		if a.app.AI.Provider == nil {
+		if a.app.LLM == nil {
 			return nil, 0, failure("LLM_DISABLED", "LLM is disabled", 503, false)
 		}
-		_, err = checkLLM(ctx, a.app.Store.Settings.LLM, a.app.AI.Provider)
+		_, err = checkLLM(ctx, a.app.Store.Settings.LLM, a.app.LLM)
 	}
 	if err != nil {
 		return nil, 0, err

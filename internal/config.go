@@ -75,7 +75,7 @@ type LLMConfig struct {
 	MaxConcurrency  int     `json:"max_concurrency"`
 	MaxRetries      int     `json:"max_retries"`
 	MaxOutputTokens int     `json:"max_output_tokens"`
-	ContextBytes    int     `json:"context_bytes"`
+	ContextBytes    int     `json:"context_bytes"` // Deprecated: retained for saved settings compatibility; no input budget.
 }
 
 type EmbeddingConfig struct {
@@ -136,7 +136,7 @@ type Settings struct {
 func DefaultSettings() Settings {
 	embeddingModel := "qwen3.7-text-embedding"
 	return Settings{
-		Memos:    MemosConfig{TimeoutSeconds: 10, PageSize: 100, MaxPages: 10000},
+		Memos:    MemosConfig{TimeoutSeconds: 10, PageSize: 0, MaxPages: 10000},
 		Timezone: "Asia/Hong_Kong", StateDir: "/data/state", IndexDir: "/data/index",
 		Sync:          SyncConfig{60, 21600, 300, 5, 300},
 		Review:        ReviewConfig{Count: 3, MinAgeHours: 72, RecentDays: 7},
@@ -261,7 +261,7 @@ func (s *Settings) Validate() error {
 		return bad("memos identity")
 	}
 	if s.Memos.TimeoutSeconds < 1 || s.Memos.TimeoutSeconds > 120 ||
-		s.Memos.PageSize < 1 || s.Memos.PageSize > 1000 ||
+		s.Memos.PageSize < 0 || s.Memos.PageSize > 1000 ||
 		s.Memos.MaxPages < 1 || s.Memos.MaxPages > 100000 {
 		return bad("memos limits")
 	}

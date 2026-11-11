@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import { once } from 'node:events';
+import { text as readRequestText } from 'node:stream/consumers';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import { readFile, mkdtemp, cp, writeFile, rm, mkdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -9,8 +10,7 @@ import { test } from 'node:test';
 import { createWebServer } from '../server.mjs';
 
 const runtime = process.env.MOERISE_PLAYWRIGHT_MODULE;
-if (!runtime) throw new Error('Set MOERISE_PLAYWRIGHT_MODULE to the installed playwright/index.mjs');
-const { chromium } = await import(pathToFileURL(runtime).href);
+const { chromium } = runtime ? await import(pathToFileURL(runtime).href) : await import('playwright');
 function settings() {
   return {
     version: 1, default_insight_prompt: '内置默认洞察 Prompt',
@@ -36,7 +36,7 @@ async function fixture(t) {
     checks: [], checkFail: null, holdCheck: false, modelPending: [], index: 'disabled' };
   const core = http.createServer(async (req, res) => {
     const path = new URL(req.url, 'http://localhost').pathname;
-    let raw = ''; for await (const chunk of req) raw += chunk;
+    const raw = await readRequestText(req);
     const json = (data, status = 200) => {
       if (res.destroyed) return;
       res.writeHead(status, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(data));
@@ -150,6 +150,40 @@ const pageReady = page => page.getByRole('button', { name: '保存设置', exact
 const setting = (page, path) => page.locator(`[name="${path}"]`);
 const operation = (page, label) => page.getByRole('combobox', { name: `${label}操作`, exact: true });
 const secret = (page, label) => page.getByLabel(`${label}新值`, { exact: true });
+
+test('lazy page modules isolate navigation during loading and recover from a failed download', { timeout: 60_000 }, async t => {
+  const { page, state, url, errors } = await fixture(t);
+  const modules = [];
+  page.on('request', request => {
+    if (/\/(?:settings|insights|map)\.js$/.test(request.url())) modules.push(request.url());
+  });
+  await page.goto(url); await login(page);
+  await page.locator('#empty').waitFor({ state: 'visible' });
+  assert.deepEqual(modules, []);
+  let release, requested;
+  const held = new Promise(resolve => { release = resolve; });
+  const loading = new Promise(resolve => { requested = resolve; });
+  await page.route('**/settings.js', async route => { requested(); await held; await route.continue(); });
+  await page.locator('a[data-route][href="/settings"]').click(); await loading;
+  await page.locator('nav a[href="/"]').click();
+  const delivered = page.waitForResponse('**/settings.js');
+  release(); await (await delivered).finished();
+  await page.evaluate(() => new Promise(requestAnimationFrame));
+  assert.equal(await page.locator('#settings-page').count(), 0);
+  assert.equal(state.gets, 0);
+  await page.unroute('**/settings.js');
+  await page.locator('a[data-route][href="/settings"]').click(); await pageReady(page);
+  assert.equal(state.gets, 1);
+  await page.locator('nav a[href="/"]').click();
+  let attempts = 0;
+  await page.route('**/map.js', route => ++attempts === 1 ? route.abort() : route.continue());
+  await page.locator('nav a[href="/map"]').click();
+  await page.locator('#list-error').waitFor({ state: 'visible' });
+  await page.locator('#list-retry').click();
+  await page.locator('#map-field').waitFor();
+  assert.equal(attempts, 2);
+  assert.deepEqual(errors, []);
+});
 
 test('settings browser saves public fields, explicit secrets, prompt and multi-slot times with session CSRF', { timeout: 60_000 }, async t => {
   const { page, state, url, errors } = await fixture(t);

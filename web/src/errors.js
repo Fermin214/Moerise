@@ -30,6 +30,14 @@ const messages = {
   SESSION_RESPONSE_INVALID: '服务返回的会话信息不完整，请重试登录。',
   NOTE_LIST_INVALID: '服务返回的笔记列表格式无效，请刷新重试。',
   NOTE_SAVE_UNCONFIRMED: '保存结果尚未确认。',
+  EMBEDDING_DISABLED: '请在设置中启用 Embedding，或选择关键词搜索。',
+  INDEX_NOT_READY: '语义索引尚未就绪，请稍后重试或选择关键词搜索。',
+  EMBEDDING_UNAVAILABLE: 'Embedding 服务暂不可用，请稍后重试或选择关键词搜索。',
+  EMBEDDING_AUTH: 'Embedding 身份校验失败，请检查模型设置。',
+  EMBEDDING_PROTOCOL: 'Embedding 返回格式无效，请检查模型设置。',
+  EMBEDDING_RATE_LIMITED: 'Embedding 请求过于频繁，请稍后重试。',
+  SEARCH_RESOURCE_LIMIT: '搜索超出资源预算，请缩小范围后重试。',
+  SEARCH_SOURCE_CHANGED: '搜索来源已变化，请刷新搜索结果。',
 };
 
 export function errorText(err) {

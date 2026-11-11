@@ -333,19 +333,14 @@ func TestClientChatMemosAcceptance(t *testing.T) {
 	if rejected["error"].(map[string]any)["code"] != "CHAT_MATERIAL_LIMIT" {
 		t.Fatal("oversize materials did not fail explicitly")
 	}
-	updateSettings(map[string]any{"llm": map[string]any{"context_bytes": 1024}})
-	rejected = c.call("POST", base+"/messages", moerise.ChatGenerate{
-		RequestID: "context-over", Version: chat.Version, Kind: "question", Content: strings.Repeat("长", 2000),
-	}, 422)
-	if rejected["error"].(map[string]any)["code"] != "CHAT_CONTEXT_LIMIT" || model.calls() != calls {
-		t.Fatal("context overflow was shortened or reached the model")
+	if model.calls() != calls {
+		t.Fatal("oversize materials reached the model")
 	}
 	if after := acceptanceChat(t, c.call("GET", base, nil, 200)); !reflect.DeepEqual(before, after) {
 		t.Fatal("budget failures deleted or changed persistent messages")
 	}
-	updateSettings(map[string]any{"llm": map[string]any{"context_bytes": 128000},
-		"insights": map[string]any{"default_prompt": "新的讨论视角"}})
-	t.Log("PASS material and context overflow fail before the model without truncation or history removal")
+	updateSettings(map[string]any{"insights": map[string]any{"default_prompt": "新的讨论视角"}})
+	t.Log("PASS material overflow fails before the model without truncation or history removal")
 
 	content[names[0]] = "来源已明确更新。 #材料 #共同"
 	h.call(h.memos, "/api/v1/"+names[0]+"?updateMask=content", "PATCH", h.upstream,
@@ -541,4 +536,54 @@ func TestClientChatMemosAcceptance(t *testing.T) {
 		}
 	}
 	t.Log("PASS active deletion clears chat product state and keeps the original saved Memos note")
+}
+
+func TestClientChatMaterialCharacterLimitMemosAcceptance(t *testing.T) {
+	model := &chatAcceptanceModel{key: randomToken(), release: make(chan struct{}, 1)}
+	server := httptest.NewServer(model)
+	t.Cleanup(server.Close)
+	h := newHarness(t)
+	address, modelName := server.URL+"/v1", "chat-acceptance"
+	h.settings.LLM.Enabled, h.settings.LLM.BaseURL = true, &address
+	h.settings.LLM.APIKey, h.settings.LLM.Model = &model.key, &modelName
+	h.settings.LLM.ContextBytes, h.settings.LLM.MaxRetries = 1024, 0
+	c := managedClient(t, h)
+	exactNames, exactContents := []string{}, []string{}
+	for i := range 10 {
+		c.key = fmt.Sprintf("chat-exact-material-%d", i)
+		text := strings.Repeat("字", 2000)
+		if i == 9 {
+			text = strings.Repeat("😀", 2000)
+		}
+		exactNote := c.call("POST", "/api/app/v1/notes", map[string]any{"content": text}, 201)
+		exactNames = append(exactNames, exactNote["name"].(string))
+		exactContents = append(exactContents, text)
+	}
+	exact := acceptanceChat(t, c.call("POST", "/api/app/v1/chats", map[string]any{
+		"request_id": "chat-exact", "title": "字符边界", "names": exactNames,
+	}, 201))
+	firstExact := completeAcceptanceChat(t, c, exact.ID, moerise.ChatGenerate{
+		RequestID: "exact-first", Version: exact.Version, Kind: "insight",
+	})
+	longQuestion := strings.Repeat("问", 20001)
+	completeAcceptanceChat(t, c, exact.ID, moerise.ChatGenerate{
+		RequestID: "exact-follow", Version: exact.Version, Kind: "question", Content: longQuestion,
+	})
+	sent := model.messages(1)
+	if len(sent) != 5 || sent[2].Content != firstExact.User.Content ||
+		sent[3].Content != firstExact.Assistant.Content || sent[4].Content != longQuestion || model.calls() != 2 {
+		t.Fatal("exact material boundary or full follow-up was rejected or truncated")
+	}
+	var exactMaterials []struct{ Content string }
+	if err := json.Unmarshal([]byte(strings.TrimPrefix(sent[1].Content, "本轮明确选定的全部笔记材料：\n")), &exactMaterials); err != nil ||
+		len(exactMaterials) != len(exactContents) {
+		t.Fatal("complete Unicode materials did not reach the model")
+	}
+	for i, material := range exactMaterials {
+		if material.Content != exactContents[i] {
+			t.Fatal("Unicode materials were shortened or reordered")
+		}
+	}
+
+	t.Log("PASS exactly 20000 Unicode material characters and complete follow-up pass independently of legacy byte budgets")
 }

@@ -12,7 +12,6 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
-	"time"
 )
 
 var feishuIDPattern = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,128}$`)
@@ -62,10 +61,8 @@ type FeishuService struct {
 	Records       *RecordService
 	Reviews       *ReviewService
 	Search        *SearchService
-	AI            *AIService
 	Client        FeishuPlatform
 	Notifications *NotificationService
-	wake          chan struct{}
 }
 
 func NewFeishuService(store *Store, source Source, records *RecordService, reviews *ReviewService, notifications *NotificationService) *FeishuService {
@@ -78,14 +75,7 @@ func newFeishuService(config ChannelConfig, store *Store, source Source, records
 	}
 	return &FeishuService{Store: store, Source: source, Records: records, Reviews: reviews,
 		Client:        NewFeishuClient(config),
-		Notifications: notifications, wake: make(chan struct{}, 1)}
-}
-
-func (s *FeishuService) Wake() {
-	select {
-	case s.wake <- struct{}{}:
-	default:
-	}
+		Notifications: notifications}
 }
 
 func (s *FeishuService) Receive(request *http.Request) (any, int, error) {
@@ -150,34 +140,7 @@ func (s *FeishuService) Receive(request *http.Request) (any, int, error) {
 	if err != nil {
 		return nil, 0, err
 	}
-	s.Wake()
 	return map[string]int{"code": 0}, 200, nil
-}
-
-func (s *FeishuService) Run(ctx context.Context) error {
-	if err := s.prepare(); err != nil {
-		return err
-	}
-	ticker := time.NewTicker(500 * time.Millisecond)
-	defer ticker.Stop()
-	for {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		progress, err := s.processOne(ctx)
-		if err != nil {
-			return err
-		}
-		if progress {
-			continue
-		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-ticker.C:
-		case <-s.wake:
-		}
-	}
 }
 
 func (s *FeishuService) prepare() error {

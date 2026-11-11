@@ -10,7 +10,7 @@
 
 工程依据：[产品与架构](PRODUCT-ARCHITECTURE.md)、[API v1](API-V1.md)。
 
-产品规则以 PRD 为准。登录表单沿用 Memos；登录后的可见文案、元素、布局与样式严格遵循 Moerise-Web 原型。原型文件为 `.local/web-integration/2026-10-28/prototype/Moerise-Web/Main.dc.html`；页面映射与演示逻辑替换见第 10 节。
+产品规则以 PRD 为准。登录表单复用 Memos 认证，品牌为 Moerise，暂不显示图标；登录后的可见文案、元素、布局与样式严格遵循 Moerise-Web 原型。侧栏沿用已有搜索区域增加关键词／语义／混合选择。原型文件为 `.local/web-integration/2026-10-28/prototype/Moerise-Web/Main.dc.html`；页面映射与演示逻辑替换见第 10 节。
 
 协议实现与集成测试见 `internal/memos_auth.go`、`internal/sessions.go`、`internal/notes_live.go` 和 `tests/client_acceptance_test.go`。
 
@@ -391,7 +391,7 @@ DELETE /api/app/v1/session
 | 标签 | Memos 原文标签与聚合；需要时增加标签聚合接口 | 显示真实正文，不拆散重拼；精确筛选及日期/状态组合，不自动改写历史 |
 | 附件添加和移除 | 附件服务；官方创建、关联及删除 API | 纯附件合法；上传大小、关联失败、孤立附件清理随实现确定 |
 | 附件查看和下载 | `GET/HEAD /api/app/v1/notes/{memo_id}/attachments/{attachment_id}/content` | 身份、父笔记关联、MIME、Range、下载文件名 |
-| 基础搜索 | 默认 keyword，复用 SearchService；语义/混合显式选择 | 日期/标签/状态与关键词共同生效；需补有界分页和索引状态，不能只筛已加载页 |
+| 搜索 | 默认 keyword 直接读官方来源；语义/混合显式复用 SearchService | 日期/原生标签/状态共同生效；关键词创建时间倒序，增强相关度分页并显式报告语义降级 |
 
 3.2 同时完成 PRD 的跨页搜索/日期/标签跳转、可移除筛选条件、归档独立入口、卡片内编辑及快捷键、独立详情路由和来源返回、删除确认。详情地址必须可直接访问和刷新，未登录先登录再回原目标；返回信息只接受站内受限路径。恢复来源页时保留其筛选和浏览位置，不把这些页面状态放入共享笔记 DTO。
 
@@ -402,6 +402,8 @@ DELETE /api/app/v1/session
 编辑和删除提交读取时的 `source_hash`，共享服务写入前复查来源，版本变化返回 `SOURCE_CHANGED`，由客户端刷新后重新编辑。Memos 0.31 的更新协议没有原子条件更新；来源复查与写入之间发生的外部写入仍按最后一次写入生效，单进程锁不能消除来自 Memos 界面的竞争。
 
 客户端列表使用 `GET /api/app/v1/notes`，`query` 为基础关键词，重复 `tag` 参数按精确 AND 组合，`date=YYYY-MM-DD` 按产品时区限定创建日期；`state` 选择正常或归档，排序固定为 `created_desc`。全部条件在服务端分页前应用，并绑定到签名游标。`GET /tags?state=...` 返回全范围标签及数量，`GET /calendar?state=...&month=YYYY-MM` 返回该月每日创建数量；两者均以官方来源为准。
+
+增强搜索使用 `POST /api/app/v1/search`，沿用本人 Cookie、Origin 和 CSRF；共享检索服务在同样的过滤条件下召回并按相关度返回完整 Note 页。签名游标保存资源排序与版本摘要，绑定筛选和索引，有效期十分钟，不保存正文、不重复调用查询模型；每页实时复查原文。模式、筛选及详情返回写入受限站内 URL，语义失败与混合降级分别反馈。完整协议见 [API v1](API-V1.md)。
 
 创建与编辑中的新增附件使用 `{filename,type,content}`，`content` 为 Base64 原始字节；单次最多十个，原始总大小不超过 8 MiB。编辑使用 `PATCH /notes/{id}`，允许 `content`、`state`、新增 `attachments` 与 `remove_attachments`，携带 `source_hash` 和稳定 `Idempotency-Key`。删除使用 `DELETE /notes/{id}` 并提交 `source_hash`。客户端附件 DTO 只提供资源名、文件名、类型、大小及 Core 同源读取路径。
 
@@ -475,7 +477,7 @@ LLM 变更只替换 LLM Provider；Embedding 变更涉及向量空间、新代�
 | --- | --- | --- | --- | --- |
 | 登录、底部用户菜单、退出 | 新增 Sessions，复用来源绑定检查 | `POST/GET/DELETE /session`、`GET /capabilities` | Memos 官方认证；state 会话 | 3.1 |
 | 主时间线与顶部创建 | Notes.LiveList；Records 幂等和投影可复用 | `GET/POST /notes`，默认 `NORMAL + created_desc` | Memos；state 创建幂等 | 3.1，完整交互 3.2 |
-| 侧栏关键词、日期、标签与条件清除 | 受限过滤、标签聚合、日历计数；不能只筛已加载笔记 | `POST /search` 默认 keyword；`GET /notes`、`/tags`、`/calendar` | Memos 原文/时间/标签；搜索索引 | 3.2 |
+| 侧栏查询、搜索方式、日期、标签与条件清除 | 受限过滤、标签聚合、日历计数；不能只筛已加载笔记 | 默认关键词 `GET /notes`；增强 `POST /search`；`/tags`、`/calendar` | Memos 原文/时间/标签；搜索索引 | 3.2 |
 | 归档独立入口 | 正常/归档范围与归档操作，原型需补 | `GET /notes?state=ARCHIVED`、受限 `PATCH /notes/{id}` | Memos 官方状态 | 3.2 |
 | 卡片内编辑、Ctrl+Enter、Esc | Notes.Update、来源版本与冲突反馈 | `PATCH /notes/{id}` | Memos；同步更新投影 | 3.2 |
 | 独立详情、跨入口返回、删除确认 | Notes.Get/Delete；路由和来源返回由客户端持有 | `GET/DELETE /notes/{id}` | Memos；站内来源路由 | 3.1 读取，3.2 完整操作 |
@@ -535,11 +537,11 @@ LLM 变更只替换 LLM Provider；Embedding 变更涉及向量空间、新代�
 
 旧批次升级时保留其资源名、历史、原通知引用和恢复状态，不重新抽取或重写已入队任务；旧日结果以兼容视图读取，新生成计划采用新分配结构。取消换组入口不删除历史 batch_id 的读取能力，也不删除恢复所需旧表。
 
-**漫步路径：** 语义召回完整收集正余弦候选，按笔记合并多个片段后随机选择，失效来源剔除后继续。同标签与近期阅读不改变权重。路径由客户端逐次传回，不设固定条数上限；客户端 HTTP 请求体限 1 MiB，来源复查和候选计算沿用上下文期限，超限返回可重试的 `WALK_RESOURCE_LIMIT`，不能假报候选耗尽。
+**漫步路径：** Web 起点和后续候选均排除归档笔记。语义召回完整收集正余弦候选，按笔记合并多个片段后随机选择，失效来源剔除后继续。同标签与近期阅读不改变权重。路径由客户端逐次传回，不设固定条数上限；客户端 HTTP 请求体限 1 MiB，来源复查和候选计算沿用上下文期限，超限返回可重试的 `WALK_RESOURCE_LIMIT`，不能假报候选耗尽。
 
 外部机器漫步保持无持久副作用的读取形态。原生客户端若使用 state 保存长路径，不能向外部机器令牌开放这类路径创建、更新或阅读状态写入。
 
-**聊天：** 保存材料引用和每次使用的版本摘要，不另建 Memos 原文权威库。每次生成以明确选中的全部笔记为输入，归档不排除；来源已失效或总字符数超限时反馈并要求调整，不能静默删选材、截断或补入历史。来源核验由共享 Notes 完成，具体批量和校验策略兼顾身份/内容正确性与响应速度。
+**聊天：** 保存材料引用和每次使用的版本摘要，不另建 Memos 原文权威库。每次生成以明确选中的全部笔记为输入，归档不排除；选中笔记正文合计最多 20,000 个 Unicode 码点，Prompt、问题和后续对话不计入，不另设总输入字节数或消息条数限制。来源已失效或材料超限时反馈并要求调整，不能静默删选材、截断或补入其他笔记。附件仅提供元数据，暂不分析图片或文件实际内容。来源核验由共享 Notes 完成，具体批量和校验策略兼顾身份/内容正确性与响应速度。
 
 用户消息、助手消息及会话状态持久保存；流式增量可有界批量落盘，完成事件在最终消息持久化后发出。中断、取消、失败与完成分开保存，Core 重启不把中断当成功或自动重跑模型。保留已保存消息供恢复，历史很长时的模型上下文预算与重试协议随 3.7 实现，不删除产品会话来满足模型窗口。会话删除清理其消息、材料和必要关联；来源失效不自动抹除已有聊天历史，也不把历史回复当成仍然有效的来源正文。
 
@@ -628,7 +630,7 @@ LLM 变更只替换 LLM Provider；Embedding 变更涉及向量空间、新代�
 | 设置字段与应用失败 | 部署只初始化日常字段，持久值主导；定义连接暂时失败、应用排空和时区日界过渡 | 3.3 |
 | 首启与默认部署入口 | 官方首建账户和受控绑定的可执行命令，固定代理、TLS 及数据卷编排 | 3.4 |
 | 回顾与漫步实现 | 数量不足按时段先后填充；语义候选按笔记等概率选择；客户端传递完整路径，HTTP 体积及期限独立反馈 | 3.6 |
-| 聊天协议与预算 | 字符阈值、历史上下文预算、流断开后的消息恢复/取消/重试与材料版本处理；不删选材或取消持久会话 | 3.7 |
+| 聊天协议与选材限制 | 所选笔记正文字符阈值、完整对话保留、流断开后的消息恢复/取消/重试与材料版本处理；不删选材或取消持久会话 | 3.7 |
 | 地图算法与成本 | 一笔记一点，稳定布局版本；算法、增量更新阈值及实际规模 | 3.8 |
 | Android 身份传输 | 复用业务契约，增加设备凭据安全存放及传输适配，不分发后台 PAT | Android |
 
@@ -650,7 +652,7 @@ LLM 变更只替换 LLM Provider；Embedding 变更涉及向量空间、新代�
 - `main.go`、`internal/api.go`、`store.go`、`memos.go`、`mcp.go`：对象图、现有认证、读取、同步和生命周期。
 - `internal/records.go`、`attachments.go`、`models.go`：创建、附件和资源契约。
 - `internal/config.go`、`config_environment.go`、`maintenance.go`：启动配置、恢复和重建。
-- `internal/llm.go`、`ai_generation.go`、`search.go`、`feishu.go`、`notifications.go`、`vector_index.go`：后续复用与配置边界。
+- `internal/llm.go`、`ai_models.go`、`ai_evidence.go`、`search.go`、`feishu.go`、`notifications.go`、`vector_index.go`：通用模型、历史恢复、搜索与配置边界。
 - `tests/acceptance_test.go`、`docs/DEVELOPMENT.md`、`docs/OPERATIONS.md`、`compose.yaml`：真实 Memos 框架及部署基础。
 
 ### 上游依据

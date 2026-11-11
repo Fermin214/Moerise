@@ -13,6 +13,9 @@ import (
 const liveListRequestTimeout = 55 * time.Second
 
 func isLiveListRead(r *http.Request) bool {
+	if r.URL.Path == "/api/app/v1/search" {
+		return r.Method == http.MethodPost
+	}
 	if r.Method != http.MethodGet {
 		return false
 	}

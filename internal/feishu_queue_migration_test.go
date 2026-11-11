@@ -14,7 +14,7 @@ func feishuQueueMigrationKey() string {
 
 func feishuQueueMigrationFixture(t *testing.T) (*FeishuService, *feishuAIPlatform, *int) {
 	t.Helper()
-	service, platform, _, calls := feishuAIFixture(t, insightOutput)
+	service, platform, _, fixtures := feishuAIFixture(t, legacyInsightResult())
 	receiveFeishuAI(t, service, "洞察 memos/seed")
 	processLegacyFeishuAI(t, service)
 	platform.mode = "unknown"
@@ -47,7 +47,7 @@ func feishuQueueMigrationFixture(t *testing.T) (*FeishuService, *feishuAIPlatfor
 			t.Fatal(err)
 		}
 	}
-	return service, platform, calls
+	return service, platform, fixtures
 }
 
 func feishuQueueSnapshot(t *testing.T, store *Store, ciphertext bool) []byte {
@@ -91,7 +91,7 @@ func feishuQueueSnapshot(t *testing.T, store *Store, ciphertext bool) []byte {
 }
 
 func TestFeishuQueueMigrationRotation(t *testing.T) {
-	service, platform, calls := feishuQueueMigrationFixture(t)
+	service, platform, fixtures := feishuQueueMigrationFixture(t)
 	store := service.Store
 	metadata := feishuQueueSnapshot(t, store, false)
 	store.Settings.Web.StateEncryptionKey = feishuQueueMigrationKey()
@@ -161,8 +161,8 @@ func TestFeishuQueueMigrationRotation(t *testing.T) {
 		t.Fatal(err)
 	}
 	deliverFeishuAI(t, service)
-	if *calls != 1 || platform.calls != 3 {
-		t.Fatalf("rotation repeated generation or lost reply: model=%d reply=%d", *calls, platform.calls)
+	if *fixtures != 1 || platform.calls != 3 {
+		t.Fatalf("rotation repeated generation or lost reply: model=%d reply=%d", *fixtures, platform.calls)
 	}
 }
 

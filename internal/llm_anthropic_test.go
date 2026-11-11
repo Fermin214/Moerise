@@ -516,8 +516,6 @@ func TestAnthropicLLMArgumentsAndRedirect(t *testing.T) {
 		{"tool role", []LLMMessage{{Role: "tool", Content: "tool result"}}, "INVALID_ARGUMENT"},
 		{"blank", []LLMMessage{{Role: "user", Content: " "}}, "INVALID_ARGUMENT"},
 		{"UTF8", []LLMMessage{{Role: "user", Content: string([]byte{0xff})}}, "INVALID_ARGUMENT"},
-		{"too many", make([]LLMMessage, 257), "INVALID_ARGUMENT"},
-		{"context", []LLMMessage{{Role: "system", Content: strings.Repeat("x", 2048)}, {Role: "user", Content: strings.Repeat("\u754c", 1024)}}, "LLM_CONTEXT_LIMIT"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			_, err := provider.Generate(context.Background(), test.messages, nil)

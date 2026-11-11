@@ -4,19 +4,42 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"sync/atomic"
 	"time"
 )
 
 const mapRequestTimeout = 55 * time.Second
+const mapSnapshotInterval = 24 * time.Hour
 
-type MapService struct {
-	Store *Store
-	Notes *NoteService
-	gate  chan struct{}
+type mapCache struct {
+	key      string
+	response MapResponse
 }
 
-func NewMapService(store *Store, notes *NoteService) *MapService {
-	return &MapService{Store: store, Notes: notes, gate: make(chan struct{}, 1)}
+type mapSchedule struct {
+	key  string
+	next time.Time
+}
+
+type MapService struct {
+	Store    *Store
+	gate     chan struct{}
+	cache    atomic.Pointer[mapCache]
+	schedule atomic.Pointer[mapSchedule]
+}
+
+func NewMapService(store *Store) *MapService {
+	return &MapService{Store: store, gate: make(chan struct{}, 1)}
+}
+
+func (s *MapService) Reset() {
+	s.cache.Store(nil)
+	s.schedule.Store(nil)
+}
+
+func (s *MapService) cacheKey() string {
+	return hashBytes(canonicalJSON([]string{s.Store.Settings.Memos.InstanceID,
+		s.Store.Settings.Memos.User, embeddingSpace(s.Store.Settings.Embedding)}))
 }
 
 func mapRequestError(ctx context.Context, err error) error {
@@ -26,6 +49,20 @@ func mapRequestError(ctx context.Context, err error) error {
 	return err
 }
 
+func (s *MapService) response(layout *mapLayout, space string) MapResponse {
+	result := MapResponse{Status: "ready", Algorithm: mapAlgorithm, LayoutVersion: layout.version,
+		LayoutFrame: hashBytes(canonicalJSON([]any{s.Store.Settings.Memos.InstanceID,
+			s.Store.Settings.Memos.User, mapAlgorithm, space, layout.basis})),
+		VectorGeneration: layout.generation, ProjectionRevision: layout.revision,
+		GeneratedAt: layout.generatedAt.Format(time.RFC3339Nano), Points: layout.points}
+	if len(layout.points) == 0 {
+		result.Status = "empty"
+	}
+	return result
+}
+
+// Read serves published trend data. The client API authenticates the session;
+// individual notes and attachments still use the live official source APIs.
 func (s *MapService) Read(ctx context.Context) (_ MapResponse, result error) {
 	ctx, cancel := context.WithTimeout(ctx, mapRequestTimeout)
 	defer cancel()
@@ -37,133 +74,101 @@ func (s *MapService) Read(ctx context.Context) (_ MapResponse, result error) {
 	if !s.Store.Settings.Embedding.Enabled {
 		return response, nil
 	}
-	select {
-	case s.gate <- struct{}{}:
-		defer func() { <-s.gate }()
-	case <-ctx.Done():
-		return MapResponse{}, ctx.Err()
+	key := s.cacheKey()
+	cached := s.cache.Load()
+	if cached != nil && cached.key == key {
+		return cached.response, ctx.Err()
 	}
-	if err := s.Notes.Verify(ctx); err != nil {
+	space := embeddingSpace(s.Store.Settings.Embedding)
+	layout, err := s.Store.loadMapLayout(ctx, mapSnapshot{space: space, dimensions: s.Store.Settings.Embedding.Dimensions})
+	if err != nil {
 		return MapResponse{}, err
+	}
+	if layout != nil && !layout.generatedAt.IsZero() {
+		response = s.response(layout, space)
+		// A cold read must not overwrite a snapshot published concurrently.
+		s.cache.CompareAndSwap(cached, &mapCache{key: key, response: response})
+		return response, ctx.Err()
 	}
 	status, err := s.Store.VectorStatusContext(ctx)
 	if err != nil {
 		return MapResponse{}, err
 	}
-	response.ProjectionRevision = status.ProjectionRevision
-	if !status.Ready {
-		response.Status = "waiting"
-		if building := status.Building; building != nil && building.SpaceHash == embeddingSpace(s.Store.Settings.Embedding) {
-			response.Status = "building"
-			if building.LastError != nil {
-				response.Status = "unavailable"
-			}
+	response.Status, response.ProjectionRevision = "waiting", status.ProjectionRevision
+	if status.Ready {
+		response.Status = "building"
+	} else if building := status.Building; building != nil && building.SpaceHash == space {
+		response.Status = "building"
+		if building.LastError != nil {
+			response.Status = "unavailable"
 		}
-		return response, ctx.Err()
 	}
-	snapshot, err := s.Store.mapSnapshot(ctx)
-	if errors.Is(err, sql.ErrNoRows) {
-		return MapResponse{}, mapIndexChanged()
-	}
-	if err != nil {
-		return MapResponse{}, err
-	}
-	previous, err := s.Store.loadMapLayout(ctx, snapshot)
-	if err != nil {
-		return MapResponse{}, err
-	}
-	layout, err := buildMapLayout(ctx, snapshot, previous)
-	if err != nil {
-		return MapResponse{}, err
-	}
-	if err := s.verifyPoints(ctx, layout.points); err != nil {
-		return MapResponse{}, err
-	}
-	if err := s.Notes.Verify(ctx); err != nil {
-		return MapResponse{}, err
-	}
-	if err := s.Store.publishMapLayout(ctx, snapshot, layout); err != nil {
-		return MapResponse{}, err
-	}
-	response.Status, response.LayoutVersion = "ready", layout.version
-	response.LayoutFrame = hashBytes(canonicalJSON([]any{s.Store.Settings.Memos.InstanceID,
-		s.Store.Settings.Memos.User, mapAlgorithm, snapshot.space, layout.basis}))
-	if len(layout.points) == 0 {
-		response.Status = "empty"
-	}
-	response.VectorGeneration, response.ProjectionRevision = snapshot.generation, snapshot.revision
-	response.Points = layout.points
 	return response, ctx.Err()
 }
 
-// Full official pagination verifies originals without spending one upstream request per map point.
-func (s *MapService) verifyPoints(ctx context.Context, points []MapPoint) error {
-	positions, seen := map[string]int{}, map[string]bool{}
-	for i, point := range points {
-		positions[point.Name] = i
+// Update runs with the vector worker while indexing is idle. Ordinary changes
+// are combined into a daily snapshot; unchanged generations need no vector scan.
+func (s *MapService) Update(ctx context.Context) error {
+	return s.update(ctx, time.Now().UTC())
+}
+
+func (s *MapService) update(ctx context.Context, now time.Time) error {
+	select {
+	case s.gate <- struct{}{}:
+		defer func() { <-s.gate }()
+	case <-ctx.Done():
+		return ctx.Err()
 	}
-	var changed *Memo
-	for _, state := range []string{"NORMAL", "ARCHIVED"} {
-		token, visited := "", map[string]bool{}
-		for page := 0; ; page++ {
-			if err := ctx.Err(); err != nil {
-				return err
-			}
-			if page >= s.Store.Settings.Memos.MaxPages {
-				return upstreamError("PAGINATION_LIMIT", "Memos pagination exceeded the configured limit")
-			}
-			memos, next, err := s.Notes.Source.ListPage(ctx, state, nil, token)
-			if err != nil {
-				if cause := context.Cause(ctx); cause != nil {
-					return cause
-				}
-				if healthErr := s.Store.SourceHealthContext(ctx, false, errorCode(err), ""); healthErr != nil {
-					return healthErr
-				}
-				return err
-			}
-			for _, memo := range memos {
-				if memo.Creator != s.Store.Settings.Memos.User {
-					continue
-				}
-				if seen[memo.Name] {
-					return upstreamError("PAGINATION_LOOP", "Memos repeated a source resource")
-				}
-				seen[memo.Name] = true
-				position, exists := positions[memo.Name]
-				if !exists || points[position].SourceHash != memo.SourceHash {
-					if changed == nil {
-						changed = &memo
-					}
-				} else {
-					points[position].Tags = append([]string{}, memo.Tags...)
-				}
-			}
-			if next == "" {
-				break
-			}
-			if visited[next] {
-				return upstreamError("PAGINATION_LOOP", "Memos repeated a pagination token")
-			}
-			visited[next], token = true, next
+	if !s.Store.Settings.Embedding.Enabled {
+		return nil
+	}
+	key := s.cacheKey()
+	if schedule := s.schedule.Load(); schedule != nil && schedule.key == key && now.Before(schedule.next) {
+		return ctx.Err()
+	}
+	// Bound retries without making page requests responsible for background work.
+	s.schedule.Store(&mapSchedule{key, now.Add(5 * time.Second)})
+	unlock, err := s.Store.lockBackground(ctx)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	space := embeddingSpace(s.Store.Settings.Embedding)
+	previous, err := s.Store.loadMapLayout(ctx, mapSnapshot{space: space, dimensions: s.Store.Settings.Embedding.Dimensions})
+	if err != nil {
+		return err
+	}
+	if previous != nil && !previous.generatedAt.IsZero() {
+		s.cache.Store(&mapCache{key, s.response(previous, space)})
+		if due := previous.generatedAt.Add(mapSnapshotInterval); now.Before(due) {
+			s.schedule.Store(&mapSchedule{key, due})
+			return ctx.Err()
 		}
 	}
-	name := ""
-	if changed != nil {
-		name = changed.Name
-	} else {
-		for _, point := range points {
-			if !seen[point.Name] {
-				name = point.Name
-				break
-			}
-		}
+	status, err := s.Store.VectorStatusContext(ctx)
+	if err != nil || !status.Ready {
+		return err
 	}
-	if name != "" {
-		if err := s.Store.RefreshContext(ctx, name, changed); err != nil {
-			return err
-		}
-		return failure("MAP_SOURCE_CHANGED", "Map sources changed; retry after indexing completes", 409, true)
+	if previous != nil && !previous.generatedAt.IsZero() && previous.generation == status.Active.ID && previous.revision == status.ProjectionRevision {
+		s.schedule.Store(&mapSchedule{key, now.Add(mapSnapshotInterval)})
+		return ctx.Err()
 	}
+	snapshot, err := s.Store.mapSnapshot(ctx)
+	if errors.Is(err, sql.ErrNoRows) {
+		return mapIndexChanged()
+	}
+	if err != nil {
+		return err
+	}
+	layout, err := buildMapLayout(ctx, snapshot, previous)
+	if err != nil {
+		return err
+	}
+	layout.generatedAt = now
+	if err := s.Store.publishMapLayout(ctx, snapshot, layout); err != nil {
+		return err
+	}
+	s.cache.Store(&mapCache{key, s.response(layout, space)})
+	s.schedule.Store(&mapSchedule{key, now.Add(mapSnapshotInterval)})
 	return ctx.Err()
 }

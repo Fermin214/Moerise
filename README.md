@@ -2,7 +2,7 @@
 
 Moerise 是基于 Memos 的开源自托管笔记产品，支持记录、阅读、回顾和思考。Moerise Core 提供笔记同步、文字与附件记录、每日回顾、飞书记录与定时推送，以及备份恢复。Memos 保存笔记原文与附件，并负责编辑和删除。
 
-服务提供 Web、只读 REST/MCP 和飞书入口。Web 支持 Memos 账户登录、时间线、关键词和标签日期筛选、完整笔记管理、附件、持久设置、每日回顾、随机语义漫步、自然聊天洞察及二维认知地图。后续开发安排见[路线图](docs/ROADMAP.md)。产品行为见[产品需求](docs/PRD.md)。
+服务提供 Web、只读 REST/MCP 和飞书入口。Web 支持 Memos 账户登录、时间线、关键词／语义／混合搜索及标签日期筛选、完整笔记管理、附件、持久设置、每日回顾、随机语义漫步、自然聊天洞察及每日快照认知地图。地图由后台预建，打开直接读取，点选笔记获取实时原文。后续开发安排见[路线图](docs/ROADMAP.md)。产品行为见[产品需求](docs/PRD.md)。
 
 Core 已提供中文混合检索、相关笔记与语义漫步接口，见[搜索](docs/SEARCH.md)。通用及百炼向量接入、索引构建见[向量模型](docs/EMBEDDING.md)，自然聊天、LLM 协议及历史生成任务恢复见 [AI](docs/AI.md)。
 
@@ -71,6 +71,8 @@ curl --fail http://localhost:3000/health/ready
 打开 `http://localhost:3000`，使用同一 Memos 账户登录。基础笔记操作无需模型或飞书配置；日常设置在 Web 保存后生效。Memos、产品状态、索引与备份使用独立数据卷。
 
 连接已有 Memos 时，将 `.env` 中 `COMPOSE_PROFILES` 留空，填写容器可达的 `MOERISE_MEMOS_BASE_URL`、浏览器可达的 `MOERISE_MEMOS_PUBLIC_URL` 及本人 PAT、资源名和独立密钥，再执行相同启动命令。详细首启、外部 Memos、HTTPS、旧配置迁移、备份与升级见[运行与恢复](docs/OPERATIONS.md#容器部署)。
+
+Core 自动按进程配额控制 Go 内存、来源读取批量和计算并发。随附 1 核 1 GiB、2 核 1–4 GiB、4 核 4–8 GiB 的资源配置文件，选择方法见[服务器资源](docs/OPERATIONS.md#服务器资源)。
 
 对外访问使用 HTTPS，并将 `MOERISE_PUBLIC_ORIGIN` 设置为浏览器访问的完整来源。Core 的 `/docs`、机器 REST/MCP 与飞书回调使用独立的 `8787` 回环端口，Web 只代理客户端 API。Web 独立构建见 [Web 指南](docs/WEB.md)，Linux 二进制运行见[运行与恢复](docs/OPERATIONS.md#二进制运行)，机器接口见 [API v1](docs/API-V1.md)。
 

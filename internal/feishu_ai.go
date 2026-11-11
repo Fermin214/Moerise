@@ -266,7 +266,7 @@ func (s *FeishuService) sendAIPart(ctx context.Context, item Notification) (stri
 			if s.Search == nil {
 				verifyErr = failure("SOURCE_UNAVAILABLE", "Evidence verification unavailable", 503, false)
 			} else {
-				verifyErr = NewEvidenceService(s.Search, 0).Verify(ctx, result.References)
+				verifyErr = NewEvidenceService(s.Search).Verify(ctx, result.References)
 			}
 		}
 		if ctx.Err() != nil {

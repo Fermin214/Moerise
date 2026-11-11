@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import { once } from 'node:events';
+import { text as readRequestText } from 'node:stream/consumers';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { mkdir, readFile, writeFile, rm, realpath, lstat } from 'node:fs/promises';
 import { resolve, dirname, basename } from 'node:path';
@@ -161,7 +162,7 @@ try {
     await wait('Core', async () => { try { await request(coreURL, '/health/ready'); return true; } catch { return false; } });
   });
   mock = http.createServer(async (req, res) => {
-    let raw = ''; for await (const chunk of req) raw += chunk;
+    const raw = await readRequestText(req);
     const body = JSON.parse(raw), json = value => { res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify(value)); };
     if (req.url === '/v1/chat/completions') {
       if (req.headers.authorization !== `Bearer ${llmKey}`) fixture.violations.push('LLM credential');

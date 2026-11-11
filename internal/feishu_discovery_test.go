@@ -29,10 +29,28 @@ func TestFeishuQueuedWalkUnavailableReplies(t *testing.T) {
 				finishIndex(t, index)
 			}
 			text, err := service.render(context.Background(), "walk", resource)
-			if err != nil || !strings.Contains(text, reason) || !strings.Contains(text, "随机跳转") ||
+			if err != nil || !strings.Contains(text, reason) || strings.Contains(text, "随机跳转") ||
 				strings.Contains(text, "seed") {
 				t.Fatalf("unavailable walk must reply without a result: %q %v", text, err)
 			}
 		})
+	}
+}
+
+func TestFeishuQueuedWalkDoesNotSuggestRetiredCommands(t *testing.T) {
+	search, _, _ := discoveryFixture(t)
+	service := &FeishuService{Store: search.Store, Search: search}
+	sealed, err := service.seal("walk:om_legacy", canonicalJSON(WalkRequest{Name: "memos/a", Path: []string{"memos/a"}}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text, err := service.render(context.Background(), "walk", "om_legacy."+base64.RawURLEncoding.EncodeToString(sealed))
+	if err != nil || !strings.Contains(text, "笔记漫步") {
+		t.Fatalf("legacy walk recovery: %q %v", text, err)
+	}
+	for _, hint := range []string{"随机跳转", "命令", "回复", "查看 memos/", "记录阅读"} {
+		if strings.Contains(text, hint) {
+			t.Fatalf("legacy walk suggests a retired command: %q", text)
+		}
 	}
 }

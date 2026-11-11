@@ -215,11 +215,13 @@ func (m *MemosClient) ListFilteredLivePage(ctx context.Context, state string, si
 	return items, next, nil
 }
 
-func (m *MemosClient) scanLivePage(ctx context.Context, state string, size int, cursor memosLiveCursor, limits memosLiveLimits) ([]Memo, int, error) {
-	return m.scanFilteredLivePage(ctx, state, size, cursor, limits, LiveFilter{})
+func (m *MemosClient) scanFilteredLivePage(ctx context.Context, state string, size int, cursor memosLiveCursor, limits memosLiveLimits, options LiveFilter) ([]Memo, int, error) {
+	// 普通首屏只读取短页；跨页的同时间组改用完整批量重新收集。
+	batch := min(m.config.PageSize, max(100, size+1))
+	return m.scanLiveBatch(ctx, state, size, cursor, limits, options, batch, m.config.MaxPages)
 }
 
-func (m *MemosClient) scanFilteredLivePage(ctx context.Context, state string, size int, cursor memosLiveCursor, limits memosLiveLimits, options LiveFilter) ([]Memo, int, error) {
+func (m *MemosClient) scanLiveBatch(ctx context.Context, state string, size int, cursor memosLiveCursor, limits memosLiveLimits, options LiveFilter, batch, maxPages int) ([]Memo, int, error) {
 	filter := "creator == '" + m.config.User + "'" + options.cel()
 	if cursor.Created != "" {
 		created, _ := time.Parse(time.RFC3339Nano, cursor.Created)
@@ -227,7 +229,7 @@ func (m *MemosClient) scanFilteredLivePage(ctx context.Context, state string, si
 	}
 	query := url.Values{
 		"state": {state}, "filter": {filter}, "orderBy": {"create_time desc"},
-		"pageSize": {strconv.Itoa(m.config.PageSize)},
+		"pageSize": {strconv.Itoa(batch)},
 	}
 	result := []Memo{}
 	seenNames := map[string]bool{}
@@ -250,7 +252,7 @@ func (m *MemosClient) scanFilteredLivePage(ctx context.Context, state string, si
 		return nil
 	}
 	previousTime, cutoff := "", ""
-	for page := 1; page <= m.config.MaxPages; page++ {
+	for page := 1; page <= maxPages; page++ {
 		var response struct {
 			Memos         []map[string]any `json:"memos"`
 			NextPageToken string           `json:"nextPageToken"`
@@ -299,6 +301,13 @@ func (m *MemosClient) scanFilteredLivePage(ctx context.Context, state string, si
 		if response.NextPageToken == "" {
 			return finishLivePage(result, size), page, nil
 		}
+		if batch < m.config.PageSize {
+			if maxPages == 1 {
+				break
+			}
+			items, pages, err := m.scanLiveBatch(ctx, state, size, cursor, limits, options, m.config.PageSize, maxPages-1)
+			return items, pages + 1, err
+		}
 		if seenTokens[response.NextPageToken] {
 			return nil, page, upstreamError("UPSTREAM_PROTOCOL", "Memos repeated a live list page token")
 		}
@@ -309,7 +318,7 @@ func (m *MemosClient) scanFilteredLivePage(ctx context.Context, state string, si
 		seenTokens[response.NextPageToken] = true
 		query.Set("pageToken", response.NextPageToken)
 	}
-	return nil, m.config.MaxPages, upstreamError("UPSTREAM_PAGINATION_LIMIT", "Memos live list exceeded the page budget")
+	return nil, maxPages, upstreamError("UPSTREAM_PAGINATION_LIMIT", "Memos live list exceeded the page budget")
 }
 
 func finishLivePage(items []Memo, size int) []Memo {

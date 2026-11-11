@@ -6,10 +6,8 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"errors"
-	"log/slog"
 	"math"
 	"strings"
-	"time"
 )
 
 type VectorGeneration struct {
@@ -295,11 +293,11 @@ func (s *VectorIndexService) publish(id string) (bool, error) {
 
 // Step persists at most one model batch. A cancelled or failed batch leaves the old generation active.
 func (s *VectorIndexService) Step(ctx context.Context) (worked bool, err error) {
-	s.Store.vectorMu.Lock()
-	defer s.Store.vectorMu.Unlock()
-	if err := ctx.Err(); err != nil {
+	unlock, err := s.Store.lockBackground(ctx)
+	if err != nil {
 		return false, err
 	}
+	defer unlock()
 	if !s.Store.Settings.Embedding.Enabled {
 		return false, nil
 	}
@@ -359,31 +357,4 @@ func (s *VectorIndexService) Step(ctx context.Context) (worked bool, err error) 
 		return false, err
 	}
 	return true, s.save(id, batch, result)
-}
-
-func (s *VectorIndexService) Run(ctx context.Context) error {
-	delay := time.Duration(0)
-	for ctx.Err() == nil {
-		timer := time.NewTimer(delay)
-		select {
-		case <-ctx.Done():
-			timer.Stop()
-			return ctx.Err()
-		case <-timer.C:
-		}
-		worked, err := s.Step(ctx)
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-		switch {
-		case err != nil:
-			slog.Warn("vector indexing failed", "code", errorCode(err))
-			delay = time.Duration(s.Store.Settings.Sync.RetrySeconds) * time.Second
-		case worked:
-			delay = 0
-		default:
-			delay = time.Second
-		}
-	}
-	return ctx.Err()
 }

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import { once } from 'node:events';
+import { text as readRequestText } from 'node:stream/consumers';
 import { pathToFileURL } from 'node:url';
 import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -8,8 +9,7 @@ import { test } from 'node:test';
 import { createWebServer } from '../server.mjs';
 
 const runtime = process.env.MOERISE_PLAYWRIGHT_MODULE;
-if (!runtime) throw new Error('Set MOERISE_PLAYWRIGHT_MODULE to the installed playwright/index.mjs');
-const { chromium } = await import(pathToFileURL(runtime).href);
+const { chromium } = runtime ? await import(pathToFileURL(runtime).href) : await import('playwright');
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aP9sAAAAASUVORK5CYII=', 'base64');
 
 async function fixture(t) {
@@ -31,7 +31,7 @@ async function fixture(t) {
   };
   const core = http.createServer(async (req, res) => {
     const url = new URL(req.url, 'http://localhost'), path = url.pathname.replace('/api/app/v1', '');
-    let raw = ''; for await (const chunk of req) raw += chunk;
+    const raw = await readRequestText(req);
     const body = raw ? JSON.parse(raw) : undefined;
     state.requests.push({ path, method: req.method, body, headers: req.headers });
     res.on('close', () => { if (!res.writableEnded) state.aborts.push(path); });
@@ -285,6 +285,21 @@ test('detail and review can start at the selected note; mobile cards keep full t
   await page.getByRole('button', { name: '从这条漫步', exact: true }).click();
   await page.locator('.discovery-note[data-name="memos/n2"]:visible').waitFor();
   assert.deepEqual(requests(state, '/walks/start').at(-1).body, { name: 'memos/n2' });
+});
+
+test('archived notes keep the insights entry and have no walk entry in detail or review', { timeout: 60_000 }, async t => {
+  const { page, state, url } = await fixture(t);
+  state.notes[0].state = 'ARCHIVED';
+  await login(page, url, '/notes/n0');
+  const detail = page.locator('article.note[data-name="memos/n0"]');
+  await detail.waitFor();
+  assert.equal(await detail.getByRole('button', { name: '从这条漫步', exact: true }).count(), 0);
+  await detail.getByRole('button', { name: 'AI 洞察这条', exact: true }).waitFor();
+  await page.goto(url + '/review');
+  await page.getByRole('button', { name: '第 6 / 6 条', exact: true }).waitFor();
+  assert.equal(await page.getByRole('button', { name: '从这条漫步', exact: true }).count(), 0);
+  await page.getByRole('button', { name: 'AI 洞察这条', exact: true }).waitFor();
+  assert.equal(requests(state, '/walks/start').length, 0);
 });
 
 test('resource errors and non-exhausted technical responses can retry the same path; exhaustion preserves the last note', { timeout: 60_000 }, async t => {

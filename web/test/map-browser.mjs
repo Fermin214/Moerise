@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import { once } from 'node:events';
+import { text as readRequestText } from 'node:stream/consumers';
 import { pathToFileURL } from 'node:url';
 import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -8,8 +9,7 @@ import { test } from 'node:test';
 import { createWebServer } from '../server.mjs';
 
 const runtime = process.env.MOERISE_PLAYWRIGHT_MODULE;
-if (!runtime) throw new Error('Set MOERISE_PLAYWRIGHT_MODULE to the installed playwright/index.mjs');
-const { chromium } = await import(pathToFileURL(runtime).href);
+const { chromium } = runtime ? await import(pathToFileURL(runtime).href) : await import('playwright');
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aP9sAAAAASUVORK5CYII=', 'base64');
 
 async function fixture(t, mobile = false) {
@@ -25,7 +25,7 @@ async function fixture(t, mobile = false) {
     requests: [], pending: [], aborted: [], hold: new Set(), error: null, noteError: null, malformed: null };
   const core = http.createServer(async (req, res) => {
     const url = new URL(req.url, 'http://localhost'), path = url.pathname.replace('/api/app/v1', '');
-    let raw = ''; for await (const chunk of req) raw += chunk;
+    const raw = await readRequestText(req);
     state.requests.push({ path, method: req.method, headers: req.headers, body: raw ? JSON.parse(raw) : null });
     res.on('close', () => { if (!res.writableEnded) state.aborted.push(path); });
     const json = (data, status = 200) => {
@@ -143,10 +143,10 @@ test('late point and note replies cannot rewrite navigation; switching points ca
   assert.equal(await page.locator('.map-page').count(), 0);
 });
 
-test('index states and temporary failures clear stale points then recover; source changes refresh the reader', async t => {
+test('index states and temporary failures clear points then recover; published source changes refresh the reader', async t => {
   const { page, state, url } = await fixture(t); await login(page, url); await ready(page);
   await marker(page, 0).click(); await card(page).waitFor();
-  state.error = { code: 'MAP_SOURCE_CHANGED', status: 409, retryable: true };
+  state.error = { code: 'MAP_RESOURCE_LIMIT', status: 503, retryable: true };
   await page.locator('#map-field').press('r'); await page.getByRole('alert').waitFor();
   assert.equal(await page.locator('.map-dot').count(), 0); assert.equal(await card(page).count(), 0);
   state.error = null; state.notes[0].content = '\u66f4\u65b0\u540e\u7684\u5b8c\u6574\u6b63\u6587'; state.notes[0].source_hash = 'changed'; state.version = 'c'.repeat(64);
@@ -207,4 +207,22 @@ test('each map history entry restores its own viewport and reader on back, reloa
   await page.reload(); await ready(page); await page.locator('.map-note[data-name="memos/n0"]').waitFor(); assert.deepEqual(await view(page), first);
   await page.goForward(); await page.waitForURL(url + '/'); await page.goForward(); await ready(page);
   await page.locator('.map-note[data-name="memos/n1"]').waitFor(); assert.deepEqual(await view(page), second);
+});
+
+
+test('focus and live note changes keep the daily snapshot without automatic refresh', async t => {
+  const { page, state, url } = await fixture(t); await login(page, url); await ready(page);
+  const count = state.requests.filter(req => req.path === '/map').length;
+  const saved = await view(page);
+  state.notes[0].content = '实时修改后的原文'; state.notes[0].source_hash = 'live-change';
+  await page.evaluate(() => {
+    window.dispatchEvent(new Event('focus'));
+    document.dispatchEvent(new Event('visibilitychange'));
+  });
+  await marker(page, 0).click(); await card(page).waitFor();
+  assert.equal(await card(page).locator('.note-content').innerText(), '实时修改后的原文');
+  await page.waitForTimeout(3200);
+  assert.equal(state.requests.filter(req => req.path === '/map').length, count);
+  assert.equal((await view(page)).scale, saved.scale);
+  assert.equal(await page.locator('.map-dot').count(), 6);
 });

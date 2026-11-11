@@ -353,6 +353,8 @@ func (a *ClientAPI) route(w http.ResponseWriter, r *http.Request) (any, int, err
 		return a.modelsRoute(w, r)
 	case "/api/app/v1/map":
 		return a.mapRoute(r)
+	case "/api/app/v1/search":
+		return a.searchRoute(w, r)
 	case "/api/app/v1/reviews/daily", "/api/app/v1/walks/start", "/api/app/v1/walks/next":
 		return a.discoveryRoute(w, r)
 	case "/api/app/v1/notes":

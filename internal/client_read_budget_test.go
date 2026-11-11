@@ -23,6 +23,12 @@ func TestClientSourceReadBudgetIncludesAuthenticationAndRuntimeWait(t *testing.T
 				if r.URL.Path == "/api/v1/memos" {
 					return 200, map[string]any{"memos": []any{memo}}, nil
 				}
+				if r.URL.Path == "/api/v1/users:stats" {
+					return 200, map[string]any{"stats": []SourceStats{{
+						Name: api.app.Store.Settings.Memos.User + "/stats", Total: 1, Tags: map[string]int{"tag": 1},
+						Created: []string{"2026-11-01T00:00:00Z"}, Updated: []string{"2026-11-01T00:00:00Z"},
+					}}}, nil
+				}
 				return 200, memo, nil
 			})
 			api.app.Notes.Source = source
@@ -91,9 +97,15 @@ func TestClientSourceReadRateLimitDoesNotReturnPartialContent(t *testing.T) {
 				if status, body, ok := identityResponse(r); ok {
 					return status, body, nil
 				}
-				if r.URL.Path == "/api/v1/memos" {
+				if r.URL.Path == "/api/v1/memos" || r.URL.Path == "/api/v1/users:stats" {
 					pages++
 					if pages == 1 {
+						if r.URL.Path == "/api/v1/users:stats" {
+							return 200, map[string]any{"stats": []SourceStats{{
+								Name: settings.Memos.User + "/stats", Total: 1, Tags: map[string]int{"tag": 1},
+								Created: []string{"2020-01-01T00:00:00Z"}, Updated: []string{"2020-01-01T00:00:00Z"},
+							}}}, nil
+						}
 						return 200, map[string]any{"memos": []any{rawMemo("one", "PRIVATE_ORIGINAL")}, "nextPageToken": "next"}, nil
 					}
 					return 429, map[string]string{"message": "PRIVATE_UPSTREAM_BODY"}, nil

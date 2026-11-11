@@ -31,17 +31,17 @@ func TestSettingsRuntimeDrainAndResourceReplacement(t *testing.T) {
 	update = settingsChange(1, `{"llm":{"enabled":true,"base_url":"http://127.0.0.1:1/v1","model":"runtime-model"}}`)
 	update.Secrets = map[string]SecretUpdate{"llm_api_key": {Action: "replace", Value: &key}}
 	view, err := app.UpdateSettings(t.Context(), update)
-	if err != nil || view.Version != 2 || app.AI.Provider == nil {
+	if err != nil || view.Version != 2 || app.LLM == nil {
 		t.Fatalf("offline provider configuration did not publish: %v", err)
 	}
-	provider := app.AI.Provider
+	provider := app.LLM
 	view, err = app.UpdateSettings(t.Context(), settingsChange(2, `{"llm":{"model":"replacement-model"}}`))
-	if err != nil || view.Version != 3 || app.AI.Provider == provider || configured(store.Settings.LLM.Model) != "replacement-model" {
+	if err != nil || view.Version != 3 || app.LLM == provider || configured(store.Settings.LLM.Model) != "replacement-model" {
 		t.Fatalf("model-only update did not replace the provider: %v", err)
 	}
-	provider = app.AI.Provider
+	provider = app.LLM
 	view, err = app.UpdateSettings(t.Context(), settingsChange(3, `{"insights":{"default_prompt":"新的思考方向"}}`))
-	if err != nil || view.Version != 4 || app.AI.Provider != provider {
+	if err != nil || view.Version != 4 || app.LLM != provider {
 		t.Fatalf("unrelated setting replaced provider: %v", err)
 	}
 	if app.Records != records || app.Reviews != reviews || app.Search != search ||
@@ -49,7 +49,7 @@ func TestSettingsRuntimeDrainAndResourceReplacement(t *testing.T) {
 		t.Fatal("settings update rebuilt shared state or left a stale settings consumer")
 	}
 	if _, err := app.UpdateSettings(t.Context(), settingsChange(4, `{"llm":{"protocol":"invalid"}}`)); errorCode(err) != "INVALID_ARGUMENT" ||
-		store.productVersion != 4 || app.AI.Provider != provider {
+		store.productVersion != 4 || app.LLM != provider {
 		t.Fatalf("invalid provider update changed runtime: %v", err)
 	}
 }

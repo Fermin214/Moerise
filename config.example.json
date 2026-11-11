@@ -6,7 +6,7 @@
     "user": "users/replace-with-your-resource-id",
     "token": "replace-with-a-memos-personal-access-token",
     "timeout_seconds": 10,
-    "page_size": 100,
+    "page_size": 0,
     "max_pages": 10000
   },
   "access_tokens": [
@@ -61,8 +61,7 @@
     "timeout_seconds": 90,
     "max_concurrency": 2,
     "max_retries": 2,
-    "max_output_tokens": 2048,
-    "context_bytes": 24000
+    "max_output_tokens": 2048
   },
   "channel": {
     "kind": "feishu-app",

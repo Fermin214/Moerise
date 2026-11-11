@@ -24,7 +24,8 @@ export function createInsightsPage({ sessionRequest, csrfToken, renewCSRF, handl
   let selected = new Map(), pendingCreate = null, pendingUpdate = null, pendingGenerate = null, controller = null, selectionController = null, pollTimer = null;
   let running = false, conflicted = false, sourceWarning = '', disposed = 0;
   let stopping = false, deleting = false, generationDone = null, historyDialog = null;
-  const saving = new Map();
+  let renderFrame = null;
+  const saving = new Map(), turnNodes = new Map();
   const find = name => root.querySelector(`[data-chat="${name}"]`);
   const current = ticket => active && ticket === disposed;
   const namesEqual = (a, b) => a.length === b.length && a.every((name, index) => name === b[index]);
@@ -37,7 +38,6 @@ export function createInsightsPage({ sessionRequest, csrfToken, renewCSRF, handl
     if (!active || err.name === 'AbortError') return;
     const messages = {
       CHAT_MATERIAL_LIMIT: '超过字数上限，请减少所选笔记。',
-      CHAT_CONTEXT_LIMIT: '完整材料与对话已超过模型上下文上限，请调整材料或开始新的会话。',
       CHAT_RESOURCE_LIMIT: '材料请求超过资源限制，请减少选择范围。',
       SOURCE_CHANGED: '所选材料已修改，请重新选择这些笔记。',
       SOURCE_NOT_FOUND: '所选材料已删除或无法访问，请调整材料。',
@@ -103,40 +103,73 @@ export function createInsightsPage({ sessionRequest, csrfToken, renewCSRF, handl
   }
   function renderTurns() {
     if (!active) return;
-    const list = find('messages'); list.replaceChildren();
+    if (renderFrame !== null) { cancelAnimationFrame(renderFrame); renderFrame = null; }
+    const list = find('messages');
     const turns = chat?.turns || [];
     if (!turns.length) {
+      turnNodes.clear(); list.replaceChildren();
       const empty = el('div', 'insight-empty');
       empty.append(el('p', 'sub', '添加材料后，一键洞察，或直接提问。'));
       const start = button('一键洞察', 'save', () => generate('insight'));
       start.dataset.generate = 'insight'; empty.append(start); list.append(empty);
+      controls(); return;
+    }
+    list.querySelector('.insight-empty')?.remove();
+    const names = new Set(turns.map(turn => turn.id));
+    for (const [id, entry] of turnNodes) {
+      if (!names.has(id)) { entry.user.remove(); entry.group.remove(); turnNodes.delete(id); }
     }
     for (const turn of turns) {
-      list.append(el('div', 'insight-user', turn.kind === 'insight' ? '一键洞察' : turn.user.content));
-      const group = el('div', 'insight-assistant'), content = el('div', 'insight-answer note-content');
-      content.append(renderMarkdown(turn.assistant.content || '', { attachments: [] }));
-      const action = button(turn.assistant.saved_name ? '已保存为笔记' : '保存为笔记', 'btn s insight-save', async () => {
-        if (deleting || saving.has(turn.id) || turn.assistant.saved_name || turn.assistant.status !== 'completed') return;
-        if (new TextEncoder().encode(turn.assistant.content).length > 65536) {
-          warning('回复超过笔记正文上限，无法完整保存。请让 AI 总结后保存总结。'); return;
-        }
-        const ticket = disposed, chatID = chat.id;
-        action.disabled = true;
-        const task = sessionRequest(`/chats/${chatID}/messages/${turn.request_id}/save`, {
-          method: 'POST', body: { version: turn.assistant.version },
+      let entry = turnNodes.get(turn.id);
+      if (!entry) {
+        const user = el('div', 'insight-user'), group = el('div', 'insight-assistant');
+        const content = el('div', 'insight-answer note-content');
+        const action = button('', 'btn s insight-save', async () => {
+          const turn = entry.turn;
+          if (deleting || saving.has(turn.id) || turn.assistant.saved_name || turn.assistant.status !== 'completed') return;
+          if (new TextEncoder().encode(turn.assistant.content).length > 65536) {
+            warning('回复超过笔记正文上限，无法完整保存。请让 AI 总结后保存总结。'); return;
+          }
+          const ticket = disposed, chatID = chat.id;
+          action.disabled = true;
+          const task = sessionRequest(`/chats/${chatID}/messages/${turn.request_id}/save`, {
+            method: 'POST', body: { version: turn.assistant.version },
+          });
+          saving.set(turn.id, task);
+          try {
+            const note = await task;
+            if (!current(ticket)) return;
+            entry.turn.assistant.saved_name = note.name; onSaved?.(); renderTurns();
+          } catch (err) { if (current(ticket)) { failure(err); action.disabled = deleting; } }
+          finally { if (saving.get(turn.id) === task) saving.delete(turn.id); }
         });
-        saving.set(turn.id, task);
-        try {
-          const note = await task;
-          if (!current(ticket)) return;
-          turn.assistant.saved_name = note.name; onSaved?.(); renderTurns();
-        } catch (err) { if (current(ticket)) { failure(err); action.disabled = deleting; } }
-        finally { if (saving.get(turn.id) === task) saving.delete(turn.id); }
-      });
-      action.disabled = deleting || turn.assistant.status !== 'completed' || !!turn.assistant.saved_name || saving.has(turn.id);
-      const actions = el('div'); actions.append(action); group.append(content, actions); list.append(group);
+        const actions = el('div'); actions.append(action); group.append(content, actions);
+        entry = { user, group, content, action, turn, text: null };
+        turnNodes.set(turn.id, entry);
+      }
+      entry.turn = turn;
+      const question = turn.kind === 'insight' ? '一键洞察' : turn.user.content;
+      if (entry.user.textContent !== question) entry.user.textContent = question;
+      const content = turn.assistant.content || '';
+      if (entry.text !== content) {
+        entry.content.replaceChildren(renderMarkdown(content, { attachments: [] })); entry.text = content;
+      }
+      const label = turn.assistant.saved_name ? '已保存为笔记' : '保存为笔记';
+      if (entry.action.textContent !== label) entry.action.textContent = label;
+      entry.action.disabled = deleting || turn.assistant.status !== 'completed' || !!turn.assistant.saved_name || saving.has(turn.id);
+    }
+    let cursor = list.firstElementChild;
+    for (const turn of turns) {
+      const entry = turnNodes.get(turn.id);
+      for (const node of [entry.user, entry.group]) {
+        if (node !== cursor) list.insertBefore(node, cursor);
+        cursor = node.nextElementSibling;
+      }
     }
     controls();
+  }
+  function scheduleTurns() {
+    if (renderFrame === null) renderFrame = requestAnimationFrame(() => { renderFrame = null; renderTurns(); });
   }
   function upsert(turn) {
     const index = chat.turns.findIndex(value => value.id === turn.id);
@@ -386,9 +419,6 @@ export function createInsightsPage({ sessionRequest, csrfToken, renewCSRF, handl
     if (pendingGenerate && pendingGenerate.kind !== kind) return;
     const content = pendingGenerate?.content ?? (kind === 'question' ? find('ask').value : '');
     if (kind === 'question' && !content.trim()) return;
-    if (chars(content) > 8000 || new TextEncoder().encode(content).length > 32768) {
-      warning('问题超过 8000 字或 32768 UTF-8 字节上限，请调整后重试。'); return;
-    }
     busy = true; warning(); controls();
     const generation = disposed;
     let finish;
@@ -418,7 +448,7 @@ export function createInsightsPage({ sessionRequest, csrfToken, renewCSRF, handl
           else {
             const turn = chat.turns.find(value => value.request_id === input.request_id);
             if (!turn) throw Object.assign(new Error('Missing chat turn'), { code: 'CHAT_PROTOCOL' });
-            turn.assistant.content += event.text; renderTurns();
+            turn.assistant.content += event.text; scheduleTurns();
           }
           if (event.type === 'complete') {
             pendingGenerate = null;
@@ -644,6 +674,8 @@ export function createInsightsPage({ sessionRequest, csrfToken, renewCSRF, handl
 
   function destroy() {
     active = false; disposed++; controller?.abort(); controller = null;
+    if (renderFrame !== null) cancelAnimationFrame(renderFrame);
+    renderFrame = null; turnNodes.clear();
     selectionController?.abort(); selectionController = null;
     clearTimeout(pollTimer); picker?.abort.abort(); picker?.overlay.remove(); picker = null;
     historyDialog?.abort.abort(); historyDialog?.overlay.remove(); historyDialog = null;

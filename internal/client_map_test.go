@@ -84,8 +84,8 @@ func TestClientMapAuthenticationAndSourceShareDeadline(t *testing.T) {
 	}
 	started := time.Now()
 	response := clientCall(api, "GET", "/api/app/v1/map", "", cookie, "", "")
-	if response.Code != 200 || len(deadlines) < 8 {
-		t.Fatalf("map did not authenticate and recheck sources: %d %s %v", response.Code, response.Body, deadlines)
+	if response.Code != 200 || len(deadlines) < 3 {
+		t.Fatalf("map did not authenticate snapshot access: %d %s %v", response.Code, response.Body, deadlines)
 	}
 	for _, deadline := range deadlines {
 		if !deadline.Equal(deadlines[0]) || deadline.Before(started) || deadline.After(started.Add(mapRequestTimeout+100*time.Millisecond)) {
@@ -134,35 +134,37 @@ func TestClientMapDeadlineCoversAuthenticationAndLocks(t *testing.T) {
 	}
 }
 
-func TestClientMapLogoutCancelsLiveSourceRead(t *testing.T) {
+func TestClientMapLogoutCancelsColdSnapshotRead(t *testing.T) {
 	api, _ := clientFixture(t)
 	cookie, _ := settingsSession(t, api)
 	clientMapIndex(t, api)
-	started, stopped, done := make(chan struct{}), make(chan struct{}), make(chan *httptest.ResponseRecorder, 1)
-	api.app.Notes.Source = mapSource{Source: api.app.Notes.Source,
-		list: func(ctx context.Context, _ string, _ *int64, _ string) ([]Memo, string, error) {
-			close(started)
-			<-ctx.Done()
-			close(stopped)
-			return nil, "", ctx.Err()
-		}}
+	api.app.Map.Reset()
+	db := api.app.Store.index
+	held, err := db.BeginTx(t.Context(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer held.Rollback()
+	before := db.Stats().WaitCount
+	done := make(chan *httptest.ResponseRecorder, 1)
 	go func() { done <- clientCall(api, "GET", "/api/app/v1/map", "", cookie, "", "") }()
-	<-started
+	deadline := time.Now().Add(time.Second)
+	for db.Stats().WaitCount == before && time.Now().Before(deadline) {
+		runtimePause(t.Context(), time.Millisecond)
+	}
+	if db.Stats().WaitCount == before {
+		t.Fatal("snapshot read did not reach the held connection")
+	}
 	if err := api.app.Sessions.Logout(t.Context(), cookie.Value); err != nil {
 		t.Fatal(err)
 	}
 	select {
-	case <-stopped:
+	case response := <-done:
+		assertSettingsError(t, response, 503, "MAP_REQUEST_CANCELED")
 	case <-time.After(time.Second):
-		t.Fatal("logout did not cancel source read")
+		t.Fatal("logout did not cancel snapshot read")
 	}
-	response := <-done
-	assertSettingsError(t, response, 503, "MAP_REQUEST_CANCELED")
 	assertSettingsError(t, clientCall(api, "GET", "/api/app/v1/map", "", cookie, "", ""), 401, "SESSION_UNAUTHORIZED")
-	var count int
-	if err := api.app.Store.index.QueryRow("SELECT COUNT(*) FROM map_layouts").Scan(&count); err != nil || count != 0 {
-		t.Fatalf("logout published private layout: %d %v", count, err)
-	}
 }
 
 func TestMapNotDiscoverableOrCallableThroughMCP(t *testing.T) {

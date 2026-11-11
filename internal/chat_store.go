@@ -264,7 +264,6 @@ func chatGenerateHash(input ChatGenerate) string { return hashBytes(canonicalJSO
 func validateChatGenerate(input ChatGenerate) error {
 	if !idempotencyPattern.MatchString(input.RequestID) || input.Version < 1 ||
 		(input.Kind != "insight" && input.Kind != "question") || !utf8.ValidString(input.Content) ||
-		len(input.Content) > 32768 || utf8.RuneCountInString(input.Content) > 8000 ||
 		(input.Kind == "question" && strings.TrimSpace(input.Content) == "") ||
 		(input.Kind == "insight" && input.Content != "") {
 		return failure("INVALID_ARGUMENT", "Invalid chat generation request", 422, false)

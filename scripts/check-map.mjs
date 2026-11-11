@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import http from 'node:http';
+import { DatabaseSync } from 'node:sqlite';
 import { once } from 'node:events';
+import { text as readRequestText } from 'node:stream/consumers';
 import { spawn } from 'node:child_process';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { mkdir, readFile, writeFile, rm, realpath, lstat, open } from 'node:fs/promises';
@@ -25,7 +27,7 @@ for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, () => cancellatio
 const username = 'map-owner', password = randomBytes(24).toString('hex');
 const modelKey = randomBytes(24).toString('hex'), machineKey = randomBytes(24).toString('hex');
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aP9sAAAAASUVORK5CYII=', 'base64');
-const evidence = { checks: [], pageErrors: [], measurements: [], apiMeasurements: [], sourceRequests: { lists: 0, notes: 0 },
+const evidence = { checks: [], pageErrors: [], measurements: [], apiMeasurements: [], sourceRequests: { lists: 0, stats: 0, notes: 0 },
   sourceFailures: [], canceledSourceReads: 0, embeddingCalls: 0 };
 let browser, page, web, model, proxy, processCore, coreExit, log, cookie = '', csrf = '', url, coreURL, sourceURL, pat;
 let createdSource = false, success = false, step = '初始化', failName = '', holdName = '', held = [], total = 0, rateLimitLists = false;
@@ -134,11 +136,21 @@ async function readPoint(note) {
   await marker(note).focus(); await marker(note).press('Enter');
   await page.locator(`.map-note[data-name="${note.name}"]`).waitFor();
 }
-async function vectorsReady() {
+async function vectorsReady({ snapshot = true } = {}) {
   await wait('完整向量索引', async () => {
     const models = await api('GET', '/models');
-    return models.index_status === 'ready' && models.vector_index.active.notes === total;
+    if (models.index_status !== 'ready' || models.vector_index.active.notes !== total) return false;
+    if (!snapshot) return true;
+    const map = await api('GET', '/map');
+    return map.status === 'ready' && map.vector_generation === models.vector_index.active.id;
   }, Math.max(120_000, total * 750));
+}
+async function ageMapSnapshot() {
+  await stopCore();
+  const db = new DatabaseSync(resolve(root, 'index', 'index.sqlite3'));
+  try { db.prepare('UPDATE map_layouts SET generated_at = ?').run(new Date(Date.now() - 48 * 3600_000).toISOString()); }
+  finally { db.close(); }
+  await startCore();
 }
 function assertClusters(map, notes) {
   const points = new Map(map.points.map(point => [point.name, point]));
@@ -184,8 +196,8 @@ try {
     let nextSourceRequest = 0;
     proxy = http.createServer(async (req, res) => {
       const path = req.url.split('?')[0];
-      if (req.method === 'GET' && path === '/api/v1/memos') {
-        evidence.sourceRequests.lists++;
+      if (req.method === 'GET' && (path === '/api/v1/memos' || path === '/api/v1/users:stats')) {
+        evidence.sourceRequests[path === '/api/v1/memos' ? 'lists' : 'stats']++;
         if (rateLimitLists) {
           res.writeHead(429, { 'Content-Type': 'application/json' });
           res.end('{"message":"controlled rate limit"}'); return;
@@ -202,7 +214,7 @@ try {
         await new Promise(resolve => { held.push(resolve); res.once('close', () => { if (!res.writableEnded) evidence.canceledSourceReads++; resolve(); }); });
         if (res.destroyed) return;
       }
-      if (failName && req.method === 'GET' && req.url.split('?')[0] === '/api/v1/memos' && new URL(req.url, sourceURL).searchParams.get('state') === 'ARCHIVED') {
+      if (failName && req.method === 'GET' && (path === `/api/v1/${failName}` || (path === '/api/v1/memos' && new URL(req.url, sourceURL).searchParams.get('state') === 'ARCHIVED'))) {
         res.writeHead(503, { 'Content-Type': 'application/json' }); res.end('{"message":"controlled source outage"}'); return;
       }
       const upstream = http.request(sourceURL + req.url, { method: req.method, headers: { ...req.headers, host: new URL(sourceURL).host } }, response => {
@@ -214,7 +226,7 @@ try {
     });
     proxy.listen(0, '127.0.0.1'); await once(proxy, 'listening');
     model = http.createServer(async (req, res) => {
-      let raw = ''; for await (const chunk of req) raw += chunk;
+      const raw = await readRequestText(req);
       try {
         const body = JSON.parse(raw); assert.equal(req.headers.authorization, `Bearer ${modelKey}`);
         if (baselineBinary && req.url === '/v1/chat/completions') {
@@ -295,7 +307,8 @@ try {
     assert.deepEqual(await api('GET', '/settings'), settings);
     assert.deepEqual(await api('GET', '/reviews/daily'), plan);
     assert.deepEqual(await api('GET', `/chats/${chat.id}`), chat);
-    await vectorsReady(); assert.deepEqual(await api('GET', '/map'), map);
+    await vectorsReady();
+    const migrated = await api('GET', '/map'); assert.deepEqual(migrated.points, map.points); assert.equal(migrated.layout_frame, map.layout_frame);
     assert.equal(evidence.embeddingCalls, calls, '升级复用已有向量，不重跑模型');
     await browse(); await ready(); assert.deepEqual(await view(), saved);
   });
@@ -314,10 +327,15 @@ try {
     await marker(fixtures[6]).focus(); await field.press('+'); await field.press('+'); await marker(fixtures[6]).click();
     await page.locator(`.map-note[data-name="${fixtures[6].name}"]`).waitFor();
   });
-  await check('真实来源错误清空旧点集，导航取消完整阅读并隔离迟到响应', async () => {
-    failName = fixtures[0].name; await page.locator('#map-field').press('r');
-    await page.locator('.map-page .error').waitFor(); assert.equal(await page.locator('.map-dot').count(), 0); assert.equal(await reader().count(), 0);
-    failName = ''; await page.locator('#map-field').press('r'); await ready();
+  await check('趋势快照容忍来源列表故障，原文读取失败及导航取消不返回旧正文', async () => {
+    const snapshot = await api('GET', '/map');
+    failName = fixtures[0].name;
+    assert.deepEqual(await api('GET', '/map'), snapshot);
+    await api('GET', `/notes/${fixtures[0].name.slice(6)}`, undefined, 503);
+    await page.locator('#map-field').press('r'); await ready();
+    assert.equal(await page.locator('.map-dot').count(), total);
+    failName = '';
+    await readPoint(fixtures[1]);
     holdName = fixtures[0].name; await marker(fixtures[0]).focus(); await marker(fixtures[0]).press('Enter'); await wait('来源读取已挂起', () => held.length > 0);
     await page.locator('nav a[href="/"]').click(); await page.waitForURL(url + '/');
     await wait('来源取消已传递', () => evidence.canceledSourceReads > 0); holdName = ''; for (const release of held.splice(0)) release();
@@ -348,7 +366,8 @@ try {
         const group = total % 3, subject = ['balcony herbs', 'bicycle brakes', 'reading fiction'][group];
         const note = await source('POST', '/memos', { content: `${subject} observation ${total} #原生`, visibility: 'PRIVATE' }); dense.push({ ...note, group });
       }
-      await vectorsReady(); const map = await api('GET', '/map'); assert.equal(map.points.length, target); assertClusters(map, dense);
+      await vectorsReady({ snapshot: false }); await ageMapSnapshot(); await vectorsReady();
+      const map = await api('GET', '/map'); assert.equal(map.points.length, target); assertClusters(map, dense);
       const stable = await api('GET', '/map'); assert.deepEqual(stable, map);
       await browse(); const renderStart = performance.now(); await ready();
       evidence.measurements.push({ browserNotes: target, browserLoadMs: performance.now() - renderStart });
@@ -362,13 +381,14 @@ try {
       assert.ok(listed.notes.every(note => note.state === 'NORMAL'));
       const search = await api('GET', '/notes?query=observation&page_size=20');
       assert.equal(search.notes.length, 20); assert.ok(search.notes.every(note => note.content.includes('observation')));
-      const beforeNotes = evidence.sourceRequests.notes;
+      const beforeNotes = evidence.sourceRequests.notes, beforeStats = evidence.sourceRequests.stats;
       const tags = await api('GET', '/tags'), month = new Date(dense.at(-1).createTime).toISOString().slice(0, 7);
       assert.equal(tags.tags.find(item => item.tag === '原生')?.count, dense.length);
       const calendar = await api('GET', `/calendar?month=${month}`);
       const monthNotes = dense.filter(note => note.createTime.startsWith(month)).length;
       assert.ok(calendar.days.reduce((sum, day) => sum + day.count, 0) >= monthNotes);
-      assert.equal(evidence.sourceRequests.notes, beforeNotes, '全量侧栏只使用官方分页，不逐条 GET');
+      assert.equal(evidence.sourceRequests.notes, beforeNotes, '全量侧栏使用官方统计，不逐条 GET');
+      assert.ok(evidence.sourceRequests.stats >= beforeStats + 4, '标签和日历分别读取并复查官方统计');
       const materials = await api('GET', '/chat-materials?page_size=20');
       assert.equal(materials.notes.length, 20);
       const plan = await api('GET', '/reviews/daily');
@@ -391,7 +411,12 @@ try {
     const first = await api('GET', '/map'), unchanged = new Map(first.points.map(point => [point.name, point]));
     await source('PATCH', `/${fixtures[2].name}?updateMask=content`, { content: 'reading edited subject #原生' });
     await source('DELETE', `/${fixtures[4].name}`); await source('POST', '/memos', { content: 'balcony herbs added', visibility: 'PRIVATE' });
-    await wait('少量增改删发布', async () => {
+    assert.deepEqual(await api('GET', '/map'), first, '普通变化继续读取已发布趋势');
+    const latest = await api('GET', `/notes/${fixtures[2].name.slice(6)}`);
+    assert.equal(latest.content, 'reading edited subject #原生');
+    await api('GET', `/notes/${fixtures[4].name.slice(6)}`, undefined, 404);
+    await vectorsReady({ snapshot: false }); await ageMapSnapshot();
+    await wait('每日快照合并增改删', async () => {
       const models = await api('GET', '/models'); if (models.index_status !== 'ready') return false;
       let map;
       try { map = await api('GET', '/map'); }

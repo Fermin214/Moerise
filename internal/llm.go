@@ -84,9 +84,6 @@ func (c LLMConfig) Validate() error {
 	if c.MaxOutputTokens < 32 || c.MaxOutputTokens > 16384 {
 		return bad("max_output_tokens")
 	}
-	if c.ContextBytes < 1024 || c.ContextBytes > 262144 {
-		return bad("context_bytes")
-	}
 	return nil
 }
 
@@ -130,16 +127,13 @@ func (c *chatCompletionsClient) Generate(ctx context.Context, messages []LLMMess
 	ctx, cancel := context.WithTimeout(ctx, time.Duration(c.config.TimeoutSeconds*float64(time.Second)))
 	defer cancel()
 	size := 0
-	if len(messages) < 1 || len(messages) > 256 {
-		return LLMResult{}, failure("INVALID_ARGUMENT", "LLM requires 1 to 256 messages", 422, false)
+	if len(messages) < 1 {
+		return LLMResult{}, failure("INVALID_ARGUMENT", "LLM requires at least one message", 422, false)
 	}
 	for _, message := range messages {
 		if !slices.Contains([]string{"system", "developer", "user", "assistant"}, message.Role) ||
 			!utf8.ValidString(message.Content) {
 			return LLMResult{}, failure("INVALID_ARGUMENT", "LLM requires text messages with a supported role", 422, false)
-		}
-		if len(message.Content) > c.config.ContextBytes-size {
-			return LLMResult{}, failure("LLM_CONTEXT_LIMIT", "LLM context exceeds the configured byte limit", 422, false)
 		}
 		size += len(message.Content)
 	}

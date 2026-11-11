@@ -73,7 +73,7 @@ func TestClientModelCheckProviderTimeout(t *testing.T) {
 	config := llmTestConfig(server.URL)
 	config.TimeoutSeconds, config.MaxRetries = 1, 0
 	api.app.Store.Settings.LLM = config
-	api.app.AI.Provider = llmTestProvider(t, config)
+	api.app.LLM = llmTestProvider(t, config)
 	response := clientCall(api, "POST", "/api/app/v1/models/llm/check", `{"version":1}`,
 		cookie, fixture.settings.Web.PublicOrigin, identity.CSRFToken)
 	assertSettingsError(t, response, 503, "MODEL_CHECK_TIMEOUT")
@@ -98,7 +98,7 @@ func TestClientModelCheckSharedDeadline(t *testing.T) {
 			return transport.RoundTrip(r)
 		})
 	}
-	api.app.AI.Provider = aiLLMFunc(func(ctx context.Context, _ []LLMMessage, _ func(string) error) (LLMResult, error) {
+	api.app.LLM = aiLLMFunc(func(ctx context.Context, _ []LLMMessage, _ func(string) error) (LLMResult, error) {
 		deadline, _ := ctx.Deadline()
 		deadlines = append(deadlines, deadline)
 		return LLMResult{Content: "OK"}, nil

@@ -110,10 +110,14 @@ func vectorNorm(vector []float32) float64 {
 
 // Cache one published matrix. Configuration and projection checks also run on cache hits.
 func (s *SearchService) vectors(ctx context.Context) (*searchMatrix, error) {
-	s.mu.Lock()
+	for !s.mu.TryLock() {
+		if err := runtimePause(ctx, 10*time.Millisecond); err != nil {
+			return nil, err
+		}
+	}
 	defer s.mu.Unlock()
 	var matrix *searchMatrix
-	err := transaction(s.Store.index, func(tx *sql.Tx) error {
+	err := transactionContext(ctx, s.Store.index, func(tx *sql.Tx) error {
 		var id string
 		err := tx.QueryRowContext(ctx, `SELECT g.id FROM vector_generations g JOIN projection_meta p USING (instance_id)
 			WHERE g.instance_id = ? AND g.user_name = ? AND g.status = 'active'
@@ -127,6 +131,8 @@ func (s *SearchService) vectors(ctx context.Context) (*searchMatrix, error) {
 			matrix = s.matrix
 			return nil
 		}
+		// 加载新代次时，已无请求使用的旧缓存可以回收。
+		s.matrix = nil
 		matrix = &searchMatrix{id: id}
 		rows, err := tx.QueryContext(ctx, `SELECT c.name, n.source_hash, c.ordinal,
 			c.byte_start, c.byte_end, c.line_start, c.line_end, c.content, c.vector, m.payload_json
@@ -238,43 +244,123 @@ func (s *SearchService) semanticCandidates(ctx context.Context, request SearchRe
 	if err != nil {
 		return nil, SearchSemantic{}, err
 	}
-	query, norm := result.Vectors[0], vectorNorm(result.Vectors[0])
-	candidates := []searchCandidate{}
-	for i, entry := range matrix.entries {
-		if i%256 == 0 && ctx.Err() != nil {
-			return nil, SearchSemantic{}, ctx.Err()
+	query := result.Vectors[0]
+	// 每个分片至少约一百万维乘加，小集合沿用串行扫描。
+	workers := min(4, processCPUs(), len(matrix.entries)*len(query)/(1024*1024))
+	candidates, err := rankSemanticVectors(ctx, request, matrix.entries, query, workers)
+	if err != nil {
+		return nil, SearchSemantic{}, err
+	}
+	return candidates, SearchSemantic{Used: true}, nil
+}
+
+func rankSemanticVectors(ctx context.Context, request SearchRequest, entries []searchVector, query []float32, workers int) ([]searchCandidate, error) {
+	norm := vectorNorm(query)
+	scan := func(entries []searchVector) []searchCandidate {
+		candidates := make([]searchCandidate, 0, searchCandidates+1)
+		var batch [4]*searchVector
+		count := 0
+		keep := func(entry *searchVector, dot float64) {
+			if similarity := dot / (norm * entry.norm); similarity > 0 {
+				item := entry.candidate
+				item.score = similarity
+				candidates = keepSearchCandidate(candidates, item)
+			}
 		}
-		if !searchAccepts(request, entry.state, entry.tags) || !searchDateAccepts(request, entry.createTime) {
-			continue
+		for i := range entries {
+			if i%256 == 0 && ctx.Err() != nil {
+				return nil
+			}
+			entry := &entries[i]
+			if !searchAccepts(request, entry.state, entry.tags) || !searchDateAccepts(request, entry.createTime) {
+				continue
+			}
+			batch[count] = entry
+			count++
+			if count == len(batch) {
+				dots := semanticBatchDots(batch, query)
+				for j, dot := range dots {
+					keep(batch[j], dot)
+				}
+				count = 0
+			}
 		}
-		dot := float64(0)
-		for j, value := range entry.vector {
-			dot += float64(value) * float64(query[j])
+		for _, entry := range batch[:count] {
+			dot := float64(0)
+			for j, value := range entry.vector {
+				dot += float64(value) * float64(query[j])
+			}
+			keep(entry, dot)
 		}
-		similarity := dot / (norm * entry.norm)
-		if similarity > 0 {
-			item := entry.candidate
-			item.score = similarity
-			candidates = append(candidates, item)
+		return candidates
+	}
+	workers = max(1, min(workers, len(entries)))
+	if workers == 1 {
+		candidates := scan(entries)
+		return candidates, ctx.Err()
+	}
+	parts := make([][]searchCandidate, workers)
+	var group sync.WaitGroup
+	for worker := range workers {
+		group.Go(func() {
+			parts[worker] = scan(entries[len(entries)*worker/workers : len(entries)*(worker+1)/workers])
+		})
+	}
+	group.Wait()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	candidates := make([]searchCandidate, 0, searchCandidates+1)
+	for _, part := range parts {
+		for _, item := range part {
+			candidates = keepSearchCandidate(candidates, item)
 		}
 	}
-	sortSearchCandidates(candidates)
-	return candidates[:min(len(candidates), searchCandidates)], SearchSemantic{Used: true}, nil
+	return candidates, nil
+}
+
+// 交错四个独立点积，每个向量仍按原维度顺序累加。
+func semanticBatchDots(entries [4]*searchVector, query []float32) [4]float64 {
+	a, b, c, d := entries[0].vector, entries[1].vector, entries[2].vector, entries[3].vector
+	a, b, c, d = a[:len(query)], b[:len(query)], c[:len(query)], d[:len(query)]
+	var da, db, dc, dd float64
+	for i, value := range query {
+		q := float64(value)
+		da += float64(a[i]) * q
+		db += float64(b[i]) * q
+		dc += float64(c[i]) * q
+		dd += float64(d[i]) * q
+	}
+	return [4]float64{da, db, dc, dd}
+}
+
+func compareSearchCandidates(a, b searchCandidate) int {
+	if a.score != b.score {
+		if a.score > b.score {
+			return -1
+		}
+		return 1
+	}
+	if order := strings.Compare(a.name, b.name); order != 0 {
+		return order
+	}
+	return a.chunk.Ordinal - b.chunk.Ordinal
 }
 
 func sortSearchCandidates(items []searchCandidate) {
-	slices.SortFunc(items, func(a, b searchCandidate) int {
-		if a.score != b.score {
-			if a.score > b.score {
-				return -1
-			}
-			return 1
-		}
-		if order := strings.Compare(a.name, b.name); order != 0 {
-			return order
-		}
-		return a.chunk.Ordinal - b.chunk.Ordinal
-	})
+	slices.SortFunc(items, compareSearchCandidates)
+}
+
+// 只维护语义检索的前 100 个片段；漫步仍使用全部合格候选。
+func keepSearchCandidate(items []searchCandidate, item searchCandidate) []searchCandidate {
+	if len(items) == searchCandidates && compareSearchCandidates(item, items[len(items)-1]) >= 0 {
+		return items
+	}
+	position, _ := slices.BinarySearchFunc(items, item, compareSearchCandidates)
+	items = append(items, searchCandidate{})
+	copy(items[position+1:], items[position:])
+	items[position] = item
+	return items[:min(len(items), searchCandidates)]
 }
 
 func fuseSearch(lists ...[]searchCandidate) []searchCandidate {
@@ -304,14 +390,7 @@ func fuseSearch(lists ...[]searchCandidate) []searchCandidate {
 }
 
 func (s *SearchService) verify(ctx context.Context) error {
-	version, err := s.Source.Identity(ctx)
-	if err != nil {
-		if health := s.Store.SourceHealth(false, errorCode(err), ""); health != nil {
-			return health
-		}
-		return err
-	}
-	return s.Store.SourceHealth(true, "", version)
+	return NewNoteService(s.Store.Settings, s.Store, s.Source).Verify(ctx)
 }
 
 func (s *SearchService) Search(ctx context.Context, request SearchRequest) (SearchResponse, error) {
@@ -323,33 +402,12 @@ func (s *SearchService) Search(ctx context.Context, request SearchRequest) (Sear
 	if err := s.verify(ctx); err != nil {
 		return response, err
 	}
-	var keywords, tags, semantic []searchCandidate
-	if request.Mode != "semantic" {
-		keywords, err = s.Store.lexicalCandidates(ctx, request, false)
-		if err != nil {
-			return response, err
-		}
-		tags, err = s.Store.lexicalCandidates(ctx, request, true)
-		if err != nil {
-			return response, err
-		}
+	candidates, mode, semantic, err := s.rankedCandidates(ctx, request)
+	if err != nil {
+		return SearchResponse{}, err
 	}
-	if request.Mode == "keyword" {
-		response.Semantic = SearchSemantic{Reason: "KEYWORD_MODE"}
-	} else {
-		semantic, response.Semantic, err = s.semanticCandidates(ctx, request)
-		if err != nil {
-			return response, err
-		}
-		if !response.Semantic.Used {
-			if request.Mode == "semantic" {
-				reason := response.Semantic.Reason
-				return response, failure(reason, "Semantic search unavailable: "+reason, 503, reason != "EMBEDDING_DISABLED")
-			}
-			response.Mode = "keyword"
-		}
-	}
-	response.Results, err = s.loadSearchHits(ctx, request, fuseSearch(keywords, tags, semantic), "", false)
+	response.Mode, response.Semantic = mode, semantic
+	response.Results, err = s.loadSearchHits(ctx, request, candidates, "", false)
 	if err != nil {
 		return SearchResponse{}, err
 	}
@@ -359,21 +417,39 @@ func (s *SearchService) Search(ctx context.Context, request SearchRequest) (Sear
 	return response, nil
 }
 
-func (s *SearchService) liveSearchMemo(ctx context.Context, name string) (*Memo, error) {
-	fresh, err := s.Source.Get(ctx, name)
-	if err != nil {
-		if health := s.Store.SourceHealth(false, errorCode(err), ""); health != nil {
-			return nil, health
+func (s *SearchService) rankedCandidates(ctx context.Context, request SearchRequest) ([]searchCandidate, string, SearchSemantic, error) {
+	mode := request.Mode
+	semanticState := SearchSemantic{Reason: "KEYWORD_MODE"}
+	var keywords, tags, semantic []searchCandidate
+	var err error
+	if request.Mode != "semantic" {
+		keywords, err = s.Store.lexicalCandidates(ctx, request, false)
+		if err != nil {
+			return nil, mode, semanticState, err
 		}
-		return nil, err
+		tags, err = s.Store.lexicalCandidates(ctx, request, true)
+		if err != nil {
+			return nil, mode, semanticState, err
+		}
 	}
-	if fresh != nil && (fresh.Creator != s.Store.Settings.Memos.User || fresh.Name != name) {
-		fresh = nil
+	if request.Mode != "keyword" {
+		semantic, semanticState, err = s.semanticCandidates(ctx, request)
+		if err != nil {
+			return nil, mode, semanticState, err
+		}
+		if !semanticState.Used {
+			if request.Mode == "semantic" {
+				reason := semanticState.Reason
+				return nil, mode, semanticState, failure(reason, "Semantic search unavailable: "+reason, 503, reason != "EMBEDDING_DISABLED")
+			}
+			mode = "keyword"
+		}
 	}
-	if err := s.Store.Refresh(name, fresh); err != nil {
-		return nil, err
-	}
-	return fresh, nil
+	return fuseSearch(keywords, tags, semantic), mode, semanticState, nil
+}
+
+func (s *SearchService) liveSearchMemo(ctx context.Context, name string) (*Memo, error) {
+	return NewNoteService(s.Store.Settings, s.Store, s.Source).fresh(ctx, name)
 }
 
 func (s *SearchService) loadSearchHits(ctx context.Context, request SearchRequest, candidates []searchCandidate,

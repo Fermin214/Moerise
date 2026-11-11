@@ -354,7 +354,6 @@ func TestConcurrentWorkerReadsAndSyncRequests(t *testing.T) {
 						t.Error(err)
 						return
 					}
-					worker.Wake()
 				}
 				method, path, body := "GET", "/api/ext/v1/notes", ""
 				request := httptest.NewRequest(method, path, strings.NewReader(body))
@@ -467,10 +466,10 @@ func TestAPIContractAndSourceIsolation(t *testing.T) {
 	if err := json.Unmarshal(first.Body.Bytes(), &page); err != nil || len(page.Notes) != 1 || page.Token == "" || page.Notes[0].Content != "fresh" {
 		t.Fatalf("incorrect first page: %s", first.Body.String())
 	}
-	if _, err := api.decodeCursor(page.Token, "ARCHIVED"); errorCode(err) != "INVALID_PAGE_TOKEN" {
+	if _, err := api.Notes.decodeCursor(page.Token, "ARCHIVED"); errorCode(err) != "INVALID_PAGE_TOKEN" {
 		t.Fatal("cursor state was not enforced")
 	}
-	if _, err := api.decodeCursor(page.Token+"x", "NORMAL"); errorCode(err) != "INVALID_PAGE_TOKEN" {
+	if _, err := api.Notes.decodeCursor(page.Token+"x", "NORMAL"); errorCode(err) != "INVALID_PAGE_TOKEN" {
 		t.Fatal("cursor signature was not enforced")
 	}
 	var spec map[string]any
@@ -484,6 +483,8 @@ func TestConfigRejectsUnknownAndInvalidValues(t *testing.T) {
 	for _, mutate := range []func(*Settings){
 		func(s *Settings) { s.Memos.BaseURL = "https://user:password@example.com" },
 		func(s *Settings) { s.Memos.User = "users/../other" },
+		func(s *Settings) { s.Memos.PageSize = -1 },
+		func(s *Settings) { s.Memos.PageSize = 1001 },
 		func(s *Settings) { s.StateDir = s.IndexDir },
 		func(s *Settings) { s.AccessTokens[0].Scopes = []string{"notes:delete"} },
 		func(s *Settings) { s.Sync.PollSeconds = 0 },

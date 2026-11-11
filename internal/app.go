@@ -17,7 +17,7 @@ type App struct {
 	Records       *RecordService
 	Reviews       *ReviewService
 	Search        *SearchService
-	AI            *AIService
+	LLM           LLMProvider
 	Chat          *ChatService
 	Map           *MapService
 	Feishu        *FeishuService
@@ -38,14 +38,12 @@ func NewApp(settings Settings, store *Store, source Source) *App {
 	a.Notes = NewNoteService(settings, store, source)
 	a.Records, a.Reviews = NewRecordService(store, source), NewReviewService(store, source)
 	a.Search = NewSearchService(store, source, nil)
-	a.AI = NewAIService(a.Search, nil)
-	a.AI.legacyDisabled = true
 	a.Chat = NewChatService(store, a.Notes, a.Records, nil)
-	a.Map = NewMapService(store, a.Notes)
+	a.Map = NewMapService(store)
 	a.Notifications = NewNotificationService(store, a.Reviews, nil)
 	a.Feishu = NewFeishuService(store, source, a.Records, a.Reviews, a.Notifications)
 	if a.Feishu != nil {
-		a.Feishu.Search, a.Feishu.AI = a.Search, a.AI
+		a.Feishu.Search = a.Search
 	}
 	a.Notifications.Transport = NewFeishuDelivery(store, a.Reviews, a.Feishu)
 	a.Notifications.channelTransport = a.notificationTransport
@@ -91,7 +89,7 @@ func OpenApp(settings Settings) (_ *App, result error) {
 		if err != nil {
 			return nil, err
 		}
-		a.AI.Provider = provider
+		a.LLM = provider
 		a.Chat.Provider = provider
 	}
 	if settings.Embedding.Enabled {
@@ -136,7 +134,7 @@ func (a *App) Run(ctx context.Context, server *http.Server) error {
 	}
 	start("sync", a.Worker.Run)
 	start("notifications", a.Notifications.Run)
-	start("Feishu", a.runFeishu)
+	start("Feishu", a.RunFeishu)
 	start("vector index", a.runVector)
 	go func() { done <- outcome{"HTTP", server.ListenAndServe()} }()
 	var result error
