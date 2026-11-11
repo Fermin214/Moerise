@@ -67,3 +67,25 @@ func TestSyncPaginationRestartDiscardsBothScanPasses(t *testing.T) {
 		})
 	}
 }
+
+func TestSyncMinimumPageRestartStopsWithoutProgress(t *testing.T) {
+	settings := testSettings(t)
+	store := testStore(t, settings)
+	client := fakeClient(settings, func(r *http.Request) (int, any, error) {
+		status, body, _ := identityResponse(r)
+		return status, body, nil
+	})
+	attempts := 0
+	source := paginationRestartSource{Source: client, list: func(string, *int64, string) ([]Memo, string, error) {
+		attempts++
+		return nil, "", errMemosPaginationRestartAtMinimum
+	}}
+	_, err := NewSyncService(store, source).Sync(t.Context(), Job{Mode: "full"})
+	if err != errMemosResponseTooLarge || attempts != 2 {
+		t.Fatalf("minimum-page retry did not terminate: attempts=%d error=%v", attempts, err)
+	}
+	status, err := store.Status()
+	if err != nil || status.Watermark != nil {
+		t.Fatalf("failed scan advanced watermark: %+v %v", status, err)
+	}
+}

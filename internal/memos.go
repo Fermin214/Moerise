@@ -17,6 +17,7 @@ import (
 
 var errMemosResponseTooLarge = upstreamError("UPSTREAM_PROTOCOL", "Memos response exceeded the size limit")
 var errMemosPaginationRestart = upstreamError("UPSTREAM_PROTOCOL", "Memos pagination must restart with a smaller page size")
+var errMemosPaginationRestartAtMinimum = upstreamError("UPSTREAM_PROTOCOL", "Memos pagination must restart with page size one")
 
 type Source interface {
 	Identity(context.Context) (string, error)
@@ -60,17 +61,24 @@ func (m *MemosClient) request(ctx context.Context, path string, query url.Values
 		size = min(size, int(m.pageSize.Load()))
 		query.Set("pageSize", strconv.Itoa(size))
 		err := m.do(ctx, http.MethodGet, path, query, nil, target)
-		if err != errMemosResponseTooLarge || size <= 1 {
+		if err != errMemosResponseTooLarge {
 			return err
 		}
-		size = max(1, size/2)
-		for limit := m.pageSize.Load(); int64(size) < limit; limit = m.pageSize.Load() {
-			if m.pageSize.CompareAndSwap(limit, int64(size)) {
-				break
+		if size > 1 {
+			size = max(1, size/2)
+			for limit := m.pageSize.Load(); int64(size) < limit; limit = m.pageSize.Load() {
+				if m.pageSize.CompareAndSwap(limit, int64(size)) {
+					break
+				}
 			}
+		} else if query.Get("pageToken") == "" {
+			return err
 		}
 		// Memos 的游标固定了批量，续页须由扫描方用新批量从头读取。
 		if query.Get("pageToken") != "" {
+			if m.pageSize.Load() == 1 {
+				return errMemosPaginationRestartAtMinimum
+			}
 			return errMemosPaginationRestart
 		}
 	}

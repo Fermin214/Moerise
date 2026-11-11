@@ -78,13 +78,19 @@ func (s *SyncService) Sync(ctx context.Context, job Job) (map[string]any, error)
 		since = &value
 	}
 	defer s.Store.DiscardScan(run)
+	restartedAtMinimum := false
 	for {
 		err := s.scan(ctx, run, job.ID, since)
 		if err == nil && full {
 			catchup := started.Unix() - int64(s.Store.Settings.Sync.OverlapSeconds)
 			err = s.scan(ctx, run, job.ID, &catchup)
 		}
-		if err != errMemosPaginationRestart {
+		if err == errMemosPaginationRestartAtMinimum {
+			if restartedAtMinimum {
+				return nil, errMemosResponseTooLarge
+			}
+			restartedAtMinimum = true
+		} else if err != errMemosPaginationRestart {
 			if err != nil {
 				return nil, err
 			}

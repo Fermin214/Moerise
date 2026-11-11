@@ -216,13 +216,18 @@ func (m *MemosClient) ListFilteredLivePage(ctx context.Context, state string, si
 }
 
 func (m *MemosClient) scanFilteredLivePage(ctx context.Context, state string, size int, cursor memosLiveCursor, limits memosLiveLimits, options LiveFilter) ([]Memo, int, error) {
-	pages := 0
+	pages, restartedAtMinimum := 0, false
 	for pages < m.config.MaxPages {
 		// 普通首屏只读取短页；跨页的同时间组改用完整批量重新收集。
 		batch := min(int(m.pageSize.Load()), max(100, size+1))
 		items, used, err := m.scanLiveBatch(ctx, state, size, cursor, limits, options, batch, m.config.MaxPages-pages)
 		pages += used
-		if err != errMemosPaginationRestart {
+		if err == errMemosPaginationRestartAtMinimum {
+			if restartedAtMinimum {
+				return nil, pages, errMemosResponseTooLarge
+			}
+			restartedAtMinimum = true
+		} else if err != errMemosPaginationRestart {
 			return items, pages, err
 		}
 	}
