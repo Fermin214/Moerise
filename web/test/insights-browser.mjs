@@ -872,7 +872,7 @@ test('English chat keeps its running stream and material picker through language
   await page.locator('[data-chat="menu"]').click();
   await page.getByRole('menuitem', { name: 'Chat history', exact: true }).click();
   await page.getByRole('dialog', { name: 'Chat history', exact: true }).waitFor();
-  assert.match(await page.locator('.insight-history').textContent(), /Generate insight/);
+  await page.locator('.insight-history-row', { hasText: 'Generate insight' }).waitFor();
   await page.getByRole('button', { name: 'Close', exact: true }).click();
   await mkdir('.local/i18n-review', { recursive: true });
   await page.screenshot({ path: '.local/i18n-review/chat-en.png', fullPage: true });

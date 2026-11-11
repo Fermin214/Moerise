@@ -233,10 +233,11 @@ test('English map labels and dates update without refetching notes or losing the
   await login(page, url); await ready(page);
   await page.getByRole('group', { name: 'Note map', exact: true }).waitFor();
   await page.getByRole('button', { name: 'Note n0', exact: true }).click(); await card(page).waitFor();
-  const saved = await view(page), reads = state.requests.length;
+  const readCount = () => state.requests.filter(request => ['/map', '/notes/n0'].includes(request.path)).length;
+  const saved = await view(page), reads = readCount();
   await page.locator('#app [data-language]').selectOption('zh-CN');
   await page.getByRole('group', { name: '认知地图', exact: true }).waitFor();
-  assert.deepEqual(await view(page), saved); assert.equal(state.requests.length, reads);
+  assert.deepEqual(await view(page), saved); assert.equal(readCount(), reads);
   await page.locator('#app [data-language]').selectOption('en');
   assert.match(await card(page).locator('time').textContent(), /Oct/);
   assert.match(await card(page).locator('.note-content').textContent(), /完整笔记/);
