@@ -3,7 +3,9 @@ package moerise
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"io"
 	"mime/multipart"
 	"net/http"
@@ -84,6 +86,20 @@ type telegramMessage struct {
 }
 
 func (s *TelegramDelivery) request(ctx context.Context, method, contentType string, body io.Reader) (telegramMessage, error) {
+	bot, _, _ := strings.Cut(configured(s.config.BotToken), ":")
+	rateKey := hashBytes(canonicalJSON([]string{"telegram", bot}))
+	if s.Store != nil {
+		var retryAt float64
+		err := s.Store.state.QueryRow(`SELECT retry_at FROM notification_rate_limits WHERE provider_key = ?`, rateKey).Scan(&retryAt)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return telegramMessage{}, err
+		}
+		if remaining := retryAt - nowSeconds(); remaining > 0 {
+			return telegramMessage{}, &notificationRetryError{
+				error: upstreamError("CHANNEL_RATE_LIMITED", "Telegram rate limit reached"),
+				after: time.Duration(remaining * float64(time.Second))}
+		}
+	}
 	unknown := upstreamError("SEND_OUTCOME_UNKNOWN", "Telegram send outcome is unknown")
 	var result struct {
 		OK         *bool           `json:"ok"`
@@ -117,6 +133,13 @@ func (s *TelegramDelivery) request(ctx context.Context, method, contentType stri
 			if after <= 0 || after > 1<<31-1 {
 				after = 60
 			}
+			if s.Store != nil {
+				if _, err := s.Store.state.Exec(`INSERT INTO notification_rate_limits (provider_key, retry_at) VALUES (?, ?)
+					ON CONFLICT(provider_key) DO UPDATE SET retry_at = MAX(retry_at, excluded.retry_at)`,
+					rateKey, nowSeconds()+float64(after)); err != nil {
+					return result.Result, err
+				}
+			}
 			return result.Result, &notificationRetryError{
 				error: upstreamError("CHANNEL_RATE_LIMITED", "Telegram rate limit reached"), after: time.Duration(after) * time.Second}
 		}
@@ -126,7 +149,6 @@ func (s *TelegramDelivery) request(ctx context.Context, method, contentType stri
 		return result.Result, upstreamError("CHANNEL_REJECTED", "Telegram rejected the notification")
 	}
 	chat, _ := strconv.ParseInt(configured(s.config.Destination), 10, 64)
-	bot, _, _ := strings.Cut(configured(s.config.BotToken), ":")
 	botID, _ := strconv.ParseInt(bot, 10, 64)
 	fromBot := result.Result.From.IsBot && result.Result.From.ID == botID
 	channelPost := result.Result.Chat.Type == "channel" && result.Result.From.ID == 0

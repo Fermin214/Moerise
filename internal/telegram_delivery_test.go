@@ -233,6 +233,9 @@ func TestTelegramFullReviewRateLimitAndChannelRecovery(t *testing.T) {
 	if _, err := store.state.Exec("UPDATE notifications SET available_at = 0 WHERE id = ?", delayedID); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := store.state.Exec("DELETE FROM notification_rate_limits"); err != nil {
+		t.Fatal(err)
+	}
 	fail = "unknown"
 	if !deliver() || deliver() {
 		t.Fatal("unknown part was resent or released its successor")
@@ -427,6 +430,36 @@ func TestTelegramLongFooterDelivery(t *testing.T) {
 	if _, err := queue.enqueue("review", "long-footer", batch.Date, &batch.ID, nil); err != nil {
 		t.Fatal(err)
 	}
+	if worked, err := queue.Deliver(t.Context()); err != nil || !worked {
+		t.Fatalf("prepare review and header: %v", err)
+	}
+	var footerID, tailID, rootID string
+	var footerPosition int
+	if err := store.state.QueryRow(`SELECT notification_id, root_id, position FROM feishu_review_parts
+		WHERE kind = 'footer' ORDER BY position LIMIT 1`).Scan(&footerID, &rootID, &footerPosition); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.state.QueryRow(`SELECT notification_id FROM feishu_review_parts
+		WHERE root_id = ? AND position = ?`, rootID, footerPosition+1).Scan(&tailID); err != nil {
+		t.Fatal(err)
+	}
+	// Recreate an unsplit footer and a later part from an older persisted queue.
+	if _, err := store.state.Exec(`UPDATE feishu_review_parts SET byte_start = 0, byte_end = 0 WHERE notification_id = ?`, footerID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.state.Exec(`UPDATE feishu_review_parts SET kind = 'empty', byte_start = 0, byte_end = 0 WHERE notification_id = ?`, tailID); err != nil {
+		t.Fatal(err)
+	}
+	deployment, source := store.Settings, reviews.Source
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store = testStore(t, deployment)
+	reviews = NewReviewService(store, source)
+	delivery = newTelegramDelivery(deployment.Channel, store, reviews).(*TelegramDelivery)
+	defer delivery.http.CloseIdleConnections()
+	delivery.baseURL = server.URL
+	queue = NewNotificationService(store, reviews, delivery)
 	for range 10 {
 		worked, err := queue.Deliver(t.Context())
 		if err != nil {
@@ -444,6 +477,9 @@ func TestTelegramLongFooterDelivery(t *testing.T) {
 	if err != nil || legacy != strings.Join(texts[3:], "") {
 		t.Fatal("existing footer parts no longer render the entire footer")
 	}
+	if detail, err := queue.Detail(tailID); err != nil || detail.Notification.Status != "sent" {
+		t.Fatal("splitting the persisted footer blocked its successor")
+	}
 }
 
 func TestFeishuWebhookIgnoresOtherChannelFields(t *testing.T) {
@@ -454,5 +490,54 @@ func TestFeishuWebhookIgnoresOtherChannelFields(t *testing.T) {
 	settings.Notifications.Enabled = true
 	if err := settings.Validate(); err != nil {
 		t.Fatalf("saved fields for other channels prevented selecting a Feishu webhook: %v", err)
+	}
+}
+
+func TestTelegramBotCooldownSurvivesRestart(t *testing.T) {
+	settings := testSettings(t)
+	settings.Channel = telegramTestChannel()
+	store := testStore(t, settings)
+	calls := 0
+	limited := true
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls++
+		if limited {
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = io.WriteString(w, `{"ok":false,"error_code":429,"parameters":{"retry_after":90}}`)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(telegramTestResponse(calls, false))
+	}))
+	defer server.Close()
+	makeDelivery := func(channel ChannelConfig) *TelegramDelivery {
+		delivery := newTelegramDelivery(channel, store, nil).(*TelegramDelivery)
+		delivery.baseURL = server.URL
+		t.Cleanup(delivery.http.CloseIdleConnections)
+		return delivery
+	}
+	delivery := makeDelivery(settings.Channel)
+	if _, err := delivery.sendReviewText(t.Context(), Notification{}, "first"); errorCode(err) != "CHANNEL_RATE_LIMITED" {
+		t.Fatalf("initial rate limit: %v", err)
+	}
+	otherChat := settings.Channel
+	otherChat.Destination = new("790")
+	otherChat.BotToken = new("123456:rotated_abcdefghijklmnopqrstuvwxyz")
+	if _, err := makeDelivery(otherChat).sendReviewText(t.Context(), Notification{}, "new notification"); errorCode(err) != "CHANNEL_RATE_LIMITED" || calls != 1 {
+		t.Fatal("a new notification or token rotation bypassed the bot cooldown")
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store = testStore(t, settings)
+	delivery = makeDelivery(settings.Channel)
+	if _, err := delivery.sendReviewText(t.Context(), Notification{}, "after restart"); errorCode(err) != "CHANNEL_RATE_LIMITED" || calls != 1 {
+		t.Fatal("reopening product state lost the bot cooldown")
+	}
+	limited = false
+	if _, err := store.state.Exec("UPDATE notification_rate_limits SET retry_at = 0"); err != nil {
+		t.Fatal(err)
+	}
+	if receipt, err := delivery.sendReviewText(t.Context(), Notification{}, "after cooldown"); err != nil || receipt == "" || calls != 2 {
+		t.Fatalf("expired cooldown prevented sending: %v", err)
 	}
 }
