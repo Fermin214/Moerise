@@ -1,10 +1,21 @@
-# Moerise 向量模型
+# Moerise 向量模型 (Embedding)
 
-Moerise 通过独立的提供商接口生成文本向量。支持 OpenAI 兼容协议和百炼 DashScope 原生协议；Embedding 与 LLM 分别配置、独立启停。后台索引将正常与归档笔记分块，分批生成向量并持久保存构建进度。检索和漫步接口见[搜索](SEARCH.md)。
+Moerise 通过独立的向量提供商接口将笔记正文切块并转化为高维向量，为语义检索、混合检索、随机漫步以及 2D 认知地图提供计算底座。向量模型与对话模型（LLM）完全解耦，分别配置、独立启停。
 
-## 通用配置
+---
 
-在 `embedding` 中设置以下字段；基础超时、分批和并发参数沿用默认值：
+## 一、支持的模型协议
+
+Moerise 支持以下两类向量协议：
+
+1. **OpenAI 兼容协议 (`openai-compatible`)**：兼容 OpenAI 官方 `text-embedding-3-*` 系列，以及各类遵循 OpenAI 规范的第三方网关或本地模型（如 Ollama、vLLM）。
+2. **阿里云百炼 DashScope 原生协议 (`bailian` / `dashscope`)**：针对阿里云百炼 `qwen3.7-text-embedding` 等多维度多语言模型深度适配。
+
+---
+
+## 二、配置示例
+
+### 1. OpenAI 兼容协议配置
 
 ```json
 {
@@ -12,24 +23,23 @@ Moerise 通过独立的提供商接口生成文本向量。支持 OpenAI 兼容�
     "enabled": true,
     "provider": "openai-compatible",
     "protocol": "openai-compatible",
-    "base_url": "https://embedding.example.com/v1",
-    "api_key": "replace-with-your-api-key",
-    "model": "your-embedding-model",
-    "dimensions": 1024,
-    "send_dimensions": false
+    "base_url": "https://api.openai.com/v1",
+    "api_key": "sk-proj-xxxxxxxxxxxxxxxxxxxxxxxx",
+    "model": "text-embedding-3-small",
+    "dimensions": 1536,
+    "send_dimensions": false,
+    "batch_size": 20,
+    "timeout_seconds": 30,
+    "max_concurrency": 2,
+    "max_retries": 2
   }
 }
 ```
 
-适配器向基地址追加 `/embeddings`，以 Bearer 发送密钥，请求包含 `model`、`input` 文本数组和 `encoding_format: "float"`。`dimensions` 必须与模型实际输出一致，范围为 1 至 16384；`send_dimensions` 默认 `false`，适合不接受维度参数的固定维度模型，支持显式维度的服务可设为 `true`。
+- `dimensions`：模型输出的向量维度（范围 1 至 16384）。必须与实际返回值严格相符。
+- `send_dimensions`：针对支持显式指定输出维度的模型（如 OpenAI text-embedding-3），可设为 `true`；对固定维度模型保持 `false`。
 
-返回使用 `data[].index` 和 `data[].embedding`，按索引恢复顺序；`usage.total_tokens` 可省略，省略时用量计为 0。文档与查询共用该协议，不添加任务前缀，不发送供应商专用参数；`query_instruction` 必须为空。服务应提供适合文档与查询共用的模型。
-
-## 百炼配置
-
-使用阿里云百炼北京地域的 `qwen3.7-text-embedding`，默认 1024 维。API Key 与调用地址须属于对应业务空间和地域；在百炼控制台获取业务空间 ID 和该空间的 API Host。
-
-在服务配置中填写 `embedding`：
+### 2. 阿里云百炼配置
 
 ```json
 {
@@ -37,8 +47,8 @@ Moerise 通过独立的提供商接口生成文本向量。支持 OpenAI 兼容�
     "enabled": true,
     "provider": "bailian",
     "protocol": "dashscope",
-    "base_url": "https://replace-with-your-workspace-id.cn-beijing.maas.aliyuncs.com/api/v1",
-    "api_key": "replace-with-a-beijing-bailian-api-key",
+    "base_url": "https://dashscope.aliyuncs.com/api/v1",
+    "api_key": "sk-xxxxxxxxxxxxxxxxxxxxxxxx",
     "model": "qwen3.7-text-embedding",
     "dimensions": 1024,
     "batch_size": 20,
@@ -50,78 +60,49 @@ Moerise 通过独立的提供商接口生成文本向量。支持 OpenAI 兼容�
 }
 ```
 
-`base_url` 是包含 `/api/v1` 的 DashScope 基地址，例如北京公共端点 `https://dashscope.aliyuncs.com/api/v1` 或业务空间专属地址。适配器添加 `/services/embeddings/text-embedding/text-embedding`，不支持 OpenAI 兼容接口的 `/compatible-mode/v1` 地址。配置值直接从 JSON 读取，不替换环境变量。
+- `base_url`：包含 `/api/v1` 的 DashScope 基地址（北京公共端点或业务空间专属地址）。适配器将自动追加 `/services/embeddings/text-embedding/text-embedding`。
+- `dimensions`：`qwen3.7-text-embedding` 原生支持 256, 512, 768, 1024, 1536, 2048, 2560 维（默认 1024）。
 
-| 字段 | 含义与范围 |
-| --- | --- |
-| `enabled` | 默认 `false`；启用时校验模型配置，关闭时基础记录与回顾照常运行 |
-| `provider`、`protocol` | `bailian`、`dashscope` |
-| `base_url`、`api_key` | DashScope HTTP(S) 基地址与该业务空间的 API Key；地址不含账号密码、查询参数或片段 |
-| `model` | `qwen3.7-text-embedding` |
-| `dimensions` | 默认 1024；模型支持 256、512、768、1024、1536、2048、2560 |
-| `batch_size` | 每个 HTTP 请求的文本数量，默认 20，范围 1 至 20 |
-| `timeout_seconds` | 一次业务调用的总超时，包含并发等待、分批请求和重试；默认 30 秒，范围 1 至 120 秒 |
-| `max_concurrency` | 一个提供商客户端同时处理的批次数量，默认 2，范围 1 至 8 |
-| `max_retries` | 每批首次请求之后的重试次数，默认 2，范围 0 至 3 |
-| `query_instruction` | 可选查询任务说明，仅在查询请求中发送；最多 4096 个 UTF-8 字节 |
+---
 
-供应商与模型支持范围的依据见[百炼文本向量接口](https://help.aliyun.com/zh/model-studio/text-embedding-synchronous-api)。百炼始终发送原生维度参数，`send_dimensions` 保持 `false`。
+## 三、分块策略与向量索引构建
 
-默认每批 20 条文本，同一模型客户端最多同时执行两个批次，超过上限的请求等待。`max_concurrency` 限制模型批次，不限制整个 REST 服务的请求数。
+### 1. 文本分块规则 (`paragraph-v1-2048`)
+- **短笔记处理**：正文字符较短的笔记整篇作为单个分块。
+- **长笔记分块**：按自然段落、空行进行切分；超长段落沿标点与 Unicode 码点切分，绝不截断 UTF-8 字符。
+- **元数据保留**：每个分块精确记录其在原始正文中的 UTF-8 字节偏移区间 `[byte_start, byte_end)` 以及对应的起止行号，确保检索高亮与定位严丝合缝。
 
-## 连接检查
+### 2. 索引代次（Generation）与空间隔离
+- 向量数据存储于 `index.sqlite3`，支持随时从 Memos 重新生成。
+- 当用户在 Web 设置中更换向量模型、修改维度或更换 Provider 时，系统将分配全新的“空间代次”。
+- 新代次在后台异步批量构建，构建期间旧代次继续为前端提供检索服务；全量构建就绪后原子切换，避免检索功能出现真空期。
 
-Web 设置页支持分别检查已保存的文档与查询连接，并显示索引状态和片段进度；检查不写笔记。连接错误与索引错误分别显示，协议见[产品设置](SETTINGS.md#模型与索引状态)。
+---
 
-原生二进制：
+## 四、连接诊断与健康检查
 
+在保存模型配置后，建议通过诊断命令核验连通性。该命令会发送微小的测试文本，验证端到端网络、身份凭证与返回向量维度。
+
+**二进制环境：**
 ```bash
 ./build/moerise check-embedding --config .local/config.json
 ```
 
-容器部署：
-
+**Docker 容器环境：**
 ```bash
 docker compose exec -T moerise moerise check-embedding
 ```
 
-命令使用两个内置虚构文档和一个示例查询，独立于 Memos 与数据库运行。成功时输出 JSON，包含提供商、协议、模型、维度、文档与查询向量数量、总 Token 用量和耗时；退出码为 0。失败时返回非零退出码和错误，不输出 API Key、文本或向量数值。检查会产生少量模型用量。
-
-`check-config` 只校验本地配置结构，`check-embedding` 通过实际模型请求检查连接和返回格式。检索评测的执行方式见[开发指南](DEVELOPMENT.md#检索评测)。
-
-## 调用与返回
-
-业务服务通过 `EmbeddingProvider` 提交文档或查询文本，不直接处理 DashScope 请求结构。每次调用接受 1 至 1000 条非空 UTF-8 文本，每条最多 65536 字节；超过批次大小时顺序分批，输入不截断。百炼查询按 `text_type=query` 发送，入库文档按 `text_type=document` 发送；两者使用同一模型和维度。
-
-百炼适配器显式请求 `output_type=dense` 和 `dimension`，按返回的 `text_index` 恢复输入顺序，将向量转为 float32，并汇总 Token 用量。返回数量、位置、维度、数值或用量不符合契约时整次调用失败，不返回部分向量。向量保留供应商数值，不额外归一化。
-
-模型连接使用标准 HTTP 代理环境设置，拒绝自动跟随重定向。Memos 连接仍直接访问来源，两者的配置与传输分开。
-
-## 故障处理
-
-| 错误 | 处理方法 |
-| --- | --- |
-| `EMBEDDING_DISABLED` | 将 `embedding.enabled` 设为 `true` 并填写模型配置 |
-| `EMBEDDING_AUTH` | 检查 API Key、业务空间、地域与模型访问权限；不自动重试 |
-| `EMBEDDING_REJECTED` | 检查接口地址、模型及请求参数；不自动重试 |
-| `EMBEDDING_RATE_LIMITED` | 429 限流；按 `Retry-After` 与指数退避有限重试 |
-| `EMBEDDING_UNAVAILABLE` | 网络、响应读取或 5xx 故障；有限重试 |
-| `EMBEDDING_PROTOCOL` | 返回数量、位置、维度、数值或用量错误；不自动重试 |
-
-等待与请求受同一次调用的总超时限制。取消或达到超时后结束调用；供应商错误正文不进入错误输出。
-
-## 分块与向量索引
-
-启用 `embedding` 后，服务在完整同步成功后自动构建向量索引。索引使用独立工作循环，每次处理至多 `batch_size` 个片段，单批向量成功后写入 `index.sqlite3`；模型故障按 `sync.retry_seconds` 间隔重试，不阻塞记录、同步或每日回顾。发送新文档向量请求前检查来源身份，逐条复查涉及的笔记；来源变化先修正投影，再重新规划索引。
-
-分块版本为 `paragraph-v1-2048`。正文不超过 2048 个 Unicode 码点时整条处理；长正文在上限内优先按空行分隔的段落组合，支持 LF、CRLF 和仅含空格或制表符的空行。超长段落优先按换行切分，单行超过上限时按码点切分；不截断正文、不拆开 UTF-8 字符。全空白片段不生成向量，空白笔记仍保留笔记元数据。附件字节不进入文档向量。
-
-每个片段保存笔记资源名、顺序、原始正文的 UTF-8 字节起止位置、起止行号、文本和 SHA-256 摘要。字节位置从 0 开始，终点不包含在区间中；行号从 1 开始，末尾换行属于其前一行。笔记另存来源摘要和正文摘要。向量以小端 float32 连续字节保存，保留供应商数值。
-
-每个索引代次保存提供商、协议、调用地址、模型、维度、分块版本和投影修订号。向量空间摘要由前六项及通用协议的维度发送选项共同确定，百炼既有空间摘要保持兼容；API Key、批次大小、重试参数和查询任务说明不改变文档向量空间。修改模型空间或分块方式后建立新代次，活动代次在替换完成前保留；只有全部片段具备有效向量，且投影修订号一致时才原子切换。
-
-投影更新或删除会触发新代次，同一空间内按片段正文摘要复用向量。归档、置顶、时间及附件元数据变化不重新计算正文向量；正文变化只计算变化后的片段。构建期间发生投影变化时重新规划，并复用已完成批次。重启后从持久片段进度继续，失败或中断的批次重新请求，已提交的批次不重复调用。发布完成后清理被替换的代次及无引用向量。
-
-通过具备 `sync:read` 的凭据读取 `GET /api/ext/v1/sync`，查看 `vector_index.active`、`building`、`ready` 和 `completed_chunks`。`ready` 仅描述索引与配置及投影的一致性；来源状态单独看 `source_ok`。
-
-分块、向量、缓存和构建进度均为派生数据，不进入产品状态备份。停止服务后执行 `rebuild-index` 可清空并重新生成索引；创建幂等记录、回顾历史、阅读与通知状态保留在 `state.sqlite3`。恢复产品状态快照后重新同步并构建向量。命令见[运行与恢复](OPERATIONS.md#重建索引)。
+成功输出示例：
+```json
+{
+  "status": "ok",
+  "provider": "openai-compatible",
+  "model": "text-embedding-3-small",
+  "dimensions": 1536,
+  "documents_count": 2,
+  "query_count": 1,
+  "total_tokens": 18,
+  "duration_ms": 620
+}
+```

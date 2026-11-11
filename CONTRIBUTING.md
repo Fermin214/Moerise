@@ -1,22 +1,38 @@
 # Contributing to Moerise
 
-Issues, pull requests and design discussions are welcome in English or Chinese. A useful bug report explains what you tried, what you expected, what happened, and the relevant Moerise and Memos versions. Remove credentials and private note content from examples.
+We welcome issues, pull requests, and architecture discussions in English or Simplified Chinese.
 
-For a substantial feature, describe the use case in an issue first so the design can be discussed. For a fix, include enough detail to reproduce the problem and explain how you checked the result.
+When reporting bugs, please provide a clear reproduction: explain what you attempted, the expected outcome, the actual result, and the relevant Moerise and Memos versions. Never include private credentials or confidential note content in issues or pull requests.
 
-## Development setup
+For major feature proposals, open an issue first to discuss the requirements and design before writing code. For bug fixes, include tests or clear verification steps demonstrating the fix.
 
-Use Linux or Linux containers, Go 1.27+, Node.js 24+ and npm. Docker Engine is needed for real Memos integration tests. Ordinary unit tests and the Web build do not need Docker, a running Memos instance or model credentials.
+---
+
+## Development Setup
+
+The development environment requires Linux or Linux containers, Go 1.27+, Node.js 24+, and npm. Docker Engine is required for integration tests running against a real Memos container. Standard unit tests and Web frontend builds do not require Docker, a live Memos instance, or third-party model credentials.
 
 ```bash
+# Download Go dependencies
 go mod download
+
+# Install frontend dependencies and build
 npm --prefix web ci
 npm --prefix web run build
+
+# Run Go unit tests and frontend unit tests
 go test ./...
 npm --prefix web test
 ```
 
-For a full local stack, follow [Getting started](docs/GETTING-STARTED.md). To run Core from source, copy `config.example.json` to `.local/config.json`, configure a separate test Memos instance, and use separate `.local/state` and `.local/index` directories. Configure `web.enabled`, `web.public_origin` and a state encryption key for browser access. Check the field names in the template.
+### Running from Source
+
+To run Moerise Core from source:
+
+1. Copy `config.example.json` to `.local/config.json`.
+2. Configure a dedicated test Memos instance and set isolated directories for `.local/state` and `.local/index`.
+3. Set `web.enabled` to `true`, configure `web.public_origin`, and generate a 32-byte base64 state encryption key.
+4. Start Core and the Web dev server:
 
 ```bash
 go run . check-config
@@ -25,56 +41,76 @@ npm --prefix web run build
 npm --prefix web start
 ```
 
-Core defaults to port 8787 and Web to port 3000. Web's `PUBLIC_ORIGIN` must match Core's configured public origin; `CORE_ORIGIN` selects Web's fixed upstream. Web serves `web/dist`, so rebuild after source edits. See the [Chinese development guide](docs/DEVELOPMENT.md) for integration scenarios and optional provider checks.
+By default, Moerise Core listens on port `8787` and Web listens on port `3000`. Web forwards `/api/app/v1` calls to `CORE_ORIGIN` (defaults to `http://127.0.0.1:8787`). Web serves compiled assets from `web/dist`, so rebuild the frontend after editing source files. See [Development Guide](docs/DEVELOPMENT.md) for full details on integration suites and test scripts.
 
-## Find your way around
+---
+
+## Codebase Organization
 
 | Path | Purpose |
 | --- | --- |
-| `main.go`, `internal/` | CLI, Go services, HTTP APIs and platform adapters |
-| `internal/openapi.json` | Embedded API contract |
-| `internal/migrations/` | Versioned SQLite migrations |
-| `web/src/` | Browser UI: JavaScript, HTML and CSS, without runtime packages |
-| `web/server.mjs`, `web/build.mjs` | Same-origin proxy, static serving and Web build |
-| `web/test/` | Node unit tests and Playwright browser suites |
-| `tests/` | Integration tests against real Memos |
-| `scripts/` | Joint acceptance flows and performance tools |
-| `docs/` | Product, API, architecture and operations documentation |
+| `main.go`, `internal/` | CLI commands, Go background services, HTTP APIs, and platform adapters |
+| `internal/openapi.json` | Embedded OpenAPI v3 specification |
+| `internal/migrations/` | Versioned SQLite migrations for `state.sqlite3` and `index.sqlite3` |
+| `web/src/` | Lightweight vanilla JavaScript/HTML/CSS frontend (zero runtime dependencies) |
+| `web/server.mjs`, `web/build.mjs` | Static file server, same-origin proxy, and asset build scripts |
+| `web/test/` | Node.js unit tests and Playwright browser integration tests |
+| `tests/` | End-to-end integration tests using live Memos containers |
+| `docs/` | Comprehensive technical, operational, and API documentation |
 
-Memos is the authority for notes, tags, attachments and accounts. Access it through official APIs and respect the bound author, including when an administrator PAT is used. `state.sqlite3` contains product state that needs backups; `index.sqlite3` is rebuildable. External REST/MCP access is read-only.
+### Key Development Guidelines
 
-Add a new numbered SQL migration for schema changes; do not rewrite applied migrations. Update API definitions and documentation together. Keep credentials and private source material out of logs, repository files and browser storage.
+1. **Memos Authority**: Memos remains the single source of truth for notes, tags, media attachments, and authentication. Always interact with Memos through its official APIs, respecting the author boundaries bound to the instance.
+2. **Dual-Database Invariant**: `state.sqlite3` holds irreplaceable application state (settings, chat sessions, review history); `index.sqlite3` holds disposable indexes that must be rebuildable from Memos at any time.
+3. **Database Migrations**: Add numbered SQL files in `internal/migrations/` for schema changes. Never modify an existing, committed migration.
+4. **Read-Only External Access**: External machine interfaces (`/api/ext/v1` and `/mcp`) are strictly read-only. Write operations are reserved for authenticated user client sessions.
 
-## Check a change
+---
 
-Choose existing checks that exercise the behavior you changed:
+## Verifying Changes
+
+Before submitting pull requests, run the test suites relevant to your modifications:
 
 ```bash
+# Code formatting and static analysis
 go vet ./...
 gofmt -l main.go internal tests
+
+# Go unit tests
 go test ./...
+
+# Frontend build and unit tests
 npm --prefix web run build
 npm --prefix web test
+
+# Playwright browser end-to-end tests (requires Chromium)
 cd web && npx playwright install chromium && npm run test:browser
 ```
 
-For source synchronization, Memos protocol or backup changes, run `go test -tags=integration ./tests -v -count=1` from the repository root with Docker available. CI also checks a build without cgo, Go races and dependencies for known vulnerabilities. The race detector needs a C toolchain.
+For changes affecting Memos synchronization, protocol handling, or backups, run the integration test suite with Docker running:
 
-Use end-to-end checks for user behavior. Add focused tests for important boundaries or failure paths that those flows cannot reliably exercise. Documentation changes need factual and link checks.
+```bash
+go test -tags=integration ./tests -v -count=1
+```
 
-## Work on translations
+---
 
-English and Simplified Chinese are supported. The translation layer is in `web/src/i18n.js`; Chinese source phrases serve as message keys, and `web/src/en.js` provides English messages. Missing translations fall back to the source phrase. An unsupported browser language falls back to English.
+## Working with Translations
 
-- Use `l('中文消息', { name: value })` for a deferred message and bind it with `setText` or `setAttr`. Named or numbered placeholders let translators change word order. English messages can use a function for singular/plural wording.
-- Annotate static captions with `data-i18n`; use `data-i18n-placeholder`, `data-i18n-aria-label` and similar attributes for accessible names and hints. Preserve icons and keyboard shortcuts.
-- `setText` creates a bound caption; append icons or keyboard shortcuts after binding, or use `data-i18n` on static markup. Avoid constructing translated text with template interpolation; bind a complete message with placeholders instead. Use `locale()` with `Intl.DateTimeFormat` for dates.
-- Translate interface text, rather than note bodies, tags, filenames, custom prompts or conversation history. New language support should preserve these boundaries.
+Moerise supports English and Simplified Chinese. The translation layer resides in `web/src/i18n.js`:
+- Chinese source phrases serve as message keys; `web/src/en.js` maps keys to English messages.
+- Missing translations automatically fall back to the source Chinese string.
+- If the browser language is neither Chinese nor English, the UI defaults to English.
 
-The browser stores only the explicit language preference under `moerise.language`. Switching language updates text in place and preserves drafts, secret inputs, selections, map position and active chat streams. A generation request freezes its reply language along with its request ID, so a retry remains the same request after a language switch. An unchanged built-in insight prompt uses an English equivalent for English requests; custom prompts are used verbatim.
+### Internationalization Guidelines
 
-Check English and Chinese on desktop and narrow screens. The browser suites pin Chinese fixtures explicitly and include English workflows. Confirm accessible labels, dates, plural forms, errors and private-data handling as well as visible captions.
+- Use `l('中文文案', { name: value })` for parameterized messages bound via `setText` or `setAttr`. Use named placeholders so translators can adapt word order.
+- Annotate static elements in HTML templates with `data-i18n`. Use `data-i18n-placeholder` or `data-i18n-aria-label` for accessibility attributes.
+- Avoid dynamic string concatenation. Always use full message keys with placeholders.
+- Translate interface controls and notifications only. Never translate user note bodies, tags, filenames, custom prompts, or chat conversation records.
+
+---
 
 ## License
 
-Contributions are distributed under the project's [MIT license](LICENSE). Keep applicable third-party notices with reused code and assets.
+All contributions are licensed under the project's [MIT License](LICENSE).

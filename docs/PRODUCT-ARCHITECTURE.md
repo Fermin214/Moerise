@@ -1,248 +1,162 @@
 # Moerise 产品与架构
 
-## 功能范围
+Moerise 是基于 Memos 的单用户自托管个人笔记增强服务。Moerise Core 负责同步、索引、回顾调度、检索算法与模型适配，通过现代化 Web 界面、只读 REST/MCP 接口以及消息渠道（Telegram、飞书）提供全方位能力。
 
-Moerise 是基于 Memos 的开源、自托管个人笔记服务。Core 提供同步、记录、回顾、检索和模型适配，通过 Web、只读 REST/MCP 和飞书提供入口。
+---
 
-一个实例绑定一名 Memos 用户。Memos 保存原文、标签、附件和账户，Core 保存产品状态与可重建索引。Web 支持登录、组合筛选时间线、完整笔记管理、附件、持久设置、每日回顾、语义漫步、自然聊天洞察和二维认知地图。后续范围与 Android 计划见[路线图](ROADMAP.md)。
+## 一、架构设计原则
 
-产品行为见[产品需求](PRD.md)，可调用接口、配置及操作方式见 [API v1](API-V1.md)和[运行与恢复](OPERATIONS.md)。
+1. **Memos 权威存储**：Memos 是笔记的唯一权威数据源，存储原始 Markdown 正文、原生标签、图片与附件以及用户凭据。Moerise 仅通过 Memos 官方 API 交互，绝不破坏、重排或隐式修改用户的原始数据。
+2. **单实例单作者绑定**：每个 Moerise 实例严格绑定 Memos 中的单一作者。无论使用管理员 PAT 还是普通账号，所有读写、同步与检索均严格限制在该绑定作者的数据范围内。
+3. **状态与索引解耦（双数据库架构）**：
+   - `state.sqlite3`：保存必须备份的产品业务状态（加密凭据、用户设置、每日回顾计划与历史、AI 对话会话与消息、通知发送队列）。
+   - `index.sqlite3`：保存可随时从 Memos 完整重建的检索与布局数据（FTS5 全文索引、向量语义索引、认知地图 2D 坐标快照）。
+4. **外部接口严格只读**：面向外部 AI 工具与自动化脚本的 REST API (`/api/ext/v1`) 和 MCP Server (`/mcp`) 实施服务端只读白名单机制，杜绝任何形式的外部越权写入。
 
-Web 集成沿用 Memos + Core + Web 的模块化单体架构。接口、身份、笔记管理、固定回顾计划、随机漫步、自然聊天和地图均调用共享服务。
+---
 
-## 组件职责
+## 二、系统组件与职责
 
-| 组件 | 职责 |
-| --- | --- |
-| 官方 Memos | 保存原始笔记、标签、图片、附件和账户，执行原生权限，通过官方 API 提供基础读写 |
-| Moerise Core | 同步、索引、身份范围、持久任务、笔记写入适配、回顾、检索、模型调用与通知 |
-| Moerise Web | 独立构建的浏览器客户端、同源固定代理、登录、组合筛选、笔记管理与受保护附件 |
-| 飞书应用机器人 | 专用私聊文字、图片与文件记录，以及每日回顾推送 |
-| 飞书自定义机器人 Webhook | 向群发送每日回顾 |
-| 机器 REST 入口 | 同时检查 Bearer Scope 和只读操作白名单，提供笔记、同步状态、已有回顾和检索 |
-| 外部 MCP | 只读获取和搜索笔记，可读取已有回顾；服务端限制工具发现与调用，不开放笔记写入或产品状态变更 |
-
-Memos 是笔记的唯一权威数据源，Core 只通过官方 API 访问原文。原生客户端与专用记录机器人调用同一写入服务，外部 Agent 使用只读 REST 或 MCP。笔记编辑和删除通过 Memos 完成。
-
-回顾、检索和模型调用由业务服务处理；HTTP 与消息适配器负责请求、平台收发、格式和回执。旧渠道恢复只处理已有生成记录和发送结果，外部机器不能发起新生成。
-
-### Web 集成边界
-
-Web 通过同源 `/api/app/v1` 调用 Core，Core 只通过 Memos 官方认证、笔记和文件接口访问来源，不开放任意 Memos 路径透传。浏览器会话、后台 PAT 和外部机器 Bearer 分离，登录身份必须匹配绑定作者。App 统一持有 Store、共享业务服务、Provider 和后台循环，REST、MCP、飞书和客户端适配器通过依赖注入复用。
-
-对外机器 REST/MCP 使用只读操作白名单；外部结构化生成入口关闭。通知确认等操作使用绑定作者会话的受控管理适配。笔记编辑、删除与附件能力由共享服务调用官方 API，Web 路由、Cookie 和展示状态不进入业务层。
-
-日常设置使用带版本的加密产品状态，部署值只负责首次初始化。App 排空使用旧版本的操作后发布新配置，按变化替换模型与渠道客户端，复用 Store 和共享服务；LLM 变化不重建向量，Embedding 按空间代次隔离。飞书旧队列在密钥变更前迁移为稳定状态密钥，保留任务及回执状态。协议见[产品设置](SETTINGS.md)。
-
-`state.sqlite3` 保存浏览器会话、持久设置、全天回顾计划与时段分配。`review_batches` 和 `review_items` 保存计划及选入历史，`review_plans` 冻结设置版本与规则，`review_plan_slots` 保存互不重叠的条目区间，通知通过 `slot_id` 绑定分配；这些关系与选入历史在同一事务中建立。无分配引用的历史通知按原整批结果恢复。漫步路径由调用方传回，不写跨入口阅读历史。
-
-向量与地图布局属于 `index.sqlite3` 的可重建状态。自然聊天的会话、消息、材料版本及主动保存关联保存在 `state.sqlite3`，不因索引重建删除；共享 Chat 编排复用 Notes、Records 和 LLM Provider。本人客户端通过 `client_chat.go` 提供归档选材、持久会话、POST SSE、取消及原回复保存，机器 REST/MCP 不开放这些路径；Web 使用原型聊天与选材布局。App 已停止旧结构化生成新调用，旧机器生成 Handler 与飞书新生成编排已删除，保留通用 LLM Provider、流式通信、搜索、历史结果解码与来源复查、已应用迁移及未完成发送恢复。产品规则只在 PRD 维护。
-
-地图布局使用 `map_layouts` 和 `map_points`，按来源实例与绑定作者保存一份向量空间的派生布局。索引迁移 `004` 建立布局表，`005` 增加快照时间与原生标签，不修改产品状态或已应用 SQL。生成快照时，只读取与投影修订一致的已发布向量代次，包含正常、归档及无文本向量的笔记；不同笔记不因正文重复而合并为同一点。每条笔记的分块按内容摘要去重、逐块归一化，再等权聚合并归一化。
-
-`pca-fixed-v2` 使用确定性的二维主成分投影，保存均值、正交基底和统一尺度。增量代次沿用同一空间的基底和尺度；聚合向量未变时坐标保持原值，仅更新来源摘要。新增与正文向量变化的点采用局部螺旋避让，间距取 `min(0.22, 0.5 / sqrt(点数))`，避免固定间距把密集语义簇撑散；先保留全部未变坐标，不移动其余点。无文本向量的点单独放置，不伪造语义信息。二维投影会损失部分高维距离；密集区域通过客户端放大后分别点选。计算不构造维度平方矩阵，检查取消信号；完整点集与布局元数据原子替换，发布时再次检查向量代次和投影修订。空间或算法版本变化不会复用旧布局，索引重建可以重新计算，不删除持久设置、会话或回顾。
-
-App 持有共享 `MapService`。向量后台任务在索引空闲时预建地图，普通增删改按 24 小时间隔合并；代次和投影修订不变时跳过全量向量扫描及布局计算。同步、向量构建和地图生成共用后台互斥锁，避免小核数服务器同时执行重任务。快照的坐标、标签、来源摘要、索引版本和生成时间持久化在索引库中；同空间旧快照在索引更新期间继续可读，模型空间或算法变化不混用旧点集。索引迁移后的旧布局在后台补齐快照数据，不额外调用模型。
-
-本人客户端通过 `client_map.go` 读取已发布点集，热读取复用不可变内存快照，冷读取只查询布局表，不访问全库正文或向量。服务不调用 LLM 或查询 Embedding，不写产品状态。会话与来源身份继续实时认证；点选完整阅读复用 Notes 和受保护附件接口，对修改、删除与失权继续实时处理。认证、运行资源等待和快照读取共用 55 秒预算；设置替换沿用 App 排空机制，退出取消绑定请求，后台生成随应用生命周期停止。机器 REST/MCP 不开放地图。协议见 [API v1](API-V1.md#认知地图)，Web 的阅读与视口行为见[Web 指南](WEB.md)。
-
-`layout_frame` 是来源、作者、算法、空间与固定基底的派生摘要，不额外持久化。Web 的 `map.js` 只维护视口和选中资源名，按该摘要在浏览器历史中恢复页面偏好；点集及权威坐标始终重新从 Core 获取，正文和附件通过 Notes 实时读取。增量发布保持视口，空间或基底变化时适配新图；页面销毁取消点集、正文及轮询，主动退出清理地图偏好，不把正文或凭据写入浏览器存储。
-
-聊天状态使用 `chat_sessions`、`chat_materials`、`chat_turns` 和 `chat_saves`。每个 turn 保存用户与助手两条逻辑消息、稳定请求 ID、原始正文、生成状态、有效 Prompt、设置版本、模型、材料引用快照及用量；流式增量与最终状态分别持久化。单会话只允许一条 running 生成，重复请求返回原 turn，异内容重用请求 ID 报冲突。Store 启动把遗留 running 转为 interrupted，保留已落盘文本，不自动调用模型；completed、failed、canceled 等终态不改写。
-
-Web 历史列表的首轮摘要从已有消息读取，不增加独立存储状态。会话切换销毁旧页面的流和临时选材，迟到响应不能回写新页面；主动停止先请求服务端取消，再读取持久终态。删除携带会话版本，并先停止生成、等待保存排空；来源失效和空材料不触发自动删除。
-
-聊天读取与修改均按实例和作者限定。材料表只保存资源名和来源摘要，不复制 Memos 原文；新生成通过共享 Notes 读取并复查来源。会话版本约束材料/标题修改，历史 turn 保留原引用和 Prompt。删除会话级联清理消息、材料及保存关联，running 生成须先结束；Memos 笔记和 Records 的写入幂等元数据不随聊天删除。保存关联固定助手消息版本和原文摘要，预留稳定写入键，重启后仍能复用。
-
-### 总体架构
-
-服务组件及数据流如下：
-
-```mermaid
-flowchart LR
-    Memos["官方 Memos：账户、原文、标签与附件"]
-    Core["Moerise Core"] -->|"官方 API：同步与读写"| Memos
-    Caller["机器 REST 调用方"] -->|"只读获取、搜索与状态"| Core
-    Agents["外部 Agent"] -->|"只读 MCP：获取与搜索"| Core
-    FeishuBot["飞书应用机器人"] -->|"专用私聊文字与图片记录"| Core
-    Core --> Notify["回顾调度与渠道发送"]
-    Core --> State["state.sqlite3：产品状态与渠道暂存"]
-    Core --> Index["index.sqlite3：可重建索引"]
-    Core --> Embedding["Embedding：语义检索与漫步"]
-    Core --> LLM["LLM Provider：自然聊天与连接检查"]
-    Notify --> FeishuBot
-    Notify -.-> FeishuWebhook["飞书 Webhook：可选推送"]
-```
-
-## 核心实现
-
-核心服务使用 Go 1.27+、标准库 `net/http` 和 SQLite，编译为单个二进制。SQLite 驱动为 `modernc.org/sqlite`，构建无需 cgo。HTTP API 与后台工作循环通过 goroutine 在同一进程运行，同一产品数据目录只允许一个写入进程。服务端支持 Linux 原生运行和 Docker Linux 容器部署；Windows、macOS 原生服务端支持见[路线图](ROADMAP.md#后续方向与开发输入)。
-
-进程按 Linux cgroup v1/v2 及可见父级限制确定 CPU 和内存预算，显式 `GOMEMLIMIT` 优先。来源分页按内存预算选择批量，来源 HTTP 并发与搜索分片按有效 CPU 数限制。同步、向量构建和地图生成共用后台执行名额，交互读取独立进入来源请求队列；部署参数及服务器档位见[服务器资源](OPERATIONS.md#服务器资源)。
-
-| 源码 | 职责 |
-| --- | --- |
-| `internal/app.go` | 唯一服务装配、Provider 和工作循环、资源关闭与写锁所有权 |
-| `internal/notes.go` | 共享笔记读取、来源复查与机器索引分页 |
-| `internal/client_api.go`、`client_models.go` | 同源 Cookie、Origin、CSRF、原生笔记与受控通知恢复路由 |
-| `internal/memos_auth.go`、`sessions.go` | 官方密码认证、加密持久会话、串行续期与本地撤销 |
-| `internal/memos_live.go`、`notes_live.go` | 创建时间倒序的来源分页、同时间组排序及独立签名游标 |
-| `internal/api.go`、`models.go`、`openapi.json` | REST 路由、访问范围、来源复查、分页与响应契约 |
-| `internal/memos.go` | Memos 版本与身份检查、官方 API 调用及笔记格式转换 |
-| `internal/records.go`、`attachments.go` | 文本、标签和附件记录、持久幂等、写入结果复查与恢复 |
-| `internal/reviews.go`、`review_plans.go` | 固定全天回顾、时段分配、选入历史及旧批次恢复 |
-| `internal/reviews_api.go`、`mcp.go` | 回顾 REST、只读 MCP 入口与访问范围检查 |
-| `internal/search.go`、`search_index.go` | 共享混合检索、中文关键词索引、排名融合、向量缓存与结果来源复查 |
-| `internal/discovery.go`、`discovery_api.go` | 语义漫步、路径去重与显式阅读历史 |
-| `internal/feishu.go`、`feishu_client.go`、`feishu_crypto.go`、`feishu_delivery.go`、`feishu_review_parts.go` | 飞书回调校验、加密事件队列、私聊记录、全文与图片分片推送及回执复查 |
-| `internal/notifications.go`、`notification_channels.go` | 当地日期调度、持久发送队列、发送尝试、回执复查及结果确认 |
-| `internal/sync.go` | 正常与归档扫描、增量追补、全量修复与任务调度 |
-| `internal/store.go`、`migrations/` | 数据库迁移、来源绑定、持久任务、退避、扫描暂存与投影 |
-| `internal/maintenance.go` | 在线状态备份、停止服务后恢复、索引重建与写入互斥 |
-| `internal/embedding.go` | 独立向量 Provider、百炼与通用协议、分批和并发限制、返回校验及连接检查 |
-| `internal/chunks.go`、`vector_index.go` | 原文分块、可恢复向量构建、缓存复用与索引代次发布 |
-| `internal/llm.go`、`ai_models.go`、`ai_evidence.go` | 通用模型通信、历史结果解码与来源引用复查 |
-| `internal/chat.go`、`chat_models.go`、`chat_store.go` | 自然聊天编排、完整材料与上下文预算、持久消息、取消、请求去重与主动保存 |
-| `internal/config.go`、`config_environment.go`、`main.go` | JSON 与环境配置、配置校验、服务与维护命令入口 |
-
-核心采用模块化单体，HTTP 和平台入口调用共享业务服务。
-
-```mermaid
-flowchart LR
-    Caller["API 调用方"] --> API["Moerise API"]
-    API -->|"身份和原文复查"| Memos["官方 Memos"]
-    Worker["同步工作循环"] -->|"正常与归档笔记"| Memos
-    API --> State["state.sqlite3"]
-    Worker --> State
-    API --> Index["index.sqlite3"]
-    Worker --> Index
-```
-
-### 数据与身份
-
-| 数据 | 存储 | 恢复方式 |
+| 组件 | 核心职责 | 存储与依赖 |
 | --- | --- | --- |
-| 原始笔记、标签、图片、附件、账号和 PAT 状态 | Memos | Memos 自身备份或数据导出 |
-| 来源绑定、同步水位、持久任务、创建幂等、回顾历史、浏览器会话、持久设置、自然聊天及渠道发送记录 | `state.sqlite3` | Core 在线状态备份与停服恢复 |
-| 飞书入站请求、渠道 AI 任务的请求、结果与正文分片 | `state.sqlite3` 中的加密渠道数据 | 随产品状态备份恢复，用于事件处理及发送恢复 |
-| 笔记投影、扫描暂存、片段、关键词 FTS5、向量、索引代次及地图布局 | `index.sqlite3` | 从 Memos 重建 |
-| Memos 连接、入口凭据与状态加密主密钥等基础设施 | JSON 与进程环境 | 配置文件和部署环境备份；日常模型/渠道设置随产品状态备份 |
+| **官方 Memos (0.31.x)** | 原生数据存储底座：管理用户账户、笔记原文、`#标签`、图片与附件资源，执行原生权限校验。 | 独立存储（SQLite） |
+| **Moerise Core** | 业务核心引擎：负责 Memos 实时双向同步、双库数据管理、检索与向量构建、回顾计划调度、AI 会话编排、渠道消息推送及外部 MCP 协议服务。 | Go 单体二进制、`state.sqlite3`、`index.sqlite3` |
+| **Moerise Web** | 现代化浏览器客户端：提供浅色两栏式界面、中英双语自适应、Markdown 编辑器、时间线组合筛选、认知地图交互及流式 AI 聊天。 | 静态资源 + 轻量 Node 同源反代服务 |
+| **消息渠道适配器** | 消息触达与便捷交互：Telegram 机器人（英文回顾推送）、飞书应用机器人（私聊双向速记与定时回顾）、飞书群 Webhook（定时回顾推送）。 | 由 Core 内部常驻工作线程驱动 |
+| **外部 MCP 服务** | 开放生态接入：提供符合 Model Context Protocol 标准的只读工具接口，供 Claude Desktop、Cursor 等外部 Agent 检索与阅读笔记。 | 标准输入输出 (stdio) 或 SSE 传输 |
 
-Memos 是笔记主库，保存原文；Core 保存扩展业务状态。渠道数据中的正文或证据副本仅用于入站处理、结果保留及发送恢复。`state.sqlite3` 中的渠道数据可能包含私人内容，须与配置凭据一同妥善保管。
+---
 
-笔记创建幂等记录保存幂等键、规范化内容摘要、分配的 `memoId` 和处理状态，不保存附件文件字节。回顾历史、发现阅读记录、渠道事件和发送记录在重启及索引重建后保留；分块、向量和索引代次从 Memos 重建。
+## 三、总体架构与数据流
 
-飞书待处理消息使用 AES-GCM 加密暂存，事件业务完成后清除入站密文。队列中的搜索结果引用保存加密查询，发送时重新搜索；旧 AI 任务在等待发送或确认时保存加密请求、完整结果及回复分片，结果中的引用可包含来源片段；全部分片已送达后，在最终通知事务中清空内容，保留事件、分片标识、去重、回执和确认元数据。升级时处理已有完成记录，未知或不完整记录不清理；该规则不用于 Web 聊天。恢复行为见[飞书入口](FEISHU.md#事件与恢复)。事件按消息标识去重，笔记和附件资源标识持久保存，读取与发送执行各自业务的来源检查。
+```mermaid
+flowchart TD
+    subgraph 接入层
+        Web["Moerise Web 前端 (Port 3000)"]
+        ExternalAgent["外部 Agent / MCP 客户端"]
+        FeishuPlatform["飞书开放平台"]
+        TelegramPlatform["Telegram Bot API"]
+    end
 
-基础设施参数按内置默认值、JSON、非空环境变量依次覆盖，服务启动时加载。日常设置首次从部署配置初始化，随后使用加密持久值；模型和环境字段见[配置说明](OPERATIONS.md#配置)。浏览器登录会话、日常设置和自然聊天状态保存在产品数据库。
+    subgraph MoeriseCore ["Moerise Core 核心服务 (Port 8787)"]
+        App["App 运行时装配层"]
+        SessionSvc["会话与认证服务 (SessionService)"]
+        NotesSvc["笔记同步与读写服务 (NotesService)"]
+        SearchSvc["混合检索与漫步服务 (SearchService)"]
+        ReviewSvc["每日回顾调度引擎 (ReviewService)"]
+        ChatSvc["AI 洞察会话服务 (ChatService)"]
+        MapSvc["认知地图投影服务 (MapService)"]
+        NotifySvc["通知分片与重试队列 (NotificationService)"]
+        
+        App --> SessionSvc
+        App --> NotesSvc
+        App --> SearchSvc
+        App --> ReviewSvc
+        App --> ChatSvc
+        App --> MapSvc
+        App --> NotifySvc
+    end
 
-SQLite 使用 WAL。迁移按编号执行并校验摘要，产品状态与投影分别迁移。两份数据库通过先发布投影、后推进水位的顺序保证中断后可重放。
+    subgraph 数据与外部依赖
+        Memos["官方 Memos 服务"]
+        StateDB[("state.sqlite3\n业务持久化")]
+        IndexDB[("index.sqlite3\n可重建索引")]
+        LLM["大语言模型 API"]
+        Embedding["向量模型 API"]
+    end
 
-每个部署绑定一个 Memos 实例和一个账号，只索引并输出该账号本人创建的笔记。读取时实时核验来源身份，返回笔记原文前复查来源版本和原文；地图使用后台趋势快照，点选详情再读取实时原文。资源标识、访问 Scope 和失败行为见 [API v1](API-V1.md)。
+    Web -->|"/api/app/v1 同源请求"| App
+    ExternalAgent -->|"/api/ext/v1 & /mcp 只读"| App
+    FeishuPlatform <-->|"HTTP 事件回调 & API"| App
+    TelegramPlatform <--|"HTTPS 消息推送"| App
 
-### 笔记创建流程
+    NotesSvc <-->|"官方 REST/Connect API"| Memos
+    SessionSvc <-->|"官方认证链路"| Memos
+    
+    App --> StateDB
+    SearchSvc --> IndexDB
+    MapSvc --> IndexDB
+    
+    SearchSvc -.-> Embedding
+    MapSvc -.-> Embedding
+    ChatSvc -.-> LLM
+```
 
-`POST /api/app/v1/notes` 要求本人浏览器会话、Origin、CSRF 与必填 `Idempotency-Key`，接收 `content` 和可选附件。键为 1 至 128 个 ASCII 字母、数字或 `._:-`。正文最多 65536 UTF-8 字节；非空白正文或至少一个合法附件即可保存。
+---
 
-1. 检查会话、请求头与字段，将真实正文交给共享 Records 服务；不拆分标签或添加前缀。受保护请求绑定可取消的会话 context，退出撤销会话时一并取消排队请求。
-2. 以原正文和附件摘要计算请求摘要，将幂等键、摘要、分配的 `memoId` 和处理状态持久写入产品数据库。同键不同请求返回 409 `IDEMPOTENCY_CONFLICT`。历史请求按持久摘要识别并恢复旧写入形式。
-3. 验证来源身份，通过官方 API 为绑定账号创建 `PRIVATE` 笔记，保留首尾空白、换行和正文标签。接口不开放 `creator`、`visibility` 或 `state`。
-4. 超时、5xx、响应不可信等结果不明时返回 503 `WRITE_OUTCOME_UNKNOWN`，`retryable=true`。调用方只用相同键和请求体重试；服务先复查持久分配的 `memoId`，必要时才以同一 ID 创建，避免生成重复 ID。来源资源冲突返回 409 `WRITE_CONFLICT`。
-5. 返回前验证来源身份并复查作者与正文，首次请求成功返回 201 和 `Note`。同键同正文重放时再次复查来源，成功返回 200 和最新 `Note`；来源故障不输出缓存正文。
-6. 已确认成功的来源笔记被删除后，重放返回 404 `SOURCE_NOT_FOUND`，不重建笔记。
+## 四、核心子系统设计
 
-原生客户端和内部渠道共用原文规则：标签留在实际正文，由 Memos 解析，不使用独立标签数组添加前缀。纯附件正文为空，不补文件名。附件按位置持久分配资源标识，通过官方 API 上传并关联已复查作者的笔记。附件失败后使用同一请求继续，只补齐缺失项；每次上传前检查来源身份和父笔记。正文与全部附件关联成功后才确认整次写入，部分成功后的父笔记已删除时不重建。产品数据库只保存请求摘要、附件标识和父笔记确认状态，不存文件字节。
+### 1. 认证与会话安全体系
 
-`NoteService.Update` 保存步骤摘要、来源版本和附件资源名，按新增附件、正文或状态更新、移除附件的顺序执行。响应丢失后复查已完成步骤，重启重试沿用相同资源名。编辑和删除要求来源摘要一致；官方更新没有原子条件写入，来源复查与写入之间的外部竞争按最后一次写入生效。
+- **用户身份隔离**：Moerise 登录表单直接复用 Memos 账户认证。登录成功后，Core 校验登录用户与配置中绑定的作者资源名（`users/{id}`）。若身份不匹配，直接拒绝登录。
+- **浏览器会话管理**：
+  - 采用同源会话机制。Web 服务端反向代理统一通过 Cookie 传递会话标识。
+  - HTTPS 生产环境采用 `__Host-moerise_session` Cookie，配置 `HttpOnly`、`SameSite=Lax` 与 `Secure` 属性。
+  - 登录状态下所有写操作（POST / PATCH / DELETE）均强制校验 `Origin` 请求头以及内存关联的 `X-CSRF-Token`。
+  - 刷新凭据使用基于 AES-256-GCM 的状态加密密钥安全持久化于 `state.sqlite3`，短期访问令牌仅保留在内存中。普通服务重启可无缝恢复登录态。
+- **机器接口安全**：
+  - 外部 REST (`/api/ext/v1`) 与 MCP (`/mcp`) 仅接受配置的 `MOERISE_ACCESS_TOKEN` Bearer 鉴权。
+  - 外部接口实施严格的服务端白名单，仅开放笔记检索、只读获取、相关笔记与漫步，彻底屏蔽写入与状态修改接口。
 
-客户端来源列表在 Memos 端组合关键词、精确 AND 标签、状态与产品时区创建日，再按创建时间和资源名倒序分页。签名游标绑定全部筛选。标签及日历调用官方 `ListAllUserStats`，固定作者、状态和月份范围，前后核验来源身份，两次核对总数、标签计数与逐篇创建/更新时间集合。统计不保存正文，受条数、元数据字节和请求期限约束；失败不输出部分结果。文件流复查浏览器会话、作者、父笔记与附件关联，只访问固定来源地址，不建立持久文件副本。客户端只接收同源文件路径，主动内容按下载处理。
+### 2. 笔记读写与幂等保障
 
-### 同步流程
+- **实时时间线读取**：客户端时间线直接以 `created_desc` 倒序从 Memos 读取实时候选并校验作者身份，结合服务端分页游标，保证笔记编辑后不会伪造置顶。
+- **防重复创建（幂等机制）**：
+  - 客户端创建笔记强制提交 `Idempotency-Key`。
+  - Core 将幂等键、内容哈希与分配的 `memoId` 记录在 `state.sqlite3` 中。
+  - 遭遇网络抖动或超时重试时，系统识别相同幂等键，避免在 Memos 中创建重复笔记。
 
-1. 检查 Memos 版本及 `/api/v1/auth/me` 返回的账号资源名。
-2. 分页读取 `NORMAL` 和 `ARCHIVED`，将结果写入扫描暂存表。增量条件从水位向前保留重叠时间。
-3. 全量扫描后，再追补扫描期间的变化，减小偏移分页漂移造成的遗漏。
-4. 对投影中存在、但全量结果未包含的笔记逐条复查，确认不可用后移除。
-5. 两种状态和全部分页均成功后，再检查来源身份、发布投影并推进水位。失败扫描丢弃暂存结果。
-6. 服务启动请求全量修复，运行期间轮询增量并定期全量比较，修复删除、归档及回溯时间修改。
+### 3. 检索与认知地图
 
-Memos 0.31.0 的时间排序字段为 `update_time`，CEL 筛选字段为 `updated_ts`，条件使用 `updated_ts >= timestamp("...")`。正常与归档需要分别列出；`show_deleted` 在该版本没有提供可依赖的删除变更流。笔记更新时间可被修改，单一最大时间水位无法覆盖回溯修改。依据为固定版本的[笔记协议](https://github.com/usememos/memos/blob/v0.31.0/proto/api/v1/memo_service.proto)与[服务实现](https://github.com/usememos/memos/blob/v0.31.0/server/api/v1/memo_service.go)。
+- **双引擎混合检索**：
+  - 中文关键词通道：采用 SQLite FTS5，对中文文本执行单字与相邻双字分词，准确匹配中文短语。
+  - 语义检索通道：通过独立的 Embedding Provider 将文本分块向量化，计算余弦相似度。
+  - 排序融合：利用 Reciprocal Rank Fusion (RRF, k=60) 算法将关键词、标签匹配与语义检索结果进行多通道打分融合。
+- **2D 认知地图算法**：
+  - 采用确定性二维主成分分析（PCA）投影算法，将高维笔记向量稳定降维到二维平面。
+  - 针对密集语义簇采用局部螺旋避让算法，防止点位在视觉上严重重叠。
+  - 每日定时预建轻量快照，用户在前端拖拽平移、缩放时仅加载不可变快照，点选具体节点再实时拉取 Memos 最新笔记正文。
 
-同步通过轮询和全量修复执行，不接收 Memos 事件 Webhook。
+### 4. 每日回顾与消息渠道
 
-### 混合搜索
+- **确定性日计划与时段分配**：
+  - 每日凌晨依据时区配置生成唯一的全天回顾计划。
+  - 候选笔记需满足成熟等待期（默认创建满 72 小时），并排除近期已选笔记（默认 7 天去重）。
+  - 全天计划根据配置的推送时段（如 09:00、18:00）均匀分配互不重叠的笔记子集。
+- **无压力阅读原则**：
+  - 界面不显示未读角标、不强制点击已读、不设打卡连击激励，随时打开即可重温灵感。
+- **可靠发送队列**：
+  - 通知调度器维护明确的状态机（`pending`、`running`、`unknown`、`sent`）。
+  - 长正文分片发送，保障格式完整与多端可读性；支持网络异常自动退避重试，以及管理员接口对不确定状态（`unknown`）的手动核验与恢复。
 
-REST `POST /api/ext/v1/search` 与 MCP `semantic_search` 共用 `SearchService`，无需 LLM，要求 `notes:read`；默认只搜正常笔记，状态和精确 AND 标签过滤对全部检索通道共同生效。
+### 5. 上下文 AI 洞察
 
-关键词使用预分词 FTS5：连续中文生成单字与相邻双字，英文数字整词小写；至少两字的中文查询使用相邻双字，单字走专门召回路径，生成的词项安全引用，原查询不作为 SQL 或 FTS 语法。关键词 BM25、标签匹配和正余弦语义分别取前 100 个片段，以 k=60 的 RRF 先融合片段，再按笔记合并。笔记分数取最高片段分数，每条最多 3 个片段，稳定排序并返回分块时保存的原文位置。
+- **自由材料圈选**：用户可在 Web 界面自由选择多篇正常或归档笔记作为上下文，不受标签或日期硬性约束。
+- **多协议大模型适配**：内置统一的抽象层，兼容 OpenAI Chat Completions、OpenAI Responses 以及 Anthropic Messages 协议。
+- **持久化与成果转化**：对话历史完整持久化在 `state.sqlite3`，支持多轮深入追问与中断恢复；用户可随时将满意的生成成果一键保存回 Memos。
 
-每个服务复用一个活动代次的内存 float32 向量缓存，仅在向量空间与配置、投影修订号一致时使用。关闭模型、索引未就绪或模型错误时降级为关键词与标签，并返回显式语义状态；取消不降级。搜索前验证来源版本与身份，输出前逐条读原文；修改、删除、作者越界或过滤变化的候选丢弃并修正投影，最后再次验证身份。来源故障使整个请求失败，不返回缓存正文。
+---
 
-片段和关键词索引独立于 embedding，服务启动时补齐投影对应的索引。它们属于可重建数据，不进入产品状态备份。请求字段、排名、来源位置与恢复语义见[搜索](SEARCH.md)。
+## 五、代码结构与模块职责
 
-### 相关笔记
-
-REST `GET /api/ext/v1/notes/{memo_id}/related` 与 MCP `get_related_memos` 使用共享检索业务。原文全量提取词项并选取最多 64 个，结合共同标签和同一活动代次的文档向量召回；无需查询模型、LLM 或额外 embedding 调用。排除自身、融合和正文去重后返回 `SearchHit` 及来源位置，不写入产品状态。
-
-候选状态和显式 AND 标签过滤不限制原笔记。先验证来源身份、读取原笔记并修正投影，候选逐条复查同搜索；输出前再次读取原笔记并验证摘要与身份。原笔记消失或越界返回 404 `SOURCE_NOT_FOUND`，处理中改变返回可重试的 409 `SOURCE_CHANGED`；来源故障使整个请求失败。请求、算法与降级原因见[相关笔记](SEARCH.md#相关笔记)。
-
-## 模型与扩展能力的架构约定
-
-### 共享接口与模型
-
-REST、MCP、飞书和客户端复用相应业务服务与资源标识；入口按职责开放操作，不要求暴露完全相同的工具或结果格式。Memos 协议、模型协议和消息平台分别封装，业务层使用 Moerise 自己的数据结构。
-
-embedding 与 LLM 使用独立配置。embedding 通过提供商适配器生成向量，索引业务负责保存并检索；LLM 生成洞察和回答。百炼向量模型使用 `qwen3.7-text-embedding` 和默认 1024 维，支持配置、分批文档与查询调用及独立连接检查，具体字段见[向量模型](EMBEDDING.md)。
-
-语义搜索使用连续 float32 向量的内存精确检索，限制批次、计算线程和模型并发。10000 个 1024 维向量的裸数据约为 39.1 MiB，投影与查询中间结果需额外内存。是否引入专用计算库、近似索引或独立向量数据库，以真实规模和延迟测量为依据。
-
-向量索引记录模型、维度、分块版本和内容摘要；笔记与查询必须使用同一向量空间。更换向量模型时建立并重建新索引，完成后切换；更换 LLM 无需重建向量。检索矩阵复用内存缓存，正文变化才重新生成向量。
-
-分块与向量构建位于 `internal/chunks.go`、`internal/vector_index.go`。索引数据库保存投影修订号、构建与发布代次、片段来源位置和同空间正文向量缓存。每批提交后可恢复进度，发布事务只接受与投影修订一致且片段完整的代次；投影变化重新规划，复用已完成向量。分块规则和状态接口见[向量模型](EMBEDDING.md#分块与向量索引)。
-
-向量业务只依赖 `EmbeddingProvider`，百炼适配使用 DashScope 原生协议，明确设置文档或查询类型、连续向量输出和维度，同时支持 OpenAI 兼容协议，按期望维度校验返回，可选择是否发送维度参数。LLM 业务只依赖 `LLMProvider`，支持 OpenAI Chat Completions、OpenAI Responses 和 Anthropic Messages；协议、地址、凭据及模型分别配置。两类模型分别进行连接检查。
-
-外部模型凭据只由服务端模型适配器读取。Embedding、LLM、飞书分别按需启用，笔记读写、关键词搜索和每日回顾独立运行。语义漫步的随机起点与语义前进均要求已启用且就绪的 Embedding；自然聊天只需要 LLM。
-
-### 自然聊天与历史 AI 恢复
-
-`ChatService` 使用 App 持有的有效 `LLMProvider`，模型检查、热替换及关闭共用同一资源生命周期。聊天读取明确选择的完整材料和成功历史，不额外召回全库，预算超限明确报错；持久化、流事件与主动保存见 [AI](AI.md#自然聊天共享服务)。
-
-旧结构化生成算法和证据收集器已移除。`internal/ai_models.go` 保留已有结果和引用的解码结构，`internal/ai_evidence.go` 的 `EvidenceService.Verify` 继续复查历史引用的官方原文、作者、版本及字节和行号位置。
-
-渠道队列中的历史 AI 请求、结果和回复分片加密保存在产品状态。重启或恢复快照将未完成生成转为 interrupted，已完成结果按原顺序发送，不调用模型重建结果。每片发送前复查来源，发送使用原渠道、接收方、稳定标识、回执和未知结果确认机制；终态内容回收保留恢复元数据。机器 REST/MCP 和飞书新消息不提供结构化生成入口。
-
-### 飞书与通知
-
-飞书应用机器人绑定指定 Memos 账号，消息事件去重，记录返回保存结果、Memos 资源标识和原文链接。专用私聊的文字、图片和文件直接作为笔记输入，文字保留正文原貌；私聊不执行查询、AI 或回顾命令。具体记录方式见[飞书入口](FEISHU.md)。
-
-| 入口 | 方向与用途 |
+| 源码路径 | 模块职责 |
 | --- | --- |
-| 飞书应用机器人 | 接收私聊记录，发送保存结果和每日回顾 |
-| 飞书自定义机器人 Webhook | Moerise 向群发送回顾的可选方式 |
-
-采用应用机器人时，同一机器人承担交互和推送。回顾选择、时区调度、持久发送队列和阅读状态归业务服务；渠道适配器只处理收发、分片、格式转义、限流与平台回执。
-
-每日计划等概率随机选取笔记：默认创建满 72 小时、排除最近 7 天已选内容，时长和归档范围可配置。Core 固定当地日结果，REST、MCP 与飞书读取相同批次；调整规则、刷新或增加发送时段不替换已固定结果。数量不足返回实际数量，空池不发送，来源故障单独报错并重试。全天计划冻结规则及设置版本，各时段分配不交叉；当天错过时段只补最近一次，已入队任务继续恢复。旧批次保留读取和恢复；规则见 PRD 第三章。
-
-飞书每次先单独发送一次 `「今日回顾」`，再逐篇发送正文和原图，末尾显示标签与创建日期。日期取来源 `create_time` 并按配置 `timezone` 换算，无标签时只显示创建日期，不附加链接、片号或状态提示。没有可发送内容的笔记不发尾注，整次均无内容时不发标题。阅读即可完成回顾，无需打开或略过操作。具体规则见[每日回顾](DAILY-REVIEW.md)和[调度说明](NOTIFICATIONS.md)。
-
-平台能力依据：[自定义机器人](https://open.feishu.cn/document/client-docs/bot-v3/add-custom-bot?lang=zh-CN)、[接收消息](https://open.feishu.cn/document/server-docs/im-v1/message/events/receive)、[发送消息](https://open.feishu.cn/document/server-docs/im-v1/message/create)。
-
-### MCP 与客户端
-
-Moerise 的 `/mcp` 使用官方 Go MCP SDK 提供无会话 Streamable HTTP 传输。工具包括单条获取、分页列表、搜索、相关笔记、语义漫步及回顾读取，按令牌的读取 Scope 注册。
-
-回顾尚未生成时 MCP 返回 `REVIEW_NOT_FOUND`，由 Core 生成流程创建。工具发现与直接调用都不开放笔记写入、创建或更换回顾、打开、略过、阅读历史写入及 AI 生成，即使令牌包含写入 Scope 或 `ai:generate`。工具及权限见 [API v1](API-V1.md#每日回顾与-mcp)。
-
-Memos 0.31.0 的 PAT 缺少读写 Scope；`readOnlyHint` 和客户端工具筛选只是调用方提示或限制。Moerise 的只读边界由服务端凭据检查落实，上游 PAT 保存在服务端。依据见[令牌协议](https://github.com/usememos/memos/blob/v0.31.0/proto/api/v1/user_service.proto)及[令牌创建实现](https://github.com/usememos/memos/blob/v0.31.0/server/api/v1/user_service_access_tokens.go)。
-
-外部调用方使用独立的 Moerise 访问令牌，服务端检查身份、Scope 和来源范围。Memos PAT 保存在服务端，不作为外部调用方凭据。
-
-## 部署与恢复
-
-服务端支持 Linux 二进制和 Docker Linux 容器，连接可访问的 Memos 0.31.x。随附 Compose 提供 Core、Web 与 `memos` profile 下的官方 Memos，也可关闭该 profile 连接外部 Memos。Web 是同源浏览器入口；Core 机器接口和飞书回调通过独立端口按需接入。基础设施从 JSON 与环境读取，日常设置由加密产品状态管理；Memos、产品状态、索引和备份使用独立数据卷。
-
-Memos 数据使用 Memos 的备份和导出；Core 提供在线状态快照、停服恢复和索引重建，配置凭据单独备份。恢复及升级保留回顾、幂等、阅读和渠道记录，索引可重新生成。运行步骤见[运行与恢复](OPERATIONS.md)。
-
-运行与资源限制见[运行与恢复](OPERATIONS.md)，开发和验证入口见[开发指南](DEVELOPMENT.md)。
+| `main.go` | 命令行入口、配置初始化、服务装配与优雅退出 |
+| `internal/app.go` | 核心应用装配器：持有全局生命周期、工作池与服务实例 |
+| `internal/memos.go`, `memos_live.go` | Memos 官方 API 客户端、协议转换与实时时间线分页 |
+| `internal/memos_auth.go`, `sessions.go` | Memos 官方认证适配、加密 Session 管理与 CSRF 防御 |
+| `internal/client_api.go`, `client_models.go` | 面向 Web/移动端的前端应用 API 路由与契约 |
+| `internal/api.go`, `models.go`, `openapi.json` | 开放机器 REST API 路由、权限作用域检查与 OpenAPI 定义 |
+| `internal/mcp.go` | Model Context Protocol 只读 Server 协议适配 |
+| `internal/records.go`, `attachments.go` | 笔记内容持久幂等、媒体附件读写流与安全性校验 |
+| `internal/reviews.go`, `review_plans.go` | 每日回顾抽样算法、全天计划生成与时段分配策略 |
+| `internal/search.go`, `search_index.go` | FTS5 预分词、向量扫描、余弦相似度与 RRF 混合融合算法 |
+| `internal/discovery.go` | 语义漫步候选抽取、单次漫步去重算法 |
+| `internal/map.go`, `map_models.go` | 2D 认知地图 PCA 降维投影算法、局部螺旋避让与每日快照 |
+| `internal/chat.go`, `llm.go` | AI 洞察流式会话编排、上下文容量控制与多模型协议通信 |
+| `internal/embedding.go`, `vector_index.go` | 文本分块、向量批量生成、代次管理与索引维护 |
+| `internal/notifications.go`, `review_delivery.go` | 通知调度器、长文本分片器、发送状态机与管理恢复接口 |
+| `internal/feishu.go`, `telegram.go` | 飞书开放平台与 Telegram Bot API 平台级协议适配 |
+| `internal/store.go`, `migrations/` | SQLite 双库读写、事务保障与版本化数据库迁移脚本 |
+| `internal/maintenance.go` | 生产环境在线热备份、恢复校验与索引重建工具 |
+| `web/` | 现代化前端工程：无外部运行依赖的轻量级 JavaScript/HTML/CSS 实现 |

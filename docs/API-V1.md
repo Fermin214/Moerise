@@ -1,383 +1,102 @@
-# Moerise API v1
+# Moerise API v1 规范
 
-原生客户端前缀为 `/api/app/v1`，机器 REST 前缀为 `/api/ext/v1`，MCP 位于 `/mcp`。客户端路由见 [client_api.go](../internal/client_api.go)，机器路由见 [api.go](../internal/api.go)，完整字段契约见 [openapi.json](../internal/openapi.json)。服务通过 `/openapi.json` 提供契约，通过 `/docs` 提供交互文档。
+Moerise 服务端提供两组 RESTful API 以及一个 Model Context Protocol (MCP) 接口：
+1. **客户端应用接口 (`/api/app/v1`)**：面向 Moerise Web 及未来的移动客户端，基于同源 Cookie 与 CSRF Token 鉴权。
+2. **外部开放接口 (`/api/ext/v1`)**：面向外部脚本与第三方集成，基于 Bearer Token 鉴权，**严格只读**。
+3. **MCP 协议接口 (`/mcp`)**：面向 Claude Desktop、Cursor 等支持 MCP 标准的外部 AI Agent，**严格只读**。
 
-机器入口提供本人笔记读取、中文混合检索、相关笔记、语义漫步、已有回顾和同步状态读取。操作是否只读由服务端白名单判定；搜索和漫步的 POST 保持可用。
+完整接口契约以服务内置的 `/openapi.json` 及交互式文档页面 `/docs` 为准。
 
-## 原生客户端
+---
 
-启用 `web.enabled` 后，客户端使用同源 Cookie。登录账户必须匹配绑定的 Memos 作者；客户端路径拒绝 Authorization，机器路径只接受独立 Bearer，不使用浏览器 Cookie。
+## 一、客户端应用接口 (`/api/app/v1`)
 
-| 方法 | 路径 | 行为 |
+客户端接口采用会话 Cookie 认证机制。所有写操作均强制校验 `Origin` 与 `X-CSRF-Token`。
+
+### 1. 认证与会话管理
+
+| 方法 | 路径 | 功能说明 |
 | --- | --- | --- |
-| GET | `/api/app/v1/capabilities` | 匿名获取密码登录方式与笔记入口状态；`ready` 表示入口启用，来源故障由实际请求反馈 |
-| POST | `/api/app/v1/session` | 接收 `username`、`password`，验证官方登录与续期链路，返回身份、时区、会话到期时间和 `csrf_token` |
-| GET | `/api/app/v1/session` | 核验本人身份，必要时刷新上游凭据，返回会话信息 |
-| DELETE | `/api/app/v1/session` | 先撤销本地会话，再尝试上游退出，清 Cookie 并返回 204；上游不可用仍可退出 |
-| GET | `/api/app/v1/settings` | 返回设置版本、日常配置、凭据配置状态、渠道能力及内置洞察 Prompt |
-| PATCH | `/api/app/v1/settings` | 提交版本、日常配置和密钥操作，保存并生效，返回递增版本的设置视图 |
-| GET | `/api/app/v1/models` | 返回设置版本、两类模型的启用与配置状态、索引状态和代次进度 |
-| POST | `/api/app/v1/models/{embedding,llm}/check` | 接收 `{version}`，分别检查已保存的模型连接，返回版本、`status=ok` 和耗时 |
-| GET | `/api/app/v1/reviews/daily` | 生成或读取完整固定日计划，返回全部条目及冻结设置版本 |
-| POST | `/api/app/v1/walks/start` | 接收 `{name?}`，返回指定或随机起点，不记录阅读 |
-| POST | `/api/app/v1/walks/next` | 接收 `{name,path}`，在语义候选中随机选择未访问的下一条 |
-| GET | `/api/app/v1/map` | 读取本人正常与归档笔记的每日趋势快照、布局版本及索引状态 |
-| GET | `/api/app/v1/chat-materials` | 分页组合筛选聊天材料，默认包括正常与归档笔记 |
-| POST | `/api/app/v1/chat-materials/resolve` | 接收 `{names}`，复查明确选中的完整材料、引用与字符数 |
-| GET、POST | `/api/app/v1/chats` | 分页读取持久会话，或提交 `{request_id,title,names}` 幂等创建 |
-| GET、PATCH、DELETE | `/api/app/v1/chats/{chat_id}` | 恢复会话；按版本修改标题与材料；按版本主动删除 |
-| POST | `/api/app/v1/chats/{chat_id}/messages` | 提交 `{request_id,version,kind,content}`，持久化并流式生成自然回复 |
-| POST | `/api/app/v1/chats/{chat_id}/messages/{request_id}/cancel` | 接收 `{}`，停止指定请求，读取会话取得最终取消状态 |
-| POST | `/api/app/v1/chats/{chat_id}/messages/{request_id}/save` | 接收助手消息 `{version}`，原文幂等保存为 Memos 笔记 |
-| GET | `/api/app/v1/notes` | 实时读取 Memos 本人笔记，默认 `state=NORMAL&order=created_desc&page_size=20` |
-| POST | `/api/app/v1/search` | 本人关键词／语义／混合搜索；返回完整笔记分页、实际模式和语义状态 |
-| GET | `/api/app/v1/notes/{memo_id}` | 返回来源复查后的最新 Note，不记录阅读 |
-| POST | `/api/app/v1/notes` | 接收 `{content,attachments}`，必填 `Idempotency-Key`，首次 201、重放 200，均直接返回 Note |
-| PATCH | `/api/app/v1/notes/{memo_id}` | 原文编辑、归档或恢复、添加或移除附件；提交 `source_hash` 和 `Idempotency-Key` |
-| DELETE | `/api/app/v1/notes/{memo_id}` | 提交 `{source_hash}`，删除笔记，返回 204 |
-| GET | `/api/app/v1/tags` | `state=NORMAL/ARCHIVED` 范围内的全部标签，返回 `{tags:[{tag,count}]}` |
-| GET | `/api/app/v1/calendar` | 接收 `state`、必填 `month=YYYY-MM`，返回 `{month,days:[{date,count}]}` |
-| GET、HEAD | `/api/app/v1/notes/{memo_id}/attachments/{attachment_id}/content` | 会话、作者及父笔记关联检查后的受保护文件流，支持单段 Range |
-| GET | `/api/app/v1/admin/notifications` | 读取通知，支持单个 `status` 参数 |
-| GET | `/api/app/v1/admin/notifications/{notification_id}` | 读取通知、尝试和确认详情 |
-| POST | `/api/app/v1/admin/notifications/{notification_id}/resolve` | 接收 `decision`、`receipt`，调用通知回执核验和恢复服务 |
+| `GET` | `/api/app/v1/capabilities` | 获取服务端能力描述（登录方式与服务健康状态）。 |
+| `POST` | `/api/app/v1/session` | 提交 `username` 与 `password` 登录，返回用户信息与 `csrf_token` 并签发 Cookie。 |
+| `GET` | `/api/app/v1/session` | 校验当前登录状态，返回用户身份、时区与会话过期时间。 |
+| `DELETE` | `/api/app/v1/session` | 登出并销毁会话，清除浏览器 Cookie。 |
 
-所有登录和状态变更请求要求 Origin 精确匹配 `web.public_origin`，拒绝缺失或 `null`；登录后的写请求还要求会话对应的 `X-CSRF-Token`。无有效本地会话时，退出只检查 Origin 并幂等清 Cookie。HTTPS Cookie 使用 `__Host-moerise_session`，回环 HTTP 使用 `moerise_local_session`，均具有 HttpOnly、SameSite=Lax 和 Path=/。不设置 Domain；HTTPS 还设置 Secure。
+### 2. 笔记管理与时间线
 
-身份响应只包含 `instance_id`、`user.name`、`user.display_name`、`timezone`、`expires_at`、`csrf_token`。Memos PAT、访问和刷新凭据不返回客户端。登录有效期不超过登录时的刷新凭据到期时间；上游续期只更新服务端凭据，不延长登录期限，读取和业务响应不设置 Cookie。会话跨普通重启恢复，产品快照恢复会清空会话，索引重建保留会话。密码登录关闭或需要其他认证方式的来源返回 501 `PASSWORD_LOGIN_UNSUPPORTED`。
-
-客户端列表接受 `state=NORMAL/ARCHIVED`、`page_size=1..100`、`page_token`，排序仅支持 `created_desc`。`query` 是基础关键词，最多 256 个 Unicode 码点和 1024 个 UTF-8 字节；重复 `tag` 参数按精确 AND 组合，最多 20 个，每个最多 100 个 Unicode 码点和 400 个 UTF-8 字节，兼容 `C++`、`R&D`、组合字符及 emoji 等原生标签；`date=YYYY-MM-DD` 按产品时区限定创建日期。各条件在服务端分页前组合，拒绝未知参数及除 `tag` 外的重复参数。
-
-创建时间相同按资源名倒序，置顶和编辑不改变创建时间排序。列表直接从 Memos 取候选并复查来源，来源新增后刷新即可读取。游标绑定列表种类、来源、作者、状态、排序及筛选，与机器索引游标不可互换，索引重建不会使实时列表游标失效。来源在跨页读取中改变可返回 409 `SOURCE_CHANGED`；资源预算耗尽返回错误。标签和日历统计覆盖对应来源范围，不从客户端已加载页推算。
-
-列表、标签、日历与聊天材料分页的认证、运行资源锁和来源读取共用最长 55 秒预算。超时返回可重试的 503 `LIVE_LIST_LIMIT`，取消为 503 `LIVE_LIST_CANCELED`，来源 429 为可重试的 503 `UPSTREAM_RATE_LIMITED`。标签/日历两次读取官方 `ListAllUserStats`，固定作者、状态及月份条件，并在前后核验来源身份。逐篇创建/更新时间的数量必须与总数相符，标签计数必须处于有效范围；两次统计的计数或时间元数据集合不一致时返回 409 `SOURCE_CHANGED`，不输出部分统计。每次统计最多 10,000 篇、32 MiB 校验数据；来源分页扫描另受 `memos.max_pages` 约束。资源预算不限制来源笔记总量，超过预算返回错误。
-
-`POST /search` 接收 `{query,mode,tags,state,date,page_size,page_token}`，默认 `mode=keyword`、`state=NORMAL`、`page_size=20`，范围 1—100。关键词、原生标签和日期校验与实时列表相同；`tags` 是精确 AND 数组。关键词模式直接调用实时来源列表并按创建时间倒序，不依赖模型。`semantic` 和 `hybrid` 要求非空查询，通过共享索引按相关度分页，日期、状态、标签在各召回通道限额之前组合。返回 `{notes,next_page_token,mode,semantic:{used,reason}}`，Note 使用受保护的客户端地址。
-
-增强搜索复用每通道前 100 个片段的召回与融合规则，按笔记去重，不代表笔记总数上限。语义成功时 `used=true`；混合模式的语义不可用时明确返回 `mode=keyword` 与原因，仍按索引相关度排列；显式语义模式返回 503 及对应原因。默认 Web 关键词仍走 `GET /notes`。
-
-增强游标只携带签名的排序资源名和版本摘要，不保存正文；有效期十分钟，绑定来源、作者、查询、模式、筛选、时区、投影和向量空间。翻页沿用同一排序，不再次调用查询模型。筛选、索引或配置变化及过期返回 `INVALID_PAGE_TOKEN`；读取中来源变更使投影变化时整页返回 `SOURCE_CHANGED`，须刷新搜索。每页从官方来源核验展示的完整原文、作者及版本，故障不返回部分文本。POST 使用本人 Cookie、Origin 和 CSRF，共用 55 秒总预算；请求体最多 192 KiB、增强游标最多 128 KiB，拒绝查询参数、未知/重复字段及 null。
-
-创建和编辑保留正文首尾空白、换行及全部 `#标签`，不接受独立标签数组。创建固定 PRIVATE。正文最多 65536 UTF-8 字节；正文非空白或至少保留一个合法附件，纯图片和纯普通文件均可保存，不补占位文字。新增 `attachments` 为 `{filename,type,content}` 数组，`content` 是 Base64 原始字节；单次最多十个，原始总大小不超过 8 MiB。
-
-每次独立提交使用新键，超时、结果不明或重新登录后的同次重试使用原键及原请求体。同键不同请求返回 409 `IDEMPOTENCY_CONFLICT`；创建结果不明返回 503 `WRITE_OUTCOME_UNKNOWN`。持久幂等属于实例，不绑定某次浏览器会话。
-
-Web 会话失效时隐藏私人界面，在页面内存中保存创建和编辑草稿、已读取的附件及原提交；同一账户重新登录后恢复。主动退出清空这些数据；草稿不写入浏览器持久存储。
-
-编辑接收 `content`、`state`、新增 `attachments`、`remove_attachments` 及必填 `source_hash`；未提交的正文和状态保持原值，已有附件默认保留。十个附件限制只约束单次新增，来源已有更多附件仍可编辑、归档或减少附件。移除列表使用完整附件资源名，且必须真实关联父笔记。`state=ARCHIVED` 归档，`state=NORMAL` 恢复。修改正文或状态推进来源修改时间，创建时间保持原值。编辑和删除先复查来源版本，变化返回 409 `SOURCE_CHANGED`。Memos 更新没有原子条件写入，复查与写入之间的外部并发仍可能按最后一次写入生效。
-
-附件移除先检查请求完成后的正文。Markdown 图片仍引用待删除附件时，在写入前返回 422 `ATTACHMENT_REFERENCED`；不合法的原生图片地址、HTML 引用或其他来源删除前置条件返回 422 `ATTACHMENT_DELETE_REJECTED`，两者均不可原样重试。Web 保留草稿并允许修正正文，可在同一请求中去掉图片引用和附件；普通链接、行内代码和代码块不按图片引用处理。
-
-客户端 Note 的附件只包含 `name`、`filename`、`type`、`size`、`content_url`，`url` 为 Moerise 详情路径。图片和下载始终使用 `content_url`；该路径只接受资源标识，不接受上游地址。每次读取复查登录、作者、父笔记与附件关联，返回 `no-store`、`nosniff` 和安全文件名。PNG、JPEG、GIF、WebP、AVIF 内联，其余类型按 `application/octet-stream` 下载。支持 GET、HEAD 和单段 `Range: bytes=...`，多段或无效范围返回 416，单次读取上限 128 MiB。
-
-回顾响应沿用 `ReviewBatch`，`items` 返回全天计划的全部条目，最多 480 条；`settings_version` 为冻结规则的产品设置版本，历史批次或缺少版本信息的过渡规则为 0。Note 使用客户端详情及附件路径。缺失来源保留 `unavailable` 位置，不补抽。客户端不提供换组、打开、略过或完成接口。
-
-漫步起点和前进均返回 `WalkResponse`。指定正常起点的首个响应包含该笔记，`path=[name]`；省略 `name` 时随机开始。起点和后续候选均排除归档笔记，指定归档起点返回 422 `WALK_ARCHIVED`。前进提交正在阅读的资源名及完整已访问 `path`，成功后路径追加下一条，`exhausted=true` 仅表示合格候选全部耗尽。标签和跨入口阅读不改变选取概率。漫步要求已启用且就绪的 Embedding，关闭返回 `EMBEDDING_DISABLED`，构建中返回 `INDEX_NOT_READY`。JSON 请求体上限 1 MiB，超出返回可重试的 413 `WALK_RESOURCE_LIMIT`；技术资源错误不表示候选耗尽，也不推进路径。请求支持取消，停止或离开页面会取消进行中的请求。
-
-Web 正文中的原生 `/file/attachments/{id}/{filename}` 引用按父笔记附件表转换为受保护的 `content_url`，未知或不属于该笔记的引用保持文字。侧栏标签按笔记状态、日历按状态和月份复用聚合结果，缓存有效期一分钟；写入、手动刷新笔记或页面重新获得焦点后刷新聚合，被替代的聚合请求会取消。
-
-客户端沿用 `error.code/message/retryable/request_id`：401 表示会话失效，403 表示身份范围或请求边界错误，503 表示来源、配置或存储故障，不返回 Bearer 认证挑战。私人响应使用 `Cache-Control: no-store`。通知确认的 `resolved_by` 为登录用户资源名；其业务决策和回执要求见[通知说明](NOTIFICATIONS.md)。
-
-### 认知地图
-
-`GET /api/app/v1/map` 只接受本人 Cookie，不接受查询参数或 Authorization。读取不要求 CSRF；机器 REST/MCP 不提供地图获取或重建操作，写入 Scope 不能开放这些入口。响应使用 `no-store`，不设置新 Cookie，也不返回缓存笔记正文、附件地址、模型密钥或配置地址。
-
-响应字段为 `status`、`layout_version`、`layout_frame`、`algorithm`、`vector_generation`、`projection_revision`、`generated_at` 和 `points`。`status` 区分 `disabled`（Embedding 关闭）、`waiting`（等待同步或构建）、`building`、`unavailable`（向量空间构建失败且没有可用快照）、`ready` 和 `empty`（已就绪但没有笔记）。前四种状态不返回旧点集，布局版本、坐标系摘要和向量代次为空；`empty` 返回有效版本及空数组，不等同于未配置。
-
-`points` 以资源名排序，每项包含 `name`、`source_hash`、有限二维坐标 `x/y`、`semantic` 和快照中的原生 `tags`。正常与归档笔记各占一点，重复正文不合并。`semantic=false` 表示没有可用的文本向量，例如纯附件；这些点独立放置，不声称语义相近。标签只用于沿用客户端的点位配色，不参与向量或距离加权。坐标为 Core 的布局单位，不是页面百分比。客户端可按可见区域平移、缩放，但不能把浏览器坐标当作权威布局。点击后使用现有本人笔记接口读取完整原文及受保护附件。
-
-布局采用 `pca-fixed-v2`，只使用同一已发布代次的文档向量。`layout_version` 是算法、向量空间、固定投影基底和完整点集的摘要，未变点集的刷新与普通重启保持版本及坐标；增量发布保留聚合向量未变的坐标。正文、归档状态或附件等来源变化可改变布局版本而不移动其余点。`layout_frame` 仅绑定来源、作者、算法、向量空间和投影基底；同一基底的增量发布保持该摘要，客户端据此保留平移缩放，摘要变化后重新适配全图。切换向量空间或重建索引可以重新布局，产品状态不受影响。二维压缩有信息损失，详情始终以实时来源为准。
-
-地图是允许滞后的趋势快照。后台在完整向量索引就绪后预先生成，普通新增、修改和删除每 24 小时最多合并发布一次；向量代次和投影修订没有变化时，不读取全量向量或重算布局。`generated_at` 为 RFC 3339 格式的快照生成时间，`vector_generation` 和 `projection_revision` 对应快照使用的索引版本，可能早于最新索引。已有同空间快照在同步或构建期间继续返回 `ready/empty`；首次生成、模型空间变化或索引重建需要等待后台准备。点位和标签可以滞后，点选详情始终实时读取，删除或失权的笔记不能读出旧正文。
-
-GET 只读取已发布快照，不核对全库正文，不读取全量向量或执行布局计算。会话和来源身份继续实时认证，认证失败不返回私有点集。快照持久化在可重建索引中，重启可直接恢复；内存只缓存不可变点集。认证、资源锁等待和快照读取共用最长 55 秒期限，超时返回可重试的 503 `MAP_RESOURCE_LIMIT`；无效布局返回 `MAP_LAYOUT_INVALID`。主动退出或断开请求取消该请求的读取，仍可收到的取消响应为 503 `MAP_REQUEST_CANCELED`，退出后的旧 Cookie 返回 401。后台预建属于应用任务，页面关闭和退出不取消其他会话共用的任务。
-
-### 自然聊天
-
-聊天接口使用本人 Cookie，写操作要求 Origin 与 CSRF，不接受机器 Bearer；外部 REST/MCP 不开放会话、选材或生成。会话列表默认 `page_size=20`，范围 1—100，以 `updated_at`、ID 倒序分页；不带其他筛选参数。会话与流响应不可缓存。消息和材料引用保存在产品状态，普通重启和索引重建保留，产品快照恢复后须重新登录。
-
-`GET /chat-materials` 接受 `state=ALL/NORMAL/ARCHIVED`（默认 ALL）、`query`、重复 `tag`、`from`、`until`、`page_size`（默认 100，范围 1—100）与 `page_token`。关键词及标签规则复用笔记列表，多个标签精确 AND；日期为 `YYYY-MM-DD`，按产品时区限定创建日期半开区间 `[from,until)`。ALL 先分页正常笔记、再分页归档，每种状态内按创建时间倒序；分页游标绑定来源、作者、状态和全部筛选，不能与普通笔记列表游标互换。响应为 `{notes,next_page_token,character_limit:20000}`。
-
-筛选只用于寻找材料。创建和修改会话提交明确 `names` 集合，随后生成包含全部已选原文，包括归档和同文不同资源；不再次套用筛选、不补入相关历史。`POST /chat-materials/resolve` 返回 `{notes,materials,characters,limit}`，其中 `characters` 为完整原文 Unicode 码点数。即使超过 20,000 仍返回实际计数供用户调整，不截断。来源删除、失权或变动在生成时明确反馈，已有消息保持。Note 及附件使用受保护客户端路径。
-
-创建提交 `{request_id,title,names}`，至少选择一条材料，标题最多 200 个 Unicode 码点；同请求 ID、同请求重放返回原会话，首次 201、重放 200，异请求复用返回 409 `IDEMPOTENCY_CONFLICT`。`request_id` 允许 1—128 个 ASCII 字母、数字、点、下划线、冒号或连字符，推荐 UUID。修改提交 `{version,title,names}`，版本匹配后递增并明确更新材料版本；`names:[]` 移除全部材料但保留消息历史，空材料不能生成，`null` 被拒绝。删除提交 `{version}`，清理消息、材料及保存关联，不删除已主动保存的 Memos 笔记。生成中修改/删除返回 `CHAT_BUSY`，须先停止；保存与删除排空互斥。
-
-`ChatSummary` 包含 `id/title/preview/preview_kind/version/material_count/created_at/updated_at`，`ChatSession` 另含 `materials/turns`。`preview` 从首轮问题提取最多 80 个 Unicode 码点，一键洞察显示“一键洞察”，没有消息时使用标题；该只读摘要不改写标题或消息。`preview_kind` 为首轮的 `question` 或 `insight`，无消息时为空；客户端按此字段翻译洞察标签，不翻译用户问题。`materials` 是 `{name,source_hash}` 引用。每轮 `ChatTurn` 包含 `request_id`、`kind`、独立的 `user` 和 `assistant` 消息、有效 `settings_version/prompt/model/materials/usage`；每条消息有 `id/role/content/version/status/error_code/saved_name/created_at/updated_at`。助手状态为 running、completed、failed、canceled 或 interrupted，原文本和部分回复持久保留。会话版本约束选材与标题，助手消息版本用于固定主动保存内容。
-
-生成提交 `{request_id,version,kind,content,language?}`：`kind=insight` 时 `content=""`，使用已保存的默认洞察 Prompt；`kind=question` 使用非空白的原始问题。20,000 个 Unicode 码点上限只计算明确选中的全部笔记正文，恰好达到上限可生成；超过时返回 `CHAT_MATERIAL_LIMIT`，不调用模型。系统约定、Prompt、材料元数据、问题和后续对话不计入此上限，不另设对话总字节数或 Provider 消息条数限制，不裁切材料或删除历史。旧 `llm.context_bytes` 保留兼容但不生效。超过 1,000 条材料请求为 `CHAT_RESOURCE_LIMIT`。
-
-`language` 可选 `en` 或 `zh-CN`，省略或空字符串时使用简体中文；系统提示按该值设置回复语言，用户明确指定其他语言时可覆盖。英语请求使用英文内置洞察 Prompt，自定义 Prompt 保持原文。语言参与幂等校验，同一 `request_id` 改变语言返回 `IDEMPOTENCY_CONFLICT`。
-
-消息流使用 POST fetch 和 SSE。开始流之前的参数、来源、模型或预算失败返回普通 JSON 错误；开始后 HTTP 为 200，须按事件判断结果：
-
-| event | data | 含义 |
+| 方法 | 路径 | 功能说明 |
 | --- | --- | --- |
-| `message` | `{type:"message",turn:ChatTurn}` | 已持久化的请求与消息起点；重放时返回原消息快照 |
-| `delta` | `{type:"delta",text:string}` | 已落盘的自然 Markdown 增量 |
-| `complete` | `{type:"complete",turn:ChatTurn}` | 最终 completed 消息已持久化；这是成功标记 |
-| `error` | `{error:{code,message,retryable,request_id},turn:ChatTurn|null}` | 流失败；部分文本保留，不能按成功使用 |
+| `GET` | `/api/app/v1/notes` | 分页拉取时间线笔记，支持按标签、日期、归档状态筛选，按创建时间倒序。 |
+| `GET` | `/api/app/v1/notes/{memo_id}` | 获取单篇笔记最新详细内容与附件列表。 |
+| `POST` | `/api/app/v1/notes` | 创建笔记，接收正文与附件，强制要求 `Idempotency-Key` 请求头。 |
+| `PATCH` | `/api/app/v1/notes/{memo_id}` | 编辑笔记正文、更新标签、归档或恢复笔记，要求 `Idempotency-Key`。 |
+| `DELETE` | `/api/app/v1/notes/{memo_id}` | 删除指定笔记。 |
+| `GET` | `/api/app/v1/tags` | 获取所有使用中的 `#标签` 及其关联笔记统计计数。 |
+| `GET` | `/api/app/v1/calendar` | 获取指定月份每天的笔记数量分布。 |
+| `GET` | `/api/app/v1/notes/{memo_id}/attachments/{attachment_id}/content` | 受保护的媒体附件内容流，支持分段 Range 请求。 |
 
-认证和生成共享 115 秒期限，Web 固定代理的生成流闲置超时为 125 秒，不缓冲 SSE。EOF 不表示成功；断开或退出取消上游调用，保存 interrupted；显式取消保存 canceled；供应商或来源失败保存 failed。Core 重启把遗留 running 转为 interrupted，不自动重跑模型。同 `request_id` 重试读取原结果：completed 重放不重复 delta，running 返回原消息及 `CHAT_BUSY`，其他终态返回原消息及失败代码。失败后只有明确提交新请求 ID 才生成下一轮，客户端可读取会话恢复最终状态。
+### 3. 检索、漫步与认知地图
 
-主动保存只接受 completed 助手消息的固定 `version`。Records 使用稳定幂等键创建，首次 201、重放 200；保留原 Markdown、空白、换行和正文标签，不自动加标签。会话创建/更新及材料解析的 JSON 体最多 128 KiB，消息生成最多 64 KiB，删除、取消与保存最多 4 KiB；未知/重复字段、null 和不支持的查询参数被拒绝。模型设置和默认 Prompt 的编辑/恢复沿用设置接口，聊天不依赖 Embedding。
-
-### 产品设置
-
-设置接口复用本人会话与账号检查，拒绝 Authorization 和查询参数。PATCH 还要求精确匹配的 Origin、会话对应的 `X-CSRF-Token`，并在读取请求体前检查会话有效性。机器 REST 和外部 MCP 无法读写产品设置。
-
-GET 和 PATCH 的成功响应均为 `SettingsView`：
-
-| 字段 | 类型 | 含义 |
+| 方法 | 路径 | 功能说明 |
 | --- | --- | --- |
-| `version` | integer | 设置版本，初始化为 1，保存成功递增 |
-| `settings` | object | `timezone`、`review`、`notifications`、`embedding`、`llm`、`channel`、`insights` 七组日常设置 |
-| `secrets` | object | 七种凭据各自的 `{configured: boolean}` 状态，不包含凭据原文 |
-| `channel_capabilities` | object | 服务端按配置计算的 `text`、`images`、`record` 布尔能力 |
-| `default_insight_prompt` | string | 内置洞察 Prompt，可用于恢复 `settings.insights.default_prompt` |
+| `POST` | `/api/app/v1/search` | 全文与语义检索，支持 `keyword`、`semantic` 与 `hybrid` 模式，返回相关度排序分页。 |
+| `POST` | `/api/app/v1/walks/start` | 启动一次随机漫步，可指定起始笔记或由系统随机挑选起点。 |
+| `POST` | `/api/app/v1/walks/next` | 提交走过的路径，基于语义关联抽取未访问过的下一篇漫步笔记。 |
+| `GET` | `/api/app/v1/map` | 读取 2D 认知地图最新预建快照（含全量点位投影坐标与标签）。 |
 
-`review` 包含条数、等待时长、重复排除期及归档开关；`notifications` 包含启用状态、兼容单时段的 `time` 及多时段 `times`。模型配置含启用状态、协议、地址、模型及调用预算，均无 `api_key`；`channel` 包含类型、应用标识、用户标识及目标，默认类型为 `none`，用户可选 `telegram`、`feishu-app` 或 `feishu-webhook`。Telegram 的目标为数字 Chat ID；配置不含 Bot Token、应用密钥、校验 Token、加密密钥或 Webhook 凭据。具体字段见 OpenAPI。
+### 4. 每日回顾
 
-PATCH 请求体仅接受 `version`、`settings`、`secrets`，上限 128 KiB，Content-Type 必须为 `application/json`。`version` 必填且为正整数；至少提交一个设置字段或密钥操作。设置对象递归合并，数组整体替换；省略字段保持原值。所有层级拒绝重复字段、未知字段和显式 `null`，设置对象内也不能嵌入密钥或基础设施字段。
-
-只提交 `notifications.time` 时替换有效时段列表；提交非空 `notifications.times` 时以列表为准，并将 `time` 同步为最早时段。空列表回退到 `time`，省略 `time` 时使用保存前的最早时段。GET 和 PATCH 响应的 `times` 均返回有效时段。
-
-```json
-{
-  "version": 1,
-  "settings": {
-    "timezone": "Asia/Hong_Kong",
-    "review": {"count": 3, "min_age_hours": 72, "recent_days": 7},
-    "notifications": {"times": ["09:00", "18:00"]},
-    "insights": {"default_prompt": "探索所选笔记的联系"}
-  },
-  "secrets": {
-    "llm_api_key": {"action": "replace", "value": "new-secret"},
-    "embedding_api_key": {"action": "keep"},
-    "webhook_secret": {"action": "clear"}
-  }
-}
-```
-
-密钥名称仅允许 `llm_api_key`、`embedding_api_key`、`app_secret`、`verification_token`、`encrypt_key`、`webhook_url`、`webhook_secret`。操作对象只允许 `action` 和 `value`：`keep`、`clear` 禁止携带 `value`；`replace` 必须提供非空真实值，不能使用遮蔽字符。省略操作等同保持。
-
-| HTTP 状态 | 错误代码 | 含义 |
+| 方法 | 路径 | 功能说明 |
 | --- | --- | --- |
-| 401 | `SESSION_UNAUTHORIZED` | 浏览器会话缺失或失效 |
-| 403 | `FORBIDDEN`、`ACCOUNT_NOT_BOUND`、`ORIGIN_REJECTED`、`CSRF_REJECTED` | 身份、Origin 或 CSRF 不符合要求 |
-| 409 | `SETTINGS_CONFLICT` | 版本过期，重新读取并基于新版本修改 |
-| 415 | `UNSUPPORTED_MEDIA_TYPE` | 请求体不是 JSON |
-| 422 | `INVALID_ARGUMENT` | 请求超限、格式或字段错误、版本缺失或非正数、修改为空 |
-| 503 | `SETTINGS_BUSY`、`SETTINGS_UNAVAILABLE` | 应用繁忙或尚未配置状态加密密钥；会话、来源及存储故障沿用对应服务错误 |
+| `GET` | `/api/app/v1/reviews/daily` | 获取当天全天固定回顾计划及全部选中笔记。 |
 
-失败不发布部分配置。设置持久化、生效顺序、渠道能力及队列兼容规则见[产品设置](SETTINGS.md)。
+### 5. 上下文 AI 洞察
 
-## 资源与身份
+| 方法 | 路径 | 功能说明 |
+| --- | --- | --- |
+| `GET` | `/api/app/v1/chats` | 分页获取历史 AI 对话列表。 |
+| `POST` | `/api/app/v1/chats` | 创建新对话会话，指定对话标题与绑定的笔记上下文材料。 |
+| `GET` | `/api/app/v1/chats/{chat_id}` | 读取指定对话详情与完整消息记录。 |
+| `DELETE` | `/api/app/v1/chats/{chat_id}` | 删除指定对话。 |
+| `POST` | `/api/app/v1/chats/{chat_id}/messages` | 向大模型发送消息，返回 Server-Sent Events (SSE) 流式回复。 |
+| `POST` | `/api/app/v1/chats/{chat_id}/messages/{request_id}/cancel` | 主动停止正在生成的回复。 |
+| `POST` | `/api/app/v1/chats/{chat_id}/messages/{request_id}/save` | 将选定的助手回复原样保存为 Memos 笔记。 |
 
-一个服务部署绑定一个 Memos 实例和一个账号。资源主键使用 `instance_id + user + name`，其中 `name` 沿用 Memos 的 `memos/{id}`，账号使用 `users/{id}`。账号资源名来自 `/api/v1/auth/me`，可以包含用户名，不能假设为整数。
+### 6. 系统设置与诊断
 
-服务索引和输出范围为绑定账号本人创建的正常及归档笔记。其他账号的公开笔记和管理员可直接管理的其他作者笔记，均在此范围之外。身份绑定保存在产品数据库中。更换数据源地址或账号时使用新的 `instance_id` 和数据卷。
+| 方法 | 路径 | 功能说明 |
+| --- | --- | --- |
+| `GET` | `/api/app/v1/settings` | 读取当前系统设置与渠道能力矩阵。 |
+| `PATCH` | `/api/app/v1/settings` | 版本化更新系统设置与敏感凭据。 |
+| `GET` | `/api/app/v1/models` | 获取模型与向量索引当前构建进度与状态。 |
+| `POST` | `/api/app/v1/models/llm/check` | 发送探测请求测试 LLM 连通性。 |
+| `POST` | `/api/app/v1/models/embedding/check` | 发送探测请求测试 Embedding 连通性与维度。 |
 
-扩展入口使用独立的 Bearer 凭据。Memos PAT 仅由服务端适配层读取。
+---
 
-| Scope | 允许操作 |
-| --- | --- |
-| `notes:read` | 读取身份、笔记列表和单条笔记，执行搜索、查找相关笔记及漫步 |
-| `sync:read` | 读取同步状态和任务结果 |
-| `reviews:read` | 读取已有当日回顾和指定批次 |
+## 二、外部开放接口 (`/api/ext/v1`)
 
-服务端先验证机器 Bearer，再检查操作白名单及读取 Scope。缺少凭据或凭据无效返回 401 `UNAUTHENTICATED`；已认证但不在白名单中的操作统一返回 403 `FORBIDDEN`，不解析写入参数、不调用来源或模型。`notes:write`、`sync:write`、`reviews:write`、`discovery:write` 和 `ai:generate` 均不能增加外部操作。
+外部接口供自动化脚本使用，使用 HTTP 请求头 `Authorization: Bearer <MOERISE_ACCESS_TOKEN>` 鉴权。外部接口受限于只读白名单：
 
-机器 REST 不提供笔记写入、手动同步、创建或更换回顾、阅读标记、通知管理、洞察或问答生成。`/api/ext/v1/notifications` 及其子路径、`/api/ext/v1/insights` 和 `/api/ext/v1/answers` 也遵循上述拒绝规则。未列入白名单的方法和路径返回 403。
-
-OpenAPI 只描述可调用的产品协议，不提供已关闭结构化生成的请求、结果或 SSE Schema。旧路径仍由统一的只读白名单拒绝，不保留可被误挂载的生成 Handler。
-
-## 路由
-
-| 方法 | 路径 | Scope | 结果 |
+| 方法 | 路径 | 所需 Scope | 功能说明 |
 | --- | --- | --- | --- |
-| GET | `/health/live` | 无 | 进程存活与服务版本 |
-| GET | `/health/ready` | 无 | `ready` 或 `degraded` |
-| GET | `/api/ext/v1/me` | `notes:read` | 实例、账号、凭据名称、Scope、时区 |
-| GET | `/api/ext/v1/notes` | `notes:read` | 已索引笔记的分页结果，逐条复查来源 |
-| GET | `/api/ext/v1/notes/{memo_id}` | `notes:read` | 直接复查并读取一条来源笔记 |
-| GET | `/api/ext/v1/notes/{memo_id}/related` | `notes:read` | 200，返回原笔记、相关结果与语义使用状态 |
-| POST | `/api/ext/v1/search` | `notes:read` | 200，返回混合搜索结果与语义使用状态 |
-| GET | `/api/ext/v1/search/index` | `notes:read` | 向量索引代次与就绪状态，结构同同步状态的 `vector_index` |
-| POST | `/api/ext/v1/discovery/walk` | `notes:read` | 200，返回一个漫步结果及后续路径 |
-| GET | `/api/ext/v1/sync` | `sync:read` | 水位、完整同步时间、来源状态、数量、任务统计与向量索引进度 |
-| GET | `/api/ext/v1/jobs/{job_id}` | `sync:read` | 持久任务与执行结果 |
-| GET | `/api/ext/v1/reviews/daily` | `reviews:read` | 读取已有当日批次；尚未创建时返回 404 |
-| GET | `/api/ext/v1/reviews/{batch_id}` | `reviews:read` | 读取指定批次，200 |
-| POST | `/hooks/feishu` | 飞书平台凭据与身份校验 | URL 验证或事件持久入队应答，200 |
+| `GET` | `/api/ext/v1/notes` | `notes:read` | 分页读取绑定作者的笔记列表。 |
+| `GET` | `/api/ext/v1/notes/{memo_id}` | `notes:read` | 获取单篇笔记最新原文与元数据。 |
+| `POST` | `/api/ext/v1/search` | `notes:read` | 执行关键词、语义或混合搜索，默认 `hybrid`。 |
+| `GET` | `/api/ext/v1/notes/{memo_id}/related` | `notes:read` | 基于高维向量相似度查找与指定笔记最相关的其他笔记。 |
+| `GET` | `/api/ext/v1/reviews/daily` | `reviews:read` | 读取当天已生成的每日回顾结果（不主动触发生成）。 |
+| `GET` | `/api/ext/v1/sync/status` | `sync:read` | 查看 Memos 同步水位与当前索引构建状态。 |
 
-来源连接成功、全量同步完成且工作循环存活时，就绪检查返回 200；其他情况返回 503。存活检查适合区分进程状态与来源故障。
+---
 
-启用 `embedding` 时，同步状态包含 `vector_index`，关闭时省略。`active` 是已发布代次，`building` 是构建中的代次，无对应代次时为 `null`；两者包含模型、维度、分块版本、向量空间摘要、投影修订号，以及笔记数、片段数、已完成片段数和最近错误代码。`projection_revision` 随投影变化递增；`ready=true` 表示已发布代次与配置和投影修订一致，来源连接和查询是否可用需单独检查。向量索引构建和模型故障不影响基础就绪检查。构建与恢复规则见[向量索引](EMBEDDING.md#分块与向量索引)。
+## 三、Model Context Protocol (`/mcp`)
 
-## 笔记与分页
+Moerise 实现了 Anthropic 提出的 Model Context Protocol (MCP) 标准，使各类 AI 工具能够安全检索知识库。
 
-列表参数：
-
-| 参数 | 默认值 | 约束 |
-| --- | --- | --- |
-| `state` | `NORMAL` | `NORMAL`、`ARCHIVED` |
-| `page_size` | 20 | 1 至 100 |
-| `page_token` | 空字符串 | 服务返回的不透明游标，最多 4096 字符 |
-
-笔记按 `update_time DESC, name DESC` 排序，使用键值分页。游标通过 HMAC 签名，并绑定实例、账号、归档状态和索引代次。重建索引使分页游标失效，调用方从第一页重新读取。
-
-列表从本地投影确定候选资源，再请求 Memos 获取最新正文并复查作者。来源已消失时删除对应投影，来源已归档时移出正常列表。单页可能少于 `page_size`，甚至为空；调用方应以 `next_page_token` 是否为空判断分页结束。
-
-投影会随同步和来源复查变化，分页不提供跨请求的固定快照。需要稳定集合的业务应在服务内部建立自己的批次。
-
-```http
-GET /api/ext/v1/notes?state=NORMAL&page_size=20
-Authorization: Bearer <reader-token>
-```
-
-响应包含 `notes` 和 `next_page_token`。单条资源路径中的 `memo_id` 是 `memos/{id}` 的标识部分，`job_id` 是任务 UUID。
-
-附件数组沿用 Memos 返回的附件元数据。`source_hash` 包含正文、状态、标签、附件和关系等来源信息；正文摘要单独保存在索引中，供后续向量任务判断正文变化。
-
-来源身份或版本无法验证、Memos 连接失败时，读取接口返回 503，不以缓存正文替代来源复查。
-
-## 搜索
-
-```http
-POST /api/ext/v1/search
-Authorization: Bearer <reader-token>
-Content-Type: application/json
-
-{"query":"如何整理灵感","tags":["工作/灵感"],"state":"NORMAL","limit":10}
-```
-
-`SearchRequest` 仅接受以下字段；未知字段及参数不合法返回 422 `INVALID_ARGUMENT`，非 POST 方法返回 403 `FORBIDDEN`。
-
-| 字段 | 必填 | 默认值与约束 |
-| --- | --- | --- |
-| `query` | 是 | 字符串，trim 后非空，最多 256 个 Unicode 码点且最多 1024 个 UTF-8 字节 |
-| `mode` | 否 | 默认 `hybrid`，可选 `keyword`、`semantic`；语义模式不可用时返回错误 |
-| `tags` | 否 | `[]`；输入最多 20 项，使用字母、十进制数字、下划线、连字符和斜杠分段的标签格式，去重排序，精确 AND 过滤 |
-| `state` | 否 | `NORMAL`；可选 `NORMAL`、`ARCHIVED`、`ALL` |
-| `limit` | 否 | 10；整数，1 至 20 |
-
-所有召回通道共用作者、状态和标签过滤。响应为 `SearchResponse`：
-
-| 字段 | 类型 | 含义 |
-| --- | --- | --- |
-| `query` | string | trim 后的查询 |
-| `mode` | string | 实际模式；混合模式语义降级后为 `keyword` |
-| `results` | `SearchHit[]` | 排名后的笔记，无命中时为 `[]` |
-| `semantic` | object | `used: bool`、`reason: string`；使用语义时 reason 为空字符串，否则为 `EMBEDDING_DISABLED`、`INDEX_NOT_READY` 或具体模型错误代码 |
-
-每个 `SearchHit` 包含 `note: Note`、`score: number` 和最多 3 项的 `matches: SearchMatch[]`。每个片段含 `ordinal: int`、`byte_start: int`、`byte_end: int`、`line_start: int`、`line_end: int`、`content: string` 和 `signals: string[]`；signals 仅包含 `keyword`、`semantic`、`tag`。字节位置对应原始正文 UTF-8 编码，使用从 0 开始的半开区间；行号从 1 开始，分块规则见[搜索](SEARCH.md)。`note` 使用来源复查后的正文和原文 URL。
-
-关键词 BM25、标签匹配和正余弦语义分别取前 100 个片段，按 RRF（k=60）融合后再按笔记合并，笔记分数取最高片段分数，每条最多返回 3 个片段，排序稳定。模型关闭、索引未就绪或模型失败时降级为关键词与标签搜索；请求取消不降级。`score` 用于融合排名，不能用作余弦值或置信度。
-
-搜索前复查 Memos 版本与身份，返回前逐条读取候选原文；修改、删除、作者越界或不再满足过滤条件的候选丢弃并修正投影，最后再次复查身份。来源故障使整个请求失败，不输出缓存正文。分词、内存缓存、迁移与降级规则见[搜索](SEARCH.md)。
-
-显式 `keyword` 模式不调用模型，语义原因为 `KEYWORD_MODE`；`semantic` 模式不使用关键词通道，模型关闭、未就绪或失败时返回 503 和明确原因。默认 `hybrid` 保留自动降级行为。
-
-## 语义漫步
-
-`POST /api/ext/v1/discovery/walk` 接受 `name`、`mode`、`path`、`include_archived`；默认 `continue`，兼容值 `angle` 使用相同的语义候选随机规则，`random` 随机选择起点且允许省略 `name`。路径不设固定条数上限，机器 REST 的 JSON 请求体预算为 64 KiB。返回一个 `item`、后续 `path`、`mode`、`exhausted`、`warnings`。漫步只读，使用 `notes:read`；均要求已启用且就绪的 Embedding。来源复查、候选去重及技术资源规则见[语义漫步](SEARCH.md#语义漫步)。
-
-## 相关笔记
-
-```http
-GET /api/ext/v1/notes/example/related?tags=园艺&tags=随记&state=NORMAL&limit=10
-Authorization: Bearer <reader-token>
-```
-
-`memo_id` 为原笔记 `memos/{id}` 的标识部分，资源名须匹配 `^memos/[a-zA-Z0-9_-]+$`。仅接受以下查询参数：
-
-| 参数 | 默认值与约束 |
-| --- | --- |
-| `tags` | `[]`；重复字段传数组，例如 `?tags=园艺&tags=随记`；输入最多 20 项，格式、去重排序和精确 AND 过滤同搜索 |
-| `state` | `NORMAL`；可选 `NORMAL`、`ARCHIVED`、`ALL`，仅允许出现一次 |
-| `limit` | 10；整数，1 至 20，仅允许出现一次 |
-
-未知参数、重复 `state`/`limit`、非法资源名或参数返回 422 `INVALID_ARGUMENT`；非 GET 方法返回 403 `FORBIDDEN`。状态和显式标签只过滤候选，不过滤原笔记，因此可以从归档原笔记查找正常候选。
-
-响应 `RelatedResponse` 包含 `source: Note`、`results: SearchHit[]` 和 `semantic: SearchSemantic`；无相关结果时 `results=[]`。命中字段、字节区间、行号和分数含义复用搜索契约。关键词从全量原文提取，标签通道匹配共同标签，语义复用文档向量；不将原文截为搜索短查询，不调用查询模型或 LLM。语义降级原因限定为 `EMBEDDING_DISABLED`、`INDEX_NOT_READY`、`NO_SOURCE_VECTORS`，成功使用语义时 `used=true`、`reason=""`。算法见[相关笔记](SEARCH.md#相关笔记)。
-
-先验证来源版本与身份，再读取原笔记并修正投影；候选逐条原文复查同搜索。输出前再次读取原笔记、核实来源摘要与身份：原笔记消失或作者越界返回 404 `SOURCE_NOT_FOUND`，处理中改变返回 409 `SOURCE_CHANGED` 且 `retryable=true`。任意来源故障使整个请求失败，不输出原笔记或部分结果。
-
-## 飞书事件
-
-应用机器人回调入口为 `/hooks/feishu`，仅在应用凭据完整时启用；使用平台事件 Token 和可选 Encrypt Key 验证，不使用 Moerise Bearer 凭据。绑定使用者的单聊消息持久入队后返回 `{"code":0}`；URL 验证返回 `{"challenge":"..."}`。文字消息全部原样记录为笔记，不解析命令。重复消息沿用同一记录操作，其他身份和群聊不进入业务。事件配置、记录方式及恢复语义见[飞书入口](FEISHU.md)。
-
-## 每日回顾与 MCP
-
-机器 REST 只读取已有回顾批次。当天没有批次时返回 404 `REVIEW_NOT_FOUND`，读取操作不创建批次、不更换内容、不更新打开或略过记录。
-
-响应直接返回 `ReviewBatch`，含 `id`、`date`、`timezone`、`rule_version`、`sequence`、`created_at`、`settings_version` 和全天有序 `items`。条目含 `name`、`selected_source_hash`、`selected_at`、历史字段 `opened_at` 与 `skipped_at`、`unavailable`，以及可用时的最新 `note`。来源删除或作者变化时保留条目位置，`unavailable=true` 并省略 `note`。选择、参数和恢复规则见[每日回顾](DAILY-REVIEW.md)。
-
-扩展 MCP 位于 `/mcp`，使用官方 Go MCP SDK 的无会话 Streamable HTTP 传输，返回 JSON。客户端对该 URL 发送 MCP 请求，使用与 REST 相同的 Moerise Bearer 凭据；请求体上限为 64 KiB。协议初始化、请求头和错误按 MCP 协议处理，业务错误使用工具结果的 `isError` 及包含 `code`、`message`、`retryable` 的 JSON 文本。MCP GET、DELETE 不提供事件流或会话管理。含跨站来源的请求受到同源检查。
-
-| 工具 | Scope | 行为 |
-| --- | --- | --- |
-| `get_memo` | `notes:read` | 读取 `name` 指定的本人笔记，返回最新 `Note` 全文与附件 |
-| `list_memos` | `notes:read` | 按 `state`、`page_size`、`page_token` 分页读取，返回 `notes` 和 `next_page_token` |
-| `semantic_search` | `notes:read` | 只读、幂等、非破坏；参数为 `SearchRequest`，结构化结果为 `SearchResponse` |
-| `get_related_memos` | `notes:read` | 只读、幂等、非破坏；参数为 `RelatedRequest`，结构化结果为 `RelatedResponse` |
-| `semantic_walk` | `notes:read` | 只读、幂等、非破坏；参数为 `WalkRequest`，结构化结果为 `WalkResponse`，随机模式可返回不同笔记 |
-| `read_daily_review` | `reviews:read` | 读取已有当日批次；不存在时返回 `REVIEW_NOT_FOUND`，不创建批次 |
-| `get_review_batch` | `reviews:read` | 读取指定 `batch_id` |
-
-外部 MCP 仅提供只读工具，不支持创建笔记、创建或更换回顾、记录打开或略过、更新阅读历史。令牌中的写入 Scope 和 `ai:generate` 不增加 MCP 工具，工具发现和直接调用均执行只读限制。服务端按读取 Scope 注册工具，`readOnlyHint` 只用于展示提示。REST 与 MCP 共享只读业务服务，均不能通过机器凭据写入产品状态。
-
-`get_memo` 接受 `{"name":"memos/example"}`，读取前验证来源账户，返回前获取 Memos 原文；不存在或不属于绑定作者时返回 `SOURCE_NOT_FOUND`。`list_memos` 接受可省略的 `state`（默认 `NORMAL`，也支持 `ARCHIVED`）、`page_size`（默认 20，范围 1—100）、`page_token`。它复用 REST 笔记列表的分页与原文复查，同一实例、作者、索引代次及状态下的游标可在 REST 与 MCP 间互用；无效游标返回 `INVALID_PAGE_TOKEN`。来源故障使获取和列表请求失败，不返回缓存正文。两个工具均只读、幂等、非破坏，不更新阅读历史。
-
-`semantic_search` 仅对具备 `notes:read` 的凭据可见及可调用，设置 `readOnlyHint=true`、`idempotentHint=true`、`destructiveHint=false`。REST 和 MCP 复用 `SearchService`，搜索无需 LLM；来源复查引起的派生投影修正不改变产品记录。
-
-`get_related_memos` 使用相同 Scope 可见性及工具提示。`RelatedRequest` 为 JSON 对象，例如 `{"name":"memos/example","tags":["园艺"],"state":"NORMAL","limit":10}`；`name` 必填，格式与相关 REST 资源名一致，其他字段的默认值及约束同相关查询参数。未知字段或非法参数以 `isError=true` 和错误文本返回；业务错误文本为包含 `code`、`message`、`retryable` 的 JSON。成功结构化输出为 `RelatedResponse`。
-
-## 同步任务
-
-`GET /api/ext/v1/sync` 读取同步状态，`GET /api/ext/v1/jobs/{job_id}` 返回 `{"job": Job}`。同步由服务端任务队列执行，机器 REST 不接受手动入队。
-
-`mode` 支持 `incremental` 和 `full`。全量任务也用于修复删除、归档变化和时间回溯修改。
-
-每个实例最多保留一个等待中的同步任务；重复请求返回该任务，全量请求可提升其模式。执行期间到达的新请求形成后续任务。任务按顺序执行，不并行覆盖投影。
-
-| 状态 | 含义 |
-| --- | --- |
-| `pending` | 等待执行或按退避时间重试 |
-| `running` | 执行中，按页更新租约 |
-| `succeeded` | 执行完成，或触发请求已合并到另一个持久任务 |
-
-合并任务的 `result.merged_into` 指向承接任务。调用方沿该标识查询结果。普通成功结果包含 `mode`、`observed`、`changed`、`removed`。
-
-失败保留任务标识、尝试次数、错误代码和下一次执行时间。服务重启将遗留执行任务转为全量修复，或合并到已有等待任务。最近 500 条完成记录保留在数据库中，等待和执行任务不参与历史清理。
-
-## 时间与错误
-
-接口时间使用带时区的 ISO 8601 字符串；`available_at` 和 `lease_until` 使用 Unix 秒。配置时区用于产品日期与调度。
-
-错误结构统一为：
-
-```json
-{
-  "error": {
-    "code": "UPSTREAM_UNAVAILABLE",
-    "message": "Memos is unavailable",
-    "retryable": true,
-    "request_id": "uuid"
-  }
-}
-```
-
-| HTTP 状态 | 常见错误代码 | 处理 |
-| --- | --- | --- |
-| 401 | `UNAUTHENTICATED` | 检查扩展 Bearer 凭据 |
-| 403 | `FORBIDDEN` | 检查凭据读取 Scope 和服务端操作白名单 |
-| 404 | `SOURCE_NOT_FOUND`、`JOB_NOT_FOUND`、`REVIEW_NOT_FOUND`、`NOT_FOUND` | 移除失效资源或重新开始查询 |
-| 405 | `METHOD_NOT_ALLOWED` | 检查方法和路由 |
-| 409 | `SOURCE_CHANGED` | 来源复查时原文改变；按响应 `retryable` 处理，重新读取来源后重试 |
-| 422 | `INVALID_ARGUMENT`、`INVALID_PAGE_TOKEN` | 修正参数，游标失效时重读第一页 |
-| 503 | `UPSTREAM_UNAVAILABLE`、`UPSTREAM_AUTH`、`UPSTREAM_RATE_LIMITED`、`IDENTITY_MISMATCH` | 检查来源连接、限流与绑定 |
-| 503 | `UNSUPPORTED_UPSTREAM`、`UPSTREAM_PROTOCOL`、`UPSTREAM_REQUEST_REJECTED` | 检查 Memos 版本与适配层 |
-| 500 | `INTERNAL` | 通过请求标识和服务日志定位 |
-
-业务响应携带 `X-Request-ID` 和 `Cache-Control: no-store`。日志记录任务标识与错误代码，省略笔记正文、请求凭据和模型密钥。
+- **安全红线**：MCP Server 仅暴露只读工具，绝不暴露创建、修改、删除笔记或更改系统配置的任何工具。
+- **暴露的 MCP 工具**：
+  - `search_notes`：多模式检索笔记。
+  - `get_note`：通过资源名或 ID 获取单篇笔记内容。
+  - `list_notes`：按时间线分页列出笔记。
+  - `get_related_notes`：查找语义相似的相关笔记。
+  - `get_daily_review`：读取当天的每日回顾内容。

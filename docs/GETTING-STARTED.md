@@ -1,10 +1,12 @@
-# Getting started with Moerise
+# Getting Started with Moerise
 
-[Product introduction](../README.md) · [中文安装指南](OPERATIONS.md#容器部署)
+[Product Overview](../README.md) · [中文运行指南](OPERATIONS.md#容器部署)
 
-Moerise runs on Linux, directly or in Docker Linux containers. Docker deployment needs Docker Engine and Compose 2.24 or later. The bundled stack includes Memos 0.31.x, Moerise Core and the Web interface. Each installation serves one Memos author.
+Moerise runs on Linux natively or via Docker Linux containers. Docker deployment requires Docker Engine and Docker Compose (2.24 or later). The bundled stack includes Memos 0.31.x, Moerise Core, and the Moerise Web frontend. Each Moerise instance connects to one author on a Memos instance.
 
-## Start with a new Memos instance
+---
+
+## 1. Start with a New Memos Instance
 
 Run these commands from the repository root:
 
@@ -13,21 +15,27 @@ cp .env.example .env
 docker compose up -d memos
 ```
 
-Open `http://localhost:5231` and create a Memos account. In Memos account settings, create a personal access token (PAT). Request `GET http://localhost:5231/api/v1/auth/me` with `Authorization: Bearer <your-PAT>` and find `user.name` in the response. This is the resource name, such as `users/abc123`, rather than your sign-in username.
+1. Open `http://localhost:5231` in your browser and register your Memos account.
+2. In Memos **Settings → Access Tokens**, generate a Personal Access Token (PAT).
+3. Request the Memos profile endpoint to find your exact author resource name:
+   ```bash
+   curl -H "Authorization: Bearer <your-PAT>" http://localhost:5231/api/v1/auth/me
+   ```
+   Note the `user.name` property in the JSON response (e.g. `users/abc123`). This is the system resource identifier, distinct from your sign-in username.
 
-Edit `.env`:
+4. Edit `.env` to configure your instance:
 
-| Variable | Value |
+| Variable | Description |
 | --- | --- |
 | `MOERISE_MEMOS_TOKEN` | Your Memos PAT |
-| `MOERISE_MEMOS_USER` | The exact `user.name` from `/api/v1/auth/me` |
-| `MOERISE_MEMOS_INSTANCE_ID` | A unique, stable identifier you choose for this Memos instance |
-| `MOERISE_TIMEZONE` | An IANA timezone, such as `Europe/London` or `America/Chicago` |
-| `MOERISE_ACCESS_TOKEN` | A separate random token for machine access |
-| `MOERISE_CURSOR_SECRET` | A separate random secret for pagination |
-| `MOERISE_STATE_ENCRYPTION_KEY` | A base64-encoded 32-byte key for saved credentials |
+| `MOERISE_MEMOS_USER` | The exact `user.name` string from `/api/v1/auth/me` |
+| `MOERISE_MEMOS_INSTANCE_ID` | A stable, unique identifier for this instance (e.g. `primary-memos`) |
+| `MOERISE_TIMEZONE` | IANA timezone (e.g. `Asia/Shanghai`, `Europe/London`, `America/New_York`) |
+| `MOERISE_ACCESS_TOKEN` | Independent secret token for external machine/MCP access |
+| `MOERISE_CURSOR_SECRET` | Independent random secret used for pagination signatures |
+| `MOERISE_STATE_ENCRYPTION_KEY` | Base64-encoded 32-byte key for encrypting stored credentials |
 
-Generate the last three values independently:
+Generate independent cryptographic keys using OpenSSL:
 
 ```bash
 openssl rand -hex 32     # MOERISE_ACCESS_TOKEN
@@ -35,9 +43,10 @@ openssl rand -hex 32     # MOERISE_CURSOR_SECRET
 openssl rand -base64 32  # MOERISE_STATE_ENCRYPTION_KEY
 ```
 
-Keep the instance ID, Compose project name and encryption key stable across upgrades. Back up `.env` securely along with product state; losing the encryption key prevents recovery of saved credentials.
+> [!IMPORTANT]
+> Keep your `.env` and `MOERISE_STATE_ENCRYPTION_KEY` safely backed up. If the encryption key is lost, encrypted provider credentials and notification secrets cannot be recovered.
 
-Start the complete stack:
+5. Start the complete stack:
 
 ```bash
 docker compose up -d --build
@@ -45,11 +54,16 @@ docker compose ps
 curl --fail http://localhost:3000/health/ready
 ```
 
-Open `http://localhost:3000` and sign in with the bound Memos account's username and password. Memos must allow password sign-in. The interface uses your browser language; choose English or 简体中文 from the language selector to override it.
+Open `http://localhost:3000` and sign in using your Memos username and password. The interface detects your browser language preference; you can toggle between English and 简体中文 via the sidebar or login page.
 
-## Connect an existing Memos instance
+---
 
-Use Memos 0.31.x and the PAT and resource name of the author whose notes you want to use. In `.env`, set:
+## 2. Connect to an Existing Memos Instance
+
+To connect Moerise to a pre-existing Memos (0.31.x) instance:
+
+1. Obtain the PAT and `user.name` for the target author account.
+2. In `.env`, set:
 
 ```dotenv
 COMPOSE_PROFILES=
@@ -57,47 +71,67 @@ MOERISE_MEMOS_BASE_URL=https://memos.example.com
 MOERISE_MEMOS_PUBLIC_URL=https://memos.example.com
 ```
 
-`MOERISE_MEMOS_BASE_URL` must be reachable from the Core container. `localhost` inside a container refers to that container. `MOERISE_MEMOS_PUBLIC_URL` is the browser-facing Memos origin. The origins may differ, for example when Core uses a private container network.
+- `MOERISE_MEMOS_BASE_URL`: The URL reachable from inside the Moerise Core container.
+- `MOERISE_MEMOS_PUBLIC_URL`: The public-facing URL your browser uses to open original Memos links.
 
-Fill in the same author binding, independent secrets and timezone described above, then run `docker compose up -d --build`. Moerise uses Memos' official API; it does not need direct access to the Memos database.
+3. Fill in the remaining required secrets (`MOERISE_ACCESS_TOKEN`, `MOERISE_CURSOR_SECRET`, `MOERISE_STATE_ENCRYPTION_KEY`) and launch with:
 
-## Read, write and explore
+```bash
+docker compose up -d --build
+```
 
-Start with ordinary notes, attachments, tags, keyword search and daily review. Open **Settings** to configure optional services:
+---
 
-- **Embeddings:** choose a supported provider and model, save, check the connection, then wait for the semantic index to finish. This enables semantic search, hybrid search, random walks and the note map.
-- **LLM:** configure OpenAI Chat Completions, OpenAI Responses or Anthropic Messages. Save and check the connection. In AI insights, select notes and ask a question or choose Generate insight. Embeddings are not required for chat.
-- **Messaging:** no channel is selected by default. Choose [Telegram](TELEGRAM.md) for English review delivery or a [Feishu](FEISHU.md) bot/webhook for Chinese delivery. Telegram needs a Bot Token and numeric Chat ID; Feishu also supports note capture. Set the channel and review schedule in Web settings.
+## 3. Configuring Optional Features
 
-Model features send the necessary note content to the provider you configure. Notes, tags, custom prompts and existing conversations retain their original language. New AI requests carry the interface's reply language; an explicit user request can ask for another language.
+Core writing, reading, keyword search, and daily reviews work immediately without third-party models or messaging integrations. Open **Settings** in the Web UI to enable optional services:
 
-## Expose the Web interface over HTTPS
+- **Embeddings:** Configure an OpenAI-compatible endpoint or Alibaba Bailian DashScope. Verify the connection, then wait for the semantic index build to complete. This activates semantic search, hybrid search, the random walk, and the cognitive map.
+- **LLM:** Configure OpenAI Chat Completions, OpenAI Responses, or Anthropic Messages. Verify connectivity. In AI Insights, select notes and start multi-turn discussions. Embeddings are not required for chat.
+- **Messaging Channels:** Choose [Telegram](TELEGRAM.md) for scheduled review delivery in English, or [Feishu](FEISHU.md) for Chinese delivery and note capturing. New installations start with messaging disabled.
 
-The default ports bind to loopback. For remote access, place an HTTPS reverse proxy in front of Web and set, for example:
+---
+
+## 4. Reverse Proxy & HTTPS Deployment
+
+Default Compose bindings expose ports to the local loopback interface. For production deployments with public domains, place an HTTPS reverse proxy (such as Nginx, Caddy, or Traefik) in front of Moerise Web and set:
 
 ```dotenv
 MOERISE_PUBLIC_ORIGIN=https://notes.example.com
 ```
 
-Forward that origin to Web's port 3000. If the proxy runs in another container, connect it to Web's network or configure `WEB_BIND_ADDRESS` for the intended private network. Remote public origins require HTTPS; plain HTTP is accepted only for loopback addresses. Restart the stack after changing infrastructure variables.
+Forward traffic for `notes.example.com` to Moerise Web port `3000`. Web proxies `/api/app/v1` internally to Core. For external MCP or machine REST endpoints (`/api/ext/v1` and `/mcp`), forward requests directly to Core port `8787` as needed.
 
-Web proxies only `/api/app/v1`. Machine REST/MCP, Core API documentation and Feishu callbacks use the separate Core listener on port 8787. Expose only the endpoints your deployment needs through your reverse proxy.
+---
 
-## Choose a resource profile
+## 5. Resource Profiles
 
-Core adjusts its memory budget, source read batches and computation concurrency to process limits. Compose profiles provide service limits for these server sizes:
+Moerise Core automatically tunes memory budgets and concurrency limits based on container cgroups. Sample resource configurations for various host sizes are available in `deploy/resources/`:
 
-| Server | Resource file |
+| Server Size | Profile File |
 | --- | --- |
-| 1 core / 1 GiB | `deploy/resources/1c1g.env` |
-| 2 cores / 1 GiB | `deploy/resources/2c1g.env` |
-| 2 cores / 2–4 GiB | `deploy/resources/2c2g.env` |
-| 4 cores / 4–8 GiB | `deploy/resources/4c4g.env` |
+| 1 Core / 1 GiB | `deploy/resources/1c1g.env` |
+| 2 Cores / 1 GiB | `deploy/resources/2c1g.env` |
+| 2 Cores / 2–4 GiB | `deploy/resources/2c2g.env` |
+| 4 Cores / 4–8 GiB | `deploy/resources/4c4g.env` |
 
-Copy the resource file's entries into your `.env`. These are service limits, rather than measured idle usage; leave room for the operating system and other services. The 2-core / 2–4 GiB profile is suitable for choosing initial limits on a 2C4G host.
+Copy the contents of the appropriate profile file into your `.env` to enforce resource bounds.
 
-## Back up and upgrade
+---
 
-Memos data and Moerise product state both need backups. Compose stores Memos, product state, rebuildable indexes and backup output in separate named volumes. Rebuilding an index preserves chats, settings and review history. A product-state backup does not replace a backup of Memos notes and attachments.
+## 6. Backups and Upgrades
 
-Keep `.env`, the instance ID and the Compose project name stable. Before an upgrade, back up both services and the encryption key. Pull the intended source revision and rebuild with `docker compose up -d --build`. Detailed backup, restore and rollback commands are in [Operations](OPERATIONS.md).
+Memos data and Moerise product state are stored in isolated named Docker volumes:
+- Memos database: `memos-data`
+- Moerise state: `moerise-state` (contains `state.sqlite3`)
+- Moerise index: `moerise-index` (contains `index.sqlite3`, rebuildable)
+
+To upgrade Moerise:
+1. Back up `.env` and `moerise-state`.
+2. Pull the latest repository updates:
+   ```bash
+   git pull origin main
+   docker compose up -d --build
+   ```
+
+For detailed backup and recovery procedures, see [Operations Guide](OPERATIONS.md).
