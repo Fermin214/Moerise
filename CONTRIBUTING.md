@@ -1,5 +1,7 @@
 # Contributing to Moerise
 
+[简体中文](CONTRIBUTING.zh-CN.md)
+
 We welcome issues, pull requests, and architecture discussions in English or Simplified Chinese.
 
 When reporting bugs, please provide a clear reproduction: explain what you attempted, the expected outcome, the actual result, and the relevant Moerise and Memos versions. Never include private credentials or confidential note content in issues or pull requests.
@@ -41,7 +43,7 @@ npm --prefix web run build
 npm --prefix web start
 ```
 
-By default, Moerise Core listens on port `8787` and Web listens on port `3000`. Web forwards `/api/app/v1` calls to `CORE_ORIGIN` (defaults to `http://127.0.0.1:8787`). Web serves compiled assets from `web/dist`, so rebuild the frontend after editing source files. See [Development Guide](docs/DEVELOPMENT.md) for full details on integration suites and test scripts.
+By default, Moerise Core listens on port `8787` and Web listens on port `3000`. Web's `PUBLIC_ORIGIN` must match Core's `web.public_origin`. Web forwards `/api/app/v1` calls to `CORE_ORIGIN` (defaults to `http://127.0.0.1:8787`). Web serves compiled assets from `web/dist`, so rebuild the frontend after editing source files. See [Development Guide](docs/DEVELOPMENT.en.md) for full details on integration suites and test scripts.
 
 ---
 
@@ -63,7 +65,7 @@ By default, Moerise Core listens on port `8787` and Web listens on port `3000`. 
 1. **Memos Authority**: Memos remains the single source of truth for notes, tags, media attachments, and authentication. Always interact with Memos through its official APIs, respecting the author boundaries bound to the instance.
 2. **Dual-Database Invariant**: `state.sqlite3` holds irreplaceable application state (settings, chat sessions, review history); `index.sqlite3` holds disposable indexes that must be rebuildable from Memos at any time.
 3. **Database Migrations**: Add numbered SQL files in `internal/migrations/` for schema changes. Never modify an existing, committed migration.
-4. **Read-Only External Access**: External machine interfaces (`/api/ext/v1` and `/mcp`) are strictly read-only. Write operations are reserved for authenticated user client sessions.
+4. **Read-Only External Access**: External machine interfaces (`/api/ext/v1` and `/mcp`) are strictly read-only. Note writes use the owner's authenticated client session or internal dedicated capture services.
 
 ---
 
@@ -108,6 +110,10 @@ Moerise supports English and Simplified Chinese. The translation layer resides i
 - Annotate static elements in HTML templates with `data-i18n`. Use `data-i18n-placeholder` or `data-i18n-aria-label` for accessibility attributes.
 - Avoid dynamic string concatenation. Always use full message keys with placeholders.
 - Translate interface controls and notifications only. Never translate user note bodies, tags, filenames, custom prompts, or chat conversation records.
+
+### Documentation Translations
+
+Public documentation uses separate English and Chinese files, listed in the [Documentation Index](docs/README.md). Update both versions when behavior, parameters, or commands change. Follow the existing structure and writing style, and preserve variable names, API paths, protocol fields, and code identifiers.
 
 ---
 

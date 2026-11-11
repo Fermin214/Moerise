@@ -1,5 +1,7 @@
 # Moerise 开发指南
 
+[English](DEVELOPMENT.en.md)
+
 本指南面向 Moerise 代码贡献者，提供本地开发环境配置、测试套件执行、端到端集成验收及评测流程说明。
 
 ---
@@ -25,7 +27,8 @@ go mod verify
 1. 复制配置文件模板：`cp config.example.json .local/config.json`；
 2. 在 `.local/config.json` 中配置测试用 Memos 地址、PAT、绑定作者及独立的 `access_tokens`、`cursor_secret`；
 3. 将 `state_dir` 和 `index_dir` 分别设为 `.local/state` 和 `.local/index`；
-4. 校验并启动核心服务：
+4. 启用 `web.enabled`，将 `web.public_origin` 设为 `http://localhost:3000`，用 `openssl rand -base64 32` 生成独立的 `web.state_encryption_key`；
+5. 校验并启动核心服务：
    ```bash
    go run . check-config
    go run . serve --host 127.0.0.1
@@ -76,11 +79,14 @@ Moerise Web 前端使用 Playwright 覆盖真实的端到端浏览器交互：
 
 ```bash
 # 安装 Chromium 浏览器内核
-cd web && npx playwright install --with-deps chromium
+cd web
+npx playwright install chromium
 
 # 执行完整浏览器测试套件
 npm run test:browser
 ```
+
+浏览器缺少系统库时，按 Playwright 提示安装依赖。CI 通过 `CHROMIUM_PATH` 使用 Runner 预装 Chrome；本地也可将该变量设为兼容的 Chrome/Chromium 可执行文件路径。
 
 ### 专项浏览器测试说明
 - `web/test/browser.mjs`：基础页面交互、Markdown 渲染、就地编辑与多维筛选。
@@ -108,7 +114,7 @@ go test -tags=integration ./tests -v -count=1
 ### 1. 向量扫描与布局计算性能基准
 ```bash
 # 向量点积与内存扫描 Benchmark
-go test ./internal -run '^$' -bench '^BenchmarkSemantic' -benchmem
+go test ./internal -run '^$' -bench 'Benchmark(VectorIndex|Semantic)' -benchmem
 
 # 2D 认知地图 PCA 布局生成 Benchmark
 go test ./internal -run '^$' -bench '^BenchmarkMapLayout$' -benchmem
@@ -116,9 +122,12 @@ go test ./internal -run '^$' -bench '^BenchmarkMapLayout$' -benchmem
 
 ### 2. 检索效果评测脚本
 提供标准评测脚本 `scripts/evaluate-search.py`，用于对标注问题集评测 Hit@5、MRR@5 及查询延迟：
+
 ```bash
-python3 scripts/evaluate-search.py --questions .local/search-questions.json
+python3 scripts/evaluate-search.py --config .local/config.json --credential reader --questions .local/search-questions.json
 ```
+
+先运行已完成同步与向量构建的 Core，在配置中提供名为 `reader`、含 `notes:read` 的访问凭据。问题文件为 JSON 数组，每项包含 `query` 与预期资源名数组 `expected`，可附 `state` 和 `tags`；输出路径默认 `.local/search-evaluation.json`，需使用新的文件名。向量扫描基准只测计算过程，完整 API 延迟还包含来源认证、模型请求与原文复查。
 
 ---
 

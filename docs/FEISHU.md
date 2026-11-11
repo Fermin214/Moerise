@@ -1,5 +1,7 @@
 # 飞书接入指南
 
+[English](FEISHU.en.md)
+
 Moerise 支持接入飞书平台，提供**企业自建应用机器人**与**群自定义机器人 Webhook** 两种模式：
 - **飞书应用机器人**：支持在专属私聊中双向快速记录文字、图片和文件至 Memos，并支持按时段主动推送图文每日回顾。
 - **群自定义机器人 Webhook**：仅用于定时向飞书群单向推送每日回顾。
@@ -62,10 +64,12 @@ Moerise 支持接入飞书平台，提供**企业自建应用机器人**与**群
 | `verification_token` | string | 飞书事件回调校验 Token |
 | `encrypt_key` | string / null | 飞书事件加密 Key（未开启加密填 `null`） |
 | `user_open_id` | string | 绑定的用户 Open ID（格式如 `ou_...`），决定谁有权在私聊中速记以及接收单聊回顾推送 |
-| `destination` | string / null | 推送目标 Open ID；默认为 `null` 即发送给 `user_open_id` |
+| `destination` | string / null | 指定时必须与 `user_open_id` 相同；`null` 表示使用绑定用户 |
 
 > [!TIP]
 > 环境变量配置时支持 `MOERISE_FEISHU_APP_ID`、`MOERISE_FEISHU_APP_SECRET`、`MOERISE_FEISHU_USER_OPEN_ID` 等变量。
+
+部署值仅用于首次初始化日常设置，之后以 Web 保存的值为准。
 
 ---
 
@@ -86,7 +90,7 @@ Moerise 支持接入飞书平台，提供**企业自建应用机器人**与**群
 
 ## 四、定时回顾推送规格
 
-按照设置的推送时段（如 09:00、18:00），飞书机器人将有序推送当前时段分配的精选笔记：
+按照设置的推送时段（如 09:00、18:00），飞书机器人将有序推送时段分配的精选笔记：
 
 1. **推送顺序**：
    - 每次推送首先单独发送一条标题：`「今日回顾」`；

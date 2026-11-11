@@ -1,5 +1,7 @@
 # Moerise 向量模型 (Embedding)
 
+[English](EMBEDDING.en.md)
+
 Moerise 通过独立的向量提供商接口将笔记正文切块并转化为高维向量，为语义检索、混合检索、随机漫步以及 2D 认知地图提供计算底座。向量模型与对话模型（LLM）完全解耦，分别配置、独立启停。
 
 ---
@@ -9,7 +11,7 @@ Moerise 通过独立的向量提供商接口将笔记正文切块并转化为高
 Moerise 支持以下两类向量协议：
 
 1. **OpenAI 兼容协议 (`openai-compatible`)**：兼容 OpenAI 官方 `text-embedding-3-*` 系列，以及各类遵循 OpenAI 规范的第三方网关或本地模型（如 Ollama、vLLM）。
-2. **阿里云百炼 DashScope 原生协议 (`bailian` / `dashscope`)**：针对阿里云百炼 `qwen3.7-text-embedding` 等多维度多语言模型深度适配。
+2. **阿里云百炼 DashScope 原生协议**：`provider=bailian`、`protocol=dashscope`，适配 `qwen3.7-text-embedding` 的文档与查询向量。
 
 ---
 
@@ -69,13 +71,13 @@ Moerise 支持以下两类向量协议：
 
 ### 1. 文本分块规则 (`paragraph-v1-2048`)
 - **短笔记处理**：正文字符较短的笔记整篇作为单个分块。
-- **长笔记分块**：按自然段落、空行进行切分；超长段落沿标点与 Unicode 码点切分，绝不截断 UTF-8 字符。
+- **长笔记分块**：每块最多 2,048 个 Unicode 码点，优先在空行分段，其次在换行处切分；超长行沿码点边界切分，保持 UTF-8 完整。
 - **元数据保留**：每个分块精确记录其在原始正文中的 UTF-8 字节偏移区间 `[byte_start, byte_end)` 以及对应的起止行号，确保检索高亮与定位严丝合缝。
 
 ### 2. 索引代次（Generation）与空间隔离
 - 向量数据存储于 `index.sqlite3`，支持随时从 Memos 重新生成。
 - 当用户在 Web 设置中更换向量模型、修改维度或更换 Provider 时，系统将分配全新的“空间代次”。
-- 新代次在后台异步批量构建，构建期间旧代次继续为前端提供检索服务；全量构建就绪后原子切换，避免检索功能出现真空期。
+- 新代次在后台批量构建，只有模型空间与投影修订匹配的已发布代次可用于语义检索。更换模型空间后先降级为关键词与标签，待新索引就绪再启用语义；同空间旧地图快照在增量更新期间继续可读。
 
 ---
 
@@ -98,10 +100,11 @@ docker compose exec -T moerise moerise check-embedding
 {
   "status": "ok",
   "provider": "openai-compatible",
+  "protocol": "openai-compatible",
   "model": "text-embedding-3-small",
   "dimensions": 1536,
-  "documents_count": 2,
-  "query_count": 1,
+  "document_vectors": 2,
+  "query_vectors": 1,
   "total_tokens": 18,
   "duration_ms": 620
 }

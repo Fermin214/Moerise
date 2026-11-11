@@ -1,5 +1,7 @@
 # Moerise Web 集成与系统设计
 
+[English](DESIGN.en.md)
+
 本文档阐述 Moerise Web 客户端的系统集成设计、前后端通信契约以及核心交互模块的技术实现方案。
 
 ---
@@ -37,7 +39,7 @@ flowchart LR
 
 - **Memos 身份认证适配**：
   - 用户在 Web 登录页输入 Memos 用户名和密码。
-  - Core 调用 Memos 官方认证协议验证凭据，获取访问令牌与刷新 Cookie，并校验账号是否属于当前实例绑定的作者。
+  - Core 调用 Memos 官方认证协议验证凭据，获取访问令牌与刷新 Cookie，并校验账号是否属于实例绑定的作者。
   - 校验通过后，Core 在 `state.sqlite3` 中加密记录持久化会话，并通过响应头向浏览器设置会话 Cookie。
 - **Cookie 安全策略**：
   - 生产 HTTPS 环境使用前缀安全 Cookie：`__Host-moerise_session`；本地回环调试使用 `moerise_local_session`。
@@ -71,16 +73,16 @@ flowchart LR
 
 - **实时时间线加载**：
   - 默认以 `created_desc` 倒序展示未归档笔记。
-  - 滚动到底部自动触发分页加载（基于 `page_token` 游标机制）。
+   - 点击「加载更多」继续读取分页（基于 `page_token` 游标机制）。
   - 搜索、标签点击与日历按月筛选作为统一筛选条件联动刷新时间线。
 - **卡片内即时编辑**：
-  - 点击卡片直接进入编辑状态，支持 `Ctrl+Enter` 快速保存、`Esc` 取消。
+   - 从卡片的「更多操作」菜单进入编辑，支持 `Ctrl+Enter` 快速保存、`Esc` 取消。
   - 编辑只修改 Memos 中的正文或标签，创建时间不变，不影响时间线排序。
 
-### 3. 2D 认知地图画布
+### 3. 2D 认知地图
 
 - **轻量每日快照分发**：
-  - Core 后台定时运行高维向量 PCA 降维与局部螺旋避让算法，将数千条笔记投影为轻量二维坐标集。
+   - Core 在向量索引就绪后运行 PCA 投影与局部螺旋避让算法；普通变化按 24 小时间隔合并，无变化时跳过计算。
   - 前端通过不可变数据快照渲染全图点位，加载性能极高。
 - **平滑交互与实时查阅**：
   - 支持鼠标滚轮平滑缩放、拖拽平移，以及快捷键控制（方向键平移、加减键缩放、`Home` 复位全图、`R` 刷新快照）。
@@ -89,22 +91,23 @@ flowchart LR
 ### 4. 流式 AI 洞察
 
 - **灵活选材**：
-  - 支持多选任意历史笔记作为当前会话的上下文材料。
+  - 支持多选任意历史笔记作为会话的上下文材料。
   - 严格限制笔记正文字符规模（默认 20,000 Unicode 码点以内），防止超出模型上下文或产生高额费用。
 - **Server-Sent Events (SSE) 流式传输**：
   - 客户端通过 POST 请求发起会话，并通过 SSE 协议实时接收大模型 token 流。
-  - 支持随时主动停止生成，支持会话持久化与离线恢复。
+   - 支持主动停止生成与持久会话；重启后保留中断文本，不自动续调模型。
   - 满意的 AI 产出支持一键幂等保存为 Memos 笔记。
 
 ---
 
 ## 四、运维与容器编排拓扑
 
-通过 `compose.yaml` 统一部署时的服务关系：
+仓库根目录的 [compose.yaml](../compose.yaml) 定义完整编排；以下为服务关系摘要：
 
 ```yaml
 services:
   memos:
+    profiles: [memos, local]
     image: neosmemo/memos:0.31.0
     restart: unless-stopped
     volumes:
@@ -113,25 +116,25 @@ services:
   moerise:
     build: .
     restart: unless-stopped
-    depends_on:
-      - memos
     volumes:
-      - moerise-state:/data/state
-      - moerise-index:/data/index
+      - state-data:/data/state
+      - index-data:/data/index
+      - backup-data:/backups
     environment:
       - MOERISE_MEMOS_BASE_URL=http://memos:5230
       - MOERISE_WEB_ENABLED=true
 
-  moerise-web:
+  web:
     build: ./web
     restart: unless-stopped
     depends_on:
-      - moerise
+      moerise:
+        condition: service_healthy
     environment:
       - CORE_ORIGIN=http://moerise:8787
       - PUBLIC_ORIGIN=${MOERISE_PUBLIC_ORIGIN}
     ports:
-      - "3000:3000"
+      - "127.0.0.1:3000:3000"
 ```
 
 Web 容器作为非 root 用户运行，仅对外暴露 3000 端口，前端和核心服务之间通过 Docker 内部网络安全通信。

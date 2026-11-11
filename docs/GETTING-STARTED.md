@@ -1,6 +1,6 @@
 # Getting Started with Moerise
 
-[Product Overview](../README.md) · [中文运行指南](OPERATIONS.md#容器部署)
+[Product Overview](../README.en.md) · [简体中文](GETTING-STARTED.zh-CN.md)
 
 Moerise runs on Linux natively or via Docker Linux containers. Docker deployment requires Docker Engine and Docker Compose (2.24 or later). The bundled stack includes Memos 0.31.x, Moerise Core, and the Moerise Web frontend. Each Moerise instance connects to one author on a Memos instance.
 
@@ -54,7 +54,7 @@ docker compose ps
 curl --fail http://localhost:3000/health/ready
 ```
 
-Open `http://localhost:3000` and sign in using your Memos username and password. The interface detects your browser language preference; you can toggle between English and 简体中文 via the sidebar or login page.
+Open `http://localhost:3000` and sign in using your bound Memos account's username and password. Memos must allow password sign-in. The interface detects your browser language preference; you can toggle between English and 简体中文 via the sidebar or login page.
 
 ---
 
@@ -88,7 +88,7 @@ Core writing, reading, keyword search, and daily reviews work immediately withou
 
 - **Embeddings:** Configure an OpenAI-compatible endpoint or Alibaba Bailian DashScope. Verify the connection, then wait for the semantic index build to complete. This activates semantic search, hybrid search, the random walk, and the cognitive map.
 - **LLM:** Configure OpenAI Chat Completions, OpenAI Responses, or Anthropic Messages. Verify connectivity. In AI Insights, select notes and start multi-turn discussions. Embeddings are not required for chat.
-- **Messaging Channels:** Choose [Telegram](TELEGRAM.md) for scheduled review delivery in English, or [Feishu](FEISHU.md) for Chinese delivery and note capturing. New installations start with messaging disabled.
+- **Messaging Channels:** Choose [Telegram](TELEGRAM.md) for scheduled review delivery in English, or [Feishu](FEISHU.en.md) for Chinese delivery and note capturing. New installations start with messaging disabled.
 
 ---
 
@@ -115,23 +115,27 @@ Moerise Core automatically tunes memory budgets and concurrency limits based on 
 | 2 Cores / 2–4 GiB | `deploy/resources/2c2g.env` |
 | 4 Cores / 4–8 GiB | `deploy/resources/4c4g.env` |
 
-Copy the contents of the appropriate profile file into your `.env` to enforce resource bounds.
+Copy the contents of the appropriate profile file into your `.env` to enforce resource bounds. These limits are memory ceilings, rather than measured usage or guaranteed note capacities; leave room for the operating system and other services.
 
 ---
 
 ## 6. Backups and Upgrades
 
 Memos data and Moerise product state are stored in isolated named Docker volumes:
-- Memos database: `memos-data`
-- Moerise state: `moerise-state` (contains `state.sqlite3`)
-- Moerise index: `moerise-index` (contains `index.sqlite3`, rebuildable)
+
+- Memos database and attachments: `memos-data`
+- Moerise state: `state-data` (contains `state.sqlite3`)
+- Moerise index: `index-data` (contains `index.sqlite3`, rebuildable)
+- Moerise backup output: `backup-data` (mounted at `/backups`)
+
+Compose prefixes volume names with the project name. Keep `COMPOSE_PROJECT_NAME`, the Memos instance ID and the state encryption key stable across upgrades.
 
 To upgrade Moerise:
-1. Back up `.env` and `moerise-state`.
-2. Pull the latest repository updates:
+1. Back up Memos data, Moerise product state and `.env` using the procedures in [Operations](OPERATIONS.en.md).
+2. Select the intended source revision, then rebuild and check readiness:
    ```bash
-   git pull origin main
    docker compose up -d --build
+   curl --fail http://localhost:3000/health/ready
    ```
 
-For detailed backup and recovery procedures, see [Operations Guide](OPERATIONS.md).
+For detailed backup and recovery procedures, see [Operations Guide](OPERATIONS.en.md).

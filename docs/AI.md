@@ -1,5 +1,7 @@
 # Moerise AI 模块
 
+[English](AI.en.md)
+
 Moerise AI 为用户提供围绕个人笔记展开深度思考、多轮探讨与创意发散的能力。通过独立的协议适配器，Moerise 支持主流的大语言模型服务，并与向量模型（Embedding）完全解耦——更换或关闭 LLM 不影响笔记检索、每日回顾与基础笔记管理。
 
 ---
@@ -10,8 +12,8 @@ Moerise AI 为用户提供围绕个人笔记展开深度思考、多轮探讨与
    - AI 洞察鼓励以选定笔记为基石，进行跨领域联想、假设验证、潜在矛盾梳理以及头脑风暴。
    - 回复中自然辨析笔记原意与 AI 延展想法，既尊重记录事实，又开拓全新视野。
 2. **精准的材料上下文控制**：
-   - 用户可以在 Web 界面自由选择多篇正常或归档笔记作为当前探讨的上下文材料。
-   - 系统统计所选笔记正文的 Unicode 码点总数（默认上限 20,000 码点），在发起调用前进行严格预算检查，防止超出模型上下文或产生高额账单。
+   - 用户可以在 Web 界面自由选择多篇正常或归档笔记作为探讨的上下文材料。
+   - 系统统计所选笔记正文的 Unicode 码点总数，上限为 20,000 码点，发起调用前检查材料预算。该限制仅约束所选正文，完整请求还包含提示词和成功历史，实际 token 用量由模型决定。
 3. **流式传输与中断可恢复**：
    - 会话采用 Server-Sent Events (SSE) 协议提供实时的流式 token 输出。
    - 对话消息持久化存储于 `state.sqlite3`，支持刷新页面后无缝继续追问。
@@ -28,7 +30,7 @@ Moerise Core 统一实现了通用的 `LLMProvider`，适配以下三大主流�
 
 | 协议名称 (`protocol`) | 请求路径 | 鉴权格式 | 输出上限参数 | 适用场景 |
 | --- | --- | --- | --- | --- |
-| `openai-compatible` | `base_url` + `/chat/completions` | `Authorization: Bearer <key>` | `max_completion_tokens` / `max_tokens` | OpenAI 官方及兼容网关（DeepSeek、OneAPI、Ollama 等） |
+| `openai-compatible` | `base_url` + `/chat/completions` | `Authorization: Bearer <key>` | `max_completion_tokens` | 支持该请求字段及流式协议的 OpenAI 服务或兼容网关 |
 | `openai-responses` | `base_url` + `/responses` | `Authorization: Bearer <key>` | `max_output_tokens` | OpenAI 最新 Responses API 协议 |
 | `anthropic` | `base_url` + `/messages` | `x-api-key: <key>`<br>`anthropic-version: 2023-06-01` | `max_tokens` | Anthropic Claude 官方接口或中转服务 |
 
@@ -63,7 +65,7 @@ Moerise Core 统一实现了通用的 `LLMProvider`，适配以下三大主流�
 | `base_url` | string | 必填 | 服务 HTTP(S) 基地址，不含末尾斜杠、查询参数或账号密码 |
 | `api_key` | string | 必填 | 模型服务的 API 密钥；在服务端妥善加密保管 |
 | `model` | string | 必填 | 具体的模型名称或网关路由标识（如 `gpt-4o`, `claude-3-5-sonnet-20241022`） |
-| `timeout_seconds` | integer | `90` | 单次请求总超时时长（范围 1 至 110 秒），包含重试时间 |
+| `timeout_seconds` | number | `90` | 单次请求总超时时长（范围 1 至 110 秒），包含重试时间 |
 | `max_concurrency` | integer | `2` | 允许同一模型客户端同时发起的请求并发数（范围 1 至 8） |
 | `max_retries` | integer | `2` | 网络抖动或模型临时不可用时的最大重试次数（范围 0 至 3） |
 | `max_output_tokens` | integer | `2048` | 单次生成允许的最大 token 数量（范围 32 至 16384） |
@@ -117,8 +119,9 @@ docker compose exec -T moerise moerise check-llm
    - 圈选笔记正文总字符数若超过 20,000 Unicode 码点，系统将在发起调用前拦截并返回 `CHAT_MATERIAL_LIMIT` 错误提示，指导用户精简材料。
    - 圈选笔记条数上限为 1,000 条（返回 `CHAT_RESOURCE_LIMIT`）。
 2. **多语言回复约定**：
-   - 生成请求默认携带界面当前语言偏好（`language=zh-CN` 或 `en`）。
-   - 若用户未修改内置 Prompt，英文环境将自动切换为地道的英文系统 Prompt；用户自定义的 Prompt 和笔记材料始终保留原语言内容不作篡改。
+   - 生成请求默认携带界面语言偏好（`language=zh-CN` 或 `en`）。
+   - 英文请求增加英文回复指令；未修改的内置洞察 Prompt 使用英文对应文案。用户自定义 Prompt 与笔记材料保留原语言。
 3. **会话持久化与幂等保存**：
    - 会话记录、消息序列与引用的材料版本保存在 `state.sqlite3` 中。
+   - 重启将遗留生成标记为 `interrupted`，保留已保存文本，不自动续调模型；后续可继续追问。
    - 点击“保存为笔记”时，系统将选定的助手回答以原样纯文本形式写入 Memos，并记录幂等映射，防止因连击产生重复笔记。
