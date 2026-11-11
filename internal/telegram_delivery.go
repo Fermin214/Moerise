@@ -71,7 +71,8 @@ func (s *TelegramDelivery) reviewTextEnd(content string) (int, error) {
 type telegramMessage struct {
 	ID   int64 `json:"message_id"`
 	Chat struct {
-		ID int64 `json:"id"`
+		ID   int64  `json:"id"`
+		Type string `json:"type"`
 	} `json:"chat"`
 	From struct {
 		ID    int64 `json:"id"`
@@ -127,8 +128,10 @@ func (s *TelegramDelivery) request(ctx context.Context, method, contentType stri
 	chat, _ := strconv.ParseInt(configured(s.config.Destination), 10, 64)
 	bot, _, _ := strings.Cut(configured(s.config.BotToken), ":")
 	botID, _ := strconv.ParseInt(bot, 10, 64)
+	fromBot := result.Result.From.IsBot && result.Result.From.ID == botID
+	channelPost := result.Result.Chat.Type == "channel" && result.Result.From.ID == 0
 	if !valid || !*result.OK || response.StatusCode != http.StatusOK || result.Result.ID <= 0 ||
-		result.Result.Chat.ID != chat || !result.Result.From.IsBot || result.Result.From.ID != botID ||
+		result.Result.Chat.ID != chat || !fromBot && !channelPost ||
 		method == "sendDocument" && result.Result.Document.FileID == "" {
 		return result.Result, unknown
 	}

@@ -38,6 +38,7 @@ func TestTelegramProtocolAndPrivateErrors(t *testing.T) {
 		status               int
 	}{
 		{"success", `{"ok":true,"result":{"message_id":42,"chat":{"id":789},"from":{"id":123456,"is_bot":true}}}`, "", 200},
+		{"channel", `{"ok":true,"result":{"message_id":42,"chat":{"id":-100789,"type":"channel"}}}`, "", 200},
 		{"wrong-chat", `{"ok":true,"result":{"message_id":42,"chat":{"id":790},"from":{"id":123456,"is_bot":true}}}`, "SEND_OUTCOME_UNKNOWN", 200},
 		{"wrong-bot", `{"ok":true,"result":{"message_id":42,"chat":{"id":789},"from":{"id":1,"is_bot":true}}}`, "SEND_OUTCOME_UNKNOWN", 200},
 		{"missing-message", `{"ok":true}`, "SEND_OUTCOME_UNKNOWN", 200},
@@ -53,13 +54,17 @@ func TestTelegramProtocolAndPrivateErrors(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			calls := 0
+			destination := "789"
+			if test.name == "channel" {
+				destination = "-100789"
+			}
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				calls++
 				if r.Method != "POST" || r.URL.Path != "/bot"+telegramTestToken+"/sendMessage" {
 					t.Error("unexpected Telegram endpoint")
 				}
 				var body map[string]any
-				if json.NewDecoder(r.Body).Decode(&body) != nil || body["chat_id"] != "789" ||
+				if json.NewDecoder(r.Body).Decode(&body) != nil || body["chat_id"] != destination ||
 					body["text"] != "literal **Markdown** <&> 中文🙂\nhttps://example.com" ||
 					body["parse_mode"] != nil || body["link_preview_options"].(map[string]any)["is_disabled"] != true {
 					t.Error("Telegram changed note text, formatted it or enabled previews")
@@ -69,11 +74,13 @@ func TestTelegramProtocolAndPrivateErrors(t *testing.T) {
 				_, _ = io.WriteString(w, test.response)
 			}))
 			defer server.Close()
-			delivery := newTelegramDelivery(telegramTestChannel(), nil, nil).(*TelegramDelivery)
+			channel := telegramTestChannel()
+			channel.Destination = &destination
+			delivery := newTelegramDelivery(channel, nil, nil).(*TelegramDelivery)
 			defer delivery.http.CloseIdleConnections()
 			delivery.baseURL = server.URL
 			receipt, err := delivery.sendReviewText(t.Context(), Notification{}, "literal **Markdown** <&> 中文🙂\nhttps://example.com")
-			if test.code == "" && (err != nil || receipt != "telegram:789:42") ||
+			if test.code == "" && (err != nil || receipt != "telegram:"+configured(channel.Destination)+":42") ||
 				test.code != "" && (err == nil || errorCode(err) != test.code) || calls != 1 {
 				t.Fatalf("unexpected outcome: receipt=%q err=%v calls=%d", receipt, err, calls)
 			}

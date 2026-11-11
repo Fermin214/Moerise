@@ -21,7 +21,7 @@ unset TELEGRAM_BOT_TOKEN
 
 Use a dedicated bot for Moerise. If `getUpdates` returns an empty list, send another message to the bot and try again. An existing webhook or another program consuming updates can prevent this setup step; see Telegram's [Bot features](https://core.telegram.org/bots/features) and [Bot API](https://core.telegram.org/bots/api#getupdates).
 
-For a group, add the bot, send a command addressed to it, and use that update's `message.chat.id`, which is usually negative. All members of the destination chat can read the delivered notes. Chat usernames are not accepted.
+For a group, add the bot, send a command addressed to it, and use the update's `message.chat.id`. For a channel, add the bot as an administrator with permission to post, publish a message, and use `channel_post.chat.id`. These IDs are usually negative. All members of the destination can read the delivered notes. Chat usernames are not accepted.
 
 ## Configure Moerise
 
