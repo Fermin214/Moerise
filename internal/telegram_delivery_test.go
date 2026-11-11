@@ -541,3 +541,46 @@ func TestTelegramBotCooldownSurvivesRestart(t *testing.T) {
 		t.Fatalf("expired cooldown prevented sending: %v", err)
 	}
 }
+
+func TestTelegramInvisibleTextIsPreservedAsFile(t *testing.T) {
+	for _, content := range []string{"\u2800", "\u200b\u200c\u200d\u200e\u200f", "\u180e\ufeff\ufffc", "\u030a\u0333\u033f", "\U000e0001", "\x00\t\r\n "} {
+		t.Run("invisible", func(t *testing.T) {
+			calls := 0
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls++
+				if !strings.HasSuffix(r.URL.Path, "/sendDocument") {
+					t.Error("Telegram would reject this invisible-only text message")
+					w.WriteHeader(http.StatusBadRequest)
+					_, _ = io.WriteString(w, `{"ok":false,"error_code":400}`)
+					return
+				}
+				if err := r.ParseMultipartForm(1 << 20); err != nil {
+					t.Error(err)
+					return
+				}
+				defer r.MultipartForm.RemoveAll()
+				file, _, err := r.FormFile("document")
+				if err != nil {
+					t.Error(err)
+					return
+				}
+				data, _ := io.ReadAll(file)
+				file.Close()
+				if string(data) != content {
+					t.Error("invisible text was changed")
+				}
+				_ = json.NewEncoder(w).Encode(telegramTestResponse(calls, true))
+			}))
+			defer server.Close()
+			delivery := newTelegramDelivery(telegramTestChannel(), nil, nil).(*TelegramDelivery)
+			defer delivery.http.CloseIdleConnections()
+			delivery.baseURL = server.URL
+			if receipt, err := delivery.sendReviewText(t.Context(), Notification{}, content); err != nil || receipt == "" || calls != 1 {
+				t.Fatalf("invisible text could not be delivered: %v", err)
+			}
+			if !telegramTextHasContent(content+"a") || !telegramTextHasContent("🙂") {
+				t.Fatal("visible note content was treated as empty")
+			}
+		})
+	}
+}

@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf16"
 )
 
@@ -164,8 +165,24 @@ func (s *TelegramDelivery) receipt(message telegramMessage) string {
 	return "telegram:" + configured(s.config.Destination) + ":" + strconv.FormatInt(message.ID, 10)
 }
 
+func telegramTextHasContent(text string) bool {
+	// TDLib also treats invisible formatting and braille blank characters as empty.
+	for _, r := range text {
+		if unicode.IsSpace(r) || r <= 0x20 || r >= 0x2000 && r <= 0x200F ||
+			r >= 0x2028 && r <= 0x202F || r >= 0xE0000 && r <= 0xE007F {
+			continue
+		}
+		switch r {
+		case 0x030A, 0x0333, 0x033F, 0x180E, 0x2800, 0xFEFF, 0xFFFC:
+			continue
+		}
+		return true
+	}
+	return false
+}
+
 func (s *TelegramDelivery) sendReviewText(ctx context.Context, _ Notification, text string) (string, error) {
-	if strings.TrimSpace(text) == "" {
+	if !telegramTextHasContent(text) {
 		// Telegram rejects whitespace-only messages; a text file preserves this part verbatim.
 		var body bytes.Buffer
 		writer := multipart.NewWriter(&body)
