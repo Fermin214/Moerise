@@ -9,9 +9,6 @@ import (
 )
 
 func (c NotificationConfig) Clocks() []string {
-	if len(c.Times) == 0 {
-		return []string{c.Time}
-	}
 	clocks := slices.Clone(c.Times)
 	slices.Sort(clocks)
 	return clocks
@@ -43,7 +40,6 @@ func (s *Settings) loadEnvironment() error {
 		{"REVIEW_RECENT_DAYS", &s.Review.RecentDays},
 		{"REVIEW_INCLUDE_ARCHIVED", &s.Review.IncludeArchived},
 		{"NOTIFICATIONS_ENABLED", &s.Notifications.Enabled},
-		{"NOTIFICATIONS_TIME", &s.Notifications.Time},
 		{"NOTIFICATIONS_TIMES", &s.Notifications.Times},
 		{"CHANNEL_KIND", &s.Channel.Kind},
 		{"FEISHU_APP_ID", &s.Channel.AppID},

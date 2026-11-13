@@ -19,7 +19,7 @@ Configuration templates are provided in `.env.example` and `config.example.json`
 | `MOERISE_MEMOS_TOKEN` | `memos.token` | Required | Memos Personal Access Token (PAT) for the bound account |
 | `MOERISE_ACCESS_TOKEN` | `access_tokens` | Required | Bearer token for machine REST and MCP access |
 | `MOERISE_CURSOR_SECRET` | `cursor_secret` | Required | Independent random secret for cursor signatures and resource hashes, at least 32 characters |
-| `MOERISE_STATE_ENCRYPTION_KEY` | `web.state_encryption_key` | Required when Web is enabled | Base64-encoded 32-byte key for stored credentials |
+| `MOERISE_STATE_ENCRYPTION_KEY` | `web.state_encryption_key` | Required for Web or Feishu app bots | Base64-encoded 32-byte key for stored credentials |
 | `MOERISE_WEB_ENABLED` | `web.enabled` | `true` in Compose; `false` in Core | Enable Web client sessions |
 | `MOERISE_PUBLIC_ORIGIN` | `web.public_origin` | Required when Web is enabled | Public Web origin, such as `https://notes.example.com` |
 | `MOERISE_TIMEZONE` | `timezone` | `Asia/Hong_Kong` | IANA timezone for reviews and timeline dates |

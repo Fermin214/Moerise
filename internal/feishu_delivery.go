@@ -23,10 +23,6 @@ type FeishuDelivery struct {
 	images  feishuImagePlatform
 }
 
-func NewFeishuDelivery(store *Store, reviews *ReviewService, events *FeishuService) NotificationTransport {
-	return newFeishuDelivery(store.Settings.Channel, store, reviews, events)
-}
-
 func newFeishuDelivery(config ChannelConfig, store *Store, reviews *ReviewService, events *FeishuService) NotificationTransport {
 	if events == nil && (config.Kind != "feishu-webhook" || configured(config.WebhookURL) == "") {
 		return nil
@@ -47,9 +43,6 @@ func (s *FeishuDelivery) Send(ctx context.Context, item Notification) (string, e
 			WHERE message_id = ? AND app_id = ? AND sender_open_id = ?`, *item.SourceEvent,
 			configured(settings.Channel.AppID), configured(settings.Channel.UserOpenID)).Scan(&kind, &resource); err != nil {
 			return "", err
-		}
-		if kind == "ai" {
-			return s.Events.sendAIPart(ctx, item)
 		}
 		text, err := s.Events.render(ctx, kind, resource)
 		if err != nil {
@@ -109,14 +102,6 @@ func (s *FeishuDelivery) Check(ctx context.Context, item Notification, receipt s
 	if item.Kind == "reply" {
 		if item.SourceEvent == nil || message.ParentID != *item.SourceEvent {
 			return false, nil
-		}
-		var ai bool
-		if err := s.Store.state.QueryRow(`SELECT EXISTS (
-			SELECT 1 FROM feishu_ai_parts WHERE notification_id = ?)`, item.ID).Scan(&ai); err != nil {
-			return false, err
-		}
-		if ai {
-			return s.Events.checkAIPart(item, message)
 		}
 		return true, nil
 	}
@@ -210,14 +195,14 @@ func (s *FeishuDelivery) webhookMessage(ctx context.Context, id, kind string, co
 		return "", upstreamError("CHANNEL_REJECTED", "Webhook rejected the notification")
 	}
 	var result struct {
-		Code   *int `json:"code"`
-		Legacy *int `json:"StatusCode"`
+		Code       *int `json:"code"`
+		StatusCode *int `json:"StatusCode"`
 	}
 	if json.NewDecoder(io.LimitReader(response.Body, 65536)).Decode(&result) != nil ||
-		result.Code == nil && result.Legacy == nil {
+		result.Code == nil && result.StatusCode == nil {
 		return "", upstreamError("SEND_OUTCOME_UNKNOWN", "Webhook returned an untrusted response")
 	}
-	if result.Code != nil && *result.Code != 0 || result.Legacy != nil && *result.Legacy != 0 {
+	if result.Code != nil && *result.Code != 0 || result.StatusCode != nil && *result.StatusCode != 0 {
 		return "", upstreamError("CHANNEL_REJECTED", "Webhook rejected the notification")
 	}
 	// Custom robots acknowledge delivery but do not return a queryable message resource.

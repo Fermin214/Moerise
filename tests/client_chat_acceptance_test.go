@@ -161,7 +161,7 @@ func TestClientChatMemosAcceptance(t *testing.T) {
 	server := httptest.NewServer(model)
 	t.Cleanup(server.Close)
 	h := newHarness(t)
-	h.settings.AccessTokens[1].Scopes = append(h.settings.AccessTokens[1].Scopes, "ai:generate", "reviews:write")
+	h.settings.AccessTokens[1].Scopes = append(h.settings.AccessTokens[1].Scopes, "sync:read")
 	c := managedClient(t, h)
 	h.client.Timeout = 30 * time.Second
 	prompt := "明确区分原文与联想，讨论这组完整材料。"
@@ -169,7 +169,7 @@ func TestClientChatMemosAcceptance(t *testing.T) {
 		"version": 1,
 		"settings": map[string]any{
 			"llm": map[string]any{"enabled": true, "base_url": server.URL + "/v1", "model": "chat-acceptance",
-				"max_retries": 0, "context_bytes": 128000},
+				"max_retries": 0},
 			"embedding": map[string]any{"enabled": false},
 			"insights":  map[string]any{"default_prompt": prompt},
 		},
@@ -415,7 +415,7 @@ func TestClientChatMemosAcceptance(t *testing.T) {
 	if model.calls() != calls {
 		t.Fatal("unauthorized or machine requests reached the model")
 	}
-	t.Log("PASS author restriction and machine REST/MCP isolation with write scopes")
+	t.Log("PASS author restriction and machine REST/MCP isolation")
 
 	model.mode.Store(3)
 	changing := acceptanceChat(t, c.call("POST", "/api/app/v1/chats", map[string]any{
@@ -546,7 +546,7 @@ func TestClientChatMaterialCharacterLimitMemosAcceptance(t *testing.T) {
 	address, modelName := server.URL+"/v1", "chat-acceptance"
 	h.settings.LLM.Enabled, h.settings.LLM.BaseURL = true, &address
 	h.settings.LLM.APIKey, h.settings.LLM.Model = &model.key, &modelName
-	h.settings.LLM.ContextBytes, h.settings.LLM.MaxRetries = 1024, 0
+	h.settings.LLM.MaxRetries = 0
 	c := managedClient(t, h)
 	exactNames, exactContents := []string{}, []string{}
 	for i := range 10 {
@@ -585,5 +585,5 @@ func TestClientChatMaterialCharacterLimitMemosAcceptance(t *testing.T) {
 		}
 	}
 
-	t.Log("PASS exactly 20000 Unicode material characters and complete follow-up pass independently of legacy byte budgets")
+	t.Log("PASS exactly 20000 Unicode material characters and complete follow-up pass with complete materials")
 }

@@ -35,6 +35,8 @@ Enable these app scopes for `tenant_access_token`:
 
 ## 2. Configuration
 
+Feishu app bots encrypt incoming queues with `web.state_encryption_key`. Configure an independent Base64-encoded 32-byte key even with Web disabled; generate it with `openssl rand -base64 32`. Rotating the platform App Secret does not change the queue key.
+
 Configure **Settings → Messaging Channel** in Web, or initialize through JSON:
 
 ```json

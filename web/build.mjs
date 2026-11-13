@@ -9,7 +9,7 @@ const output = fileURLToPath(new URL('./dist/', import.meta.url));
 await rm(output, { recursive: true, force: true });
 await mkdir(output, { recursive: true });
 await cp(source, output, { recursive: true });
-// Compile the prototype's static style attributes for the same-origin CSP.
+// Compile static inline styles for the same-origin CSP.
 const rules = [];
 let html = (await readFile(`${output}/index.html`, 'utf8')).replace(/<[^>]+\sstyle="[^"]*"[^>]*>/g, tag => {
   const style = /\sstyle="([^"]*)"/.exec(tag)[1];

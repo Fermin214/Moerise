@@ -21,6 +21,7 @@ func stringPointer(value string) *string { return &value }
 func feishuSettings(t *testing.T) Settings {
 	t.Helper()
 	settings := testSettings(t)
+	settings.Web.StateEncryptionKey = base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{9}, 32))
 	settings.Channel.Kind = "feishu-app"
 	settings.Channel.AppID = stringPointer("cli_test_app")
 	settings.Channel.AppSecret = stringPointer(strings.Repeat("s", 32))
@@ -66,7 +67,7 @@ func TestFeishuCallbackAuthenticationAndEncryptedQueue(t *testing.T) {
 		return 500, nil, nil
 	})
 	reviews := NewReviewService(store, client)
-	service := NewFeishuService(store, client, NewRecordService(store, client), reviews, NewNotificationService(store, reviews, nil))
+	service := NewFeishuService(store, client, NewRecordService(store, client), NewNotificationService(store, reviews, nil))
 	call := func(body []byte, sign bool) error {
 		t.Helper()
 		request := httptest.NewRequest("POST", "/hooks/feishu", bytes.NewReader(body))
@@ -241,8 +242,8 @@ func TestUnknownFeishuReplyIsHeldWithoutRepeatingBusiness(t *testing.T) {
 	})
 	reviews := NewReviewService(store, client)
 	notifications := NewNotificationService(store, reviews, nil)
-	service := NewFeishuService(store, client, NewRecordService(store, client), reviews, notifications)
-	notifications.Transport = NewFeishuDelivery(store, reviews, service)
+	service := NewFeishuService(store, client, NewRecordService(store, client), notifications)
+	notifications.Transport = newFeishuDelivery(store.Settings.Channel, store, reviews, service)
 	platform := &unknownFeishuReply{}
 	service.Client = platform
 	body := testFeishuEvent(settings, "om_help", "ou_owner", "帮助")
@@ -298,10 +299,10 @@ func TestFeishuPrivateTextRecordsVerbatim(t *testing.T) {
 	})
 	reviews := NewReviewService(store, client)
 	notifications := NewNotificationService(store, reviews, nil)
-	service := NewFeishuService(store, client, NewRecordService(store, client), reviews, notifications)
-	platform := &feishuAIPlatform{messages: map[string]FeishuSentMessage{}}
+	service := NewFeishuService(store, client, NewRecordService(store, client), notifications)
+	platform := &capturePlatform{messages: map[string]FeishuSentMessage{}}
 	service.Client = platform
-	notifications.Transport = NewFeishuDelivery(store, reviews, service)
+	notifications.Transport = newFeishuDelivery(store.Settings.Channel, store, reviews, service)
 	for i, text := range []string{
 		"  \t普通文字 #标签\n\n第二段\r\n末尾空白 \t\n",
 		"记录 #原文 正文",
@@ -320,7 +321,7 @@ func TestFeishuPrivateTextRecordsVerbatim(t *testing.T) {
 		if progress, err := service.processOne(context.Background()); err != nil || !progress {
 			t.Fatalf("record %q: progress=%t err=%v", text, progress, err)
 		}
-		deliverFeishuAI(t, service)
+		deliverFeishuReply(t, service)
 		var name string
 		if err := store.state.QueryRow("SELECT resource_name FROM channel_events WHERE message_id = ?", id).Scan(&name); err != nil {
 			t.Fatal(err)
@@ -338,14 +339,11 @@ func TestFeishuPrivateTextRecordsVerbatim(t *testing.T) {
 			t.Fatalf("completed event repeated: %t %v", progress, err)
 		}
 	}
-	var generations, batches int
-	if err := store.state.QueryRow("SELECT COUNT(*) FROM feishu_ai_generations").Scan(&generations); err != nil {
-		t.Fatal(err)
-	}
+	var batches int
 	if err := store.state.QueryRow("SELECT COUNT(*) FROM review_batches").Scan(&batches); err != nil {
 		t.Fatal(err)
 	}
-	if generations != 0 || batches != 0 {
+	if batches != 0 {
 		t.Fatal("recorded text triggered AI or review selection")
 	}
 	for _, text := range []string{"", " \t\r\n", strings.Repeat("文", 21846)} {
@@ -367,7 +365,7 @@ func (p *recordAttachmentPlatform) Download(context.Context, string, string, str
 	return p.file, nil
 }
 
-func TestFeishuAttachmentVerbatimAndLegacyRecovery(t *testing.T) {
+func TestFeishuAttachmentVerbatimAndRecovery(t *testing.T) {
 	for _, status := range []string{"new", "pending", "unknown", "succeeded"} {
 		for _, kind := range []string{"file", "image"} {
 			t.Run(status+"/"+kind, func(t *testing.T) {
@@ -381,8 +379,8 @@ func TestFeishuAttachmentVerbatimAndLegacyRecovery(t *testing.T) {
 					Content: string(canonicalJSON(map[string]string{"file_key": "file_key", "image_key": "image_key", "file_name": file.Filename}))}
 				expected := ""
 				if status != "new" {
-					input := CreateNote{Content: "附件：" + file.Filename, Attachments: []CreateAttachment{file}}
-					content, hash, err := prepareLegacyNote(input)
+					input := CreateNote{Attachments: []CreateAttachment{file}}
+					content, hash, err := prepareNote(input)
 					if err != nil {
 						t.Fatal(err)
 					}
@@ -415,5 +413,29 @@ func TestFeishuAttachmentVerbatimAndLegacyRecovery(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+type capturePlatform struct {
+	unknownFeishuReply
+	texts    []string
+	messages map[string]FeishuSentMessage
+}
+
+func (p *capturePlatform) Reply(_ context.Context, parent, uuid, text string) (string, error) {
+	p.calls++
+	p.texts = append(p.texts, text)
+	receipt := fmt.Sprintf("om_reply_%d", p.calls)
+	p.messages[receipt] = FeishuSentMessage{ID: receipt, ParentID: parent, Text: text,
+		SenderType: "app", SenderIDType: "app_id", SenderID: "cli_test_app"}
+	return receipt, nil
+}
+func (p *capturePlatform) GetMessage(_ context.Context, receipt string) (FeishuSentMessage, error) {
+	return p.messages[receipt], nil
+}
+func deliverFeishuReply(t *testing.T, service *FeishuService) {
+	t.Helper()
+	if progress, err := service.Notifications.Deliver(context.Background()); err != nil || !progress {
+		t.Fatalf("delivery: %v %v", progress, err)
 	}
 }

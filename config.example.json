@@ -64,7 +64,7 @@
     "max_output_tokens": 2048
   },
   "channel": {
-    "kind": "feishu-app",
+    "kind": "none",
     "app_id": null,
     "app_secret": null,
     "verification_token": null,
@@ -72,7 +72,8 @@
     "user_open_id": null,
     "destination": null,
     "webhook_url": null,
-    "webhook_secret": null
+    "webhook_secret": null,
+    "bot_token": null
   },
   "notifications": {
     "enabled": false,

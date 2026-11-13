@@ -381,30 +381,3 @@ func TestChatStoreOutputLimitDoesNotTruncate(t *testing.T) {
 		t.Fatalf("overflow changed persisted output: %v", err)
 	}
 }
-
-func TestChatStoreUpgradePreservesExistingProductState(t *testing.T) {
-	legacy, batch := legacyNotificationFixture(t, "018")
-	before, err := appliedMigrations(legacy.Store.state)
-	if err != nil {
-		t.Fatal(err)
-	}
-	upgradeNotificationFixture(t, legacy)
-	store := legacy.Store
-	var count int
-	if err := store.state.QueryRow("SELECT COUNT(*) FROM review_items WHERE batch_id = ?", batch.ID).Scan(&count); err != nil || count != 1 {
-		t.Fatalf("chat migration lost old review: count=%d error=%v", count, err)
-	}
-	after, err := appliedMigrations(store.state)
-	if err != nil || len(after) <= len(before) || after["019"] == "" {
-		t.Fatalf("chat migration not recorded: %+v %v", after, err)
-	}
-	for version, hash := range before {
-		if after[version] != hash {
-			t.Fatalf("changed applied migration %s", version)
-		}
-	}
-	chat := testChat(t, store, "upgraded")
-	if len(chat.Materials) != 2 {
-		t.Fatal("upgraded chat storage not usable")
-	}
-}

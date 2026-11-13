@@ -16,8 +16,7 @@ import (
 
 func chatFixture(t *testing.T, memos map[string]map[string]any, provider LLMProvider) *ChatService {
 	t.Helper()
-	evidence := evidenceFixture(t, memos)
-	store, source := evidence.Search.Store, evidence.Search.Source
+	store, source := sourceFixture(t, memos)
 	store.Settings.LLM.Enabled = true
 	model := "chat-test-model"
 	store.Settings.LLM.Model = &model
@@ -144,8 +143,6 @@ func TestChatMaterialLimitExcludesConversationAndDoesNotTruncate(t *testing.T) {
 			}
 			service := chatFixture(t, memos, nil)
 			chat := createTestChat(t, service, names...)
-			// Legacy byte budgets must not reject valid materials or later discussion.
-			service.Store.Settings.LLM.ContextBytes = 1024
 			if mode == "history" || mode == "messages" {
 				n, content := 2, strings.Repeat("旧回复", 50000)
 				if mode == "messages" {

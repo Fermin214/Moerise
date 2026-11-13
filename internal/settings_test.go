@@ -25,48 +25,25 @@ func settingsChange(version int64, fields string) SettingsUpdate {
 	return update
 }
 
-func TestProductSettingsNotificationTimePatch(t *testing.T) {
-	for _, test := range []struct {
-		name   string
-		times  []string
-		patch  string
-		clocks []string
-	}{
-		{"legacy_single", nil, `{"time":"18:00"}`, []string{"18:00"}},
-		{"replace_multiple", []string{"09:00", "12:00"}, `{"time":"18:00"}`, []string{"18:00"}},
-		{"times_only", nil, `{"times":["20:00","08:00"]}`, []string{"08:00", "20:00"}},
-		{"both_fields", nil, `{"time":"18:00","times":["20:00","08:00"]}`, []string{"08:00", "20:00"}},
-		{"empty_with_time", []string{"09:00", "12:00"}, `{"time":"18:00","times":[]}`, []string{"18:00"}},
-		{"empty_list", []string{"08:00", "20:00"}, `{"times":[]}`, []string{"08:00"}},
-		{"unrelated_field", []string{"08:00", "20:00"}, `{"enabled":false}`, []string{"08:00", "20:00"}},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			deployment, store := settingsFixture(t)
-			store.Settings.Notifications.Times = test.times
-			next, err := store.prepareSettings(settingsChange(1, `{"notifications":`+test.patch+`}`))
-			if err != nil || !slices.Equal(next.Notifications.Clocks(), test.clocks) ||
-				next.Notifications.Time != test.clocks[0] {
-				t.Fatalf("inconsistent time patch: %+v %v", next.Notifications, err)
-			}
-			if store.Settings.Notifications.Time != "09:00" ||
-				!slices.Equal(store.Settings.Notifications.Times, test.times) {
-				t.Fatal("preparing a time patch mutated saved settings")
-			}
-			if err := store.persistSettings(next); err != nil {
-				t.Fatal(err)
-			}
-			loaded, err := loadPersistedProduct(deployment)
-			if err != nil || !slices.Equal(loaded.Notifications.Clocks(), test.clocks) ||
-				loaded.Notifications.Time != test.clocks[0] {
-				t.Fatalf("restart changed effective notification times: %+v %v", loaded.Notifications, err)
-			}
-		})
+func TestProductSettingsNotificationTimesPatch(t *testing.T) {
+	deployment, store := settingsFixture(t)
+	next, err := store.prepareSettings(settingsChange(1, `{"notifications":{"times":["20:00","08:00"]}}`))
+	if err != nil || !slices.Equal(next.Notifications.Clocks(), []string{"08:00", "20:00"}) {
+		t.Fatalf("clock patch: %+v %v", next.Notifications, err)
 	}
-	_, store := settingsFixture(t)
-	store.Settings.Notifications.Times = []string{"09:00", "12:00"}
-	for _, clock := range []string{"", "25:00", "9:00"} {
-		if _, err := store.prepareSettings(settingsChange(1, `{"notifications":{"time":"`+clock+`"}}`)); errorCode(err) != "INVALID_ARGUMENT" {
-			t.Fatalf("invalid single time accepted: %q %v", clock, err)
+	if !slices.Equal(store.Settings.Notifications.Times, []string{"09:00"}) {
+		t.Fatal("patch mutated saved settings")
+	}
+	if err := store.persistSettings(next); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := loadPersistedProduct(deployment)
+	if err != nil || !slices.Equal(loaded.Notifications.Clocks(), []string{"08:00", "20:00"}) {
+		t.Fatalf("restart clocks: %+v %v", loaded.Notifications, err)
+	}
+	for _, times := range []string{`[]`, `[""]`, `["25:00"]`, `["9:00"]`} {
+		if _, err := store.prepareSettings(settingsChange(2, `{"notifications":{"times":`+times+`}}`)); errorCode(err) != "INVALID_ARGUMENT" {
+			t.Fatalf("invalid clocks: %s %v", times, err)
 		}
 	}
 }
@@ -156,28 +133,13 @@ func TestProductSettingsSecretOperationsAndValidation(t *testing.T) {
 	}
 }
 
-func TestProductSettingsUpgradeInitializationAndEnvironmentPrecedence(t *testing.T) {
+func TestProductSettingsInitializationAndEnvironmentPrecedence(t *testing.T) {
 	settings := testSettings(t)
 	settings.Review.MinAgeHours, settings.Review.RecentDays = 29, 11
-	legacy, err := NewStore(settings)
-	if err != nil {
-		t.Fatal(err)
-	}
-	// 使用旧版结构验证已有数据库的增量升级。
-	if _, err := legacy.state.Exec(`DROP TABLE product_settings; DELETE FROM schema_migrations WHERE version = '017'`); err != nil {
-		t.Fatal(err)
-	}
-	if err := legacy.Close(); err != nil {
-		t.Fatal(err)
-	}
 	settings.Web.StateEncryptionKey = base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{7}, 32))
-	before, err := loadPersistedProduct(settings)
-	if err != nil || before.Review.MinAgeHours != 29 {
-		t.Fatalf("legacy configuration cannot load before migration: %v", err)
-	}
-	store := testStore(t, before)
+	store := testStore(t, settings)
 	if store.productVersion != 1 || store.Settings.Review.MinAgeHours != 29 || store.Settings.Review.RecentDays != 11 {
-		t.Fatal("schema upgrade replaced customized product values")
+		t.Fatal("initialization replaced product values")
 	}
 	next, err := store.prepareSettings(settingsChange(1, `{"review":{"min_age_hours":12,"recent_days":2}}`))
 	if err != nil {

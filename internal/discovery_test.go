@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"math"
 	"net/http"
-	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -113,7 +112,7 @@ func TestDiscoveryStartWalkRechecksSourceAndIdentity(t *testing.T) {
 	}
 }
 
-func TestDiscoveryWalkModesPathAndExplicitRead(t *testing.T) {
+func TestDiscoveryWalkModesAndPath(t *testing.T) {
 	service, _, _ := discoveryFixture(t)
 	ctx := context.Background()
 	first := func(int) int { return 0 }
@@ -124,31 +123,17 @@ func TestDiscoveryWalkModesPathAndExplicitRead(t *testing.T) {
 		!slices.Equal(cont.Item.Matches[0].Signals, []string{"semantic"}) || cont.Item.Score != 1 {
 		t.Fatalf("continue must return an unweighted semantic draw: %+v %v", cont, err)
 	}
-	for _, mode := range []string{"continue", "angle"} {
-		for slot, want := range []string{"memos/b", "memos/c"} {
-			draw := func(n int) int {
-				if n != 2 {
-					t.Fatalf("expected exactly two positive-cosine notes, got %d", n)
-				}
-				return slot
+	for slot, want := range []string{"memos/b", "memos/c"} {
+		draw := func(n int) int {
+			if n != 2 {
+				t.Fatalf("expected exactly two positive-cosine notes, got %d", n)
 			}
-			item, err := service.walk(ctx, WalkRequest{Name: "memos/a", Mode: mode}, draw)
-			if err != nil || item.Item == nil || item.Item.Note.Name != want {
-				t.Fatalf("%s slot %d: %+v %v", mode, slot, item, err)
-			}
+			return slot
 		}
-	}
-	recent, err := service.recentReads()
-	if err != nil || len(recent) != 0 {
-		t.Fatalf("displaying a walk item marked it as read: %v %v", recent, err)
-	}
-	if note, err := service.Open(ctx, "memos/b"); err != nil || note.Name != "memos/b" {
-		t.Fatalf("explicit open: %+v %v", note, err)
-	}
-	cont, err = service.walk(ctx, WalkRequest{Name: "memos/a"}, first)
-	if err != nil || cont.Item == nil || cont.Item.Note.Name != "memos/b" || cont.Item.Score != 1 ||
-		!slices.Equal(cont.Item.Matches[0].Signals, []string{"semantic"}) {
-		t.Fatalf("recent explicit read changed the draw or score: %+v %v", cont, err)
+		item, err := service.walk(ctx, WalkRequest{Name: "memos/a", Mode: "continue"}, draw)
+		if err != nil || item.Item == nil || item.Item.Note.Name != want {
+			t.Fatalf("continue slot %d: %+v %v", slot, item, err)
+		}
 	}
 	weaker, err := service.walk(ctx, WalkRequest{Name: "memos/a"}, last)
 	if err != nil || weaker.Item == nil || weaker.Item.Note.Name != "memos/c" ||
@@ -192,7 +177,7 @@ func TestDiscoveryNormalizeAndLongPath(t *testing.T) {
 		t.Fatal("normalization mutated its caller's path")
 	}
 	for _, request := range []WalkRequest{
-		{}, {Mode: "other"}, {Mode: "angle"}, {Mode: "random", Name: "a"},
+		{}, {Mode: "other"}, {Mode: "random", Name: "a"},
 		{Name: "memos/a/b"}, {Mode: "random", Path: []string{"memos/"}},
 	} {
 		if _, err := normalizeWalk(request); errorCode(err) != "INVALID_ARGUMENT" {
@@ -229,7 +214,7 @@ func TestDiscoveryNormalizeAndLongPath(t *testing.T) {
 func TestDiscoverySemanticReadinessForAllModes(t *testing.T) {
 	store, index, memos, _ := indexFixture(t)
 	service := NewSearchService(store, index.Source, nil)
-	for _, mode := range []string{"continue", "angle", "random"} {
+	for _, mode := range []string{"continue", "random"} {
 		if result, err := service.Walk(context.Background(), WalkRequest{Name: "memos/a", Mode: mode}); errorCode(err) != "INDEX_NOT_READY" || result.Item != nil {
 			t.Fatalf("%s silently fell back without a published index: %+v %v", mode, result, err)
 		}
@@ -241,7 +226,7 @@ func TestDiscoverySemanticReadinessForAllModes(t *testing.T) {
 	}
 	finishIndex(t, index)
 	store.Settings.Embedding.Enabled = false
-	for _, mode := range []string{"continue", "angle", "random"} {
+	for _, mode := range []string{"continue", "random"} {
 		if result, err := service.Walk(context.Background(), WalkRequest{Name: "memos/a", Mode: mode}); errorCode(err) != "EMBEDDING_DISABLED" || result.Item != nil {
 			t.Fatalf("%s silently fell back without embedding: %+v %v", mode, result, err)
 		}
@@ -400,72 +385,6 @@ func TestDiscoveryCancellationAndDeadlineDoNotReportExhaustion(t *testing.T) {
 	}
 }
 
-func TestDiscoveryRecentReviewReadsAndSevenDayWindow(t *testing.T) {
-	reviews, _ := reviewFixture(t, 9)
-	service := NewSearchService(reviews.Store, reviews.Source, nil)
-	ctx, at := context.Background(), time.Now().UTC()
-	batch, err := reviews.Daily(ctx, at)
-	if err != nil || len(batch.Items) < 3 {
-		t.Fatalf("review batch: %+v %v", batch, err)
-	}
-	opened, skipped, shown := batch.Items[0].Name, batch.Items[1].Name, batch.Items[2].Name
-	if _, err := reviews.Mark(ctx, batch.ID, opened, "open", at); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := reviews.Mark(ctx, batch.ID, skipped, "skip", at); err != nil {
-		t.Fatal(err)
-	}
-	recent, err := service.recentReads()
-	if err != nil || !recent[opened] || recent[skipped] || recent[shown] {
-		t.Fatalf("only opened reviews should count as reads: %v %v", recent, err)
-	}
-	path := []string{}
-	names, err := service.Store.Names()
-	if err != nil {
-		t.Fatal(err)
-	}
-	for name := range names {
-		if name != opened && name != shown {
-			path = append(path, name)
-		}
-	}
-	service.Store.Settings.Embedding = embeddingTestConfig("http://embedding.test")
-	index := NewVectorIndexService(service.Store, service.Source,
-		&indexEmbedding{dimensions: service.Store.Settings.Embedding.Dimensions})
-	finishIndex(t, index)
-	selected := map[string]bool{}
-	for slot := range 2 {
-		walk, err := service.walk(ctx, WalkRequest{Mode: "random", Path: path}, func(n int) int {
-			if n != 2 {
-				t.Fatalf("review history changed the candidate count: %d", n)
-			}
-			return slot
-		})
-		if err != nil || walk.Item == nil || walk.Item.Score != 0.5 {
-			t.Fatalf("review history changed a random draw: %+v %v", walk, err)
-		}
-		selected[walk.Item.Note.Name] = true
-	}
-	if !selected[opened] || !selected[shown] {
-		t.Fatalf("opened and unread review notes need equal slots: %v", selected)
-	}
-	if _, err := service.Open(ctx, skipped); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := service.Store.state.Exec(`UPDATE discovery_reads SET opened_at = ?`,
-		at.Add(-8*24*time.Hour).Format(time.RFC3339Nano)); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := service.Store.state.Exec(`UPDATE review_items SET opened_at = ? WHERE memo_name = ?`,
-		at.Add(-8*24*time.Hour).Format(time.RFC3339Nano), opened); err != nil {
-		t.Fatal(err)
-	}
-	recent, err = service.recentReads()
-	if err != nil || len(recent) != 0 {
-		t.Fatalf("expired reads still affect discovery: %v %v", recent, err)
-	}
-}
-
 func TestDiscoveryRejectsChangedCandidates(t *testing.T) {
 	for _, change := range []string{"delete", "content", "tags", "author", "archive"} {
 		t.Run(change, func(t *testing.T) {
@@ -547,91 +466,5 @@ func TestDiscoverySourceChangesAndFailuresAreAtomic(t *testing.T) {
 				}
 			}
 		})
-	}
-}
-
-func TestDiscoveryOpenFailureDoesNotRecordRead(t *testing.T) {
-	for _, cause := range []string{"missing", "author", "identity", "offline"} {
-		t.Run(cause, func(t *testing.T) {
-			settings := testSettings(t)
-			store := testStore(t, settings)
-			identities := 0
-			client := fakeClient(settings, func(r *http.Request) (int, any, error) {
-				if strings.HasSuffix(r.URL.Path, "/auth/me") {
-					identities++
-					if cause == "identity" && identities == 2 {
-						return 200, map[string]any{"user": map[string]string{"name": "users/other"}}, nil
-					}
-				}
-				if status, body, ok := identityResponse(r); ok {
-					return status, body, nil
-				}
-				switch cause {
-				case "missing":
-					return 404, nil, nil
-				case "offline":
-					return 503, nil, nil
-				}
-				raw := rawMemo("a", "source")
-				if cause == "author" {
-					raw["creator"] = "users/other"
-				}
-				return 200, raw, nil
-			})
-			service := NewSearchService(store, client, nil)
-			note, err := service.Open(context.Background(), "memos/a")
-			if err == nil || note.Name != "" {
-				t.Fatalf("failed open exposed a note: %+v %v", note, err)
-			}
-			reads, err := service.recentReads()
-			if err != nil || len(reads) != 0 {
-				t.Fatalf("failed open recorded a read: %v %v", reads, err)
-			}
-		})
-	}
-}
-
-func TestDiscoveryReadsSurviveRestartRebuildAndRestore(t *testing.T) {
-	service, _, _ := discoveryFixture(t)
-	if _, err := service.Open(context.Background(), "memos/b"); err != nil {
-		t.Fatal(err)
-	}
-	settings := service.Store.Settings
-	snapshot := filepath.Join(t.TempDir(), "snapshot")
-	if _, err := Backup(settings, snapshot); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := service.Open(context.Background(), "memos/c"); err != nil {
-		t.Fatal(err)
-	}
-	if err := service.Store.Close(); err != nil {
-		t.Fatal(err)
-	}
-	restarted := testStore(t, settings)
-	reads, err := NewSearchService(restarted, service.Source, nil).recentReads()
-	if err != nil || !reads["memos/b"] || !reads["memos/c"] {
-		t.Fatalf("restart lost explicit reads: %v %v", reads, err)
-	}
-	if err := restarted.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if err := RebuildIndex(settings); err != nil {
-		t.Fatal(err)
-	}
-	rebuilt := testStore(t, settings)
-	reads, err = NewSearchService(rebuilt, service.Source, nil).recentReads()
-	if err != nil || !reads["memos/b"] || !reads["memos/c"] {
-		t.Fatalf("index rebuild lost explicit reads: %v %v", reads, err)
-	}
-	if err := rebuilt.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if err := Restore(settings, snapshot, filepath.Join(t.TempDir(), "safety")); err != nil {
-		t.Fatal(err)
-	}
-	restored := NewSearchService(testStore(t, settings), service.Source, nil)
-	reads, err = restored.recentReads()
-	if err != nil || !reads["memos/b"] || reads["memos/c"] {
-		t.Fatalf("restore did not recover the snapshot's read history: %v %v", reads, err)
 	}
 }

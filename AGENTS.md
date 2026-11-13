@@ -8,6 +8,7 @@ Moerise 是基于 Memos 的单用户自托管笔记服务。服务端使用 Go 1
 
 | 任务 | 入口 |
 | --- | --- |
+| 了解仓库布局、寻找源码入口 | [代码导览](docs/CODEBASE.md)、[脚本说明](scripts/README.md) |
 | 了解可用功能、安装方式 | [README](README.md) |
 | 确定产品行为与开发范围 | [产品需求](docs/PRD.md)、[路线图](docs/ROADMAP.md)、[Web 集成设计](docs/DESIGN.md) |
 | 调整模块、存储或来源访问 | [产品与架构](docs/PRODUCT-ARCHITECTURE.md) |
@@ -30,7 +31,7 @@ Moerise 是基于 Memos 的单用户自托管笔记服务。服务端使用 Go 1
 - `state.sqlite3` 保存需备份的产品状态，`index.sqlite3` 保存可重建索引。重建索引保留产品状态。
 - 正常与归档笔记的全部分页成功后，才能发布投影并推进同步水位。
 - `internal/migrations/` 按编号和摘要记账。结构变化新增迁移，保持已应用 SQL 不变。
-- 外部 MCP 只读；写入 Scope 也不能开放笔记或产品状态写操作。
+- 外部 REST/MCP 只读，配置仅接受 `notes:read`、`sync:read`、`reviews:read`。
 
 ## 实现与文档
 

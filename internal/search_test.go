@@ -2,8 +2,6 @@ package moerise
 
 import (
 	"context"
-	"encoding/base64"
-	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -13,7 +11,7 @@ import (
 	"testing"
 )
 
-func TestSearchChineseKeywordsAndUpgrade(t *testing.T) {
+func TestSearchChineseKeywordsAndSourceOffsets(t *testing.T) {
 	settings := testSettings(t)
 	store, err := NewStore(settings)
 	if err != nil {
@@ -29,19 +27,6 @@ func TestSearchChineseKeywordsAndUpgrade(t *testing.T) {
 	memos["memos/tag"]["tags"] = []string{"园艺", "园艺/阳台"}
 	for _, raw := range memos {
 		refreshIndexMemo(t, store, raw)
-	}
-	// Recreate the pre-3.3 schema while retaining its projection and migration checksums.
-	if _, err := store.index.Exec(`DROP TRIGGER search_chunks_insert; DROP TRIGGER search_chunks_delete;
-		DROP TABLE search_fts; DROP TABLE search_chunks; DROP TABLE search_notes;
-		DELETE FROM schema_migrations WHERE version = '003'`); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.Close(); err != nil {
-		t.Fatal(err)
-	}
-	store, err = NewStore(settings)
-	if err != nil {
-		t.Fatal(err)
 	}
 	client := fakeClient(settings, func(r *http.Request) (int, any, error) {
 		if status, body, ok := identityResponse(r); ok {
@@ -230,7 +215,7 @@ func TestSearchFusionKeepsBestChunkAndSourceFailureIsAtomic(t *testing.T) {
 	}
 }
 
-func TestSearchRESTScopeValidationAndEncryptedFeishuRequest(t *testing.T) {
+func TestSearchRESTScopeValidation(t *testing.T) {
 	settings := feishuSettings(t)
 	settings.AccessTokens[1].Scopes = []string{"sync:read"}
 	store := testStore(t, settings)
@@ -270,39 +255,5 @@ func TestSearchRESTScopeValidationAndEncryptedFeishuRequest(t *testing.T) {
 			t.Fatalf("search %s: status=%d body=%s", test.body, response.Code, response.Body.String())
 		}
 	}
-	// A saved search reply can still be delivered without a text command entrypoint.
-	sealed, err := api.Feishu.seal("search:om_search",
-		canonicalJSON(SearchRequest{Query: "阳台花", Tags: []string{"植物"}, Limit: 5}))
-	if err != nil {
-		t.Fatal(err)
-	}
-	kind, reference := "search", "om_search."+base64.RawURLEncoding.EncodeToString(sealed)
-	text, err := api.Feishu.render(context.Background(), kind, reference)
-	if err != nil || !strings.Contains(text, "搜索结果") {
-		t.Fatalf("encrypted search could not be replayed: %s %v", text, err)
-	}
-	foreign := *api.Feishu
-	otherSettings := settings
-	otherSettings.Memos.InstanceID = "other"
-	foreign.Store = testStore(t, otherSettings)
-	if _, err := foreign.render(context.Background(), kind, reference); errorCode(err) != "CHANNEL_QUEUE_KEY" {
-		t.Fatal("encrypted search crossed its source binding")
-	}
-	for _, query := range []string{"", strings.Repeat("花", 257)} {
-		body, _ := json.Marshal(SearchRequest{Query: query})
-		request := httptest.NewRequest("POST", "/api/ext/v1/search", strings.NewReader(string(body)))
-		request.Header.Set("Authorization", "Bearer "+settings.AccessTokens[0].Token)
-		response := httptest.NewRecorder()
-		api.ServeHTTP(response, request)
-		if response.Code != 422 {
-			t.Fatal("search accepted an invalid text length")
-		}
-	}
-	request := httptest.NewRequest("GET", "/api/ext/v1/search", nil)
-	request.Header.Set("Authorization", "Bearer "+settings.AccessTokens[0].Token)
-	response := httptest.NewRecorder()
-	api.ServeHTTP(response, request)
-	if response.Code != 403 {
-		t.Fatal("search accepted a method outside its contract")
-	}
+
 }

@@ -45,7 +45,7 @@ jobs:
       - run: npm --prefix web ci
       - run: npm --prefix web run build
       - run: npm --prefix web test
-      - run: node --test scripts/test/*.test.mjs
+      - run: node --test scripts/lib/*.test.mjs
       - name: Verify preinstalled Chrome
         run: google-chrome --version
       - name: Run browser suites

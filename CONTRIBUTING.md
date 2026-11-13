@@ -49,6 +49,8 @@ By default, Moerise Core listens on port `8787` and Web listens on port `3000`. 
 
 ## Codebase Organization
 
+See the [Codebase Guide](docs/CODEBASE.en.md) for module groups and reading order.
+
 | Path | Purpose |
 | --- | --- |
 | `main.go`, `internal/` | CLI commands, Go background services, HTTP APIs, and platform adapters |
@@ -58,6 +60,7 @@ By default, Moerise Core listens on port `8787` and Web listens on port `3000`. 
 | `web/server.mjs`, `web/build.mjs` | Static file server, same-origin proxy, and asset build scripts |
 | `web/test/` | Node.js unit tests and Playwright browser integration tests |
 | `tests/` | End-to-end integration tests using live Memos containers |
+| `scripts/` | Joint acceptance, performance evaluation, and shared utilities; see the [script guide](scripts/README.en.md) |
 | `docs/` | Comprehensive technical, operational, and API documentation |
 
 ### Key Development Guidelines

@@ -95,11 +95,11 @@ func TestClientChatLifecycleStrictRequestsAndSSE(t *testing.T) {
 		result.Turns[0].Assistant.Status != "completed" || result.Turns[0].Assistant.Content != "## 自然回复\n\n可能存在另一种解释。\n" {
 		t.Fatalf("persistent response: %d %s", loaded.Code, loaded.Body.String())
 	}
-	aiAPIValidateJSON(t, clientChatSchema(t, "ChatSession"), loaded.Body.Bytes())
+	validateAPISchema(t, clientChatSchema(t, "ChatSession"), loaded.Body.Bytes())
 	eventSchema := clientChatSchema(t, "ChatEvent")
 	for _, line := range strings.Split(response.Body.String(), "\n") {
 		if strings.HasPrefix(line, "data: ") {
-			aiAPIValidateJSON(t, eventSchema, []byte(strings.TrimPrefix(line, "data: ")))
+			validateAPISchema(t, eventSchema, []byte(strings.TrimPrefix(line, "data: ")))
 		}
 	}
 	replay := clientCall(api, "POST", base+"/messages", input, cookie, fixture.settings.Web.PublicOrigin, identity.CSRFToken)
@@ -166,7 +166,7 @@ func TestClientChatRequiresSessionOriginCSRFAndMachineIsolation(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, path := range []string{"/api/ext/v1/chats", "/api/ext/v1/chat-materials"} {
-		recorder := aiAPICall(machine, "POST", path, fixture.settings.AccessTokens[0].Token, `{}`)
+		recorder := externalCall(machine, "POST", path, fixture.settings.AccessTokens[0].Token, `{}`)
 		if recorder.Code != 403 {
 			t.Errorf("machine chat endpoint: %d", recorder.Code)
 		}
@@ -190,7 +190,7 @@ func TestClientChatRemoveLastMaterialPreservesHistory(t *testing.T) {
 		len(empty.Materials) != 0 || len(empty.Turns) != 1 || empty.Turns[0].Assistant.Status != "completed" {
 		t.Fatalf("empty selection lost history: %d %s", cleared.Code, cleared.Body.String())
 	}
-	aiAPIValidateJSON(t, clientChatSchema(t, "ChatSession"), cleared.Body.Bytes())
+	validateAPISchema(t, clientChatSchema(t, "ChatSession"), cleared.Body.Bytes())
 	blocked := call("POST", base+"/messages", `{"request_id":"empty","version":2,"kind":"insight","content":""}`)
 	if blocked.Code != 422 || !strings.Contains(blocked.Body.String(), "INVALID_ARGUMENT") {
 		t.Fatalf("empty selection generated: %d %s", blocked.Code, blocked.Body.String())
@@ -230,14 +230,14 @@ func TestClientChatHistoryPreviewPreservesTitleAndUnicode(t *testing.T) {
 				page.Chats[0].Preview != preview || page.Chats[0].Title != chat.Title {
 				t.Fatalf("history preview: %s", listed.Body.String())
 			}
-			aiAPIValidateJSON(t, clientChatSchema(t, "ChatSummary"), canonicalJSON(page.Chats[0]))
+			validateAPISchema(t, clientChatSchema(t, "ChatSummary"), canonicalJSON(page.Chats[0]))
 			loaded := clientCall(api, "GET", "/api/app/v1/chats/"+chat.ID, "", cookie, "", "")
 			var restored ChatSession
 			if json.Unmarshal(loaded.Body.Bytes(), &restored) != nil || restored.Preview != preview ||
 				restored.Turns[0].User.Content != map[string]string{"question": content, "insight": fixture.settings.Insights.DefaultPrompt}[kind] {
 				t.Fatalf("preview changed full content: %s", loaded.Body.String())
 			}
-			aiAPIValidateJSON(t, clientChatSchema(t, "ChatSession"), loaded.Body.Bytes())
+			validateAPISchema(t, clientChatSchema(t, "ChatSession"), loaded.Body.Bytes())
 		})
 	}
 }
@@ -518,7 +518,7 @@ func TestClientChatReplyLanguagePreservesPromptsMaterialsAndIdempotency(t *testi
 	if response.Code != 200 || len(calls) != 2 || calls[1][len(calls[1])-1].Content != custom {
 		t.Fatal("custom prompt was translated or discarded")
 	}
-	response = send(`{"request_id":"legacy","version":1,"kind":"question","content":"继续"}`)
+	response = send(`{"request_id":"missing-language","version":1,"kind":"question","content":"继续"}`)
 	if response.Code != 200 || len(calls) != 3 || !strings.Contains(calls[2][0].Content, "使用简体中文回复") {
 		t.Fatal("omitted language did not preserve the Chinese default")
 	}

@@ -6,7 +6,6 @@ import (
 	"context"
 	"encoding/json"
 	"net/http/httptest"
-	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -50,7 +49,7 @@ func TestDiscoveryAcrossEntrypointsAcceptance(t *testing.T) {
 	h.sync("full")
 	h.stop()
 	settings := h.settings
-	settings.AccessTokens[1].Scopes = append(settings.AccessTokens[1].Scopes, "discovery:write")
+	settings.AccessTokens[1].Scopes = append(settings.AccessTokens[1].Scopes, "sync:read")
 	settings.Embedding.Enabled, settings.Embedding.Dimensions = true, 256
 	address, key := "http://embedding.test/api/v1", strings.Repeat("k", 32)
 	settings.Embedding.BaseURL, settings.Embedding.APIKey = &address, &key
@@ -124,10 +123,6 @@ func TestDiscoveryAcrossEntrypointsAcceptance(t *testing.T) {
 		!slices.Equal(continued.Item.Matches[0].Signals, []string{"semantic"}) {
 		t.Fatalf("continue did not choose a semantic neighbor: %+v", continued)
 	}
-	angled := walk(moerise.WalkRequest{Name: seed, Mode: "angle"})
-	if angled.Item == nil || !slices.Contains([]string{near, angle}, angled.Item.Note.Name) {
-		t.Fatalf("angle did not choose a semantic neighbor: %+v", angled)
-	}
 	random := walk(moerise.WalkRequest{Name: seed, Mode: "random", Path: []string{near, angle}})
 	if random.Item == nil || random.Item.Note.Name != other {
 		t.Fatalf("random did not exclude the path: %+v", random)
@@ -144,64 +139,6 @@ func TestDiscoveryAcrossEntrypointsAcceptance(t *testing.T) {
 	}
 	h.call(server.URL, "/api/ext/v1/discovery/walk", "GET", h.reader, nil, 403)
 	h.call(server.URL, "/api/ext/v1/discovery/walk", "POST", "", map[string]string{"mode": "random"}, 401)
-	requireRecordError(t, h.call(server.URL, "/api/ext/v1/discovery/open", "POST", h.reader,
-		map[string]string{"name": near}, 403), "FORBIDDEN")
-	h.call(server.URL, "/api/ext/v1/discovery/open", "POST", h.operator, map[string]string{"name": near}, 403)
-	if _, err := api.Search.Open(context.Background(), near); err != nil {
-		t.Fatal(err)
-	}
-	afterOpen := walk(moerise.WalkRequest{Name: seed, Path: []string{angle}})
-	if afterOpen.Item == nil || afterOpen.Item.Note.Name != near || afterOpen.Item.Score != 1 ||
-		!slices.Equal(afterOpen.Item.Matches[0].Signals, []string{"semantic"}) {
-		t.Fatal("shared service open changed semantic eligibility or score")
-	}
-	mcp := func(token, method string, params any) map[string]any {
-		t.Helper()
-		raw, code, err := h.requestWithHeaders(server.URL, "/mcp", "POST", token,
-			map[string]any{"jsonrpc": "2.0", "id": "discovery", "method": method, "params": params},
-			map[string]string{"Accept": "application/json, text/event-stream", "MCP-Protocol-Version": "2025-11-25"})
-		if err != nil || code != 200 || raw["error"] != nil {
-			t.Fatalf("MCP discovery: code=%d err=%v response=%v", code, err, raw)
-		}
-		return raw["result"].(map[string]any)
-	}
-	for _, token := range []string{h.reader, h.operator} {
-		visible := map[string]bool{}
-		for _, raw := range mcp(token, "tools/list", map[string]any{})["tools"].([]any) {
-			tool := raw.(map[string]any)
-			visible[tool["name"].(string)] = true
-			if tool["name"] == "semantic_walk" && tool["annotations"].(map[string]any)["readOnlyHint"] != true {
-				t.Fatal("MCP walk did not preserve its read-only annotation")
-			}
-		}
-		if !visible["semantic_walk"] || visible["open_discovery_memo"] {
-			t.Fatalf("incorrect discovery tool scopes: %v", visible)
-		}
-		denied, code, err := h.requestWithHeaders(server.URL, "/mcp", "POST", token,
-			map[string]any{"jsonrpc": "2.0", "id": "removed-open", "method": "tools/call",
-				"params": map[string]any{"name": "open_discovery_memo", "arguments": map[string]string{"name": angle}}},
-			map[string]string{"Accept": "application/json, text/event-stream", "MCP-Protocol-Version": "2025-11-25"})
-		deniedResult, _ := denied["result"].(map[string]any)
-		if err != nil || code != 200 || denied["error"] == nil && deniedResult["isError"] != true {
-			t.Fatalf("MCP exposed the removed reading tool: status=%d err=%v response=%v", code, err, denied)
-		}
-	}
-	result := mcp(h.reader, "tools/call", map[string]any{"name": "semantic_walk",
-		"arguments": map[string]any{"name": seed, "path": []string{angle}}})
-	data, _ := json.Marshal(result["structuredContent"])
-	var fromMCP moerise.WalkResponse
-	if json.Unmarshal(data, &fromMCP) != nil || !reflect.DeepEqual(fromMCP, afterOpen) {
-		t.Fatalf("REST/MCP discovery differs: %s", data)
-	}
-	if _, err := api.Search.Open(context.Background(), other); err != nil {
-		t.Fatal(err)
-	}
-	db := h.database("state")
-	defer db.Close()
-	var opened string
-	if err := db.QueryRow("SELECT opened_at FROM discovery_reads WHERE memo_name = ?", other).Scan(&opened); err != nil || opened == "" {
-		t.Fatalf("shared service open did not persist explicit reading: %q %v", opened, err)
-	}
 	h.call(h.memos, "/api/v1/"+seed, "DELETE", h.upstream, nil, 200)
 	requireRecordError(t, h.call(server.URL, "/api/ext/v1/discovery/walk", "POST", h.reader,
 		moerise.WalkRequest{Name: seed}, 404), "SOURCE_NOT_FOUND")

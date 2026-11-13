@@ -65,9 +65,10 @@ func TestFeishuFullReviewDeliveryWithRealMemosAcceptance(t *testing.T) {
 	settings := h.settings
 	settings.StateDir, settings.IndexDir = filepath.Join(h.root, "full-review-state"), filepath.Join(h.root, "full-review-index")
 	settings.Review.Count, settings.Review.MinAgeHours = 2, 0
-	settings.Notifications.Enabled, settings.Notifications.Time = true, "00:00"
+	settings.Notifications.Enabled, settings.Notifications.Times = true, []string{"00:00"}
 	pointer := func(value string) *string { return &value }
 	settings.Channel.Kind = "feishu-app"
+	settings.Web.StateEncryptionKey = randomStateKey()
 	settings.Channel.AppID, settings.Channel.AppSecret = pointer("cli_acceptance"), pointer(strings.Repeat("s", 32))
 	settings.Channel.VerificationToken, settings.Channel.UserOpenID = pointer(strings.Repeat("v", 32)), pointer("ou_owner")
 	source := moerise.NewMemosClient(settings.Memos)
@@ -81,10 +82,9 @@ func TestFeishuFullReviewDeliveryWithRealMemosAcceptance(t *testing.T) {
 		replies: map[string]string{}, uuids: map[string]string{}}, sendCounts: map[string]int{}, loseImage: true}
 	// Use the same queue and transport as production, with only Feishu replaced.
 	makeQueue := func() (*moerise.NotificationService, *moerise.ReviewService) {
-		reviews := moerise.NewReviewService(store, source)
-		events := moerise.NewFeishuService(store, source, nil, reviews, nil)
-		events.Client = platform
-		return moerise.NewNotificationService(store, reviews, moerise.NewFeishuDelivery(store, reviews, events)), reviews
+		app := moerise.NewApp(store.Settings, store, source)
+		app.Feishu.Client = platform
+		return app.Notifications, app.Reviews
 	}
 	queue, reviews := makeQueue()
 	ctx := context.Background()

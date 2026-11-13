@@ -4,8 +4,6 @@ package acceptance
 
 import (
 	"bytes"
-	"crypto/rand"
-	"encoding/base64"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -129,12 +127,10 @@ func TestClientMemosAcceptance(t *testing.T) {
 		return server.URL
 	})
 	h.stop()
-	key := make([]byte, 32)
-	_, _ = rand.Read(key)
 	h.settings.Web = moerise.WebConfig{Enabled: true, PublicOrigin: h.base,
-		StateEncryptionKey: base64.StdEncoding.EncodeToString(key)}
+		StateEncryptionKey: randomStateKey()}
 	h.settings.AccessTokens[1].Scopes = append(h.settings.AccessTokens[1].Scopes,
-		"reviews:read", "reviews:write", "discovery:write", "ai:generate")
+		"reviews:read")
 	data, _ := json.Marshal(h.settings)
 	if err := os.WriteFile(h.config, data, 0600); err != nil {
 		t.Fatal(err)
@@ -221,7 +217,7 @@ func TestClientMemosAcceptance(t *testing.T) {
 		t.Fatal("live list depended on a rebuilt index")
 	}
 	for _, path := range []string{"/api/ext/v1/notes", "/api/ext/v1/sync", "/api/ext/v1/reviews/daily",
-		"/api/ext/v1/discovery/open", "/api/ext/v1/insights", "/api/ext/v1/answers",
+		"/api/ext/v1/chats", "/api/ext/v1/chats/example/messages",
 		"/api/ext/v1/notifications/id/resolve"} {
 		h.call(h.base, path, "POST", h.operator, map[string]any{}, 403)
 	}

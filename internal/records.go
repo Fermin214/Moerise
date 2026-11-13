@@ -6,10 +6,8 @@ import (
 	"errors"
 	"mime"
 	"regexp"
-	"slices"
 	"strings"
 	"unicode"
-	"unicode/utf8"
 )
 
 var idempotencyPattern = regexp.MustCompile(`^[a-zA-Z0-9._:-]{1,128}$`)
@@ -23,45 +21,13 @@ type noteWrite struct {
 }
 
 func prepareNote(input CreateNote) (string, string, error) {
-	if len(input.Tags) != 0 {
-		return "", "", failure("INVALID_ARGUMENT", "Put native #tags in content instead of tags", 422, false)
-	}
 	if (strings.TrimSpace(input.Content) == "" && len(input.Attachments) == 0) || len(input.Content) > 65536 {
 		return "", "", failure("INVALID_ARGUMENT", "A note requires content or attachments; content cannot exceed 65536 UTF-8 bytes", 422, false)
 	}
 	if err := validateAttachments(input.Attachments); err != nil {
 		return "", "", err
 	}
-	return input.Content, noteRequestHash(input, []string{}), nil
-}
-
-// Historical digests and injected content are only accepted for an existing write.
-func prepareLegacyNote(input CreateNote) (string, string, error) {
-	if strings.TrimSpace(input.Content) == "" || len(input.Tags) > 20 {
-		return "", "", failure("INVALID_ARGUMENT", "Content or tags are invalid", 422, false)
-	}
-	tags := slices.Clone(input.Tags)
-	for _, tag := range tags {
-		if utf8.RuneCountInString(tag) > 100 || !tagPattern.MatchString(tag) {
-			return "", "", failure("INVALID_ARGUMENT", "Tags must use letters, decimal digits, underscores, hyphens or slash-separated segments", 422, false)
-		}
-	}
-	slices.Sort(tags)
-	tags = slices.Compact(tags)
-	if tags == nil {
-		tags = []string{}
-	}
-	content := input.Content
-	if len(tags) > 0 {
-		content = "#" + strings.Join(tags, " #") + "\n\n" + content
-	}
-	if len(content) > 65536 {
-		return "", "", failure("INVALID_ARGUMENT", "Content including tags exceeds 65536 UTF-8 bytes", 422, false)
-	}
-	if err := validateAttachments(input.Attachments); err != nil {
-		return "", "", err
-	}
-	return content, noteRequestHash(input, tags), nil
+	return input.Content, noteRequestHash(input), nil
 }
 
 func validateAttachments(files []CreateAttachment) error {
@@ -88,9 +54,9 @@ func validateAttachments(files []CreateAttachment) error {
 	return nil
 }
 
-func noteRequestHash(input CreateNote, tags []string) string {
+func noteRequestHash(input CreateNote) string {
 	// Hash file digests rather than retaining their bytes in product state.
-	payload := map[string]any{"content": input.Content, "tags": tags}
+	payload := map[string]any{"content": input.Content}
 	if len(input.Attachments) > 0 {
 		files := []map[string]string{}
 		for _, attachment := range input.Attachments {
@@ -111,27 +77,6 @@ func (s *Store) savedNoteHash(key string) (string, error) {
 		return "", nil
 	}
 	return hash, err
-}
-
-func (s *RecordService) prepare(key string, input CreateNote) (string, string, error) {
-	if len(input.Tags) == 0 {
-		return prepareNote(input)
-	}
-	content, hash, err := prepareLegacyNote(input)
-	if err != nil {
-		return "", "", err
-	}
-	saved, err := s.Store.savedNoteHash(key)
-	if err != nil {
-		return "", "", err
-	}
-	if saved == "" {
-		return "", "", failure("INVALID_ARGUMENT", "Put native #tags in content instead of tags", 422, false)
-	}
-	if saved != hash {
-		return "", "", failure("IDEMPOTENCY_CONFLICT", "This idempotency key belongs to a different request", 409, false)
-	}
-	return content, hash, nil
 }
 
 func (s *Store) reserveNote(key, hash string) (noteWrite, error) {
@@ -200,7 +145,7 @@ func (s *RecordService) Create(ctx context.Context, key string, input CreateNote
 	if !idempotencyPattern.MatchString(key) {
 		return Note{}, 0, failure("INVALID_ARGUMENT", "A valid Idempotency-Key header is required", 422, false)
 	}
-	content, hash, err := s.prepare(key, input)
+	content, hash, err := prepareNote(input)
 	if err != nil {
 		return Note{}, 0, err
 	}
@@ -285,11 +230,6 @@ func (s *RecordService) unknown(key, code string) (Note, int, error) {
 func (s *RecordService) reconcile(ctx context.Context, key string, memo *Memo, content string, input CreateNote, status int) (Note, int, error) {
 	if memo.Content != content || memo.Visibility != "PRIVATE" {
 		return Note{}, 0, failure("WRITE_CONFLICT", "The reserved Memos resource differs from this request", 409, false)
-	}
-	for _, tag := range input.Tags {
-		if !slices.Contains(memo.Tags, tag) {
-			return Note{}, 0, failure("WRITE_CONFLICT", "Memos did not preserve the requested tags; inspect the source memo", 409, false)
-		}
 	}
 	if len(input.Attachments) > 0 {
 		if _, err := s.Store.state.Exec(`UPDATE note_writes SET source_created = 1 WHERE

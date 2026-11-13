@@ -10,8 +10,7 @@ import (
 
 func TestExternalAPIRejectsWritesBeforeParsingOrSourceAccess(t *testing.T) {
 	settings := testSettings(t)
-	scopes := []string{"notes:read", "sync:read", "reviews:read",
-		"notes:write", "sync:write", "reviews:write", "discovery:write", "ai:generate"}
+	scopes := []string{"notes:read", "sync:read", "reviews:read"}
 	settings.AccessTokens = append(settings.AccessTokens,
 		AccessToken{"all", strings.Repeat("f", 40), slices.Clone(scopes)})
 	store := testStore(t, settings)
@@ -26,16 +25,14 @@ func TestExternalAPIRejectsWritesBeforeParsingOrSourceAccess(t *testing.T) {
 	for _, operation := range []struct{ method, path string }{
 		{"POST", "/notes"}, {"PUT", "/notes/example"}, {"PATCH", "/notes/example"},
 		{"DELETE", "/notes/example"}, {"POST", "/sync"}, {"DELETE", "/sync"},
-		{"POST", "/reviews/daily"}, {"POST", "/reviews/daily/replace"},
-		{"POST", "/reviews/example/items/example/open"}, {"POST", "/reviews/example/items/example/skip"},
-		{"POST", "/discovery/open"}, {"GET", "/notifications"}, {"GET", "/notifications/example"},
-		{"POST", "/notifications/example/resolve"}, {"POST", "/insights"}, {"POST", "/answers"},
+		{"POST", "/reviews/daily"}, {"GET", "/notifications"}, {"GET", "/notifications/example"},
+		{"POST", "/notifications/example/resolve"}, {"POST", "/chats"}, {"POST", "/chats/example/messages"},
 		{"GET", "/search"}, {"DELETE", "/search/index"}, {"POST", "/jobs/example"},
 		{"POST", "/future-write"}, {"GET", "/future-management"},
 	} {
 		t.Run(operation.method+operation.path, func(t *testing.T) {
 			for _, token := range []string{"", "invalid", settings.AccessTokens[0].Token, strings.Repeat("f", 40)} {
-				response := aiAPICall(api, operation.method, "/api/ext/v1"+operation.path, token, "{invalid")
+				response := externalCall(api, operation.method, "/api/ext/v1"+operation.path, token, "{invalid")
 				wantStatus, wantCode := 403, "FORBIDDEN"
 				if token == "" || token == "invalid" {
 					wantStatus, wantCode = 401, "UNAUTHENTICATED"
@@ -51,7 +48,7 @@ func TestExternalAPIRejectsWritesBeforeParsingOrSourceAccess(t *testing.T) {
 			}
 		})
 	}
-	for _, table := range []string{"note_writes", "jobs", "review_batches", "discovery_reads", "notifications"} {
+	for _, table := range []string{"note_writes", "jobs", "review_batches", "notifications"} {
 		var count int
 		if err := store.state.QueryRow("SELECT COUNT(*) FROM " + table).Scan(&count); err != nil || count != 0 {
 			t.Fatalf("external operation changed %s: count=%d err=%v", table, count, err)

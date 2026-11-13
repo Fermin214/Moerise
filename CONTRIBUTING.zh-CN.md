@@ -47,6 +47,8 @@ Core 默认监听 8787，Web 默认监听 3000。Web 的 `PUBLIC_ORIGIN` 必须�
 
 ## 代码结构
 
+完整模块分组与阅读顺序见[代码导览](docs/CODEBASE.md)。
+
 | 路径 | 职责 |
 | --- | --- |
 | `main.go`、`internal/` | 命令行、共享服务、HTTP API 与平台适配 |
@@ -56,6 +58,7 @@ Core 默认监听 8787，Web 默认监听 3000。Web 的 `PUBLIC_ORIGIN` 必须�
 | `web/server.mjs`、`web/build.mjs` | 静态服务、同源代理与构建 |
 | `web/test/` | Node 单元测试与 Playwright 浏览器测试 |
 | `tests/` | 真实 Memos 集成测试 |
+| `scripts/` | 联合验收、性能评测与共用工具，见[脚本说明](scripts/README.md) |
 | `docs/` | 产品、架构、接口与运维文档 |
 
 ### 开发约定

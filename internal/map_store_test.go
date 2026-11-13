@@ -191,32 +191,13 @@ func TestMapPublicationIsAtomicAndRejectsStaleOrCanceledSnapshots(t *testing.T) 
 	}
 }
 
-func TestMapMigrationKeepsProductStateAndAppliedSQL(t *testing.T) {
+func TestIndexRebuildKeepsProductSettings(t *testing.T) {
 	store, index, _, _ := indexFixture(t)
 	store.Settings.Web.StateEncryptionKey = base64.StdEncoding.EncodeToString([]byte(strings.Repeat("k", 32)))
 	if err := store.initializeProductSettings(); err != nil {
 		t.Fatal(err)
 	}
 	finishIndex(t, index)
-	_, layout := indexedMapLayout(t, store)
-	before, err := appliedMigrations(store.index)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := store.index.Exec("DROP TABLE map_points; DROP TABLE map_layouts; DELETE FROM schema_migrations WHERE version IN ('004', '005')"); err != nil {
-		t.Fatal(err)
-	}
-	if err := migrate(store.index, "index"); err != nil {
-		t.Fatal(err)
-	}
-	after, err := appliedMigrations(store.index)
-	if err != nil || !reflect.DeepEqual(before, after) {
-		t.Fatalf("migration checksums changed: %v", err)
-	}
-	_, rebuilt := indexedMapLayout(t, store)
-	if !reflect.DeepEqual(layout.points, rebuilt.points) || layout.version != rebuilt.version {
-		t.Fatal("layout-only rebuild changed deterministic coordinates")
-	}
 	if err := store.Close(); err != nil {
 		t.Fatal(err)
 	}

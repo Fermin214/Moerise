@@ -56,14 +56,12 @@ type ReviewConfig struct {
 	Count           int  `json:"count"`
 	MinAgeHours     int  `json:"min_age_hours"`
 	RecentDays      int  `json:"recent_days"`
-	TopicLimit      int  `json:"topic_limit"`
 	IncludeArchived bool `json:"include_archived"`
 }
 
 type NotificationConfig struct {
 	Enabled bool     `json:"enabled"`
-	Time    string   `json:"time"`
-	Times   []string `json:"times,omitempty"`
+	Times   []string `json:"times"`
 }
 
 type LLMConfig struct {
@@ -76,7 +74,6 @@ type LLMConfig struct {
 	MaxConcurrency  int     `json:"max_concurrency"`
 	MaxRetries      int     `json:"max_retries"`
 	MaxOutputTokens int     `json:"max_output_tokens"`
-	ContextBytes    int     `json:"context_bytes"` // Deprecated: retained for saved settings compatibility; no input budget.
 }
 
 type EmbeddingConfig struct {
@@ -142,11 +139,11 @@ func DefaultSettings() Settings {
 		Timezone: "Asia/Hong_Kong", StateDir: "/data/state", IndexDir: "/data/index",
 		Sync:          SyncConfig{60, 21600, 300, 5, 300},
 		Review:        ReviewConfig{Count: 3, MinAgeHours: 72, RecentDays: 7},
-		Notifications: NotificationConfig{Time: "09:00"},
+		Notifications: NotificationConfig{Times: []string{"09:00"}},
 		Embedding: EmbeddingConfig{Provider: "bailian", Protocol: "dashscope", Model: &embeddingModel,
 			Dimensions: 1024, BatchSize: 20, TimeoutSeconds: 30, MaxConcurrency: 2, MaxRetries: 2},
 		LLM: LLMConfig{Protocol: "openai-compatible", TimeoutSeconds: 90, MaxConcurrency: 2,
-			MaxRetries: 2, MaxOutputTokens: 2048, ContextBytes: 24000},
+			MaxRetries: 2, MaxOutputTokens: 2048},
 		Channel:  ChannelConfig{Kind: "none"},
 		Insights: InsightsConfig{DefaultPrompt: DefaultInsightPrompt},
 	}
@@ -266,6 +263,11 @@ func (s *Settings) Validate() error {
 	if err := s.Web.validate(); err != nil {
 		return err
 	}
+	if s.Channel.Kind == "feishu-app" || s.Web.StateEncryptionKey != "" {
+		if _, err := stateEncryptionKey(s.Web.StateEncryptionKey); err != nil {
+			return err
+		}
+	}
 	if !instancePattern.MatchString(s.Memos.InstanceID) {
 		return bad("memos.instance_id")
 	}
@@ -293,13 +295,13 @@ func (s *Settings) Validate() error {
 			return bad("access_tokens")
 		}
 		for _, scope := range access.Scopes {
-			if !slices.Contains([]string{"notes:read", "notes:write", "sync:read", "sync:write", "reviews:read", "reviews:write", "discovery:write", "ai:generate"}, scope) {
+			if !slices.Contains([]string{"notes:read", "sync:read", "reviews:read"}, scope) {
 				return bad("access_tokens.scopes")
 			}
 		}
 		names[access.Name], tokens[access.Token] = true, true
 	}
-	if s.Web.Enabled && (s.Web.StateEncryptionKey == s.CursorSecret ||
+	if s.Web.StateEncryptionKey != "" && (s.Web.StateEncryptionKey == s.CursorSecret ||
 		s.Web.StateEncryptionKey == s.Memos.Token || tokens[s.Web.StateEncryptionKey]) {
 		return bad("web.state_encryption_key must be independent")
 	}
@@ -361,7 +363,7 @@ func (s *Settings) Validate() error {
 		s.Review.MinAgeHours > 87600 || s.Review.RecentDays < 0 || s.Review.RecentDays > 3650 {
 		return bad("review")
 	}
-	if len(s.Notifications.Clocks()) > 24 {
+	if len(s.Notifications.Times) == 0 || len(s.Notifications.Times) > 24 {
 		return bad("notifications.times")
 	}
 	clocks := map[string]bool{}

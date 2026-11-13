@@ -19,7 +19,7 @@ import (
 func llmTestConfig(address string) LLMConfig {
 	key, model, base := "llm-test-credential", "route/test-model", address+"/v1/"
 	return LLMConfig{Enabled: true, Protocol: "openai-compatible", BaseURL: &base, APIKey: &key, Model: &model,
-		TimeoutSeconds: 90, MaxConcurrency: 2, MaxRetries: 2, MaxOutputTokens: 2048, ContextBytes: 24000}
+		TimeoutSeconds: 90, MaxConcurrency: 2, MaxRetries: 2, MaxOutputTokens: 2048}
 }
 
 func llmTestProvider(t *testing.T, config LLMConfig) LLMProvider {
@@ -653,7 +653,7 @@ func TestLLMProtocolsSendFullConversationWithoutLocalInputBudgets(t *testing.T) 
 			}))
 			defer server.Close()
 			config := llmTestConfig(server.URL)
-			config.Protocol, config.ContextBytes, config.MaxRetries = protocol, 1024, 0
+			config.Protocol, config.MaxRetries = protocol, 0
 			provider := llmTestProvider(t, config)
 			for _, stream := range []bool{false, true} {
 				var received strings.Builder

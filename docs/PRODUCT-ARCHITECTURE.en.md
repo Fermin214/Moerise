@@ -118,6 +118,8 @@ flowchart LR
 
 ## 5. Source Layout
 
+See the [Codebase Guide](CODEBASE.en.md) for file groups, reading order, and change entry points, and the [script guide](../scripts/README.en.md) for development tools.
+
 | Source | Responsibility |
 | --- | --- |
 | `main.go` | CLI, configuration, service startup, and graceful shutdown |

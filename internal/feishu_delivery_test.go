@@ -22,7 +22,7 @@ func TestFeishuWebhookAcknowledgementAndSignature(t *testing.T) {
 		status               int
 	}{
 		{"success", `{"code":0}`, "", 200},
-		{"legacy-success", `{"StatusCode":0}`, "", 200},
+		{"status-code-success", `{"StatusCode":0}`, "", 200},
 		{"rejected", `{"code":19021}`, "CHANNEL_REJECTED", 200},
 		{"bad-response", `{"message":"ok"}`, "SEND_OUTCOME_UNKNOWN", 200},
 		{"interrupted-response", `{"code":`, "SEND_OUTCOME_UNKNOWN", 200},
@@ -60,7 +60,7 @@ func TestFeishuWebhookAcknowledgementAndSignature(t *testing.T) {
 			settings.Channel.Kind = "feishu-webhook"
 			settings.Channel.WebhookURL, settings.Channel.WebhookSecret = stringPointer(server.URL), stringPointer("webhook-secret")
 			store := testStore(t, settings)
-			delivery := NewFeishuDelivery(store, nil, nil).(*FeishuDelivery)
+			delivery := newFeishuDelivery(store.Settings.Channel, store, nil, nil).(*FeishuDelivery)
 			receipt, err := delivery.webhook(context.Background(), "notification-id", "private review")
 			if err != nil && errorCode(err) != test.code || err == nil && test.code != "" {
 				t.Fatalf("Webhook outcome: receipt=%s err=%v", receipt, err)
@@ -102,9 +102,9 @@ func TestFeishuPushRechecksSourcesAndReceiptIdentity(t *testing.T) {
 		t.Fatal(err)
 	}
 	platform := &reviewDeliveryPlatform{}
-	events := NewFeishuService(store, reviews.Source, NewRecordService(store, reviews.Source), reviews, nil)
+	events := NewFeishuService(store, reviews.Source, NewRecordService(store, reviews.Source), nil)
 	events.Client = platform
-	delivery := NewFeishuDelivery(store, reviews, events)
+	delivery := newFeishuDelivery(store.Settings.Channel, store, reviews, events)
 	queue := NewNotificationService(store, reviews, delivery)
 	id, err := queue.enqueue("review", "source-recheck", batch.Date, &batch.ID, nil)
 	if err != nil {
@@ -121,7 +121,7 @@ func TestFeishuPushRechecksSourcesAndReceiptIdentity(t *testing.T) {
 		t.Fatalf("push leaked stale content or used a different identity: %s %v", platform.text, err)
 	}
 	var bodyID string
-	if err := store.state.QueryRow(`SELECT notification_id FROM feishu_review_parts
+	if err := store.state.QueryRow(`SELECT notification_id FROM review_delivery_parts
 		WHERE root_id = ? AND kind = 'text' ORDER BY position LIMIT 1`, id).Scan(&bodyID); err != nil {
 		t.Fatal(err)
 	}
@@ -204,9 +204,9 @@ func TestFeishuReviewFullTextQueueResumeAndUnknown(t *testing.T) {
 		raw["updateTime"] = "2020-01-01T00:30:00Z"
 	}
 	platform := &reviewDeliveryPlatform{}
-	events := NewFeishuService(store, reviews.Source, nil, reviews, nil)
+	events := NewFeishuService(store, reviews.Source, nil, nil)
 	events.Client = platform
-	transport := NewFeishuDelivery(store, reviews, events)
+	transport := newFeishuDelivery(store.Settings.Channel, store, reviews, events)
 	queue := NewNotificationService(store, reviews, transport)
 	ctx := context.Background()
 	batch, err := reviews.Daily(ctx, time.Date(2026, 10, 26, 2, 0, 0, 0, time.UTC))
@@ -229,7 +229,7 @@ func TestFeishuReviewFullTextQueueResumeAndUnknown(t *testing.T) {
 		t.Fatalf("unknown part was not isolated: %+v", unknown)
 	}
 	// A new queue/transport models a worker restart; durable state owns progress.
-	queue = NewNotificationService(store, reviews, NewFeishuDelivery(store, reviews, events))
+	queue = NewNotificationService(store, reviews, newFeishuDelivery(store.Settings.Channel, store, reviews, events))
 	if err := queue.recover(); err != nil {
 		t.Fatal(err)
 	}
@@ -268,7 +268,7 @@ func TestFeishuReviewFullTextQueueResumeAndUnknown(t *testing.T) {
 		seen[uuid] = true
 	}
 	var root string
-	if err := store.state.QueryRow(`SELECT root_id FROM feishu_review_parts WHERE notification_id = ?`, id).Scan(&root); err != nil || root != id {
+	if err := store.state.QueryRow(`SELECT root_id FROM review_delivery_parts WHERE notification_id = ?`, id).Scan(&root); err != nil || root != id {
 		t.Fatalf("missing durable source references: %v", err)
 	}
 	pending, _ := queue.List("pending")
@@ -284,9 +284,9 @@ func TestFeishuReviewEmptyAndSourceOutage(t *testing.T) {
 			store := reviews.Store
 			store.Settings.Channel = feishuSettings(t).Channel
 			platform := &reviewDeliveryPlatform{}
-			events := NewFeishuService(store, reviews.Source, nil, reviews, nil)
+			events := NewFeishuService(store, reviews.Source, nil, nil)
 			events.Client = platform
-			transport := NewFeishuDelivery(store, reviews, events)
+			transport := newFeishuDelivery(store.Settings.Channel, store, reviews, events)
 			queue := NewNotificationService(store, reviews, transport)
 			ctx := context.Background()
 			batch, err := reviews.Daily(ctx, time.Date(2026, 10, 26, 2, 0, 0, 0, time.UTC))
@@ -358,7 +358,7 @@ func TestFeishuWebhookFullTextIgnoresAttachments(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	queue := NewNotificationService(store, reviews, NewFeishuDelivery(store, reviews, nil))
+	queue := NewNotificationService(store, reviews, newFeishuDelivery(store.Settings.Channel, store, reviews, nil))
 	if _, err := queue.enqueue("review", "webhook-text", batch.Date, &batch.ID, nil); err != nil {
 		t.Fatal(err)
 	}
@@ -392,9 +392,9 @@ func TestFeishuReviewSourceChangeCancelsOldPartsAndContinues(t *testing.T) {
 		raw["content"] = name + "\n" + strings.Repeat("完整正文🙂\n", 3000)
 	}
 	platform := &reviewDeliveryPlatform{}
-	events := NewFeishuService(store, reviews.Source, nil, reviews, nil)
+	events := NewFeishuService(store, reviews.Source, nil, nil)
 	events.Client = platform
-	queue := NewNotificationService(store, reviews, NewFeishuDelivery(store, reviews, events))
+	queue := NewNotificationService(store, reviews, newFeishuDelivery(store.Settings.Channel, store, reviews, events))
 	ctx := context.Background()
 	batch, err := reviews.Daily(ctx, time.Date(2026, 10, 26, 2, 0, 0, 0, time.UTC))
 	if err != nil || len(batch.Items) != 3 {
@@ -449,9 +449,9 @@ func TestFeishuReviewReceiptsCannotCrossNotifications(t *testing.T) {
 	store.Settings.Channel = feishuSettings(t).Channel
 	store.Settings.Notifications.Enabled = true
 	platform := &reviewDeliveryPlatform{}
-	events := NewFeishuService(store, reviews.Source, nil, reviews, nil)
+	events := NewFeishuService(store, reviews.Source, nil, nil)
 	events.Client = platform
-	transport := NewFeishuDelivery(store, reviews, events)
+	transport := newFeishuDelivery(store.Settings.Channel, store, reviews, events)
 	queue := NewNotificationService(store, reviews, transport)
 	ctx := context.Background()
 	batch, err := reviews.Daily(ctx, time.Now())

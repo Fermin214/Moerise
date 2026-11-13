@@ -7,7 +7,7 @@ const snapshot = {
   settings: {
     timezone: 'Asia/Hong_Kong',
     review: { count: 3, min_age_hours: 72, recent_days: 7, include_archived: false },
-    notifications: { enabled: false, time: '09:00', times: ['09:00'] },
+    notifications: { enabled: false, times: ['09:00'] },
     llm: { enabled: false, model: null },
     embedding: { enabled: false, dimensions: 1024 },
     channel: { kind: 'none', app_id: null },

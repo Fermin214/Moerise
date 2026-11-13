@@ -2,6 +2,7 @@
 !go.mod
 !go.sum
 !main.go
+!LICENSE
 !internal/
 !internal/**
 **/*_test.go

@@ -17,6 +17,8 @@
 | Architecture / 产品架构 | [Guide](PRODUCT-ARCHITECTURE.en.md) | [指南](PRODUCT-ARCHITECTURE.md) |
 | System Design / 系统设计 | [Guide](DESIGN.en.md) | [指南](DESIGN.md) |
 | API v1 | [Specification](API-V1.en.md) | [规范](API-V1.md) |
+| Codebase / 代码导览 | [Guide](CODEBASE.en.md) | [指南](CODEBASE.md) |
+| Scripts / 开发脚本 | [Guide](../scripts/README.en.md) | [指南](../scripts/README.md) |
 | Development / 开发指南 | [Guide](DEVELOPMENT.en.md) | [指南](DEVELOPMENT.md) |
 | Contributing / 参与贡献 | [Guide](../CONTRIBUTING.md) | [指南](../CONTRIBUTING.zh-CN.md) |
 | Roadmap / 路线图 | [Roadmap](ROADMAP.en.md) | [路线图](ROADMAP.md) |

@@ -116,6 +116,8 @@ docker compose up -d --build
 | | [检索系统](docs/SEARCH.md) | FTS5 中文关键词分词、余弦相似度检索与 RRF 融合排序 |
 | | [系统设置](docs/SETTINGS.md) | 版本化动态设置、敏感凭据加密与热生效机制 |
 | **架构与开发** | [产品架构](docs/PRODUCT-ARCHITECTURE.md) | 模块设计、数据边界、状态划分与单用户安全边界 |
+| | [代码导览](docs/CODEBASE.md) | 源码入口、目录职责与修改指引 |
+| | [开发脚本](scripts/README.md) | 联合验收、性能基准与质量评测 |
 | | [系统设计](docs/DESIGN.md) | Web 集成设计与前后端通信规范 |
 | | [API 规范](docs/API-V1.md) | 客户端 `/api/app/v1` 与开放机器 `/api/ext/v1`、`/mcp` 接口契约 |
 | | [开发指南](docs/DEVELOPMENT.md) | 本地研发环境配置、测试执行与代码检查 |

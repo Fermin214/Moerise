@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/rand"
 	"database/sql"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -43,6 +44,14 @@ func randomToken() string {
 		panic(err)
 	}
 	return hex.EncodeToString(data[:])
+}
+
+func randomStateKey() string {
+	var data [32]byte
+	if _, err := rand.Read(data[:]); err != nil {
+		panic(err)
+	}
+	return base64.StdEncoding.EncodeToString(data[:])
 }
 
 func docker(t *testing.T, args ...string) string {
@@ -280,7 +289,7 @@ func newHarnessWithUpstream(t *testing.T, decorate func(string) string) *harness
 	s.StateDir, s.IndexDir = filepath.Join(root, "state"), filepath.Join(root, "index")
 	s.Sync.PollSeconds, s.Sync.FullSeconds = 60, 300
 	h.reader, h.operator = randomToken(), randomToken()
-	s.AccessTokens = []moerise.AccessToken{{Name: "reader", Token: h.reader, Scopes: []string{"notes:read"}}, {Name: "operator", Token: h.operator, Scopes: []string{"notes:read", "notes:write", "sync:read", "sync:write"}}}
+	s.AccessTokens = []moerise.AccessToken{{Name: "reader", Token: h.reader, Scopes: []string{"notes:read"}}, {Name: "operator", Token: h.operator, Scopes: []string{"notes:read", "sync:read"}}}
 	s.CursorSecret = randomToken()
 	h.settings, h.upstream = s, pat
 	h.config = filepath.Join(root, "config.json")
@@ -438,7 +447,7 @@ func TestMemosAcceptance(t *testing.T) {
 	t.Log("PASS source outage and process restart recovery")
 
 	db := h.database("state")
-	if _, err := db.Exec("INSERT INTO product_state VALUES (?, 'acceptance', 'marker', '1', '2026-10-25')", h.settings.Memos.InstanceID); err != nil {
+	if _, err := db.Exec("INSERT INTO notification_rate_limits VALUES (?, 1)", h.settings.Memos.InstanceID); err != nil {
 		t.Fatal(err)
 	}
 	db.Close()
@@ -449,7 +458,7 @@ func TestMemosAcceptance(t *testing.T) {
 		t.Fatal("live restore was not blocked")
 	}
 	db = h.database("state")
-	if _, err := db.Exec("UPDATE product_state SET value_json='2' WHERE namespace='acceptance'"); err != nil {
+	if _, err := db.Exec("UPDATE notification_rate_limits SET retry_at=2"); err != nil {
 		t.Fatal(err)
 	}
 	db.Close()
@@ -459,7 +468,7 @@ func TestMemosAcceptance(t *testing.T) {
 	h.ready()
 	db = h.database("state")
 	var value string
-	if err := db.QueryRow("SELECT value_json FROM product_state WHERE namespace='acceptance'").Scan(&value); err != nil {
+	if err := db.QueryRow("SELECT CAST(retry_at AS INTEGER) FROM notification_rate_limits").Scan(&value); err != nil {
 		t.Fatal(err)
 	}
 	db.Close()
@@ -472,7 +481,7 @@ func TestMemosAcceptance(t *testing.T) {
 	h.start()
 	h.ready()
 	db = h.database("state")
-	if err := db.QueryRow("SELECT value_json FROM product_state WHERE namespace='acceptance'").Scan(&value); err != nil {
+	if err := db.QueryRow("SELECT CAST(retry_at AS INTEGER) FROM notification_rate_limits").Scan(&value); err != nil {
 		t.Fatal(err)
 	}
 	db.Close()

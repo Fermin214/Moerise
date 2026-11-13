@@ -116,6 +116,8 @@ Once running, navigate to `http://localhost:3000` and sign in using your Memos u
 | | [Search Engine](docs/SEARCH.en.md) | FTS5 full-text search, cosine similarity, and RRF fusion |
 | | [System Settings](docs/SETTINGS.en.md) | Versioned runtime settings and credential encryption |
 | **Architecture** | [Product Architecture](docs/PRODUCT-ARCHITECTURE.en.md) | Component responsibilities, dual-database model, and boundaries |
+| | [Codebase Guide](docs/CODEBASE.en.md) | Source entry points, directory responsibilities, and change guidance |
+| | [Development Scripts](scripts/README.en.md) | Cross-service acceptance, benchmarks, and quality evaluation |
 | | [System Design](docs/DESIGN.en.md) | Web integration, API boundaries, and communication architecture |
 | | [API Specification](docs/API-V1.en.md) | Client API `/api/app/v1`, machine REST `/api/ext/v1`, and `/mcp` |
 | | [Development Guide](docs/DEVELOPMENT.en.md) | Local development workflow, test suites, and verification |

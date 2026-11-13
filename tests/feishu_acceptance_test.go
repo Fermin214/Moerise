@@ -118,11 +118,12 @@ func TestFeishuProactiveReviewWithRealMemosAcceptance(t *testing.T) {
 	settings := h.settings
 	settings.StateDir, settings.IndexDir = filepath.Join(h.root, "push-state"), filepath.Join(h.root, "push-index")
 	settings.Review.MinAgeHours = 0
-	settings.Notifications.Enabled, settings.Notifications.Time = true, "00:00"
+	settings.Notifications.Enabled, settings.Notifications.Times = true, []string{"00:00"}
 	settings.AccessTokens[0].Scopes = append(settings.AccessTokens[0].Scopes, "reviews:read")
-	settings.AccessTokens[1].Scopes = append(settings.AccessTokens[1].Scopes, "reviews:read", "reviews:write")
+	settings.AccessTokens[1].Scopes = append(settings.AccessTokens[1].Scopes, "reviews:read")
 	pointer := func(value string) *string { return &value }
 	settings.Channel.Kind = "feishu-app"
+	settings.Web.StateEncryptionKey = randomStateKey()
 	settings.Channel.AppID, settings.Channel.AppSecret = pointer("cli_acceptance"), pointer(strings.Repeat("s", 32))
 	settings.Channel.VerificationToken, settings.Channel.UserOpenID = pointer(strings.Repeat("v", 32)), pointer("ou_owner")
 	if err := settings.Validate(); err != nil {
@@ -254,11 +255,6 @@ func TestFeishuProactiveReviewWithRealMemosAcceptance(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, item := range batch.Items {
-		if item.OpenedAt != nil || item.SkippedAt != nil {
-			t.Fatal("sending a review changed reading history")
-		}
-	}
 	if count, err := api.Notifications.Schedule(ctx, now); err != nil || count != 0 {
 		t.Fatal("repeated scheduling duplicated the notification")
 	}
@@ -270,9 +266,10 @@ func TestFeishuEventsWithRealMemosAcceptance(t *testing.T) {
 	settings.StateDir, settings.IndexDir = filepath.Join(h.root, "feishu-state"), filepath.Join(h.root, "feishu-index")
 	settings.Review.MinAgeHours = 0
 	settings.AccessTokens[0].Scopes = append(settings.AccessTokens[0].Scopes, "reviews:read")
-	settings.AccessTokens[1].Scopes = append(settings.AccessTokens[1].Scopes, "reviews:read", "reviews:write")
+	settings.AccessTokens[1].Scopes = append(settings.AccessTokens[1].Scopes, "reviews:read")
 	pointer := func(value string) *string { return &value }
 	settings.Channel.Kind = "feishu-app"
+	settings.Web.StateEncryptionKey = randomStateKey()
 	settings.Channel.AppID, settings.Channel.AppSecret = pointer("cli_acceptance"), pointer(strings.Repeat("s", 32))
 	settings.Channel.VerificationToken, settings.Channel.UserOpenID = pointer(strings.Repeat("v", 32)), pointer("ou_owner")
 	source := moerise.NewMemosClient(settings.Memos)

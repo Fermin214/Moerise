@@ -7,7 +7,6 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"reflect"
 	"strconv"
 	"strings"
@@ -385,105 +384,4 @@ func TestMemosLiveRejectsBrokenScan(t *testing.T) {
 			}
 		})
 	}
-}
-
-// 独立列表协议探针向此测试传入临时凭据。
-func TestMemosLiveRealProtocol(t *testing.T) {
-	address := os.Getenv("MOERISE_LIVE_PROBE_URL")
-	if address == "" {
-		t.Skip("requires the isolated list protocol probe")
-	}
-	settings := DefaultSettings().Memos
-	settings.BaseURL, settings.User, settings.Token = address, os.Getenv("MOERISE_LIVE_PROBE_USER"), os.Getenv("MOERISE_LIVE_PROBE_TOKEN")
-	settings.InstanceID, settings.PageSize = "isolated-live-probe", 2
-	client := NewMemosClient(settings)
-	defer client.Close()
-	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
-	defer cancel()
-	if version, err := client.Identity(ctx); err != nil || version != "0.31.0" {
-		t.Fatalf("identity: %q %v", version, err)
-	}
-	all := []string{}
-	token := ""
-	for page := 0; ; page++ {
-		if page > 10 {
-			t.Fatal("live cursor failed to terminate")
-		}
-		items, next, err := client.ListLivePage(ctx, "NORMAL", 2, token)
-		if err != nil {
-			t.Fatal(err)
-		}
-		for _, memo := range items {
-			if memo.Creator != settings.User || memo.State != "NORMAL" {
-				t.Fatalf("scope leak: %s %s", memo.Name, memo.Creator)
-			}
-		}
-		all = append(all, liveProbeNames(items)...)
-		if next == "" {
-			break
-		}
-		token = next
-	}
-	want := []string{"memos/new-front-probe", "memos/z-probe", "memos/y-probe", "memos/m-probe", "memos/b-probe", "memos/a-probe", "memos/old-pinned-probe"}
-	if !reflect.DeepEqual(all, want) {
-		t.Fatalf("live created_desc: got %v, want %v", all, want)
-	}
-	archived, next, err := client.ListLivePage(ctx, "ARCHIVED", 2, "")
-	if err != nil || next != "" || !reflect.DeepEqual(liveProbeNames(archived), []string{"memos/archived-probe"}) {
-		t.Fatalf("archived scope: %v %q %v", liveProbeNames(archived), next, err)
-	}
-	// 修改分页大小沿用相同的键值边界。
-	first, next, err := client.ListLivePage(ctx, "NORMAL", 1, "")
-	if err != nil || next == "" {
-		t.Fatalf("page size setup: %v %q %v", first, next, err)
-	}
-	rest, _, err := client.ListLivePage(ctx, "NORMAL", 20, next)
-	if err != nil || !reflect.DeepEqual(liveProbeNames(rest), want[1:]) {
-		t.Fatalf("page size continuation: %v %v", liveProbeNames(rest), err)
-	}
-	_, continuation, err := client.ListLivePage(ctx, "NORMAL", 2, "")
-	if err != nil || continuation == "" {
-		t.Fatalf("mutation setup: %q %v", continuation, err)
-	}
-	var response map[string]any
-	for _, name := range []string{"memos/new-front-probe", "memos/z-probe"} {
-		if err := client.do(ctx, http.MethodDelete, "/api/v1/"+name, nil, nil, &response); err != nil {
-			t.Fatal(err)
-		}
-	}
-	for _, item := range []struct{ name, created string }{
-		{"after-live-first", "2027-01-01T00:00:00Z"},
-		{"w-live", "2026-01-02T00:00:00Z"},
-		{"zz-live", "2026-01-02T00:00:00Z"},
-	} {
-		if _, err := client.Create(ctx, "memos/"+item.name, item.name); err != nil {
-			t.Fatal(err)
-		}
-		payload, _ := json.Marshal(map[string]string{"createTime": item.created})
-		if err := client.do(ctx, http.MethodPatch, "/api/v1/memos/"+item.name,
-			map[string][]string{"updateMask": {"create_time"}}, payload, &response); err != nil {
-			t.Fatal(err)
-		}
-	}
-	remaining := []string{}
-	for page := 0; continuation != ""; page++ {
-		if page > 10 {
-			t.Fatal("mutation continuation failed to terminate")
-		}
-		items, next, err := client.ListLivePage(ctx, "NORMAL", 2, continuation)
-		if err != nil {
-			t.Fatal(err)
-		}
-		remaining = append(remaining, liveProbeNames(items)...)
-		continuation = next
-	}
-	if want := []string{"memos/y-probe", "memos/w-live", "memos/m-probe", "memos/b-probe", "memos/a-probe", "memos/old-pinned-probe"}; !reflect.DeepEqual(remaining, want) {
-		t.Fatalf("mutation continuation: got %v, want %v", remaining, want)
-	}
-	refreshed, _, err := client.ListLivePage(ctx, "NORMAL", 2, "")
-	if err != nil || !reflect.DeepEqual(liveProbeNames(refreshed), []string{"memos/after-live-first", "memos/zz-live"}) {
-		t.Fatalf("mutation refresh: %v %v", liveProbeNames(refreshed), err)
-	}
-	t.Logf("real protocol: %d normal, %d archived; resource-name ties, pinning, edit and author isolation passed", len(all), len(archived))
-	t.Log("real mutation: newer and equal-time insertions, returned-item deletions and first-page refresh passed")
 }

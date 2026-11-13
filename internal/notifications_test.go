@@ -37,7 +37,7 @@ func notificationFixture(t *testing.T) (*NotificationService, *notificationPlatf
 	t.Helper()
 	reviews, _ := reviewFixture(t, 12)
 	reviews.Store.Settings.Notifications.Enabled = true
-	reviews.Store.Settings.Notifications.Time = "09:00"
+	reviews.Store.Settings.Notifications.Times = []string{"09:00"}
 	platform := &notificationPlatform{}
 	return NewNotificationService(reviews.Store, reviews, platform), platform
 }
@@ -77,14 +77,9 @@ func TestNotificationDatesAndIndependentOpenState(t *testing.T) {
 	if len(sent) != 1 || sent[0].Receipt == nil {
 		t.Fatal("send result was not persisted")
 	}
-	batch, err := service.Reviews.Get(ctx, *sent[0].BatchID)
+	_, err = service.Reviews.Get(ctx, *sent[0].BatchID)
 	if err != nil {
 		t.Fatal(err)
-	}
-	for _, item := range batch.Items {
-		if item.OpenedAt != nil || item.SkippedAt != nil {
-			t.Fatal("notification success changed reading history")
-		}
 	}
 }
 
@@ -98,7 +93,7 @@ func TestNotificationDSTGapAndRepeatedHour(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			service, _ := notificationFixture(t)
 			service.Store.Settings.Timezone = "America/New_York"
-			service.Store.Settings.Notifications.Time = test.clock
+			service.Store.Settings.Notifications.Times = []string{test.clock}
 			parse := func(value string) time.Time {
 				at, err := time.Parse(time.RFC3339, value)
 				if err != nil {
@@ -156,33 +151,6 @@ func TestDailyReviewWithoutPushAndMultipleSlots(t *testing.T) {
 	restarted := NewNotificationService(service.Store, service.Reviews, platform)
 	if count, err := restarted.Schedule(ctx, at.Add(4*time.Hour)); err != nil || count != 0 {
 		t.Fatalf("restart duplicated a processed slot: %d %v", count, err)
-	}
-}
-
-func TestScheduleUsesLatestReplacementWithinSecond(t *testing.T) {
-	service, _ := notificationFixture(t)
-	ctx := context.Background()
-	at := time.Date(2026, 10, 28, 2, 0, 0, 0, time.UTC)
-	seedLegacyReview(t, service.Reviews, at, "legacy-scheduled", "legacy-rules", 40)
-	var latest ReviewBatch
-	for i, offset := range []time.Duration{500 * time.Millisecond, 510 * time.Millisecond} {
-		latest = seedLegacyReview(t, service.Reviews, at.Add(offset), fmt.Sprintf("scheduled-replace-%d", i), "random-v1", i+1)
-	}
-	memo, err := service.Reviews.Source.Get(ctx, "memos/review-00")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := service.Store.state.Exec(`INSERT INTO review_items
-		(batch_id, position, memo_name, source_hash, selected_at) VALUES (?, 0, ?, ?, ?)`,
-		latest.ID, memo.Name, memo.SourceHash, nowText()); err != nil {
-		t.Fatal(err)
-	}
-	if count, err := service.Schedule(ctx, at.Add(time.Second)); err != nil || count != 1 {
-		t.Fatalf("schedule replacement: %d %v", count, err)
-	}
-	items, err := service.List("")
-	if err != nil || len(items) != 1 || items[0].BatchID == nil || *items[0].BatchID != latest.ID {
-		t.Fatalf("scheduled an earlier batch: %+v %v", items, err)
 	}
 }
 

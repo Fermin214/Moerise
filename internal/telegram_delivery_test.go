@@ -435,19 +435,12 @@ func TestTelegramLongFooterDelivery(t *testing.T) {
 	}
 	var footerID, tailID, rootID string
 	var footerPosition int
-	if err := store.state.QueryRow(`SELECT notification_id, root_id, position FROM feishu_review_parts
+	if err := store.state.QueryRow(`SELECT notification_id, root_id, position FROM review_delivery_parts
 		WHERE kind = 'footer' ORDER BY position LIMIT 1`).Scan(&footerID, &rootID, &footerPosition); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.state.QueryRow(`SELECT notification_id FROM feishu_review_parts
+	if err := store.state.QueryRow(`SELECT notification_id FROM review_delivery_parts
 		WHERE root_id = ? AND position = ?`, rootID, footerPosition+1).Scan(&tailID); err != nil {
-		t.Fatal(err)
-	}
-	// Recreate an unsplit footer and a later part from an older persisted queue.
-	if _, err := store.state.Exec(`UPDATE feishu_review_parts SET byte_start = 0, byte_end = 0 WHERE notification_id = ?`, footerID); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := store.state.Exec(`UPDATE feishu_review_parts SET kind = 'empty', byte_start = 0, byte_end = 0 WHERE notification_id = ?`, tailID); err != nil {
 		t.Fatal(err)
 	}
 	deployment, source := store.Settings, reviews.Source
@@ -472,10 +465,6 @@ func TestTelegramLongFooterDelivery(t *testing.T) {
 	if documents == 0 || len(texts) != 5 || texts[0] != "Daily review" || strings.Join(bodyParts, "") != content ||
 		strings.Join(texts[3:], "") != "#"+strings.Repeat("tag", 1800)+"  Created on 2020-01-01" {
 		t.Fatal("long Telegram footer was truncated, reordered or left pending")
-	}
-	legacy, err := delivery.reviewDelivery().reviewFooterText(reviewDeliveryPart{Kind: "footer"}, *batch.Items[0].Note)
-	if err != nil || legacy != strings.Join(texts[3:], "") {
-		t.Fatal("existing footer parts no longer render the entire footer")
 	}
 	if detail, err := queue.Detail(tailID); err != nil || detail.Notification.Status != "sent" {
 		t.Fatal("splitting the persisted footer blocked its successor")

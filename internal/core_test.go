@@ -22,7 +22,7 @@ func testSettings(t *testing.T) Settings {
 	s := DefaultSettings()
 	s.Memos.InstanceID, s.Memos.BaseURL, s.Memos.PublicURL = "unit-instance", "http://memos:5230", "https://memos.example.com"
 	s.Memos.User, s.Memos.Token, s.Memos.PageSize = "users/owner", strings.Repeat("u", 40), 2
-	s.AccessTokens = []AccessToken{{"reader", strings.Repeat("r", 40), []string{"notes:read"}}, {"operator", strings.Repeat("o", 40), []string{"notes:read", "sync:read", "sync:write"}}}
+	s.AccessTokens = []AccessToken{{"reader", strings.Repeat("r", 40), []string{"notes:read"}}, {"operator", strings.Repeat("o", 40), []string{"notes:read", "sync:read"}}}
 	s.CursorSecret, s.StateDir, s.IndexDir = strings.Repeat("c", 40), filepath.Join(root, "state"), filepath.Join(root, "index")
 	if err := s.Validate(); err != nil {
 		t.Fatal(err)
@@ -245,72 +245,6 @@ func TestMergeRetryAndRestart(t *testing.T) {
 	next, _ = again.Job(next.ID)
 	if restored.Result["merged_into"] != next.ID || next.Mode != "full" {
 		t.Fatal("restart lost full repair intent")
-	}
-}
-
-func TestStateAndBackupCompatibility(t *testing.T) {
-	s := testSettings(t)
-	s.Memos.InstanceID = "legacy-instance"
-	fixture := filepath.Join("testdata", "backup-v1")
-	if err := Restore(s, fixture, filepath.Join(t.TempDir(), "unused")); err != nil {
-		t.Fatal(err)
-	}
-	store := testStore(t, s)
-	var history string
-	if err := store.state.QueryRow("SELECT value_json FROM product_state WHERE namespace = 'review'").Scan(&history); err != nil || !strings.Contains(history, "memos/example") {
-		t.Fatalf("backup history lost: %v", err)
-	}
-	backupDir := filepath.Join(t.TempDir(), "snapshot")
-	if _, err := Backup(s, backupDir); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := store.state.Exec("DELETE FROM product_state"); err != nil {
-		t.Fatal(err)
-	}
-	store.Close()
-	if err := Restore(s, backupDir, filepath.Join(t.TempDir(), "safety")); err != nil {
-		t.Fatal(err)
-	}
-	again := testStore(t, s)
-	status, _ := again.Status()
-	names, _ := again.Names()
-	if status.Watermark != nil || len(names) != 0 {
-		t.Fatal("restore did not request a fresh index")
-	}
-	if err := again.state.QueryRow("SELECT value_json FROM product_state").Scan(&history); err != nil {
-		t.Fatal(err)
-	}
-	again.Close()
-	if err := Restore(s, backupDir, filepath.Join(t.TempDir(), "safety-again")); err != nil {
-		t.Fatal(err)
-	}
-	entries, err := os.ReadDir(backupDir)
-	if err != nil || len(entries) != 2 {
-		t.Fatal("restore modified its backup")
-	}
-}
-
-func TestOpenDatabaseRecoversRunningTask(t *testing.T) {
-	settings := testSettings(t)
-	settings.Memos.InstanceID = "legacy-instance"
-	if err := os.MkdirAll(settings.StateDir, 0700); err != nil {
-		t.Fatal(err)
-	}
-	data, err := os.ReadFile(filepath.Join("testdata", "backup-v1", "state.sqlite3"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(settings.StateDir, "state.sqlite3"), data, 0600); err != nil {
-		t.Fatal(err)
-	}
-	store := testStore(t, settings)
-	status, err := store.Status()
-	if err != nil || len(status.Jobs) != 1 || status.Jobs[0].Status != "pending" || status.Jobs[0].Count != 1 {
-		t.Fatalf("persisted task not recovered: %+v %v", status.Jobs, err)
-	}
-	job, err := store.Claim()
-	if err != nil || job == nil || job.Mode != "full" {
-		t.Fatalf("persisted repair intent lost: %+v %v", job, err)
 	}
 }
 

@@ -4,7 +4,6 @@ package acceptance
 
 import (
 	"bytes"
-	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -28,10 +27,8 @@ import (
 func managedClient(t *testing.T, h *harness) *clientHarness {
 	t.Helper()
 	h.stop()
-	key := make([]byte, 32)
-	_, _ = rand.Read(key)
 	h.settings.Web = moerise.WebConfig{Enabled: true, PublicOrigin: h.base,
-		StateEncryptionKey: base64.StdEncoding.EncodeToString(key)}
+		StateEncryptionKey: randomStateKey()}
 	data, _ := json.Marshal(h.settings)
 	if err := os.WriteFile(h.config, data, 0600); err != nil {
 		t.Fatal(err)

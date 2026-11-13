@@ -16,10 +16,10 @@ function settings() {
     version: 1, default_insight_prompt: '内置默认洞察 Prompt',
     settings: {
       timezone: 'Asia/Hong_Kong',
-      review: { count: 3, min_age_hours: 72, recent_days: 7, topic_limit: 0, include_archived: false },
-      notifications: { enabled: false, time: '09:00' },
+      review: { count: 3, min_age_hours: 72, recent_days: 7, include_archived: false },
+      notifications: { enabled: false, times: ['09:00'] },
       llm: { enabled: false, protocol: 'openai-compatible', base_url: null, model: null, timeout_seconds: 90,
-        max_concurrency: 2, max_retries: 2, max_output_tokens: 2048, context_bytes: 24000 },
+        max_concurrency: 2, max_retries: 2, max_output_tokens: 2048 },
       embedding: { enabled: false, provider: 'bailian', protocol: 'dashscope', base_url: null,
         model: 'qwen3.7-text-embedding', dimensions: 1024, send_dimensions: false, batch_size: 20, timeout_seconds: 30,
         max_concurrency: 2, max_retries: 2, query_instruction: null },

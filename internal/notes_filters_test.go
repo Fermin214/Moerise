@@ -180,37 +180,6 @@ func TestNotesFilteredFallbackAcrossPagesAndCursorBinding(t *testing.T) {
 	}
 }
 
-func TestNotesUnfilteredCursorCompatibility(t *testing.T) {
-	f := newNotesLiveHTTPFixture(t)
-	first, err := f.service.ListLive(t.Context(), NoteList{PageSize: 1})
-	if err != nil || first.NextPageToken == "" {
-		t.Fatalf("cursor setup: %+v %v", first, err)
-	}
-	var cursor liveListCursor
-	if err := f.service.readCursor(first.NextPageToken, &cursor); err != nil {
-		t.Fatal(err)
-	}
-	legacy := cursor
-	legacy.Filter = ""
-	legacyToken := f.service.signCursor(legacy)
-	for _, token := range []string{first.NextPageToken, legacyToken} {
-		service := *f.service
-		service.Settings.Timezone = "America/New_York"
-		page, err := service.ListLive(t.Context(), NoteList{
-			PageSize: 2, PageToken: token, Query: "  ", Tags: []string{},
-		})
-		if err != nil || !reflect.DeepEqual(notesLivePageNames(page), []string{"memos/a"}) || page.NextPageToken != "" {
-			t.Fatalf("equivalent default filters or page size invalidated cursor: %+v %v", page, err)
-		}
-	}
-	before := f.requestCount()
-	if _, err := f.service.ListLive(t.Context(), NoteList{
-		PageToken: legacyToken, Query: "needle",
-	}); errorCode(err) != "INVALID_PAGE_TOKEN" || f.requestCount() != before {
-		t.Fatalf("legacy unfiltered cursor escaped its scope: %v", err)
-	}
-}
-
 func TestNotesFilteredFreshConditions(t *testing.T) {
 	for _, change := range []func(*Memo){
 		func(m *Memo) { m.Content = "changed" },

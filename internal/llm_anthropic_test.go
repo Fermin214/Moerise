@@ -21,7 +21,7 @@ const anthropicTestJSON = `{"type":"message","role":"assistant","model":"test-mo
 func anthropicTestConfig(base string) LLMConfig {
 	key, model := "test-key", "test-model"
 	return LLMConfig{Enabled: true, Protocol: "anthropic", BaseURL: &base, APIKey: &key, Model: &model,
-		TimeoutSeconds: 5, MaxConcurrency: 1, MaxRetries: 1, MaxOutputTokens: 256, ContextBytes: 4096}
+		TimeoutSeconds: 5, MaxConcurrency: 1, MaxRetries: 1, MaxOutputTokens: 256}
 }
 
 func anthropicTestProvider(t *testing.T, config LLMConfig) *anthropicLLMClient {
@@ -141,7 +141,7 @@ func TestAnthropicLLMRequest(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			aiAPIValidateJSON(t, clientChatSchema(t, "LLMUsage"), usageJSON)
+			validateAPISchema(t, clientChatSchema(t, "LLMUsage"), usageJSON)
 		})
 	}
 }

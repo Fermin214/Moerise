@@ -81,43 +81,6 @@ func replaceSearchMemo(tx *sql.Tx, settings Settings, memo Memo) error {
 	return nil
 }
 
-func (s *Store) prepareSearchIndex() error {
-	return transaction(s.index, func(tx *sql.Tx) error {
-		rows, err := tx.Query(`SELECT m.payload_json FROM memos m LEFT JOIN search_notes n
-			USING (instance_id, user_name, name) WHERE m.instance_id = ? AND m.user_name = ?
-			AND (n.source_hash IS NULL OR n.source_hash != m.source_hash)`,
-			s.Settings.Memos.InstanceID, s.Settings.Memos.User)
-		if err != nil {
-			return err
-		}
-		var memos []Memo
-		for rows.Next() {
-			var data []byte
-			if err := rows.Scan(&data); err != nil {
-				rows.Close()
-				return err
-			}
-			memo, err := decodeMemo(data)
-			if err != nil {
-				rows.Close()
-				return err
-			}
-			memos = append(memos, memo)
-		}
-		err = rows.Err()
-		rows.Close()
-		if err != nil {
-			return err
-		}
-		for _, memo := range memos {
-			if err := replaceSearchMemo(tx, s.Settings, memo); err != nil {
-				return err
-			}
-		}
-		return nil
-	})
-}
-
 type searchCandidate struct {
 	name, sourceHash string
 	chunk            TextChunk

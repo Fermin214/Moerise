@@ -47,10 +47,9 @@ func TestClientDiscoveryMemosAcceptance(t *testing.T) {
 	h := newHarness(t)
 	h.settings.Review.Count, h.settings.Review.MinAgeHours = 3, 0
 	h.settings.Notifications.Times = []string{"08:00", "20:00"}
-	h.settings.Notifications.Time = "08:00"
 	h.settings.AccessTokens[0].Scopes = append(h.settings.AccessTokens[0].Scopes, "reviews:read")
 	h.settings.AccessTokens[1].Scopes = append(h.settings.AccessTokens[1].Scopes,
-		"reviews:read", "reviews:write", "discovery:write")
+		"reviews:read")
 	c := managedClient(t, h)
 	(&clientHarness{h: h}).call("GET", "/api/app/v1/reviews/daily", nil, 401)
 	for _, path := range []string{"/api/app/v1/reviews/daily", "/api/app/v1/walks/start"} {
@@ -201,23 +200,17 @@ func TestClientDiscoveryMemosAcceptance(t *testing.T) {
 	h.start()
 	c.call("GET", "/api/app/v1/session", nil, 200)
 	assertPlan()
-	for _, path := range []string{"/api/ext/v1/reviews/daily", "/api/ext/v1/reviews/daily/replace",
-		"/api/ext/v1/reviews/" + batch["id"].(string) + "/items/" + strings.TrimPrefix(textNames[0], "memos/") + "/open",
-		"/api/ext/v1/discovery/open"} {
-		h.call(h.base, path, "POST", h.operator, map[string]any{"name": textNames[0]}, 403)
-	}
+	h.call(h.base, "/api/ext/v1/reviews/daily", "POST", h.operator, map[string]any{}, 403)
 	if got := h.call(h.base, "/api/ext/v1/reviews/daily", "GET", h.operator, nil, 200); got["id"] != batch["id"] {
 		t.Fatal("machine reader did not share the fixed plan")
 	}
-	for _, tool := range []string{"get_daily_review", "replace_daily_review", "open_review_memo", "open_discovery_memo"} {
-		result, status, err := h.requestWithHeaders(h.base, "/mcp", "POST", h.operator,
-			map[string]any{"jsonrpc": "2.0", "id": "denied", "method": "tools/call",
-				"params": map[string]any{"name": tool, "arguments": map[string]any{}}},
-			map[string]string{"Accept": "application/json, text/event-stream", "MCP-Protocol-Version": "2025-11-25"})
-		failed, _ := result["result"].(map[string]any)
-		if err != nil || status != 200 || result["error"] == nil && failed["isError"] != true {
-			t.Fatalf("MCP accepted a product write: tool=%s result=%v status=%d err=%v", tool, result, status, err)
-		}
+	result, status, err := h.requestWithHeaders(h.base, "/mcp", "POST", h.operator,
+		map[string]any{"jsonrpc": "2.0", "id": "denied", "method": "tools/call",
+			"params": map[string]any{"name": "unknown_tool", "arguments": map[string]any{}}},
+		map[string]string{"Accept": "application/json, text/event-stream", "MCP-Protocol-Version": "2025-11-25"})
+	failed, _ := result["result"].(map[string]any)
+	if err != nil || status != 200 || result["error"] == nil && failed["isError"] != true {
+		t.Fatalf("MCP accepted an unknown tool: result=%v status=%d err=%v", result, status, err)
 	}
 	c.call("POST", "/api/app/v1/walks/start", map[string]any{}, 503)
 	c.key = "archived-walk-candidate"
@@ -289,8 +282,6 @@ func TestClientDiscoveryMemosAcceptance(t *testing.T) {
 	assertPlan()
 	c.call("POST", "/api/app/v1/walks/start", map[string]any{}, 503)
 	count("SELECT COUNT(*) FROM review_plans", 1)
-	count("SELECT COUNT(*) FROM review_items WHERE opened_at IS NOT NULL OR skipped_at IS NOT NULL", 0)
-	count("SELECT COUNT(*) FROM discovery_reads", 0)
 	oldCookie := c.cookie
 	c.call("DELETE", "/api/app/v1/session", nil, 204)
 	(&clientHarness{h: h, cookie: oldCookie}).call("GET", "/api/app/v1/reviews/daily", nil, 401)

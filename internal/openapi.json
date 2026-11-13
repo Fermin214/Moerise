@@ -46,7 +46,7 @@
     "/api/ext/v1/discovery/walk": {
       "post": {
         "summary": "语义漫步或随机跳转",
-        "description": "continue 和兼容值 angle 在所有正余弦语义候选中等概率选择一条，random 在正常笔记中随机选择起点；均要求已启用且就绪的向量索引。标签和近期阅读不改变权重，同次路径去重，不设固定路径条数上限。候选耗尽与技术资源错误分别返回；输出前复查来源身份和原文，起点变化返回 SOURCE_CHANGED。只读，不登记阅读。",
+        "description": "continue 在所有正余弦语义候选中等概率选择一条，random 在正常笔记中随机选择起点；均要求已启用且就绪的向量索引。标签和近期阅读不改变权重，同次路径去重，不设固定路径条数上限。候选耗尽与技术资源错误分别返回；输出前复查来源身份和原文，起点变化返回 SOURCE_CHANGED。只读，不登记阅读。",
         "security": [
           {
             "HTTPBearer": []
@@ -8497,10 +8497,6 @@
                 "type": "integer",
                 "description": "重复排除期，0 至 3650 天。"
               },
-              "topic_limit": {
-                "type": "integer",
-                "description": "兼容配置字段。"
-              },
               "include_archived": {
                 "type": "boolean"
               }
@@ -8509,7 +8505,6 @@
               "count",
               "min_age_hours",
               "recent_days",
-              "topic_limit",
               "include_archived"
             ]
           },
@@ -8519,10 +8514,6 @@
             "properties": {
               "enabled": {
                 "type": "boolean"
-              },
-              "time": {
-                "type": "string",
-                "description": "有效推送时段中最早的 HH:MM，与 times 的首项一致。"
               },
               "times": {
                 "type": "array",
@@ -8536,8 +8527,7 @@
               }
             },
             "required": [
-              "enabled",
-              "time"
+              "enabled"
             ]
           },
           "llm": {
@@ -8576,11 +8566,6 @@
               },
               "max_output_tokens": {
                 "type": "integer"
-              },
-              "context_bytes": {
-                "type": "integer",
-                "deprecated": true,
-                "description": "仅为旧配置和持久设置兼容保留，不再限制材料、问题或对话。"
               }
             },
             "required": [
@@ -8591,8 +8576,7 @@
               "timeout_seconds",
               "max_concurrency",
               "max_retries",
-              "max_output_tokens",
-              "context_bytes"
+              "max_output_tokens"
             ]
           },
           "embedding": {
@@ -8801,10 +8785,6 @@
                 "type": "integer",
                 "description": "重复排除期，0 至 3650 天。"
               },
-              "topic_limit": {
-                "type": "integer",
-                "description": "兼容配置字段。"
-              },
               "include_archived": {
                 "type": "boolean"
               }
@@ -8816,10 +8796,6 @@
             "properties": {
               "enabled": {
                 "type": "boolean"
-              },
-              "time": {
-                "type": "string",
-                "description": "兼容单时段的 HH:MM；只提交 time 时替换有效时段列表，同时提交非空 times 时以 times 为准。"
               },
               "times": {
                 "type": "array",
@@ -8863,11 +8839,6 @@
               },
               "max_output_tokens": {
                 "type": "integer"
-              },
-              "context_bytes": {
-                "type": "integer",
-                "deprecated": true,
-                "description": "仅为旧配置和持久设置兼容保留，不再限制材料、问题或对话。"
               }
             }
           },
@@ -9190,17 +9161,16 @@
           "name": {
             "type": "string",
             "pattern": "^memos/[a-zA-Z0-9_-]+$",
-            "description": "起点资源；continue/angle 必填，random 可省略。"
+            "description": "起点资源；continue 必填，random 可省略。"
           },
           "mode": {
             "type": "string",
             "enum": [
               "continue",
-              "angle",
               "random"
             ],
             "default": "continue",
-            "description": "continue 和兼容值 angle 均在合格语义候选中随机；random 为随机起点。"
+            "description": "continue 在合格语义候选中随机；random 为随机起点。"
           },
           "path": {
             "type": "array",
@@ -9231,7 +9201,6 @@
             "type": "string",
             "enum": [
               "continue",
-              "angle",
               "random"
             ]
           },
@@ -9537,9 +9506,7 @@
               "type": "string",
               "enum": [
                 "notes:read",
-                "notes:write",
-                "sync:read",
-                "sync:write"
+                "sync:read"
               ]
             },
             "type": "array",
@@ -10097,20 +10064,6 @@
             "type": "string",
             "format": "date-time"
           },
-          "opened_at": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "format": "date-time"
-          },
-          "skipped_at": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "format": "date-time"
-          },
           "unavailable": {
             "type": "boolean"
           },
@@ -10122,8 +10075,6 @@
           "name",
           "selected_source_hash",
           "selected_at",
-          "opened_at",
-          "skipped_at",
           "unavailable"
         ]
       },
@@ -10142,13 +10093,6 @@
           "timezone": {
             "type": "string"
           },
-          "rule_version": {
-            "type": "string"
-          },
-          "sequence": {
-            "type": "integer",
-            "minimum": 1
-          },
           "created_at": {
             "type": "string",
             "format": "date-time"
@@ -10163,15 +10107,13 @@
           "settings_version": {
             "type": "integer",
             "minimum": 0,
-            "description": "计划冻结的产品设置版本；历史批次或缺少版本信息的过渡规则为 0。"
+            "description": "计划冻结的产品设置版本；直接使用部署配置时为 0。"
           }
         },
         "required": [
           "id",
           "date",
           "timezone",
-          "rule_version",
-          "sequence",
           "created_at",
           "items",
           "settings_version"
@@ -10247,7 +10189,7 @@
           "slot_id": {
             "type": "string",
             "format": "uuid",
-            "description": "固定计划的时段分配引用；历史整批通知省略。"
+            "description": "回顾通知所属计划的时段分配引用；回复通知省略。"
           }
         },
         "required": [
@@ -10902,20 +10844,6 @@
             "type": "string",
             "format": "date-time"
           },
-          "opened_at": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "format": "date-time"
-          },
-          "skipped_at": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "format": "date-time"
-          },
           "unavailable": {
             "type": "boolean"
           },
@@ -10927,8 +10855,6 @@
           "name",
           "selected_source_hash",
           "selected_at",
-          "opened_at",
-          "skipped_at",
           "unavailable"
         ]
       },
@@ -10947,13 +10873,6 @@
           "timezone": {
             "type": "string"
           },
-          "rule_version": {
-            "type": "string"
-          },
-          "sequence": {
-            "type": "integer",
-            "minimum": 1
-          },
           "created_at": {
             "type": "string",
             "format": "date-time"
@@ -10968,15 +10887,13 @@
           "settings_version": {
             "type": "integer",
             "minimum": 0,
-            "description": "计划冻结的产品设置版本；历史批次或缺少版本信息的过渡规则为 0。"
+            "description": "计划冻结的产品设置版本；直接使用部署配置时为 0。"
           }
         },
         "required": [
           "id",
           "date",
           "timezone",
-          "rule_version",
-          "sequence",
           "created_at",
           "items",
           "settings_version"
@@ -11022,7 +10939,6 @@
             "type": "string",
             "enum": [
               "continue",
-              "angle",
               "random"
             ]
           },
@@ -11075,7 +10991,7 @@
           "name": {
             "type": "string",
             "pattern": "^memos/[a-zA-Z0-9_-]+$",
-            "description": "起点资源；continue/angle 必填，random 可省略。"
+            "description": "起点资源；continue 必填，random 可省略。"
           },
           "path": {
             "type": "array",
@@ -11235,7 +11151,11 @@
           },
           "preview_kind": {
             "type": "string",
-            "enum": ["", "question", "insight"],
+            "enum": [
+              "",
+              "question",
+              "insight"
+            ],
             "description": "First turn kind; empty for a chat without messages. Clients can localize the insight label without translating user text."
           },
           "version": {
@@ -11281,7 +11201,11 @@
           },
           "preview_kind": {
             "type": "string",
-            "enum": ["", "question", "insight"],
+            "enum": [
+              "",
+              "question",
+              "insight"
+            ],
             "description": "First turn kind; empty for a chat without messages. Clients can localize the insight label without translating user text."
           },
           "version": {
@@ -11407,7 +11331,11 @@
           },
           "language": {
             "type": "string",
-            "enum": ["", "en", "zh-CN"],
+            "enum": [
+              "",
+              "en",
+              "zh-CN"
+            ],
             "description": "Reply language for this request. Omitted or empty values use Simplified Chinese. Included in request_id idempotency checks."
           },
           "content": {

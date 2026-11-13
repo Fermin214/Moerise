@@ -18,10 +18,6 @@ type reviewSlot struct {
 }
 
 func (s *ReviewService) freezePlan(tx *sql.Tx, id, date string, settings Settings) error {
-	var exists bool
-	if err := tx.QueryRow(`SELECT EXISTS(SELECT 1 FROM review_plans WHERE batch_id = ?)`, id).Scan(&exists); err != nil || exists {
-		return err
-	}
 	instance, user := s.binding()
 	version := s.Store.productVersion
 	if previous := settings.daily; previous != nil {
@@ -38,12 +34,7 @@ func (s *ReviewService) freezePlan(tx *sql.Tx, id, date string, settings Setting
 		return err
 	}
 	var count int
-	var queued bool
 	if err := tx.QueryRow(`SELECT COUNT(*) FROM review_items WHERE batch_id = ?`, id).Scan(&count); err != nil {
-		return err
-	}
-	if err := tx.QueryRow(`SELECT EXISTS(SELECT 1 FROM notifications
-		WHERE batch_id = ? AND kind = 'review' AND slot_id IS NULL)`, id).Scan(&queued); err != nil {
 		return err
 	}
 	for ordinal, clock := range clocks {
@@ -51,10 +42,6 @@ func (s *ReviewService) freezePlan(tx *sql.Tx, id, date string, settings Setting
 		allocated := min(settings.Review.Count, count-first)
 		if ordinal == len(clocks)-1 {
 			allocated = count - first
-		}
-		// Legacy queued notifications already own their entire batch.
-		if queued {
-			first, allocated = count, 0
 		}
 		if _, err := tx.Exec(`INSERT INTO review_plan_slots
 			(id, batch_id, ordinal, clock, first_position, item_count) VALUES (?, ?, ?, ?, ?, ?)`,
@@ -84,14 +71,11 @@ func (s *ReviewService) slots(id string) ([]reviewSlot, error) {
 }
 
 func (s *ReviewService) forNotification(ctx context.Context, item Notification) (ReviewBatch, error) {
-	if item.BatchID == nil {
+	if item.BatchID == nil || item.SlotID == nil {
 		return ReviewBatch{}, failure("INVALID_ARGUMENT", "Review notification has no plan", 422, false)
 	}
 	if err := s.verify(ctx); err != nil {
 		return ReviewBatch{}, err
-	}
-	if item.SlotID == nil {
-		return s.load(ctx, *item.BatchID)
 	}
 	var slot reviewSlot
 	err := s.Store.state.QueryRow(`SELECT first_position, item_count FROM review_plan_slots

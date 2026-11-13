@@ -56,9 +56,9 @@ func TestWebConfigurationEnvironmentAndBoundaries(t *testing.T) {
 	}
 }
 
-func TestEnvironmentOverridesAndExplicitReviewMigration(t *testing.T) {
+func TestEnvironmentOverridesAndReviewConfiguration(t *testing.T) {
 	settings := testSettings(t)
-	settings.Review.MinAgeHours, settings.Review.RecentDays, settings.Review.TopicLimit = 48, 14, 1
+	settings.Review.MinAgeHours, settings.Review.RecentDays = 48, 14
 	data, _ := json.Marshal(settings)
 	path := filepath.Join(t.TempDir(), "config.json")
 	if err := os.WriteFile(path, data, 0600); err != nil {
@@ -66,7 +66,7 @@ func TestEnvironmentOverridesAndExplicitReviewMigration(t *testing.T) {
 	}
 	loaded, err := LoadSettings(path)
 	if err != nil || loaded.Review.MinAgeHours != 48 || loaded.Review.RecentDays != 14 {
-		t.Fatalf("explicit legacy durations were replaced: %+v %v", loaded.Review, err)
+		t.Fatalf("explicit review durations were replaced: %+v %v", loaded.Review, err)
 	}
 	t.Setenv("MOERISE_REVIEW_COUNT", "5")
 	t.Setenv("MOERISE_NOTIFICATIONS_TIMES", "18:00, 09:00")

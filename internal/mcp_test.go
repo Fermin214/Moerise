@@ -58,9 +58,9 @@ func mcpReadFixture(t *testing.T) (*API, map[string]map[string]any) {
 	settings := reviews.Store.Settings
 	settings.AccessTokens = append(settings.AccessTokens,
 		AccessToken{"all", strings.Repeat("f", 40), []string{
-			"notes:read", "notes:write", "reviews:read", "reviews:write", "discovery:write", "ai:generate"}},
+			"notes:read", "sync:read", "reviews:read"}},
 		AccessToken{"reviews", strings.Repeat("v", 40), []string{"reviews:read"}},
-		AccessToken{"writes", strings.Repeat("w", 40), []string{"notes:write", "reviews:write", "discovery:write"}})
+		AccessToken{"sync", strings.Repeat("w", 40), []string{"sync:read"}})
 	api, err := NewAPI(NewApp(settings, reviews.Store, reviews.Source))
 	if err != nil {
 		t.Fatal(err)
@@ -70,7 +70,7 @@ func mcpReadFixture(t *testing.T) (*API, map[string]map[string]any) {
 
 func mcpReadResult(t *testing.T, api *API, token, name string, args any) map[string]any {
 	t.Helper()
-	reply := aiMCPCall(t, api, token, "tools/call", map[string]any{"name": name, "arguments": args})
+	reply := callMCP(t, api, token, "tools/call", map[string]any{"name": name, "arguments": args})
 	result, _ := reply["result"].(map[string]any)
 	if reply["error"] != nil || result == nil || result["isError"] == true {
 		t.Fatalf("%s failed: %v", name, reply)
@@ -84,7 +84,7 @@ func mcpReadResult(t *testing.T, api *API, token, name string, args any) map[str
 
 func mcpReadError(t *testing.T, api *API, token, name string, args any, code string) {
 	t.Helper()
-	reply := aiMCPCall(t, api, token, "tools/call", map[string]any{"name": name, "arguments": args})
+	reply := callMCP(t, api, token, "tools/call", map[string]any{"name": name, "arguments": args})
 	result, _ := reply["result"].(map[string]any)
 	if code == "" && (reply["error"] != nil || result["isError"] == true) {
 		return
@@ -97,7 +97,7 @@ func mcpReadError(t *testing.T, api *API, token, name string, args any, code str
 
 func mcpUnknownTool(t *testing.T, api *API, token, name string) {
 	t.Helper()
-	reply := aiMCPCall(t, api, token, "tools/call", map[string]any{"name": name, "arguments": map[string]any{}})
+	reply := callMCP(t, api, token, "tools/call", map[string]any{"name": name, "arguments": map[string]any{}})
 	rpcError, _ := reply["error"].(map[string]any)
 	if rpcError["code"] != float64(-32602) || !strings.Contains(rpcError["message"].(string), "unknown tool") {
 		t.Fatalf("%s reached a tool handler: %v", name, reply)
@@ -117,7 +117,7 @@ func TestMCPReadOnlyDiscoveryAndDirectCalls(t *testing.T) {
 		{strings.Repeat("w", 40), []string{}},
 		{strings.Repeat("f", 40), append(slices.Clone(noteTools), reviewTools...)},
 	} {
-		tools := aiMCPCall(t, api, test.token, "tools/list", map[string]any{})["result"].(map[string]any)["tools"].([]any)
+		tools := callMCP(t, api, test.token, "tools/list", map[string]any{})["result"].(map[string]any)["tools"].([]any)
 		got := []string{}
 		for _, raw := range tools {
 			tool := raw.(map[string]any)
@@ -136,16 +136,13 @@ func TestMCPReadOnlyDiscoveryAndDirectCalls(t *testing.T) {
 		}
 	}
 	for _, token := range []string{strings.Repeat("f", 40), strings.Repeat("w", 40), strings.Repeat("r", 40)} {
-		for _, name := range []string{"get_daily_review", "replace_daily_review", "open_review_memo",
-			"skip_review_memo", "open_discovery_memo", "mark_memo_read", "analyze_memos", "ask_memos", "get_topic_timeline"} {
-			mcpUnknownTool(t, api, token, name)
-		}
+		mcpUnknownTool(t, api, token, "unknown_tool")
 	}
 	for _, name := range []string{"get_memo", "list_memos"} {
 		mcpUnknownTool(t, api, strings.Repeat("w", 40), name)
 	}
 	mcpUnknownTool(t, api, strings.Repeat("r", 40), "read_daily_review")
-	for _, table := range []string{"review_batches", "review_items", "discovery_reads", "note_writes"} {
+	for _, table := range []string{"review_batches", "review_items", "note_writes"} {
 		var count int
 		if err := api.Store.state.QueryRow("SELECT COUNT(*) FROM " + table).Scan(&count); err != nil || count != 0 {
 			t.Fatalf("denied MCP call wrote %s: count=%d err=%v", table, count, err)
@@ -161,7 +158,7 @@ func TestMCPFetchListAndRESTPagination(t *testing.T) {
 	if note["content"] != memos["memos/review-00"]["content"] || note["creator"] != api.Settings.Memos.User {
 		t.Fatalf("direct read returned stale or foreign content: %v", note)
 	}
-	rest := aiAPICall(api, "GET", "/api/ext/v1/notes/review-00", reader, "")
+	rest := externalCall(api, "GET", "/api/ext/v1/notes/review-00", reader, "")
 	var restNote map[string]any
 	if rest.Code != 200 || json.Unmarshal(rest.Body.Bytes(), &restNote) != nil || !reflect.DeepEqual(note, restNote) {
 		t.Fatalf("MCP and REST notes differ: %v %s", note, rest.Body.String())
@@ -187,7 +184,7 @@ func TestMCPFetchListAndRESTPagination(t *testing.T) {
 			page = mcpReadResult(t, api, reader, "list_memos", map[string]any{
 				"page_size": 1, "page_token": token})
 		} else {
-			response := aiAPICall(api, "GET", "/api/ext/v1/notes?page_size=1&page_token="+token, reader, "")
+			response := externalCall(api, "GET", "/api/ext/v1/notes?page_size=1&page_token="+token, reader, "")
 			if response.Code != 200 || json.Unmarshal(response.Body.Bytes(), &page) != nil {
 				t.Fatalf("REST rejected MCP cursor: %d %s", response.Code, response.Body.String())
 			}
@@ -260,7 +257,7 @@ func TestMCPSourceIsolationAndFailures(t *testing.T) {
 	}
 }
 
-func TestMCPReviewReadsDoNotCreateOrMark(t *testing.T) {
+func TestMCPReviewReadsDoNotCreateOrModifyPlans(t *testing.T) {
 	api, memos := mcpReadFixture(t)
 	token := strings.Repeat("f", 40)
 	mcpReadError(t, api, token, "read_daily_review", map[string]any{}, "REVIEW_NOT_FOUND")
@@ -272,10 +269,6 @@ func TestMCPReviewReadsDoNotCreateOrMark(t *testing.T) {
 	batch, err := api.Reviews.Daily(context.Background(), time.Now())
 	if err != nil || len(batch.Items) == 0 {
 		t.Fatalf("create native review: %+v %v", batch, err)
-	}
-	batch, err = api.Reviews.Mark(context.Background(), batch.ID, batch.Items[0].Name, "open", time.Now())
-	if err != nil {
-		t.Fatal(err)
 	}
 	for range 2 {
 		for _, tool := range []string{"read_daily_review", "get_review_batch"} {
@@ -298,7 +291,7 @@ func TestMCPReviewReadsDoNotCreateOrMark(t *testing.T) {
 	if err != nil || !reflect.DeepEqual(after, batch) {
 		t.Fatalf("MCP changed the existing batch or item history: %+v %v", after, err)
 	}
-	for table, want := range map[string]int{"review_batches": 1, "review_items": len(batch.Items), "discovery_reads": 0} {
+	for table, want := range map[string]int{"review_batches": 1, "review_items": len(batch.Items)} {
 		if err := api.Store.state.QueryRow("SELECT COUNT(*) FROM " + table).Scan(&count); err != nil || count != want {
 			t.Fatalf("MCP changed %s: count=%d want=%d err=%v", table, count, want, err)
 		}

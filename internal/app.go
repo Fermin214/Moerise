@@ -41,10 +41,7 @@ func NewApp(settings Settings, store *Store, source Source) *App {
 	a.Chat = NewChatService(store, a.Notes, a.Records, nil)
 	a.Map = NewMapService(store)
 	a.Notifications = NewNotificationService(store, a.Reviews, nil)
-	a.Feishu = NewFeishuService(store, source, a.Records, a.Reviews, a.Notifications)
-	if a.Feishu != nil {
-		a.Feishu.Search = a.Search
-	}
+	a.Feishu = NewFeishuService(store, source, a.Records, a.Notifications)
 	a.Notifications.Transport = newNotificationTransport(store.Settings.Channel, store, a.Reviews, a.Feishu)
 	a.Notifications.channelTransport = a.notificationTransport
 	a.closers = append(a.closers, a.closeRuntime, a.Chat.Close)

@@ -92,13 +92,10 @@ func TestCheckEmbeddingCommand(t *testing.T) {
 			t.Fatal("model check opened product or index storage")
 		}
 	}
-	var legacy map[string]any
-	body, _ := json.Marshal(settings)
-	_ = json.Unmarshal(body, &legacy)
-	legacy["embedding"] = map[string]any{"protocol": "openai-compatible", "base_url": nil, "api_key": nil, "model": nil}
-	writeConfig(legacy)
+	settings.Embedding.Enabled = false
+	writeConfig(settings)
 	if _, err := invoke("check-config"); err != nil {
-		t.Fatalf("legacy disabled model config stopped basic commands: %v", err)
+		t.Fatalf("disabled model config stopped basic commands: %v", err)
 	}
 	if _, err := invoke("check-embedding"); err == nil || !strings.Contains(err.Error(), "EMBEDDING_DISABLED") || requests.Load() != 2 {
 		t.Fatalf("disabled embedding made a model request: %v", err)

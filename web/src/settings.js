@@ -1,7 +1,7 @@
 import { l, setText, setAttr, resolveText, locale } from './i18n.js';
 const fields = {
-  review: ['count', 'min_age_hours', 'recent_days', 'topic_limit', 'include_archived'],
-  notifications: ['enabled', 'time', 'times'],
+  review: ['count', 'min_age_hours', 'recent_days', 'include_archived'],
+  notifications: ['enabled', 'times'],
   llm: ['enabled', 'protocol', 'base_url', 'model', 'timeout_seconds', 'max_concurrency', 'max_retries', 'max_output_tokens'],
   embedding: ['enabled', 'provider', 'protocol', 'base_url', 'model', 'dimensions', 'send_dimensions', 'batch_size', 'timeout_seconds', 'max_concurrency', 'max_retries', 'query_instruction'],
   channel: ['kind', 'app_id', 'user_open_id', 'destination'],
@@ -181,10 +181,9 @@ export function createSettingsPage({ sessionRequest, handleFailure, onSaved = ()
     if (!clocks.length || clocks.some(clock => !/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(clock)) ||
         new Set(clocks).size !== clocks.length) throw invalid(l("请填写至少一个有效推送时段，时段不能重复。"));
     const previous = snapshot.settings.notifications;
-    const previousClocks = previous.times?.length ? previous.times : [previous.time];
+    const previousClocks = previous.times;
     if (!same(clocks, previousClocks)) {
       draft.notifications.times = clocks;
-      draft.notifications.time = clocks[0];
     }
     return draft;
   }
@@ -206,8 +205,8 @@ export function createSettingsPage({ sessionRequest, handleFailure, onSaved = ()
       append.disabled = times.length >= 24;
     }
     const append = button(l("添加时段"), 'ghost', () => add());
-    const { time, times: clocks } = snapshot.settings.notifications;
-    for (const clock of clocks?.length ? clocks : [time || '09:00']) add(clock);
+    const clocks = snapshot.settings.notifications.times;
+    for (const clock of clocks) add(clock);
     box.append(list, append, el('span', 'sub', l("时段数即每日推送次数；每个时段分配不同笔记。")));
     parent.append(box);
   }

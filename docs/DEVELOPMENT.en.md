@@ -4,6 +4,8 @@
 
 This guide covers local development, test suites, end-to-end integration, and evaluation workflows for Moerise contributors.
 
+See the [Codebase Guide](CODEBASE.en.md) for reading order and module responsibilities, and [Development Scripts](../scripts/README.en.md) for cross-service checks and performance tools.
+
 ---
 
 ## 1. Environment
@@ -90,7 +92,7 @@ npx playwright install chromium
 npm run test:browser
 ```
 
-Install missing system libraries as directed by Playwright. CI selects the Runner's preinstalled Chrome with `CHROMIUM_PATH`; local runs can also set this variable to a compatible Chrome or Chromium executable.
+Install missing system libraries as directed by Playwright. CI uses `MOERISE_PLAYWRIGHT_CHANNEL=chrome` for preinstalled Chrome and `MOERISE_PLAYWRIGHT_MODULE` for the Playwright module path. Local runs can use the installed Playwright Chromium directly.
 
 ### Browser Suites
 
@@ -112,6 +114,26 @@ go test -tags=integration ./tests -v -count=1
 
 The suite pulls the official Memos 0.31.x image, initializes an isolated container, registers an account and PAT, exercises API reads and writes and failure recovery, then cleans up its temporary containers and data.
 
+Use the [cross-service acceptance scripts](../scripts/README.en.md#1-joint-acceptance) to exercise Compose deployment, the Web proxy, and a real browser together.
+
+### Optional Real-Provider Tests
+
+These tests require Docker and isolated test configuration. Ordinary CI skips them. Store configuration in `.local/` and choose a new report path for each run.
+
+| Test | Required environment variables | Behavior |
+| --- | --- | --- |
+| `TestSearchQualityLiveAcceptance` | `MOERISE_SEARCH_QUALITY_CONFIG`, `MOERISE_SEARCH_QUALITY_OUTPUT` | On Linux, sends repository documentation to a real embedding provider and measures retrieval quality, latency, and resources; model charges may apply |
+| `TestChatQualityLiveAcceptance` | `MOERISE_CHAT_QUALITY_CONFIG`, `MOERISE_CHAT_QUALITY_OUTPUT` | Sends fictional materials to a real LLM and saves replies and protocol results for human evaluation; model charges may apply |
+| `TestFeishuLiveReviewAcceptance` | `MOERISE_FEISHU_LIVE_CONFIG` | Sends fictional notes and images to the configured real Feishu recipient; set `MOERISE_FEISHU_LIVE_WEBHOOK` to a JSON file containing `url` and `secret` to also test group webhook delivery |
+
+After setting the relevant variables, select a test by name:
+
+```bash
+go test -tags=integration ./tests -run '^TestSearchQualityLiveAcceptance$' -v -count=1 -timeout=30m
+```
+
+Retrieval evaluation reads source paths and labeled questions from `tests/testdata/search-quality.json` and records each material's SHA-256. Update label references when changing document headings. Chat fixtures are in `tests/testdata/chat-quality.json`.
+
 ---
 
 ## 6. Benchmarks & Retrieval Evaluation
@@ -128,10 +150,10 @@ go test ./internal -run '^$' -bench '^BenchmarkMapLayout$' -benchmem
 
 ### 2. Retrieval Quality
 
-`scripts/evaluate-search.py` measures Hit@5, MRR@5, and query latency against labeled questions:
+`scripts/performance/evaluate-search.py` measures Hit@5, MRR@5, and query latency against labeled questions:
 
 ```bash
-python3 scripts/evaluate-search.py --config .local/config.json --credential reader --questions .local/search-questions.json
+python3 scripts/performance/evaluate-search.py --config .local/config.json --credential reader --questions .local/search-questions.json
 ```
 
 First run Core with synchronization and vector construction complete. Configure a credential named `reader` with `notes:read`. The question file is a JSON array with `query` and an `expected` array of resource names, optionally `state` and `tags`. Output defaults to `.local/search-evaluation.json`; choose a new output filename for each run. Vector benchmarks measure computation alone, while complete API latency includes source authentication, model requests, and live-text verification.

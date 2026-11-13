@@ -279,7 +279,7 @@ func (s *TelegramDelivery) sendReviewImage(ctx context.Context, item Notificatio
 	if err != nil {
 		return "", err
 	}
-	if _, err := s.Store.state.Exec(`UPDATE feishu_review_parts SET image_key = ? WHERE notification_id = ?`,
+	if _, err := s.Store.state.Exec(`UPDATE review_delivery_parts SET image_key = ? WHERE notification_id = ?`,
 		message.Document.FileID, item.ID); err != nil {
 		return "", err
 	}

@@ -118,7 +118,6 @@ type MapResponse struct {
 
 type CreateNote struct {
 	Content     string             `json:"content"`
-	Tags        []string           `json:"tags"`
 	Attachments []CreateAttachment `json:"attachments,omitempty"`
 }
 
@@ -182,7 +181,7 @@ type RelatedResponse struct {
 
 type WalkRequest struct {
 	Name            string   `json:"name,omitempty" jsonschema:"Source memo; optional for a random start"`
-	Mode            string   `json:"mode,omitempty" jsonschema:"continue (default) and angle select a random semantic neighbor; random selects a starting note"`
+	Mode            string   `json:"mode,omitempty" jsonschema:"continue (default) selects a random semantic neighbor; random selects a starting note"`
 	Path            []string `json:"path,omitempty" jsonschema:"Visited memo resources; no fixed item limit"`
 	IncludeArchived bool     `json:"include_archived,omitempty"`
 }

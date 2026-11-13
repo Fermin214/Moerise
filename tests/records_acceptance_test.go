@@ -3,8 +3,6 @@
 package acceptance
 
 import (
-	"crypto/sha256"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/http/httputil"
@@ -127,10 +125,6 @@ func TestRecordsAcceptance(t *testing.T) {
 	requireRecordError(t, h.recordInProcess("", body, 422), "INVALID_ARGUMENT")
 	requireRecordError(t, h.recordInProcess("bad/key", body, 422), "INVALID_ARGUMENT")
 	requireRecordError(t, h.recordInProcess(strings.Repeat("k", 129), body, 422), "INVALID_ARGUMENT")
-	requireRecordError(t, h.recordInProcess("invalid-tag",
-		map[string]any{"content": "rejected", "tags": []string{""}}, 422), "INVALID_ARGUMENT")
-	requireRecordError(t, h.recordInProcess("separate-tag",
-		map[string]any{"content": "rejected", "tags": []string{"valid"}}, 422), "INVALID_ARGUMENT")
 	h.requireSourceRecords()
 
 	content := body["content"].(string)
@@ -175,53 +169,6 @@ func TestRecordsAcceptance(t *testing.T) {
 		checkPersisted()
 		t.Logf("PASS record replay, conflict, fresh source, and deleted source after %s", operation)
 	}
-}
-
-func TestRecordsLegacyUpgradeAcceptance(t *testing.T) {
-	h := newHarness(t)
-	body := map[string]any{"content": "legacy body", "tags": []string{"z", "a", "a"}}
-	content := "#a #z\n\nlegacy body"
-	// This is the historical canonical digest, independent of the new preparer.
-	digest := sha256.Sum256([]byte(`{"content": "legacy body", "tags": ["a", "z"]}`))
-	names := []string{}
-	h.stop()
-	db := h.database("state")
-	for _, status := range []string{"pending", "unknown", "succeeded"} {
-		name := "memos/legacy-upgrade-" + status
-		names = append(names, name)
-		if status != "pending" {
-			h.call(h.memos, "/api/v1/memos?memoId="+strings.TrimPrefix(name, "memos/"), "POST", h.upstream,
-				map[string]string{"content": content, "visibility": "PRIVATE"}, 200)
-		}
-		_, err := db.Exec(`INSERT INTO note_writes
-			(instance_id, user_name, idempotency_key, request_hash, memo_name, status, created_at, updated_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, h.settings.Memos.InstanceID, h.settings.Memos.User,
-			"legacy:"+status, fmt.Sprintf("%x", digest), name, status, "2026-10-28T00:00:00Z", "2026-10-28T00:00:00Z")
-		if err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := db.Close(); err != nil {
-		t.Fatal(err)
-	}
-	snapshot := filepath.Join(h.root, "legacy-writes")
-	h.command(true, "backup", "--output", snapshot)
-	h.start()
-	h.ready()
-	replay := func() {
-		t.Helper()
-		for _, status := range []string{"pending", "unknown", "succeeded"} {
-			h.requireRecord(h.recordInProcess("legacy:"+status, body, 200),
-				"memos/legacy-upgrade-"+status, content, []string{"a", "z"})
-		}
-		h.requireSourceRecords(names...)
-	}
-	replay()
-	h.stop()
-	h.command(true, "restore", "--source", snapshot, "--safety-backup", filepath.Join(h.root, "before-legacy-restore"))
-	h.start()
-	h.ready()
-	replay()
 }
 
 type recordUpstreamEvent struct {

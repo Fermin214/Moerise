@@ -10,21 +10,17 @@ import (
 )
 
 type ReviewItem struct {
-	Name        string  `json:"name"`
-	SourceHash  string  `json:"selected_source_hash"`
-	SelectedAt  string  `json:"selected_at"`
-	OpenedAt    *string `json:"opened_at"`
-	SkippedAt   *string `json:"skipped_at"`
-	Unavailable bool    `json:"unavailable"`
-	Note        *Note   `json:"note,omitempty"`
+	Name        string `json:"name"`
+	SourceHash  string `json:"selected_source_hash"`
+	SelectedAt  string `json:"selected_at"`
+	Unavailable bool   `json:"unavailable"`
+	Note        *Note  `json:"note,omitempty"`
 }
 
 type ReviewBatch struct {
 	ID              string       `json:"id"`
 	Date            string       `json:"date"`
 	Timezone        string       `json:"timezone"`
-	RuleVersion     string       `json:"rule_version"`
-	Sequence        int          `json:"sequence"`
 	CreatedAt       string       `json:"created_at"`
 	Items           []ReviewItem `json:"items"`
 	SettingsVersion int64        `json:"settings_version"`
@@ -35,15 +31,8 @@ type ReviewService struct {
 	Source Source
 }
 
-// Batches append in creation order; timestamps vary in precision and sequences reset per rule.
-const reviewBatchOrder = " ORDER BY rowid DESC LIMIT 1"
-
 func NewReviewService(store *Store, source Source) *ReviewService {
 	return &ReviewService{Store: store, Source: source}
-}
-
-func (s *ReviewService) ruleVersion() string {
-	return "daily-plan-v2"
 }
 
 func (s *ReviewService) binding() (string, string) {
@@ -70,7 +59,7 @@ func (s *ReviewService) ReadDaily(ctx context.Context, at time.Time) (ReviewBatc
 	}
 	instance, user := s.binding()
 	var id string
-	err = s.dailyID(s.Store.state, instance, user, at.In(location).Format(time.DateOnly), settings.Timezone).Scan(&id)
+	err = s.dailyID(s.Store.state, instance, user, at.In(location).Format(time.DateOnly)).Scan(&id)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ReviewBatch{}, failure("REVIEW_NOT_FOUND", "No daily review has been created", 404, false)
 	}
@@ -80,40 +69,13 @@ func (s *ReviewService) ReadDaily(ctx context.Context, at time.Time) (ReviewBatc
 	return s.load(ctx, id)
 }
 
-func (s *ReviewService) Replace(ctx context.Context, key string, at time.Time) (ReviewBatch, error) {
-	if !idempotencyPattern.MatchString(key) {
-		return ReviewBatch{}, failure("INVALID_ARGUMENT", "A valid Idempotency-Key is required", 422, false)
-	}
-	settings := s.Store.reviewSettings(at)
-	location, err := time.LoadLocation(settings.Timezone)
-	if err != nil {
-		return ReviewBatch{}, err
-	}
-	instance, user := s.binding()
-	var id string
-	err = s.Store.state.QueryRow(`SELECT id FROM review_batches WHERE instance_id = ? AND user_name = ?
-		AND local_date = ? AND timezone = ? AND request_key = ?`+reviewBatchOrder,
-		instance, user, at.In(location).Format(time.DateOnly), settings.Timezone, key).Scan(&id)
-	if err == nil {
-		return s.Get(ctx, id)
-	}
-	if !errors.Is(err, sql.ErrNoRows) {
-		return ReviewBatch{}, err
-	}
-	return ReviewBatch{}, failure("REVIEW_REPLACEMENT_DISABLED", "Daily review plans cannot be replaced", 410, false)
-}
-
 type reviewQuery interface {
 	QueryRow(string, ...any) *sql.Row
 }
 
-func (s *ReviewService) dailyID(db reviewQuery, instance, user, date, timezone string) *sql.Row {
-	// A timezone change must not create a second selection for the same local date.
+func (s *ReviewService) dailyID(db reviewQuery, instance, user, date string) *sql.Row {
 	return db.QueryRow(`SELECT batch_id FROM review_plans
-		WHERE instance_id = ? AND user_name = ? AND local_date = ?
-		UNION ALL SELECT id FROM (SELECT id FROM review_batches
-		WHERE instance_id = ? AND user_name = ? AND local_date = ? AND timezone = ?`+reviewBatchOrder+`) LIMIT 1`,
-		instance, user, date, instance, user, date, timezone)
+        WHERE instance_id = ? AND user_name = ? AND local_date = ?`, instance, user, date)
 }
 
 func (s *ReviewService) batch(ctx context.Context, at time.Time) (ReviewBatch, error) {
@@ -127,16 +89,11 @@ func (s *ReviewService) batch(ctx context.Context, at time.Time) (ReviewBatch, e
 	if err != nil {
 		return ReviewBatch{}, err
 	}
-	date, rule := at.In(location).Format(time.DateOnly), s.ruleVersion()
+	date := at.In(location).Format(time.DateOnly)
 	instance, user := s.binding()
 	var id string
-	err = s.dailyID(s.Store.state, instance, user, date, settings.Timezone).Scan(&id)
+	err = s.dailyID(s.Store.state, instance, user, date).Scan(&id)
 	if err == nil {
-		if err := transaction(s.Store.state, func(tx *sql.Tx) error {
-			return s.freezePlan(tx, id, date, settings)
-		}); err != nil {
-			return ReviewBatch{}, err
-		}
 		return s.load(ctx, id)
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
@@ -157,23 +114,17 @@ func (s *ReviewService) batch(ctx context.Context, at time.Time) (ReviewBatch, e
 	err = transaction(s.Store.state, func(tx *sql.Tx) error {
 		// Recheck after acquiring the database write lock as well as the in-process gate.
 		var existing string
-		err := s.dailyID(tx, instance, user, date, settings.Timezone).Scan(&existing)
+		err := s.dailyID(tx, instance, user, date).Scan(&existing)
 		if err == nil {
 			id = existing
-			return s.freezePlan(tx, id, date, settings)
+			return nil
 		}
 		if !errors.Is(err, sql.ErrNoRows) {
 			return err
 		}
-		var sequence int
-		if err := tx.QueryRow(`SELECT COALESCE(MAX(sequence), 0) FROM review_batches
-			WHERE instance_id = ? AND user_name = ? AND local_date = ? AND timezone = ? AND rule_version = ?`,
-			instance, user, date, settings.Timezone, rule).Scan(&sequence); err != nil {
-			return err
-		}
 		if _, err := tx.Exec(`INSERT INTO review_batches
-			(id, instance_id, user_name, local_date, timezone, rule_version, sequence, request_key, created_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?)`, id, instance, user, date, settings.Timezone, rule, sequence+1, stamp); err != nil {
+            (id, instance_id, user_name, local_date, timezone, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)`, id, instance, user, date, settings.Timezone, stamp); err != nil {
 			return err
 		}
 		for i, memo := range candidates {
@@ -300,27 +251,24 @@ func (s *ReviewService) load(ctx context.Context, id string) (ReviewBatch, error
 func (s *ReviewService) loadRange(ctx context.Context, id string, first, count int) (ReviewBatch, error) {
 	instance, user := s.binding()
 	batch := ReviewBatch{Items: []ReviewItem{}}
-	err := s.Store.state.QueryRow(`SELECT id, local_date, timezone, rule_version, sequence, created_at
-		FROM review_batches WHERE id = ? AND instance_id = ? AND user_name = ?`, id, instance, user).
-		Scan(&batch.ID, &batch.Date, &batch.Timezone, &batch.RuleVersion, &batch.Sequence, &batch.CreatedAt)
+	err := s.Store.state.QueryRow(`SELECT b.id, b.local_date, b.timezone, b.created_at, p.settings_version
+		FROM review_batches b JOIN review_plans p ON p.batch_id = b.id
+		WHERE b.id = ? AND b.instance_id = ? AND b.user_name = ?`, id, instance, user).
+		Scan(&batch.ID, &batch.Date, &batch.Timezone, &batch.CreatedAt, &batch.SettingsVersion)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ReviewBatch{}, failure("REVIEW_NOT_FOUND", "Review batch is unavailable", 404, false)
 	}
 	if err != nil {
 		return ReviewBatch{}, err
 	}
-	if err := s.Store.state.QueryRow(`SELECT COALESCE(
-		(SELECT settings_version FROM review_plans WHERE batch_id = ?), 0)`, id).Scan(&batch.SettingsVersion); err != nil {
-		return ReviewBatch{}, err
-	}
-	rows, err := s.Store.state.Query(`SELECT memo_name, source_hash, selected_at, opened_at, skipped_at
+	rows, err := s.Store.state.Query(`SELECT memo_name, source_hash, selected_at
 		FROM review_items WHERE batch_id = ? ORDER BY position LIMIT ? OFFSET ?`, id, count, first)
 	if err != nil {
 		return ReviewBatch{}, err
 	}
 	for rows.Next() {
 		var item ReviewItem
-		if err := rows.Scan(&item.Name, &item.SourceHash, &item.SelectedAt, &item.OpenedAt, &item.SkippedAt); err != nil {
+		if err := rows.Scan(&item.Name, &item.SourceHash, &item.SelectedAt); err != nil {
 			rows.Close()
 			return ReviewBatch{}, err
 		}
@@ -358,40 +306,6 @@ func (s *ReviewService) Get(ctx context.Context, id string) (ReviewBatch, error)
 		return ReviewBatch{}, failure("INVALID_ARGUMENT", "Invalid review batch", 422, false)
 	}
 	if err := s.verify(ctx); err != nil {
-		return ReviewBatch{}, err
-	}
-	return s.load(ctx, id)
-}
-
-func (s *ReviewService) Mark(ctx context.Context, id, name, action string, at time.Time) (ReviewBatch, error) {
-	if action != "open" && action != "skip" || !memoPattern.MatchString(name) {
-		return ReviewBatch{}, failure("INVALID_ARGUMENT", "Invalid review action or resource", 422, false)
-	}
-	s.Store.reviewMu.Lock()
-	defer s.Store.reviewMu.Unlock()
-	batch, err := s.Get(ctx, id)
-	if err != nil {
-		return ReviewBatch{}, err
-	}
-	found := false
-	for _, item := range batch.Items {
-		if item.Name == name {
-			if item.Unavailable {
-				return ReviewBatch{}, failure("SOURCE_NOT_FOUND", "Memo is unavailable", 404, false)
-			}
-			found = true
-		}
-	}
-	if !found {
-		return ReviewBatch{}, failure("REVIEW_ITEM_NOT_FOUND", "Memo is not in this review batch", 404, false)
-	}
-	column := "opened_at"
-	if action == "skip" {
-		column = "skipped_at"
-	}
-	_, err = s.Store.state.Exec("UPDATE review_items SET "+column+" = COALESCE("+column+", ?) WHERE batch_id = ? AND memo_name = ?",
-		at.UTC().Format(time.RFC3339Nano), id, name)
-	if err != nil {
 		return ReviewBatch{}, err
 	}
 	return s.load(ctx, id)

@@ -1,4 +1,4 @@
-@import url('/prototype.css');
+@import url('/shell.css');
 @import url('/memos.css');
 [hidden] { display: none !important; }
 .note-content { overflow-wrap: anywhere; }

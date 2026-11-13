@@ -39,7 +39,7 @@ func normalizeWalk(request WalkRequest) (WalkRequest, error) {
 	if request.Mode == "" {
 		request.Mode = "continue"
 	}
-	if !slices.Contains([]string{"continue", "angle", "random"}, request.Mode) ||
+	if !slices.Contains([]string{"continue", "random"}, request.Mode) ||
 		(request.Name == "" && request.Mode != "random") || (request.Name != "" && !memoPattern.MatchString(request.Name)) {
 		return request, failure("INVALID_ARGUMENT", "Invalid discovery walk parameters", 422, false)
 	}
@@ -256,30 +256,4 @@ func (s *SearchService) walk(ctx context.Context, request WalkRequest, intN func
 		result.Exhausted = true
 	}
 	return result, nil
-}
-
-func (s *SearchService) Open(ctx context.Context, name string) (Note, error) {
-	if !memoPattern.MatchString(name) {
-		return Note{}, failure("INVALID_ARGUMENT", "Invalid source memo name", 422, false)
-	}
-	if err := s.verify(ctx); err != nil {
-		return Note{}, err
-	}
-	memo, err := s.liveSearchMemo(ctx, name)
-	if err != nil {
-		return Note{}, err
-	}
-	if memo == nil {
-		return Note{}, failure("SOURCE_NOT_FOUND", "Memo is unavailable", 404, false)
-	}
-	if err := s.verify(ctx); err != nil {
-		return Note{}, err
-	}
-	_, err = s.Store.state.ExecContext(ctx, `INSERT INTO discovery_reads (instance_id, user_name, memo_name, opened_at) VALUES (?, ?, ?, ?)
-		ON CONFLICT(instance_id, user_name, memo_name) DO UPDATE SET opened_at = excluded.opened_at`,
-		s.Store.Settings.Memos.InstanceID, s.Store.Settings.Memos.User, name, time.Now().UTC().Format(time.RFC3339Nano))
-	if err != nil {
-		return Note{}, err
-	}
-	return memo.Note(s.Store.Settings), nil
 }

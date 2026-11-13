@@ -134,6 +134,7 @@ func run(args []string) error {
 }
 
 func serve(settings moerise.Settings, address string) error {
+	resources := moerise.ConfigureRuntime()
 	app, err := moerise.OpenApp(settings)
 	if err != nil {
 		return err
@@ -148,6 +149,7 @@ func serve(settings moerise.Settings, address string) error {
 		ErrorLog: slog.NewLogLogger(slog.Default().Handler(), slog.LevelError)}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	slog.Info("service started", "address", address, "version", moerise.Version)
+	slog.Info("service started", "address", address, "version", moerise.Version,
+		"cpus", resources.CPUs, "memory_budget", resources.MemoryBytes, "go_memory_limit", resources.GoMemoryBytes)
 	return app.Run(ctx, server)
 }

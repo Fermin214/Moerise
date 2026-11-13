@@ -34,6 +34,7 @@ func TestFeishuLiveReviewAcceptance(t *testing.T) {
 	settings := h.settings
 	settings.StateDir, settings.IndexDir = filepath.Join(h.root, "live-state"), filepath.Join(h.root, "live-index")
 	settings.Channel = live.Channel
+	settings.Web.StateEncryptionKey = randomStateKey()
 	settings.Review.Count, settings.Review.MinAgeHours = 1, 0
 	settings.Notifications = moerise.NotificationConfig{Enabled: true, Times: []string{"00:00"}}
 	source := moerise.NewMemosClient(settings.Memos)
@@ -93,9 +94,9 @@ func TestFeishuLiveReviewAcceptance(t *testing.T) {
 			}
 			store.Settings = settings
 			makeQueue := func() *moerise.NotificationService {
-				reviews = moerise.NewReviewService(store, source)
-				events := moerise.NewFeishuService(store, source, moerise.NewRecordService(store, source), reviews, nil)
-				return moerise.NewNotificationService(store, reviews, moerise.NewFeishuDelivery(store, reviews, events))
+				app := moerise.NewApp(store.Settings, store, source)
+				reviews = app.Reviews
+				return app.Notifications
 			}
 			queue := makeQueue()
 			if count, err := queue.Schedule(ctx, time.Now()); err != nil || count != 1 {

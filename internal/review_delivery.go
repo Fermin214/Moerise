@@ -25,7 +25,7 @@ type reviewDelivery struct {
 	platform reviewPlatform
 }
 
-// The existing table and trigger also store Telegram parts to preserve queued deliveries.
+// Review parts share ordering and outcome tracking across delivery channels.
 type reviewDeliveryPart struct {
 	Root, Kind, Name, Version string
 	Attachment, ImageKey      string
@@ -36,7 +36,7 @@ func (s *reviewDelivery) reviewPart(id string) (reviewDeliveryPart, error) {
 	var part reviewDeliveryPart
 	err := s.Store.state.QueryRow(`SELECT root_id, position, kind, memo_name, source_version,
 		byte_start, byte_end, attachment_name, COALESCE(image_key, '')
-		FROM feishu_review_parts WHERE notification_id = ?`, id).
+		FROM review_delivery_parts WHERE notification_id = ?`, id).
 		Scan(&part.Root, &part.Position, &part.Kind, &part.Name, &part.Version,
 			&part.Start, &part.End, &part.Attachment, &part.ImageKey)
 	return part, err
@@ -106,7 +106,7 @@ func (s *reviewDelivery) prepareReview(ctx context.Context, item Notification) (
 	}
 	err = transaction(s.Store.state, func(tx *sql.Tx) error {
 		var exists bool
-		if err := tx.QueryRow(`SELECT EXISTS(SELECT 1 FROM feishu_review_parts WHERE root_id = ?)`, item.ID).Scan(&exists); err != nil {
+		if err := tx.QueryRow(`SELECT EXISTS(SELECT 1 FROM review_delivery_parts WHERE root_id = ?)`, item.ID).Scan(&exists); err != nil {
 			return err
 		}
 		if exists {
@@ -127,7 +127,7 @@ func (s *reviewDelivery) prepareReview(ctx context.Context, item Notification) (
 					return err
 				}
 			}
-			if _, err := tx.Exec(`INSERT INTO feishu_review_parts
+			if _, err := tx.Exec(`INSERT INTO review_delivery_parts
 				(notification_id, root_id, position, kind, memo_name, source_version,
 				byte_start, byte_end, attachment_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 				id, item.ID, i, candidate.Kind, candidate.Name, candidate.Version,
@@ -190,8 +190,7 @@ func (s *reviewDelivery) reviewFooter(note Note) (string, error) {
 
 func (s *reviewDelivery) reviewFooterText(part reviewDeliveryPart, note Note) (string, error) {
 	footer, err := s.reviewFooter(note)
-	if err != nil || part.End == 0 {
-		// Existing footer parts store no range and continue to send the whole footer.
+	if err != nil {
 		return footer, err
 	}
 	if part.Start < 0 || part.End <= part.Start || part.End > len(footer) {
@@ -200,72 +199,8 @@ func (s *reviewDelivery) reviewFooterText(part reviewDeliveryPart, note Note) (s
 	return footer[part.Start:part.End], nil
 }
 
-func (s *reviewDelivery) splitLegacyFooter(item Notification, part reviewDeliveryPart, note Note) (reviewDeliveryPart, error) {
-	if part.End != 0 {
-		return part, nil
-	}
-	footer, err := s.reviewFooter(note)
-	if err != nil {
-		return part, err
-	}
-	type textRange struct{ start, end int }
-	ranges := []textRange{}
-	for start := 0; start < len(footer); {
-		length, err := s.platform.reviewTextEnd(footer[start:])
-		if err != nil {
-			return part, err
-		}
-		ranges = append(ranges, textRange{start, start + length})
-		start += length
-	}
-	if len(ranges) <= 1 {
-		return part, nil
-	}
-	err = transaction(s.Store.state, func(tx *sql.Tx) error {
-		var end int
-		if err := tx.QueryRow(`SELECT byte_end FROM feishu_review_parts WHERE notification_id = ?`, item.ID).Scan(&end); err != nil || end != 0 {
-			return err
-		}
-		// Move later positions out of the unique key's range before making room for new parts.
-		if _, err := tx.Exec(`UPDATE feishu_review_parts SET position = -position-1
-			WHERE root_id = ? AND position > ?`, part.Root, part.Position); err != nil {
-			return err
-		}
-		if _, err := tx.Exec(`UPDATE feishu_review_parts SET position = -position-1+?
-			WHERE root_id = ? AND position < 0`, len(ranges)-1, part.Root); err != nil {
-			return err
-		}
-		if _, err := tx.Exec(`UPDATE feishu_review_parts SET byte_start = 0, byte_end = ? WHERE notification_id = ?`, ranges[0].end, item.ID); err != nil {
-			return err
-		}
-		for ordinal, interval := range ranges[1:] {
-			id := derivedID(s.Store.Settings.CursorSecret, "review-footer-part", item.ID, strconv.Itoa(ordinal+1))
-			if _, err := tx.Exec(`INSERT INTO notifications
-				(id, instance_id, user_name, channel_key, logical_key, kind, local_date, batch_id, slot_id,
-				status, platform_uuid, available_at, created_at, updated_at)
-				SELECT ?, instance_id, user_name, channel_key, ?, kind, local_date, batch_id, slot_id,
-				'pending', ?, 1.0e30, ?, ? FROM notifications WHERE id = ?`,
-				id, "review-footer-part:"+item.ID+":"+strconv.Itoa(ordinal+1),
-				derivedID(s.Store.Settings.CursorSecret, "notification-send", id), nowText(), nowText(), item.ID); err != nil {
-				return err
-			}
-			if _, err := tx.Exec(`INSERT INTO feishu_review_parts
-				(notification_id, root_id, position, kind, memo_name, source_version, byte_start, byte_end)
-				VALUES (?, ?, ?, 'footer', ?, ?, ?, ?)`, id, part.Root, part.Position+ordinal+1,
-				part.Name, part.Version, interval.start, interval.end); err != nil {
-				return err
-			}
-		}
-		return nil
-	})
-	if err != nil {
-		return part, err
-	}
-	return s.reviewPart(item.ID)
-}
-
 func (s *reviewDelivery) skipReviewNote(part reviewDeliveryPart) error {
-	_, err := s.Store.state.Exec(`UPDATE feishu_review_parts SET kind = 'empty'
+	_, err := s.Store.state.Exec(`UPDATE review_delivery_parts SET kind = 'empty'
 		WHERE root_id = ? AND memo_name = ? AND position >= ? AND notification_id IN
 		(SELECT id FROM notifications WHERE status IN ('pending', 'running'))`,
 		part.Root, part.Name, part.Position)
@@ -283,7 +218,7 @@ func (s *reviewDelivery) sendReviewPart(ctx context.Context, item Notification) 
 	if part.Position != 0 {
 		var ready bool
 		if err := s.Store.state.QueryRow(`SELECT n.status = 'sent'
-			FROM feishu_review_parts p JOIN notifications n ON n.id = p.notification_id
+			FROM review_delivery_parts p JOIN notifications n ON n.id = p.notification_id
 			WHERE p.root_id = ? AND p.position = ?`, part.Root, part.Position-1).Scan(&ready); err != nil {
 			return "", err
 		}
@@ -324,17 +259,13 @@ func (s *reviewDelivery) sendReviewPart(ctx context.Context, item Notification) 
 	if part.Kind == "footer" {
 		var delivered bool
 		if err := s.Store.state.QueryRow(`SELECT EXISTS (
-			SELECT 1 FROM feishu_review_parts p JOIN notifications n ON n.id = p.notification_id
+			SELECT 1 FROM review_delivery_parts p JOIN notifications n ON n.id = p.notification_id
 			WHERE p.root_id = ? AND p.memo_name = ? AND p.kind IN ('text', 'image')
 			AND n.status = 'sent' AND (n.receipt IS NULL OR n.receipt NOT LIKE 'empty:%'))`, part.Root, part.Name).Scan(&delivered); err != nil {
 			return "", err
 		}
 		if !delivered {
 			return "empty:" + item.ID, nil
-		}
-		part, err = s.splitLegacyFooter(item, part, note)
-		if err != nil {
-			return "", err
 		}
 		footer, err := s.reviewFooterText(part, note)
 		if err != nil {
@@ -351,7 +282,7 @@ func (s *reviewDelivery) sendReviewPart(ctx context.Context, item Notification) 
 
 // Check for actual content before emitting the standalone title.
 func (s *reviewDelivery) reviewHeaderReady(ctx context.Context, root string) (bool, error) {
-	rows, err := s.Store.state.Query(`SELECT notification_id FROM feishu_review_parts
+	rows, err := s.Store.state.Query(`SELECT notification_id FROM review_delivery_parts
 		WHERE root_id = ? AND kind IN ('text', 'image') ORDER BY position`, root)
 	if err != nil {
 		return false, err
@@ -399,7 +330,7 @@ func (s *reviewDelivery) reviewHeaderReady(ctx context.Context, root string) (bo
 		if key != "" {
 			return true, nil
 		}
-		if _, err := s.Store.state.Exec(`UPDATE feishu_review_parts SET kind = 'empty' WHERE notification_id = ?`, id); err != nil {
+		if _, err := s.Store.state.Exec(`UPDATE review_delivery_parts SET kind = 'empty' WHERE notification_id = ?`, id); err != nil {
 			return false, err
 		}
 	}

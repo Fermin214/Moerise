@@ -55,10 +55,6 @@ func TestClientDiscoverySessionCSRFAndResourceBoundaries(t *testing.T) {
 			t.Fatalf("%s: %d %s", test.path, response.Code, response.Body.String())
 		}
 	}
-	var count int
-	if err := api.app.Store.state.QueryRow(`SELECT COUNT(*) FROM discovery_reads`).Scan(&count); err != nil || count != 0 {
-		t.Fatalf("client walk wrote read history: %d %v", count, err)
-	}
 }
 
 func TestClientDailyPlanSanitizesSourcesAndKeepsAllItems(t *testing.T) {

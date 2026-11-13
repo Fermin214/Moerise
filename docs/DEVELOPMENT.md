@@ -4,6 +4,8 @@
 
 本指南面向 Moerise 代码贡献者，提供本地开发环境配置、测试套件执行、端到端集成验收及评测流程说明。
 
+源码阅读顺序与模块职责见[代码导览](CODEBASE.md)；跨服务验收和性能工具见[开发脚本](../scripts/README.md)。
+
 ---
 
 ## 一、环境准备
@@ -86,7 +88,7 @@ npx playwright install chromium
 npm run test:browser
 ```
 
-浏览器缺少系统库时，按 Playwright 提示安装依赖。CI 通过 `CHROMIUM_PATH` 使用 Runner 预装 Chrome；本地也可将该变量设为兼容的 Chrome/Chromium 可执行文件路径。
+浏览器缺少系统库时，按 Playwright 提示安装依赖。CI 通过 `MOERISE_PLAYWRIGHT_CHANNEL=chrome` 使用 Runner 预装 Chrome，并通过 `MOERISE_PLAYWRIGHT_MODULE` 指定 Playwright 模块路径。本地安装 Chromium 后可直接运行测试。
 
 ### 专项浏览器测试说明
 - `web/test/browser.mjs`：基础页面交互、Markdown 渲染、就地编辑与多维筛选。
@@ -107,6 +109,26 @@ go test -tags=integration ./tests -v -count=1
 
 测试流程会自动拉取 Memos 0.31.x 官方镜像，启动临时独立容器并完成初始化注册、PAT 签发、双向数据读写与断流容灾校验，并在测试结束后自动清理容器与匿名数据卷。
 
+需要同时验证 Compose 部署、Web 代理和真实浏览器时，使用[联合验收脚本](../scripts/README.md#一联合验收)。
+
+### 可选的真实供应商测试
+
+以下测试均需 Docker 和独立测试配置，普通 CI 默认跳过。配置文件放在 `.local/`，报告使用新的输出路径。
+
+| 测试 | 必需环境变量 | 行为 |
+| --- | --- | --- |
+| `TestSearchQualityLiveAcceptance` | `MOERISE_SEARCH_QUALITY_CONFIG`、`MOERISE_SEARCH_QUALITY_OUTPUT` | Linux 下以仓库文档为材料调用真实 Embedding，测量检索质量、延迟与资源占用；可能产生模型费用 |
+| `TestChatQualityLiveAcceptance` | `MOERISE_CHAT_QUALITY_CONFIG`、`MOERISE_CHAT_QUALITY_OUTPUT` | 将虚构材料发送给真实 LLM，保存回复与协议检查结果，供人工评价；可能产生模型费用 |
+| `TestFeishuLiveReviewAcceptance` | `MOERISE_FEISHU_LIVE_CONFIG` | 向配置的真实飞书接收方发送虚构笔记与图片；可用 `MOERISE_FEISHU_LIVE_WEBHOOK` 提供含 `url`、`secret` 的 JSON 文件，追加群 Webhook 测试 |
+
+设置对应环境变量后，按测试名选择执行：
+
+```bash
+go test -tags=integration ./tests -run '^TestSearchQualityLiveAcceptance$' -v -count=1 -timeout=30m
+```
+
+检索评测读取 `tests/testdata/search-quality.json` 的来源列表和问题标注，并记录各篇材料的 SHA-256；修改文档标题时需同步标注引用。聊天数据集位于 `tests/testdata/chat-quality.json`。
+
 ---
 
 ## 六、基准测试与检索质量评测
@@ -121,10 +143,10 @@ go test ./internal -run '^$' -bench '^BenchmarkMapLayout$' -benchmem
 ```
 
 ### 2. 检索效果评测脚本
-提供标准评测脚本 `scripts/evaluate-search.py`，用于对标注问题集评测 Hit@5、MRR@5 及查询延迟：
+提供标准评测脚本 `scripts/performance/evaluate-search.py`，用于对标注问题集评测 Hit@5、MRR@5 及查询延迟：
 
 ```bash
-python3 scripts/evaluate-search.py --config .local/config.json --credential reader --questions .local/search-questions.json
+python3 scripts/performance/evaluate-search.py --config .local/config.json --credential reader --questions .local/search-questions.json
 ```
 
 先运行已完成同步与向量构建的 Core，在配置中提供名为 `reader`、含 `notes:read` 的访问凭据。问题文件为 JSON 数组，每项包含 `query` 与预期资源名数组 `expected`，可附 `state` 和 `tags`；输出路径默认 `.local/search-evaluation.json`，需使用新的文件名。向量扫描基准只测计算过程，完整 API 延迟还包含来源认证、模型请求与原文复查。

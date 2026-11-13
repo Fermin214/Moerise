@@ -77,17 +77,6 @@ func TestMapServiceReadStatusesAndEmpty(t *testing.T) {
 	if err != nil || result.Status != "empty" || result.LayoutVersion == "" || result.VectorGeneration == "" || result.Points == nil {
 		t.Fatalf("empty: %+v %v", result, err)
 	}
-	if _, err := service.Store.index.Exec("UPDATE map_layouts SET generated_at = ''"); err != nil {
-		t.Fatal(err)
-	}
-	service.Reset()
-	if err := service.Update(t.Context()); err != nil {
-		t.Fatal(err)
-	}
-	persisted, err := NewMapService(service.Store).Read(t.Context())
-	if err != nil || persisted.Status != "empty" || persisted.GeneratedAt == "" {
-		t.Fatalf("legacy empty layout did not persist its snapshot time: %+v %v", persisted, err)
-	}
 
 }
 

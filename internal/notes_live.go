@@ -45,7 +45,7 @@ func (s *NoteService) ListLive(ctx context.Context, args NoteList) (NotePage, er
 		if s.readCursor(args.PageToken, &cursor) != nil || cursor.Kind != "live-v1" ||
 			!slices.Equal(cursor.Context, s.liveContext()) || cursor.State != args.State ||
 			cursor.Order != args.Order || cursor.Token == "" ||
-			(cursor.Filter != binding && !(cursor.Filter == "" && filter.empty())) {
+			cursor.Filter != binding {
 			return result, failure("INVALID_PAGE_TOKEN", "Page token is invalid or expired", 422, false)
 		}
 		token = cursor.Token

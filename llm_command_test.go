@@ -63,16 +63,8 @@ func TestLLMCheckCommand(t *testing.T) {
 			t.Fatal("model connection check opened product databases")
 		}
 	}
-	// A pre-AI configuration remains disabled even when it has reserved provider fields.
-	body, _ := json.Marshal(settings)
-	var legacy map[string]any
-	_ = json.Unmarshal(body, &legacy)
-	legacy["llm"] = map[string]any{"protocol": "openai-compatible", "base_url": nil, "api_key": nil, "model": nil}
-	save(legacy)
-	loaded, err := moerise.LoadSettings(path)
-	if err != nil || loaded.LLM.Enabled || loaded.LLM.MaxOutputTokens != 2048 {
-		t.Fatalf("legacy LLM defaults: %+v %v", loaded.LLM, err)
-	}
+	settings.LLM.Enabled = false
+	save(settings)
 	if err := run([]string{"check-llm", "--config", path}); err == nil || !strings.Contains(err.Error(), "LLM_DISABLED") || calls != 1 {
 		t.Fatalf("disabled model should not connect: %v", err)
 	}

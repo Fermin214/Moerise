@@ -1,0 +1,143 @@
+{
+  "version": 1,
+  "sources": [
+    "docs/OPERATIONS.md",
+    "docs/API-V1.md",
+    "docs/DAILY-REVIEW.md",
+    "docs/FEISHU.md",
+    "docs/NOTIFICATIONS.md",
+    "docs/EMBEDDING.md",
+    "docs/SEARCH.md",
+    "docs/PRODUCT-ARCHITECTURE.md"
+  ],
+  "questions": [
+    {
+      "query": "重新建立搜索索引会不会把我的设置和聊天记录弄没？",
+      "expected": [
+        "docs/OPERATIONS.md#3. 索引重建 (Reindex)"
+      ]
+    },
+    {
+      "query": "只想备份那些不能从 Memos 找回的数据，具体要保存什么？",
+      "expected": [
+        "docs/OPERATIONS.md#四、数据备份与容灾恢复",
+        "docs/PRODUCT-ARCHITECTURE.md#一、架构设计原则"
+      ]
+    },
+    {
+      "query": "线上状态坏了，怎样用快照替换现有数据？",
+      "expected": [
+        "docs/OPERATIONS.md#2. 数据恢复"
+      ]
+    },
+    {
+      "query": "请求超时后再次保存，怎么避免出现两条一样的笔记？",
+      "expected": [
+        "docs/PRODUCT-ARCHITECTURE.md#2. 笔记读写与幂等保障"
+      ]
+    },
+    {
+      "query": "机器人说发送结果不明，为什么不能直接重发？",
+      "expected": [
+        "docs/NOTIFICATIONS.md#二、发送状态机与重试策略",
+        "docs/NOTIFICATIONS.md#四、异常处理与管理员管理接口"
+      ]
+    },
+    {
+      "query": "我想每天早上九点收到旧笔记，需要配置哪里？",
+      "expected": [
+        "docs/FEISHU.md#四、定时回顾推送规格",
+        "docs/NOTIFICATIONS.md#一、调度配置与全天计划绑定"
+      ]
+    },
+    {
+      "query": "怎么避免回顾刚写的笔记和最近已经看过的内容？",
+      "expected": [
+        "docs/DAILY-REVIEW.md#二、候选选取与去重规则",
+        "docs/DAILY-REVIEW.md#选取流程"
+      ]
+    },
+    {
+      "query": "同一天反复点击回顾会一直换内容吗？",
+      "expected": [
+        "docs/DAILY-REVIEW.md#三、全天固定计划与多端分发"
+      ]
+    },
+    {
+      "query": "没有向量模型能不能继续用笔记搜索？",
+      "expected": [
+        "docs/SEARCH.md#一、三种检索模式"
+      ]
+    },
+    {
+      "query": "只要关键词不要调用模型该怎么查？",
+      "expected": [
+        "docs/SEARCH.md#一、三种检索模式"
+      ]
+    },
+    {
+      "query": "为什么管理员令牌也看不到别人的笔记？",
+      "expected": [
+        "docs/PRODUCT-ARCHITECTURE.md#1. 认证与会话安全体系",
+        "docs/PRODUCT-ARCHITECTURE.md#一、架构设计原则"
+      ]
+    },
+    {
+      "query": "我只记得意思，表达跟原文不一样，应该用哪种检索？",
+      "expected": [
+        "docs/SEARCH.md#一、三种检索模式"
+      ]
+    },
+    {
+      "query": "找一条笔记的相似内容会再调用查询模型吗？",
+      "expected": [
+        "docs/SEARCH.md#四、随机漫步 (Random Walk)"
+      ]
+    },
+    {
+      "query": "长笔记的命中结果怎么定位回原文具体几行？",
+      "expected": [
+        "docs/EMBEDDING.md#1. 文本分块规则 (`paragraph-v1-2048`)",
+        "docs/SEARCH.md#3. 多通道 RRF 排名融合 (Reciprocal Rank Fusion)"
+      ]
+    },
+    {
+      "query": "换向量模型时，旧索引要不要先删掉？",
+      "expected": [
+        "docs/EMBEDDING.md#2. 索引代次（Generation）与空间隔离"
+      ]
+    },
+    {
+      "query": "消息渠道鉴权失败能靠自动重试恢复吗？",
+      "expected": [
+        "docs/NOTIFICATIONS.md#错误重试与限流退避"
+      ]
+    },
+    {
+      "query": "怎样沿着正在看的内容探索，同时不重复走过的笔记？",
+      "expected": [
+        "docs/SEARCH.md#四、随机漫步 (Random Walk)"
+      ]
+    },
+    {
+      "query": "想离开已有路径，重新随机挑一篇作为起点，该怎么做？",
+      "expected": [
+        "docs/SEARCH.md#四、随机漫步 (Random Walk)"
+      ]
+    },
+    {
+      "query": "只是展示给我的内容也会算读过吗？",
+      "expected": [
+        "docs/DAILY-REVIEW.md#一、核心设计哲学：无压力重温"
+      ]
+    },
+    {
+      "query": "搜索时原文刚被删除或改给别的作者，会不会还返回旧内容？",
+      "expected": [
+        "docs/SEARCH.md#三、来源复查保障 (Source Verification)"
+      ]
+    }
+  ],
+  "minimum_hit_at_5": 0.85,
+  "minimum_mrr_at_5": 0.6
+}

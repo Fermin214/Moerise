@@ -102,12 +102,12 @@ func TestSettingsSingleTimeChangesNextDaySchedule(t *testing.T) {
 	}
 	app := NewApp(store.Settings, store, reviews.Source)
 	defer app.Close()
-	view, err := app.UpdateSettings(t.Context(), settingsChange(1, `{"notifications":{"time":"18:00"}}`))
+	view, err := app.UpdateSettings(t.Context(), settingsChange(1, `{"notifications":{"times":["18:00"]}}`))
 	if err != nil {
 		t.Fatal(err)
 	}
 	notifications := view.Settings["notifications"].(map[string]any)
-	if notifications["time"] != "18:00" || store.Settings.daily == nil {
+	if notifications["times"].([]string)[0] != "18:00" || store.Settings.daily == nil {
 		t.Fatal("single time update did not establish the day transition")
 	}
 	nextDay := store.Settings.daily.Until

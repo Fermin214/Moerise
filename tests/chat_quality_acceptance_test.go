@@ -298,7 +298,7 @@ func TestChatQualityEvaluationAcceptance(t *testing.T) {
 	config := moerise.DefaultSettings().LLM
 	address, key, name := server.URL+"/v1", model.key, "chat-acceptance"
 	config.Enabled, config.BaseURL, config.APIKey, config.Model = true, &address, &key, &name
-	config.ContextBytes, config.MaxRetries = 128000, 0
+	config.MaxRetries = 0
 	output := filepath.Join(t.TempDir(), "quality.json")
 	rows := runChatQuality(t, config, output, "controlled")
 	if len(rows) != 6 || model.calls() != 12 {

@@ -4,14 +4,12 @@ import (
 	"context"
 	"crypto/hmac"
 	"database/sql"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"regexp"
-	"strings"
 )
 
 var feishuIDPattern = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,128}$`)
@@ -59,21 +57,19 @@ type FeishuService struct {
 	Store         *Store
 	Source        Source
 	Records       *RecordService
-	Reviews       *ReviewService
-	Search        *SearchService
 	Client        FeishuPlatform
 	Notifications *NotificationService
 }
 
-func NewFeishuService(store *Store, source Source, records *RecordService, reviews *ReviewService, notifications *NotificationService) *FeishuService {
-	return newFeishuService(store.Settings.Channel, store, source, records, reviews, notifications)
+func NewFeishuService(store *Store, source Source, records *RecordService, notifications *NotificationService) *FeishuService {
+	return newFeishuService(store.Settings.Channel, store, source, records, notifications)
 }
 
-func newFeishuService(config ChannelConfig, store *Store, source Source, records *RecordService, reviews *ReviewService, notifications *NotificationService) *FeishuService {
+func newFeishuService(config ChannelConfig, store *Store, source Source, records *RecordService, notifications *NotificationService) *FeishuService {
 	if configured(config.AppID) == "" || config.Kind != "feishu-app" {
 		return nil
 	}
-	return &FeishuService{Store: store, Source: source, Records: records, Reviews: reviews,
+	return &FeishuService{Store: store, Source: source, Records: records,
 		Client:        NewFeishuClient(config),
 		Notifications: notifications}
 }
@@ -114,8 +110,7 @@ func (s *FeishuService) Receive(request *http.Request) (any, int, error) {
 	}
 	payload, _ := json.Marshal(message)
 	hash := hashBytes(payload)
-	queued, _ := json.Marshal(queuedFeishuMessage{feishuMessage: message, VerbatimText: true})
-	sealed, err := s.seal(message.ID, queued)
+	sealed, err := s.seal(message.ID, payload)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -144,9 +139,6 @@ func (s *FeishuService) Receive(request *http.Request) (any, int, error) {
 }
 
 func (s *FeishuService) prepare() error {
-	if err := s.recoverAI(); err != nil {
-		return err
-	}
 	config := s.Store.Settings.Channel
 	if _, err := s.Store.state.Exec(`UPDATE channel_events SET status = 'pending' WHERE status = 'processing'
 		AND app_id = ? AND sender_open_id = ?`, configured(config.AppID), configured(config.UserOpenID)); err != nil {
@@ -173,7 +165,7 @@ func (s *FeishuService) prepare() error {
 		return err
 	}
 	for _, id := range adopt {
-		if err := s.enqueueReply(id); err != nil {
+		if _, err := s.Notifications.EnqueueReply(id); err != nil {
 			return err
 		}
 	}
@@ -203,20 +195,12 @@ func (s *FeishuService) processOne(ctx context.Context) (bool, error) {
 		}
 		var body []byte
 		body, err = s.unseal(messageID, payload)
-		var message queuedFeishuMessage
+		var message feishuMessage
 		if err == nil {
 			err = json.Unmarshal(body, &message)
 		}
 		if err == nil {
-			// Resume generations already persisted before the text recording entrypoint.
-			_, savedErr := s.aiGeneration(messageID)
-			if savedErr == nil {
-				kind, resource = "ai", messageID
-			} else if errors.Is(savedErr, sql.ErrNoRows) {
-				kind, resource, err = s.executeQueued(ctx, message)
-			} else {
-				err = savedErr
-			}
+			kind, resource, err = s.execute(ctx, message)
 		}
 		if err != nil {
 			var service *ServiceError
@@ -233,7 +217,8 @@ func (s *FeishuService) processOne(ctx context.Context) (bool, error) {
 			return false, err
 		}
 	}
-	return true, s.enqueueReply(messageID)
+	_, err = s.Notifications.EnqueueReply(messageID)
+	return true, err
 }
 
 func (s *FeishuService) retry(id, status string, attempts int, code string) error {
@@ -270,14 +255,6 @@ func (s *FeishuService) execute(ctx context.Context, message feishuMessage) (str
 			return "", "", err
 		}
 		input := CreateNote{Attachments: []CreateAttachment{file}}
-		saved, err := s.Store.savedNoteHash(key)
-		if err != nil {
-			return "", "", err
-		}
-		legacy := CreateNote{Content: "附件：" + file.Filename, Attachments: input.Attachments}
-		if _, hash, err := prepareLegacyNote(legacy); err == nil && saved == hash {
-			input = legacy
-		}
 		note, _, err := s.Records.Create(ctx, key, input)
 		return "saved", note.Name, err
 	}
@@ -288,113 +265,22 @@ func (s *FeishuService) execute(ctx context.Context, message feishuMessage) (str
 	return "saved", note.Name, err
 }
 
-func excerpt(content string, limit int) string {
-	runes := []rune(content)
-	if len(runes) > limit {
-		return string(runes[:limit]) + "…"
-	}
-	return content
-}
-
 func (s *FeishuService) render(ctx context.Context, kind, resource string) (string, error) {
 	switch kind {
-	case "walk":
-		return s.renderWalk(ctx, resource)
-	case "related":
-		result, err := s.Search.Related(ctx, RelatedRequest{Name: resource, Limit: 5})
+	case "help":
+		return feishuHelp, nil
+	case "error":
+		return "操作失败：" + resource + "。请检查参数后重新发送。", nil
+	case "saved":
+		note, err := NewNoteService(s.Store.Settings, s.Store, s.Source).Get(ctx, resource)
 		if errorCode(err) == "SOURCE_NOT_FOUND" {
 			return "笔记已删除或不可访问。", nil
 		}
 		if err != nil {
 			return "", err
 		}
-		return "相关笔记\n原笔记：" + result.Source.Name + "\n" + result.Source.URL + "\n" +
-			renderSearchResults(result.Results, result.Semantic), nil
-	case "search":
-		id, encoded, ok := strings.Cut(resource, ".")
-		if !ok {
-			return "", upstreamError("CHANNEL_QUEUE_KEY", "Invalid encrypted search request")
-		}
-		sealed, err := base64.RawURLEncoding.Strict().DecodeString(encoded)
-		if err != nil {
-			return "", err
-		}
-		body, err := s.unseal("search:"+id, sealed)
-		if err != nil {
-			return "", err
-		}
-		var request SearchRequest
-		if err := json.Unmarshal(body, &request); err != nil {
-			return "", err
-		}
-		result, err := s.Search.Search(ctx, request)
-		if err != nil {
-			return "", err
-		}
-		return "搜索结果\n" + renderSearchResults(result.Results, result.Semantic), nil
-	case "help":
-		return feishuHelp, nil
-	case "error":
-		return "操作失败：" + resource + "。请检查参数后重新发送。", nil
-	case "saved", "memo":
-		if err := s.Records.verify(ctx); err != nil {
-			return "", err
-		}
-		memo, err := s.Source.Get(ctx, resource)
-		if err != nil {
-			return "", err
-		}
-		if memo == nil {
-			return "笔记已删除或不可访问。", nil
-		}
-		if err := s.Records.verify(ctx); err != nil {
-			return "", err
-		}
-		prefix := "已保存"
-		if kind == "memo" {
-			prefix = excerpt(memo.Content, 1500)
-		}
-		return prefix + "\n" + memo.Name + "\n" + memo.Note(s.Store.Settings).URL, nil
-	case "review":
-		batch, err := s.Reviews.Get(ctx, resource)
-		if err != nil {
-			return "", err
-		}
-		return renderReview(batch), nil
+		return "已保存\n" + note.Name + "\n" + note.URL, nil
 	default:
 		return "", fmt.Errorf("invalid Feishu event result")
 	}
-}
-
-func renderSearchResults(results []SearchHit, semantic SearchSemantic) string {
-	var text strings.Builder
-	if !semantic.Used {
-		text.WriteString("仅使用关键词与标签（" + semantic.Reason + "）。\n")
-	}
-	if len(results) == 0 {
-		text.WriteString("没有找到符合条件的笔记。")
-	}
-	for _, hit := range results {
-		if len(hit.Matches) > 0 {
-			match := hit.Matches[0]
-			fmt.Fprintf(&text, "\n%s\n第 %d–%d 行\n%s\n%s\n", excerpt(match.Content, 300),
-				match.LineStart, match.LineEnd, hit.Note.Name, hit.Note.URL)
-		}
-	}
-	return text.String()
-}
-
-func renderReview(batch ReviewBatch) string {
-	var text strings.Builder
-	fmt.Fprintf(&text, "%s 每日回顾\n批次：%s\n", batch.Date, batch.ID)
-	if len(batch.Items) == 0 {
-		text.WriteString("没有符合规则的笔记。")
-	}
-	for _, item := range batch.Items {
-		if item.Unavailable {
-			continue
-		}
-		fmt.Fprintf(&text, "\n%s\n%s\n%s\n%s\n", item.Note.CreateTime, excerpt(item.Note.Content, 300), item.Name, item.Note.URL)
-	}
-	return text.String()
 }

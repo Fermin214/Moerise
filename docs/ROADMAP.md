@@ -10,10 +10,10 @@
 
 ```mermaid
 flowchart LR
-    Stage1["阶段一：Core 引擎\n(已就绪)"] --> Stage2["阶段二：消息渠道\n(已就绪)"]
-    Stage2 --> Stage3["阶段三：完整 Web 与一体化部署\n(已就绪)"]
-    Stage3 --> Stage4["阶段四：Android 客户端\n(规划中)"]
-    Stage4 --> Stage5["阶段五：多端生态与高级洞察\n(远期探索)"]
+    Stage1["阶段一：Core 引擎<br/>(已就绪)"] --> Stage2["阶段二：消息渠道<br/>(已就绪)"]
+    Stage2 --> Stage3["阶段三：完整 Web 与一体化部署<br/>(已就绪)"]
+    Stage3 --> Stage4["阶段四：Android 客户端<br/>(规划中)"]
+    Stage4 --> Stage5["阶段五：多端生态与高级洞察<br/>(远期探索)"]
 ```
 
 | 产品阶段 | 状态 | 目标与范围 |

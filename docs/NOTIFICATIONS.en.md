@@ -20,7 +20,7 @@ The shared scheduler and persistent queue in `internal/notifications.go` drive d
 
 1. **Timezone and times**:
    - Scheduling follows the configured IANA timezone.
-   - `times` contains distinct `HH:MM` values, up to 24 per day. Without a list, the single `time` field is used, default `09:00`.
+   - `times` contains distinct `HH:MM` values, up to 24 per day. The default is `["09:00"]`; the list must not be empty.
 2. **Slot binding**:
    - At delivery time, the scheduler uses the day's saved `slot_id` allocation to create its batch.
    - Empty slots are recorded as processed without sending an empty message.

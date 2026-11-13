@@ -50,7 +50,7 @@ func TestReviewBatchesHistoryAndRecovery(t *testing.T) {
 	ctx := context.Background()
 	at := time.Date(2026, 10, 26, 12, 0, 0, 0, time.UTC)
 	first, err := service.Daily(ctx, at)
-	if err != nil || first.Sequence != 1 || len(first.Items) != 3 {
+	if err != nil || len(first.Items) != 3 {
 		t.Fatalf("first batch: %+v %v", first, err)
 	}
 	seen := map[string]bool{}
@@ -69,23 +69,8 @@ func TestReviewBatchesHistoryAndRecovery(t *testing.T) {
 		t.Fatal("repeated daily read created another batch")
 	}
 	name := first.Items[0].Name
-	opened, err := service.Mark(ctx, first.ID, name, "open", at)
-	if err != nil || opened.Items[0].OpenedAt == nil || opened.Items[0].SkippedAt != nil {
-		t.Fatalf("open: %+v %v", opened, err)
-	}
-	marked, err := service.Mark(ctx, first.ID, name, "skip", at.Add(time.Minute))
-	if err != nil || marked.Items[0].OpenedAt == nil || marked.Items[0].SkippedAt == nil {
-		t.Fatal("open and skip must be retained separately")
-	}
-	retry, err := service.Mark(ctx, first.ID, name, "open", at.Add(time.Hour))
-	if err != nil || *retry.Items[0].OpenedAt != *opened.Items[0].OpenedAt {
-		t.Fatal("repeated open changed its first timestamp")
-	}
-	if _, err := service.Replace(ctx, "replace-1", at); errorCode(err) != "REVIEW_REPLACEMENT_DISABLED" {
-		t.Fatalf("fixed plans accepted replacement: %v", err)
-	}
 	second, err := service.Daily(ctx, at.AddDate(0, 0, 1))
-	if err != nil || second.Sequence != 1 || len(second.Items) != 3 {
+	if err != nil || len(second.Items) != 3 {
 		t.Fatalf("second batch: %+v %v", second, err)
 	}
 	check(second)
@@ -94,7 +79,7 @@ func TestReviewBatchesHistoryAndRecovery(t *testing.T) {
 		t.Fatal("replacement replay advanced the batch")
 	}
 	third, err := service.Daily(ctx, at.AddDate(0, 0, 2))
-	if err != nil || third.Sequence != 1 || len(third.Items) != 3 {
+	if err != nil || len(third.Items) != 3 {
 		t.Fatalf("third batch: %+v %v", third, err)
 	}
 	check(third)
@@ -138,7 +123,7 @@ func TestReviewBatchesHistoryAndRecovery(t *testing.T) {
 	}
 	restored := NewReviewService(testStore(t, settings), service.Source)
 	batch, err := restored.Get(ctx, first.ID)
-	if err != nil || batch.Items[0].OpenedAt == nil || batch.Items[0].SkippedAt == nil {
+	if err != nil || batch.ID != first.ID || batch.Items[0].Name != name {
 		t.Fatalf("backup did not preserve review states: %+v %v", batch, err)
 	}
 }
@@ -234,62 +219,4 @@ func TestConcurrentDailyReadsShareOneBatch(t *testing.T) {
 		}
 		id = actual
 	}
-}
-
-func TestReviewLatestBatchAcrossTimestampPrecisionAndRules(t *testing.T) {
-	service, _ := reviewFixture(t, 15)
-	ctx := context.Background()
-	at := time.Date(2026, 10, 28, 2, 0, 0, 0, time.UTC)
-	legacy := seedLegacyReview(t, service, at, "legacy-replace", "legacy-rules", 40)
-	replacements := []ReviewBatch{}
-	for i, offset := range []time.Duration{500 * time.Millisecond, 510 * time.Millisecond, 510 * time.Millisecond} {
-		key := fmt.Sprintf("same-second-%d", i)
-		batch := seedLegacyReview(t, service, at.Add(offset), key, "random-v1", i+1)
-		replacements = append(replacements, batch)
-		for _, read := range []struct {
-			name string
-			call func(context.Context, time.Time) (ReviewBatch, error)
-		}{{"ReadDaily", service.ReadDaily}} {
-			latest, err := read.call(ctx, at.Add(time.Second))
-			if err != nil || latest.ID != batch.ID {
-				t.Fatalf("%s did not return the latest replacement: %+v %v", read.name, latest, err)
-			}
-		}
-	}
-	for _, replay := range []struct {
-		key string
-		id  string
-	}{{"legacy-replace", legacy.ID}, {"same-second-0", replacements[0].ID}} {
-		batch, err := service.Replace(ctx, replay.key, at.Add(time.Minute))
-		if err != nil || batch.ID != replay.id {
-			t.Fatalf("replacement replay changed across rules or newer batches: %+v %v", batch, err)
-		}
-	}
-	latest, err := service.Daily(ctx, at)
-	if err != nil || latest.ID != replacements[len(replacements)-1].ID {
-		t.Fatalf("replaying an earlier replacement changed the daily result: %+v %v", latest, err)
-	}
-	var count int
-	if err := service.Store.state.QueryRow("SELECT COUNT(*) FROM review_batches").Scan(&count); err != nil || count != 4 {
-		t.Fatalf("daily reads or replacement replays created batches: %d %v", count, err)
-	}
-}
-
-func seedLegacyReview(t *testing.T, service *ReviewService, at time.Time, key, rule string, sequence int) ReviewBatch {
-	t.Helper()
-	location, _ := time.LoadLocation(service.Store.Settings.Timezone)
-	id := newID()
-	_, err := service.Store.state.Exec(`INSERT INTO review_batches
-		(id, instance_id, user_name, local_date, timezone, rule_version, sequence, request_key, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, id, service.Store.Settings.Memos.InstanceID,
-		service.Store.Settings.Memos.User, at.In(location).Format(time.DateOnly),
-		service.Store.Settings.Timezone, rule, sequence, key, at.UTC().Format(time.RFC3339Nano))
-	if err != nil {
-		t.Fatal(err)
-	}
-	batch, err := service.Get(t.Context(), id)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return batch
 }

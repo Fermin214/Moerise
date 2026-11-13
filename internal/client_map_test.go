@@ -21,7 +21,7 @@ func TestClientMapContractAndMachineIsolation(t *testing.T) {
 	if response.Code != 200 || json.Unmarshal(response.Body.Bytes(), &result) != nil || result.Status != "disabled" {
 		t.Fatalf("disabled response: %d %s", response.Code, response.Body)
 	}
-	aiAPIValidateJSON(t, clientChatSchema(t, "MapResponse"), response.Body.Bytes())
+	validateAPISchema(t, clientChatSchema(t, "MapResponse"), response.Body.Bytes())
 	clientMapIndex(t, api)
 	response = clientCall(api, "GET", path, "", cookie, "", "")
 	if response.Code != 200 || json.Unmarshal(response.Body.Bytes(), &result) != nil || result.Status != "ready" ||
@@ -30,7 +30,7 @@ func TestClientMapContractAndMachineIsolation(t *testing.T) {
 		len(response.Header().Values("Set-Cookie")) != 0 {
 		t.Fatalf("map contract: %d %s %v", response.Code, response.Body, response.Header())
 	}
-	aiAPIValidateJSON(t, clientChatSchema(t, "MapResponse"), response.Body.Bytes())
+	validateAPISchema(t, clientChatSchema(t, "MapResponse"), response.Body.Bytes())
 	for _, secret := range []string{"private body", fixture.settings.Memos.Token, fixture.settings.Web.StateEncryptionKey, "vector_hash", "base_url"} {
 		if strings.Contains(response.Body.String(), secret) {
 			t.Fatalf("map leaked private original or credential: %s", secret)
@@ -49,7 +49,7 @@ func TestClientMapContractAndMachineIsolation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, scope := range []string{"notes:read", "notes:write", "sync:write"} {
+	for _, scope := range []string{"notes:read", "sync:read"} {
 		machine.Settings.AccessTokens[0].Scopes = []string{scope}
 		request := httptest.NewRequest("GET", "/api/ext/v1/map", nil)
 		request.Header.Set("Authorization", "Bearer "+fixture.settings.AccessTokens[0].Token)
@@ -170,7 +170,7 @@ func TestClientMapLogoutCancelsColdSnapshotRead(t *testing.T) {
 func TestMapNotDiscoverableOrCallableThroughMCP(t *testing.T) {
 	api, _ := mcpReadFixture(t)
 	for _, token := range []string{strings.Repeat("r", 40), strings.Repeat("f", 40), strings.Repeat("w", 40)} {
-		reply := aiMCPCall(t, api, token, "tools/list", map[string]any{})
+		reply := callMCP(t, api, token, "tools/list", map[string]any{})
 		data, _ := json.Marshal(reply)
 		for _, name := range []string{"get_map", "read_map", "get_cognitive_map", "rebuild_map"} {
 			if strings.Contains(string(data), `"`+name+`"`) {

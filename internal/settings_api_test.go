@@ -150,7 +150,7 @@ func TestClientSettingsSaveConflictAndSecretOperations(t *testing.T) {
 		return clientCall(api, "PATCH", clientSettingsPath, body, cookie,
 			fixture.settings.Web.PublicOrigin, identity.CSRFToken)
 	}
-	body := `{"version":1,"settings":{"timezone":"UTC","review":{"count":6},"notifications":{"time":"18:00"},"insights":{"default_prompt":"custom prompt"}},"secrets":{"llm_api_key":{"action":"replace","value":"private-new-llm-key"}}}`
+	body := `{"version":1,"settings":{"timezone":"UTC","review":{"count":6},"notifications":{"times":["18:00"]},"insights":{"default_prompt":"custom prompt"}},"secrets":{"llm_api_key":{"action":"replace","value":"private-new-llm-key"}}}`
 	response := call(body)
 	var view SettingsView
 	if response.Code != 200 || json.Unmarshal(response.Body.Bytes(), &view) != nil ||
@@ -161,7 +161,7 @@ func TestClientSettingsSaveConflictAndSecretOperations(t *testing.T) {
 	}
 	if api.app.Store.Settings.Review.Count != 6 || api.app.Store.Settings.Review.MinAgeHours != 72 ||
 		api.app.Store.Settings.Insights.DefaultPrompt != "custom prompt" ||
-		api.app.Store.Settings.Notifications.Time != "18:00" ||
+		api.app.Store.Settings.Notifications.Clocks()[0] != "18:00" ||
 		strings.Join(api.app.Store.Settings.Notifications.Clocks(), ",") != "18:00" {
 		t.Fatal("save did not merge product settings")
 	}

@@ -24,7 +24,7 @@ const assets = new Map([
   ['/map.js', ['map.js', 'text/javascript; charset=utf-8']],
   ['/chat-stream.js', ['chat-stream.js', 'text/javascript; charset=utf-8']],
   ['/styles.css', ['styles.css', 'text/css; charset=utf-8']],
-  ['/prototype.css', ['prototype.css', 'text/css; charset=utf-8']],
+  ['/shell.css', ['shell.css', 'text/css; charset=utf-8']],
   ['/memos.css', ['memos.css', 'text/css; charset=utf-8']],
   ['/layout.css', ['layout.css', 'text/css; charset=utf-8']],
   ['/favicon.svg', ['favicon.svg', 'image/svg+xml']],

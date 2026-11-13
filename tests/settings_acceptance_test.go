@@ -51,7 +51,7 @@ func TestClientSettingsMemosAcceptance(t *testing.T) {
 	initialReview := first["settings"].(map[string]any)["review"].(map[string]any)
 	if first["version"] != float64(1) || initialReview["min_age_hours"] != float64(36) ||
 		initialReview["recent_days"] != float64(2) {
-		t.Fatal("upgrade initialization replaced existing custom settings")
+		t.Fatal("initialization replaced configured custom settings")
 	}
 	c.call("POST", "/api/app/v1/notes", map[string]any{"content": "用于设置与向量切换的虚构笔记"}, 201)
 	update := map[string]any{

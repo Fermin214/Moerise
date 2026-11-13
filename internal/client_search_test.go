@@ -235,7 +235,7 @@ func TestClientSearchStrictJSONAndResponseContract(t *testing.T) {
 	if response.Code != 200 {
 		t.Fatalf("model-independent search: %d %s", response.Code, response.Body.String())
 	}
-	aiAPIValidateJSON(t, clientChatSchema(t, "ClientSearchPage"), response.Body.Bytes())
+	validateAPISchema(t, clientChatSchema(t, "ClientSearchPage"), response.Body.Bytes())
 	for _, path := range []string{"/api/app/v1/search?query=needle", "/api/app/v1/search?extra=x"} {
 		response := clientCall(api, "POST", path, `{}`, cookie, fixture.settings.Web.PublicOrigin, identity.CSRFToken)
 		if response.Code != 422 {

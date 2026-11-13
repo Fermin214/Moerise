@@ -134,37 +134,6 @@ func TestReviewRecoveryOnlyLatestDueAndKeepsOldQueue(t *testing.T) {
 	}
 }
 
-func TestLegacyQueuedReviewRetainsWholeBatchWithoutNewDuplicate(t *testing.T) {
-	reviews, _ := reviewFixture(t, 4)
-	store := reviews.Store
-	store.Settings.Notifications.Times = []string{"09:00", "18:00"}
-	store.Settings.Notifications.Enabled = true
-	at := time.Date(2026, 10, 28, 11, 0, 0, 0, time.UTC)
-	legacy := seedLegacyReview(t, reviews, at, "old-key", "random-v1", 1)
-	memo, _ := reviews.Source.Get(t.Context(), "memos/review-00")
-	if _, err := store.state.Exec(`INSERT INTO review_items
-		(batch_id, position, memo_name, source_hash, selected_at) VALUES (?, 0, ?, ?, ?)`,
-		legacy.ID, memo.Name, memo.SourceHash, nowText()); err != nil {
-		t.Fatal(err)
-	}
-	service := NewNotificationService(store, reviews, &notificationPlatform{})
-	id, err := service.enqueue("review", "2026-10-28:09:00", "2026-10-28", &legacy.ID, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if count, err := service.Schedule(t.Context(), at); err != nil || count != 0 {
-		t.Fatalf("legacy batch was repeated: %d %v", count, err)
-	}
-	detail, _ := service.Detail(id)
-	batch, err := reviews.forNotification(t.Context(), detail.Notification)
-	if err != nil || batch.ID != legacy.ID || len(batch.Items) != 1 {
-		t.Fatalf("legacy queue lost its original items: %+v %v", batch, err)
-	}
-	if retry, err := reviews.Replace(t.Context(), "old-key", at); err != nil || retry.ID != legacy.ID {
-		t.Fatalf("historical idempotency replay: %+v %v", retry, err)
-	}
-}
-
 func TestReviewSourceFailureDoesNotFreezeEmptyPlan(t *testing.T) {
 	reviews, _ := reviewFixture(t, 4)
 	client := reviews.Source.(*MemosClient)
@@ -227,7 +196,7 @@ func TestReviewTextOnlySlotsSkipImagesWithoutReplacement(t *testing.T) {
 	defer server.Close()
 	store.Settings.Channel.Kind = "feishu-webhook"
 	store.Settings.Channel.WebhookURL = stringPointer(server.URL)
-	queue := NewNotificationService(store, reviews, NewFeishuDelivery(store, reviews, nil))
+	queue := NewNotificationService(store, reviews, newFeishuDelivery(store.Settings.Channel, store, reviews, nil))
 	for ordinal, offset := range []time.Duration{time.Hour, 10 * time.Hour} {
 		start := len(texts)
 		if count, err := queue.Schedule(t.Context(), at.Add(offset)); err != nil || count != 1 {

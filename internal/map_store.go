@@ -107,12 +107,9 @@ func (s *Store) loadMapLayout(ctx context.Context, snapshot mapSnapshot) (*mapLa
 		if err != nil {
 			return err
 		}
-		// Layouts created before snapshot publication need one background refresh.
-		if generatedAt != "" {
-			layout.generatedAt, err = time.Parse(time.RFC3339Nano, generatedAt)
-			if err != nil {
-				return failure("MAP_LAYOUT_INVALID", "Stored map timestamp is invalid; rebuild the index", 503, false)
-			}
+		layout.generatedAt, err = time.Parse(time.RFC3339Nano, generatedAt)
+		if err != nil {
+			return failure("MAP_LAYOUT_INVALID", "Stored map timestamp is invalid; rebuild the index", 503, false)
 		}
 		if json.Unmarshal(basis, &layout.basis) != nil || !validMapBasis(layout.basis, snapshot.dimensions) {
 			return failure("MAP_LAYOUT_INVALID", "Stored map layout is invalid; rebuild the index", 503, false)
@@ -170,10 +167,8 @@ func (s *Store) publishMapLayout(ctx context.Context, snapshot mapSnapshot, layo
 			return err
 		}
 		if err == nil && version == layout.version {
-			if publishedAt != "" {
-				if generatedAt, err = time.Parse(time.RFC3339Nano, publishedAt); err != nil {
-					return err
-				}
+			if generatedAt, err = time.Parse(time.RFC3339Nano, publishedAt); err != nil {
+				return err
 			}
 			_, err = tx.ExecContext(ctx, `UPDATE map_layouts SET generation_id = ?, projection_revision = ?, generated_at = ?
 				WHERE instance_id = ? AND user_name = ?`, snapshot.generation, snapshot.revision, generatedAt.Format(time.RFC3339Nano),

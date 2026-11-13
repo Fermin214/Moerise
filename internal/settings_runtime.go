@@ -110,10 +110,7 @@ func (a *App) UpdateSettings(ctx context.Context, update SettingsUpdate) (Settin
 		}
 	}
 	if channelChanged {
-		events = newFeishuService(settings.Channel, a.Store, a.Source, a.Records, a.Reviews, a.Notifications)
-		if events != nil {
-			events.Search = a.Search
-		}
+		events = newFeishuService(settings.Channel, a.Store, a.Source, a.Records, a.Notifications)
 		transport = newNotificationTransport(settings.Channel, a.Store, a.Reviews, events)
 	}
 	now := time.Now()
@@ -129,9 +126,6 @@ func (a *App) UpdateSettings(ctx context.Context, update SettingsUpdate) (Settin
 		settings.daily = nil
 	}
 	if err := ctx.Err(); err != nil {
-		return SettingsView{}, err
-	}
-	if err := a.Store.migrateFeishuQueue(); err != nil {
 		return SettingsView{}, err
 	}
 	if err := a.Store.retainNotificationChannels(&settings); err != nil {

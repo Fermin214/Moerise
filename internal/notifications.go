@@ -138,12 +138,12 @@ func (s *NotificationService) Schedule(ctx context.Context, at time.Time) (int, 
 		var done bool
 		err := db.QueryRow(`SELECT EXISTS (SELECT 1 FROM review_schedule_slots
 			WHERE instance_id = ? AND user_name = ? AND timezone = ?
-			AND local_date = ? AND (clock = ? OR (clock = '' AND ? = 0))
+			AND local_date = ? AND clock = ?
 			UNION ALL SELECT 1 FROM notifications
 			WHERE instance_id = ? AND user_name = ? AND kind = 'review'
-			AND (logical_key = ? OR (logical_key = ? AND ? = 0)))`,
-			instance, user, timezone, today, slots[ordinal].Clock, ordinal,
-			instance, user, today+":"+slots[ordinal].Clock, today, ordinal).Scan(&done)
+			AND logical_key = ?)`,
+			instance, user, timezone, today, slots[ordinal].Clock,
+			instance, user, today+":"+slots[ordinal].Clock).Scan(&done)
 		return done, err
 	}
 	done, err := processed(s.Store.state, latest)

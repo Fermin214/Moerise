@@ -69,10 +69,7 @@ func (a *App) notificationTransport(channel ChannelConfig) (NotificationTranspor
 	store := &Store{Settings: a.Store.Settings, state: a.Store.state, index: a.Store.index}
 	store.Settings.Channel = channel
 	notifications := NewNotificationService(store, a.Reviews, nil)
-	events := newFeishuService(channel, store, a.Source, a.Records, a.Reviews, notifications)
-	if events != nil {
-		events.Search = a.Search
-	}
+	events := newFeishuService(channel, store, a.Source, a.Records, notifications)
 	transport := newNotificationTransport(channel, store, a.Reviews, events)
 	return transport, func() { closeChannel(events, transport) }
 }

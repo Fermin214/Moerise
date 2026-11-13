@@ -231,7 +231,7 @@ func publicProduct(product ProductSettings) map[string]any {
 	delete(result, "notification_channels")
 	notifications := result["notifications"].(map[string]any)
 	clocks := product.Notifications.Clocks()
-	notifications["time"], notifications["times"] = clocks[0], clocks
+	notifications["times"] = clocks
 	for _, section := range []string{"llm", "embedding"} {
 		delete(result[section].(map[string]any), "api_key")
 	}
@@ -324,17 +324,6 @@ func (s *Store) prepareSettings(update SettingsUpdate) (Settings, error) {
 	if strictJSON(bytes.NewReader(body), &product) != nil {
 		return s.Settings, bad
 	}
-	if raw, exists := update.Settings["notifications"]; exists {
-		var patch map[string]json.RawMessage
-		if json.Unmarshal(raw, &patch) != nil {
-			return s.Settings, bad
-		}
-		_, timeSet := patch["time"]
-		_, timesSet := patch["times"]
-		if timeSet && !timesSet {
-			product.Notifications.Times = []string{product.Notifications.Time}
-		}
-	}
 	fields := secretFields(&product)
 	for name, operation := range update.Secrets {
 		field, exists := fields[name]
@@ -367,7 +356,6 @@ func (s *Store) prepareSettings(update SettingsUpdate) (Settings, error) {
 	if err := result.Validate(); err != nil {
 		return s.Settings, bad
 	}
-	result.Notifications.Time = result.Notifications.Clocks()[0]
 	return result, nil
 }
 

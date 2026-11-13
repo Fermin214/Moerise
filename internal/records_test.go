@@ -12,7 +12,7 @@ import (
 
 func TestConcurrentRecordsUseOneResource(t *testing.T) {
 	settings := testSettings(t)
-	settings.AccessTokens[1].Scopes = append(settings.AccessTokens[1].Scopes, "notes:write")
+	settings.AccessTokens[1].Scopes = append(settings.AccessTokens[1].Scopes, "sync:read")
 	if err := settings.Validate(); err != nil {
 		t.Fatal(err)
 	}
@@ -84,7 +84,7 @@ func TestConcurrentRecordsUseOneResource(t *testing.T) {
 
 func TestRecordRejectsInvalidRequestsBeforeSourceAccess(t *testing.T) {
 	settings := testSettings(t)
-	settings.AccessTokens[1].Scopes = append(settings.AccessTokens[1].Scopes, "notes:write")
+	settings.AccessTokens[1].Scopes = append(settings.AccessTokens[1].Scopes, "sync:read")
 	store := testStore(t, settings)
 	client := fakeClient(settings, func(*http.Request) (int, any, error) {
 		t.Error("invalid record reached Memos")
@@ -97,11 +97,7 @@ func TestRecordRejectsInvalidRequestsBeforeSourceAccess(t *testing.T) {
 	}{
 		{"", CreateNote{Content: "private"}},
 		{"invalid key", CreateNote{Content: "private"}},
-		{"key", CreateNote{Content: "private", Tags: []string{"a #public"}}},
-		{"key", CreateNote{Content: "private", Tags: []string{"valid"}}},
-		{"key", CreateNote{Content: "private", Tags: []string{"v\u00b2"}}},
 		{"key", CreateNote{Content: " "}},
-		{"key", CreateNote{Content: strings.Repeat("x", 65536), Tags: []string{"a"}}},
 		{"key", CreateNote{Content: "private", Attachments: []CreateAttachment{{Filename: "../a.txt", Type: "text/plain", Content: []byte("a")}}}},
 		{"key", CreateNote{Content: "private", Attachments: []CreateAttachment{{Filename: "a.txt", Type: "text/plain", Content: nil}}}},
 		{"key", CreateNote{Content: "private", Attachments: []CreateAttachment{{Filename: "a.txt", Type: "text/plain; charset=utf-8", Content: []byte("a")}}}},
@@ -226,53 +222,5 @@ func TestRecordConflictDoesNotAdoptAnotherAuthorsResource(t *testing.T) {
 	names, _ := store.Names()
 	if len(names) != 0 {
 		t.Fatal("foreign resource reached the projection")
-	}
-}
-
-func TestRecordLegacyTagsRecoverOnlyPersistedDigests(t *testing.T) {
-	for _, status := range []string{"pending", "unknown", "succeeded"} {
-		for _, exists := range []bool{false, true} {
-			if status == "succeeded" && !exists {
-				continue
-			}
-			t.Run(status+map[bool]string{false: "/absent", true: "/existing"}[exists], func(t *testing.T) {
-				f := newRecordMutationFixture(t)
-				input := CreateNote{Content: "historical body", Tags: []string{"z", "a", "a"}}
-				content, hash, err := prepareLegacyNote(input)
-				if err != nil {
-					t.Fatal(err)
-				}
-				write, err := f.store.reserveNote("legacy", hash)
-				if err != nil {
-					t.Fatal(err)
-				}
-				if err := f.store.updateNoteWrite("legacy", status, ""); err != nil {
-					t.Fatal(err)
-				}
-				f.memo = nil
-				if exists {
-					f.memo = rawMemo(strings.TrimPrefix(write.Name, "memos/"), content)
-					f.memo["tags"] = []string{"a", "z"}
-				}
-				// Memos parses native tags on create; emulate that response here.
-				handler := f.client.client.Transport
-				f.client.client.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
-					response, err := handler.RoundTrip(r)
-					if r.Method == "POST" && f.memo != nil {
-						f.memo["tags"] = []string{"a", "z"}
-					}
-					return response, err
-				})
-				input.Tags = []string{"a", "z"}
-				note, _, err := NewRecordService(f.store, f.client).Create(context.Background(), "legacy", input)
-				if err != nil || note.Content != "#a #z\n\nhistorical body" || f.memoPosts > 1 {
-					t.Fatalf("legacy recovery: %+v posts=%d err=%v", note, f.memoPosts, err)
-				}
-				input.Content = "different historical body"
-				if _, _, err := NewRecordService(f.store, f.client).Create(context.Background(), "legacy", input); errorCode(err) != "IDEMPOTENCY_CONFLICT" {
-					t.Fatalf("legacy hash was not enforced: %v", err)
-				}
-			})
-		}
 	}
 }
