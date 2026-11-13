@@ -88,7 +88,7 @@ button.flc{cursor:pointer;font-size:13px;line-height:1.6}
 .mg{display:grid;grid-template-columns:repeat(4,1fr);gap:6px}.mg button{height:44px;border:0;border-radius:10px;background:transparent;font-size:14px;color:#2B3038;cursor:pointer}.mg button:hover{background:#EEF0EE}.mg button.has{background:#EEF4FD;color:#1E4A9A}.mg button.ed{background:#1E4A9A;color:#fff}
 .tab{height:34px;padding:0 14px;border:0;background:transparent;border-radius:8px;font-size:14px;color:#5F6672;cursor:pointer}.tab.on{background:#fff;color:#1E4A9A;font-weight:600}
 .pbtn.on{background:#DCE8FB;border-color:#B5CCF2}
-.stage{flex:1;display:flex;flex-direction:column;gap:16px}.stage.mid{justify-content:center}
+.stage{flex:1;display:flex;flex-direction:column;gap:16px}
 .card.big{padding:28px 32px}
 .card.big p{font-size:21px!important;line-height:1.9!important;margin:12px 0 6px}
 .card.note{padding:26px 32px 22px;border-radius:18px}
@@ -98,4 +98,4 @@ button.flc{cursor:pointer;font-size:13px;line-height:1.6}
 .pbtn:hover{background:#EEF4FD}
 .chip{border:0;background:transparent;padding:0;font:inherit;color:inherit;cursor:pointer}.chip:hover{text-decoration:underline}
 .row{display:flex;justify-content:space-between;align-items:center;min-height:44px;font-size:14px;border-bottom:1px solid #F0F0EC}.row:last-child{border:0}.row b{color:#1E4A9A}
-@media (max-width:760px){.app{flex-direction:column}.side{width:auto;position:static;height:auto}.feed{padding:20px 16px}}
+@media (max-width:760px), (max-width:1024px) and (pointer:coarse){.app{flex-direction:column}.feed{padding:20px 16px}}

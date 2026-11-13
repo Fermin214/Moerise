@@ -133,6 +133,10 @@ async function screenshot(page, name) {
   await mkdir(process.env.MOERISE_BROWSER_ARTIFACTS, { recursive: true });
   await page.screenshot({ path: join(process.env.MOERISE_BROWSER_ARTIFACTS, name), fullPage: true });
 }
+async function assertDiscoverySpacing(page, content) {
+  const heading = await page.locator('#view-title').boundingBox(), body = await content.boundingBox();
+  assert.ok(body.y - heading.y - heading.height < 100, 'Discovery content should follow the heading without a large blank area');
+}
 
 test('daily review exposes all six fixed positions, full text/images, unavailable items and detail return without read writes', { timeout: 60_000 }, async t => {
   const { page, state, url } = await fixture(t);
@@ -149,6 +153,7 @@ test('daily review exposes all six fixed positions, full text/images, unavailabl
   assert.match(await card(page).innerText(), /已不存在或无法访问/);
   assert.equal(await card(page).getByRole('button', { name: '打开笔记' }).count(), 0);
   await page.getByRole('button', { name: '第 6 / 6 条', exact: true }).click();
+  await assertDiscoverySpacing(page, card(page));
   await card(page).getByRole('button', { name: '打开笔记' }).click();
   await page.locator('article.note[data-name="memos/n5"]').waitFor();
   assert.equal(new URL(page.url()).searchParams.get('from'), '/review');
@@ -238,6 +243,7 @@ test('walk random start uses session CSRF, can continue past 100 notes, and rest
   const { page, state, url } = await fixture(t);
   await login(page, url, '/walk');
   await page.getByRole('button', { name: '随机开始', exact: true }).waitFor();
+  await assertDiscoverySpacing(page, page.locator('.walk-start'));
   state.rejectCSRF = true;
   await page.getByRole('button', { name: '随机开始', exact: true }).click();
   await card(page).filter({ hasText: '末尾文字 0' }).waitFor();
@@ -280,11 +286,17 @@ test('detail and review can start at the selected note; mobile cards keep full t
   await card(page).filter({ hasText: '末尾文字 0' }).waitFor();
   assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
   await screenshot(page, 'walk-mobile.png');
+  await page.locator('#navigation-toggle').click();
   await page.locator('a[data-route][href="/review"]').click();
   await page.getByRole('button', { name: '第 3 / 6 条', exact: true }).click();
+  await assertDiscoverySpacing(page, card(page));
+  await screenshot(page, 'review-mobile.png');
   await page.getByRole('button', { name: '从这条漫步', exact: true }).click();
   await page.locator('.discovery-note[data-name="memos/n2"]:visible').waitFor();
   assert.deepEqual(requests(state, '/walks/start').at(-1).body, { name: 'memos/n2' });
+  await page.getByRole('button', { name: '停止', exact: true }).click();
+  await assertDiscoverySpacing(page, page.locator('.walk-start'));
+  await screenshot(page, 'walk-start-mobile.png');
 });
 
 test('archived notes keep the insights entry and have no walk entry in detail or review', { timeout: 60_000 }, async t => {

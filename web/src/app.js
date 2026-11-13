@@ -3,8 +3,10 @@ import { Draft, readAttachments } from './draft.js';
 import { errorMessage as errorText } from './errors.js';
 import { pages, notePath, filters, timelineURL, listQuery, enhancedSearch, searchBody, safeFrom, detailURL, noteID, attachmentURL, rasterImage } from './routes.js';
 import { renderMarkdown } from './markdown.js';
+import { initShell } from './shell.js';
 
 const $ = id => document.getElementById(id);
+const shell = initShell();
 const draft = new Draft(), controllers = new Set(), snapshots = new Map();
 const editors = new Map(), pendingWrites = new Map(), failures = new Map();
 const sidebarTags = new Map(), sidebarCalendars = new Map();
@@ -121,6 +123,7 @@ function clearDrafts() {
   draftOwner = null;
 }
 function hidePrivate({ resume = false } = {}) {
+  shell.reset();
   if (resume) {
     draftOwner ||= identity?.user.name;
     for (const [name, operation] of pendingWrites) {
@@ -198,6 +201,7 @@ function rememberView(writeHistory = true) {
   if (snapshots.size > 12) snapshots.delete(snapshots.keys().next().value);
 }
 function navigate(url, { replace = false, returnKey = null } = {}) {
+  shell.closeNavigation();
   if (url === currentURL) return;
   clearTimeout(searchTimer);
   rememberView();
@@ -800,7 +804,7 @@ function discoveryCard(note, review = false, className = 'card big discovery-not
 function createDiscoveryPage(kind) {
   let alive = true, sequence = 0, controller = null, busy = false, failure = null, retry = null;
   let modelHint = '', configured = true;
-  const root = el('div', `stage mid discovery-page ${kind}-page`);
+  const root = el('div', `stage discovery-page ${kind}-page`);
   root.id = 'discovery-page';
   const active = ticket => alive && ticket === sequence;
   function cancel() {
@@ -1001,6 +1005,7 @@ async function routeModule(load, generation, sequence) {
 }
 async function showRoute() {
   if (!identity) return;
+  shell.closeNavigation();
   settingsPage?.destroy(); settingsPage = null;
   insightsPage?.destroy(); insightsPage = null;
   mapPage?.destroy(); mapPage = null;
@@ -1196,7 +1201,8 @@ document.addEventListener('click', event => {
 });
 document.addEventListener('keydown', event => {
   if (event.key === 'Escape') {
-    const open = document.querySelector('[aria-haspopup="menu"][aria-expanded="true"]'); closeMenus(); open?.focus();
+    const open = document.querySelector('[aria-haspopup="menu"][aria-expanded="true"]');
+    if (open) { event.preventDefault(); closeMenus(); open.focus(); }
   }
 });
 window.addEventListener('popstate', () => {
@@ -1204,10 +1210,7 @@ window.addEventListener('popstate', () => {
   currentURL = location.pathname + location.search; currentKey = history.state?.webKey || crypto.randomUUID();
   if (identity) showRoute();
 });
-$('mobile-filters').addEventListener('click', () => {
-  const open = document.querySelector('.side').classList.toggle('filters-open');
-  $('mobile-filters').setAttribute('aria-expanded', String(open));
-});
+$('navigation-dialog').addEventListener('close', closeMenus);
 window.addEventListener('scroll', () => {
   if (identity && isTimeline()) history.replaceState({ ...history.state, scroll: window.scrollY, pages: pageCount }, '');
 }, { passive: true });

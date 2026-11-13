@@ -1,6 +1,9 @@
 const noun = (count, singular, plural = singular + 's') => count === '1' ? singular : plural;
 
 export const english = {
+  "打开导航": "Open navigation",
+  "关闭导航": "Close navigation",
+  "收起搜索": "Close search",
   "{0} · 今天的 {1} 条旧笔记": p => `{0} · {1} old ${noun(p[1], "note")} for today`,
   "请求失败，请重试。": "Request failed. Please try again.",
   "语义搜索": "Semantic search",

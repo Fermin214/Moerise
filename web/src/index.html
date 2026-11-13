@@ -2,7 +2,7 @@
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="color-scheme" content="light">
   <title>Moerise</title>
   <link rel="icon" type="image/svg+xml" href="/favicon.svg">
@@ -25,9 +25,18 @@
     </div>
   </section>
   <div id="app" class="app" hidden>
-    <aside class="side">
-      <div style="display:flex;align-items:center;padding:4px 8px 2px;min-height:36px">
+    <header id="mobile-header" class="mobile-header">
+      <div class="mobile-toolbar">
+        <button id="navigation-toggle" class="btn" type="button" aria-label="打开导航" aria-controls="navigation-dialog" aria-expanded="false" aria-haspopup="dialog" data-i18n-aria-label="打开导航"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"></path></svg></button>
+        <b>Moerise</b>
+        <button id="search-toggle" class="btn" type="button" aria-label="搜索笔记" aria-controls="search-panel" aria-expanded="false" data-i18n-aria-label="搜索笔记"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6"></circle><path d="M20 20l-4.5-4.5"></path></svg></button>
+      </div>
+    </header>
+    <dialog id="navigation-dialog" class="navigation-dialog" aria-label="主导航" data-i18n-aria-label="主导航"></dialog>
+    <aside id="sidebar" class="side">
+      <div class="sidebar-heading">
         <b style="font-size:17px">Moerise</b><select class="language-select" data-language aria-label="语言" data-i18n-aria-label="语言"><option value="zh-CN">简体中文</option><option value="en">English</option></select>
+        <button id="navigation-close" class="btn mobile-only" type="button" aria-label="关闭导航" data-i18n-aria-label="关闭导航"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M6 18 18 6"></path></svg></button>
       </div>
       <nav aria-label="主导航" style="display:flex;flex-direction:column;gap:2px" data-i18n-aria-label="主导航">
         <a class="ent on" href="/" data-route aria-current="page" data-i18n="主页"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 6h14M5 12h14M5 18h9"></path></svg>主页</a>
@@ -37,22 +46,26 @@
         <a class="ent" href="/insights" data-route data-i18n="AI 洞察"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8zM18 16l.8 2.2L21 19l-2.2.8L18 22l-.8-2.2L15 19l2.2-.8z"></path></svg>AI 洞察</a>
         <a class="ent" href="/map" data-route data-i18n="认知地图"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><circle cx="6" cy="7" r="2.5"></circle><circle cx="18" cy="6" r="2.5"></circle><circle cx="12" cy="18" r="2.5"></circle><path d="M8.3 8.3l2.4 7.4M15.9 8l-2.8 7.8M8.5 7h7"></path></svg>认知地图</a>
       </nav>
-      <div class="sq" style="margin-top:6px">
-        <label class="sr" for="q" data-i18n="搜索笔记">搜索笔记</label><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6"></circle><path d="M20 20l-4.5-4.5"></path></svg>
-        <input id="q" type="search" placeholder="搜索笔记" data-i18n-placeholder="搜索笔记">
-      </div>
-      <label class="search-mode" for="search-mode" data-i18n="搜索方式">搜索方式
-        <select id="search-mode">
-          <option value="keyword" data-i18n="关键词">关键词</option>
-          <option value="semantic" data-i18n="语义">语义</option>
-          <option value="hybrid" data-i18n="混合">混合</option>
-        </select>
-      </label>
-      <button id="mobile-filters" class="ghost mobile-filter-toggle" type="button" aria-expanded="false" data-i18n="日历与标签">日历与标签</button>
+      <section id="search-panel" class="search-panel" aria-label="搜索笔记" data-i18n-aria-label="搜索笔记">
+        <div class="search-row">
+          <div class="sq">
+            <label class="sr" for="q" data-i18n="搜索笔记">搜索笔记</label><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6"></circle><path d="M20 20l-4.5-4.5"></path></svg>
+            <input id="q" type="search" placeholder="搜索笔记" data-i18n-placeholder="搜索笔记">
+          </div>
+          <button id="search-close" class="btn mobile-only" type="button" aria-label="收起搜索" data-i18n-aria-label="收起搜索"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M6 18 18 6"></path></svg></button>
+        </div>
+        <label class="search-mode" for="search-mode" data-i18n="搜索方式">搜索方式
+          <select id="search-mode">
+            <option value="keyword" data-i18n="关键词">关键词</option>
+            <option value="semantic" data-i18n="语义">语义</option>
+            <option value="hybrid" data-i18n="混合">混合</option>
+          </select>
+        </label>
+      </section>
       <section id="sidebar-calendar" aria-label="日历" style="display:flex;flex-direction:column;gap:4px" data-i18n-aria-label="日历">
         <div class="lab"><b id="calendar-title" style="font-size:13px;font-weight:600;color:#3A4049"></b><span style="display:flex">
-          <button id="month-prev" class="btn s" style="width:28px;height:28px" type="button" aria-label="上个月" data-i18n-aria-label="上个月"><svg class="i" style="width:16px;height:16px" viewBox="0 0 24 24" aria-hidden="true"><path d="M14 6l-6 6 6 6"></path></svg></button>
-          <button id="month-next" class="btn s" style="width:28px;height:28px" type="button" aria-label="下个月" data-i18n-aria-label="下个月"><svg class="i" style="width:16px;height:16px" viewBox="0 0 24 24" aria-hidden="true"><path d="M10 6l6 6-6 6"></path></svg></button>
+          <button id="month-prev" class="btn calendar-month" type="button" aria-label="上个月" data-i18n-aria-label="上个月"><svg class="i" style="width:16px;height:16px" viewBox="0 0 24 24" aria-hidden="true"><path d="M14 6l-6 6 6 6"></path></svg></button>
+          <button id="month-next" class="btn calendar-month" type="button" aria-label="下个月" data-i18n-aria-label="下个月"><svg class="i" style="width:16px;height:16px" viewBox="0 0 24 24" aria-hidden="true"><path d="M10 6l6 6-6 6"></path></svg></button>
         </span></div>
         <div id="calendar" class="hm"><span data-i18n="一">一</span><span data-i18n="二">二</span><span data-i18n="三">三</span><span data-i18n="四">四</span><span data-i18n="五">五</span><span data-i18n="六">六</span><span data-i18n="日">日</span></div>
       </section>

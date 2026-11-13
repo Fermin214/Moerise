@@ -243,6 +243,6 @@ test('English map labels and dates update without refetching notes or losing the
   assert.match(await card(page).locator('.note-content').textContent(), /完整笔记/);
   await page.setViewportSize({ width: 390, height: 844 });
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
-  await page.getByRole('button', { name: 'Calendar and tags', exact: true }).click();
+  await page.getByRole('button', { name: 'Open navigation', exact: true }).click();
   await page.getByRole('region', { name: 'Calendar', exact: true }).waitFor({ state: 'visible' });
 });

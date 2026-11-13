@@ -12,7 +12,7 @@ const runtime = process.env.MOERISE_PLAYWRIGHT_MODULE;
 const { chromium } = runtime ? await import(pathToFileURL(runtime).href) : await import('playwright');
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aP9sAAAAASUVORK5CYII=', 'base64');
 
-async function fixture(t, language = 'zh-CN') {
+async function fixture(t, language = 'zh-CN', options = {}) {
   const notes = new Map();
   for (let i = 0; i < 47; i++) {
     const id = `n${String(i).padStart(2, '0')}`;
@@ -153,7 +153,7 @@ async function fixture(t, language = 'zh-CN') {
     await Promise.all([core, live].map(server => new Promise(resolve => { server.close(resolve); server.closeAllConnections(); })));
   });
   browser = await chromium.launch({ headless: true, channel: process.env.MOERISE_PLAYWRIGHT_CHANNEL || undefined });
-  const context = await browser.newContext({ locale: language, viewport: { width: 1360, height: 960 } });
+  const context = await browser.newContext({ locale: language, viewport: { width: 1360, height: 960 }, ...options });
   const page = await context.newPage(), errors = [];
   await page.clock.setFixedTime(new Date('2026-10-30T04:00:00Z'));
   page.on('pageerror', err => errors.push(err.message));
@@ -212,6 +212,7 @@ test('browser explicit search modes, relevance pagination, filters, return and m
   await page.locator('[data-name="memos/n40"]').waitFor();
   assert.equal(await page.locator('#capability').isHidden(), true);
   await page.setViewportSize({ width: 390, height: 844 });
+  if (await page.locator('#q').isHidden()) await page.locator('#search-toggle').click();
   await page.locator('#search-mode').selectOption('hybrid');
   await page.locator('#capability', { hasText: '语义检索暂不可用' }).waitFor();
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
@@ -222,9 +223,11 @@ test('browser explicit search modes, relevance pagination, filters, return and m
   assert.equal(state.requests.findLast(request => request.path === '/search').body.state, 'ARCHIVED');
   state.searchDelay = 250;
   const delayed = page.waitForRequest(request => request.url().endsWith('/search'));
+  await page.locator('#search-toggle').click();
   await page.locator('#q').fill('迟到的查询');
   await page.locator('#q').press('Enter');
   await delayed;
+  await page.locator('#navigation-toggle').click();
   await page.locator('a[href="/"]').click();
   await page.locator('[data-name="memos/n00"]').waitFor();
   await page.waitForTimeout(350);
@@ -241,6 +244,124 @@ async function screenshot(page, filename) {
   await mkdir(process.env.MOERISE_SCREENSHOT_DIR, { recursive: true });
   await page.screenshot({ path: join(process.env.MOERISE_SCREENSHOT_DIR, filename), fullPage: false });
 }
+
+test('mobile navigation, touch gestures, search and rotation preserve drafts and keyboard access', { timeout: 60_000 }, async t => {
+  const { page, context, state, errors, url } = await fixture(t, 'zh-CN', {
+    viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true,
+  });
+  await page.goto(url); await login(page);
+  await page.locator('[data-name="memos/n00"]').waitFor();
+  const drawer = page.getByRole('dialog', { name: '主导航' });
+  const toggle = page.locator('#navigation-toggle'), search = page.locator('#q');
+  assert.equal(await drawer.isVisible(), false);
+  assert.equal(await search.isVisible(), false);
+  assert.equal((await page.locator('.mobile-toolbar').boundingBox()).height, 56);
+  assert.ok((await page.locator('#composer').boundingBox()).y < 90);
+  await page.locator('#content').fill('旋转与筛选保留这份草稿');
+  await page.locator('#content').blur();
+  await screenshot(page, 'home-touch.png');
+
+  await toggle.tap();
+  await drawer.waitFor({ state: 'visible' });
+  assert.equal(await page.locator('#navigation-close').evaluate(node => node === document.activeElement), true);
+  await page.locator('#calendar').waitFor({ state: 'visible' });
+  await drawer.evaluate(node => Promise.all(node.getAnimations().map(animation => animation.finished)));
+  await screenshot(page, 'navigation-mobile.png');
+  await page.locator('#user-menu').focus();
+  await page.keyboard.press('Tab');
+  assert.equal(await page.locator('#sidebar [data-language]').evaluate(node => node === document.activeElement), true);
+  await page.keyboard.press('Shift+Tab');
+  assert.equal(await page.locator('#user-menu').evaluate(node => node === document.activeElement), true);
+  await page.keyboard.press('Escape');
+  await drawer.waitFor({ state: 'hidden' });
+  assert.equal(await toggle.evaluate(node => node === document.activeElement), true);
+  await toggle.tap();
+  await page.touchscreen.tap(380, 120);
+  await drawer.waitFor({ state: 'hidden' });
+  await toggle.tap();
+  await page.locator('a[data-route][href="/"]').tap();
+  await drawer.waitFor({ state: 'hidden' });
+  assert.equal(await page.locator('#content').inputValue(), '旋转与筛选保留这份草稿');
+
+  await toggle.tap();
+  await page.locator('#tags button', { hasText: '#灵感' }).tap();
+  await drawer.waitFor({ state: 'hidden' });
+  await page.waitForURL('**/?tag=*');
+  await toggle.tap();
+  await page.locator('#calendar button[aria-label^="2026-10-29"]').tap();
+  await drawer.waitFor({ state: 'hidden' });
+  await page.waitForFunction(() => new URL(location.href).searchParams.get('date') === '2026-10-29');
+  assert.equal(await page.locator('#content').inputValue(), '旋转与筛选保留这份草稿');
+  await page.locator('#filters').getByRole('button', { name: '清除全部' }).tap();
+
+  await page.getByRole('button', { name: '搜索笔记', exact: true }).tap();
+  assert.equal(await search.evaluate(node => node === document.activeElement), true);
+  await search.fill('笔记 4'); await search.press('Enter');
+  await page.locator('[data-name="memos/n40"]').waitFor();
+  await page.locator('#search-mode').selectOption('hybrid');
+  await page.locator('[data-name="memos/n46"]').waitFor();
+  await screenshot(page, 'search-touch.png');
+  await page.getByRole('button', { name: '收起搜索', exact: true }).tap();
+  assert.equal(await search.isVisible(), false);
+  await page.locator('#search-toggle').tap();
+  assert.equal(await search.inputValue(), '笔记 4');
+  assert.equal(await page.locator('#search-mode').inputValue(), 'hybrid');
+  await page.keyboard.press('Escape');
+  assert.equal(await search.isVisible(), false);
+  assert.equal(await page.locator('#search-toggle').evaluate(node => node === document.activeElement), true);
+
+  const client = await context.newCDPSession(page);
+  const swipe = async (from, to) => {
+    await client.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: from[0], y: from[1], id: 1 }] });
+    await client.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x: to[0], y: to[1], id: 1 }] });
+    await client.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+  };
+  await swipe([8, 600], [10, 450]);
+  assert.equal(await drawer.isVisible(), false);
+  await swipe([8, 220], [125, 220]);
+  await drawer.waitFor({ state: 'visible' });
+  await drawer.evaluate(node => Promise.all(node.getAnimations().map(animation => animation.finished)));
+  await swipe([220, 220], [90, 220]);
+  await drawer.waitFor({ state: 'hidden' });
+
+  await toggle.tap();
+  await page.locator('#sidebar [data-language]').selectOption('en');
+  await page.getByRole('button', { name: 'Close navigation', exact: true }).tap();
+  await page.getByRole('button', { name: 'Search notes', exact: true }).tap();
+  await page.getByRole('button', { name: 'Close search', exact: true }).waitFor();
+  assert.equal(await search.inputValue(), '笔记 4');
+  await screenshot(page, 'search-en-mobile.png');
+  await page.getByRole('button', { name: 'Close search', exact: true }).tap();
+  for (const size of [{ width: 320, height: 568 }, { width: 430, height: 932 }, { width: 932, height: 430 }]) {
+    await page.setViewportSize(size);
+    await page.getByRole('button', { name: 'Open navigation', exact: true }).waitFor();
+    assert.equal(await search.isVisible(), false);
+    assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+  }
+  await screenshot(page, 'home-landscape.png');
+  await toggle.tap();
+  await page.locator('#user-menu').scrollIntoViewIfNeeded();
+  assert.ok((await page.locator('#user-menu').boundingBox()).y < 430);
+  await page.getByRole('button', { name: 'Close navigation', exact: true }).tap();
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await search.waitFor({ state: 'visible' });
+  assert.equal(await page.locator('#mobile-header').isVisible(), false);
+  assert.equal(await search.inputValue(), '笔记 4');
+  await search.focus();
+  await page.setViewportSize({ width: 390, height: 844 });
+  await search.waitFor({ state: 'visible' });
+  assert.equal(await search.evaluate(node => node === document.activeElement), true);
+  assert.equal(await page.locator('#content').inputValue(), '旋转与筛选保留这份草稿');
+
+  await toggle.tap();
+  state.session = false;
+  await page.locator('#month-next').tap();
+  await page.locator('#login-form').waitFor({ state: 'visible' });
+  assert.equal(await page.locator('#navigation-dialog').isVisible(), false);
+  assert.notEqual(await page.evaluate(() => getComputedStyle(document.documentElement).overflow), 'hidden');
+  assert.equal(await page.locator('#notes').textContent(), '');
+  assert.deepEqual(errors, []);
+});
 
 test('browser timeline management, attachment retries, history, conflicts and private cleanup', { timeout: 120_000 }, async t => {
   const { page, context, state, errors, url } = await fixture(t);
@@ -368,11 +489,13 @@ test('browser timeline management, attachment retries, history, conflicts and pr
   await page.setViewportSize({ width: 390, height: 844 });
   await page.evaluate(() => scrollTo(0, 0));
   await screenshot(page, 'mobile.png');
-  await page.locator('#mobile-filters').click();
+  await page.locator('#navigation-toggle').click();
   await page.locator('#calendar').waitFor({ state: 'visible' });
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
+  await page.locator('#navigation-close').click();
   await page.locator('#content').fill('退出应清理的草稿');
   await page.locator('#attachment-input').setInputFiles({ name: 'private.txt', mimeType: 'text/plain', buffer: Buffer.from('private') });
+  await page.locator('#navigation-toggle').click();
   await page.locator('#user-menu').click();
   await page.locator('#logout').click();
   await page.locator('#login-form').waitFor({ state: 'visible' });

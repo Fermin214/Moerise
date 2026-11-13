@@ -86,6 +86,7 @@ flowchart TD
 | 路径 | 用途 |
 | --- | --- |
 | `web/src/app.js` | 页面启动、会话、笔记列表、编辑与附件交互 |
+| `shell.js` | 桌面与手机布局切换、导航侧栏、搜索展开与触控手势 |
 | `routes.js`、`draft.js`、`errors.js` | 导航状态、草稿恢复与错误文案 |
 | `settings.js`、`insights.js`、`map.js` | 按需加载的设置、AI 洞察和地图页面 |
 | `chat-stream.js`、`markdown.js` | SSE 消息解析与 Markdown 渲染 |

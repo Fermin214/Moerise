@@ -15,6 +15,7 @@ const assets = new Map([
   ['/i18n.js', ['i18n.js', 'text/javascript; charset=utf-8']],
   ['/en.js', ['en.js', 'text/javascript; charset=utf-8']],
   ['/app.js', ['app.js', 'text/javascript; charset=utf-8']],
+  ['/shell.js', ['shell.js', 'text/javascript; charset=utf-8']],
   ['/draft.js', ['draft.js', 'text/javascript; charset=utf-8']],
   ['/errors.js', ['errors.js', 'text/javascript; charset=utf-8']],
   ['/routes.js', ['routes.js', 'text/javascript; charset=utf-8']],
