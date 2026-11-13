@@ -1,7 +1,5 @@
 # Moerise Web 集成与系统设计
 
-[English](DESIGN.en.md)
-
 本文档阐述 Moerise Web 客户端的系统集成设计、前后端通信契约以及核心交互模块的技术实现方案。
 
 ---
@@ -46,7 +44,7 @@ flowchart LR
   - 设置 `HttpOnly` 防止 XSS 窃取，设置 `SameSite=Lax` 防止跨站伪造，设置 `Path=/`。
 - **CSRF 双重防御**：
   - 登录成功后，Core 向前端返回唯一的 `csrf_token`，仅保存在浏览器运行内存中。
-  - 所有写请求（POST / PATCH / DELETE）必须同时提供 `X-CSRF-Token` 请求头，并且 `Origin` 请求头必须精确匹配配置的 `web.public_origin`。
+  - 登录请求校验 `Origin`；登录后的非只读请求（POST / PATCH / DELETE）还需提供 `X-CSRF-Token`，且 `Origin` 必须精确匹配配置的 `web.public_origin`。
 
 ### 2. 请求幂等性设计
 

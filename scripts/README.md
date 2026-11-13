@@ -1,7 +1,5 @@
 # Moerise 开发脚本
 
-[English](README.en.md)
-
 所有命令从仓库根目录运行。脚本按联合验收、性能评测和共用工具分类；基础测试入口见[开发指南](../docs/DEVELOPMENT.md)。
 
 ---

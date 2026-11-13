@@ -1,7 +1,5 @@
 # Moerise 每日回顾
 
-[English](DAILY-REVIEW.en.md)
-
 每日回顾（Daily Review）旨在让用户过去写下的思考、灵感摘录与日常速记自然地重新浮现，帮助发现曾经关注的问题与不同时期思想之间的潜在联系。
 
 ---

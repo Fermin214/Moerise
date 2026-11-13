@@ -1,7 +1,5 @@
 # Moerise 运行、维护与恢复指南
 
-[English](OPERATIONS.en.md)
-
 Moerise 支持 Linux 原生二进制运行以及 Docker 容器部署。本文档提供生产环境配置、容器化编排、服务器资源规格推荐、数据备份恢复及索引重建的完整运维指导。
 
 ---

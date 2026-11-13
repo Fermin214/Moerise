@@ -1,40 +1,36 @@
-# Contributing to Moerise
+# 参与 Moerise 贡献
 
-[简体中文](CONTRIBUTING.zh-CN.md)
+欢迎使用中文或英文提交 Issue、Pull Request 与架构讨论。
 
-We welcome issues, pull requests, and architecture discussions in English or Simplified Chinese.
+报告问题时，说明操作步骤、预期行为、实际结果，以及 Moerise 和 Memos 版本。示例中去除凭据与私人笔记内容。
 
-When reporting bugs, please provide a clear reproduction: explain what you attempted, the expected outcome, the actual result, and the relevant Moerise and Memos versions. Never include private credentials or confidential note content in issues or pull requests.
-
-For major feature proposals, open an issue first to discuss the requirements and design before writing code. For bug fixes, include tests or clear verification steps demonstrating the fix.
+较大的功能提议先通过 Issue 讨论需求与设计；修复问题时提供能够复现与验证结果的步骤或测试。
 
 ---
 
-## Development Setup
+## 开发环境
 
-The development environment requires Linux or Linux containers, Go 1.27+, Node.js 24+, and npm. Docker Engine is required for integration tests running against a real Memos container. Standard unit tests and Web frontend builds do not require Docker, a live Memos instance, or third-party model credentials.
+使用 Linux 或 Linux 容器、Go 1.27+、Node.js 24+ 与 npm。真实 Memos 集成测试需要 Docker；常规单元测试与 Web 构建无需 Docker、在线 Memos 或模型凭据。
 
 ```bash
-# Download Go dependencies
+# 下载 Go 依赖
 go mod download
 
-# Install frontend dependencies and build
+# 安装并构建前端
 npm --prefix web ci
 npm --prefix web run build
 
-# Run Go unit tests and frontend unit tests
+# 后端与前端单元测试
 go test ./...
 npm --prefix web test
 ```
 
-### Running from Source
+### 从源码运行
 
-To run Moerise Core from source:
-
-1. Copy `config.example.json` to `.local/config.json`.
-2. Configure a dedicated test Memos instance and set isolated directories for `.local/state` and `.local/index`.
-3. Set `web.enabled` to `true`, configure `web.public_origin`, and generate a 32-byte base64 state encryption key.
-4. Start Core and the Web dev server:
+1. 复制 `config.example.json` 到 `.local/config.json`。
+2. 配置独立测试 Memos，将数据目录设为 `.local/state` 与 `.local/index`。
+3. 启用 `web.enabled`，设置 `web.public_origin`，生成独立的 32 字节 Base64 状态加密密钥。
+4. 启动 Core 与 Web：
 
 ```bash
 go run . check-config
@@ -43,56 +39,51 @@ npm --prefix web run build
 npm --prefix web start
 ```
 
-By default, Moerise Core listens on port `8787` and Web listens on port `3000`. Web's `PUBLIC_ORIGIN` must match Core's `web.public_origin`. Web forwards `/api/app/v1` calls to `CORE_ORIGIN` (defaults to `http://127.0.0.1:8787`). Web serves compiled assets from `web/dist`, so rebuild the frontend after editing source files. See [Development Guide](docs/DEVELOPMENT.en.md) for full details on integration suites and test scripts.
+Core 默认监听 8787，Web 默认监听 3000。Web 的 `PUBLIC_ORIGIN` 必须匹配 Core 的 `web.public_origin`。`CORE_ORIGIN` 指定固定上游，默认 `http://127.0.0.1:8787`。Web 提供 `web/dist` 产物，源码修改后需重新构建。完整流程见[开发指南](docs/DEVELOPMENT.md)。
 
 ---
 
-## Codebase Organization
+## 代码结构
 
-See the [Codebase Guide](docs/CODEBASE.en.md) for module groups and reading order.
+完整模块分组与阅读顺序见[代码导览](docs/CODEBASE.md)。
 
-| Path | Purpose |
+| 路径 | 职责 |
 | --- | --- |
-| `main.go`, `internal/` | CLI commands, Go background services, HTTP APIs, and platform adapters |
-| `internal/openapi.json` | Embedded OpenAPI v3 specification |
-| `internal/migrations/` | Versioned SQLite migrations for `state.sqlite3` and `index.sqlite3` |
-| `web/src/` | Lightweight vanilla JavaScript/HTML/CSS frontend (zero runtime dependencies) |
-| `web/server.mjs`, `web/build.mjs` | Static file server, same-origin proxy, and asset build scripts |
-| `web/test/` | Node.js unit tests and Playwright browser integration tests |
-| `tests/` | End-to-end integration tests using live Memos containers |
-| `scripts/` | Joint acceptance, performance evaluation, and shared utilities; see the [script guide](scripts/README.en.md) |
-| `docs/` | Comprehensive technical, operational, and API documentation |
+| `main.go`、`internal/` | 命令行、共享服务、HTTP API 与平台适配 |
+| `internal/openapi.json` | 内嵌 OpenAPI v3 契约 |
+| `internal/migrations/` | 状态库与索引库的版本化 SQLite 迁移 |
+| `web/src/` | 无第三方运行依赖的 JavaScript、HTML 与 CSS 前端 |
+| `web/server.mjs`、`web/build.mjs` | 静态服务、同源代理与构建 |
+| `web/test/` | Node 单元测试与 Playwright 浏览器测试 |
+| `tests/` | 真实 Memos 集成测试 |
+| `scripts/` | 联合验收、性能评测与共用工具，见[脚本说明](scripts/README.md) |
+| `docs/` | 产品、架构、接口与运维文档 |
 
-### Key Development Guidelines
+### 开发约定
 
-1. **Memos Authority**: Memos remains the single source of truth for notes, tags, media attachments, and authentication. Always interact with Memos through its official APIs, respecting the author boundaries bound to the instance.
-2. **Dual-Database Invariant**: `state.sqlite3` holds irreplaceable application state (settings, chat sessions, review history); `index.sqlite3` holds disposable indexes that must be rebuildable from Memos at any time.
-3. **Database Migrations**: Add numbered SQL files in `internal/migrations/` for schema changes. Never modify an existing, committed migration.
-4. **Read-Only External Access**: External machine interfaces (`/api/ext/v1` and `/mcp`) are strictly read-only. Note writes use the owner's authenticated client session or internal dedicated capture services.
+1. **Memos 权威来源**：笔记、标签、附件与身份只通过官方 API 访问，所有操作遵守绑定作者范围。
+2. **双库边界**：`state.sqlite3` 保存需要备份的设置、聊天与回顾等产品状态；`index.sqlite3` 必须可以从 Memos 重建。
+3. **数据库迁移**：结构变化新增编号 SQL 文件，保持已应用迁移不变。
+4. **外部只读**：机器 REST/MCP 严格只读；笔记写入由本人会话客户端与内部专用记录服务提供。
 
 ---
 
-## Verifying Changes
+## 验证改动
 
-Before submitting pull requests, run the test suites relevant to your modifications:
+按改动范围选择已有检查：
 
 ```bash
-# Code formatting and static analysis
 go vet ./...
 gofmt -l main.go internal tests
-
-# Go unit tests
 go test ./...
-
-# Frontend build and unit tests
 npm --prefix web run build
 npm --prefix web test
 
-# Playwright browser end-to-end tests (requires Chromium)
+# 浏览器端到端流程
 cd web && npx playwright install chromium && npm run test:browser
 ```
 
-For changes affecting Memos synchronization, protocol handling, or backups, run the integration test suite with Docker running:
+同步、Memos 协议与备份恢复变化，在 Docker 可用时运行：
 
 ```bash
 go test -tags=integration ./tests -v -count=1
@@ -100,26 +91,21 @@ go test -tags=integration ./tests -v -count=1
 
 ---
 
-## Working with Translations
+## 界面国际化
 
-Moerise supports English and Simplified Chinese. The translation layer resides in `web/src/i18n.js`:
-- Chinese source phrases serve as message keys; `web/src/en.js` maps keys to English messages.
-- Missing translations automatically fall back to the source Chinese string.
-- If the browser language is neither Chinese nor English, the UI defaults to English.
+Web 支持简体中文与英语，翻译层位于 `web/src/i18n.js`：
 
-### Internationalization Guidelines
+- 中文源文案作为消息键，`web/src/en.js` 提供英语对应文案。
+- 缺失翻译回退到中文源文案。
+- 浏览器语言未匹配中文时使用英文。
 
-- Use `l('中文文案', { name: value })` for parameterized messages bound via `setText` or `setAttr`. Use named placeholders so translators can adapt word order.
-- Annotate static elements in HTML templates with `data-i18n`. Use `data-i18n-placeholder` or `data-i18n-aria-label` for accessibility attributes.
-- Avoid dynamic string concatenation. Always use full message keys with placeholders.
-- Translate interface controls and notifications only. Never translate user note bodies, tags, filenames, custom prompts, or chat conversation records.
+### 界面翻译规范
 
-### Documentation Translations
+- 使用 `l('中文文案', { name: value })`，通过 `setText` 或 `setAttr` 绑定；使用完整文案与占位符，让译文能够调整语序。
+- 静态元素标注 `data-i18n`，输入提示与辅助名称使用 `data-i18n-placeholder`、`data-i18n-aria-label` 等属性。
+- 避免动态拼接消息；保留图标、快捷键与可访问性信息。
+- 仅翻译控件和系统提示，笔记正文、标签、文件名、自定义 Prompt 与历史聊天保持原样。
 
-Public documentation uses separate English and Chinese files, listed in the [Documentation Index](docs/README.md). Update both versions when behavior, parameters, or commands change. Follow the existing structure and writing style, and preserve variable names, API paths, protocol fields, and code identifiers.
+## 开源协议
 
----
-
-## License
-
-All contributions are licensed under the project's [MIT License](LICENSE).
+贡献内容遵循项目的 [MIT License](LICENSE)。

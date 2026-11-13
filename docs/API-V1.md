@@ -1,7 +1,5 @@
 # Moerise API v1 规范
 
-[English](API-V1.en.md)
-
 Moerise 服务端提供两组 RESTful API 以及一个 Model Context Protocol (MCP) 接口：
 
 1. **客户端应用接口 (`/api/app/v1`)**：面向 Moerise Web 及未来的移动客户端，基于同源 Cookie 与 CSRF Token 鉴权。

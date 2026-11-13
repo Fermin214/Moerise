@@ -1,7 +1,5 @@
 # Moerise Web 客户端指南
 
-[English](WEB.en.md)
-
 Moerise Web 是独立构建的高性能现代化浏览器客户端。它采用纯粹的原生技术栈（Vanilla JavaScript、HTML5 与 CSS3）构建，无冗余庞大的运行时框架依赖，开箱即用，轻快优雅。
 
 ---

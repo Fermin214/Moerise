@@ -1,7 +1,5 @@
 # Moerise 路线图
 
-[English](ROADMAP.en.md)
-
 本文档记录 Moerise 的产品演进阶段、已交付核心能力以及未来的开发规划。
 
 ---

@@ -1,7 +1,5 @@
 # Moerise 通知调度与发送队列
 
-[English](NOTIFICATIONS.en.md)
-
 Moerise 内置统一的通知调度器与持久发送队列（`internal/notifications.go`），负责驱动每日回顾的定时分发、长正文分片、平台重试以及异常交付确认。所有任务状态均持久化存储于 `state.sqlite3`，即使重建索引或重启服务也不会丢失调度记录。
 
 ---

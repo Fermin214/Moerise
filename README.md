@@ -2,7 +2,7 @@
 
 **基于 Memos 的单用户自托管个人笔记增强系统。**
 
-[English](README.en.md) · [快速上手](docs/GETTING-STARTED.zh-CN.md) · [运行与恢复](docs/OPERATIONS.md) · [API 文档](docs/API-V1.md) · [参与贡献](CONTRIBUTING.zh-CN.md)
+[English](README.en.md) · [快速上手](docs/GETTING-STARTED.md) · [运行与恢复](docs/OPERATIONS.md) · [API 文档](docs/API-V1.md) · [参与贡献](CONTRIBUTING.md)
 
 ---
 
@@ -84,8 +84,30 @@ docker compose up -d memos
 
 1. 打开浏览器访问 `http://localhost:5231`，完成 Memos 初始账户注册。
 2. 在 Memos「设置」→「访问令牌」中生成一个个人访问令牌 (PAT)。
-3. 请求 `http://localhost:5231/api/v1/auth/me`（携带 PAT），获取你的用户资源名（格式如 `users/abc123`）。
-4. 在 `.env` 中填入 Memos 令牌、用户资源名以及生成的加密密钥（详见[快速上手指南](docs/GETTING-STARTED.zh-CN.md)）。
+3. 携带 PAT 查询作者资源名，记录响应中的 `user.name`（格式如 `users/abc123`）：
+
+   ```bash
+   curl -H "Authorization: Bearer <你的-PAT>" http://localhost:5231/api/v1/auth/me
+   ```
+
+4. 在 `.env` 中设置：
+
+| 变量 | 内容 |
+| --- | --- |
+| `MOERISE_MEMOS_TOKEN` | Memos PAT |
+| `MOERISE_MEMOS_USER` | 上一步返回的完整 `user.name` |
+| `MOERISE_MEMOS_INSTANCE_ID` | 唯一且稳定的实例标识，如 `primary-memos` |
+| `MOERISE_ACCESS_TOKEN` | 外部 REST/MCP 的独立访问密钥 |
+| `MOERISE_CURSOR_SECRET` | 分页签名的独立随机密钥 |
+| `MOERISE_STATE_ENCRYPTION_KEY` | 加密持久凭据的 32 字节 Base64 密钥 |
+
+分别生成三个独立密钥，并填入对应变量：
+
+```bash
+openssl rand -hex 32     # MOERISE_ACCESS_TOKEN
+openssl rand -hex 32     # MOERISE_CURSOR_SECRET
+openssl rand -base64 32  # MOERISE_STATE_ENCRYPTION_KEY
+```
 
 ### 2. 启动完整服务
 
@@ -102,16 +124,16 @@ docker compose up -d
 
 ## 文档导航
 
-[中英文文档索引](docs/README.md)
+[文档索引](docs/README.md)
 
 | 领域 | 文档 | 说明 |
 | --- | --- | --- |
-| **入门与部署** | [快速上手](docs/GETTING-STARTED.zh-CN.md) | 从零安装与初始化流程 |
+| **入门与部署** | [快速上手](docs/GETTING-STARTED.md) | 从零安装与初始化流程 |
 | | [运行与恢复](docs/OPERATIONS.md) | 生产部署、配置参数、资源配置档位、数据备份与升级回滚 |
 | **功能指南** | [Web 界面](docs/WEB.md) | 界面交互、双语偏好、同源架构与安全模型 |
 | | [每日回顾](docs/DAILY-REVIEW.md) | 回顾抽取算法、全天计划分时分配与无压力交互 |
 | | [飞书接入](docs/FEISHU.md) | 飞书应用机器人私聊速记与群 Webhook 定时推送 |
-| | [Telegram 接入](docs/TELEGRAM.zh-CN.md) | Telegram 机器人定时回顾推送配置 |
+| | [Telegram 接入](docs/TELEGRAM.md) | Telegram 机器人定时回顾推送配置 |
 | | [AI 对话与洞察](docs/AI.md) | LLM 接入协议、上下文规模控制、Prompt 配置与连接诊断 |
 | | [向量与语义检索](docs/EMBEDDING.md) | Embedding 模型适配（OpenAI / 百炼）、分块与向量构建 |
 | | [检索系统](docs/SEARCH.md) | FTS5 中文关键词分词、余弦相似度检索与 RRF 融合排序 |
@@ -123,7 +145,6 @@ docker compose up -d
 | | [API 规范](docs/API-V1.md) | 客户端 `/api/app/v1` 与开放机器 `/api/ext/v1`、`/mcp` 接口契约 |
 | | [开发指南](docs/DEVELOPMENT.md) | 本地研发环境配置、测试执行与代码检查 |
 | | [产品路线图](docs/ROADMAP.md) | 已交付能力与未来版本演进规划（含 Android 客户端） |
-| | [产品需求](docs/PRD.md) | 产品定位、功能规格与入口边界 |
 
 ---
 

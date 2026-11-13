@@ -1,7 +1,5 @@
 # Moerise 系统设置与动态凭据管理
 
-[English](SETTINGS.en.md)
-
 Moerise 采用分层配置与版本化持久设置架构：底层基础设施参数由部署环境管理，而日常偏好与模型凭据可在 Web 界面动态调整并加密持久化。
 
 ---
@@ -34,7 +32,7 @@ Moerise 采用分层配置与版本化持久设置架构：底层基础设施参
 
 ### 2. 增量更新设置
 - 请求：`PATCH /api/app/v1/settings`
-- 携带读取到的版本号 `version`、需要修改的字段以及密钥操作动作。
+- 携带读取到的版本号 `version`，在 `settings` 中提交需要修改的字段，在 `secrets` 中提交密钥操作动作。
 - **密钥操作指令**：
   - `{"action":"keep"}`：保持原密钥；
   - `{"action":"replace","value":"新密钥"}`：替换密钥；

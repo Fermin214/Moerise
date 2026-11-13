@@ -1,7 +1,5 @@
 # Moerise 产品与架构
 
-[English](PRODUCT-ARCHITECTURE.en.md)
-
 Moerise 是基于 Memos 的单用户自托管个人笔记增强服务。Moerise Core 负责同步、索引、回顾调度、检索算法与模型适配，通过现代化 Web 界面、只读 REST/MCP 接口以及消息渠道（Telegram、飞书）提供全方位能力。
 
 ---

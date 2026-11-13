@@ -1,7 +1,5 @@
 # Moerise 代码导览
 
-[English](CODEBASE.en.md)
-
 本指南介绍仓库布局、服务依赖与常见改动入口。产品行为见[产品与架构](PRODUCT-ARCHITECTURE.md)，环境准备和测试命令见[开发指南](DEVELOPMENT.md)。
 
 ---
@@ -52,7 +50,7 @@ flowchart TD
 | `scripts/lib/` | 脚本共用的进程管理工具及测试 |
 | `deploy/resources/` | 按 CPU 核数和内存划分的 Compose 资源配置档位 |
 | `.github/workflows/` | Go、Web、浏览器和真实 Memos 的 CI 检查 |
-| `docs/` | 成对的中英文产品、开发、接口与运维文档 |
+| `docs/` | 产品、开发、接口与运维文档 |
 
 根目录保留通用入口：`Dockerfile` 和 `compose.yaml` 定义部署，`.env.example` 与 `config.example.json` 提供配置模板，`go.mod`/`go.sum` 固定 Go 依赖。`.dockerignore`、`.gitignore`、`.gitattributes` 分别约束构建上下文、版本管理和文本格式。`LICENSE`、`CONTRIBUTING*` 与 `AGENTS.md` 说明许可证和贡献约定。
 
@@ -110,4 +108,4 @@ flowchart TD
 | 推送渠道 | 通知队列、共享回顾分片、平台适配与[通知文档](NOTIFICATIONS.md) |
 | 界面文字 | 中文源文案、`en.js` 和对应浏览器流程 |
 
-新增工具先放到用途相符的脚本目录，并补充[脚本说明](../scripts/README.md)。新增公开文档在[文档导航](README.md)登记中英文入口。测试按功能命名，生成报告写入 `.local/`。
+新增工具先放到用途相符的脚本目录，并补充[脚本说明](../scripts/README.md)。新增公开文档在[文档导航](README.md)登记入口。测试按功能命名，生成报告写入 `.local/`。

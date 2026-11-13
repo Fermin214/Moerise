@@ -1,41 +1,42 @@
-# Getting Started with Moerise
+# Moerise 快速上手
 
-[Product Overview](../README.en.md) · [简体中文](GETTING-STARTED.zh-CN.md)
+[产品介绍](../README.md)
 
-Moerise runs on Linux natively or via Docker Linux containers. Docker deployment requires Docker Engine and Docker Compose (2.24 or later), using versioned AMD64/ARM64 images from GHCR. The bundled stack includes Memos 0.31.x, Moerise Core, and the Moerise Web frontend. Each Moerise instance connects to one author on a Memos instance.
+Moerise 支持 Linux 原生二进制与 Docker Linux 容器。容器部署需要 Docker Engine 和 Docker Compose 2.24 或更高版本，直接拉取 GHCR 的 AMD64/ARM64 版本镜像。一体化服务包含 Memos 0.31.x、Moerise Core 与 Web，每个 Moerise 实例绑定一名 Memos 作者。
 
 ---
 
-## 1. Start with a New Memos Instance
+## 一、使用新的 Memos 实例
 
-Run these commands from the repository root:
+在仓库根目录执行：
 
 ```bash
 cp .env.example .env
 docker compose up -d memos
 ```
 
-1. Open `http://localhost:5231` in your browser and register your Memos account.
-2. In Memos **Settings → Access Tokens**, generate a Personal Access Token (PAT).
-3. Request the Memos profile endpoint to find your exact author resource name:
+1. 打开 `http://localhost:5231`，注册 Memos 账户。
+2. 在 Memos「设置」→「访问令牌」中生成个人访问令牌 (PAT)。
+3. 携带 PAT 查询作者资源名：
+
    ```bash
-   curl -H "Authorization: Bearer <your-PAT>" http://localhost:5231/api/v1/auth/me
+   curl -H "Authorization: Bearer <你的-PAT>" http://localhost:5231/api/v1/auth/me
    ```
-   Note the `user.name` property in the JSON response (e.g. `users/abc123`). This is the system resource identifier, distinct from your sign-in username.
 
-4. Edit `.env` to configure your instance:
+   记录响应中的 `user.name`（如 `users/abc123`），这是资源标识，与登录用户名不同。
+4. 编辑 `.env`：
 
-| Variable | Description |
+| 变量 | 说明 |
 | --- | --- |
-| `MOERISE_MEMOS_TOKEN` | Your Memos PAT |
-| `MOERISE_MEMOS_USER` | The exact `user.name` string from `/api/v1/auth/me` |
-| `MOERISE_MEMOS_INSTANCE_ID` | A stable, unique identifier for this instance (e.g. `primary-memos`) |
-| `MOERISE_TIMEZONE` | IANA timezone (e.g. `Asia/Shanghai`, `Europe/London`, `America/New_York`) |
-| `MOERISE_ACCESS_TOKEN` | Independent secret token for external machine/MCP access |
-| `MOERISE_CURSOR_SECRET` | Independent random secret used for pagination signatures |
-| `MOERISE_STATE_ENCRYPTION_KEY` | Base64-encoded 32-byte key for encrypting stored credentials |
+| `MOERISE_MEMOS_TOKEN` | Memos PAT |
+| `MOERISE_MEMOS_USER` | `/api/v1/auth/me` 返回的完整 `user.name` |
+| `MOERISE_MEMOS_INSTANCE_ID` | 唯一且稳定的实例标识，如 `primary-memos` |
+| `MOERISE_TIMEZONE` | IANA 时区，如 `Asia/Shanghai`、`Europe/London` |
+| `MOERISE_ACCESS_TOKEN` | 外部机器 REST/MCP 的独立访问密钥 |
+| `MOERISE_CURSOR_SECRET` | 分页签名的独立随机密钥 |
+| `MOERISE_STATE_ENCRYPTION_KEY` | 加密持久凭据的 32 字节 Base64 密钥 |
 
-Generate independent cryptographic keys using OpenSSL:
+分别生成三个独立密钥：
 
 ```bash
 openssl rand -hex 32     # MOERISE_ACCESS_TOKEN
@@ -44,9 +45,9 @@ openssl rand -base64 32  # MOERISE_STATE_ENCRYPTION_KEY
 ```
 
 > [!IMPORTANT]
-> Keep your `.env` and `MOERISE_STATE_ENCRYPTION_KEY` safely backed up. If the encryption key is lost, encrypted provider credentials and notification secrets cannot be recovered.
+> 妥善备份 `.env` 与 `MOERISE_STATE_ENCRYPTION_KEY`。主密钥丢失后，无法恢复已加密的模型和渠道凭据。
 
-5. Start the complete stack:
+5. 启动完整服务：
 
 ```bash
 docker compose pull moerise web
@@ -55,16 +56,16 @@ docker compose ps
 curl --fail http://localhost:3000/health/ready
 ```
 
-Open `http://localhost:3000` and sign in using your bound Memos account's username and password. Memos must allow password sign-in. The interface detects your browser language preference; you can toggle between English and 简体中文 via the sidebar or login page.
+打开 `http://localhost:3000`，使用绑定的 Memos 账户名和密码登录。Memos 需允许密码登录。界面自动匹配浏览器语言，也可在登录页或侧栏切换简体中文与英语。
 
 ---
 
-## 2. Connect to an Existing Memos Instance
+## 二、连接已有 Memos 实例
 
-To connect Moerise to a pre-existing Memos (0.31.x) instance:
+已有实例需为 Memos 0.31.x：
 
-1. Obtain the PAT and `user.name` for the target author account.
-2. In `.env`, set:
+1. 获取目标作者的 PAT 与 `user.name`。
+2. 在 `.env` 中设置：
 
 ```dotenv
 COMPOSE_PROFILES=
@@ -72,10 +73,10 @@ MOERISE_MEMOS_BASE_URL=https://memos.example.com
 MOERISE_MEMOS_PUBLIC_URL=https://memos.example.com
 ```
 
-- `MOERISE_MEMOS_BASE_URL`: The URL reachable from inside the Moerise Core container.
-- `MOERISE_MEMOS_PUBLIC_URL`: The public-facing URL your browser uses to open original Memos links.
+- `MOERISE_MEMOS_BASE_URL`：Core 容器内可访问的 Memos 地址。
+- `MOERISE_MEMOS_PUBLIC_URL`：浏览器打开 Memos 原文时使用的地址。
 
-3. Fill in the remaining required secrets (`MOERISE_ACCESS_TOKEN`, `MOERISE_CURSOR_SECRET`, `MOERISE_STATE_ENCRYPTION_KEY`) and launch with:
+3. 填入作者绑定及独立密钥后启动：
 
 ```bash
 docker compose pull moerise web
@@ -84,63 +85,63 @@ docker compose up -d
 
 ---
 
-## 3. Configuring Optional Features
+## 三、配置可选功能
 
-Core writing, reading, keyword search, and daily reviews work immediately without third-party models or messaging integrations. Open **Settings** in the Web UI to enable optional services:
+基础记录、阅读、关键词筛选和每日回顾无需第三方模型或消息渠道。在 Web「设置」中启用增强能力：
 
-- **Embeddings:** Configure an OpenAI-compatible endpoint or Alibaba Bailian DashScope. Verify the connection, then wait for the semantic index build to complete. This activates semantic search, hybrid search, the random walk, and the cognitive map.
-- **LLM:** Configure OpenAI Chat Completions, OpenAI Responses, or Anthropic Messages. Verify connectivity. In AI Insights, select notes and start multi-turn discussions. Embeddings are not required for chat.
-- **Messaging Channels:** Choose [Telegram](TELEGRAM.md) for scheduled review delivery in English, or [Feishu](FEISHU.en.md) for Chinese delivery and note capturing. New installations start with messaging disabled.
+- **向量模型**：配置 OpenAI 兼容接口或百炼 DashScope，检查连接并等待索引构建完成，随后可使用语义搜索、混合搜索、随机漫步与认知地图。
+- **大语言模型**：配置 OpenAI Chat Completions、OpenAI Responses 或 Anthropic Messages，检查连接后在 AI 洞察中选择笔记并展开对话。聊天无需 Embedding。
+- **消息渠道**：[Telegram](TELEGRAM.md) 提供英文标题的回顾推送，[飞书](FEISHU.md) 提供中文回顾与私聊记录。新安装默认不启用渠道。
 
 ---
 
-## 4. Reverse Proxy & HTTPS Deployment
+## 四、反向代理与 HTTPS
 
-Default Compose bindings expose ports to the local loopback interface. For production deployments with public domains, place an HTTPS reverse proxy (such as Nginx, Caddy, or Traefik) in front of Moerise Web and set:
+Compose 默认端口绑定回环地址。公网部署时，在 Web 前配置 Nginx、Caddy 或 Traefik 等 HTTPS 反向代理，并设置：
 
 ```dotenv
 MOERISE_PUBLIC_ORIGIN=https://notes.example.com
 ```
 
-`MOERISE_PUBLIC_ORIGIN` must match the scheme, hostname, and port used by the browser.
+`MOERISE_PUBLIC_ORIGIN` 必须与浏览器访问的协议、主机名和端口一致。
 
-Forward traffic for `notes.example.com` to Moerise Web port `3000`. Web proxies `/api/app/v1` internally to Core. For external MCP or machine REST endpoints (`/api/ext/v1` and `/mcp`), forward requests directly to Core port `8787` as needed.
+将该域名转发至 Web 的 3000 端口。Web 内部代理 `/api/app/v1`；外部机器 REST 与 MCP（`/api/ext/v1`、`/mcp`）按需直接转发至 Core 的 8787 端口。
 
 ---
 
-## 5. Resource Profiles
+## 五、服务器资源配置
 
-Moerise Core automatically tunes memory budgets and concurrency limits based on container cgroups. Sample resource configurations for various host sizes are available in `deploy/resources/`:
+Core 根据容器 cgroup 调整内存预算与并发，常用档位见 `deploy/resources/`：
 
-| Server Size | Profile File |
+| 服务器规格 | 配置文件 |
 | --- | --- |
-| 1 Core / 1 GiB | `deploy/resources/1c1g.env` |
-| 2 Cores / 1 GiB | `deploy/resources/2c1g.env` |
-| 2 Cores / 2–4 GiB | `deploy/resources/2c2g.env` |
-| 4 Cores / 4–8 GiB | `deploy/resources/4c4g.env` |
+| 1 核 / 1 GiB | `deploy/resources/1c1g.env` |
+| 2 核 / 1 GiB | `deploy/resources/2c1g.env` |
+| 2 核 / 2–4 GiB | `deploy/resources/2c2g.env` |
+| 4 核 / 4–8 GiB | `deploy/resources/4c4g.env` |
 
-Copy the contents of the appropriate profile file into your `.env` to enforce resource bounds. These limits are memory ceilings, rather than measured usage or guaranteed note capacities; leave room for the operating system and other services.
+将对应文件内容合并到 `.env`。这些值是内存上限，不是实测占用或笔记容量保证；为操作系统及其他服务预留空间。
 
 ---
 
-## 6. Backups and Upgrades
+## 六、备份与升级
 
-Memos data and Moerise product state are stored in isolated named Docker volumes:
+数据保存在独立的命名卷中：
 
-- Memos database and attachments: `memos-data`
-- Moerise state: `state-data` (contains `state.sqlite3`)
-- Moerise index: `index-data` (contains `index.sqlite3`, rebuildable)
-- Moerise backup output: `backup-data` (mounted at `/backups`)
+- `memos-data`：Memos 原文、附件与账户。
+- `state-data`：Moerise 产品状态，包含 `state.sqlite3`。
+- `index-data`：可重建索引，包含 `index.sqlite3`。
+- `backup-data`：备份输出，挂载至 `/backups`。
 
-Compose prefixes volume names with the project name. Keep `COMPOSE_PROJECT_NAME`, the Memos instance ID and the state encryption key stable across upgrades.
+Compose 会在卷名前添加项目名前缀。升级时保持 `COMPOSE_PROJECT_NAME`、Memos 实例标识与状态加密密钥一致。
 
-To upgrade Moerise:
-1. Back up Memos data, Moerise product state and `.env` using the procedures in [Operations](OPERATIONS.en.md).
-2. Set `MOERISE_IMAGE_TAG` in `.env` to the target version, pull the images, and check readiness:
+1. 按[运行与恢复](OPERATIONS.md)备份 Memos 数据、Moerise 产品状态与 `.env`。
+2. 将 `.env` 中的 `MOERISE_IMAGE_TAG` 设为目标版本，拉取镜像并检查就绪状态：
+
    ```bash
    docker compose pull moerise web
    docker compose up -d
    curl --fail http://localhost:3000/health/ready
    ```
 
-For detailed backup and recovery procedures, see [Operations Guide](OPERATIONS.en.md).
+完整备份与恢复命令见[运行指南](OPERATIONS.md)。

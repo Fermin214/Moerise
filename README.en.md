@@ -2,7 +2,7 @@
 
 **A self-hosted personal note enhancement system built on Memos.**
 
-[简体中文](README.md) · [Getting Started](docs/GETTING-STARTED.md) · [Operations](docs/OPERATIONS.en.md) · [API Documentation](docs/API-V1.en.md) · [Contributing](CONTRIBUTING.md)
+[简体中文](README.md) · [Getting Started](docs/GETTING-STARTED.md) · [Operations](docs/OPERATIONS.md) · [API Documentation](docs/API-V1.md) · [Contributing](CONTRIBUTING.md)
 
 ---
 
@@ -84,8 +84,30 @@ docker compose up -d memos
 
 1. Open `http://localhost:5231` in your browser and complete initial Memos registration.
 2. In Memos **Settings → Access Tokens**, create a Personal Access Token (PAT).
-3. Request `http://localhost:5231/api/v1/auth/me` with your PAT to find your exact author resource name (e.g. `users/abc123`).
-4. Update `.env` with your Memos PAT, user resource name, and generated encryption secrets (see [Getting Started](docs/GETTING-STARTED.md)).
+3. Query the author resource name with your PAT and record `user.name` from the response (e.g. `users/abc123`):
+
+   ```bash
+   curl -H "Authorization: Bearer <your-PAT>" http://localhost:5231/api/v1/auth/me
+   ```
+
+4. Set these values in `.env`:
+
+| Variable | Value |
+| --- | --- |
+| `MOERISE_MEMOS_TOKEN` | Memos PAT |
+| `MOERISE_MEMOS_USER` | Complete `user.name` returned above |
+| `MOERISE_MEMOS_INSTANCE_ID` | A unique, stable instance identifier, such as `primary-memos` |
+| `MOERISE_ACCESS_TOKEN` | Independent access token for external REST/MCP |
+| `MOERISE_CURSOR_SECRET` | Independent random secret for pagination signatures |
+| `MOERISE_STATE_ENCRYPTION_KEY` | Base64-encoded 32-byte key for encrypting stored credentials |
+
+Generate three independent secrets and copy each into its corresponding variable:
+
+```bash
+openssl rand -hex 32     # MOERISE_ACCESS_TOKEN
+openssl rand -hex 32     # MOERISE_CURSOR_SECRET
+openssl rand -base64 32  # MOERISE_STATE_ENCRYPTION_KEY
+```
 
 ### 2. Start Moerise
 
@@ -96,34 +118,33 @@ docker compose up -d
 
 Once running, navigate to `http://localhost:3000` and sign in using your Memos username and password.
 
-> For detailed environment variables, existing Memos connections, HTTPS reverse proxy configuration, and server resource profiles, see [Operations Guide](docs/OPERATIONS.en.md).
+> For detailed environment variables, existing Memos connections, HTTPS reverse proxy configuration, and server resource profiles, see [Operations Guide](docs/OPERATIONS.md).
 
 ---
 
 ## Documentation
 
-[English / Chinese Documentation Index](docs/README.md)
+[Documentation Index](docs/README.md)
 
 | Topic | Document | Description |
 | --- | --- | --- |
 | **Setup & Operations** | [Getting Started](docs/GETTING-STARTED.md) | First-time setup, Docker Compose, and account binding |
-| | [Operations](docs/OPERATIONS.en.md) | Deployment, resource profiles, backups, and recovery procedures |
-| **User & Features** | [Web Interface](docs/WEB.en.md) | UI layout, bilingual settings, same-origin model, and security |
-| | [Daily Review](docs/DAILY-REVIEW.en.md) | Review selection logic, schedule allocation, and reading flow |
-| | [Feishu Integration](docs/FEISHU.en.md) | Feishu bot note capture, review notifications, and webhooks |
+| | [Operations](docs/OPERATIONS.md) | Deployment, resource profiles, backups, and recovery procedures |
+| **User & Features** | [Web Interface](docs/WEB.md) | UI layout, bilingual settings, same-origin model, and security |
+| | [Daily Review](docs/DAILY-REVIEW.md) | Review selection logic, schedule allocation, and reading flow |
+| | [Feishu Integration](docs/FEISHU.md) | Feishu bot note capture, review notifications, and webhooks |
 | | [Telegram Delivery](docs/TELEGRAM.md) | Scheduled review delivery via Telegram bots |
-| | [AI & Insights](docs/AI.en.md) | LLM configuration, contextual token limits, and connection health |
-| | [Embeddings](docs/EMBEDDING.en.md) | Vector models (OpenAI / Bailian), chunking, and index generation |
-| | [Search Engine](docs/SEARCH.en.md) | FTS5 full-text search, cosine similarity, and RRF fusion |
-| | [System Settings](docs/SETTINGS.en.md) | Versioned runtime settings and credential encryption |
-| **Architecture** | [Product Architecture](docs/PRODUCT-ARCHITECTURE.en.md) | Component responsibilities, dual-database model, and boundaries |
-| | [Codebase Guide](docs/CODEBASE.en.md) | Source entry points, directory responsibilities, and change guidance |
-| | [Development Scripts](scripts/README.en.md) | Cross-service acceptance, benchmarks, and quality evaluation |
-| | [System Design](docs/DESIGN.en.md) | Web integration, API boundaries, and communication architecture |
-| | [API Specification](docs/API-V1.en.md) | Client API `/api/app/v1`, machine REST `/api/ext/v1`, and `/mcp` |
-| | [Development Guide](docs/DEVELOPMENT.en.md) | Local development workflow, test suites, and verification |
-| | [Roadmap](docs/ROADMAP.en.md) | Completed capabilities and upcoming milestones (including Android) |
-| | [Product Requirements](docs/PRD.en.md) | Product positioning, feature specifications, and entry-point boundaries |
+| | [AI & Insights](docs/AI.md) | LLM configuration, contextual token limits, and connection health |
+| | [Embeddings](docs/EMBEDDING.md) | Vector models (OpenAI / Bailian), chunking, and index generation |
+| | [Search Engine](docs/SEARCH.md) | FTS5 full-text search, cosine similarity, and RRF fusion |
+| | [System Settings](docs/SETTINGS.md) | Versioned runtime settings and credential encryption |
+| **Architecture** | [Product Architecture](docs/PRODUCT-ARCHITECTURE.md) | Component responsibilities, dual-database model, and boundaries |
+| | [Codebase Guide](docs/CODEBASE.md) | Source entry points, directory responsibilities, and change guidance |
+| | [Development Scripts](scripts/README.md) | Cross-service acceptance, benchmarks, and quality evaluation |
+| | [System Design](docs/DESIGN.md) | Web integration, API boundaries, and communication architecture |
+| | [API Specification](docs/API-V1.md) | Client API `/api/app/v1`, machine REST `/api/ext/v1`, and `/mcp` |
+| | [Development Guide](docs/DEVELOPMENT.md) | Local development workflow, test suites, and verification |
+| | [Roadmap](docs/ROADMAP.md) | Completed capabilities and upcoming milestones (including Android) |
 
 ---
 

@@ -1,6 +1,8 @@
 .local/
 /.codex-remote-attachments/
 /override.AGENTS.md
+/docs/PRD.md
+/docs/PRD.en.md
 .env
 .env.*
 !.env.example

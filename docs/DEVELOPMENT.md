@@ -1,7 +1,5 @@
 # Moerise 开发指南
 
-[English](DEVELOPMENT.en.md)
-
 本指南面向 Moerise 代码贡献者，提供本地开发环境配置、测试套件执行、端到端集成验收及评测流程说明。
 
 源码阅读顺序与模块职责见[代码导览](CODEBASE.md)；跨服务验收和性能工具见[开发脚本](../scripts/README.md)。

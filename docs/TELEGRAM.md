@@ -1,7 +1,5 @@
 # Telegram Review Delivery
 
-[简体中文](TELEGRAM.zh-CN.md)
-
 Moerise supports scheduled daily review delivery through an official Telegram Bot. Each Moerise instance can configure one active messaging channel: Telegram, a Feishu App bot, a Feishu webhook, or none.
 
 When enabled, Moerise delivers full note text (split into ordered messages if necessary) and images as original files. The delivery header is titled `Daily review`, and each note concludes with its tags and creation date (e.g., `#ideas  Created on 2026-01-15`). Note content, tags, and file attachments retain their original languages.
@@ -74,6 +72,6 @@ Deployment values initialize daily settings once; saved Web settings take preced
    - Images are uploaded using `sendDocument` (up to 10 MiB per image) to guarantee that image bytes and metadata remain uncompressed.
 4. **Rate Limiting & Retries**:
    - Moerise obeys the Bot API response's `parameters.retry_after` value on HTTP 429 and maintains persistent cooldowns across restarts.
-   - If a message transmission times out or its status cannot be confirmed, it enters the `unknown` state. You can inspect and resolve deliveries via the [Notification Management API](NOTIFICATIONS.en.md).
+   - If a message transmission times out or its status cannot be confirmed, it enters the `unknown` state. You can inspect and resolve deliveries via the [Notification Management API](NOTIFICATIONS.md).
 
 Telegram normalizes surrounding whitespace in plain text messages. Moerise preserves the submitted text and uses files for chunks that Telegram would treat as empty. Telegram has no general API for retrieving an arbitrary sent message by ID, so `unknown` deliveries require you to inspect the destination chat before resolving them.
