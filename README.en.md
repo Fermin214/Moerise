@@ -66,7 +66,7 @@ flowchart LR
 
 ## Quick Start
 
-The recommended deployment method uses Docker Compose, which includes an official Memos 0.31.x instance, or connects Moerise to an existing Memos deployment.
+The recommended deployment method uses Docker Compose, which includes an official Memos 0.31.x instance, or connects Moerise to an existing Memos deployment. Core and Web use versioned images from GHCR, with AMD64 and ARM64 support.
 
 ### 1. Launch All-in-One Stack
 
@@ -90,7 +90,8 @@ docker compose up -d memos
 ### 2. Start Moerise
 
 ```bash
-docker compose up -d --build
+docker compose pull moerise web
+docker compose up -d
 ```
 
 Once running, navigate to `http://localhost:3000` and sign in using your Memos username and password.

@@ -2,7 +2,7 @@
 
 [Product Overview](../README.en.md) · [简体中文](GETTING-STARTED.zh-CN.md)
 
-Moerise runs on Linux natively or via Docker Linux containers. Docker deployment requires Docker Engine and Docker Compose (2.24 or later). The bundled stack includes Memos 0.31.x, Moerise Core, and the Moerise Web frontend. Each Moerise instance connects to one author on a Memos instance.
+Moerise runs on Linux natively or via Docker Linux containers. Docker deployment requires Docker Engine and Docker Compose (2.24 or later), using versioned AMD64/ARM64 images from GHCR. The bundled stack includes Memos 0.31.x, Moerise Core, and the Moerise Web frontend. Each Moerise instance connects to one author on a Memos instance.
 
 ---
 
@@ -49,7 +49,8 @@ openssl rand -base64 32  # MOERISE_STATE_ENCRYPTION_KEY
 5. Start the complete stack:
 
 ```bash
-docker compose up -d --build
+docker compose pull moerise web
+docker compose up -d
 docker compose ps
 curl --fail http://localhost:3000/health/ready
 ```
@@ -77,7 +78,8 @@ MOERISE_MEMOS_PUBLIC_URL=https://memos.example.com
 3. Fill in the remaining required secrets (`MOERISE_ACCESS_TOKEN`, `MOERISE_CURSOR_SECRET`, `MOERISE_STATE_ENCRYPTION_KEY`) and launch with:
 
 ```bash
-docker compose up -d --build
+docker compose pull moerise web
+docker compose up -d
 ```
 
 ---
@@ -99,6 +101,8 @@ Default Compose bindings expose ports to the local loopback interface. For produ
 ```dotenv
 MOERISE_PUBLIC_ORIGIN=https://notes.example.com
 ```
+
+`MOERISE_PUBLIC_ORIGIN` must match the scheme, hostname, and port used by the browser.
 
 Forward traffic for `notes.example.com` to Moerise Web port `3000`. Web proxies `/api/app/v1` internally to Core. For external MCP or machine REST endpoints (`/api/ext/v1` and `/mcp`), forward requests directly to Core port `8787` as needed.
 
@@ -132,9 +136,10 @@ Compose prefixes volume names with the project name. Keep `COMPOSE_PROJECT_NAME`
 
 To upgrade Moerise:
 1. Back up Memos data, Moerise product state and `.env` using the procedures in [Operations](OPERATIONS.en.md).
-2. Select the intended source revision, then rebuild and check readiness:
+2. Set `MOERISE_IMAGE_TAG` in `.env` to the target version, pull the images, and check readiness:
    ```bash
-   docker compose up -d --build
+   docker compose pull moerise web
+   docker compose up -d
    curl --fail http://localhost:3000/health/ready
    ```
 

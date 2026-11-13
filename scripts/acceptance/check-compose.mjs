@@ -253,7 +253,7 @@ async function runScenario(kind) {
       buildAttempted = true;
       await compose(['build', 'moerise', 'web'], { timeout: 1_200_000 });
       evidence.images = {};
-      for (const image of [`moerise:${imageTag}`, `moerise-web:${imageTag}`]) {
+      for (const image of [`ghcr.io/fermin214/moerise:${imageTag}`, `ghcr.io/fermin214/moerise-web:${imageTag}`]) {
         evidence.images[image] = (await docker(['image', 'inspect', '--format', '{{.Id}}', image])).trim();
       }
     });
@@ -567,7 +567,7 @@ try {
     }
     if (buildAttempted) {
       try {
-        for (const image of [`moerise:${imageTag}`, `moerise-web:${imageTag}`]) {
+        for (const image of [`ghcr.io/fermin214/moerise:${imageTag}`, `ghcr.io/fermin214/moerise-web:${imageTag}`]) {
           const found = await docker(['image', 'ls', '--quiet', image], { cleanup: true });
           if (found) await docker(['image', 'rm', image], { cleanup: true });
         }

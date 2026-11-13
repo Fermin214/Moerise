@@ -21,7 +21,7 @@ Configuration templates are provided in `.env.example` and `config.example.json`
 | `MOERISE_CURSOR_SECRET` | `cursor_secret` | Required | Independent random secret for cursor signatures and resource hashes, at least 32 characters |
 | `MOERISE_STATE_ENCRYPTION_KEY` | `web.state_encryption_key` | Required for Web or Feishu app bots | Base64-encoded 32-byte key for stored credentials |
 | `MOERISE_WEB_ENABLED` | `web.enabled` | `true` in Compose; `false` in Core | Enable Web client sessions |
-| `MOERISE_PUBLIC_ORIGIN` | `web.public_origin` | Required when Web is enabled | Public Web origin, such as `https://notes.example.com` |
+| `MOERISE_PUBLIC_ORIGIN` | `web.public_origin` | Required when Web is enabled | Public Web origin; scheme, hostname, and port must match the browser URL |
 | `MOERISE_TIMEZONE` | `timezone` | `Asia/Hong_Kong` | IANA timezone for reviews and timeline dates |
 | `MOERISE_STATE_DIR` | `state_dir` | `/data/state` | Persistent directory containing `state.sqlite3` |
 | `MOERISE_INDEX_DIR` | `index_dir` | `/data/index` | Directory containing rebuildable `index.sqlite3` |
@@ -51,10 +51,11 @@ cp .env.example .env
 docker compose up -d memos
 ```
 
-Open `http://localhost:5231`, create an account, and obtain its PAT and resource name. Fill in `.env`, then start the stack:
+Open `http://localhost:5231`, create an account, and obtain its PAT and resource name. Fill in `.env`, then pull the images and start the stack. Core and Web use GHCR images selected by `MOERISE_IMAGE_TAG`, with automatic AMD64 or ARM64 selection:
 
 ```bash
-docker compose up -d --build
+docker compose pull moerise web
+docker compose up -d
 docker compose ps
 ```
 
@@ -68,7 +69,7 @@ MOERISE_MEMOS_BASE_URL=https://memos.example.com
 MOERISE_MEMOS_PUBLIC_URL=https://memos.example.com
 ```
 
-Use Memos 0.31.x. The account and PAT must match the resource name in `.env`; `localhost` inside a container refers to that container. Run `docker compose up -d --build` to start Moerise.
+Use Memos 0.31.x. The account and PAT must match the resource name in `.env`; `localhost` inside a container refers to that container. Run `docker compose pull moerise web` and `docker compose up -d` to start Moerise.
 
 ### 3. HTTPS & Readiness
 
@@ -165,7 +166,7 @@ For native deployments, use `backup --output`, `restore --source --safety-backup
 ## 5. Upgrades & Rollback
 
 1. Back up Memos data, Moerise product state, and configuration. Record the source revision or image digest.
-2. Keep the Compose project name, source binding, volumes, and encryption key stable. Select the target version and run `docker compose up -d --build`.
+2. Keep the Compose project name, source binding, volumes, and encryption key stable. Set `MOERISE_IMAGE_TAG` in `.env` to the target version, then run `docker compose pull moerise web` and `docker compose up -d`.
 3. Check readiness, notes and attachments, settings version, review and chat history, and vector-index status when Embedding is enabled.
 4. For rollback, stop the service and switch the code or image. If the database schema is incompatible, restore a state snapshot for the target version before starting it.
 

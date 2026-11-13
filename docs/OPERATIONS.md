@@ -21,7 +21,7 @@ Moerise 支持 Linux 原生二进制运行以及 Docker 容器部署。本文档
 | `MOERISE_CURSOR_SECRET` | `cursor_secret` | 必填 | 用于分页签名与资源安全哈希的独立随机密钥（至少 32 字符） |
 | `MOERISE_STATE_ENCRYPTION_KEY` | `web.state_encryption_key` | Web 或飞书应用机器人启用时必填 | 加密存储凭据的 32 字节 Base64 编码主密钥 |
 | `MOERISE_WEB_ENABLED` | `web.enabled` | Compose 为 `true`；Core 默认 `false` | 是否启用 Web 客户端会话支持 |
-| `MOERISE_PUBLIC_ORIGIN` | `web.public_origin` | Web 启用时必填 | Web 客户端公开域名与协议（如 `https://notes.example.com`） |
+| `MOERISE_PUBLIC_ORIGIN` | `web.public_origin` | Web 启用时必填 | Web 客户端公开 origin，协议、主机名和端口须与浏览器访问地址一致 |
 | `MOERISE_TIMEZONE` | `timezone` | `Asia/Hong_Kong` | IANA 时区标识，用于每日回顾计算与时间线显示 |
 | `MOERISE_STATE_DIR` | `state_dir` | `/data/state` | 保存业务数据库 `state.sqlite3` 的持久化目录 |
 | `MOERISE_INDEX_DIR` | `index_dir` | `/data/index` | 保存可重建索引库 `index.sqlite3` 的持久化目录 |
@@ -51,10 +51,11 @@ cp .env.example .env
 docker compose up -d memos
 ```
 
-在浏览器打开 `http://localhost:5231` 创建账户并获取 PAT 与资源名，配置到 `.env` 后启动整套服务：
+在浏览器打开 `http://localhost:5231` 创建账户并获取 PAT 与资源名，配置到 `.env` 后拉取镜像并启动整套服务。Core 与 Web 使用 GHCR 中 `MOERISE_IMAGE_TAG` 对应的版本镜像，自动匹配 AMD64 或 ARM64：
 
 ```bash
-docker compose up -d --build
+docker compose pull moerise web
+docker compose up -d
 docker compose ps
 ```
 
@@ -68,7 +69,7 @@ MOERISE_MEMOS_BASE_URL=https://memos.example.com
 MOERISE_MEMOS_PUBLIC_URL=https://memos.example.com
 ```
 
-已有实例需为 Memos 0.31.x，绑定账号与 PAT 须与 `.env` 中的资源名一致；容器内的 `localhost` 指容器自身。随后运行 `docker compose up -d --build` 完成对接。
+已有实例需为 Memos 0.31.x，绑定账号与 PAT 须与 `.env` 中的资源名一致；容器内的 `localhost` 指容器自身。随后运行 `docker compose pull moerise web` 和 `docker compose up -d` 完成对接。
 
 ### 3. HTTPS 与运行检查
 
@@ -167,7 +168,7 @@ docker compose up -d --no-build moerise
 ## 五、升级与回滚
 
 1. 备份 Memos 数据、Moerise 产品状态及配置，记录源码提交或镜像摘要。
-2. 保持 Compose 项目名、来源绑定、数据卷和状态加密密钥一致，切换到目标版本，执行 `docker compose up -d --build`。
+2. 保持 Compose 项目名、来源绑定、数据卷和状态加密密钥一致，将 `.env` 中的 `MOERISE_IMAGE_TAG` 设为目标版本，执行 `docker compose pull moerise web` 和 `docker compose up -d`。
 3. 检查就绪状态、原文和附件、设置版本、回顾与聊天历史；启用 Embedding 时另查索引构建状态。
 4. 回滚时先停止服务并切换代码或镜像；数据库结构不兼容时，恢复目标版本对应的状态备份，再启动。
 

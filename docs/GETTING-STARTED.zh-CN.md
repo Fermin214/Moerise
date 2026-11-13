@@ -2,7 +2,7 @@
 
 [产品介绍](../README.md) · [English](GETTING-STARTED.md)
 
-Moerise 支持 Linux 原生二进制与 Docker Linux 容器。容器部署需要 Docker Engine 和 Docker Compose 2.24 或更高版本。一体化服务包含 Memos 0.31.x、Moerise Core 与 Web，每个 Moerise 实例绑定一名 Memos 作者。
+Moerise 支持 Linux 原生二进制与 Docker Linux 容器。容器部署需要 Docker Engine 和 Docker Compose 2.24 或更高版本，直接拉取 GHCR 的 AMD64/ARM64 版本镜像。一体化服务包含 Memos 0.31.x、Moerise Core 与 Web，每个 Moerise 实例绑定一名 Memos 作者。
 
 ---
 
@@ -50,7 +50,8 @@ openssl rand -base64 32  # MOERISE_STATE_ENCRYPTION_KEY
 5. 启动完整服务：
 
 ```bash
-docker compose up -d --build
+docker compose pull moerise web
+docker compose up -d
 docker compose ps
 curl --fail http://localhost:3000/health/ready
 ```
@@ -78,7 +79,8 @@ MOERISE_MEMOS_PUBLIC_URL=https://memos.example.com
 3. 填入作者绑定及独立密钥后启动：
 
 ```bash
-docker compose up -d --build
+docker compose pull moerise web
+docker compose up -d
 ```
 
 ---
@@ -100,6 +102,8 @@ Compose 默认端口绑定回环地址。公网部署时，在 Web 前配置 Ngi
 ```dotenv
 MOERISE_PUBLIC_ORIGIN=https://notes.example.com
 ```
+
+`MOERISE_PUBLIC_ORIGIN` 必须与浏览器访问的协议、主机名和端口一致。
 
 将该域名转发至 Web 的 3000 端口。Web 内部代理 `/api/app/v1`；外部机器 REST 与 MCP（`/api/ext/v1`、`/mcp`）按需直接转发至 Core 的 8787 端口。
 
@@ -132,10 +136,11 @@ Core 根据容器 cgroup 调整内存预算与并发，常用档位见 `deploy/r
 Compose 会在卷名前添加项目名前缀。升级时保持 `COMPOSE_PROJECT_NAME`、Memos 实例标识与状态加密密钥一致。
 
 1. 按[运行与恢复](OPERATIONS.md)备份 Memos 数据、Moerise 产品状态与 `.env`。
-2. 切换到目标源码版本后重新构建并检查就绪状态：
+2. 将 `.env` 中的 `MOERISE_IMAGE_TAG` 设为目标版本，拉取镜像并检查就绪状态：
 
    ```bash
-   docker compose up -d --build
+   docker compose pull moerise web
+   docker compose up -d
    curl --fail http://localhost:3000/health/ready
    ```
 

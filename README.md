@@ -66,7 +66,7 @@ flowchart LR
 
 ## 快速开始
 
-Moerise 推荐使用 Docker Compose 进行一体化部署，自带官方 Memos 0.31.x；同时也支持连接你已有的 Memos 实例。
+Moerise 推荐使用 Docker Compose 进行一体化部署，自带官方 Memos 0.31.x；同时也支持连接你已有的 Memos 实例。Core 与 Web 使用 GHCR 的版本镜像，支持 AMD64 和 ARM64。
 
 ### 1. 部署一体化服务
 
@@ -90,7 +90,8 @@ docker compose up -d memos
 ### 2. 启动完整服务
 
 ```bash
-docker compose up -d --build
+docker compose pull moerise web
+docker compose up -d
 ```
 
 启动完成后，访问 `http://localhost:3000`，使用你的 Memos 账户名和密码直接登录 Moerise Web。
