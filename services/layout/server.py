@@ -54,7 +54,7 @@ def compute(request):
     path = root / (frame + ".joblib")
     state = joblib.load(path) if frame and path.exists() else None
     if state and (state["dimensions"] != dimensions or state["algorithm"] != ALGORITHM
-                  or state.get("fit_count", 0) < 12 and count != state.get("fit_count", 0)):
+                  or state.get("fit_count", 0) < 2 and count > state.get("fit_count", 0)):
         state = None
     with threadpool_limits(limits=2):
         if state:

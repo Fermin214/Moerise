@@ -102,11 +102,11 @@ func (s *Store) loadMapLayout(ctx context.Context, snapshot mapSnapshot) (*mapLa
 	err := transactionContext(ctx, s.index, func(tx *sql.Tx) error {
 		var basis, topics, links []byte
 		var generatedAt string
-		err := tx.QueryRowContext(ctx, `SELECT version, basis_json, generation_id, projection_revision, generated_at,
+		err := tx.QueryRowContext(ctx, `SELECT algorithm, version, basis_json, generation_id, projection_revision, generated_at,
 			topics_json, links_json FROM map_layouts
-			WHERE instance_id = ? AND user_name = ? AND space_hash = ? AND algorithm = ?`,
-			s.Settings.Memos.InstanceID, s.Settings.Memos.User, snapshot.space, mapAlgorithm).
-			Scan(&layout.version, &basis, &layout.generation, &layout.revision, &generatedAt, &topics, &links)
+			WHERE instance_id = ? AND user_name = ? AND space_hash = ? AND algorithm IN (?, ?)`,
+			s.Settings.Memos.InstanceID, s.Settings.Memos.User, snapshot.space, mapAlgorithm, mapLegacyAlgorithm).
+			Scan(&layout.algorithm, &layout.version, &basis, &layout.generation, &layout.revision, &generatedAt, &topics, &links)
 		if err != nil {
 			return err
 		}

@@ -28,7 +28,16 @@ function starScene(field, { onPick, onHover, onTopic, onExcerpts }) {
     node.type = 'button'; node.className = 'map-dot'; node.dataset.name = point.name;
     setAttr(node, 'aria-label', l("笔记 {0}", { 0: point.name.slice(6) }));
     node.addEventListener('click', event => { if (event.detail === 0) onPick(point.name); });
-    node.addEventListener('focus', () => { onHover(point.name); });
+    node.addEventListener('focus', () => {
+      onHover(point.name);
+      if (view) {
+        const position = screen(point);
+        if (position.x < 20 || position.x > width - 20 || position.y < 20 || position.y > height - 20) {
+          onTopic({ x: point.x, y: point.y, scale: view.scale });
+        }
+      }
+      field.scrollLeft = field.scrollTop = 0;
+    });
     markers.set(point.name, node); controls.append(node);
     return node;
   }

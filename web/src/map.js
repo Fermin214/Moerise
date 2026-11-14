@@ -398,6 +398,9 @@ export function createMapPage({ request, handleFailure, validNote, renderNote, i
     const center = positions.reduce((total, position) => ({ x: total.x + position.x / positions.length, y: total.y + position.y / positions.length }), { x: 0, y: 0 });
     return { center, distance: positions.length === 2 ? Math.hypot(positions[0].x - positions[1].x, positions[0].y - positions[1].y) : 0 };
   }
+  const pointerPick = event => result?.algorithm === 'umap-balanced-v1'
+    ? scene?.pick(event.clientX, event.clientY) || ''
+    : event.target.closest('.map-dot')?.dataset.name || scene?.pick(event.clientX, event.clientY) || '';
   field.addEventListener('pointerdown', event => {
     if (!view || event.target.closest('.map-tools,.map-topic,.map-unplaced') || (event.pointerType === 'mouse' && event.button !== 0)) return;
     setHover('');
@@ -405,7 +408,7 @@ export function createMapPage({ request, handleFailure, validNote, renderNote, i
     field.classList.add('pointer-focus');
     if (!pointers.size) {
       origin = { x: event.clientX, y: event.clientY };
-      candidate = event.target.closest('.map-dot')?.dataset.name || scene?.pick(event.clientX, event.clientY) || '';
+      candidate = pointerPick(event);
       dragged = false; nodeDrag = result?.algorithm !== 'umap-balanced-v1' && !!candidate && event.pointerType !== 'touch';
       if (result?.algorithm !== 'umap-balanced-v1' && candidate && event.pointerType === 'touch') holdTimer = setTimeout(() => {
         if (pointers.size === 1 && !dragged) { nodeDrag = true; scene?.drag(candidate, 0, 0); }
@@ -419,7 +422,7 @@ export function createMapPage({ request, handleFailure, validNote, renderNote, i
     if (!view) return;
     if (!pointers.has(event.pointerId)) {
       if (event.pointerType === 'mouse' && !event.target.closest('.map-tools,.map-topic')) {
-        setHover(event.target.closest('.map-dot')?.dataset.name || scene?.pick(event.clientX, event.clientY) || '');
+        setHover(pointerPick(event));
       }
       return;
     }

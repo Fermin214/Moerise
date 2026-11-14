@@ -110,6 +110,29 @@ func TestMapReadsAndUnchangedDailyChecksNeverScanVectorsOrCallModels(t *testing.
 	}
 }
 
+func TestMapReadsFixedPCASnapshotDuringStarsUpgrade(t *testing.T) {
+	service, _, _, _, first := readyMapService(t)
+	if _, err := service.Store.index.Exec("UPDATE map_layouts SET algorithm = ?, topics_json = '[]', links_json = '[]'", mapLegacyAlgorithm); err != nil {
+		t.Fatal(err)
+	}
+	upgraded := NewMapService(service.Store)
+	upgraded.generate = func(context.Context, mapSnapshot, *mapLayout) (*mapLayout, error) {
+		return nil, failure("MAP_LAYOUT_UNAVAILABLE", "Worker unavailable", 503, true)
+	}
+	before, err := upgraded.Read(t.Context())
+	if err != nil || before.Status != "ready" || before.Algorithm != mapLegacyAlgorithm || !reflect.DeepEqual(before.Points, first.Points) {
+		t.Fatalf("upgrade lost published PCA: %+v %v", before, err)
+	}
+	if err := upgraded.Update(t.Context()); errorCode(err) != "MAP_LAYOUT_UNAVAILABLE" {
+		t.Fatalf("unexpected worker result: %v", err)
+	}
+	after, err := upgraded.Read(t.Context())
+	if err != nil || after.Algorithm != mapLegacyAlgorithm || after.LayoutFrame != before.LayoutFrame ||
+		after.UpdateState != "unavailable" || !reflect.DeepEqual(after.Points, first.Points) {
+		t.Fatalf("worker failure hid PCA snapshot: %+v %v", after, err)
+	}
+}
+
 func TestMapDailySnapshotCombinesChangesAndPersistsSchedule(t *testing.T) {
 	service, index, memos, _, first := readyMapService(t)
 	stamp, _ := time.Parse(time.RFC3339Nano, first.GeneratedAt)

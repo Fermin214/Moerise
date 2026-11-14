@@ -97,6 +97,34 @@ async function ready(page) { await page.waitForFunction(() => document.querySele
 async function wait(condition) { for (let i = 0; i < 100; i++) { if (condition()) return; await new Promise(resolve => setTimeout(resolve, 20)); } assert.ok(condition()); }
 async function capture(page, name) { if (process.env.MOERISE_BROWSER_ARTIFACTS) { await mkdir(process.env.MOERISE_BROWSER_ARTIFACTS, { recursive: true }); await page.screenshot({ path: join(process.env.MOERISE_BROWSER_ARTIFACTS, name), fullPage: true }); } }
 
+test('stars pick the closest visible note and bring offscreen keyboard focus into view', async t => {
+  const { page, state, url } = await fixture(t);
+  state.malformed = { status: 'ready', algorithm: 'umap-balanced-v1', layout_version: state.version,
+    layout_frame: state.frame, vector_generation: 'published', projection_revision: 3, topics: [], links: [],
+    points: state.notes.slice(0, 5).map((note, i) => ({ name: note.name, source_hash: note.source_hash,
+      x: [-1, 0, .02, 1, 2][i], y: 0, semantic: true, tags: note.tags,
+      stellar: { seed: .5, role: 'ordinary', radius: 1, luminosity: .6 } })) };
+  await login(page, url); await ready(page);
+  const field = page.locator('#map-field'), point = marker(page, 1), box = await point.boundingBox();
+  await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+  await page.locator('.map-note[data-name="memos/n1"]').waitFor();
+  await field.focus();
+  for (let i = 0; i < 16; i++) await page.keyboard.press('ArrowRight');
+  await page.waitForFunction(() => {
+    const rect = document.querySelector('.map-dot[data-name="memos/n1"]')?.getBoundingClientRect();
+    const field = document.querySelector('#map-field').getBoundingClientRect();
+    return rect && rect.right < field.left;
+  });
+  await point.focus();
+  await page.waitForFunction(() => {
+    const rect = document.activeElement.getBoundingClientRect();
+    const field = document.querySelector('#map-field').getBoundingClientRect();
+    return rect.left >= field.left + 20 && rect.right <= field.right - 20;
+  });
+  assert.equal(await point.evaluate(element => element === document.activeElement), true);
+  await point.press('Enter'); await page.locator('.map-note[data-name="memos/n1"]').waitFor();
+});
+
 test('full workspace map, protected complete reading, archive, pure file and independent detail return', async t => {
   const { page, state, url } = await fixture(t); await login(page, url); await ready(page);
   const style = await page.locator('#map-field').evaluate(element => ({ height: element.getBoundingClientRect().height, background: getComputedStyle(element).backgroundColor }));
