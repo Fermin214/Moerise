@@ -11,10 +11,18 @@ import (
 	"time"
 )
 
+// Legacy fixtures keep authentication and snapshot tests independent of Python.
+func legacyMapService(store *Store) *MapService {
+	service := NewMapService(store)
+	service.algorithm = mapAlgorithm
+	service.generate = buildMapLayout
+	return service
+}
+
 func mapServiceFixture(t *testing.T) (*MapService, *VectorIndexService, map[string]map[string]any, *indexEmbedding) {
 	t.Helper()
 	store, index, memos, provider := indexFixture(t)
-	return NewMapService(store), index, memos, provider
+	return legacyMapService(store), index, memos, provider
 }
 
 func readyMapService(t *testing.T) (*MapService, *VectorIndexService, map[string]map[string]any, *indexEmbedding, MapResponse) {
@@ -87,7 +95,7 @@ func TestMapReadsAndUnchangedDailyChecksNeverScanVectorsOrCallModels(t *testing.
 	if _, err := service.Store.index.Exec("UPDATE vector_chunks SET vector = ?", []byte{1}); err != nil {
 		t.Fatal(err)
 	}
-	for _, reader := range []*MapService{service, NewMapService(service.Store)} {
+	for _, reader := range []*MapService{service, legacyMapService(service.Store)} {
 		result, err := reader.Read(t.Context())
 		if err != nil || !reflect.DeepEqual(first, result) {
 			t.Fatalf("snapshot read rescanned vectors: %v", err)
@@ -121,9 +129,9 @@ func TestMapDailySnapshotCombinesChangesAndPersistsSchedule(t *testing.T) {
 		t.Fatal(err)
 	}
 	finishIndex(t, index)
-	restarted := NewMapService(service.Store)
+	restarted := legacyMapService(service.Store)
 	for _, worker := range []*MapService{service, restarted} {
-		if err := worker.update(t.Context(), stamp.Add(23*time.Hour)); err != nil {
+		if err := worker.update(t.Context(), stamp.Add(mapSnapshotInterval/2)); err != nil {
 			t.Fatal(err)
 		}
 		result, err := worker.Read(t.Context())
@@ -241,6 +249,7 @@ func TestMapColdDatabaseReadRespectsBudget(t *testing.T) {
 func clientMapIndex(t *testing.T, api *ClientAPI) *VectorIndexService {
 	t.Helper()
 	store := api.app.Store
+	api.app.Map = legacyMapService(store)
 	store.Settings.Embedding = embeddingTestConfig("http://embedding.test")
 	for _, name := range []string{"a", "b", "archived"} {
 		raw := rawMemo(name, "private body "+name)

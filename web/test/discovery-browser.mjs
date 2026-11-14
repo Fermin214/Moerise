@@ -85,7 +85,7 @@ async function fixture(t, language = 'zh-CN', options = {}) {
     if (id !== undefined) { json(notes[Number(id)]); return; }
     if (path === '/walks/start' || path === '/walks/next') {
       assert.equal(req.method, 'POST');
-      if (state.walkError) { error(state.walkError); return; }
+      if (state.walkError && path === '/walks/next') { error(state.walkError); return; }
       if (state.technical) {
         reply({ mode: 'continue', path: body.path || [], exhausted: false, warnings: ['RESOURCE_LIMIT'] }); return;
       }
@@ -114,6 +114,7 @@ async function fixture(t, language = 'zh-CN', options = {}) {
   });
   browser = await chromium.launch({ headless: true, channel: process.env.MOERISE_PLAYWRIGHT_CHANNEL || undefined });
   const page = await browser.newPage({ locale: language, viewport: { width: 1360, height: 960 }, ...options }), errors = [];
+  await page.clock.setFixedTime(new Date('2026-10-30T04:00:00Z'));
   page.on('pageerror', error => errors.push(error.message));
   t.after(() => assert.deepEqual(errors, []));
   return { page, state, url };
@@ -228,12 +229,14 @@ test('review and walk share title coordinates through loading, reading, empty st
         await navigate('/walk');
         await page.locator('.walk-start > .save:enabled').waitFor();
         await assertPosition();
+        state.hold = '/walks/next';
         await page.locator('.walk-start > .save').click();
         await card(page).waitFor(); await assertPosition();
         state.hold = '/walks/next';
         await page.locator('.discovery-actions .save').click();
         await waitFor(() => state.pending.length === 1);
         await assertPosition();
+        state.exhausted = true;
         state.hold = null; state.pending.shift().release();
         await card(page).filter({ hasText: '末尾文字 1' }).waitFor();
         await assertPosition();
@@ -261,7 +264,7 @@ test('review and walk share title coordinates through loading, reading, empty st
   }
 });
 
-test('review hides cached notes during reloads and failures, restores the same plan position and resets for a new day', { timeout: 60_000 }, async t => {
+test('review retains same-day cached notes during reloads and failures and resets for a new day', { timeout: 60_000 }, async t => {
   const { page, state, url } = await fixture(t);
   await login(page, url, '/review');
   await page.getByRole('button', { name: '第 6 / 6 条', exact: true }).click();
@@ -276,28 +279,33 @@ test('review hides cached notes during reloads and failures, restores the same p
     assert.equal(await page.getByRole('button', { name: '第 6 / 6 条', exact: true }).count(), 0);
     assert.doesNotMatch(await page.locator('#discovery-page').innerText(), /末尾文字/);
   };
+  const assertRetained = async () => {
+    assert.equal(await page.locator('[data-review-index]').count(), 6);
+    assert.equal(await page.getByRole('button', { name: '第 6 / 6 条', exact: true }).getAttribute('aria-pressed'), 'true');
+    assert.match(await card(page).innerText(), /末尾文字 5/);
+  };
   state.hold = '/reviews/daily';
   await reopen();
   await waitFor(() => state.pending.length === 1);
-  await assertHidden();
-  await page.getByRole('status').filter({ hasText: '正在加载回顾' }).waitFor();
+  await assertRetained();
   state.hold = null; state.pending.shift().release();
   await card(page).filter({ hasText: '末尾文字 5' }).waitFor();
 
   state.reviewError = 'UPSTREAM_UNAVAILABLE';
   await reopen();
   await page.getByRole('alert').filter({ hasText: 'Memos 服务暂时无法连接' }).waitFor();
-  await assertHidden();
+  await assertRetained();
   assert.equal(await page.getByText('今天没有可回顾的旧笔记。', { exact: true }).count(), 0);
   state.reviewError = null; state.hold = '/reviews/daily';
   state.notes[5].content = '重试后从来源读取的新正文';
   await page.getByRole('button', { name: '重试', exact: true }).click();
   await waitFor(() => state.pending.length === 1);
-  await assertHidden();
+  await assertRetained();
   state.hold = null; state.pending.shift().release();
   await card(page).filter({ hasText: '重试后从来源读取的新正文' }).waitFor();
   assert.equal(await page.getByRole('button', { name: '第 6 / 6 条', exact: true }).getAttribute('aria-pressed'), 'true');
 
+  await page.clock.setFixedTime(new Date('2026-10-31T04:00:00Z'));
   state.reviewID = 'next-day'; state.reviewDate = '2026-10-31'; state.reviewError = 'UPSTREAM_UNAVAILABLE';
   await reopen();
   await page.getByRole('alert').filter({ hasText: 'Memos 服务暂时无法连接' }).waitFor();
@@ -325,7 +333,7 @@ test('walk random start uses session CSRF, can continue past 100 notes, and rest
     await next(page).click();
     await page.locator(`.discovery-note[data-name="memos/n${index}"]:visible`).waitFor();
   }
-  const last = requests(state, '/walks/next').at(-1);
+  const last = requests(state, '/walks/next').findLast(request => request.body.name === 'memos/n101');
   assert.equal(last.body.name, 'memos/n101');
   assert.equal(last.body.path.length, 102);
   assert.equal(new Set(last.body.path).size, 102);
@@ -337,7 +345,7 @@ test('walk random start uses session CSRF, can continue past 100 notes, and rest
   await page.locator('.discovery-note[data-name="memos/n102"]:visible').waitFor();
   await next(page).click();
   await page.locator('.discovery-note[data-name="memos/n103"]:visible').waitFor();
-  assert.equal(requests(state, '/walks/next').at(-1).body.path.length, 103);
+  assert.equal(requests(state, '/walks/next').findLast(request => request.body.name === 'memos/n102').body.path.length, 103);
   assert.equal(state.requests.some(request => /reads|opened|skip|complete/.test(request.path)), false);
 });
 
@@ -387,6 +395,7 @@ test('archived notes keep the insights entry and have no walk entry in detail or
 test('resource errors and non-exhausted technical responses can retry the same path; exhaustion preserves the last note', { timeout: 60_000 }, async t => {
   const { page, state, url } = await fixture(t);
   await login(page, url, '/walk');
+  state.walkError = 'RESOURCE_LIMIT';
   await page.getByRole('button', { name: '随机开始', exact: true }).click();
   await card(page).filter({ hasText: '末尾文字 0' }).waitFor();
   state.walkError = 'RESOURCE_LIMIT';
@@ -398,8 +407,10 @@ test('resource errors and non-exhausted technical responses can retry the same p
   await page.locator('#discovery-page[aria-busy="false"]').waitFor();
   await page.getByRole('alert').filter({ hasText: '技术资源限制' }).waitFor();
   assert.match(await card(page).innerText(), /末尾文字 0/);
-  state.technical = false;
+  state.technical = false; state.hold = '/walks/next';
   await page.getByRole('button', { name: '重试', exact: true }).click();
+  await waitFor(() => state.pending.length === 1);
+  state.exhausted = true; state.hold = null; state.pending.shift().release();
   await card(page).filter({ hasText: '末尾文字 1' }).waitFor();
   assert.deepEqual(requests(state, '/walks/next').slice(0, 3).map(request => request.body),
     Array(3).fill({ name: 'memos/n0', path: ['memos/n0'] }));
@@ -429,10 +440,10 @@ test('stop, navigation and logout abort pending walk requests and isolate late r
   await waitFor(() => state.pending.length === 1);
   await page.getByRole('button', { name: '停止', exact: true }).click();
   await waitFor(() => state.aborts.includes('/walks/start'));
-  state.pending.shift().release(); state.hold = null;
+  state.pending.shift().release(); state.hold = '/walks/next';
+  await page.evaluate(() => { window.ignoreDiscoveryAbort = true; });
   await page.getByRole('button', { name: '随机开始', exact: true }).click();
   await card(page).filter({ hasText: '末尾文字 0' }).waitFor();
-  await page.evaluate(() => { window.ignoreDiscoveryAbort = true; });
   state.hold = '/walks/next';
   await next(page).click(); await waitFor(() => state.pending.length === 1);
   await page.getByRole('button', { name: '停止', exact: true }).click();
@@ -442,6 +453,7 @@ test('stop, navigation and logout abort pending walk requests and isolate late r
   await page.waitForFunction(count => window.discoveryResponses > count, count);
   await page.evaluate(() => new Promise(requestAnimationFrame));
   assert.equal(await card(page).count(), 0);
+  state.hold = '/walks/next';
   await page.getByRole('button', { name: '随机开始', exact: true }).click();
   await card(page).filter({ hasText: '末尾文字 0' }).waitFor();
   state.hold = '/walks/next';
@@ -490,6 +502,7 @@ test('English review and walk localize dates, navigation, errors and floating ca
   await setUILanguage(page, 'en');
   assert.equal(await page.getByRole('button', { name: 'Note 6 of 6', exact: true }).getAttribute('aria-pressed'), 'true');
   await page.locator('nav a[href="/walk"]').click();
+  state.walkError = 'INDEX_NOT_READY';
   await page.getByRole('button', { name: 'Start anywhere', exact: true }).click();
   await card(page).waitFor();
   assert.doesNotMatch(await page.locator('#discovery-page').innerText(), /note visited/);

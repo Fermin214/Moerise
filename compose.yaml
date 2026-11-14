@@ -35,6 +35,7 @@ services:
       MOERISE_PUBLIC_ORIGIN: ${MOERISE_PUBLIC_ORIGIN:-http://localhost:3000}
       MOERISE_STATE_DIR: /data/state
       MOERISE_INDEX_DIR: /data/index
+      MOERISE_LAYOUT_URL: ${MOERISE_LAYOUT_URL:-http://layout:8766}
     restart: unless-stopped
     init: true
     ports:
@@ -80,6 +81,25 @@ services:
         max-size: "5m"
         max-file: "2"
 
+  layout:
+    image: ghcr.io/fermin214/moerise-layout:${MOERISE_IMAGE_TAG:-0.1.0}
+    build: ./services/layout
+    restart: unless-stopped
+    init: true
+    volumes:
+      - layout-data:/data
+    networks: [local]
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
+    read_only: true
+    tmpfs: ["/tmp:size=32m"]
+    mem_limit: ${LAYOUT_MEMORY_LIMIT:-1g}
+    cpus: ${LAYOUT_CPU_LIMIT:-1.0}
+    logging:
+      options:
+        max-size: "5m"
+        max-file: "2"
+
 networks:
   local:
     driver: bridge
@@ -89,3 +109,4 @@ volumes:
   state-data:
   index-data:
   backup-data:
+  layout-data:

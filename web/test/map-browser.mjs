@@ -271,7 +271,7 @@ test('workspace proportions adapt to desktop widths and switch navigation when c
       overflow: document.documentElement.scrollWidth > innerWidth,
     }));
     assert.equal(geometry.overflow, false);
-    assert.ok(Math.abs(geometry.sidebar - Math.max(288, Math.min(384, width * 0.16))) < 1);
+    assert.ok(Math.abs(geometry.sidebar - Math.max(256, Math.min(320, width * 0.14))) < 1);
     assert.ok(geometry.map.width > (width - geometry.sidebar) * 0.85);
     assert.ok(geometry.map.height > 800);
   }
@@ -292,12 +292,12 @@ test('late point and note replies cannot rewrite navigation; switching points ca
   assert.equal(await page.locator('.map-page').count(), 0);
 });
 
-test('index states and temporary failures clear points then recover; published source changes refresh the reader', async t => {
+test('temporary failures retain published points; index states clear them and source changes refresh the reader', async t => {
   const { page, state, url } = await fixture(t); await login(page, url); await ready(page);
   await marker(page, 0).click(); await card(page).waitFor();
   state.error = { code: 'MAP_RESOURCE_LIMIT', status: 503, retryable: true };
   await page.locator('#map-field').press('r'); await page.getByRole('alert').waitFor();
-  assert.equal(await page.locator('.map-dot').count(), 0); assert.equal(await card(page).count(), 0);
+  assert.equal(await page.locator('.map-dot').count(), 6); assert.equal(await card(page).count(), 1);
   state.error = null; state.notes[0].content = '\u66f4\u65b0\u540e\u7684\u5b8c\u6574\u6b63\u6587'; state.notes[0].source_hash = 'changed'; state.version = 'c'.repeat(64);
   await page.waitForFunction(() => document.querySelector('.map-note .note-content')?.textContent.includes('\u66f4\u65b0\u540e\u7684\u5b8c\u6574\u6b63\u6587'));
   for (const status of ['waiting', 'building', 'unavailable', 'disabled', 'empty']) {
@@ -307,7 +307,7 @@ test('index states and temporary failures clear points then recover; published s
   }
   state.status = 'ready'; await page.locator('#map-field').press('r'); await ready(page);
   state.malformed = { status: 'ready', points: [] }; await page.locator('#map-field').press('r'); await page.getByRole('alert').waitFor();
-  assert.equal(await page.locator('.map-dot').count(), 0);
+  assert.equal(await page.locator('.map-dot').count(), 6);
 });
 
 test('mobile touch drag and pinch zoom fill the workspace and never select on canceled gestures', async t => {

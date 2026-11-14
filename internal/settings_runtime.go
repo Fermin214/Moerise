@@ -186,11 +186,6 @@ func (a *App) runVector(ctx context.Context) error {
 		if a.Vector != nil {
 			worked, err = a.Vector.Step(ctx)
 		}
-		if !worked && err == nil && a.Map != nil {
-			if mapErr := a.Map.Update(ctx); mapErr != nil && ctx.Err() == nil {
-				slog.Warn("map snapshot failed", "code", errorCode(mapErr))
-			}
-		}
 		retry := time.Duration(a.Store.Settings.Sync.RetrySeconds) * time.Second
 		unlock()
 		if ctx.Err() != nil {

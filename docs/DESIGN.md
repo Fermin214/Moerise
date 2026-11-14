@@ -6,7 +6,7 @@
 
 ## 一、集成方案与系统拓扑
 
-Moerise 采用 **Memos + Moerise Core + Moerise Web** 的三层架构，保证轻量解耦与最小化运维复杂度：
+Moerise 由 **Memos、Moerise Core、Moerise Web** 与独立布局服务组成：
 
 ```mermaid
 flowchart LR
@@ -15,6 +15,7 @@ flowchart LR
     Core -->|"官方 Connect / REST API"| Memos["官方 Memos (底座: 5231)"]
     Core --> State[("state.sqlite3 (业务状态)")]
     Core --> Index[("index.sqlite3 (可重建索引)")]
+    Core -->|"后台向量布局"| Layout["私有 Python 布局服务 (8766)"]
 ```
 
 ### 关键设计决定
@@ -80,12 +81,14 @@ flowchart LR
    - 从卡片的「更多操作」菜单进入编辑，支持 `Ctrl+Enter` 快速保存、`Esc` 取消。
   - 编辑只修改 Memos 中的正文或标签，创建时间不变，不影响时间线排序。
 
-### 3. 2D 认知地图
+### 3. 观星
 
-- Core 在后台生成点位、语义主题、子主题与关联的每日快照，页面读取不触发模型计算；无文本向量的笔记独立展示。
-- 地图铺满工作区，支持主题聚焦、节点联动、平移缩放与键盘操作，遵守减少动态效果设置。
-- 全景展示主题色块，放大后按可用面积展开子主题分区和笔记地块；边界几何复用，摘要按需读取。
+- Core 复用已发布笔记向量，由独立服务生成均衡 UMAP、主题和星体属性；普通变化按一分钟间隔合并，未变笔记复用坐标，读取不触发布局计算。
+- Canvas 铺满工作区，提供星图与摄影氛围、平移缩放、主题聚焦、键盘和全屏操作。辉光源于真实密度，近景摘要按需读取。
+- 快照保存在索引库，模型保存在独立布局卷；计算过程不持有同步与向量构建的后台锁。没有文本向量的笔记通过列表读取。
 - 预览与详情读取 Memos 实时原文；桌面侧边展示详情，窄窗口使用底部面板。
+
+算法参数、增量与迁移规则见[观星](STARGAZING.md)。
 
 ### 4. 流式 AI 洞察
 
@@ -122,6 +125,15 @@ services:
     environment:
       - MOERISE_MEMOS_BASE_URL=http://memos:5230
       - MOERISE_WEB_ENABLED=true
+      - MOERISE_LAYOUT_URL=http://layout:8766
+
+  layout:
+    build: ./services/layout
+    restart: unless-stopped
+    volumes:
+      - layout-data:/data
+    mem_limit: 1g
+    cpus: 1.0
 
   web:
     build: ./web

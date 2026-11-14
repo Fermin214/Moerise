@@ -27,12 +27,22 @@ func acceptanceMap(t *testing.T, c *clientHarness) moerise.MapResponse {
 	t.Helper()
 	var result moerise.MapResponse
 	wait(t, "published map snapshot", func() bool {
-		value := c.call("GET", "/api/app/v1/map", nil, 200)
+		time.Sleep(time.Second)
+		value, status, err := c.h.requestWithHeaders(c.h.base, "/api/app/v1/map", "GET", "", nil,
+			map[string]string{"Cookie": c.cookie.String()})
+		if status == 503 || status == 429 {
+			time.Sleep(2 * time.Second)
+			return false
+		}
+		if err != nil || status != 200 {
+			t.Fatalf("map response: status=%d err=%v", status, err)
+		}
 		data, err := json.Marshal(value)
+		result = moerise.MapResponse{}
 		if err != nil || json.Unmarshal(data, &result) != nil {
 			t.Fatalf("invalid map response: %v", err)
 		}
-		return result.Status == "ready"
+		return result.Status == "ready" && result.UpdateState == ""
 	})
 	if len(result.LayoutVersion) != 64 || len(result.LayoutFrame) != 64 || result.GeneratedAt == "" {
 		t.Fatal("invalid snapshot metadata")
@@ -87,6 +97,7 @@ func TestClientMapMemosAcceptance(t *testing.T) {
 		t.Cleanup(server.Close)
 		return server.URL
 	})
+	h.settings.Sync.PollSeconds, h.settings.Sync.FullSeconds, h.settings.Sync.RetrySeconds = 60, 600, 5
 	c := managedClient(t, h)
 	if disabled := c.call("GET", "/api/app/v1/map", nil, 200); disabled["status"] != "disabled" || len(disabled["points"].([]any)) != 0 {
 		t.Fatal("disabled embedding exposed map points")
@@ -220,8 +231,9 @@ func TestClientMapMemosAcceptance(t *testing.T) {
 		x, y := initial[notes[a]["name"].(string)], initial[notes[b]["name"].(string)]
 		return math.Hypot(x.X-y.X, x.Y-y.Y)
 	}
-	if distance(0, 1)*3 >= distance(0, 2) || distance(2, 3)*3 >= distance(2, 4) || distance(0, 6) == 0 {
-		t.Fatal("real indexed map lost semantic neighbors or merged duplicate originals")
+	if distance(0, 1)*3 >= distance(0, 2) || distance(2, 3)*3 >= distance(2, 4) ||
+		initial[notes[0]["name"].(string)].Name == initial[notes[6]["name"].(string)].Name {
+		t.Fatal("real indexed map lost semantic neighbors or independent duplicate resources")
 	}
 	beforeCalls := calls.Load()
 	if refreshed := acceptanceMap(t, c); !reflect.DeepEqual(first, refreshed) || beforeCalls != calls.Load() {
@@ -258,32 +270,32 @@ func TestClientMapMemosAcceptance(t *testing.T) {
 	h.sync("full")
 	h.vectorsReady()
 	if stable := acceptanceMap(t, c); !reflect.DeepEqual(first, stable) {
-		t.Fatal("ordinary edits bypassed daily snapshot interval")
+		t.Fatal("ordinary edits bypassed snapshot coalescing interval")
 	}
-	// Age only the derived snapshot to exercise a day boundary without a production test switch.
+	// Advance the derived snapshot timestamp without adding a production clock switch.
 	h.stop()
 	db := h.database("index")
-	_, err := db.Exec("UPDATE map_layouts SET generated_at = ?", time.Now().UTC().Add(-48*time.Hour).Format(time.RFC3339Nano))
+	_, err := db.Exec("UPDATE star_snapshots SET generated_at = ?", time.Now().UTC().Add(-2*time.Minute).Format(time.RFC3339Nano))
 	db.Close()
 	if err != nil {
 		t.Fatal(err)
 	}
 	h.start()
 	var incremental moerise.MapResponse
-	wait(t, "daily combined snapshot", func() bool {
+	wait(t, "combined incremental snapshot", func() bool {
 		incremental = acceptanceMap(t, c)
 		return incremental.LayoutVersion != first.LayoutVersion
 	})
 	updated := points(incremental)
 	if incremental.LayoutFrame != first.LayoutFrame || len(updated) != len(initial) || updated[added["name"].(string)].Name == "" || updated[notes[4]["name"].(string)].Name != "" {
-		t.Fatal("daily update lost combined changes or reset the frame")
+		t.Fatal("incremental update lost combined changes or reset the frame")
 	}
 	for name, old := range initial {
 		if name == notes[2]["name"] || name == notes[4]["name"] {
 			continue
 		}
 		if point := updated[name]; point.X != old.X || point.Y != old.Y {
-			t.Fatalf("daily update moved unchanged point: %s", name)
+			t.Fatalf("incremental update moved unchanged point: %s", name)
 		}
 	}
 	docker(t, "stop", h.container)
@@ -293,9 +305,9 @@ func TestClientMapMemosAcceptance(t *testing.T) {
 	h.ready()
 	h.vectorsReady()
 	if recovered := acceptanceMap(t, c); !reflect.DeepEqual(recovered, incremental) {
-		t.Fatal("source recovery changed the daily snapshot")
+		t.Fatal("source recovery changed the published snapshot")
 	}
-	t.Log("PASS daily snapshots combine edits/additions/deletions; originals stay live and source authentication stays required")
+	t.Log("PASS incremental snapshots combine edits/additions/deletions; originals stay live and source authentication stays required")
 
 	chatModel := &chatAcceptanceModel{key: randomToken(), release: make(chan struct{}, 1)}
 	chatServer := httptest.NewServer(chatModel)

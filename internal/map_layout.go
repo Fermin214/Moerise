@@ -41,14 +41,18 @@ type mapAnchor struct {
 	Scale  float64   `json:"scale"`
 }
 type mapLayout struct {
-	version     string
-	basis       mapBasis
-	points      []MapPoint
-	topics      []MapTopic
-	links       []MapLink
-	generation  string
-	revision    int64
-	generatedAt time.Time
+	algorithm     string
+	frame         string
+	parentVersion string
+	rebuildToken  string
+	version       string
+	basis         mapBasis
+	points        []MapPoint
+	topics        []MapTopic
+	links         []MapLink
+	generation    string
+	revision      int64
+	generatedAt   time.Time
 }
 
 func mapNorm(vector []float64) float64 {
