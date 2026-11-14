@@ -22,4 +22,5 @@
 | 群星布局实验 | [独立实验工具](../experiments/stars/README.md) |
 | 开发指南 | [指南](DEVELOPMENT.md) |
 | 参与贡献 | [指南](../CONTRIBUTING.md) |
+| Android 开发计划 | [v0.1.0 范围、里程碑与验收](ROADMAP.md#1-阶段四android-客户端) |
 | 路线图 | [路线图](ROADMAP.md) |
