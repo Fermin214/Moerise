@@ -37,7 +37,10 @@ kotlin {
             implementation(kotlin("test"))
             implementation(libs.ktor.client.mock)
         }
-        androidMain.dependencies { implementation(libs.ktor.client.okhttp) }
+        androidMain.dependencies {
+            implementation(libs.ktor.client.okhttp)
+            implementation(libs.androidx.activity.compose)
+        }
         jvmMain.dependencies { implementation(libs.ktor.client.okhttp) }
     }
 }

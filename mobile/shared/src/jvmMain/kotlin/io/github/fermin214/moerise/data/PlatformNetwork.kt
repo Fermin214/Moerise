@@ -17,3 +17,5 @@ actual fun platformHttpEngine(): HttpClientEngine = OkHttp.create {
         writeTimeout(65, TimeUnit.SECONDS)
     }
 }
+
+actual fun newLocalId(): String = java.util.UUID.randomUUID().toString()

@@ -25,12 +25,26 @@ class SessionController(
     private val repository = ConnectionRepository(secrets)
     private val mutableState = MutableStateFlow(SessionUiState())
     val state = mutableState.asStateFlow()
+    private val mutableLanguage = MutableStateFlow(UiLanguage.SYSTEM)
+    val language = mutableLanguage.asStateFlow()
     private var generation = 0L
     private var operation: Job? = null
     var core: CoreClient? = null
         private set
 
-    init { operation = scope.launch { restore() } }
+    init {
+        scope.launch {
+            mutableLanguage.value = secrets.read("ui-language")?.let { saved ->
+                UiLanguage.entries.firstOrNull { it.name == saved }
+            } ?: UiLanguage.SYSTEM
+        }
+        operation = scope.launch { restore() }
+    }
+
+    fun language(value: UiLanguage) {
+        mutableLanguage.value = value
+        scope.launch { secrets.write("ui-language", value.name) }
+    }
 
     private fun client(origin: String, stamp: Long): CoreClient =
         CoreClient(origin, SessionCookies(origin, secrets), onUnauthorized = {

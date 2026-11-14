@@ -22,12 +22,19 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
     buildTypes {
+        create("fixture") {
+            initWith(getByName("debug"))
+            applicationIdSuffix = ".fixture"
+            matchingFallbacks += "debug"
+        }
         release {
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
         }
     }
+    testBuildType = "fixture"
+    sourceSets.getByName("fixture").res.srcDir("src/debug/res")
 }
 kotlin { compilerOptions.jvmTarget.set(JvmTarget.JVM_17) }
 dependencies {
@@ -35,4 +42,9 @@ dependencies {
     implementation(libs.androidx.activity.compose)
     implementation(libs.androidx.core)
     implementation(libs.androidx.viewmodel)
+    implementation(libs.room.runtime)
+    implementation(libs.androidx.tracing)
+    androidTestImplementation(libs.androidx.test.runner)
+    androidTestImplementation(libs.androidx.test.junit)
+    androidTestImplementation(libs.androidx.compose.test)
 }

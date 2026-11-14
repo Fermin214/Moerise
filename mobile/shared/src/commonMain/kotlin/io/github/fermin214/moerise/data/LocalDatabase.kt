@@ -1,6 +1,7 @@
 package io.github.fermin214.moerise.data
 
 import androidx.room.ConstructedBy
+import androidx.room.ColumnInfo
 import androidx.room.Dao
 import androidx.room.Database
 import androidx.room.Entity
@@ -9,6 +10,9 @@ import androidx.room.Query
 import androidx.room.RoomDatabase
 import androidx.room.RoomDatabaseConstructor
 import androidx.room.Upsert
+import androidx.room.migration.Migration
+import androidx.sqlite.SQLiteConnection
+import androidx.sqlite.execSQL
 import androidx.sqlite.driver.bundled.BundledSQLiteDriver
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.IO
@@ -33,6 +37,8 @@ data class DraftEntity(
     val sourceHash: String? = null,
     val attachmentsJson: String = "[]",
     val conflictJson: String? = null,
+    @ColumnInfo(defaultValue = "NULL") val baselineJson: String? = null,
+    @ColumnInfo(defaultValue = "'home'") val slot: String = "home",
 )
 
 @Entity(tableName = "pending_writes")
@@ -56,7 +62,7 @@ interface LocalDao {
     @Upsert suspend fun putProfile(profile: ProfileEntity)
     @Query("SELECT * FROM profiles WHERE accountKey = :key") suspend fun profile(key: String): ProfileEntity?
     @Upsert suspend fun putDraft(draft: DraftEntity)
-    @Query("SELECT * FROM drafts WHERE accountKey = :key ORDER BY revision DESC LIMIT 1")
+    @Query("SELECT * FROM drafts WHERE accountKey = :key AND slot = 'home' ORDER BY revision DESC LIMIT 1")
     suspend fun homeDraft(key: String): DraftEntity?
     @Query("SELECT * FROM drafts WHERE id = :id") suspend fun draft(id: String): DraftEntity?
     @Query("DELETE FROM drafts WHERE id = :id") suspend fun deleteDraft(id: String)
@@ -72,7 +78,7 @@ interface LocalDao {
     @Query("DELETE FROM snapshots WHERE accountKey = :key") suspend fun deleteSnapshots(key: String)
 }
 
-@Database(entities = [ProfileEntity::class, DraftEntity::class, PendingWriteEntity::class, SnapshotEntity::class], version = 1)
+@Database(entities = [ProfileEntity::class, DraftEntity::class, PendingWriteEntity::class, SnapshotEntity::class], version = 2)
 @ConstructedBy(LocalDatabaseConstructor::class)
 abstract class LocalDatabase : RoomDatabase() {
     abstract fun dao(): LocalDao
@@ -84,4 +90,11 @@ expect object LocalDatabaseConstructor : RoomDatabaseConstructor<LocalDatabase> 
 }
 
 fun RoomDatabase.Builder<LocalDatabase>.configureDatabase(): LocalDatabase =
-    setDriver(BundledSQLiteDriver()).setQueryCoroutineContext(Dispatchers.IO).build()
+    setDriver(BundledSQLiteDriver())
+        .addMigrations(object : Migration(1, 2) {
+            override fun migrate(connection: SQLiteConnection) {
+                connection.execSQL("ALTER TABLE drafts ADD COLUMN baselineJson TEXT DEFAULT NULL")
+                connection.execSQL("ALTER TABLE drafts ADD COLUMN slot TEXT NOT NULL DEFAULT 'home'")
+            }
+        })
+        .setQueryCoroutineContext(Dispatchers.IO).build()
