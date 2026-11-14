@@ -1,0 +1,30 @@
+{
+  "status": "ready",
+  "algorithm": "umap-balanced-v1",
+  "layout_version": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "layout_frame": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "vector_generation": "fixture-generation",
+  "projection_revision": 1,
+  "points": [
+    {
+      "name": "memos/fixture",
+      "source_hash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "x": 0.0,
+      "y": 0.0,
+      "semantic": true,
+      "tags": [
+        "fixture"
+      ],
+      "stellar": {
+        "seed": 0.5,
+        "role": "core",
+        "radius": 1.5,
+        "luminosity": 0.8
+      }
+    }
+  ],
+  "topics": [],
+  "links": [],
+  "generated_at": "2026-11-14T00:00:00Z",
+  "update_state": "building"
+}

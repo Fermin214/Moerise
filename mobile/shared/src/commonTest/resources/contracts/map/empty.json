@@ -1,0 +1,12 @@
+{
+  "status": "empty",
+  "algorithm": "umap-balanced-v1",
+  "layout_version": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "layout_frame": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "vector_generation": "fixture-generation",
+  "projection_revision": 1,
+  "points": [],
+  "topics": [],
+  "links": [],
+  "generated_at": "2026-11-14T00:00:00Z"
+}

@@ -31,10 +31,14 @@ kotlin {
             implementation(libs.coroutines.core)
             implementation(libs.serialization.json)
             implementation(libs.markdown)
+            implementation(libs.ktor.client.core)
         }
         commonTest.dependencies {
             implementation(kotlin("test"))
+            implementation(libs.ktor.client.mock)
         }
+        androidMain.dependencies { implementation(libs.ktor.client.okhttp) }
+        jvmMain.dependencies { implementation(libs.ktor.client.okhttp) }
     }
 }
 dependencies {
@@ -48,4 +52,14 @@ tasks.withType<Test>().configureEach {
     maxHeapSize = "256m"
     jvmArgs("-XX:ActiveProcessorCount=1")
     testLogging.events("passed", "failed", "skipped")
+}
+val sharedJvmTest = tasks.named<Test>("jvmTest") {
+    exclude("**/CoreIntegrationTest*")
+}
+tasks.register<Test>("coreIntegrationTest") {
+    dependsOn("jvmTestClasses")
+    testClassesDirs = sharedJvmTest.get().testClassesDirs
+    classpath = sharedJvmTest.get().classpath
+    include("**/CoreIntegrationTest*")
+    outputs.upToDateWhen { false }
 }
