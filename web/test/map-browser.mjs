@@ -45,6 +45,10 @@ async function fixture(t, mobile = false, language = 'zh-CN') {
     if (path === '/tags') { json({ tags: [{ tag: '\u60f3\u6cd5', count: 1 }] }); return; }
     if (path === '/calendar') { json({ month: url.searchParams.get('month'), days: [] }); return; }
     if (path === '/notes') { json({ notes: notes.filter(note => note.state === 'NORMAL'), next_page_token: '' }); return; }
+    if (path === '/map/rebuild') {
+      assert.equal(req.method, 'POST');
+      reply({ status: 'queued' }); return;
+    }
     if (path === '/map') {
       assert.equal(req.method, 'GET'); assert.equal(url.search, '');
       if (state.error) { error(state.error.code, state.error.status, state.error.retryable); return; }
@@ -123,6 +127,41 @@ test('stars pick the closest visible note and bring offscreen keyboard focus int
   });
   assert.equal(await point.evaluate(element => element === document.activeElement), true);
   await point.press('Enter'); await page.locator('.map-note[data-name="memos/n1"]').waitFor();
+});
+
+test('star regeneration recovers from worker failure with and without a published snapshot', async t => {
+  const { page, state, url } = await fixture(t);
+  state.malformed = { status: 'unavailable', algorithm: 'umap-balanced-v1', layout_version: '',
+    layout_frame: '', vector_generation: '', projection_revision: 3, points: [], topics: [], links: [] };
+  await login(page, url);
+  const rebuild = page.getByRole('button', { name: '重新生成星图', exact: true });
+  const refresh = page.getByRole('button', { name: '刷新地图', exact: true });
+  const queued = () => state.requests.filter(request => request.path === '/map/rebuild').length;
+  await rebuild.click(); await wait(() => queued() === 1);
+  assert.equal(await rebuild.isDisabled(), true);
+  await refresh.click();
+  await page.getByRole('alert').filter({ hasText: '星图生成失败，请重试。' }).waitFor();
+  assert.equal(await rebuild.isEnabled(), true);
+
+  state.malformed = { status: 'ready', algorithm: 'umap-balanced-v1', layout_version: state.version,
+    layout_frame: state.frame, vector_generation: 'published', projection_revision: 3, topics: [], links: [],
+    points: state.notes.slice(0, 2).map((note, i) => ({ name: note.name, source_hash: note.source_hash,
+      x: i, y: 0, semantic: true, tags: note.tags,
+      stellar: { seed: .5, role: 'ordinary', radius: 1, luminosity: .6 } })) };
+  await refresh.click(); await ready(page);
+  await rebuild.click(); await wait(() => queued() === 2);
+  state.malformed.update_state = 'unavailable';
+  await refresh.click();
+  await page.getByRole('alert').filter({ hasText: '星图生成失败，请重试。' }).waitFor();
+  assert.equal(await rebuild.isEnabled(), true);
+  assert.equal(await page.locator('.map-dot').count(), 2);
+
+  delete state.malformed.update_state;
+  await rebuild.click(); await wait(() => queued() === 3);
+  state.malformed.layout_frame = 'c'.repeat(64);
+  state.malformed.layout_version = 'd'.repeat(64);
+  await refresh.click(); await ready(page);
+  assert.equal(await rebuild.isEnabled(), true);
 });
 
 test('full workspace map, protected complete reading, archive, pure file and independent detail return', async t => {

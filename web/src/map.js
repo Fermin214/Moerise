@@ -363,7 +363,7 @@ export function createMapPage({ request, handleFailure, validNote, renderNote, i
       const next = await request('/map', { controller: mapController });
       if (!activeMap(ticket)) return;
       if (!validMap(next)) throw Object.assign(new Error('Invalid map response'), { code: 'MAP_RESPONSE_INVALID' });
-      if (rebuilding && next.update_state === 'unavailable') {
+      if (rebuilding && (next.status === 'unavailable' || next.update_state === 'unavailable')) {
         rebuilding = false; rebuild.disabled = false;
         say(l("星图生成失败，请重试。"), true); refreshLater(60000); return;
       }
