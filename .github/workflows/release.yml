@@ -55,12 +55,14 @@ jobs:
           version="${RELEASE_TAG#v}"
           name="moerise_${version}_linux_${RELEASE_ARCH}"
           package="build/$name"
-          mkdir -p "$package/web"
+          mkdir -p "$package/web" "$package/services/layout" "$package/docs"
           go build -trimpath -ldflags="-s -w" -o "$package/moerise" .
           npm --prefix web run build
           cp config.example.json .env.example LICENSE "$package/"
           cp -R web/dist "$package/web/"
           cp web/server.mjs web/package.json web/MEMOS-LICENSE "$package/web/"
+          cp services/layout/server.py services/layout/semantic.py services/layout/requirements.txt "$package/services/layout/"
+          cp docs/OPERATIONS.md docs/STARGAZING.md "$package/docs/"
           tar -czf "build/$name.tar.gz" -C build "$name"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:

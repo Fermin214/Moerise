@@ -1,5 +1,5 @@
 import { l, setText, setAttr } from './i18n.js';
-import { createMapScene } from './map-scene.js';
+import { createMapScene } from './map-stars-scene.js';
 const statuses = new Set(['disabled', 'waiting', 'building', 'unavailable', 'ready', 'empty']);
 const resource = /^memos\/[A-Za-z0-9_-]+$/;
 const digest = /^[a-f0-9]{64}$/;
@@ -17,6 +17,13 @@ export function validMap(value) {
         !Number.isFinite(point.x) || !Number.isFinite(point.y) || typeof point.semantic !== 'boolean' ||
         !Array.isArray(point.tags) || point.tags.some(tag => typeof tag !== 'string')) return false;
     names.add(point.name);
+    if (point.stellar !== undefined) {
+      const a = point.stellar;
+      if (!a || !Number.isFinite(a.seed) || a.seed < 0 || a.seed > 1 ||
+          !['ordinary', 'core', 'isolated'].includes(a.role) || !Number.isFinite(a.radius) || a.radius <= 0 || a.radius > 4 ||
+          !Number.isFinite(a.luminosity) || a.luminosity < 0 || a.luminosity > 1) return false;
+    }
+    if (value.algorithm === 'umap-balanced-v1' && point.semantic && !point.stellar) return false;
   }
   if (value.algorithm === 'pca-topics-v3' && (!Array.isArray(value.topics) || !Array.isArray(value.links))) return false;
   if (value.topics !== undefined || value.links !== undefined) {
@@ -46,7 +53,7 @@ export function validMap(value) {
             local.add(name);
           }
         }
-        if (topic.districts.length && local.size !== members.size) return false;
+        if (value.algorithm !== 'umap-balanced-v1' && topic.districts.length && local.size !== members.size) return false;
       }
     }
     for (const link of value.links) {
@@ -73,6 +80,22 @@ export function fitMapView(points, width, height) {
       Math.max(1, height - 96) / Math.max(0.01, bottom - top))) };
 }
 
+export function fitStarView(points, width, height, all = false, topics = []) {
+  const source = points.filter(point => point.semantic);
+  const full = fitMapView(source, width, height);
+  if (all || source.length < 100) return full;
+  const xs = source.map(p => p.x).sort((a, b) => a - b), ys = source.map(p => p.y).sort((a, b) => a - b);
+  const quantile = (values, p) => values[Math.round((values.length - 1) * p)];
+  const subject = fitMapView([{ x: quantile(xs, .015), y: quantile(ys, .015) },
+    { x: quantile(xs, .985), y: quantile(ys, .985) }], width, height);
+  subject.scale = Math.min(subject.scale, full.scale * 1.12);
+  const inside = point => Math.abs(point.x - subject.x) * subject.scale < width / 2 - 20 &&
+    Math.abs(point.y - subject.y) * subject.scale < height / 2 - 45;
+  const visible = new Set(source.filter(inside).map(point => point.name));
+  return visible.size / source.length >= .97 &&
+    topics.every(topic => topic.members.filter(name => visible.has(name)).length / topic.members.length >= .8) ? subject : full;
+}
+
 export function transformMapView(view, factor, before, after = before) {
   const scale = Math.max(0.01, Math.min(10000, view.scale * factor));
   return { x: view.x + before.x / view.scale - after.x / scale,
@@ -95,15 +118,30 @@ export function createMapPage({ request, handleFailure, validNote, renderNote, i
   let result = null, view = null, overviewScale = 100, selected = initialView?.selected || '', readName = '', loading = false;
   let candidate = '', dragged = false, origin = null, nodeDrag = false, holdTimer = null;
   let scene = null, hovered = '', hoverTimer = null, hoverController = null, hoverSequence = 0;
+  let allFraming = false, photoMode = true, rebuilding = false, rebuildFrame = '';
   let excerptTimer = null, desiredExcerpts = [];
   const excerptCache = new Map(), excerptControllers = new Map();
   const points = new Map(), pointers = new Map();
   const root = node('div', 'map-page');
   const field = node('div', 'card map-field'), message = node('p', 'sub'), reader = node('aside', 'map-reader');
   const preview = node('div', 'map-preview'), tools = node('div', 'map-tools');
+  const unplaced = node('button', 'btn map-unplaced');
+  unplaced.type = 'button'; unplaced.hidden = true;
+  unplaced.addEventListener('click', () => {
+    clearReader(); selected = '';
+    const heading = node('h2', '', l("未定位笔记"));
+    const close = node('button', 'btn', l("关闭"));
+    close.type = 'button'; close.addEventListener('click', clearReader);
+    const items = node('div', 'map-unplaced-list');
+    for (const point of result.points.filter(point => !point.semantic)) {
+      const item = node('button', 'btn', l("笔记 {0}", { 0: point.name.slice(6) }));
+      item.type = 'button'; item.addEventListener('click', () => readPoint(point.name)); items.append(item);
+    }
+    reader.replaceChildren(close, heading, items); reader.hidden = false; root.classList.add('reading');
+  });
   preview.hidden = true; preview.setAttribute('role', 'tooltip');
   field.id = 'map-field'; field.tabIndex = 0; field.setAttribute('role', 'group'); setAttr(field, 'aria-label', l("观星"));
-  setAttr(field, 'aria-description', l("拖动空白平移，拖动笔记牵动相关节点，滚轮或双指缩放。方向键平移，加减键缩放，Home 显示全图，R 刷新。Tab 选点，Enter 阅读。"));
+  setAttr(field, 'aria-description', l("拖动平移，滚轮或双指缩放。方向键平移，加减键缩放，Home 归位，R 刷新。Tab 选星，Enter 阅读。"));
   setAttr(reader, 'aria-label', l("笔记详情"));
   message.hidden = true; reader.hidden = true; root.append(field, message, reader);
   const activeMap = ticket => alive && mapSequence === ticket;
@@ -136,7 +174,10 @@ export function createMapPage({ request, handleFailure, validNote, renderNote, i
     const rect = field.getBoundingClientRect();
     return { x: clientX - rect.left - rect.width / 2, y: clientY - rect.top - rect.height / 2 };
   }
-  function fit() { if (result) { setHover(''); move(fitMapView(result.points, field.clientWidth, field.clientHeight)); } }
+  const fitResult = () => result?.algorithm === 'umap-balanced-v1'
+    ? fitStarView(result.points, field.clientWidth, field.clientHeight, allFraming, result.topics)
+    : fitMapView(result?.points || [], field.clientWidth, field.clientHeight);
+  function fit() { if (result) { setHover(''); move(fitResult()); } }
   function tool(label, path, action, parent = tools) {
     const button = node('button', 'btn'); button.type = 'button';
     setAttr(button, 'aria-label', label); setAttr(button, 'title', label);
@@ -150,6 +191,26 @@ export function createMapPage({ request, handleFailure, validNote, renderNote, i
   tool(l("缩小"), 'M5 12h14', () => { if (view) move(transformMapView(view, 1 / 1.35, { x: 0, y: 0 })); });
   tool(l("显示全图"), 'M8 3H3v5M16 3h5v5M21 16v5h-5M8 21H3v-5', fit);
   tool(l("刷新地图"), 'M20 7v5h-5M4 17v-5h5M6 7a7 7 0 0 1 12-1l2 3M4 15l2 3a7 7 0 0 0 12-1', () => load(false));
+  const atmosphere = tool(l("切换星图氛围"), 'M12 3a9 9 0 1 0 9 9 7 7 0 0 1-9-9', () => {
+    photoMode = !photoMode; atmosphere.setAttribute('aria-pressed', String(photoMode)); scene?.mode?.(photoMode ? 'photo' : 'atlas');
+  });
+  atmosphere.setAttribute('aria-pressed', 'true');
+  const framing = tool(l("切换主体与全部取景"), 'M3 8V3h5M16 3h5v5M21 16v5h-5M8 21H3v-5', () => {
+    allFraming = !allFraming; framing.setAttribute('aria-pressed', String(allFraming)); fit();
+  });
+  framing.setAttribute('aria-pressed', 'false');
+  tool(l("全屏预览"), 'M8 3H3v5M16 3h5v5M21 16v5h-5M8 21H3v-5', async () => {
+    if (document.fullscreenElement) await document.exitFullscreen?.();
+    else await root.requestFullscreen?.().catch(() => {});
+  });
+  const rebuild = tool(l("重新生成星图"), 'M12 3v4m0 10v4M3 12h4m10 0h4M6 6l3 3m6 6 3 3M6 18l3-3m6-6 3-3', async () => {
+    if (rebuilding || !result) return;
+    rebuilding = true; rebuildFrame = result.layout_frame; rebuild.disabled = true;
+    try {
+      await request('/map/rebuild', { method: 'POST', body: {} });
+      say(l("正在重新生成星图…")); refreshLater(3000);
+    } catch (error) { rebuilding = false; rebuild.disabled = false; fail(error); }
+  });
   function setHover(name) {
     if (hovered === name) return;
     hovered = name; hoverSequence++; clearTimeout(hoverTimer); hoverController?.abort(); hoverController = null;
@@ -259,21 +320,26 @@ export function createMapPage({ request, handleFailure, validNote, renderNote, i
   function display(next) {
     setHover(''); clearExcerpts(); resetPointers(); scene?.destroy(); scene = null;
     result = next; field.replaceChildren(); points.clear(); field.dataset.rendered = 'false';
+    root.classList.toggle('stargazing', next.algorithm === 'umap-balanced-v1');
+    atmosphere.hidden = framing.hidden = rebuild.hidden = next.algorithm !== 'umap-balanced-v1';
     for (const point of next.points) points.set(point.name, point);
-    field.append(tools, preview);
+    field.append(tools, preview, unplaced);
+    const missing = next.points.filter(point => !point.semantic).length;
+    unplaced.hidden = next.algorithm !== 'umap-balanced-v1' || missing === 0;
+    setText(unplaced, l("未定位笔记（{0}）", { 0: missing }));
     if (!['ready', 'empty'].includes(next.status)) {
       clearReader();
       say({ disabled: l("请在设置中启用 Embedding。"), waiting: l("语义索引正在等待同步或构建。"),
-        building: l("语义索引构建中，可在设置中查看进度。"), unavailable: l("语义索引构建失败，可在设置中查看错误。") }[next.status]);
+        building: l("正在生成观星布局…"), unavailable: l("观星暂时不可用，稍后重试。") }[next.status]);
       if (next.status !== 'disabled') refreshLater(next.status === 'unavailable' ? 10000 : 3000);
       return;
     }
     if (!view || initialView?.frame !== next.layout_frame) {
-      view = fitMapView(next.points, field.clientWidth, field.clientHeight);
+      view = fitResult();
       if (initialView?.frame === next.layout_frame && validView(initialView)) view = { x: initialView.x, y: initialView.y, scale: initialView.scale };
     }
     initialView = { frame: next.layout_frame, ...view };
-    scene = createMapScene(field, { onPick: readPoint, onHover: setHover, onExcerpts: showExcerpts,
+    scene = createMapScene(field, { algorithm: next.algorithm, onPick: readPoint, onHover: setHover, onExcerpts: showExcerpts,
       onTopic: value => {
         setHover('');
         if (value.topic) {
@@ -281,8 +347,9 @@ export function createMapPage({ request, handleFailure, validNote, renderNote, i
           move({ ...fit, scale: Math.max(view.scale * 1.4, fit.scale) });
         } else move({ ...view, ...value });
       } });
-    overviewScale = fitMapView(next.points, field.clientWidth, field.clientHeight).scale;
+    overviewScale = fitResult().scale;
     scene.setData(next, overviewScale); positionMarkers();
+    scene.mode?.(photoMode ? 'photo' : 'atlas');
     say(next.status === 'empty' ? l("还没有可显示的笔记。") : '');
     if (selected && points.has(selected)) {
       if (readName !== selected && !noteController) readPoint(selected);
@@ -296,11 +363,19 @@ export function createMapPage({ request, handleFailure, validNote, renderNote, i
       const next = await request('/map', { controller: mapController });
       if (!activeMap(ticket)) return;
       if (!validMap(next)) throw Object.assign(new Error('Invalid map response'), { code: 'MAP_RESPONSE_INVALID' });
+      if (rebuilding && next.update_state === 'unavailable') {
+        rebuilding = false; rebuild.disabled = false;
+        say(l("星图生成失败，请重试。"), true); refreshLater(60000); return;
+      }
+      if (rebuilding && next.layout_frame !== rebuildFrame && ['ready', 'empty'].includes(next.status)) {
+        rebuilding = false; rebuild.disabled = false;
+      }
+      refreshLater(rebuilding || !['ready', 'empty', 'disabled'].includes(next.status) ? 3000 : 60000);
       onData(next);
       if (result && ['ready', 'empty'].includes(next.status) && result.status === next.status &&
           result.layout_version === next.layout_version && result.layout_frame === next.layout_frame &&
           result.vector_generation === next.vector_generation && result.projection_revision === next.projection_revision) {
-        say(next.status === 'empty' ? l("还没有可显示的笔记。") : '');
+        say(rebuilding ? l("正在重新生成星图…") : next.status === 'empty' ? l("还没有可显示的笔记。") : '');
         return;
       }
       // A changed selected source must never retain its old reading card.
@@ -324,15 +399,15 @@ export function createMapPage({ request, handleFailure, validNote, renderNote, i
     return { center, distance: positions.length === 2 ? Math.hypot(positions[0].x - positions[1].x, positions[0].y - positions[1].y) : 0 };
   }
   field.addEventListener('pointerdown', event => {
-    if (!view || event.target.closest('.map-tools,.map-topic') || (event.pointerType === 'mouse' && event.button !== 0)) return;
+    if (!view || event.target.closest('.map-tools,.map-topic,.map-unplaced') || (event.pointerType === 'mouse' && event.button !== 0)) return;
     setHover('');
     event.preventDefault(); field.focus({ preventScroll: true });
     field.classList.add('pointer-focus');
     if (!pointers.size) {
       origin = { x: event.clientX, y: event.clientY };
       candidate = event.target.closest('.map-dot')?.dataset.name || scene?.pick(event.clientX, event.clientY) || '';
-      dragged = false; nodeDrag = !!candidate && event.pointerType !== 'touch';
-      if (candidate && event.pointerType === 'touch') holdTimer = setTimeout(() => {
+      dragged = false; nodeDrag = result?.algorithm !== 'umap-balanced-v1' && !!candidate && event.pointerType !== 'touch';
+      if (result?.algorithm !== 'umap-balanced-v1' && candidate && event.pointerType === 'touch') holdTimer = setTimeout(() => {
         if (pointers.size === 1 && !dragged) { nodeDrag = true; scene?.drag(candidate, 0, 0); }
       }, 320);
     }
@@ -393,7 +468,7 @@ export function createMapPage({ request, handleFailure, validNote, renderNote, i
   });
   const resize = new ResizeObserver(() => {
     if (!view || !result) return;
-    overviewScale = fitMapView(result.points, field.clientWidth, field.clientHeight).scale;
+    overviewScale = fitResult().scale;
     if (!initialView) fit(); else positionMarkers();
   });
   return {

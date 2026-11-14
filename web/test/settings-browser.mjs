@@ -439,7 +439,7 @@ test('model settings pair protocols, check saved versions and discard obsolete r
   await page.locator('a[data-route][href="/review"]').click();
   assert.equal(await page.locator('#settings-page').count(), 0);
   await page.locator('a[data-route][href="/map"]').click();
-  await page.locator('.map-page [role="status"]').filter({ hasText: '语义索引构建中' }).waitFor();
+  await page.locator('.map-page [role="status"]').filter({ hasText: '正在生成观星布局' }).waitFor();
   state.holdCheck = false;
   await page.locator('a[data-route][href="/settings"]').click(); await pageReady(page);
   await tab(page, 'models');

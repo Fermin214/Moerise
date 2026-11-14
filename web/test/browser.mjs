@@ -454,6 +454,7 @@ test('browser timeline management, attachment retries, history, conflicts and pr
   await page.locator('[data-name="memos/n40"]').waitFor();
   await page.locator('#q').fill('');
   await page.locator('#q').press('Enter');
+  await page.getByRole('button', { name: '清除全部', exact: true }).click();
   await page.locator('[data-name="memos/n00"]').waitFor();
   await menu(page, 'n00', '编辑');
   const editor = page.locator('form.editor');

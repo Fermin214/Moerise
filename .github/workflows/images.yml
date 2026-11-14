@@ -57,8 +57,13 @@ jobs:
             --label "org.opencontainers.image.revision=$revision" \
             --label "org.opencontainers.image.version=$version" \
             --tag "$image-web:$version-$ARCH" web
+          docker build --label "org.opencontainers.image.source=$source" \
+            --label "org.opencontainers.image.revision=$revision" \
+            --label "org.opencontainers.image.version=$version" \
+            --tag "$image-layout:$version-$ARCH" services/layout
           docker push "$image:$version-$ARCH"
           docker push "$image-web:$version-$ARCH"
+          docker push "$image-layout:$version-$ARCH"
 
   publish:
     needs: build
@@ -72,7 +77,7 @@ jobs:
         run: |
           image="ghcr.io/${GITHUB_REPOSITORY,,}"
           version="${RELEASE_TAG#v}"
-          for name in "$image" "$image-web"; do
+          for name in "$image" "$image-web" "$image-layout"; do
             docker buildx imagetools create --tag "$name:$version" \
               "$name:$version-amd64" "$name:$version-arm64"
           done

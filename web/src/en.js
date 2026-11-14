@@ -1,6 +1,17 @@
 const noun = (count, singular, plural = singular + 's') => count === '1' ? singular : plural;
 
 export const english = {
+  "拖动平移，滚轮或双指缩放。方向键平移，加减键缩放，Home 归位，R 刷新。Tab 选星，Enter 阅读。": "Drag to pan, scroll or pinch to zoom. Arrow keys pan; +/- zoom; Home resets; R refreshes. Tab selects stars; Enter opens a note.",
+  "切换星图氛围": "Toggle star glow",
+  "切换主体与全部取景": "Toggle subject and full framing",
+  "全屏预览": "Fullscreen",
+  "重新生成星图": "Regenerate star map",
+  "正在重新生成星图…": "Regenerating star map…",
+  "正在生成观星布局…": "Generating star map…",
+  "观星暂时不可用，稍后重试。": "Stargazing is unavailable. Please try again shortly.",
+  "未定位笔记": "Notes without positions",
+  "未定位笔记（{0}）": "Notes without positions ({0})",
+  "星图生成失败，请重试。": "Star map generation failed. Please try again.",
   "通用": "General",
   "设置模块": "Settings sections",
   "跟随浏览器": "Follow browser",

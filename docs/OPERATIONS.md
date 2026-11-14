@@ -23,6 +23,9 @@ Moerise 支持 Linux 原生二进制运行以及 Docker 容器部署。本文档
 | `MOERISE_TIMEZONE` | `timezone` | `Asia/Hong_Kong` | IANA 时区标识，用于每日回顾计算与时间线显示 |
 | `MOERISE_STATE_DIR` | `state_dir` | `/data/state` | 保存业务数据库 `state.sqlite3` 的持久化目录 |
 | `MOERISE_INDEX_DIR` | `index_dir` | `/data/index` | 保存可重建索引库 `index.sqlite3` 的持久化目录 |
+| `MOERISE_LAYOUT_URL` | — | 原生 `http://127.0.0.1:8766`；Compose `http://layout:8766` | Core 访问的私有布局服务地址 |
+| `MOERISE_LAYOUT_STATE` | — | `/data` | Python 布局服务的模型、缓存和任务目录 |
+| `LAYOUT_MEMORY_LIMIT` / `LAYOUT_CPU_LIMIT` | — | `1g` / `1.0` | Compose 布局服务的内存和 CPU 上限 |
 
 ### 独立随机密钥生成
 
@@ -52,7 +55,7 @@ docker compose up -d memos
 在浏览器打开 `http://localhost:5231` 创建账户并获取 PAT 与资源名，配置到 `.env` 后拉取镜像并启动整套服务。Core 与 Web 使用 GHCR 中 `MOERISE_IMAGE_TAG` 对应的版本镜像，自动匹配 AMD64 或 ARM64：
 
 ```bash
-docker compose pull moerise web
+docker compose pull moerise web layout
 docker compose up -d
 docker compose ps
 ```
@@ -67,7 +70,7 @@ MOERISE_MEMOS_BASE_URL=https://memos.example.com
 MOERISE_MEMOS_PUBLIC_URL=https://memos.example.com
 ```
 
-已有实例需为 Memos 0.31.x，绑定账号与 PAT 须与 `.env` 中的资源名一致；容器内的 `localhost` 指容器自身。随后运行 `docker compose pull moerise web` 和 `docker compose up -d` 完成对接。
+已有实例需为 Memos 0.31.x，绑定账号与 PAT 须与 `.env` 中的资源名一致；容器内的 `localhost` 指容器自身。随后运行 `docker compose pull moerise web layout` 和 `docker compose up -d` 完成对接。源码部署使用 `docker compose up -d --build`；Core、Web、布局服务使用同一版本的代码。
 
 ### 3. HTTPS 与运行检查
 
@@ -91,22 +94,33 @@ docker compose logs --tail=100 moerise web
 
 Web 需单独构建与运行，步骤见 [Web 指南](WEB.md)。`--config` 优先于 `MOERISE_CONFIG_FILE`；二者省略时读取 `.local/config.json`。
 
+启用观星时，使用 Python 3.12 在独立终端或服务管理器中启动布局服务：
+
+```bash
+python3.12 -m venv .local/layout-venv
+.local/layout-venv/bin/pip install -r services/layout/requirements.txt
+MOERISE_LAYOUT_STATE="$PWD/.local/layout-data" \
+  .local/layout-venv/bin/python services/layout/server.py serve
+```
+
+服务默认仅监听 `127.0.0.1:8766`。将模型目录持久化，Core 默认连接该地址。布局服务不可用时，已发布星图仍可读取；首次生成和后续更新会重试。生产环境通过 systemd 等进程管理器启动 Core、Web 和布局服务。
+
 ---
 
 ## 三、服务器资源配置建议
 
 Moerise Core 会自动根据 Linux cgroup 的内存限制与 CPU 配额动态计算任务并发度与分批预算。在 `deploy/resources/` 目录下提供了常见主机规格的预设配置，可直接合并入 `.env`：
 
-| 服务器规格 | 推荐配置文件 | Core / Memos / Web 内存上限 | 合计上限 |
+| 服务器规格 | 推荐配置文件 | Core / Memos / Web 内存上限 | 基础服务合计上限 |
 | --- | --- | --- | --- |
 | 1 核 / 1 GiB | `deploy/resources/1c1g.env` | 256 / 192 / 96 MiB | 544 MiB |
 | 2 核 / 1 GiB | `deploy/resources/2c1g.env` | 384 / 192 / 96 MiB | 672 MiB |
 | 2 核 / 2–4 GiB | `deploy/resources/2c2g.env` | 512 / 256 / 128 MiB | 896 MiB |
 | 4 核 / 4–8 GiB | `deploy/resources/4c4g.env` | 768 / 256 / 128 MiB | 1,152 MiB |
 
-以上为服务内存上限，不是实测占用或笔记容量保证。笔记长度、分块数量、向量维度和模型并发均影响开销；为操作系统及其他服务预留空间。2C4G 主机可使用 `2c2g.env` 作为初始配置。
+表中不含布局服务。启用观星应另计 `LAYOUT_MEMORY_LIMIT` 的 1 GiB 上限，建议整机至少 2 GiB；1 GiB 档仅用于基础服务预算。布局任务结束后科学计算子进程退出，父进程保持轻量。笔记长度、分块数量、向量维度和模型并发均影响开销；为操作系统及其他服务预留空间。2C4G 主机可使用 `2c2g.env` 作为初始配置。
 
-Core 读取 cgroup v1/v2 及父级限制，设置 Go 内存预算、来源分页与计算并发；显式 `GOMEMLIMIT` 优先。同步、向量构建和地图生成串行使用后台执行名额，交互来源读取使用独立请求队列。地图读取只加载快照，普通变化按 24 小时间隔合并更新，点选原文保持实时。
+Core 读取 cgroup v1/v2 及父级限制，设置 Go 内存预算、来源分页与计算并发；显式 `GOMEMLIMIT` 优先。同步与向量构建共享后台名额，布局计算由独立服务执行，不占用该名额。观星读取只加载快照，普通变化按一分钟间隔合并，点选原文保持实时。布局卷 `layout-data` 保存 UMAP 模型与计算缓存，可重建；保留该卷有助于延续增量坐标框架。
 
 ---
 
@@ -166,7 +180,7 @@ docker compose up -d --no-build moerise
 ## 五、升级与回滚
 
 1. 备份 Memos 数据、Moerise 产品状态及配置，记录源码提交或镜像摘要。
-2. 保持 Compose 项目名、来源绑定、数据卷和状态加密密钥一致，将 `.env` 中的 `MOERISE_IMAGE_TAG` 设为目标版本，执行 `docker compose pull moerise web` 和 `docker compose up -d`。
+2. 保持 Compose 项目名、来源绑定、数据卷和状态加密密钥一致，将 `.env` 中的 `MOERISE_IMAGE_TAG` 设为目标版本，执行 `docker compose pull moerise web layout` 和 `docker compose up -d`。
 3. 检查就绪状态、原文和附件、设置版本、回顾与聊天历史；启用 Embedding 时另查索引构建状态。
 4. 回滚时先停止服务并切换代码或镜像；数据库结构不兼容时，恢复目标版本对应的状态备份，再启动。
 

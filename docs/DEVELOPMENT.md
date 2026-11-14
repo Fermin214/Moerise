@@ -12,6 +12,7 @@
 - **Node.js 24+ 与 npm**：构建和测试 Web 前端。
 - **Docker Engine 与 Compose 2.24+**：运行真实 Memos 容器进行集成端到端验收。日常单元测试无需 Docker。
 - **Git**：版本控制。
+- **Python 3.12**：原生运行布局服务；使用布局容器时无需在宿主安装科学计算依赖。
 
 ---
 
@@ -43,6 +44,17 @@ CORE_ORIGIN=http://127.0.0.1:8787 PUBLIC_ORIGIN=http://localhost:3000 npm --pref
 ```
 
 访问 `http://localhost:3000` 即可开始联调。修改前端源码后需重新执行 `npm --prefix web run build`。
+
+### 4. 观星布局服务
+
+```bash
+python3.12 -m venv .local/layout-venv
+.local/layout-venv/bin/pip install -r services/layout/requirements.txt
+MOERISE_LAYOUT_STATE="$PWD/.local/layout-data" \
+  .local/layout-venv/bin/python services/layout/server.py serve
+```
+
+Core 默认连接 `127.0.0.1:8766`，可通过 `MOERISE_LAYOUT_URL` 修改。也可运行 `docker compose up -d --build layout`，将 Core 放入同一 Compose 网络。算法、快照与模型文件说明见[观星](STARGAZING.md)。
 
 ---
 
@@ -92,7 +104,7 @@ npm run test:browser
 - `web/test/browser.mjs`：基础页面交互、Markdown 渲染、就地编辑与多维筛选。
 - `web/test/settings-browser.mjs`：动态设置保存、凭据加密、版本冲突与时区热更新。
 - `web/test/discovery-browser.mjs`：每日回顾全天计划浏览、随机漫步路径步进与中断重试。
-- `web/test/map-browser.mjs`：2D 认知地图画布渲染、鼠标与键盘快捷键交互、节点点选穿透阅读。
+- `web/test/map-browser.mjs`：旧快照迁移渲染、鼠标与键盘操作、节点点选阅读；正式星图与真实向量的联合流程见 `scripts/acceptance/check-stars.mjs`。
 - `web/test/insights-browser.mjs`：AI 洞察材料多选、SSE 流式打字机回复、追问与一键沉淀。
 
 ---
@@ -100,6 +112,8 @@ npm run test:browser
 ## 五、真实 Memos 集成测试
 
 当涉及 Memos 协议同步、数据库迁移、备份恢复或通知推送改动时，必须通过真实容器集成测试：
+
+观星集成场景要求布局服务已在 `MOERISE_LAYOUT_URL` 指定的地址运行。
 
 ```bash
 go test -tags=integration ./tests -v -count=1
@@ -136,9 +150,19 @@ go test -tags=integration ./tests -run '^TestSearchQualityLiveAcceptance$' -v -c
 # 向量点积与内存扫描 Benchmark
 go test ./internal -run '^$' -bench 'Benchmark(VectorIndex|Semantic)' -benchmem
 
-# 2D 认知地图 PCA 布局生成 Benchmark
+# 旧 PCA 布局兼容路径 Benchmark
 go test ./internal -run '^$' -bench '^BenchmarkMapLayout$' -benchmem
 ```
+
+观星联合验收使用既有笔记和对应的 Float32 小端向量，不调用真实模型：
+
+```bash
+node scripts/acceptance/check-stars.mjs \
+  --notes .local/corpus/notes.json \
+  --vectors .local/corpus/vectors.f32 --dimensions 1024
+```
+
+脚本记录快照 API 延迟、Core 内存、首次星图显示时间和连续缩放绘制耗时，同时检查新增笔记的坐标稳定性与主动重建。
 
 ### 2. 检索效果评测脚本
 提供标准评测脚本 `scripts/performance/evaluate-search.py`，用于对标注问题集评测 Hit@5、MRR@5 及查询延迟：

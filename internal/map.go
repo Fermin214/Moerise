@@ -4,12 +4,13 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"log/slog"
 	"sync/atomic"
 	"time"
 )
 
 const mapRequestTimeout = 55 * time.Second
-const mapSnapshotInterval = 24 * time.Hour
+const mapSnapshotInterval = time.Minute
 
 type mapCache struct {
 	key      string
@@ -21,25 +22,49 @@ type mapSchedule struct {
 	next time.Time
 }
 
+type mapActivity struct {
+	key    string
+	status string
+}
+
 type MapService struct {
-	Store    *Store
-	gate     chan struct{}
-	cache    atomic.Pointer[mapCache]
-	schedule atomic.Pointer[mapSchedule]
+	Store       *Store
+	gate        chan struct{}
+	cache       atomic.Pointer[mapCache]
+	schedule    atomic.Pointer[mapSchedule]
+	lastFailure atomic.Pointer[mapSchedule]
+	activity    atomic.Pointer[mapActivity]
+	algorithm   string
+	workerURL   string
+	scope       string
+	generate    func(context.Context, mapSnapshot, *mapLayout) (*mapLayout, error)
 }
 
 func NewMapService(store *Store) *MapService {
-	return &MapService{Store: store, gate: make(chan struct{}, 1)}
+	service := &MapService{Store: store, gate: make(chan struct{}, 1),
+		algorithm: starsAlgorithm, workerURL: layoutWorkerURL(),
+		scope: hashBytes(canonicalJSON([]string{store.Settings.Memos.InstanceID, store.Settings.Memos.User}))}
+	service.generate = service.computeStars
+	return service
 }
 
 func (s *MapService) Reset() {
 	s.cache.Store(nil)
 	s.schedule.Store(nil)
+	s.lastFailure.Store(nil)
+	s.activity.Store(nil)
+}
+
+func (s *MapService) readState(response MapResponse, key string) MapResponse {
+	if activity := s.activity.Load(); activity != nil && activity.key == key {
+		response.UpdateState = activity.status
+	}
+	return response
 }
 
 func (s *MapService) cacheKey() string {
 	return hashBytes(canonicalJSON([]string{s.Store.Settings.Memos.InstanceID,
-		s.Store.Settings.Memos.User, embeddingSpace(s.Store.Settings.Embedding)}))
+		s.Store.Settings.Memos.User, embeddingSpace(s.Store.Settings.Embedding), s.algorithm}))
 }
 
 func mapRequestError(ctx context.Context, err error) error {
@@ -50,9 +75,17 @@ func mapRequestError(ctx context.Context, err error) error {
 }
 
 func (s *MapService) response(layout *mapLayout, space string) MapResponse {
-	result := MapResponse{Status: "ready", Algorithm: mapAlgorithm, LayoutVersion: layout.version,
-		LayoutFrame: hashBytes(canonicalJSON([]any{s.Store.Settings.Memos.InstanceID,
-			s.Store.Settings.Memos.User, mapAlgorithm, space, layout.basis})),
+	algorithm := layout.algorithm
+	if algorithm == "" {
+		algorithm = mapAlgorithm
+	}
+	frame := hashBytes(canonicalJSON([]any{s.Store.Settings.Memos.InstanceID,
+		s.Store.Settings.Memos.User, algorithm, space, layout.basis}))
+	if algorithm == starsAlgorithm {
+		frame = hashBytes(canonicalJSON([]string{s.scope, space, algorithm, layout.frame}))
+	}
+	result := MapResponse{Status: "ready", Algorithm: algorithm, LayoutVersion: layout.version,
+		LayoutFrame:      frame,
 		VectorGeneration: layout.generation, ProjectionRevision: layout.revision,
 		GeneratedAt: layout.generatedAt.Format(time.RFC3339Nano), Points: layout.points,
 		Topics: layout.topics, Links: layout.links}
@@ -68,7 +101,7 @@ func (s *MapService) Read(ctx context.Context) (_ MapResponse, result error) {
 	ctx, cancel := context.WithTimeout(ctx, mapRequestTimeout)
 	defer cancel()
 	defer func() { result = mapRequestError(ctx, result) }()
-	response := MapResponse{Status: "disabled", Algorithm: mapAlgorithm, Points: []MapPoint{}, Topics: []MapTopic{}, Links: []MapLink{}}
+	response := MapResponse{Status: "disabled", Algorithm: s.algorithm, Points: []MapPoint{}, Topics: []MapTopic{}, Links: []MapLink{}}
 	if err := ctx.Err(); err != nil {
 		return MapResponse{}, err
 	}
@@ -78,10 +111,10 @@ func (s *MapService) Read(ctx context.Context) (_ MapResponse, result error) {
 	key := s.cacheKey()
 	cached := s.cache.Load()
 	if cached != nil && cached.key == key {
-		return cached.response, ctx.Err()
+		return s.readState(cached.response, key), ctx.Err()
 	}
 	space := embeddingSpace(s.Store.Settings.Embedding)
-	layout, err := s.Store.loadMapLayout(ctx, mapSnapshot{space: space, dimensions: s.Store.Settings.Embedding.Dimensions})
+	layout, _, err := s.loadLayout(ctx, s.Store, space)
 	if err != nil {
 		return MapResponse{}, err
 	}
@@ -89,7 +122,7 @@ func (s *MapService) Read(ctx context.Context) (_ MapResponse, result error) {
 		response = s.response(layout, space)
 		// A cold read must not overwrite a snapshot published concurrently.
 		s.cache.CompareAndSwap(cached, &mapCache{key: key, response: response})
-		return response, ctx.Err()
+		return s.readState(response, key), ctx.Err()
 	}
 	status, err := s.Store.VectorStatusContext(ctx)
 	if err != nil {
@@ -98,6 +131,9 @@ func (s *MapService) Read(ctx context.Context) (_ MapResponse, result error) {
 	response.Status, response.ProjectionRevision = "waiting", status.ProjectionRevision
 	if status.Ready {
 		response.Status = "building"
+		if failed := s.lastFailure.Load(); failed != nil && failed.key == key {
+			response.Status = "unavailable"
+		}
 	} else if building := status.Building; building != nil && building.SpaceHash == space {
 		response.Status = "building"
 		if building.LastError != nil {
@@ -107,8 +143,8 @@ func (s *MapService) Read(ctx context.Context) (_ MapResponse, result error) {
 	return response, ctx.Err()
 }
 
-// Update runs with the vector worker while indexing is idle. Ordinary changes
-// are combined into a daily snapshot; unchanged generations need no vector scan.
+// Update prepares and publishes under short locks; layout computation owns no
+// runtime or indexing lock. Published coordinates remain available throughout.
 func (s *MapService) Update(ctx context.Context) error {
 	return s.update(ctx, time.Now().UTC())
 }
@@ -120,56 +156,149 @@ func (s *MapService) update(ctx context.Context, now time.Time) error {
 	case <-ctx.Done():
 		return ctx.Err()
 	}
-	if !s.Store.Settings.Embedding.Enabled {
-		return nil
+	job, err := s.prepare(ctx, now)
+	if err != nil {
+		return err
 	}
-	key := s.cacheKey()
-	if schedule := s.schedule.Load(); schedule != nil && schedule.key == key && now.Before(schedule.next) {
+	if job == nil {
 		return ctx.Err()
 	}
-	// Bound retries without making page requests responsible for background work.
-	s.schedule.Store(&mapSchedule{key, now.Add(5 * time.Second)})
+	previous := job.previous
+	if job.token != "" {
+		previous = nil
+	}
+	s.activity.Store(&mapActivity{job.key, "building"})
+	started := time.Now()
+	layout, err := s.generate(ctx, job.snapshot, previous)
+	if err != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		s.lastFailure.Store(&mapSchedule{job.key, now})
+		s.activity.Store(&mapActivity{job.key, "unavailable"})
+		return err
+	}
+	slog.Info("stars layout computed", "points", len(layout.points), "elapsed", time.Since(started))
+	unlockRuntime := s.Store.lockRuntime()
+	defer unlockRuntime()
+	if job.key != s.cacheKey() {
+		return mapIndexChanged()
+	}
 	unlock, err := s.Store.lockBackground(ctx)
 	if err != nil {
 		return err
 	}
 	defer unlock()
-	space := embeddingSpace(s.Store.Settings.Embedding)
-	previous, err := s.Store.loadMapLayout(ctx, mapSnapshot{space: space, dimensions: s.Store.Settings.Embedding.Dimensions})
+	layout.generatedAt = now
+	if layout.algorithm == starsAlgorithm {
+		if job.previous != nil && job.previous.algorithm == starsAlgorithm {
+			layout.parentVersion = job.previous.version
+		}
+		layout.rebuildToken = job.token
+		err = job.store.publishStars(ctx, job.snapshot, layout)
+	} else {
+		err = job.store.publishMapLayout(ctx, job.snapshot, layout)
+	}
 	if err != nil {
 		return err
 	}
+	s.cache.Store(&mapCache{job.key, s.response(layout, job.snapshot.space)})
+	s.lastFailure.Store(nil)
+	s.activity.Store(nil)
+	s.schedule.Store(&mapSchedule{job.key, now.Add(mapSnapshotInterval)})
+	slog.Info("stars snapshot published", "points", len(layout.points), "revision", job.snapshot.revision)
+	return ctx.Err()
+}
+
+type mapJob struct {
+	store    *Store
+	key      string
+	snapshot mapSnapshot
+	previous *mapLayout
+	token    string
+}
+
+func (s *MapService) loadLayout(ctx context.Context, store *Store, space string) (*mapLayout, string, error) {
+	if s.algorithm == starsAlgorithm {
+		layout, token, err := store.loadStars(ctx, space)
+		if err != nil || layout != nil {
+			return layout, token, err
+		}
+		legacy, err := store.loadMapLayout(ctx, mapSnapshot{space: space, dimensions: store.Settings.Embedding.Dimensions})
+		return legacy, token, err
+	}
+	layout, err := store.loadMapLayout(ctx, mapSnapshot{space: space, dimensions: store.Settings.Embedding.Dimensions})
+	return layout, "", err
+}
+
+func (s *MapService) prepare(ctx context.Context, now time.Time) (*mapJob, error) {
+	unlockRuntime := s.Store.lockRuntime()
+	defer unlockRuntime()
+	if !s.Store.Settings.Embedding.Enabled {
+		return nil, nil
+	}
+	key := s.cacheKey()
+	if schedule := s.schedule.Load(); schedule != nil && schedule.key == key && now.Before(schedule.next) {
+		return nil, ctx.Err()
+	}
+	s.schedule.Store(&mapSchedule{key, now.Add(5 * time.Second)})
+	unlock, err := s.Store.lockBackground(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer unlock()
+	// An immutable settings view can be used while the runtime changes providers.
+	store := &Store{Settings: s.Store.Settings, state: s.Store.state, index: s.Store.index,
+		background: s.Store.background}
+	space := embeddingSpace(store.Settings.Embedding)
+	previous, token, err := s.loadLayout(ctx, store, space)
+	if err != nil {
+		return nil, err
+	}
+	sameAlgorithm := previous != nil && (previous.algorithm == s.algorithm || previous.algorithm == "" && s.algorithm == mapAlgorithm)
 	if previous != nil && !previous.generatedAt.IsZero() {
 		s.cache.Store(&mapCache{key, s.response(previous, space)})
-		if due := previous.generatedAt.Add(mapSnapshotInterval); now.Before(due) {
+		if due := previous.generatedAt.Add(mapSnapshotInterval); sameAlgorithm && token == "" && now.Before(due) {
 			s.schedule.Store(&mapSchedule{key, due})
-			return ctx.Err()
+			return nil, ctx.Err()
 		}
 	}
-	status, err := s.Store.VectorStatusContext(ctx)
+	status, err := store.VectorStatusContext(ctx)
 	if err != nil || !status.Ready {
-		return err
+		return nil, err
 	}
-	if previous != nil && !previous.generatedAt.IsZero() && previous.generation == status.Active.ID && previous.revision == status.ProjectionRevision {
+	if sameAlgorithm && token == "" && previous.generation == status.Active.ID && previous.revision == status.ProjectionRevision {
 		s.schedule.Store(&mapSchedule{key, now.Add(mapSnapshotInterval)})
-		return ctx.Err()
+		return nil, ctx.Err()
 	}
-	snapshot, err := s.Store.mapSnapshot(ctx)
+	snapshot, err := store.mapSnapshot(ctx)
 	if errors.Is(err, sql.ErrNoRows) {
-		return mapIndexChanged()
+		return nil, mapIndexChanged()
 	}
 	if err != nil {
+		return nil, err
+	}
+	return &mapJob{store, key, snapshot, previous, token}, nil
+}
+
+func (s *MapService) Rebuild(ctx context.Context) error {
+	if !s.Store.Settings.Embedding.Enabled {
+		return failure("EMBEDDING_DISABLED", "Enable embedding before rebuilding stars", 409, false)
+	}
+	if err := s.Store.requestStarsRebuild(ctx, embeddingSpace(s.Store.Settings.Embedding)); err != nil {
 		return err
 	}
-	layout, err := buildMapLayout(ctx, snapshot, previous)
-	if err != nil {
-		return err
+	s.schedule.Store(nil)
+	return nil
+}
+
+func (a *App) runMap(ctx context.Context) error {
+	for {
+		if err := a.Map.Update(ctx); err != nil && ctx.Err() == nil {
+			slog.Warn("stars snapshot failed", "code", errorCode(err))
+		}
+		if err := runtimePause(ctx, time.Second); err != nil {
+			return err
+		}
 	}
-	layout.generatedAt = now
-	if err := s.Store.publishMapLayout(ctx, snapshot, layout); err != nil {
-		return err
-	}
-	s.cache.Store(&mapCache{key, s.response(layout, space)})
-	s.schedule.Store(&mapSchedule{key, now.Add(mapSnapshotInterval)})
-	return ctx.Err()
 }

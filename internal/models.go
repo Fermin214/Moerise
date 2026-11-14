@@ -96,13 +96,21 @@ type Note struct {
 }
 
 type MapPoint struct {
-	Name       string   `json:"name"`
-	SourceHash string   `json:"source_hash"`
-	X          float64  `json:"x"`
-	Y          float64  `json:"y"`
-	Semantic   bool     `json:"semantic"`
-	Tags       []string `json:"tags"`
+	Name       string      `json:"name"`
+	SourceHash string      `json:"source_hash"`
+	X          float64     `json:"x"`
+	Y          float64     `json:"y"`
+	Semantic   bool        `json:"semantic"`
+	Tags       []string    `json:"tags"`
+	Stellar    *MapStellar `json:"stellar,omitempty"`
 	vectorHash string
+}
+
+type MapStellar struct {
+	Seed       float64 `json:"seed"`
+	Role       string  `json:"role"`
+	Radius     float64 `json:"radius"`
+	Luminosity float64 `json:"luminosity"`
 }
 
 type MapTopic struct {
@@ -139,6 +147,7 @@ type MapResponse struct {
 	Points             []MapPoint `json:"points"`
 	Topics             []MapTopic `json:"topics"`
 	Links              []MapLink  `json:"links"`
+	UpdateState        string     `json:"update_state,omitempty"`
 }
 
 type CreateNote struct {

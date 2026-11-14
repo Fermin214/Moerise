@@ -8101,8 +8101,8 @@
     "/api/app/v1/map": {
       "get": {
         "operationId": "client_cognitive_map",
-        "summary": "读取本人二维认知地图",
-        "description": "只接受本人 Cookie，不接受 Authorization 或查询参数；机器 REST/MCP 不开放。返回本人正常与归档笔记的每日趋势快照、布局版本及生成时间。后台在向量索引就绪后预建快照，普通新增、修改和删除每天最多合并一次，没有变化不扫描向量或重算布局；同空间的已有快照在索引构建期间继续可读。GET 只读取已发布点集，不分页核对全库原文，不计算布局，不调用 LLM 或 Embedding。会话与来源身份仍实时认证，点选笔记和附件通过官方 API 实时读取。认证、资源锁与快照读取共享 55 秒预算。",
+        "summary": "读取本人观星快照",
+        "description": "只接受本人 Cookie，机器 REST/MCP 不开放。返回正常与归档笔记的已发布快照。UMAP 均衡版在独立后台任务计算，新增笔记使用持久化模型 transform，未变化点位保持坐标。普通变化约一分钟合并更新，读取不触发布局或模型调用。同向量空间的已有快照在后台更新期间继续可读，点选笔记通过官方 API 实时读取。认证、资源锁与读取共享55秒预算。",
         "security": [
           {
             "BrowserSession": []
@@ -8381,6 +8381,138 @@
             "description": "来源故障、语义不可用、SEARCH_RESOURCE_LIMIT 或 LIVE_LIST_LIMIT/LIVE_LIST_CANCELED"
           }
         }
+      }
+    },
+    "/api/app/v1/map/rebuild": {
+      "post": {
+        "operationId": "client_rebuild_star_map",
+        "summary": "重新生成本人观星布局",
+        "description": "本人会话与CSRF校验后持久化重建请求，后台建立新的UMAP模型与坐标框架。返回后旧快照继续可读。",
+        "security": [
+          {
+            "BrowserSession": []
+          },
+          {
+            "LocalBrowserSession": []
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "重建请求已排队",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "string",
+                      "const": "queued"
+                    }
+                  },
+                  "required": [
+                    "status"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "SESSION_UNAUTHORIZED：浏览器会话缺失或失效；不返回 Bearer 认证挑战。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                },
+                "description": "禁止缓存。"
+              },
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "请求标识。"
+              }
+            }
+          },
+          "403": {
+            "description": "Origin、CSRF 或会话权限校验失败。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "仅接受 POST。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Embedding 未启用。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "请求参数无效。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "来源或服务暂时不可用。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Origin",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "必须与 web.public_origin 完全一致。"
+          },
+          {
+            "in": "header",
+            "name": "X-CSRF-Token",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "会话响应中的 csrf_token。"
+          }
+        ]
       }
     }
   },
@@ -11556,14 +11688,17 @@
           },
           "semantic": {
             "type": "boolean",
-            "description": "是否有可用文本向量；false 的笔记独立放置，不伪造语义关系。"
+            "description": "是否有可用文本向量；false 的笔记通过未定位笔记列表访问，不参与语义坐标与辉光。"
           },
           "tags": {
             "type": "array",
             "items": {
               "type": "string"
             },
-            "description": "快照中的原生标签，允许随每日发布滞后；只供客户端点位配色，不参与语义权重。"
+            "description": "快照中的原生标签，用于主题命名；布局与聚类依据原向量。"
+          },
+          "stellar": {
+            "$ref": "#/components/schemas/MapStellar"
           }
         },
         "required": [
@@ -11587,49 +11722,96 @@
             "type": "string",
             "description": "从该语义组的原生标签或重复关键词提取的名称；缺少可用词时为空，由客户端显示本地化的主题名称。"
           },
-          "x": { "type": "number" },
-          "y": { "type": "number" },
+          "x": {
+            "type": "number"
+          },
+          "y": {
+            "type": "number"
+          },
           "members": {
             "type": "array",
             "minItems": 1,
             "uniqueItems": true,
-            "items": { "type": "string", "pattern": "^memos/[A-Za-z0-9_-]+$" }
+            "items": {
+              "type": "string",
+              "pattern": "^memos/[A-Za-z0-9_-]+$"
+            }
           },
           "districts": {
             "type": "array",
             "maxItems": 6,
-            "items": { "$ref": "#/components/schemas/MapDistrict" },
-            "description": "主题内按原始向量细分的子主题，成员互不重复且完整覆盖父主题；没有可用细分时省略。"
+            "items": {
+              "$ref": "#/components/schemas/MapDistrict"
+            },
+            "description": "主题内按原向量识别的子主题，成员互不重复，允许部分成员保持独立。"
           }
         },
-        "required": ["id", "label", "x", "y", "members"]
+        "required": [
+          "id",
+          "label",
+          "x",
+          "y",
+          "members"
+        ]
       },
       "MapDistrict": {
         "type": "object",
         "additionalProperties": false,
         "properties": {
-          "id": { "type": "string", "pattern": "^district-[a-f0-9]{16}$" },
-          "label": { "type": "string" },
-          "x": { "type": "number" },
-          "y": { "type": "number" },
+          "id": {
+            "type": "string",
+            "pattern": "^district-[a-f0-9]{16}$"
+          },
+          "label": {
+            "type": "string"
+          },
+          "x": {
+            "type": "number"
+          },
+          "y": {
+            "type": "number"
+          },
           "members": {
             "type": "array",
             "minItems": 1,
             "uniqueItems": true,
-            "items": { "type": "string", "pattern": "^memos/[A-Za-z0-9_-]+$" }
+            "items": {
+              "type": "string",
+              "pattern": "^memos/[A-Za-z0-9_-]+$"
+            }
           }
         },
-        "required": ["id", "label", "x", "y", "members"]
+        "required": [
+          "id",
+          "label",
+          "x",
+          "y",
+          "members"
+        ]
       },
       "MapLink": {
         "type": "object",
         "additionalProperties": false,
         "properties": {
-          "source": { "type": "string", "pattern": "^memos/[A-Za-z0-9_-]+$" },
-          "target": { "type": "string", "pattern": "^memos/[A-Za-z0-9_-]+$" },
-          "weight": { "type": "number", "minimum": 0.55, "maximum": 1 }
+          "source": {
+            "type": "string",
+            "pattern": "^memos/[A-Za-z0-9_-]+$"
+          },
+          "target": {
+            "type": "string",
+            "pattern": "^memos/[A-Za-z0-9_-]+$"
+          },
+          "weight": {
+            "type": "number",
+            "minimum": 0.55,
+            "maximum": 1
+          }
         },
-        "required": ["source", "target", "weight"]
+        "required": [
+          "source",
+          "target",
+          "weight"
+        ]
       },
       "MapResponse": {
         "type": "object",
@@ -11652,7 +11834,10 @@
           },
           "algorithm": {
             "type": "string",
-            "const": "pca-topics-v3"
+            "enum": [
+              "pca-topics-v3",
+              "umap-balanced-v1"
+            ]
           },
           "vector_generation": {
             "type": "string",
@@ -11672,12 +11857,16 @@
           },
           "topics": {
             "type": "array",
-            "items": { "$ref": "#/components/schemas/MapTopic" },
+            "items": {
+              "$ref": "#/components/schemas/MapTopic"
+            },
             "description": "根据原始文档向量分组的主题；成员互不重复，不含无文本向量的笔记。非就绪状态为空数组。"
           },
           "links": {
             "type": "array",
-            "items": { "$ref": "#/components/schemas/MapLink" },
+            "items": {
+              "$ref": "#/components/schemas/MapLink"
+            },
             "description": "原始归一化向量的余弦相似度关系，阈值0.55，每篇最多提名三个邻居；不从二维坐标推断，不含无向重复边。非就绪状态为空数组。"
           },
           "layout_frame": {
@@ -11687,7 +11876,15 @@
           "generated_at": {
             "type": "string",
             "format": "date-time",
-            "description": "ready/empty 快照生成时间，RFC 3339；普通增删改按每日快照合并，点位和标签允许滞后。"
+            "description": "快照生成时间，RFC 3339；普通变化约一分钟合并更新。"
+          },
+          "update_state": {
+            "type": "string",
+            "enum": [
+              "building",
+              "unavailable"
+            ],
+            "description": "后台布局任务状态；已有点集在更新或失败期间继续可读。"
           }
         },
         "required": [
@@ -11788,6 +11985,41 @@
             "$ref": "#/components/schemas/SearchSemantic"
           }
         }
+      },
+      "MapStellar": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "seed": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          },
+          "role": {
+            "type": "string",
+            "enum": [
+              "ordinary",
+              "core",
+              "isolated"
+            ]
+          },
+          "radius": {
+            "type": "number",
+            "exclusiveMinimum": 0,
+            "maximum": 4
+          },
+          "luminosity": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          }
+        },
+        "required": [
+          "seed",
+          "role",
+          "radius",
+          "luminosity"
+        ]
       }
     },
     "securitySchemes": {

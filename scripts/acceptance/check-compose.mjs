@@ -249,11 +249,12 @@ async function runScenario(kind) {
   active = true;
   evidence.scenarios.push({ scenario: kind, project, url, sourceURL });
   if (!skipBuild && !buildAttempted) {
-    await check('构建 Core 与 Web', async () => {
+    await check('构建 Core、Web 与布局服务', async () => {
       buildAttempted = true;
-      await compose(['build', 'moerise', 'web'], { timeout: 1_200_000 });
+      await compose(['build', 'moerise', 'web', 'layout'], { timeout: 1_200_000 });
       evidence.images = {};
-      for (const image of [`ghcr.io/fermin214/moerise:${imageTag}`, `ghcr.io/fermin214/moerise-web:${imageTag}`]) {
+      for (const image of [`ghcr.io/fermin214/moerise:${imageTag}`, `ghcr.io/fermin214/moerise-web:${imageTag}`,
+        `ghcr.io/fermin214/moerise-layout:${imageTag}`]) {
         evidence.images[image] = (await docker(['image', 'inspect', '--format', '{{.Id}}', image])).trim();
       }
     });
@@ -299,7 +300,7 @@ async function runScenario(kind) {
     values.MOERISE_MEMOS_USER = me.user.name;
     values.MOERISE_MEMOS_TOKEN = pat;
     writeEnv(values);
-    await compose(['up', '-d', '--no-build', 'moerise', 'web']);
+    await compose(['up', '-d', '--no-build', 'moerise', 'web', 'layout']);
     await ready(url);
   });
 
@@ -438,6 +439,7 @@ async function runScenario(kind) {
       assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1));
       screenshots.set(`browser-${kind}-mobile.png`, await page.screenshot({ fullPage: true }));
       await page.reload(); await card.waitFor();
+      await page.locator('#navigation-toggle').click();
       await page.locator('#user-menu').click(); await page.locator('#logout').click();
       await page.locator('#login-form').waitFor({ state: 'visible' });
       assert.equal(await page.locator('#notes article').count(), 0);
@@ -567,7 +569,8 @@ try {
     }
     if (buildAttempted) {
       try {
-        for (const image of [`ghcr.io/fermin214/moerise:${imageTag}`, `ghcr.io/fermin214/moerise-web:${imageTag}`]) {
+        for (const image of [`ghcr.io/fermin214/moerise:${imageTag}`, `ghcr.io/fermin214/moerise-web:${imageTag}`,
+          `ghcr.io/fermin214/moerise-layout:${imageTag}`]) {
           const found = await docker(['image', 'ls', '--quiet', image], { cleanup: true });
           if (found) await docker(['image', 'rm', image], { cleanup: true });
         }
