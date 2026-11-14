@@ -51,10 +51,16 @@ class StarMapController(
         } else {
             ++epoch; readJob?.cancel(); postJob?.cancel(); polling?.cancel()
             ++readerGeneration; readerJob?.cancel(); cancelExcerpts()
+            width = 0.0; height = 0.0
             mutable.update { it.copy(loading = false, posting = false, reading = false) }
         }
     }
     fun clear() { visible(false); key = null; excerptCache.clear(); mutable.value = StarMapState(); firstDrawVersion = "" }
+    suspend fun stopForRemoval() {
+        visible(false)
+        listOfNotNull(readJob, postJob, polling, readerJob, excerptJob).forEach { it.join() }
+        key = null; excerptCache.clear(); mutable.value = StarMapState(); firstDrawVersion = ""
+    }
     fun tab(value: Int) { if (value != 0) cancelExcerpts(); mutable.update { it.copy(tab = value) } }
     fun unplaced() { mutable.update { it.copy(unplacedOnly = !it.unplacedOnly) } }
     fun atmosphere() { mutable.update { it.copy(photo = !it.photo) } }

@@ -7,6 +7,8 @@ import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 data class SessionUiState(
     val loading: Boolean = true,
@@ -27,6 +29,10 @@ class SessionController(
     val state = mutableState.asStateFlow()
     private val mutableLanguage = MutableStateFlow(UiLanguage.SYSTEM)
     val language = mutableLanguage.asStateFlow()
+    private val mutablePreferencesError = MutableStateFlow<String?>(null)
+    val preferencesError = mutablePreferencesError.asStateFlow()
+    private val languageLock = Mutex()
+    private var languageRevision = 0L
     private var generation = 0L
     private var operation: Job? = null
     var core: CoreClient? = null
@@ -34,16 +40,32 @@ class SessionController(
 
     init {
         scope.launch {
-            mutableLanguage.value = secrets.read("ui-language")?.let { saved ->
-                UiLanguage.entries.firstOrNull { it.name == saved }
-            } ?: UiLanguage.SYSTEM
+            try {
+                val saved = secrets.read("ui-language")?.let { value -> UiLanguage.entries.firstOrNull { it.name == value } } ?: UiLanguage.SYSTEM
+                if (languageRevision == 0L) mutableLanguage.value = saved
+            } catch (error: Exception) {
+                if (error is CancellationException) throw error
+                if (languageRevision == 0L) mutablePreferencesError.value = "LOCAL_PREFERENCES_FAILED"
+            }
         }
         operation = scope.launch { restore() }
     }
 
     fun language(value: UiLanguage) {
+        val revision = ++languageRevision
         mutableLanguage.value = value
-        scope.launch { secrets.write("ui-language", value.name) }
+        scope.launch {
+            try {
+                languageLock.withLock {
+                    if (revision != languageRevision) return@withLock
+                    secrets.write("ui-language", value.name)
+                    if (revision == languageRevision) mutablePreferencesError.value = null
+                }
+            } catch (error: Exception) {
+                if (error is CancellationException) throw error
+                if (revision == languageRevision) mutablePreferencesError.value = "LOCAL_PREFERENCES_FAILED"
+            }
+        }
     }
 
     private fun client(origin: String, stamp: Long): CoreClient =

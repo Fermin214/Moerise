@@ -1,12 +1,18 @@
 package io.github.fermin214.moerise.presentation
 
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.painter.BitmapPainter
+import androidx.compose.ui.graphics.painter.ColorPainter
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.boundsInWindow
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.platform.UriHandler
 import androidx.compose.ui.text.LinkAnnotation
@@ -20,6 +26,8 @@ import io.github.fermin214.moerise.data.CoreClient
 import io.github.fermin214.moerise.domain.Note
 import io.ktor.http.Url
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.serialization.json.*
 import org.intellij.markdown.MarkdownElementTypes
 import org.intellij.markdown.MarkdownTokenTypes
@@ -30,6 +38,7 @@ private fun ASTNode.findChildOfTypeRecursive(type: IElementType): ASTNode? =
     children.firstOrNull { it.type == type } ?: children.firstNotNullOfOrNull { it.findChildOfTypeRecursive(type) }
 
 expect suspend fun decodeProtectedImage(bytes: ByteArray): ImageBitmap?
+private val protectedImages = Semaphore(2)
 
 fun externalLink(link: String): Boolean = runCatching {
     link.none { it.code <= 32 || it == '\\' } && when {
@@ -59,15 +68,27 @@ fun MarkdownBody(content: String, modifier: Modifier = Modifier, note: Note? = n
             val item = managedAttachment(note, link) ?: return null
             val type = item["type"]?.jsonPrimitive?.content ?: return null
             if (type !in setOf("image/png", "image/jpeg", "image/webp", "image/gif")) return null
-            val bitmap by produceState<ImageBitmap?>(null, core, note?.sourceHash, item) {
-                value = try {
-                    if (note != null && core != null) decodeProtectedImage(core.attachmentBytes(note, item, 20 * 1024 * 1024)) else null
-                } catch (error: Exception) {
-                    if (error is CancellationException) throw error
-                    null
+            var visible by remember(link, note?.sourceHash) { mutableStateOf(false) }
+            val bitmap by produceState<ImageBitmap?>(null, core, note?.sourceHash, item, visible) {
+                value = null
+                if (visible && note != null && core != null) {
+                    value = try {
+                        protectedImages.withPermit { decodeProtectedImage(core.attachmentBytes(note, item, 8 * 1024 * 1024)) }
+                    } catch (error: Exception) {
+                        if (error is CancellationException) throw error
+                        null
+                    }
                 }
             }
-            return bitmap?.let { ImageData(BitmapPainter(it), contentDescription = item["filename"]?.jsonPrimitive?.content) }
+            return ImageData(
+                painter = bitmap?.let(::BitmapPainter) ?: ColorPainter(MoeriseColors.Line),
+                contentDescription = item["filename"]?.jsonPrimitive?.content,
+                modifier = Modifier.fillMaxWidth().height(220.dp).onGloballyPositioned { coordinates ->
+                    val bounds = coordinates.boundsInWindow()
+                    visible = bounds.width > 0 && bounds.height > 0
+                },
+                contentScale = ContentScale.Fit,
+            )
         }
     } }
     val annotator = remember(note) { markdownAnnotator { text, child ->

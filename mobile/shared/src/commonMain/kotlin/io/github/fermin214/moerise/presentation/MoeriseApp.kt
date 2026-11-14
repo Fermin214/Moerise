@@ -44,6 +44,9 @@ fun MoeriseApp(mobile: MobileController, onEditorReady: () -> Unit = {}) {
     val archivedTimeline by mobile.archive.state.collectAsState()
     val detail by mobile.detail.state.collectAsState()
     val editing by mobile.editing.collectAsState()
+    val clearing by mobile.clearing.collectAsState()
+    val localError by mobile.localError.collectAsState()
+    val preferencesError by session.preferencesError.collectAsState()
     val review by mobile.review.state.collectAsState()
     val walk by mobile.walk.state.collectAsState()
     val stars by mobile.stars.state.collectAsState()
@@ -57,17 +60,24 @@ fun MoeriseApp(mobile: MobileController, onEditorReady: () -> Unit = {}) {
     val detailScroll = key(connection.profile?.accountKey, detail.name) { rememberScrollState() }
     val reviewScroll = key(connection.profile?.accountKey, review.batch?.id, review.position) { rememberScrollState() }
     val walkScroll = key(connection.profile?.accountKey, walk.result?.item?.note?.name) { rememberScrollState() }
-    val insightScroll = key(connection.profile?.accountKey) { rememberScrollState() }
+    val insightScroll = key(connection.profile?.accountKey) { List(3) { rememberScrollState() } }
+    val draftsScroll = key(connection.profile?.accountKey) { rememberLazyListState() }
     val mapTopicsScroll = key(connection.profile?.accountKey) { rememberLazyListState() }
     val mapNotesScroll = key(connection.profile?.accountKey) { rememberLazyListState() }
     val mapReaderScroll = key(connection.profile?.accountKey, stars.selected) { rememberScrollState() }
     val timeline = if (page == "archive") archivedTimeline else homeTimeline
     val timelineController = if (page == "archive") mobile.archive else mobile.timeline
     var conflict by remember { mutableStateOf(false) }
+    var confirmClear by remember { mutableStateOf(false) }
     val ready = !connection.loading && connection.profile != null &&
         editor.accountKey == connection.profile?.accountKey && editor.draft != null
-    LaunchedEffect(ready) {
-        if (ready) { withFrameNanos { }; onEditorReady() }
+    val editorVisible = ready && !clearing && (editing || page == "home" && detail.name == null)
+    LaunchedEffect(editorVisible, connection.profile?.accountKey) {
+        if (editorVisible) {
+            withFrameNanos { }; withFrameNanos { }
+            connection.profile?.accountKey?.let(mobile::editorFrameReady)
+            onEditorReady()
+        }
     }
     fun navigate(next: String) { mobile.flush(); if (page == "search") mobile.search.leave(); page = next; mobile.page(next) }
     fun startWalk(note: Note) { mobile.closeNote(); navigate("walk"); mobile.walk.start(note.name) }
@@ -76,7 +86,8 @@ fun MoeriseApp(mobile: MobileController, onEditorReady: () -> Unit = {}) {
         mobile.page(page.takeIf { detail.name == null && !editing })
     }
     DisposableEffect(mobile) { onDispose { mobile.page(null) } }
-    PlatformBackHandler(drawer.isOpen || page != "home" || detail.name != null || editing || conflict) {
+    PlatformBackHandler(clearing || drawer.isOpen || page != "home" || detail.name != null || editing || conflict) {
+        if (clearing) return@PlatformBackHandler
         mobile.flush()
         when {
             drawer.isOpen -> uiScope.launch { drawer.close() }
@@ -84,7 +95,7 @@ fun MoeriseApp(mobile: MobileController, onEditorReady: () -> Unit = {}) {
             editing -> mobile.finishEditing()
             detail.name != null -> mobile.closeNote()
             page == "map" && mobile.stars.back() -> Unit
-            else -> navigate(if (page == "search") searchFrom else "home")
+            else -> navigate(when (page) { "search" -> searchFrom; "drafts" -> "settings"; else -> "home" })
         }
     }
     MaterialTheme(colorScheme = lightColorScheme(
@@ -113,11 +124,11 @@ fun MoeriseApp(mobile: MobileController, onEditorReady: () -> Unit = {}) {
                 Box(Modifier.safeDrawingPadding().padding(24.dp)) { CircularProgressIndicator() }
                 return@Surface
             }
-            if (connection.profile == null || page == "connect") {
+            if (connection.profile == null || page == "connect" && !editing) {
                 Box(Modifier.safeDrawingPadding().imePadding()) { ConnectionScreen(session, strings) { page = "home" } }
                 return@Surface
             }
-            if (page == "settings") {
+            if (page == "settings" && !editing) {
                 Column(Modifier.safeDrawingPadding().verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     TextButton(onClick = { navigate("home") }) { Text(strings.text("返回主页", "Back to home")) }
                     Text(strings.text("设置", "Settings"), style = MaterialTheme.typography.headlineSmall)
@@ -134,10 +145,25 @@ fun MoeriseApp(mobile: MobileController, onEditorReady: () -> Unit = {}) {
                             }, modifier = Modifier.padding(top = 12.dp))
                         }
                     }
+                    if (preferencesError != null) Text(strings.text("语言设置未能保存，请重新选择。", "Could not save the language setting. Select it again."),
+                        color = MaterialTheme.colorScheme.error)
+                    localError?.let { Text(editorError(it, strings), color = MaterialTheme.colorScheme.error) }
                     Button(onClick = { navigate("connect") }) { Text(strings.text("服务连接", "Server connection")) }
                     OutlinedButton(onClick = { navigate("archive"); mobile.archive.refresh() }) { Text(strings.text("归档笔记", "Archived notes")) }
+                    OutlinedButton(onClick = { navigate("drafts") }, modifier = Modifier.testTag("open_local_drafts")) {
+                        Text(strings.text("本机草稿", "Drafts on this device"))
+                    }
                     OutlinedButton(onClick = mobile::logout) { Text(strings.text("退出登录", "Sign out")) }
+                    TextButton(onClick = { confirmClear = true }, modifier = Modifier.testTag("clear_local_data")) {
+                        Text(strings.text("删除本机账号数据", "Delete this account’s local data"), color = MaterialTheme.colorScheme.error)
+                    }
                     Text("Moerise 0.1.0", color = MoeriseColors.Muted)
+                }
+                return@Surface
+            }
+            if (page == "drafts" && !editing) {
+                LocalDraftScreen(mobile.localDrafts, strings, draftsScroll, onBack = { navigate("settings") }) { draft ->
+                    mobile.openDraft(draft.id) { navigate("home") }
                 }
                 return@Surface
             }
@@ -152,20 +178,20 @@ fun MoeriseApp(mobile: MobileController, onEditorReady: () -> Unit = {}) {
                 }
                 return@Surface
             }
-            if (page == "search") {
+            if (page == "search" && !editing) {
                 SearchScreen(mobile, strings, searchScroll) { navigate(searchFrom) }
                 return@Surface
             }
-            if (page in setOf("review", "walk")) {
+            if (page in setOf("review", "walk") && !editing) {
                 DiscoveryScreen(page, mobile, strings, if (page == "review") reviewScroll else walkScroll,
                     onMenu = { uiScope.launch { drawer.open() } }, onInsight = ::startInsight, onWalk = ::startWalk)
                 return@Surface
             }
-            if (page == "insights") {
+            if (page == "insights" && !editing) {
                 InsightScreen(mobile, strings, insightScroll) { uiScope.launch { drawer.open() } }
                 return@Surface
             }
-            if (page == "map") {
+            if (page == "map" && !editing) {
                 StarMapScreen(mobile, strings, mapTopicsScroll, mapNotesScroll, mapReaderScroll,
                     onMenu = { uiScope.launch { drawer.open() } }, onWalk = ::startWalk, onInsight = ::startInsight)
                 return@Surface
@@ -177,7 +203,9 @@ fun MoeriseApp(mobile: MobileController, onEditorReady: () -> Unit = {}) {
             ) {
                 item {
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                        if (editing) TextButton(onClick = mobile::finishEditing, modifier = Modifier.testTag("editor_back")) { Text(strings.text("返回笔记", "Back to note")) }
+                        if (editing) TextButton(onClick = mobile::finishEditing, modifier = Modifier.testTag("editor_back")) {
+                            Text(if (detail.name != null) strings.text("返回笔记", "Back to note") else strings.text("返回主页", "Back to home"))
+                        }
                         else if (page == "archive") TextButton(onClick = { navigate("home") }) { Text(strings.text("返回主页", "Back to home")) }
                         else Row {
                             TextButton(onClick = { uiScope.launch { drawer.open() } }, modifier = Modifier.testTag("open_menu")) { Text(strings.text("导航", "Menu")) }
@@ -210,7 +238,9 @@ fun MoeriseApp(mobile: MobileController, onEditorReady: () -> Unit = {}) {
                             Text(strings.text("刷新", "Refresh"))
                         }
                     }
-                    if (!timeline.fresh && timeline.notes.isNotEmpty()) Text(strings.text("本机快照", "Saved snapshot"), color = MoeriseColors.Muted)
+                    if (!timeline.fresh && timeline.notes.isNotEmpty()) Text(
+                        strings.text("本机快照", "Saved snapshot") + displaySnapshotTime(timeline.snapshotAt, connection.profile!!.timezone).let { if (it.isBlank()) "" else " · $it" },
+                        color = MoeriseColors.Muted)
                     timeline.error?.let { Text(connectionError(it, strings), color = MaterialTheme.colorScheme.error) }
                 }
                 items(if (editing) emptyList() else timeline.notes, key = { it.name }) { note ->
@@ -233,9 +263,24 @@ fun MoeriseApp(mobile: MobileController, onEditorReady: () -> Unit = {}) {
                     }
                 }
             }
-            if (conflict && ready) ConflictDialog(editor, mobile.editor, strings) { conflict = false }
+            if (conflict && ready) ConflictDialog(editor, mobile.editor, strings, onFork = { content, attachments ->
+                mobile.forkConflict(content, attachments) { conflict = false; navigate("home") }
+            }) { conflict = false }
         }
         }
+        if (confirmClear) AlertDialog(
+            onDismissRequest = { confirmClear = false },
+            title = { Text(strings.text("删除本机账号数据？", "Delete this account’s local data?")) },
+            text = { Text(strings.text("将删除这个账号的本机草稿、请求记录和缓存，并退出登录。服务器笔记不受影响。",
+                "This deletes this account’s local drafts, request records and caches, then signs out. Server notes are kept.")) },
+            confirmButton = { TextButton(onClick = { confirmClear = false; mobile.clearLocalData() }, modifier = Modifier.testTag("clear_local_confirm")) {
+                Text(strings.text("删除并退出", "Delete and sign out"))
+            } },
+            dismissButton = { TextButton(onClick = { confirmClear = false }) { Text(strings.text("取消", "Cancel")) } },
+        )
+        if (clearing) AlertDialog(onDismissRequest = {},
+            title = { Text(strings.text("正在删除本机数据", "Deleting local data")) },
+            text = { LinearProgressIndicator(Modifier.fillMaxWidth()) }, confirmButton = {})
     }
 }
 
@@ -260,6 +305,7 @@ private fun HomeEditor(state: EditorUiState, controller: EditorController, strin
             key(draft.accountKey, draft.id) {
                 AttachmentPicker(
                     enabled = !state.busy && !state.importing && state.pending == null && draft.conflictJson == null,
+                    importScope = controller.attachmentScope,
                     strings = strings, onPicked = { controller.attach(draft.accountKey, draft.id, it) },
                     onError = { controller.attachmentError(it, draft.id) }, onBusy = { controller.importing(draft.id, it) },
                 )
@@ -310,7 +356,8 @@ private fun HomeEditor(state: EditorUiState, controller: EditorController, strin
 }
 
 @Composable
-private fun ConflictDialog(state: EditorUiState, controller: EditorController, strings: Strings, onClose: () -> Unit) {
+private fun ConflictDialog(state: EditorUiState, controller: EditorController, strings: Strings,
+    onFork: (String, AttachmentEdits) -> Unit, onClose: () -> Unit) {
     val draft = state.draft ?: return
     val body = draft.conflictJson?.let { CoreJson.parseToJsonElement(it).jsonObject } ?: return
     val remote = body["remote"]?.let { CoreJson.decodeFromJsonElement<Note>(it) }
@@ -355,7 +402,14 @@ private fun ConflictDialog(state: EditorUiState, controller: EditorController, s
                 }
             }) { Text(strings.text("保存为草稿", "Keep merged draft")) }
         },
-        dismissButton = { TextButton(onClick = onClose) { Text(strings.text("返回", "Back")) } },
+        dismissButton = {
+            Column {
+                TextButton(enabled = !state.busy, onClick = {
+                    onFork(merged, AttachmentEdits(staged = attachments.staged.filter { it.id in selectedFiles }))
+                }, modifier = Modifier.testTag("conflict_fork")) { Text(strings.text("另存为新草稿", "Keep as a new draft")) }
+                TextButton(onClick = onClose) { Text(strings.text("返回", "Back")) }
+            }
+        },
     )
 }
 

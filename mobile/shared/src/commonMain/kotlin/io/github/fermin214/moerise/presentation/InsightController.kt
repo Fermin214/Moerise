@@ -8,6 +8,8 @@ import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.json.*
+import kotlin.time.Duration.Companion.milliseconds
+import kotlin.time.TimeSource
 
 data class InsightState(
     val recovery: InsightRecovery = InsightRecovery(), val chat: ChatSession? = null,
@@ -17,6 +19,7 @@ data class InsightState(
     val error: String? = null,
 ) {
     val running get() = chat?.turns?.any { it.assistant.status == "running" } == true
+    val canStop get() = streaming || running || recovery.partial?.assistant?.status == "running"
     val locked get() = busy || running || recovery.generation != null || recovery.mutation != null || recovery.creation != null
 }
 
@@ -33,6 +36,7 @@ class InsightController(
     private var operation: Job? = null
     private var lifecycleWrite: Job? = null
     private var polling: Job? = null
+    private var questionWrite: Job? = null
     private val disk = Mutex()
     private var diskRevision = 0L
     private val writtenRevisions = mutableMapOf<String, Long>()
@@ -45,6 +49,30 @@ class InsightController(
         if (state.value.busy || state.value.running || state.value.recovery.generation != null) return
         mutable.update { it.copy(recovery = it.recovery.copy(question = value)) }
         ++diskRevision
+        scheduleQuestionWrite()
+    }
+
+    private fun scheduleQuestionWrite() {
+        if (questionWrite?.isActive == true) return
+        val account = key ?: return
+        questionWrite = scope.launch {
+            val started = TimeSource.Monotonic.markNow()
+            var observed = diskRevision
+            try {
+                while (key == account) {
+                    delay(300)
+                    if (observed != diskRevision && started.elapsedNow() < 1000.milliseconds) {
+                        observed = diskRevision
+                        continue
+                    }
+                    persist(account, state.value.recovery, diskRevision)
+                    if (writtenRevisions[account] == diskRevision) return@launch
+                }
+            } catch (error: Exception) {
+                if (error is CancellationException) throw error
+                if (key == account) mutable.update { it.copy(error = "LOCAL_SAVE_FAILED") }
+            }
+        }
     }
 
     fun visible(value: Boolean) {
@@ -68,7 +96,7 @@ class InsightController(
     private fun leave() {
         val account = key
         val recovery = state.value.recovery
-        ++generation; operation?.cancel(); polling?.cancel()
+        ++generation; operation?.cancel(); polling?.cancel(); questionWrite?.cancel()
         mutable.update { it.copy(busy = false, streaming = false) }
         val revision = ++diskRevision
         val previous = lifecycleWrite
@@ -81,6 +109,13 @@ class InsightController(
         }
     }
     fun clear() { visible = false; leave(); key = null; seeds.clear(); mutable.value = InsightState() }
+    suspend fun stopForRemoval() {
+        visible = false
+        leave()
+        operation?.join(); lifecycleWrite?.join(); polling?.cancelAndJoin(); questionWrite?.cancelAndJoin()
+        disk.withLock { key = null }
+        seeds.clear(); mutable.value = InsightState()
+    }
 
     suspend fun flush() {
         key?.let { persist(it, state.value.recovery, ++diskRevision) }
@@ -305,13 +340,14 @@ class InsightController(
     }
 
     fun stop() {
-        val chat = state.value.chat ?: return
-        val requestId = chat.turns.lastOrNull { it.assistant.status == "running" }?.requestId
-            ?: state.value.recovery.generation?.input?.requestId ?: return
+        val recovery = state.value.recovery
+        val id = state.value.chat?.id ?: recovery.chatId ?: recovery.generation?.chatId ?: return
+        val requestId = state.value.chat?.turns?.lastOrNull { it.assistant.status == "running" }?.requestId
+            ?: recovery.generation?.input?.requestId ?: recovery.partial?.takeIf { it.assistant.status == "running" }?.requestId ?: return
         ++generation; operation?.cancel(); polling?.cancel()
         mutable.update { it.copy(busy = false, streaming = false) }
         execute { active, account, stamp ->
-            try { active.api(HttpMethod.Post, "/chats/${chatId(chat.id)}/messages/$requestId/cancel", "{}") }
+            try { active.api(HttpMethod.Post, "/chats/${chatId(id)}/messages/$requestId/cancel", "{}") }
             finally { readChat(active, account, stamp) }
         }
     }

@@ -9,6 +9,7 @@ import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.json.*
+import kotlin.time.TimeSource
 
 class EditorController(
     private val repository: suspend () -> NoteRepository,
@@ -22,17 +23,22 @@ class EditorController(
     private var editJob: Job? = null
     private var sendJob: Job? = null
     private var generation = 0L
+    private var lastEdit = TimeSource.Monotonic.markNow()
 
-    suspend fun open(key: String?, note: Note? = null) {
+    suspend fun open(key: String?, note: Note? = null) = openDraft(key) { it.restore(requireNotNull(key), note) }
+    suspend fun openStored(key: String, id: String) = openDraft(key) { it.storedDraft(key, id) }
+
+    private suspend fun openDraft(key: String?, restore: suspend (NoteRepository) -> RestoredDraft) {
         val stamp = ++generation
         editJob?.cancelAndJoin()
         sendJob?.cancelAndJoin()
         // Flush the previous editor before changing the account.
         if (!flushWithFeedback()) return
+        if (generation != stamp) return
         mutable.value = EditorUiState(accountKey = key)
         if (key == null) return
         try {
-            val restored = localLock.withLock { repository().restore(key, note) }
+            val restored = localLock.withLock { restore(repository()) }
             if (generation == stamp) mutable.value = EditorUiState(key, restored.draft, restored.pending, savedRevision = restored.draft.revision)
         } catch (error: Exception) {
             if (error is CancellationException) throw error
@@ -40,6 +46,30 @@ class EditorController(
         }
     }
 
+    suspend fun stopForRemoval() {
+        ++generation
+        editJob?.cancelAndJoin(); sendJob?.cancelAndJoin()
+        localLock.withLock { mutable.value = EditorUiState() }
+    }
+
+    suspend fun forkConflict(content: String, attachments: AttachmentEdits): Boolean {
+        if (state.value.busy) return false
+        editJob?.cancelAndJoin()
+        if (!flushWithFeedback()) return false
+        return try {
+            localLock.withLock {
+                val draft = state.value.draft ?: return@withLock false
+                val restored = repository().forkConflict(draft, content, attachments)
+                mutable.value = EditorUiState(draft.accountKey, restored.draft, savedRevision = restored.draft.revision)
+                true
+            }
+        } catch (error: Exception) {
+            if (error is CancellationException) throw error
+            mutable.update { it.copy(error = "LOCAL_WRITE_FAILED") }; false
+        }
+    }
+
+    val attachmentScope: CoroutineScope get() = scope
     fun change(content: String) {
         val before = mutable.value
         val draft = before.draft ?: return
@@ -47,11 +77,24 @@ class EditorController(
         scheduleFlush()
     }
 
-    private fun scheduleFlush() {
+    private fun scheduleFlush(immediate: Boolean = false) {
+        lastEdit = TimeSource.Monotonic.markNow()
+        if (editJob?.isActive == true && !immediate) return
         editJob?.cancel()
         editJob = scope.launch {
-            delay(300)
-            flushWithFeedback()
+            var batch = TimeSource.Monotonic.markNow()
+            var first = immediate
+            while (isActive) {
+                val wait = if (first) 0 else minOf(300 - lastEdit.elapsedNow().inWholeMilliseconds,
+                    1000 - batch.elapsedNow().inWholeMilliseconds)
+                if (wait > 0) { delay(wait); continue }
+                first = false
+                if (!flushWithFeedback()) return@launch
+                val latest = state.value
+                val draft = latest.draft ?: return@launch
+                if (draft.revision == latest.savedRevision) return@launch
+                batch = TimeSource.Monotonic.markNow()
+            }
         }
     }
 
@@ -119,7 +162,7 @@ class EditorController(
             } catch (error: Exception) {
                 val write = attempt
                 if (write != null) {
-                    if (error is CoreException && error.detail.code in setOf("SOURCE_CHANGED", "IDEMPOTENCY_CONFLICT", "ATTACHMENT_REFERENCED", "ATTACHMENT_DELETE_REJECTED", "WRITE_CONFLICT") && stamp == generation) {
+                    if (error is CoreException && error.detail.code in setOf("SOURCE_CHANGED", "SOURCE_NOT_FOUND", "NOT_FOUND", "IDEMPOTENCY_CONFLICT", "ATTACHMENT_REFERENCED", "ATTACHMENT_DELETE_REJECTED", "WRITE_CONFLICT") && stamp == generation) {
                         val remote = if (write.method == "PATCH") runCatching {
                             CoreJson.decodeFromString<Note>(active.api(HttpMethod.Get, write.path))
                         }.getOrNull() else null
@@ -152,8 +195,7 @@ class EditorController(
         mutable.value = before.copy(draft = draft.copy(content = content, revision = draft.revision + 1,
             sourceHash = remote.sourceHash, baselineJson = CoreJson.encodeToString(remote), conflictJson = null,
             attachmentsJson = CoreJson.encodeToString(attachments)), error = null)
-        editJob?.cancel()
-        editJob = scope.launch { flushWithFeedback() }
+        scheduleFlush(immediate = true)
     }
 
     fun attachmentError(code: String, draftId: String? = null) {

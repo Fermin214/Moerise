@@ -14,6 +14,7 @@ data class TimelineUiState(
     val loading: Boolean = false,
     val fresh: Boolean = false,
     val error: String? = null,
+    val snapshotAt: Long = 0,
 )
 
 class TimelineController(
@@ -37,12 +38,19 @@ class TimelineController(
         mutable.value = TimelineUiState()
     }
 
+    suspend fun stopForRemoval() {
+        ++generation; ++accountGeneration
+        request?.cancelAndJoin()
+        key = null
+        mutable.value = TimelineUiState()
+    }
+
     suspend fun readCache() {
         if (filter != "NORMAL") return
         val account = key ?: return
         val stamp = accountGeneration
-        val cached = repository().snapshot(account) ?: return
-        if (stamp == accountGeneration && !state.value.fresh) mutable.update { it.copy(notes = cached.notes) }
+        val cached = repository().datedSnapshot(account) ?: return
+        if (stamp == accountGeneration && !state.value.fresh) mutable.update { it.copy(notes = cached.first.notes, snapshotAt = cached.second) }
     }
 
     fun hideAccountData() {
@@ -71,10 +79,10 @@ class TimelineController(
                 if (stamp != generation) return@launch
                 val notes = (if (append) state.value.notes + page.notes else page.notes).distinctBy { it.name }
                 if (filter == "NORMAL") repository().cache(account, NotePage(notes, page.nextPageToken))
-                if (stamp == generation) mutable.value = TimelineUiState(notes, page.nextPageToken, fresh = true)
+                if (stamp == generation) mutable.value = TimelineUiState(notes, page.nextPageToken, fresh = true, snapshotAt = epochMillis())
             } catch (error: Exception) {
                 if (error is CancellationException) throw error
-                if (stamp == generation) mutable.update { it.copy(loading = false, error = errorCode(error)) }
+                if (stamp == generation) mutable.update { it.copy(loading = false, fresh = false, error = errorCode(error)) }
             }
         }
     }

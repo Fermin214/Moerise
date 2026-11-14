@@ -19,7 +19,7 @@ class AppModel(application: Application) : AndroidViewModel(application) {
     val session = SessionController(AndroidSecretStore(application), BuildConfig.DEBUG, viewModelScope)
     private val repository = viewModelScope.async(Dispatchers.IO) { NoteRepository(database.await(), androidAttachmentFiles(application)) }
     val mobile = MobileController(session, { repository.await() }, viewModelScope) {
-        withContext(Dispatchers.IO) { java.io.File(application.cacheDir, "attachments").deleteRecursively(); Unit }
+        clearAttachmentCache(application)
     }
     init {
         viewModelScope.launch {

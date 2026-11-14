@@ -69,6 +69,10 @@ interface LocalDao {
     suspend fun homeDraft(key: String): DraftEntity?
     @Query("SELECT * FROM drafts WHERE accountKey = :key AND slot = :slot ORDER BY revision DESC LIMIT 1")
     suspend fun draftForSlot(key: String, slot: String): DraftEntity?
+    @Query("SELECT * FROM drafts WHERE accountKey = :key ORDER BY revision DESC")
+    suspend fun drafts(key: String): List<DraftEntity>
+    @Query("SELECT draftId FROM pending_writes WHERE accountKey = :key AND status != 'conflict'")
+    suspend fun pendingDraftIds(key: String): List<String>
     @Query("SELECT * FROM drafts WHERE id = :id") suspend fun draft(id: String): DraftEntity?
     @Query("DELETE FROM drafts WHERE id = :id") suspend fun deleteDraft(id: String)
     @Query("SELECT attachmentsJson FROM drafts") suspend fun attachmentReferences(): List<String>
@@ -85,6 +89,10 @@ interface LocalDao {
     @Upsert suspend fun putFeature(state: FeatureStateEntity)
     @Query("SELECT body FROM feature_states WHERE accountKey = :key AND feature = :feature")
     suspend fun feature(key: String, feature: String): String?
+    @Query("DELETE FROM drafts WHERE accountKey = :key") suspend fun deleteDrafts(key: String)
+    @Query("DELETE FROM pending_writes WHERE accountKey = :key") suspend fun deleteWrites(key: String)
+    @Query("DELETE FROM feature_states WHERE accountKey = :key") suspend fun deleteFeatures(key: String)
+    @Query("DELETE FROM profiles WHERE accountKey = :key") suspend fun deleteProfile(key: String)
 }
 
 @Database(entities = [ProfileEntity::class, DraftEntity::class, PendingWriteEntity::class, SnapshotEntity::class, FeatureStateEntity::class], version = 3)

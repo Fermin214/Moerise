@@ -17,7 +17,7 @@ import androidx.compose.ui.unit.dp
 import io.github.fermin214.moerise.domain.ChatTurn
 
 @Composable
-fun InsightScreen(mobile: MobileController, strings: Strings, scroll: ScrollState, onMenu: () -> Unit) {
+fun InsightScreen(mobile: MobileController, strings: Strings, scroll: List<ScrollState>, onMenu: () -> Unit) {
     val controller = mobile.insights
     val state by controller.state.collectAsState()
     val connection by mobile.session.state.collectAsState()
@@ -35,7 +35,7 @@ fun InsightScreen(mobile: MobileController, strings: Strings, scroll: ScrollStat
             }
         }
         if (state.busy) LinearProgressIndicator(Modifier.fillMaxWidth())
-        Column(Modifier.weight(1f).verticalScroll(scroll).padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        Column(Modifier.weight(1f).verticalScroll(scroll[state.tab]).padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             state.error?.let { code ->
                 Text(insightError(code, strings), color = MaterialTheme.colorScheme.error, modifier = Modifier.testTag("chat_error"))
                 if (code == "LLM_DISABLED") {
@@ -157,7 +157,7 @@ fun InsightScreen(mobile: MobileController, strings: Strings, scroll: ScrollStat
             Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedTextField(state.recovery.question, controller::question, label = { Text(strings.text("继续提问", "Ask a question")) },
                     enabled = !state.locked, modifier = Modifier.fillMaxWidth().heightIn(max = 160.dp).testTag("chat_question"))
-                if (state.streaming || state.running) Button(onClick = controller::stop, enabled = connection.connected,
+                if (state.canStop) Button(onClick = controller::stop, enabled = connection.connected,
                     modifier = Modifier.fillMaxWidth().testTag("chat_stop")) { Text(strings.text("停止", "Stop")) }
                 else Button(onClick = { controller.generate("question") }, enabled = !state.locked && connection.connected &&
                     state.chat != null && state.recovery.question.isNotBlank(), modifier = Modifier.fillMaxWidth().testTag("chat_send")) { Text(strings.text("发送", "Send")) }

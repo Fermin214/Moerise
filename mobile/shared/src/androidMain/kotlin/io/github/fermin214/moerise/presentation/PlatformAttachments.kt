@@ -18,21 +18,47 @@ import io.github.fermin214.moerise.domain.Note
 import java.io.ByteArrayOutputStream
 import java.io.File
 import kotlinx.coroutines.*
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.json.*
 
 fun androidAttachmentFiles(context: android.content.Context) =
     AttachmentFiles(File(context.applicationContext.noBackupFilesDir, "attachments").absolutePath)
 
+private object OpenFileCache {
+    val lock = Mutex()
+    var epoch = 0L
+    const val maximum = 256L * 1024 * 1024
+    fun prune(parent: File, keep: File? = null) {
+        val cutoff = System.currentTimeMillis() - 24 * 60 * 60 * 1000L
+        val folders = parent.listFiles().orEmpty().filter { it != keep }.sortedBy { it.lastModified() }
+        folders.filter { it.lastModified() < cutoff }.forEach { it.deleteRecursively() }
+        var total = parent.walkTopDown().filter { it.isFile }.sumOf { it.length() }
+        for (folder in folders.filter { it.exists() }) {
+            if (total <= maximum) break
+            val bytes = folder.walkTopDown().filter { it.isFile }.sumOf { it.length() }
+            if (folder.deleteRecursively()) total -= bytes
+        }
+    }
+}
+
+suspend fun clearAttachmentCache(context: android.content.Context) = withContext(Dispatchers.IO) {
+    OpenFileCache.lock.withLock {
+        ++OpenFileCache.epoch
+        File(context.applicationContext.cacheDir, "attachments").deleteRecursively()
+        Unit
+    }
+}
+
 @Composable
-actual fun AttachmentPicker(enabled: Boolean, strings: Strings, onPicked: (List<StagedAttachment>) -> Boolean, onError: (String) -> Unit, onBusy: (Boolean) -> Unit) {
-    val context = LocalContext.current
-    val scope = rememberCoroutineScope()
+actual fun AttachmentPicker(enabled: Boolean, importScope: CoroutineScope, strings: Strings, onPicked: (List<StagedAttachment>) -> Boolean, onError: (String) -> Unit, onBusy: (Boolean) -> Unit) {
+    val context = LocalContext.current.applicationContext
     var busy by remember { mutableStateOf(false) }
     val accept by rememberUpdatedState(onPicked)
     val fail by rememberUpdatedState(onError)
     val pending by rememberUpdatedState(onBusy)
     val launcher = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
-        if (uris.isNotEmpty()) scope.launch {
+        if (uris.isNotEmpty()) importScope.launch {
             busy = true
             pending(true)
             val files = androidAttachmentFiles(context)
@@ -94,9 +120,13 @@ actual fun OpenAttachmentButton(note: Note, item: JsonObject, core: CoreClient, 
         if (!busy) scope.launch {
             busy = true
             error = null
+            val cacheEpoch = OpenFileCache.epoch
             try {
                 val file = withContext(Dispatchers.IO) {
+                    OpenFileCache.lock.withLock {
+                    if (cacheEpoch != OpenFileCache.epoch) throw CancellationException("Account changed")
                     val parent = File(context.cacheDir, "attachments").apply { mkdirs() }
+                    OpenFileCache.prune(parent)
                     val identity = "${core.origin}\u0000${note.instanceId}\u0000${note.name}\u0000${note.sourceHash}\u0000${item["name"]}"
                     val folder = File(parent, sha256(identity.encodeToByteArray())).apply { mkdirs() }
                     val destination = File(folder, filename)
@@ -109,7 +139,10 @@ actual fun OpenAttachmentButton(note: Note, item: JsonObject, core: CoreClient, 
                             check(temporary.renameTo(destination))
                         } finally { temporary.delete() }
                     }
+                    folder.setLastModified(System.currentTimeMillis())
+                    OpenFileCache.prune(parent, folder)
                     destination
+                    }
                 }
                 val uri = FileProvider.getUriForFile(context, "${context.packageName}.files", file)
                 context.startActivity(Intent(Intent.ACTION_VIEW).apply {
@@ -131,6 +164,6 @@ actual suspend fun decodeProtectedImage(bytes: ByteArray): ImageBitmap? = withCo
     BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
     if (bounds.outWidth <= 0 || bounds.outHeight <= 0 || bounds.outWidth > 65_535 || bounds.outHeight > 65_535) return@withContext null
     val options = BitmapFactory.Options().apply { inSampleSize = 1 }
-    while (bounds.outWidth / options.inSampleSize > 2048 || bounds.outHeight / options.inSampleSize > 2048) options.inSampleSize *= 2
+    while (bounds.outWidth / options.inSampleSize > 1024 || bounds.outHeight / options.inSampleSize > 1024) options.inSampleSize *= 2
     BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options)?.asImageBitmap()
 }

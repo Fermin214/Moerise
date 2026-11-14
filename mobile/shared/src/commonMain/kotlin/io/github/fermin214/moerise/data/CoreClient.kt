@@ -14,6 +14,8 @@ import io.ktor.utils.io.readAvailable
 import kotlinx.coroutines.*
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
@@ -32,6 +34,7 @@ class CoreClient(
     private val onUnauthorized: () -> Unit = {},
 ) : AutoCloseable {
     private val sessionLock = Mutex()
+    private val attachmentDownloads = Semaphore(2)
     private var identity: SessionIdentity? = null
     private var expectedAccount: String? = null
     private val client = HttpClient(engine) {
@@ -135,7 +138,7 @@ class CoreClient(
         attachment: JsonObject,
         maximumBytes: Long = 128L * 1024 * 1024,
         onChunk: suspend (ByteArray, Int) -> Unit,
-    ) {
+    ) = attachmentDownloads.withPermit {
         require(Regex("^memos/[A-Za-z0-9_-]+$").matches(note.name))
         val name = attachment["name"]?.jsonPrimitive?.content ?: error("INVALID_ATTACHMENT")
         require(Regex("^attachments/[A-Za-z0-9_-]+$").matches(name) &&

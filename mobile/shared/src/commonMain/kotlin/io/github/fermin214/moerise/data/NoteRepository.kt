@@ -47,6 +47,48 @@ class NoteRepository(private val db: LocalDatabase, private val files: Attachmen
 
     suspend fun persist(draft: DraftEntity) { db.dao().putDraft(draft) }
 
+    suspend fun storedDraft(key: String, id: String): RestoredDraft = transaction {
+        db.dao().recoverSending(key)
+        val draft = requireNotNull(db.dao().draft(id)) { "DRAFT_NOT_FOUND" }
+        require(draft.accountKey == key) { "ACCOUNT_CHANGED" }
+        RestoredDraft(draft, db.dao().pending(id))
+    }
+
+    suspend fun drafts(key: String): List<DraftEntity> {
+        val pending = db.dao().pendingDraftIds(key).toSet()
+        return db.dao().drafts(key).filter { draft ->
+            val baseline = draft.baselineJson?.let { runCatching { CoreJson.decodeFromString<Note>(it) }.getOrNull() }
+            val changed = draft.content != (baseline?.content ?: "")
+            draft.conflictJson != null || draft.id in pending || changed || draft.attachmentEdits() != AttachmentEdits()
+        }
+    }
+    suspend fun pendingDraftIds(key: String): List<String> = db.dao().pendingDraftIds(key)
+
+    suspend fun forkConflict(draft: DraftEntity, content: String, attachments: AttachmentEdits): RestoredDraft = transaction {
+        require(draft.conflictJson != null)
+        val stored = requireNotNull(db.dao().draft(draft.id))
+        require(stored.accountKey == draft.accountKey && stored.revision == draft.revision)
+        val home = db.dao().homeDraft(draft.accountKey)
+        if (home != null && home.id != draft.id) db.dao().putDraft(home.copy(slot = "saved:${home.id}"))
+        db.dao().putDraft(stored.copy(slot = "conflict:${draft.id}"))
+        val next = DraftEntity(newLocalId(), draft.accountKey, content, 0,
+            attachmentsJson = CoreJson.encodeToString(attachments.copy(removed = emptyList())), slot = "home")
+        db.dao().putDraft(next)
+        RestoredDraft(next, null)
+    }
+
+    suspend fun clearAccount(key: String) {
+        val owned = db.dao().drafts(key).flatMap { it.attachmentEdits().staged }
+        transaction {
+            db.dao().deleteWrites(key); db.dao().deleteDrafts(key); db.dao().deleteSnapshots(key)
+            db.dao().deleteFeatures(key); db.dao().deleteProfile(key)
+        }
+        val remaining = db.dao().attachmentReferences().flatMap {
+            if (it == "[]") emptyList() else CoreJson.decodeFromString<AttachmentEdits>(it).staged.map { file -> file.id }
+        }.toSet()
+        owned.distinctBy { it.id }.filter { it.id !in remaining }.forEach { files?.remove(it) }
+    }
+
     suspend fun prepare(draft: DraftEntity): PendingWriteEntity = withContext(Dispatchers.Default) {
         db.dao().pending(draft.id)?.let { return@withContext it }
         require(draft.conflictJson == null) { "SOURCE_CHANGED" }
@@ -104,6 +146,8 @@ class NoteRepository(private val db: LocalDatabase, private val files: Attachmen
 
     suspend fun snapshot(key: String): NotePage? =
         db.dao().snapshot(key, "home")?.let { CoreJson.decodeFromString(it.body) }
+    suspend fun datedSnapshot(key: String): Pair<NotePage, Long>? =
+        db.dao().snapshot(key, "home")?.let { CoreJson.decodeFromString<NotePage>(it.body) to it.fetchedAt }
 
     suspend fun cache(key: String, page: NotePage) {
         db.dao().putSnapshot(SnapshotEntity(key, "home", CoreJson.encodeToString(page.copy(notes = page.notes.take(100))), epochMillis()))

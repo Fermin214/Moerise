@@ -17,6 +17,8 @@ import kotlinx.serialization.json.*
 fun NoteDetailScreen(state: NoteDetailState, mobile: MobileController, strings: Strings, scroll: ScrollState,
     onWalk: (Note) -> Unit, onInsight: (Note) -> Unit, onTag: (String, Note) -> Unit) {
     var confirmDelete by remember(state.name) { mutableStateOf(false) }
+    val connection by mobile.session.state.collectAsState()
+    val online = connection.connected
     Column(Modifier.safeDrawingPadding().verticalScroll(scroll).padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         TextButton(onClick = mobile::closeNote, modifier = Modifier.testTag("detail_back")) { Text(strings.text("返回", "Back")) }
         if (state.loading) LinearProgressIndicator(Modifier.fillMaxWidth())
@@ -25,18 +27,21 @@ fun NoteDetailScreen(state: NoteDetailState, mobile: MobileController, strings: 
         if (note != null) {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 TextButton(onClick = { mobile.editNote(note) }, modifier = Modifier.testTag("note_edit"), enabled = !state.busy && !state.pendingAction) { Text(strings.text("编辑", "Edit")) }
-                TextButton(onClick = mobile.detail::changeState, modifier = Modifier.testTag("note_archive"), enabled = !state.busy && !state.deleteUnknown) {
+                TextButton(onClick = mobile.detail::changeState, modifier = Modifier.testTag("note_archive"), enabled = online && !state.busy && !state.deleteUnknown) {
                     Text(if (state.pendingAction) strings.text("重试操作", "Retry action")
                         else if (note.state == "ARCHIVED") strings.text("恢复", "Restore") else strings.text("归档", "Archive"))
                 }
-                TextButton(onClick = { confirmDelete = true }, modifier = Modifier.testTag("note_delete"), enabled = !state.busy && !state.pendingAction) { Text(strings.text("删除", "Delete")) }
+                TextButton(onClick = { confirmDelete = true }, modifier = Modifier.testTag("note_delete"), enabled = online && !state.busy && !state.pendingAction) { Text(strings.text("删除", "Delete")) }
             }
-            if (state.deleteUnknown) TextButton(onClick = mobile.detail::checkDeletion, enabled = !state.busy) { Text(strings.text("检查删除结果", "Check deletion")) }
+            if (state.cached) Text(strings.text("本机快照", "Saved snapshot") +
+                displaySnapshotTime(state.snapshotAt, connection.profile?.timezone ?: "UTC").let { if (it.isBlank()) "" else " · $it" },
+                color = MoeriseColors.Muted)
+            if (state.deleteUnknown) TextButton(onClick = mobile.detail::checkDeletion, enabled = online && !state.busy) { Text(strings.text("检查删除结果", "Check deletion")) }
             if (note.state == "NORMAL") TextButton(onClick = { onWalk(note) }, enabled = !state.busy && mobile.session.state.value.connected,
                 modifier = Modifier.testTag("note_walk")) { Text(strings.text("从这条漫步", "Walk from this note")) }
             TextButton(onClick = { onInsight(note) }, enabled = !state.busy && mobile.session.state.value.connected,
                 modifier = Modifier.testTag("note_insight")) { Text(strings.text("洞察这条", "Explore this note")) }
-            if (state.error == "SOURCE_CHANGED") TextButton(onClick = { mobile.detail.open(note.name) }) { Text(strings.text("重新读取", "Read again")) }
+            if (state.error == "SOURCE_CHANGED") TextButton(onClick = { mobile.openNote(note.name) }, enabled = online) { Text(strings.text("重新读取", "Read again")) }
             Text(displayServiceTime(note.createTime, mobile.session.state.value.profile?.timezone ?: "UTC"), style = MaterialTheme.typography.labelSmall)
             Row(Modifier.horizontalScroll(rememberScrollState())) {
                 note.tags.forEach { tag -> TextButton(onClick = { onTag(tag, note) }) { Text("#$tag") } }
@@ -50,7 +55,7 @@ fun NoteDetailScreen(state: NoteDetailState, mobile: MobileController, strings: 
                     OpenAttachmentButton(note, item, core, strings)
                 }
             }
-        } else if (!state.loading && state.name != null) TextButton(onClick = { mobile.detail.open(state.name) }) { Text(strings.text("重试读取", "Read again")) }
+        } else if (!state.loading && state.name != null) TextButton(onClick = { mobile.openNote(state.name) }, enabled = online) { Text(strings.text("重试读取", "Read again")) }
     }
     if (confirmDelete) AlertDialog(
         onDismissRequest = { confirmDelete = false },

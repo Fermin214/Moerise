@@ -11,6 +11,7 @@ import kotlinx.serialization.json.*
 data class NoteDetailState(
     val name: String? = null, val note: Note? = null, val loading: Boolean = false,
     val busy: Boolean = false, val error: String? = null, val deleteUnknown: Boolean = false, val pendingAction: Boolean = false,
+    val cached: Boolean = false, val snapshotAt: Long = 0,
 )
 
 class NoteDetailController(
@@ -25,11 +26,16 @@ class NoteDetailController(
     private var pending: PendingWriteEntity? = null
 
     fun clear() { ++generation; operation?.cancel(); pending = null; mutable.value = NoteDetailState() }
+    suspend fun stopForRemoval() {
+        ++generation; operation?.cancelAndJoin(); pending = null; mutable.value = NoteDetailState()
+    }
+    fun pauseRead() { ++generation; operation?.cancel(); mutable.update { it.copy(loading = false) } }
 
-    fun open(name: String) {
+    fun open(name: String, cached: Note? = null, snapshotAt: Long = 0, online: Boolean = true) {
         require(Regex("^memos/[A-Za-z0-9_-]+$").matches(name))
-        val active = core() ?: return
+        val active = core()
         val key = account() ?: return
+        val fallback = cached?.takeIf { it.name == name && it.instanceId == key.split('\u0000')[1] }
         val stamp = ++generation
         val previous = operation
         previous?.cancel()
@@ -41,6 +47,9 @@ class NoteDetailController(
                 val restored = repository().action(key, name)
                 if (stamp != generation) return@launch
                 pending = restored
+                mutable.update { it.copy(note = fallback, cached = fallback != null, snapshotAt = snapshotAt,
+                    deleteUnknown = restored?.method == "DELETE", pendingAction = restored != null, loading = online && active != null) }
+                if (!online || active == null) return@launch
                 val note = CoreJson.decodeFromString<Note>(active.api(HttpMethod.Get, path(name)))
                 require(note.name == name && note.instanceId == key.split('\u0000')[1])
                 if (stamp == generation) mutable.value = NoteDetailState(name = name, note = note,
