@@ -8,13 +8,14 @@ import (
 	"time"
 )
 
-const mapAlgorithm = "pca-fixed-v2"
+const mapAlgorithm = "pca-topics-v3"
 const mapPointGap = 0.22
 
 type mapDocument struct {
 	name, sourceHash, vectorHash string
 	vector                       []float64
 	tags                         []string
+	keywords                     []string
 }
 
 type mapSnapshot struct {
@@ -25,15 +26,26 @@ type mapSnapshot struct {
 }
 
 type mapBasis struct {
-	Mean  []float64   `json:"mean"`
-	Axes  [][]float64 `json:"axes"`
-	Scale float64     `json:"scale"`
+	Mean    []float64   `json:"mean"`
+	Axes    [][]float64 `json:"axes"`
+	Scale   float64     `json:"scale"`
+	Anchors []mapAnchor `json:"anchors,omitempty"`
 }
 
+type mapAnchor struct {
+	Vector []float64 `json:"vector"`
+	FromX  float64   `json:"from_x"`
+	FromY  float64   `json:"from_y"`
+	X      float64   `json:"x"`
+	Y      float64   `json:"y"`
+	Scale  float64   `json:"scale"`
+}
 type mapLayout struct {
 	version     string
 	basis       mapBasis
 	points      []MapPoint
+	topics      []MapTopic
+	links       []MapLink
 	generation  string
 	revision    int64
 	generatedAt time.Time
@@ -289,9 +301,13 @@ func buildMapLayout(ctx context.Context, snapshot mapSnapshot, previous *mapLayo
 					point.X += (value - layout.basis.Mean[j]) * layout.basis.Axes[0][j] / layout.basis.Scale
 					point.Y += (value - layout.basis.Mean[j]) * layout.basis.Axes[1][j] / layout.basis.Scale
 				}
+				anchorMapPoint(&point, document.vector, layout.basis.Anchors)
 			} else {
 				// No-text notes are separate points, not fabricated semantic vectors.
 				point.X = 4
+				for _, anchor := range layout.basis.Anchors {
+					point.X = math.Max(point.X, anchor.X+2)
+				}
 			}
 			var err error
 			point, err = grid.place(ctx, point)
@@ -303,7 +319,18 @@ func buildMapLayout(ctx context.Context, snapshot mapSnapshot, previous *mapLayo
 		point.Tags = append([]string{}, document.tags...)
 		layout.points = append(layout.points, point)
 	}
-	version, err := json.Marshal([]any{mapAlgorithm, snapshot.space, layout.basis, layout.points})
+	if err := buildMapTopics(ctx, snapshot, layout); err != nil {
+		return nil, err
+	}
+	if (previous == nil || len(previous.points) == 0) && len(layout.topics) > 1 {
+		if err := separateMapTopics(ctx, snapshot, layout); err != nil {
+			return nil, err
+		}
+		if err := buildMapTopics(ctx, snapshot, layout); err != nil {
+			return nil, err
+		}
+	}
+	version, err := json.Marshal([]any{mapAlgorithm, snapshot.space, layout.basis, layout.points, layout.topics, layout.links})
 	if err != nil {
 		return nil, err
 	}
@@ -330,6 +357,19 @@ func validMapBasis(basis mapBasis, dimensions int) bool {
 		(dimensions > 1 && math.Abs(mapNorm(basis.Axes[1])-1) > 1e-6) ||
 		(dimensions == 1 && mapNorm(basis.Axes[1]) > 1e-6) || math.Abs(mapDot(basis.Axes[0], basis.Axes[1])) > 1e-6) {
 		return false
+	}
+	if len(basis.Anchors) > 12 {
+		return false
+	}
+	for _, anchor := range basis.Anchors {
+		if len(anchor.Vector) != dimensions || math.Abs(mapNorm(anchor.Vector)-1) > 1e-6 || anchor.Scale <= 0 {
+			return false
+		}
+		for _, value := range append(slices.Clone(anchor.Vector), anchor.FromX, anchor.FromY, anchor.X, anchor.Y, anchor.Scale) {
+			if math.IsNaN(value) || math.IsInf(value, 0) {
+				return false
+			}
+		}
 	}
 	return true
 }

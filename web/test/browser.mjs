@@ -1,3 +1,4 @@
+import { setUILanguage } from './browser-helpers.mjs';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import { once } from 'node:events';
@@ -162,12 +163,45 @@ async function fixture(t, language = 'zh-CN', options = {}) {
 async function login(page) {
   await page.locator('#login-form').waitFor({ state: 'visible' });
   assert.equal(await page.locator('.memos-brand').innerText(), 'Moerise');
-  assert.equal(await page.locator('#auth img').count(), 0);
   await page.locator('#username').fill('test');
   await page.locator('#password').fill('test');
   await page.locator('#login').click();
   await page.locator('#workspace').waitFor({ state: 'visible' });
 }
+
+test('large tag lists prioritize selected tags and stay above fixed account controls without a second search', async t => {
+  const { page, state, errors, url } = await fixture(t);
+  const extra = Array.from({ length: 180 }, (_, index) => `分类-${String(index).padStart(3, '0')}`);
+  state.notes.get('n00').tags.push(...extra);
+  await page.goto(url); await login(page);
+  await page.locator('#tags button').nth(181).waitFor({ state: 'attached' });
+  assert.match(await page.locator('#tags button').first().innerText(), /#想法/);
+  assert.equal(await page.locator('#sidebar input[type="search"]').count(), 1);
+  await page.locator('#tags button', { hasText: '#分类-179' }).click();
+  await page.waitForURL('**/?tag=*');
+  await page.locator('#tags button[aria-pressed="true"]').waitFor({ state: 'attached' });
+  assert.match(await page.locator('#tags button').first().innerText(), /#分类-179/);
+  for (const viewport of [{ width: 1360, height: 960 }, { width: 390, height: 844 }, { width: 932, height: 430 }]) {
+    await page.setViewportSize(viewport);
+    const mobile = viewport.width <= 960;
+    if (mobile) await page.locator('#navigation-toggle').click();
+    const geometry = await page.evaluate(() => ({
+      list: document.querySelector('#tags').getBoundingClientRect().toJSON(),
+      account: document.querySelector('#account').getBoundingClientRect().toJSON(),
+      sidebar: document.querySelector('#sidebar').getBoundingClientRect().toJSON(),
+      body: document.querySelector('.sidebar-body').getBoundingClientRect().toJSON(),
+      scroll: document.querySelector('#tags').scrollHeight > document.querySelector('#tags').clientHeight,
+    }));
+    assert.ok(Math.min(geometry.list.bottom, geometry.body.bottom) <= geometry.account.y, JSON.stringify({ viewport, geometry }));
+    assert.ok(geometry.account.bottom <= viewport.height);
+    assert.ok(geometry.account.bottom >= viewport.height - 24);
+    assert.ok(geometry.scroll);
+    await page.locator('#tags').evaluate(node => { node.scrollTop = node.scrollHeight; });
+    assert.equal((await page.locator('#account').boundingBox()).y, geometry.account.y);
+    if (mobile) await page.keyboard.press('Escape');
+  }
+  assert.deepEqual(errors, []);
+});
 
 test('browser explicit search modes, relevance pagination, filters, return and model fallback', { timeout: 120_000 }, async t => {
   const { page, state, errors, url } = await fixture(t);
@@ -269,7 +303,7 @@ test('mobile navigation, touch gestures, search and rotation preserve drafts and
   await screenshot(page, 'navigation-mobile.png');
   await page.locator('#user-menu').focus();
   await page.keyboard.press('Tab');
-  assert.equal(await page.locator('#sidebar [data-language]').evaluate(node => node === document.activeElement), true);
+  assert.equal(await page.locator('#navigation-close').evaluate(node => node === document.activeElement), true);
   await page.keyboard.press('Shift+Tab');
   assert.equal(await page.locator('#user-menu').evaluate(node => node === document.activeElement), true);
   await page.keyboard.press('Escape');
@@ -325,7 +359,7 @@ test('mobile navigation, touch gestures, search and rotation preserve drafts and
   await drawer.waitFor({ state: 'hidden' });
 
   await toggle.tap();
-  await page.locator('#sidebar [data-language]').selectOption('en');
+  await setUILanguage(page, 'en');
   await page.getByRole('button', { name: 'Close navigation', exact: true }).tap();
   await page.getByRole('button', { name: 'Search notes', exact: true }).tap();
   await page.getByRole('button', { name: 'Close search', exact: true }).waitFor();
@@ -418,7 +452,8 @@ test('browser timeline management, attachment retries, history, conflicts and pr
   await page.locator('#q').press('Enter');
   await page.waitForFunction(() => location.pathname === '/' && new URL(location.href).searchParams.get('query') === '笔记 4');
   await page.locator('[data-name="memos/n40"]').waitFor();
-  await page.locator('#filters').getByRole('button', { name: '清除全部' }).click();
+  await page.locator('#q').fill('');
+  await page.locator('#q').press('Enter');
   await page.locator('[data-name="memos/n00"]').waitFor();
   await menu(page, 'n00', '编辑');
   const editor = page.locator('form.editor');
@@ -733,6 +768,67 @@ test('sidebar aggregates reuse loaded and in-flight data, cancel replaced months
   assert.deepEqual(errors, []);
 });
 
+test('sidebar background refresh preserves tags and calendar through slow requests, failures and retry', { timeout: 60_000 }, async t => {
+  const { page, state, errors, url } = await fixture(t);
+  await page.goto(url); await login(page);
+  await page.locator('#calendar .h2').waitFor();
+  await page.locator('#tags button', { hasText: '#想法' }).click();
+  await page.locator('#tags button.on').waitFor();
+  const snapshot = () => page.evaluate(() => ['tags', 'calendar'].map(id => document.getElementById(id).innerHTML));
+  let displayed = await snapshot(), release, fail = false;
+  let delayed = new Promise(resolve => { release = resolve; });
+  t.after(() => release());
+  await page.route(/\/api\/app\/v1\/(?:tags|calendar)\?/, async route => {
+    await delayed;
+    if (fail) await route.fulfill({ status: 503, json: { error: { code: 'SOURCE_UNAVAILABLE', retryable: true } } });
+    else await route.continue().catch(() => {});
+  });
+  const requests = [];
+  page.on('request', request => { if (/\/api\/app\/v1\/(?:tags|calendar)\?/.test(request.url())) requests.push(request.url()); });
+  const focus = () => page.evaluate(() => {
+    window.dispatchEvent(new Event('focus'));
+    document.dispatchEvent(new Event('visibilitychange'));
+  });
+  async function start(action) {
+    const requested = Promise.all(['tags', 'calendar'].map(name =>
+      page.waitForRequest(request => new URL(request.url()).pathname === `/api/app/v1/${name}`)));
+    await action(); await requested;
+  }
+  async function finish() {
+    const responded = Promise.all(['tags', 'calendar'].map(name =>
+      page.waitForResponse(response => new URL(response.url()).pathname === `/api/app/v1/${name}`)));
+    release(); await responded;
+  }
+  await start(focus);
+  await focus();
+  assert.deepEqual(await snapshot(), displayed);
+  assert.equal(requests.length, 2);
+  state.notes.set('sidebar-new', { ...state.notes.get('n00'), name: 'memos/sidebar-new', tags: ['后台标签'] });
+  await finish();
+  await page.locator('#tags button', { hasText: '#后台标签' }).waitFor();
+  assert.equal(await page.locator('#tags button.on').count(), 1);
+  const normalCount = [...state.notes.values()].filter(note => note.state === 'NORMAL').length;
+  assert.equal(await page.locator('#calendar .h2').getAttribute('aria-label'), `2026-10-29 · ${normalCount} 条笔记`);
+  displayed = await snapshot();
+  delayed = new Promise(resolve => { release = resolve; }); fail = true;
+  await start(focus);
+  assert.deepEqual(await snapshot(), displayed);
+  await finish();
+  await page.locator('#sidebar-error').waitFor({ state: 'visible' });
+  assert.deepEqual(await snapshot(), displayed);
+  assert.equal(requests.length, 4);
+  delayed = new Promise(resolve => { release = resolve; }); fail = false;
+  await start(() => page.locator('#sidebar-retry').click());
+  assert.deepEqual(await snapshot(), displayed);
+  await finish();
+  await page.locator('#sidebar-error').waitFor({ state: 'hidden' });
+  await page.locator('#tags button.on').waitFor();
+  assert.equal(requests.length, 6);
+  assert.deepEqual(await page.locator('.app, .side, #account').evaluateAll(nodes =>
+    nodes.map(node => getComputedStyle(node).backgroundColor)), Array(3).fill('rgb(247, 249, 252)'));
+  assert.deepEqual(errors, []);
+});
+
 test('referenced attachment rejection keeps the draft editable so its body can be corrected and saved', { timeout: 60_000 }, async t => {
   const { page, state, errors, url } = await fixture(t);
   await page.goto(`${url}/notes/n02`); await login(page);
@@ -816,14 +912,14 @@ test('English fallback, live language switching and stored preference preserve o
   await note.getByRole('menuitem', { name: 'Edit', exact: true }).click();
   const editor = page.locator('form.editor'); await editor.locator('textarea').fill('Editing 原文');
   await page.evaluate(() => { globalThis.languageEditor = document.querySelector('form.editor'); });
-  await page.locator('#app [data-language]').selectOption('zh-CN');
+  await setUILanguage(page, 'zh-CN');
   assert.equal(await page.locator('#add-attachment').getAttribute('aria-label'), '添加附件');
   assert.equal(await page.locator('#calendar-title').textContent(), '2026年10月');
   assert.equal(await page.evaluate(() => globalThis.languageEditor === document.querySelector('form.editor')), true);
   assert.equal(await editor.locator('textarea').inputValue(), 'Editing 原文');
   assert.equal(await page.locator('#content').inputValue(), '未保存的想法 #标签');
   assert.match(await page.locator('#draft-attachments').textContent(), /图片.png/);
-  await page.locator('#app [data-language]').selectOption('en');
+  await setUILanguage(page, 'en');
   assert.match(await page.locator('#draft-attachments').getByRole('button').getAttribute('aria-label'), /Remove attachment 图片.png/);
   await editor.getByRole('button', { name: 'Cancel', exact: true }).click();
   assert.deepEqual(await note.locator('.note-content p').allTextContents(), state.notes.get('n00').content.split('\n\n'));
@@ -833,7 +929,7 @@ test('English fallback, live language switching and stored preference preserve o
   await page.locator('#q').fill('test'); await page.locator('#search-mode').selectOption('semantic');
   await page.locator('#list-error').filter({ hasText: 'Enable embeddings in Settings' }).waitFor();
   assert.doesNotMatch(await page.locator('#list-error').textContent(), /敏感诊断/);
-  await page.locator('#app [data-language]').selectOption('zh-CN');
+  await setUILanguage(page, 'zh-CN');
   assert.match(await page.locator('#list-error').textContent(), /请在设置中启用/);
   await page.reload(); await page.locator('#workspace').waitFor({ state: 'visible' });
   assert.equal(await page.locator('html').getAttribute('lang'), 'zh-CN');
@@ -841,7 +937,7 @@ test('English fallback, live language switching and stored preference preserve o
   await page.addInitScript(() => Object.defineProperty(window, 'localStorage', { get() { throw new Error('Storage blocked'); } }));
   await page.reload(); await page.locator('#workspace').waitFor({ state: 'visible' });
   assert.equal(await page.locator('html').getAttribute('lang'), 'en');
-  await page.locator('#app [data-language]').selectOption('zh-CN');
+  await setUILanguage(page, 'zh-CN');
   assert.equal(await page.locator('html').getAttribute('lang'), 'zh-CN');
   assert.deepEqual(errors, []);
 });

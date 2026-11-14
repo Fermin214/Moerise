@@ -1,4 +1,4 @@
-import { l, setText, setAttr, resolveText, locale } from './i18n.js';
+import { l, setText, setAttr, resolveText, locale, languagePreference, setLanguage } from './i18n.js';
 const fields = {
   review: ['count', 'min_age_hours', 'recent_days', 'include_archived'],
   notifications: ['enabled', 'times'],
@@ -68,6 +68,7 @@ export function createSettingsPage({ sessionRequest, handleFailure, onSaved = ()
   let sequence = 0, active = false, busy = false, conflict = false;
   let controls = new Map(), secretControls = new Map(), times = [];
   let modelViews = new Map(), modelController, modelTimer, indexText, indexProgress;
+  let activeTab = 'general', tabs = new Map(), panels = new Map();
   const checks = new Map();
 
   function abortModels() {
@@ -102,9 +103,28 @@ export function createSettingsPage({ sessionRequest, handleFailure, onSaved = ()
     if (messages[err.code]) message(messages[err.code]);
     else handleFailure(error, err);
   }
-  function section(title, target = form) {
+  function selectTab(id, focus = false) {
+    activeTab = id;
+    for (const [key, tab] of tabs) {
+      tab.classList.toggle('on', key === id);
+      tab.setAttribute('aria-selected', String(key === id)); tab.tabIndex = key === id ? 0 : -1;
+      panels.get(key).hidden = key !== id;
+    }
+    if (focus) {
+      tabs.get(id).focus({ preventScroll: true });
+      tabs.get(id).scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    }
+  }
+  function section(id, title, caption = title) {
     const card = el('section', 'card settings-card');
-    card.append(el('h2', '', title)); target.append(card);
+    card.id = `settings-panel-${id}`; card.setAttribute('role', 'tabpanel');
+    card.setAttribute('aria-labelledby', `settings-tab-${id}`); card.tabIndex = 0;
+    const tab = button(caption, 'tab', () => selectTab(id));
+    tab.id = `settings-tab-${id}`; tab.setAttribute('role', 'tab');
+    tab.setAttribute('aria-controls', card.id);
+    tabs.set(id, tab); panels.set(id, card);
+    form.querySelector('[role="tablist"]').append(tab);
+    card.append(el('h2', '', title)); form.append(card);
     return card;
   }
   function row(parent, label, control, hint = '') {
@@ -324,7 +344,7 @@ export function createSettingsPage({ sessionRequest, handleFailure, onSaved = ()
     field(block, `${group}.base_url`, l("API 地址"), { type: 'url' });
     field(block, `${group}.model`, l("模型名称"));
     secret(block, `${group}_api_key`);
-    const advanced = el('details', 'settings-advanced'); advanced.append(el('summary', '', l("高级参数"))); block.append(advanced);
+    const advanced = el('div', 'settings-advanced'); advanced.append(el('h4', 'sub', l("高级参数"))); block.append(advanced);
     field(advanced, `${group}.timeout_seconds`, l("请求超时（秒）"), { type: 'number', min: 1, max: group === 'llm' ? 110 : 120, step: 'any' });
     field(advanced, `${group}.max_concurrency`, l("并发数"), { type: 'number', min: 1, max: 8 });
     field(advanced, `${group}.max_retries`, l("重试次数"), { type: 'number', min: 0, max: 3 });
@@ -361,9 +381,29 @@ export function createSettingsPage({ sessionRequest, handleFailure, onSaved = ()
   }
   function render() {
     abortModels(); controls.clear(); secretControls.clear(); modelViews.clear(); times = [];
+    tabs.clear(); panels.clear();
     form = el('form', 'settings-form'); setAttr(form, 'aria-label', l("产品设置")); form.autocomplete = 'off';
+    form.noValidate = true;
     form.addEventListener('submit', submit);
-    const review = section(l("每日回顾"));
+    const tablist = el('div', 'settings-tabs');
+    tablist.setAttribute('role', 'tablist'); setAttr(tablist, 'aria-label', l("设置模块"));
+    tablist.addEventListener('keydown', event => {
+      if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+      const keys = [...tabs.keys()], index = keys.indexOf(activeTab);
+      const next = event.key === 'Home' ? 0 : event.key === 'End' ? keys.length - 1 :
+        (index + (event.key === 'ArrowRight' ? 1 : -1) + keys.length) % keys.length;
+      event.preventDefault(); selectTab(keys[next], true);
+    });
+    form.append(tablist);
+    const general = section('general', l("通用"));
+    const language = el('select'); language.id = 'settings-language'; language.dataset.language = '';
+    for (const [value, title] of [['auto', l("跟随浏览器")], ['zh-CN', '简体中文'], ['en', 'English']]) {
+      const option = el('option', '', title); option.value = value; language.append(option);
+    }
+    language.value = languagePreference();
+    language.addEventListener('change', () => setLanguage(language.value, { persist: true }));
+    row(general, l("语言"), language);
+    const review = section('review', l("回顾"));
     field(review, 'timezone', l("时区"), { hint: l("使用 IANA 名称，例如 Asia/Hong_Kong。") });
     field(review, 'review.count', l("每次数量（条）"), { type: 'number', min: 1, max: 20 });
     field(review, 'review.min_age_hours', l("等待期（小时）"), { type: 'number', min: 0, max: 87600 });
@@ -372,18 +412,18 @@ export function createSettingsPage({ sessionRequest, handleFailure, onSaved = ()
     field(review, 'notifications.enabled', l("开启回顾推送"), { type: 'checkbox' });
     const clocks = el('div', 'settings-clocks'); clocks.append(el('h3', '', l("推送时段"))); review.append(clocks); renderTimes(clocks);
     review.append(el('p', 'sub settings-hint', l("回顾参数、时段和时区从后续日期生效，已固定的当天计划保持不变。")));
-    const models = section(l("模型")); model(models, 'llm', 'LLM'); model(models, 'embedding', 'Embedding');
+    const models = section('models', l("模型")); model(models, 'llm', 'LLM'); model(models, 'embedding', 'Embedding');
     indexText = el('p', 'sub', l("正在读取索引状态…")); indexText.id = 'settings-index-status'; indexText.setAttribute('role', 'status');
     indexProgress = el('progress'); indexProgress.hidden = true; setAttr(indexProgress, 'aria-label', l("语义索引进度"));
     models.append(indexText, indexProgress);
-    const insights = section(l("默认洞察 Prompt"));
+    const insights = section('insights', l("默认洞察 Prompt"), l("洞察"));
     const prompt = field(insights, 'insights.default_prompt', l("一键洞察使用的 Prompt"), { type: 'textarea' });
     prompt.rows = 7;
     const restore = button(l("恢复默认"), 'ghost', () => {
       prompt.value = snapshot.default_insight_prompt; setText(status, l("已恢复默认 Prompt，保存后生效。"));
     });
     restore.disabled = typeof snapshot.default_insight_prompt !== 'string'; insights.append(restore);
-    const channel = section(l("消息渠道"));
+    const channel = section('channel', l("消息渠道"));
     const channelKind = field(channel, 'channel.kind', l("发送方式"), { options: [
       ['none', l("不启用消息渠道")], ['feishu-app', l("飞书应用机器人")],
       ['feishu-webhook', l("飞书 Webhook")], ['telegram', 'Telegram'],
@@ -428,6 +468,7 @@ export function createSettingsPage({ sessionRequest, handleFailure, onSaved = ()
     reload = button(l("重新加载设置"), 'ghost', load);
     footer.append(error, status, reload, save); form.append(footer);
     root.replaceChildren(form); busy = conflict = false;
+    selectTab(activeTab);
     updateChecks();
   }
   async function load() {
@@ -457,6 +498,12 @@ export function createSettingsPage({ sessionRequest, handleFailure, onSaved = ()
   async function submit(event) {
     event.preventDefault();
     if (busy || conflict) return;
+    const invalidInput = form.querySelector(':invalid');
+    if (invalidInput) {
+      const panel = invalidInput.closest('[role="tabpanel"]');
+      if (panel) selectTab([...panels].find(([, node]) => node === panel)[0]);
+      invalidInput.reportValidity(); return;
+    }
     message(); setText(status, '');
     try {
       const operations = Object.fromEntries([...secretControls].filter(([, { action }]) => !action.disabled).map(([name, { action, input }]) =>

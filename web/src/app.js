@@ -10,6 +10,8 @@ const shell = initShell();
 const draft = new Draft(), controllers = new Set(), snapshots = new Map();
 const editors = new Map(), pendingWrites = new Map(), failures = new Map();
 const sidebarTags = new Map(), sidebarCalendars = new Map();
+let sidebarTagState = '', sidebarCalendarKey = '';
+let sidebarFocusTimer = null, sidebarFocusRefresh = null;
 let epoch = 0, viewSequence = 0, listSequence = 0, sidebarSequence = 0;
 let identity = null, logoutCSRF = null, authBusy = false, saving = false, readingFiles = false, listing = false;
 let draftOwner = null;
@@ -23,8 +25,9 @@ let searchStatus = '';
 let lastTimeline = { path: '/', values: filters('') };
 let settingsPage = null;
 let insightsPage = null;
-let mapPage = null, mapView = null;
+let mapPage = null, mapView = null, mapSnapshot = null;
 let discoveryPage = null, reviewView = null, walkView = null;
+let walkConfiguration = null, walkFloaters = null;
 history.replaceState({ ...history.state, webKey: currentKey }, '');
 history.scrollRestoration = 'manual';
 
@@ -135,6 +138,7 @@ function hidePrivate({ resume = false } = {}) {
   $('app').hidden = $('workspace').hidden = true;
   $('auth').hidden = false;
   for (const id of ['notes', 'tags', 'filters', 'calendar', 'draft-attachments']) $(id).replaceChildren();
+  sidebarTagState = sidebarCalendarKey = '';
   for (const id of ['content', 'q', 'attachment-input', 'username', 'password']) $(id).value = '';
   for (const id of ['save-error', 'list-error', 'sidebar-error']) showError($(id), null);
   $('empty').hidden = $('account').hidden = true;
@@ -144,7 +148,8 @@ function hidePrivate({ resume = false } = {}) {
   searchStatus = ''; $('search-mode').value = 'keyword';
   snapshots.clear();
   reviewView = walkView = null;
-  mapView = null;
+  walkConfiguration = walkFloaters = null;
+  mapView = mapSnapshot = null;
   month = ''; identity = null; routeReturnKey = null;
   pageCount = 0; reloading = false; lastTimeline = { path: '/', values: filters('') };
   closeMenus();
@@ -193,12 +198,18 @@ function sidebarFilter(change) {
   const source = sourceTimeline();
   navigate(timelineURL(source.path, { ...source.values, query: $('q').value, ...change }));
 }
-function rememberView(writeHistory = true) {
-  if (!identity || !['/', '/archived'].includes(new URL(currentURL, location.origin).pathname)) return;
+function rememberView(writeHistory = true, clean = false) {
+  if (!identity || !pageCount || !['/', '/archived'].includes(new URL(currentURL, location.origin).pathname)) return;
   const previous = snapshots.get(currentKey);
-  snapshots.set(currentKey, { url: currentURL, items: [...items], nextToken, searchStatus, scroll: window.scrollY, pages: pageCount, dirty: previous?.dirty });
+  snapshots.delete(currentKey);
+  snapshots.set(currentKey, { url: currentURL, items: [...items], nextToken, searchStatus, scroll: window.scrollY, pages: pageCount, dirty: clean ? false : previous?.dirty });
   if (writeHistory) history.replaceState({ ...history.state, scroll: window.scrollY, pages: pageCount }, '');
   if (snapshots.size > 12) snapshots.delete(snapshots.keys().next().value);
+}
+function timelineSnapshot() {
+  const saved = snapshots.get(currentKey);
+  if (saved?.url === currentURL) return saved;
+  return [...snapshots.values()].reverse().find(value => value.url === currentURL && !value.dirty);
 }
 function navigate(url, { replace = false, returnKey = null } = {}) {
   shell.closeNavigation();
@@ -217,17 +228,20 @@ function restoreScroll(scroll) {
 }
 function dirtySnapshots() {
   for (const snapshot of snapshots.values()) snapshot.dirty = true;
+  reviewView = walkView = walkFloaters = mapSnapshot = null;
+  discoveryPage?.refresh();
+  mapPage?.refresh();
 }
 async function reloadTimeline(pages = pageCount || 1, scroll = window.scrollY) {
   const sequence = viewSequence;
   reloading = true;
   try {
-    await loadNotes(true);
-    for (let i = 1; i < pages && nextToken && identity && sequence === viewSequence && $('list-retry').hidden; i++) await loadNotes();
-    if (identity && sequence === viewSequence) restoreScroll(scroll);
+    await loadNotes(true, false, { pages, scroll });
   } finally {
-    reloading = false;
-    if (identity && sequence === viewSequence && nextToken) pageObserver.observe($('page-end'));
+    if (identity && sequence === viewSequence) {
+      reloading = false;
+      if (nextToken && $('list-retry').hidden) pageObserver.observe($('page-end'));
+    }
   }
 }
 async function enter(value) {
@@ -296,8 +310,6 @@ function renderFilters() {
   const values = filters(location.search), box = $('filters');
   box.replaceChildren();
   const chips = [
-    ...(values.query ? [{ label: `“${values.query}”`, remove: () => sidebarFilter({ query: '' }) }] : []),
-    ...(values.mode !== 'keyword' ? [{ label: values.mode === 'semantic' ? l("语义搜索") : l("混合搜索"), remove: () => sidebarFilter({ mode: 'keyword' }) }] : []),
     ...values.tags.map(tag => ({ label: `#${tag}`, remove: () => sidebarFilter({ tags: values.tags.filter(item => item !== tag) }) })),
     ...(values.date ? [{ label: values.date, remove: () => sidebarFilter({ date: '' }) }] : []),
   ];
@@ -310,10 +322,12 @@ function renderFilters() {
     setAttr(remove, 'aria-label', l("移除筛选 {0}", { 0: chip.label }));
     span.append(remove); box.append(span);
   }
-  box.append(button(l("清除全部"), 'ghost', () => navigate(location.pathname)));
+  box.append(button(l("清除全部"), 'ghost', () => sidebarFilter({ tags: [], date: '' })));
 }
 function invalidateSidebar() {
   sidebarSequence++;
+  clearTimeout(sidebarFocusTimer);
+  sidebarFocusTimer = sidebarFocusRefresh = null;
   for (const cache of [sidebarTags, sidebarCalendars]) {
     for (const entry of cache.values()) entry.controller?.abort();
     cache.clear();
@@ -340,48 +354,70 @@ function sidebarData(cache, key, path) {
   return cache.get(key).promise;
 }
 function refreshSidebarOnFocus() {
-  if (!identity || document.visibilityState !== 'visible') return;
-  for (const cache of [sidebarTags, sidebarCalendars]) {
-    for (const [key, entry] of cache) if (!entry.controller) cache.delete(key);
-  }
-  loadSidebar();
+  if (!identity || document.visibilityState !== 'visible' || sidebarFocusRefresh) return;
+  clearTimeout(sidebarFocusTimer);
+  sidebarFocusTimer = setTimeout(() => {
+    sidebarFocusTimer = null;
+    if (!identity || document.visibilityState !== 'visible') return;
+    for (const cache of [sidebarTags, sidebarCalendars]) {
+      for (const [key, entry] of cache) if (!entry.controller) cache.delete(key);
+    }
+    const pending = loadSidebar();
+    sidebarFocusRefresh = pending;
+    pending.finally(() => { if (sidebarFocusRefresh === pending) sidebarFocusRefresh = null; });
+  }, 100);
 }
 async function loadSidebar() {
   if (!identity) return;
   const sequence = ++sidebarSequence, generation = epoch;
   const { path, values } = sourceTimeline();
   const state = path === '/archived' ? 'ARCHIVED' : 'NORMAL', selectedMonth = month;
+  const calendarKey = `${state}:${selectedMonth}`;
   showError($('sidebar-error'), null); $('sidebar-retry').hidden = true;
-  $('tags').replaceChildren(); renderCalendar([], values.date, true);
+  if (sidebarTagState !== state) {
+    $('tags').replaceChildren();
+    sidebarTagState = state;
+  }
+  if (sidebarCalendarKey !== calendarKey) {
+    renderCalendar([], values.date, true);
+    sidebarCalendarKey = calendarKey;
+  }
   try {
     const [tags, calendar] = await Promise.all([
       sidebarData(sidebarTags, state, `/tags?${new URLSearchParams({ state })}`),
-      sidebarData(sidebarCalendars, `${state}:${selectedMonth}`, `/calendar?${new URLSearchParams({ state, month: selectedMonth })}`),
+      sidebarData(sidebarCalendars, calendarKey, `/calendar?${new URLSearchParams({ state, month: selectedMonth })}`),
     ]);
     if (generation !== epoch || sequence !== sidebarSequence) return;
     if (!Array.isArray(tags?.tags) || !Array.isArray(calendar?.days) || calendar.month !== selectedMonth) {
-      sidebarTags.delete(state); sidebarCalendars.delete(`${state}:${selectedMonth}`);
+      sidebarTags.delete(state); sidebarCalendars.delete(calendarKey);
       throw Object.assign(new Error('Invalid sidebar data'), { code: 'NOTE_LIST_INVALID' });
     }
-    for (const item of tags.tags) {
-      if (typeof item.tag !== 'string' || !Number.isInteger(item.count) || item.count < 0) continue;
-      const on = values.tags.includes(item.tag);
-      const link = button('', `ent tag-row${on ? ' on' : ''}`, () => {
-        const source = sourceTimeline();
-        sidebarFilter({ tags: source.values.tags.includes(item.tag)
-          ? source.values.tags.filter(tag => tag !== item.tag) : [...source.values.tags, item.tag] });
-      });
-      link.setAttribute('aria-pressed', String(on));
-      link.append(el('span', '', `#${item.tag}`), el('em', '', String(item.count)));
-      $('tags').append(link);
-    }
-    if (!tags.tags.length) $('tags').append(el('p', 'sub', l("暂无标签")));
+    renderTags(tags.tags, values.tags);
     renderCalendar(calendar.days, values.date);
   } catch (err) {
     if (generation !== epoch || sequence !== sidebarSequence) return;
     handleFailure($('sidebar-error'), err);
     if (identity) $('sidebar-retry').hidden = false;
   }
+}
+function renderTags(items, selectedTags) {
+  const selected = new Set(selectedTags);
+  const matches = items.filter(item => typeof item?.tag === 'string' && Number.isInteger(item.count) && item.count >= 0)
+    .sort((a, b) => Number(selected.has(b.tag)) - Number(selected.has(a.tag)) || b.count - a.count || a.tag.localeCompare(b.tag));
+  const fragment = document.createDocumentFragment();
+  for (const item of matches) {
+    const on = selected.has(item.tag);
+    const link = button('', `ent tag-row${on ? ' on' : ''}`, () => {
+      const source = sourceTimeline();
+      sidebarFilter({ tags: source.values.tags.includes(item.tag)
+        ? source.values.tags.filter(tag => tag !== item.tag) : [...source.values.tags, item.tag] });
+    });
+    link.setAttribute('aria-pressed', String(on)); link.title = `#${item.tag}`;
+    link.append(el('span', '', `#${item.tag}`), el('em', '', String(item.count)));
+    fragment.append(link);
+  }
+  if (!matches.length) fragment.append(el('p', 'sub', l("暂无标签")));
+  $('tags').replaceChildren(fragment);
 }
 function renderCalendar(days, selected, disabled = false) {
   const [year, number] = month.split('-').map(Number);
@@ -456,11 +492,15 @@ function renderNote(note, detail = false) {
   }
   const menuWrap = el('div', 'mw'), menu = el('div', 'menu');
   menu.hidden = true; menu.setAttribute('role', 'menu');
-  const more = button('···', 'btn s more', () => {
+  const more = button('', 'btn s more', () => {
     const open = menu.hidden; closeMenus(); menu.hidden = !open;
     more.setAttribute('aria-expanded', String(open));
     if (open) menu.querySelector('button')?.focus();
   });
+  const dots = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  dots.setAttribute('class', 'i dots'); dots.setAttribute('viewBox', '0 0 24 24'); dots.setAttribute('aria-hidden', 'true');
+  const points = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+  points.setAttribute('d', 'M5 12h.01M12 12h.01M19 12h.01'); dots.append(points); more.append(dots);
   setAttr(more, 'aria-label', l("更多操作"));
   more.setAttribute('aria-haspopup', 'menu'); more.setAttribute('aria-expanded', 'false');
   const content = el('div', 'note-content'); content.append(renderMarkdown(note.content, note));
@@ -474,7 +514,7 @@ function renderNote(note, detail = false) {
     ...(!detail ? [[l("打开笔记"), () => openNote(note), '']] : []),
     [note.state === 'ARCHIVED' ? l("恢复到主页") : l("归档"), () => changeState(note), ''],
     ...(note.state === 'NORMAL' ? [[l("从这条漫步"), () => startFromNote(note), '']] : []),
-    [l("AI 洞察这条"), () => navigate(`/insights?${new URLSearchParams({ note: note.name })}`), ''],
+    [l("洞察这条"), () => navigate(`/insights?${new URLSearchParams({ note: note.name })}`), ''],
     [l("删除"), () => confirmDelete(card, note), 'dg'],
   ];
   for (const [label, action, cls] of actions) {
@@ -703,7 +743,7 @@ function updateListControls() {
   $('notes').setAttribute('aria-busy', String(listing));
   $('load-more').hidden = !isTimeline() || !nextToken; $('load-more').disabled = listing;
 }
-async function loadNotes(reset = false, retry = false) {
+async function loadNotes(reset = false, retry = false, { pages = 1, scroll } = {}) {
   if (!identity || !isTimeline() || (!reset && (listing || !nextToken))) return;
   const generation = epoch, view = viewSequence, sequence = ++listSequence;
   listController?.abort(); listController = new AbortController(); listing = true; clearTimeout(retryTimer);
@@ -713,20 +753,28 @@ async function loadNotes(reset = false, retry = false) {
   let succeeded = false;
   try {
     const values = filters(location.search), enhanced = enhancedSearch(values);
-    const page = enhanced
-      ? await sessionRequest('/search', { method: 'POST', body: searchBody(location.pathname, values, reset ? '' : nextToken), controller: listController })
-      : await request(`/notes?${listQuery(location.pathname, values, reset ? '' : nextToken)}`, { controller: listController });
-    if (generation !== epoch || view !== viewSequence || sequence !== listSequence) return;
     const state = location.pathname === '/archived' ? 'ARCHIVED' : 'NORMAL';
-    if (!Array.isArray(page?.notes) || page.notes.some(note => !validNote(note) || note.state !== state) ||
-        (enhanced && (!['keyword', values.mode].includes(page.mode) ||
-          typeof page.semantic?.used !== 'boolean' || typeof page.semantic?.reason !== 'string' ||
-          (page.mode === 'keyword' && (values.mode !== 'hybrid' || page.semantic.used)) ||
-          (page.mode !== 'keyword' && !page.semantic.used)))) {
-      throw Object.assign(new Error('Invalid note list response'), { code: 'NOTE_LIST_INVALID' });
-    }
     const merged = new Map((reset ? [] : items).map(note => [note.name, note]));
-    for (const note of page.notes) merged.set(note.name, note);
+    let token = reset ? '' : nextToken, loaded = 0, page;
+    const seenTokens = new Set(token ? [token] : []);
+    do {
+      page = enhanced
+        ? await sessionRequest('/search', { method: 'POST', body: searchBody(location.pathname, values, token), controller: listController })
+        : await request(`/notes?${listQuery(location.pathname, values, token)}`, { controller: listController });
+      if (generation !== epoch || view !== viewSequence || sequence !== listSequence) return;
+      if (!Array.isArray(page?.notes) || page.notes.some(note => !validNote(note) || note.state !== state) ||
+          (enhanced && (!['keyword', values.mode].includes(page.mode) ||
+            typeof page.semantic?.used !== 'boolean' || typeof page.semantic?.reason !== 'string' ||
+            (page.mode === 'keyword' && (values.mode !== 'hybrid' || page.semantic.used)) ||
+            (page.mode !== 'keyword' && !page.semantic.used)))) {
+        throw Object.assign(new Error('Invalid note list response'), { code: 'NOTE_LIST_INVALID' });
+      }
+      for (const note of page.notes) merged.set(note.name, note);
+      token = typeof page.next_page_token === 'string' ? page.next_page_token : '';
+      if (seenTokens.has(token)) token = '';
+      else if (token) seenTokens.add(token);
+      loaded++;
+    } while (reset && loaded < pages && token);
     items = [...merged.values()];
     if (!enhanced) items.sort(compareNotes);
     renderList();
@@ -734,11 +782,11 @@ async function loadNotes(reset = false, retry = false) {
       ? l("语义检索暂不可用，当前显示按相关度排列的关键词结果。")
       : enhanced ? l("搜索结果按相关度排列。") : '';
     setText($('capability'), searchStatus); $('capability').hidden = !searchStatus;
-    pageCount = reset ? 1 : pageCount + 1;
-    const previousToken = nextToken;
-    nextToken = typeof page.next_page_token === 'string' ? page.next_page_token : '';
-    if (!reset && nextToken && nextToken === previousToken) nextToken = '';
+    pageCount = reset ? loaded : pageCount + loaded;
+    nextToken = token;
     retryDelay = 1000; $('empty').hidden = !!items.length || !!nextToken; succeeded = true;
+    rememberView(false, true);
+    if (scroll != null) restoreScroll(scroll);
   } catch (err) {
     if (generation !== epoch || view !== viewSequence || sequence !== listSequence) return;
     handleFailure($('list-error'), err.code === 'SOURCE_CHANGED' ? { ...err, code: 'SEARCH_SOURCE_CHANGED' } : err);
@@ -747,7 +795,7 @@ async function loadNotes(reset = false, retry = false) {
     setText($('list-retry'), retryReset ? l("刷新主页") : l("重试加载")); $('list-retry').hidden = false;
     if (err.retryable) {
       retryTimer = setTimeout(() => {
-        if (generation === epoch && view === viewSequence && sequence === listSequence) loadNotes(retryReset, true);
+        if (generation === epoch && view === viewSequence && sequence === listSequence) loadNotes(retryReset, true, { pages, scroll });
       }, retryDelay);
       retryDelay = Math.min(retryDelay * 2, 30_000);
     }
@@ -803,33 +851,48 @@ function discoveryCard(note, review = false, className = 'card big discovery-not
 }
 function createDiscoveryPage(kind) {
   let alive = true, sequence = 0, controller = null, busy = false, failure = null, retry = null;
-  let modelHint = '', configured = true;
+  let modelHint = '', configured = walkConfiguration?.enabled === true, modelController = null;
+  let floaters = walkFloaters || [], floaterController, floaterFailure, animatedNote, preparedNext = null;
+  const pageKey = currentKey, seedName = new URLSearchParams(location.search).get('name');
+  let seedPending = kind === 'walk' && !!seedName && walkView?.key !== pageKey;
   const root = el('div', `stage discovery-page ${kind}-page`);
   root.id = 'discovery-page';
+  const heading = el('header', 'discovery-heading');
+  heading.append(el('h1', 'vt', kind === 'review' ? l("回顾") : l("漫步")));
+  const content = el('div', 'discovery-content'), controls = el('div', 'discovery-controls');
+  root.append(heading, content, controls);
   const active = ticket => alive && ticket === sequence;
+  function discardNext() {
+    preparedNext?.controller.abort(); preparedNext = null;
+  }
   function cancel() {
-    sequence++; controller?.abort(); controller = null; busy = false;
+    sequence++; controller?.abort(); controller = null; busy = false; discardNext();
   }
   function message(text, error = false) {
     const node = el('p', error ? 'error' : 'sub', text);
-    node.setAttribute('role', error ? 'alert' : 'status'); root.append(node);
+    node.setAttribute('role', error ? 'alert' : 'status'); content.append(node);
+  }
+  function updateBusy() {
+    root.setAttribute('aria-busy', String(kind === 'review' ? busy && !reviewView :
+      busy || (!!modelController && !walkConfiguration)));
   }
   function render() {
     if (!alive) return;
-    root.replaceChildren(); root.setAttribute('aria-busy', String(busy));
+    content.replaceChildren(); controls.replaceChildren();
+    updateBusy();
     if (kind === 'review') renderReview();
     else renderWalk();
     if (failure) {
       message(discoveryText(failure), true);
-      root.append(button(l("重试"), 'ghost discovery-retry', () => retry?.()));
+      content.append(button(l("重试"), 'ghost discovery-retry', () => retry?.()));
     }
   }
   function renderReview() {
-    if (busy) { message(l("正在加载每日回顾…")); return; }
-    if (failure) return;
     const batch = reviewView?.batch;
-    if (!batch) return;
-    root.append(el('p', 'sub', l("{0} · 今天的 {1} 条旧笔记", { 0: () => new Intl.DateTimeFormat(locale(), { month: 'long', day: 'numeric', timeZone: 'UTC' }).format(new Date(`${batch.date}T12:00:00Z`)), 1: batch.items.length })));
+    if (!batch) {
+      if (busy) message(l("正在加载回顾…"));
+      return;
+    }
     if (!batch.items.length) { message(l("今天没有可回顾的旧笔记。")); return; }
     const selected = reviewView.position;
     const stack = el('div', 'review-stack');
@@ -842,30 +905,38 @@ function createDiscoveryPage(kind) {
         card = el('article', 'card big rv discovery-note');
         card.append(el('p', 'sub', l("这条笔记已不存在或无法访问。")));
       } else card = discoveryCard(item.note, true);
+      if (index === selected && animatedNote !== `${batch.id}:${selected}`) card.classList.add(selected % 2 ? 'wb' : 'wa');
       card.hidden = index !== selected; card.dataset.reviewIndex = String(index); stack.append(card);
     });
-    root.append(stack);
-    const controls = el('div', 'discovery-controls'), positions = el('div', 'pg review-positions');
+    animatedNote = `${batch.id}:${selected}`;
+    content.append(stack);
+    const positions = el('div', 'pg review-positions');
     positions.setAttribute('role', 'group'); setAttr(positions, 'aria-label', l("回顾条目"));
     batch.items.forEach((_, index) => {
-      const dot = button('', `dt${index === selected ? ' on' : ''}`, () => { reviewView.position = index; render(); });
+      const dot = button('', `dt${index === selected ? ' on' : ''}`, () => {
+        reviewView.position = index; render();
+        root.querySelectorAll('.review-positions button')[index].focus({ preventScroll: true });
+      });
       setAttr(dot, 'aria-label', l("第 {0} / {1} 条", { 0: index + 1, 1: batch.items.length }));
       dot.setAttribute('aria-pressed', String(index === selected)); positions.append(dot);
     });
     const actions = el('div', 'discovery-actions'), current = batch.items[selected];
     if (!current.unavailable) {
       if (current.note.state === 'NORMAL') actions.append(button(l("从这条漫步"), 'ghost', () => startFromNote(current.note)));
-      actions.append(button(l("AI 洞察这条"), 'ghost', () => navigate(`/insights?${new URLSearchParams({ note: current.note.name })}`)));
+      actions.append(button(l("洞察这条"), 'ghost', () => navigate(`/insights?${new URLSearchParams({ note: current.note.name })}`)));
     }
     actions.append(button(selected + 1 < batch.items.length ? l("下一条") : l("再看一遍"), 'save', () => {
       reviewView.position = (selected + 1) % batch.items.length; render();
+      root.querySelector('.discovery-actions .save').focus({ preventScroll: true });
     }));
-    controls.append(positions, actions); root.append(controls);
+    controls.append(positions, actions);
   }
   async function loadReview() {
     cancel();
     const ticket = sequence;
+    if (reviewView?.batch.date !== localToday() || reviewView?.batch.timezone !== identity?.timezone) reviewView = null;
     controller = new AbortController(); busy = true; failure = null; retry = loadReview; render();
+    let changed = false;
     try {
       const batch = await request('/reviews/daily', { controller });
       if (!active(ticket)) return;
@@ -874,23 +945,29 @@ function createDiscoveryPage(kind) {
             (!item.unavailable && (!validNote(item.note) || item.note.name !== item.name)))) {
         throw Object.assign(new Error('Invalid daily review'), { code: 'REVIEW_RESPONSE_INVALID' });
       }
+      changed = JSON.stringify(batch) !== JSON.stringify(reviewView?.batch);
       const position = reviewView?.batch.id === batch.id ? reviewView.position : 0;
       reviewView = { batch, position: Math.min(position, Math.max(0, batch.items.length - 1)) };
     } catch (err) {
       if (!active(ticket) || err.name === 'AbortError') return;
       if (err.status === 401) { expire(err); return; }
       failure = err;
-    } finally { if (active(ticket)) { busy = false; render(); } }
+    } finally {
+      if (active(ticket)) {
+        controller = null; busy = false;
+        if (changed || failure || !reviewView) render();
+        else root.setAttribute('aria-busy', 'false');
+      }
+    }
   }
   function stopWalk() {
-    cancel(); walkView = { key: currentKey, result: null, previous: null };
-    failure = retry = null; render();
+    cancel(); seedPending = false; walkView = { key: pageKey, result: null, previous: null };
+    animatedNote = null; failure = retry = null; render();
   }
   function renderWalk() {
-    root.append(el('p', 'sub', l("随意走走，看会遇见什么")));
     if (modelHint) {
       message(modelHint);
-      const settings = el('a', 'dlink', l("打开设置")); settings.href = '/settings'; settings.dataset.route = ''; root.append(settings);
+      const settings = el('a', 'dlink', l("打开设置")); settings.href = '/settings'; settings.dataset.route = ''; content.append(settings);
     }
     const result = walkView?.result;
     if (result?.item) {
@@ -901,18 +978,32 @@ function createDiscoveryPage(kind) {
           el('div', 'walk-trail-text', walkView.previous.content));
         previous.setAttribute('aria-hidden', 'true'); notes.append(previous);
       }
-      notes.append(discoveryCard(result.item.note)); root.append(notes);
+      const current = discoveryCard(result.item.note);
+      if (animatedNote !== result.item.note.name) current.classList.add(result.path.length % 2 ? 'wa' : 'wb');
+      animatedNote = result.item.note.name;
+      notes.append(current); content.append(notes);
     } else if (!result?.exhausted) {
       const start = el('div', 'walk-start');
-      const control = button(busy ? l("翻找中…") : l("随机开始"), 'save', () => walkRequest('/walks/start', {}));
-      control.disabled = busy || !configured; start.append(control); root.append(start);
-      if (!busy) message(l("也可以从笔记详情出发"));
+      floaters.forEach(note => {
+        const preview = [...note.content.replace(/\s+/gu, ' ').trim()].slice(0, 64).join('') || note.attachments?.[0]?.filename || l("笔记");
+        const floater = button('', 'flc fl walk-floater', () => walkRequest('/walks/start', { name: note.name }));
+        floater.append(el('span', '', preview));
+        floater.dataset.name = note.name;
+        setAttr(floater, 'aria-label', l("从这条笔记开始：{0}", { 0: preview }));
+        floater.disabled = busy || !configured;
+        start.append(floater);
+      });
+      const control = button(busy || (modelController && !walkConfiguration) ? l("翻找中…") : l("随机开始"), 'save', () => walkRequest('/walks/start', {}));
+      control.disabled = busy || !configured; start.append(control); content.append(start);
+      if (floaterFailure) {
+        message(errorText(floaterFailure), true);
+        content.append(button(l("重试加载笔记"), 'ghost discovery-retry', loadFloaters));
+      }
     }
     for (const warning of walkView?.warnings || []) message(discoveryText(warning));
     if (result?.exhausted) message(result.item ? l("能走的路都走完了。") : l("没有可漫步的笔记。"));
     if (result || ((busy || failure) && retry !== loadWalk)) {
-      const controls = el('div', 'discovery-controls'), actions = el('div', 'discovery-actions');
-      controls.append(el('span', 'sub', l("已漫步 {0} 条", { 0: result?.path.length || 0 })));
+      const actions = el('div', 'discovery-actions');
       actions.append(button(l("停止"), 'pbtn', stopWalk));
       if (result?.item && !result.exhausted) {
         const next = button(busy ? l("翻找中…") : l("继续漫步"), 'save', () => walkRequest('/walks/next', {
@@ -920,28 +1011,76 @@ function createDiscoveryPage(kind) {
         }));
         next.disabled = busy || !configured; actions.append(next);
       }
-      controls.append(actions); root.append(controls);
+      controls.append(actions);
     }
   }
-  async function walkRequest(path, body) {
-    if (busy) return;
-    const ticket = ++sequence;
-    controller = new AbortController(); busy = true; failure = null;
-    retry = () => walkRequest(path, body); walkView.warnings = []; render();
+  async function loadFloaters() {
+    floaterController?.abort();
+    const pending = new AbortController(); floaterController = pending; floaterFailure = null;
     try {
-      const result = await sessionRequest(path, { method: 'POST', body, controller });
-      if (!active(ticket)) return;
-      const validPath = Array.isArray(result?.path) && result.path.every(name => typeof name === 'string' && noteID(name)) &&
-        new Set(result.path).size === result.path.length;
-      const prior = path === '/walks/next' ? body.path : [];
-      if (!validPath || typeof result.mode !== 'string' || typeof result.exhausted !== 'boolean' ||
-          !Array.isArray(result.warnings) || result.warnings.some(value => typeof value !== 'string') ||
-          prior.some((name, index) => result.path[index] !== name) ||
-          (result.item ? !validNote(result.item.note) || result.path.at(-1) !== result.item.note.name ||
-            result.path.length !== prior.length + 1 || (body.name && !prior.length && result.item.note.name !== body.name)
-            : result.path.length !== prior.length)) {
-        throw Object.assign(new Error('Invalid walk response'), { code: 'WALK_RESPONSE_INVALID' });
+      const page = await request(`/notes?${listQuery('/', { tags: [] })}`, { controller: pending });
+      if (!alive || floaterController !== pending) return;
+      if (!Array.isArray(page?.notes) || page.notes.some(note => !validNote(note) || note.state !== 'NORMAL')) {
+        throw Object.assign(new Error('Invalid notes'), { code: 'NOTE_LIST_INVALID' });
       }
+      walkFloaters = floaters = page.notes.slice(0, 6);
+    } catch (err) {
+      if (!alive || floaterController !== pending || err.name === 'AbortError') return;
+      if (err.status === 401) { expire(err); return; }
+      floaterFailure = err;
+    } finally {
+      if (alive && floaterController === pending) {
+        floaterController = null;
+        if (!walkView?.result) render();
+      }
+    }
+  }
+  async function fetchWalk(path, body, pending) {
+    const result = await sessionRequest(path, { method: 'POST', body, controller: pending });
+    const validPath = Array.isArray(result?.path) && result.path.every(name => typeof name === 'string' && noteID(name)) &&
+      new Set(result.path).size === result.path.length;
+    const prior = path === '/walks/next' ? body.path : [];
+    if (!validPath || typeof result.mode !== 'string' || typeof result.exhausted !== 'boolean' ||
+        !Array.isArray(result.warnings) || result.warnings.some(value => typeof value !== 'string') ||
+        prior.some((name, index) => result.path[index] !== name) ||
+        (result.item ? !validNote(result.item.note) || result.item.note.state !== 'NORMAL' || result.path.at(-1) !== result.item.note.name ||
+          result.path.length !== prior.length + 1 || (body.name && !prior.length && result.item.note.name !== body.name)
+          : result.path.length !== prior.length)) {
+      throw Object.assign(new Error('Invalid walk response'), { code: 'WALK_RESPONSE_INVALID' });
+    }
+    return result;
+  }
+  function prepareNext() {
+    const source = walkView?.result;
+    if (!alive || busy || !configured || !source?.item || source.exhausted || preparedNext?.source === source) return;
+    discardNext();
+    const body = { name: source.item.note.name, path: [...source.path] };
+    const pending = { source, key: JSON.stringify(body), controller: new AbortController(), outcome: null, loadedAt: 0 };
+    preparedNext = pending;
+    pending.promise = fetchWalk('/walks/next', body, pending.controller).then(result => {
+      pending.loadedAt = Date.now();
+      return pending.outcome = { result };
+    }, error => {
+      if (alive && preparedNext === pending && error.status === 401) expire(error);
+      return pending.outcome = { error };
+    });
+  }
+  async function walkRequest(path, body) {
+    if (busy || !configured) return;
+    let pending = path === '/walks/next' && preparedNext?.source === walkView?.result &&
+      preparedNext.key === JSON.stringify(body) ? preparedNext : null;
+    if (pending?.outcome?.error || (pending?.loadedAt && Date.now() - pending.loadedAt >= 60_000)) pending = null;
+    if (pending) preparedNext = null;
+    else discardNext();
+    const ticket = ++sequence;
+    controller = pending?.controller || new AbortController(); busy = true; failure = null;
+    retry = () => walkRequest(path, body); walkView.warnings = [];
+    if (!pending?.outcome?.result) render();
+    try {
+      const outcome = pending ? pending.outcome || await pending.promise : { result: await fetchWalk(path, body, controller) };
+      if (!active(ticket)) return;
+      if (outcome.error) throw outcome.error;
+      const result = outcome.result;
       walkView.warnings = result.warnings;
       if (!result.item && !result.exhausted) {
         failure = { code: 'WALK_RESOURCE_LIMIT' };
@@ -954,29 +1093,48 @@ function createDiscoveryPage(kind) {
       if (!active(ticket) || err.name === 'AbortError') return;
       if (err.status === 401) { expire(err); return; }
       failure = err;
-    } finally { if (active(ticket)) { busy = false; render(); } }
+    } finally {
+      if (active(ticket)) {
+        controller = null; busy = false; render();
+        if (!failure) prepareNext();
+      }
+    }
+  }
+  function startSeed() {
+    if (!seedPending || !configured || busy) return;
+    seedPending = false;
+    if (!noteID(seedName)) { failure = { code: 'SOURCE_NOT_FOUND' }; render(); return; }
+    return walkRequest('/walks/start', { name: seedName });
   }
   async function loadWalk() {
-    cancel();
-    const ticket = sequence;
-    controller = new AbortController(); busy = true; failure = null; retry = loadWalk; render();
+    const ticket = sequence, pending = new AbortController();
+    let redraw = !walkConfiguration;
+    modelController?.abort(); modelController = pending;
+    if (!walkConfiguration) { failure = null; retry = loadWalk; }
+    render();
     try {
-      const models = await sessionRequest('/models', { controller });
-      if (!active(ticket)) return;
-      configured = models.embedding?.enabled === true;
-      modelHint = configured ? '' : l("请在设置中启用 Embedding，再开始随机漫步。");
-      busy = false;
-      const name = new URLSearchParams(location.search).get('name');
-      if (configured && name && walkView.key !== currentKey) {
-        walkView = { key: currentKey, result: null, previous: null };
-        if (!noteID(name)) failure = { code: 'SOURCE_NOT_FOUND' };
-        else { await walkRequest('/walks/start', { name }); return; }
+      const models = await sessionRequest('/models', { controller: pending });
+      if (!alive || modelController !== pending) return;
+      if (typeof models?.embedding?.enabled !== 'boolean') {
+        throw Object.assign(new Error('Invalid models response'), { code: 'WALK_RESPONSE_INVALID' });
       }
+      redraw ||= configured !== models.embedding.enabled;
+      walkConfiguration = { enabled: models.embedding.enabled };
+      configured = models.embedding?.enabled === true;
+      modelHint = configured ? '' : l("请在设置中启用 Embedding，再开始漫步。");
+      if (!configured) discardNext();
+      else { startSeed(); prepareNext(); }
     } catch (err) {
-      if (!active(ticket) || err.name === 'AbortError') return;
+      if (!alive || modelController !== pending || err.name === 'AbortError') return;
       if (err.status === 401) { expire(err); return; }
-      configured = false; failure = err;
-    } finally { if (active(ticket)) { busy = false; render(); } }
+      if (active(ticket)) { failure = err; retry = loadWalk; redraw = true; }
+    } finally {
+      if (alive && modelController === pending) {
+        modelController = null;
+        if (redraw || !walkView?.result) render();
+        else updateBusy();
+      }
+    }
   }
   return {
     async mount(parent) {
@@ -984,10 +1142,24 @@ function createDiscoveryPage(kind) {
       if (kind === 'review') await loadReview();
       else {
         walkView ||= { key: null, result: null, previous: null };
-        await loadWalk();
+        if (seedPending) walkView = { key: pageKey, result: null, previous: null };
+        if (walkConfiguration) {
+          modelHint = configured ? '' : l("请在设置中启用 Embedding，再开始漫步。");
+          startSeed(); prepareNext();
+        }
+        await Promise.all([loadWalk(), loadFloaters()]);
       }
     },
-    destroy() { alive = false; cancel(); root.remove(); },
+    refresh() {
+      cancel(); floaterController?.abort(); floaters = [];
+      if (kind === 'review') loadReview();
+      else {
+        walkView = { key: pageKey, result: null, previous: null };
+        animatedNote = null; failure = retry = null; render();
+        loadWalk(); loadFloaters();
+      }
+    },
+    destroy() { alive = false; cancel(); modelController?.abort(); floaterController?.abort(); root.remove(); },
   };
 }
 async function routeModule(load, generation, sequence) {
@@ -1011,6 +1183,7 @@ async function showRoute() {
   mapPage?.destroy(); mapPage = null;
   discoveryPage?.destroy(); discoveryPage = null;
   const generation = epoch, sequence = ++viewSequence;
+  $('main').dataset.page = location.pathname.slice(1) || 'home';
   listSequence++; listController?.abort(); clearTimeout(retryTimer); pageObserver.disconnect();
   listing = reloading = moduleReload = false; items = []; nextToken = ''; pageCount = 0; searchStatus = '';
   $('notes').replaceChildren(); closeMenus();
@@ -1031,19 +1204,19 @@ async function showRoute() {
   if (isTimeline()) {
     if (location.pathname === '/archived') { $('view-title').hidden = false; setText($('view-title'), l("归档笔记")); }
     renderFilters();
-    const snapshot = snapshots.get(currentKey);
+    const snapshot = timelineSnapshot();
     if (snapshot?.url === currentURL && !snapshot.dirty) {
       items = [...snapshot.items]; nextToken = snapshot.nextToken; pageCount = snapshot.pages; renderList(); $('empty').hidden = !!items.length || !!nextToken;
       searchStatus = snapshot.searchStatus || '';
       setText($('capability'), searchStatus); $('capability').hidden = !searchStatus;
       updateListControls();
-      if (nextToken) pageObserver.observe($('page-end'));
+      rememberView(false, true);
       restoreScroll(snapshot.scroll);
+      await reloadTimeline(Math.max(1, snapshot.pages), null);
     } else {
       const saved = snapshot || history.state;
       window.scrollTo(0, 0);
       await reloadTimeline(Math.max(1, saved?.pages || 1), saved?.scroll || 0);
-      snapshots.delete(currentKey);
     }
   } else if (detail) {
     const from = safeFrom(new URLSearchParams(location.search).get('from'));
@@ -1061,7 +1234,6 @@ async function showRoute() {
       if (identity) { setText($('list-retry'), l("重新加载笔记")); $('list-retry').hidden = false; }
     }
   } else if (location.pathname === '/review' || location.pathname === '/walk') {
-    setText($('view-title'), pages.get(location.pathname)); $('view-title').hidden = false;
     window.scrollTo(0, 0);
     discoveryPage = createDiscoveryPage(location.pathname === '/review' ? 'review' : 'walk');
     await discoveryPage.mount($('workspace'));
@@ -1083,7 +1255,7 @@ async function showRoute() {
     });
     await insightsPage.mount($('workspace'));
   } else if (location.pathname === '/map') {
-    setText($('view-title'), l("认知地图")); $('view-title').hidden = false;
+    setText($('view-title'), l("观星")); $('view-title').hidden = false;
     window.scrollTo(0, 0);
     const module = await routeModule(() => import('./map.js'), generation, sequence);
     if (!module) return;
@@ -1092,6 +1264,10 @@ async function showRoute() {
     mapPage = module.createMapPage({
       request: sessionRequest, handleFailure, validNote, renderNote: note => discoveryCard(note, false, 'card map-note'),
       initialView: saved,
+      initialData: mapSnapshot,
+      onData: value => {
+        if (identity && generation === epoch && sequence === viewSequence) mapSnapshot = value;
+      },
       onViewChange: value => {
         if (!identity || generation !== epoch || sequence !== viewSequence) return;
         mapView = { ...value, owner: identity.user.name };
@@ -1108,6 +1284,7 @@ async function showRoute() {
       sessionRequest, handleFailure,
       onSaved: data => {
         identity.timezone = data.settings.timezone;
+        walkConfiguration = null;
         month = sourceTimeline().values.date?.slice(0, 7) || localToday().slice(0, 7);
         dirtySnapshots(); invalidateSidebar(); loadSidebar();
       },
@@ -1176,7 +1353,10 @@ $('sidebar-retry').addEventListener('click', loadSidebar);
 $('load-more').addEventListener('click', () => loadNotes());
 $('list-retry').addEventListener('click', () => {
   if (moduleReload) location.reload();
-  else if (isTimeline()) loadNotes(retryReset);
+  else if (isTimeline()) {
+    if (retryReset) reloadTimeline();
+    else loadNotes();
+  }
   else showRoute();
 });
 $('back').addEventListener('click', () => {

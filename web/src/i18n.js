@@ -3,6 +3,7 @@ import { english } from './en.js';
 const preferenceKey = 'moerise.language';
 const bindings = new WeakMap(), prepared = new WeakSet();
 let language = 'zh-CN';
+let preference = 'auto';
 
 function supported(value) {
   if (/^zh(?:-|$)/i.test(value || '')) return 'zh-CN';
@@ -15,6 +16,7 @@ export function detectLanguage(languages = []) {
 }
 
 export const locale = () => language;
+export const languagePreference = () => preference;
 export const resolveText = value => String(typeof value === 'function' ? value() : value ?? '');
 
 export function t(key, values = {}) {
@@ -83,21 +85,27 @@ export function localize(root) {
 }
 
 export function setLanguage(value, { persist = false } = {}) {
-  language = supported(value) || 'en';
+  preference = supported(value) || 'auto';
+  language = supported(value) || detectLanguage(typeof navigator === 'undefined' ? [] : navigator.languages || [navigator.language]);
   if (persist) {
-    try { localStorage.setItem(preferenceKey, language); } catch { /* Storage can be disabled. */ }
+    try {
+      if (preference === 'auto') localStorage.removeItem(preferenceKey);
+      else localStorage.setItem(preferenceKey, preference);
+    } catch { /* Storage can be disabled. */ }
   }
   if (typeof document !== 'undefined') {
     document.documentElement.lang = language;
     localize(document.documentElement);
-    document.querySelectorAll('[data-language]').forEach(select => { select.value = language; });
+    document.querySelectorAll('[data-language]').forEach(select => {
+      select.value = select.querySelector('[value="auto"]') ? preference : language;
+    });
   }
 }
 
 export function initI18n() {
   let saved;
   try { saved = localStorage.getItem(preferenceKey); } catch { /* Use the browser preference. */ }
-  setLanguage(supported(saved) || detectLanguage(navigator.languages || [navigator.language]));
+  setLanguage(supported(saved) || 'auto');
   document.querySelectorAll('[data-language]').forEach(select => {
     select.addEventListener('change', () => setLanguage(select.value, { persist: true }));
   });

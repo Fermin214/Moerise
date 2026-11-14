@@ -43,7 +43,9 @@ Moerise 服务端提供两组 RESTful API 以及一个 Model Context Protocol (M
 | `POST` | `/api/app/v1/search` | 默认 `keyword`，按创建时间返回 Memos 实时筛选结果；`semantic` 与 `hybrid` 使用索引召回，按相关度分页。 |
 | `POST` | `/api/app/v1/walks/start` | 启动一次随机漫步，可指定起始笔记或由系统随机挑选起点。 |
 | `POST` | `/api/app/v1/walks/next` | 提交走过的路径，基于语义关联抽取未访问过的下一篇漫步笔记。 |
-| `GET` | `/api/app/v1/map` | 读取 2D 认知地图最新预建快照（含全量点位投影坐标与标签）。 |
+| `GET` | `/api/app/v1/map` | 读取 2D 认知地图预建快照，包含完整点集 `points`、语义主题 `topics` 和笔记关联 `links`；主题可包含语义子主题 `districts`。 |
+
+地图按每日快照发布；笔记原文通过笔记接口实时读取。字段定义见 [OpenAPI](../internal/openapi.json)。
 
 ### 4. 每日回顾
 

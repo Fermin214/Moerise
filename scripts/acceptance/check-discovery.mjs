@@ -232,7 +232,7 @@ try {
     await page.locator(`article.note[data-name="${image.name}"]`).waitFor();
     await page.waitForFunction(() => document.querySelector('article.note img')?.naturalWidth > 0);
     assert.equal(new URL(page.url()).searchParams.get('from'), '/review');
-    await page.getByRole('button', { name: '‹ 返回每日回顾', exact: true }).click();
+    await page.getByRole('button', { name: '‹ 返回回顾', exact: true }).click();
     await page.locator(`.discovery-note[data-name="${image.name}"]:visible`).waitFor();
     assert.equal(await page.getByRole('button', { name: `第 ${imagePosition + 1} / 6 条`, exact: true }).getAttribute('aria-pressed'), 'true');
     const reads = evidence.browserRequests.filter(req => req.path.endsWith('/reviews/daily')).length;
@@ -258,7 +258,7 @@ try {
     await page.locator(`.discovery-note[data-name="${specified.name}"]:visible`).waitFor();
     const started = evidence.browserRequests.filter(req => req.path.endsWith('/walks/start')).length;
     await card().getByRole('button', { name: '打开笔记', exact: true }).click();
-    await page.getByRole('button', { name: '‹ 返回随机漫步', exact: true }).click();
+    await page.getByRole('button', { name: '‹ 返回漫步', exact: true }).click();
     await page.locator(`.discovery-note[data-name="${specified.name}"]:visible`).waitFor();
     assert.equal(evidence.browserRequests.filter(req => req.path.endsWith('/walks/start')).length, started);
     const seen = [specified.name];

@@ -1,3 +1,4 @@
+import { setUILanguage } from './browser-helpers.mjs';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import { once } from 'node:events';
@@ -241,7 +242,7 @@ test('combines date and exact tags, cancels temporary selection and preserves de
   assert.equal(combination.at(-1).query.get('until'), '2026-10-22');
   assert.equal(state.chat.materials.length, 2);
   await page.locator('.insight-material .chip').first().click();
-  await page.getByRole('button', { name: '‹ 返回AI 洞察', exact: true }).click();
+  await page.getByRole('button', { name: '‹ 返回洞察', exact: true }).click();
   await page.locator('.insights-page[aria-busy="false"]').waitFor();
   assert.ok(page.url().endsWith(`/insights?chat=${chatID}`));
   await page.getByRole('button', { name: '添加笔记', exact: true }).click();
@@ -321,7 +322,7 @@ test('an unconfirmed generate request freezes its content and reuses the origina
   await page.getByText('请求结果尚未确认，请使用原内容重试。', { exact: true }).waitFor();
   assert.equal(await page.locator('[data-chat="ask"]').getAttribute('readonly'), '');
   assert.equal(await page.getByRole('button', { name: '添加笔记', exact: true }).isDisabled(), true);
-  await page.locator('#app [data-language]').selectOption('en');
+  await setUILanguage(page, 'en');
   await page.getByRole('button', { name: 'Send', exact: true }).click();
   await page.locator('.insights-page[aria-busy="false"]').waitFor();
   assert.deepEqual(sent[0], sent[1]);
@@ -640,6 +641,7 @@ async function menuAction(page, name) {
 test('new drafts stay empty across reload and paged history restores the chosen conversation without generation', async t => {
   const { page, state, url } = await fixture(t);
   await login(page, url, '/insights?note=memos%2Fnormal');
+  assert.equal((await page.locator('.insight-heading').innerText()).trim(), '洞察');
   await page.locator('[data-chat="ask"]').fill('最初的问题');
   await page.getByRole('button', { name: '发送', exact: true }).click();
   await page.locator('.insights-page[aria-busy="false"]').waitFor();
@@ -849,10 +851,10 @@ test('English chat keeps its running stream and material picker through language
   await page.getByRole('dialog', { name: 'Select notes', exact: true }).waitFor();
   await page.getByRole('button', { name: 'By tag / individually', exact: true }).click();
   await page.getByRole('button', { name: 'Select all 3 notes', exact: true }).click();
-  await page.locator('#app [data-language]').selectOption('zh-CN');
+  await setUILanguage(page, 'zh-CN');
   await page.getByRole('dialog', { name: '选择笔记', exact: true }).waitFor();
   assert.equal(await page.locator('.insight-choice input:checked').count(), 3);
-  await page.locator('#app [data-language]').selectOption('en');
+  await setUILanguage(page, 'en');
   await page.getByRole('button', { name: 'Done', exact: true }).click();
   state.stream = 'hold';
   await page.getByRole('button', { name: 'Generate insight', exact: true }).first().click();
@@ -860,11 +862,11 @@ test('English chat keeps its running stream and material picker through language
   await page.locator('.insight-answer strong').waitFor();
   const original = state.requests.find(request => request.path.endsWith('/messages')).body;
   assert.equal(original.language, 'en');
-  await page.locator('#app [data-language]').selectOption('zh-CN');
+  await setUILanguage(page, 'zh-CN');
   await page.getByRole('button', { name: '停止', exact: true }).waitFor();
   assert.equal(state.chat.turns[0].assistant.status, 'running');
   state.finish(); await page.locator('.insights-page[aria-busy="false"]').waitFor();
-  await page.locator('#app [data-language]').selectOption('en');
+  await setUILanguage(page, 'en');
   await page.getByRole('button', { name: 'Save as note', exact: true }).click();
   await page.getByRole('button', { name: 'Saved as note', exact: true }).waitFor();
   assert.equal(state.lastSave.content, reply); assert.equal(state.calls, 1);
@@ -879,4 +881,12 @@ test('English chat keeps its running stream and material picker through language
   await page.setViewportSize({ width: 390, height: 844 });
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
   await page.screenshot({ path: '.local/i18n-review/chat-en-mobile.png', fullPage: true });
+  const menu = page.getByRole('button', { name: 'Chat', exact: true });
+  assert.equal((await menu.innerText()).trim(), '');
+  assert.ok((await menu.boundingBox()).width >= 44);
+  await menu.focus(); await page.keyboard.press('Enter');
+  await page.getByRole('menuitem', { name: 'Chat history', exact: true }).waitFor();
+  await page.keyboard.press('Escape');
+  assert.equal(await menu.getAttribute('aria-expanded'), 'false');
+  assert.ok(await menu.evaluate(node => node === document.activeElement));
 });

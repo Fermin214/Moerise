@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { validMap, fitMapView, transformMapView } from '../src/map.js';
+import { buildMapRegions, insidePolygon, polygonArea, visibleRegions, voronoiCell } from '../src/map-regions.js';
 
 const point = { name: 'memos/a', source_hash: 'source', x: 0, y: 0, semantic: true, tags: [] };
 const ready = () => ({ status: 'ready', algorithm: 'pca-fixed-v2', projection_revision: 1,
@@ -23,6 +24,74 @@ test('map validation rejects duplicate, foreign-resource, invalid-coordinate and
     { ...ready(), status: 'empty' }, { ...ready(), points: [point, point] }, { ...ready(), projection_revision: 1.2 }]) assert.equal(validMap(value), false);
   for (const change of [{ name: '../session' }, { name: 'a' }, { x: Infinity }, { y: NaN }, { tags: null },
     { tags: [1] }, { semantic: 'yes' }, { source_hash: '' }]) assert.equal(validMap({ ...ready(), points: [{ ...point, ...change }] }), false);
+});
+
+test('semantic map metadata rejects foreign memberships, file-only relationships and duplicate edges', () => {
+  const semantic = () => ({ ...ready(), algorithm: 'pca-topics-v3',
+    points: [{ ...point }, { ...point, name: 'memos/b', x: 1 }, { ...point, name: 'memos/file', semantic: false }],
+    topics: [{ id: 'topic-0000000000000001', label: '主题', x: 0, y: 0, members: ['memos/a', 'memos/b'] }],
+    links: [{ source: 'memos/a', target: 'memos/b', weight: 0.8 }] });
+  assert.ok(validMap(semantic()));
+  for (const name of ['memos/missing', 'memos/file', 'memos/a']) {
+    const value = semantic();
+    value.topics[0].members[1] = name;
+    assert.equal(validMap(value), false);
+  }
+  for (const link of [{ source: 'memos/file' }, { target: 'memos/missing' }, { target: 'memos/a' },
+    { weight: 0.54 }, { weight: NaN }, { weight: 1.01 }]) {
+    const value = semantic();
+    Object.assign(value.links[0], link);
+    assert.equal(validMap(value), false);
+  }
+  const duplicate = semantic();
+  duplicate.links.push({ source: 'memos/b', target: 'memos/a', weight: 0.8 });
+  assert.equal(validMap(duplicate), false);
+  const missing = semantic();
+  delete missing.topics;
+  assert.equal(validMap(missing), false);
+});
+
+test('subtopics cover their own theme without duplicates or foreign notes', () => {
+  const value = { ...ready(), algorithm: 'pca-topics-v3', links: [],
+    points: [{ ...point }, { ...point, name: 'memos/b' }],
+    topics: [{ id: 'topic-0000000000000001', label: '技术', x: 0, y: 0, members: ['memos/a', 'memos/b'],
+      districts: [{ id: 'district-0000000000000001', label: '存储', x: 0, y: 0, members: ['memos/a'] },
+        { id: 'district-0000000000000002', label: '网络', x: 1, y: 0, members: ['memos/b'] }] }] };
+  assert.ok(validMap(value));
+  for (const name of ['memos/a', 'memos/missing']) {
+    const invalid = structuredClone(value); invalid.topics[0].districts[1].members = [name];
+    assert.equal(validMap(invalid), false);
+  }
+  const missing = structuredClone(value); missing.topics[0].districts.pop();
+  assert.equal(validMap(missing), false);
+});
+
+test('map parcels conserve area and keep semantic members inside their districts at every detail level', () => {
+  const boundary = [{ x: -2, y: -1 }, { x: 2, y: -1 }, { x: 2, y: 1 }, { x: -2, y: 1 }];
+  const sites = [{ x: -1, y: 0 }, { x: 0.5, y: 0.4 }, { x: 1, y: -0.4 }];
+  assert.ok(Math.abs(sites.reduce((sum, site) => sum + polygonArea(voronoiCell(boundary, site, sites)), 0) - polygonArea(boundary)) < 1e-8);
+  const points = Array.from({ length: 1000 }, (_, i) => ({ ...point, name: `memos/n${i}`,
+    x: Math.cos(i * 2.399963) * Math.sqrt(i / 1000), y: Math.sin(i * 2.399963) * Math.sqrt(i / 1000) }));
+  const topics = [{ id: 'topic-a', label: '技术', members: points.map(p => p.name),
+    districts: [0, 1, 2, 3].map((i) => ({ id: `district-${i}`, label: `领域${i}`, x: Math.cos(i * Math.PI / 2) * 0.3,
+      y: Math.sin(i * Math.PI / 2) * 0.3, members: points.filter((_, index) => index % 4 === i).map(p => p.name) })) }];
+  const geometry = buildMapRegions(points, topics, ['#6D94CA']), byName = new Map(geometry.points.map(p => [p.name, p]));
+  const names = new Set();
+  function check(node) {
+    for (const name of node.members) assert.ok(insidePolygon(byName.get(name), node.polygon));
+    if (node.name) { assert.equal(names.has(node.name), false); names.add(node.name); }
+    if (node.children.length) {
+      const area = node.children.reduce((sum, child) => sum + child.area, 0);
+      assert.ok(Math.abs(node.area - area) < 1e-6);
+      node.children.forEach(check);
+    }
+  }
+  geometry.roots.forEach(check);
+  assert.equal(names.size, 1000);
+  assert.equal(visibleRegions(geometry.roots, { x: 0, y: 0, scale: 70 }, 1000, 800).regions.length, 1);
+  for (const scale of [100, 300, 600, 1000, 10000]) {
+    assert.ok(visibleRegions(geometry.roots, { x: 0, y: 0, scale }, 1000, 800).regions.length <= 220);
+  }
 });
 
 test('fit keeps all coordinates inside the prototype frame without changing authoritative positions', () => {

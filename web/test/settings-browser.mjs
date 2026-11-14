@@ -152,6 +152,7 @@ const pageReady = page => page.getByRole('button', { name: '保存设置', exact
 const setting = (page, path) => page.locator(`[name="${path}"]`);
 const operation = (page, label) => page.getByRole('combobox', { name: `${label}操作`, exact: true });
 const secret = (page, label) => page.getByLabel(`${label}新值`, { exact: true });
+const tab = (page, id) => page.locator(`#settings-tab-${id}`).click();
 
 test('lazy page modules isolate navigation during loading and recover from a failed download', { timeout: 60_000 }, async t => {
   const { page, state, url, errors } = await fixture(t);
@@ -196,6 +197,7 @@ test('settings browser saves public fields, explicit secrets, prompt and multi-s
   await page.locator('a[data-route][href="/settings"]').click(); await pageReady(page);
   assert.equal(state.gets, 1);
   assert.equal(await page.locator('#settings-page input[type="password"]:visible').count(), 0);
+  await tab(page, 'review');
   await setting(page, 'review.count').fill('5');
   await setting(page, 'review.min_age_hours').fill('48');
   await setting(page, 'review.recent_days').fill('14');
@@ -204,6 +206,7 @@ test('settings browser saves public fields, explicit secrets, prompt and multi-s
   await setting(page, 'notifications.enabled').check();
   await page.getByRole('button', { name: '添加时段' }).click();
   await page.getByLabel('推送时段 2', { exact: true }).fill('18:30');
+  await tab(page, 'models');
   await setting(page, 'llm.enabled').check();
   await setting(page, 'llm.base_url').fill('https://llm.example.test/v1');
   await setting(page, 'llm.model').fill('test-llm');
@@ -214,9 +217,11 @@ test('settings browser saves public fields, explicit secrets, prompt and multi-s
   assert.equal(state.patches.length, 0);
   await secret(page, 'LLM API Key').fill('new-llm-key');
   await operation(page, 'Embedding API Key').selectOption('clear');
+  await tab(page, 'channel');
   await setting(page, 'channel.kind').selectOption('feishu-webhook');
   await operation(page, 'Webhook URL').selectOption('replace');
   await secret(page, 'Webhook URL').fill('https://hook.example.test/token');
+  await tab(page, 'insights');
   await page.getByRole('button', { name: '恢复默认', exact: true }).click();
   assert.equal(await setting(page, 'insights.default_prompt').inputValue(), state.value.default_insight_prompt);
   state.csrf = true;
@@ -234,9 +239,12 @@ test('settings browser saves public fields, explicit secrets, prompt and multi-s
   assert.deepEqual(patch.secrets.app_secret, { action: 'keep' });
   assert.equal(patch.settings.llm.api_key, undefined);
   assert.equal(await page.locator('#settings-page input[type="password"]:visible').count(), 0);
+  await tab(page, 'models');
   assert.equal(await operation(page, 'LLM API Key').inputValue(), 'keep');
+  await tab(page, 'channel');
   await page.getByText('文字推送：可用', { exact: true }).waitFor();
   await page.getByText('图文推送：不可用', { exact: true }).waitFor();
+  await tab(page, 'review');
   await setting(page, 'review.count').fill('6');
   await page.getByRole('button', { name: '保存设置', exact: true }).click();
   await page.getByRole('status').filter({ hasText: '设置已保存' }).waitFor();
@@ -383,11 +391,13 @@ test('model polling stays single after saving and invalidates results on version
 test('model settings pair protocols, check saved versions and discard obsolete results', { timeout: 60_000 }, async t => {
   const { page, state, url, errors } = await fixture(t);
   await page.goto(`${url}/settings`); await login(page); await pageReady(page);
+  await tab(page, 'models');
   await page.locator('#settings-index-status').filter({ hasText: '已关闭' }).waitFor();
   await page.locator('a[data-route][href="/insights"]').click();
   await page.locator('.insights-page[aria-busy="false"]').waitFor();
   assert.ok(await page.locator('[data-chat="send"]').isDisabled());
   await page.locator('a[data-route][href="/settings"]').click(); await pageReady(page);
+  await tab(page, 'models');
   const check = page.getByRole('button', { name: '检查 Embedding 连接', exact: true });
   assert.ok(await check.isDisabled());
   await setting(page, 'embedding.enabled').check();
@@ -397,7 +407,6 @@ test('model settings pair protocols, check saved versions and discard obsolete r
   await setting(page, 'embedding.model').fill('custom-embedding');
   await operation(page, 'Embedding API Key').selectOption('replace');
   await secret(page, 'Embedding API Key').fill('generic-key');
-  await page.locator('.settings-model').filter({ has: check }).locator('summary').click();
   await setting(page, 'embedding.dimensions').fill('768');
   await setting(page, 'embedding.send_dimensions').check();
   assert.ok(await setting(page, 'embedding.query_instruction').isDisabled());
@@ -433,6 +442,7 @@ test('model settings pair protocols, check saved versions and discard obsolete r
   await page.locator('.map-page [role="status"]').filter({ hasText: '语义索引构建中' }).waitFor();
   state.holdCheck = false;
   await page.locator('a[data-route][href="/settings"]').click(); await pageReady(page);
+  await tab(page, 'models');
   state.value.version++;
   await check.click();
   await page.getByRole('alert').filter({ hasText: '其他页面更新' }).waitFor();
@@ -444,10 +454,12 @@ test('model settings pair protocols, check saved versions and discard obsolete r
 test('conflict requires reload, busy can retry, and leaving or expiring removes sensitive inputs', { timeout: 60_000 }, async t => {
   const { page, state, url, errors } = await fixture(t);
   await page.goto(`${url}/settings`); await login(page); await pageReady(page);
+  await tab(page, 'models');
   await operation(page, 'LLM API Key').selectOption('replace'); await secret(page, 'LLM API Key').fill('temporary-key');
   await operation(page, 'LLM API Key').selectOption('keep');
   assert.equal(await secret(page, 'LLM API Key').inputValue(), '');
   await operation(page, 'LLM API Key').selectOption('replace'); await secret(page, 'LLM API Key').fill('conflict-key');
+  await tab(page, 'review');
   await setting(page, 'review.count').fill('4'); state.fail = 'SETTINGS_CONFLICT';
   await page.getByRole('button', { name: '保存设置', exact: true }).click();
   await page.getByRole('alert').filter({ hasText: '其他页面更新' }).waitFor();
@@ -462,6 +474,7 @@ test('conflict requires reload, busy can retry, and leaving or expiring removes 
   assert.ok(await page.getByRole('button', { name: '保存设置', exact: true }).isEnabled());
   await page.getByRole('button', { name: '保存设置', exact: true }).click();
   await page.getByRole('status').filter({ hasText: '设置已保存' }).waitFor();
+  await tab(page, 'models');
   await operation(page, 'LLM API Key').selectOption('replace'); await secret(page, 'LLM API Key').fill('route-key');
   await page.locator('a[data-route][href="/review"]').click();
   assert.equal(await page.locator('#settings-page').count(), 0);
@@ -475,6 +488,7 @@ test('conflict requires reload, busy can retry, and leaving or expiring removes 
   state.hold = false;
   assert.equal(await page.locator('#settings-page').count(), 0);
   await page.locator('a[data-route][href="/settings"]').click(); await pageReady(page);
+  await tab(page, 'models');
   await operation(page, 'LLM API Key').selectOption('replace'); await secret(page, 'LLM API Key').fill('logout-key');
   state.hold = true;
   await page.getByRole('button', { name: '保存设置', exact: true }).click();
@@ -485,6 +499,7 @@ test('conflict requires reload, busy can retry, and leaving or expiring removes 
   state.hold = false;
   assert.equal(await page.locator('#settings-page').count(), 0);
   await login(page); await pageReady(page);
+  await tab(page, 'models');
   await operation(page, 'LLM API Key').selectOption('replace'); await secret(page, 'LLM API Key').fill('expired-key');
   state.session = false;
   await page.getByRole('button', { name: '重新加载设置' }).click();
@@ -497,21 +512,28 @@ test('English settings switch language without clearing secrets, changing values
   const { page, state, errors, url } = await fixture(t, 'en-US');
   await page.goto(url + '/settings'); await login(page);
   await page.getByRole('button', { name: 'Save settings', exact: true }).waitFor();
+  await tab(page, 'review');
   await setting(page, 'review.count').fill('7');
+  await tab(page, 'models');
   await page.getByRole('combobox', { name: 'LLM API Key operation', exact: true }).selectOption('replace');
   await page.getByLabel('New LLM API Key value', { exact: true }).fill('new-private-key');
-  await page.locator('#app [data-language]').selectOption('zh-CN');
+  await tab(page, 'general');
+  await page.locator('#settings-language').selectOption('zh-CN');
   assert.equal(await setting(page, 'review.count').inputValue(), '7');
   assert.equal(await secret(page, 'LLM API Key').inputValue(), 'new-private-key');
   assert.equal(await setting(page, 'insights.default_prompt').inputValue(), '用户自定义 Prompt');
   assert.equal(state.patches.length, 0);
-  await page.locator('#app [data-language]').selectOption('en');
+  await page.locator('#settings-language').selectOption('en');
   await page.getByRole('button', { name: 'Save settings', exact: true }).click();
   await page.getByText('Settings saved.', { exact: true }).waitFor();
   assert.equal(state.patches.length, 1);
   assert.equal(state.patches[0].settings.review.count, 7);
   assert.equal(state.patches[0].secrets.llm_api_key.value, 'new-private-key');
   assert.equal(await page.getByLabel('New LLM API Key value', { exact: true }).inputValue(), '');
+  await page.locator('#settings-language').selectOption('auto');
+  assert.equal(await page.locator('html').getAttribute('lang'), 'en');
+  assert.equal(await page.evaluate(() => localStorage.getItem('moerise.language')), null);
+  assert.equal(state.patches.length, 1);
   await mkdir('.local/i18n-review', { recursive: true });
   await page.screenshot({ path: '.local/i18n-review/settings-en.png', fullPage: true });
   await page.setViewportSize({ width: 390, height: 844 });
@@ -520,10 +542,45 @@ test('English settings switch language without clearing secrets, changing values
   assert.deepEqual(errors, []);
 });
 
+test('settings tabs retain edits, expose advanced fields and reveal invalid fields before saving on small screens', async t => {
+  const { page, state, errors, url } = await fixture(t);
+  await page.setViewportSize({ width: 320, height: 568 });
+  await page.goto(url + '/settings'); await login(page); await pageReady(page);
+  await tab(page, 'models');
+  assert.equal(await page.locator('#settings-page details').count(), 0);
+  assert.ok(await setting(page, 'llm.timeout_seconds').isVisible());
+  assert.ok(await setting(page, 'embedding.batch_size').isVisible());
+  await setting(page, 'llm.timeout_seconds').fill('');
+  await operation(page, 'LLM API Key').selectOption('replace');
+  await secret(page, 'LLM API Key').fill('retained-across-tabs');
+  await tab(page, 'review');
+  await setting(page, 'review.count').fill('7');
+  await page.locator('#settings-tab-review').focus();
+  await page.keyboard.press('Home');
+  assert.equal(await page.locator('#settings-tab-general').getAttribute('aria-selected'), 'true');
+  await page.keyboard.press('End');
+  assert.equal(await page.locator('#settings-tab-channel').getAttribute('aria-selected'), 'true');
+  assert.equal(await setting(page, 'review.count').inputValue(), '7');
+  assert.equal(await secret(page, 'LLM API Key').inputValue(), 'retained-across-tabs');
+  assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+  await page.getByRole('button', { name: '保存设置', exact: true }).click();
+  assert.equal(await page.locator('#settings-tab-models').getAttribute('aria-selected'), 'true');
+  assert.ok(await setting(page, 'llm.timeout_seconds').evaluate(node => node === document.activeElement));
+  assert.equal(state.patches.length, 0);
+  await setting(page, 'llm.timeout_seconds').fill('91');
+  await page.getByRole('button', { name: '保存设置', exact: true }).click();
+  await page.getByText('设置已保存。', { exact: true }).waitFor();
+  assert.equal(state.patches[0].settings.review.count, 7);
+  assert.equal(state.patches[0].settings.llm.timeout_seconds, 91);
+  assert.equal(state.patches[0].secrets.llm_api_key.value, 'retained-across-tabs');
+  assert.deepEqual(errors, []);
+});
+
 test('messaging channels start unselected and save Telegram through localized settings without exposing its token', async t => {
   const { page, state, errors, url } = await fixture(t, 'en-US');
   await page.goto(url + '/settings'); await login(page);
   await page.getByRole('button', { name: 'Save settings', exact: true }).waitFor();
+  await tab(page, 'channel');
   assert.equal(await setting(page, 'channel.kind').inputValue(), 'none');
   await page.getByText('Choose a messaging channel to receive scheduled reviews, or read them in the Web app.', { exact: true }).waitFor();
   assert.equal(await page.getByRole('combobox', { name: 'Telegram Bot Token operation', exact: true }).isVisible(), false);
@@ -533,8 +590,10 @@ test('messaging channels start unselected and save Telegram through localized se
   await setting(page, 'channel.destination').fill('789');
   await page.getByRole('combobox', { name: 'Telegram Bot Token operation', exact: true }).selectOption('replace');
   await page.getByLabel('New Telegram Bot Token value', { exact: true }).fill('123456:abcdefghijklmnopqrstuvwxyz_0123456789');
-  await page.locator('#app [data-language]').selectOption('zh-CN');
+  await tab(page, 'general');
+  await page.locator('#settings-language').selectOption('zh-CN');
   assert.equal(await secret(page, 'Telegram Bot Token').inputValue(), '123456:abcdefghijklmnopqrstuvwxyz_0123456789');
+  await tab(page, 'review');
   await setting(page, 'notifications.enabled').check();
   await page.getByRole('button', { name: '保存设置', exact: true }).click();
   await page.getByText('设置已保存。', { exact: true }).waitFor();
@@ -543,6 +602,7 @@ test('messaging channels start unselected and save Telegram through localized se
   assert.equal(patch.settings.notifications.enabled, true);
   assert.deepEqual(patch.secrets.bot_token, { action: 'replace', value: '123456:abcdefghijklmnopqrstuvwxyz_0123456789' });
   assert.equal(patch.secrets.app_secret, undefined);
+  await tab(page, 'channel');
   await page.getByText('图文推送：可用', { exact: true }).waitFor();
   assert.equal(await secret(page, 'Telegram Bot Token').inputValue(), '');
   assert.equal(await page.locator('body').textContent().then(text => text.includes('123456:abcdefghijklmnopqrstuvwxyz_0123456789')), false);

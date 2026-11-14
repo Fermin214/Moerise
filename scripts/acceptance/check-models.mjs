@@ -206,6 +206,7 @@ try {
   const field = path => page.locator(`[name="${path}"]`);
   const settingPage = async () => {
     await page.goto(`${url}/settings`);
+    await page.locator('#settings-tab-models').click();
     await page.getByRole('button', { name: '保存设置', exact: true }).waitFor();
   };
   const save = async () => {
@@ -226,7 +227,8 @@ try {
     }
     const list = await api('GET', '/notes?query=balcony'); assert.equal(list.notes.length, 1);
     await page.goto(`${url}/settings`); await page.locator('#username').fill(username); await page.locator('#password').fill(password);
-    await page.locator('#login').click(); await page.locator('#settings-index-status').filter({ hasText: '已关闭' }).waitFor();
+    await page.locator('#login').click(); await page.locator('#settings-tab-models').click();
+    await page.locator('#settings-index-status').filter({ hasText: '已关闭' }).waitFor();
     assert.equal((await models()).llm.enabled, false);
     await request(url, '/api/app/v1/models', {}, 401);
     await request(url, '/api/app/v1/models', { headers: { Authorization: `Bearer ${machineKey}` } }, 403);
@@ -241,7 +243,6 @@ try {
   await check('通用 Embedding 保存、部分构建与连接错误', async () => {
     await field('embedding.provider').selectOption('openai-compatible');
     await fillModel('embedding', 'embedding-a', embeddingKey);
-    await page.locator('.settings-model').filter({ has: field('embedding.enabled') }).locator('summary').click();
     await field('embedding.dimensions').fill('3'); await field('embedding.batch_size').fill('1');
     await field('embedding.max_retries').fill('0'); await field('embedding.timeout_seconds').fill('5');
     await save();
@@ -284,7 +285,6 @@ try {
   await check('Embedding 空间切换期间保留旧代次并阻止混用', async () => {
     fixture.failure = 503;
     await field('embedding.model').fill('embedding-b');
-    await page.locator('.settings-model').filter({ has: field('embedding.enabled') }).locator('summary').click();
     await field('embedding.dimensions').fill('4'); await field('embedding.send_dimensions').check(); await save();
     await wait('新空间失败', async () => {
       const state = await models();

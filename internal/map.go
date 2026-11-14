@@ -54,7 +54,8 @@ func (s *MapService) response(layout *mapLayout, space string) MapResponse {
 		LayoutFrame: hashBytes(canonicalJSON([]any{s.Store.Settings.Memos.InstanceID,
 			s.Store.Settings.Memos.User, mapAlgorithm, space, layout.basis})),
 		VectorGeneration: layout.generation, ProjectionRevision: layout.revision,
-		GeneratedAt: layout.generatedAt.Format(time.RFC3339Nano), Points: layout.points}
+		GeneratedAt: layout.generatedAt.Format(time.RFC3339Nano), Points: layout.points,
+		Topics: layout.topics, Links: layout.links}
 	if len(layout.points) == 0 {
 		result.Status = "empty"
 	}
@@ -67,7 +68,7 @@ func (s *MapService) Read(ctx context.Context) (_ MapResponse, result error) {
 	ctx, cancel := context.WithTimeout(ctx, mapRequestTimeout)
 	defer cancel()
 	defer func() { result = mapRequestError(ctx, result) }()
-	response := MapResponse{Status: "disabled", Algorithm: mapAlgorithm, Points: []MapPoint{}}
+	response := MapResponse{Status: "disabled", Algorithm: mapAlgorithm, Points: []MapPoint{}, Topics: []MapTopic{}, Links: []MapLink{}}
 	if err := ctx.Err(); err != nil {
 		return MapResponse{}, err
 	}

@@ -11575,6 +11575,62 @@
           "tags"
         ]
       },
+      "MapTopic": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^topic-[a-f0-9]{16}$"
+          },
+          "label": {
+            "type": "string",
+            "description": "从该语义组的原生标签或重复关键词提取的名称；缺少可用词时为空，由客户端显示本地化的主题名称。"
+          },
+          "x": { "type": "number" },
+          "y": { "type": "number" },
+          "members": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": { "type": "string", "pattern": "^memos/[A-Za-z0-9_-]+$" }
+          },
+          "districts": {
+            "type": "array",
+            "maxItems": 6,
+            "items": { "$ref": "#/components/schemas/MapDistrict" },
+            "description": "主题内按原始向量细分的子主题，成员互不重复且完整覆盖父主题；没有可用细分时省略。"
+          }
+        },
+        "required": ["id", "label", "x", "y", "members"]
+      },
+      "MapDistrict": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": { "type": "string", "pattern": "^district-[a-f0-9]{16}$" },
+          "label": { "type": "string" },
+          "x": { "type": "number" },
+          "y": { "type": "number" },
+          "members": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": { "type": "string", "pattern": "^memos/[A-Za-z0-9_-]+$" }
+          }
+        },
+        "required": ["id", "label", "x", "y", "members"]
+      },
+      "MapLink": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "source": { "type": "string", "pattern": "^memos/[A-Za-z0-9_-]+$" },
+          "target": { "type": "string", "pattern": "^memos/[A-Za-z0-9_-]+$" },
+          "weight": { "type": "number", "minimum": 0.55, "maximum": 1 }
+        },
+        "required": ["source", "target", "weight"]
+      },
       "MapResponse": {
         "type": "object",
         "additionalProperties": false,
@@ -11592,11 +11648,11 @@
           },
           "layout_version": {
             "type": "string",
-            "description": "ready/empty 为算法、空间、投影基底和完整点集的 SHA-256 摘要，其余状态为空。"
+            "description": "ready/empty 为算法、空间、投影基底、完整点集、主题及关系的 SHA-256 摘要，其余状态为空。"
           },
           "algorithm": {
             "type": "string",
-            "const": "pca-fixed-v2"
+            "const": "pca-topics-v3"
           },
           "vector_generation": {
             "type": "string",
@@ -11613,6 +11669,16 @@
               "$ref": "#/components/schemas/MapPoint"
             },
             "description": "按资源名排序的完整点集，正常与归档笔记各占一点；非就绪状态为空数组。"
+          },
+          "topics": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/MapTopic" },
+            "description": "根据原始文档向量分组的主题；成员互不重复，不含无文本向量的笔记。非就绪状态为空数组。"
+          },
+          "links": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/MapLink" },
+            "description": "原始归一化向量的余弦相似度关系，阈值0.55，每篇最多提名三个邻居；不从二维坐标推断，不含无向重复边。非就绪状态为空数组。"
           },
           "layout_frame": {
             "type": "string",
@@ -11631,6 +11697,8 @@
           "vector_generation",
           "projection_revision",
           "points",
+          "topics",
+          "links",
           "layout_frame"
         ]
       },

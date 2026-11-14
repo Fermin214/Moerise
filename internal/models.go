@@ -105,6 +105,29 @@ type MapPoint struct {
 	vectorHash string
 }
 
+type MapTopic struct {
+	ID        string        `json:"id"`
+	Label     string        `json:"label"`
+	X         float64       `json:"x"`
+	Y         float64       `json:"y"`
+	Members   []string      `json:"members"`
+	Districts []MapDistrict `json:"districts,omitempty"`
+}
+
+type MapDistrict struct {
+	ID      string   `json:"id"`
+	Label   string   `json:"label"`
+	X       float64  `json:"x"`
+	Y       float64  `json:"y"`
+	Members []string `json:"members"`
+}
+
+type MapLink struct {
+	Source string  `json:"source"`
+	Target string  `json:"target"`
+	Weight float64 `json:"weight"`
+}
+
 type MapResponse struct {
 	Status             string     `json:"status"`
 	LayoutVersion      string     `json:"layout_version"`
@@ -114,6 +137,8 @@ type MapResponse struct {
 	ProjectionRevision int64      `json:"projection_revision"`
 	GeneratedAt        string     `json:"generated_at,omitempty"`
 	Points             []MapPoint `json:"points"`
+	Topics             []MapTopic `json:"topics"`
+	Links              []MapLink  `json:"links"`
 }
 
 type CreateNote struct {
