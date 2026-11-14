@@ -64,8 +64,11 @@ interface LocalDao {
     @Upsert suspend fun putDraft(draft: DraftEntity)
     @Query("SELECT * FROM drafts WHERE accountKey = :key AND slot = 'home' ORDER BY revision DESC LIMIT 1")
     suspend fun homeDraft(key: String): DraftEntity?
+    @Query("SELECT * FROM drafts WHERE accountKey = :key AND slot = :slot ORDER BY revision DESC LIMIT 1")
+    suspend fun draftForSlot(key: String, slot: String): DraftEntity?
     @Query("SELECT * FROM drafts WHERE id = :id") suspend fun draft(id: String): DraftEntity?
     @Query("DELETE FROM drafts WHERE id = :id") suspend fun deleteDraft(id: String)
+    @Query("SELECT attachmentsJson FROM drafts") suspend fun attachmentReferences(): List<String>
     @Upsert suspend fun putWrite(write: PendingWriteEntity)
     @Query("SELECT * FROM pending_writes WHERE draftId = :draftId AND status != 'conflict' LIMIT 1")
     suspend fun pending(draftId: String): PendingWriteEntity?

@@ -48,7 +48,7 @@ class SessionController(
 
     private fun client(origin: String, stamp: Long): CoreClient =
         CoreClient(origin, SessionCookies(origin, secrets), onUnauthorized = {
-            if (generation == stamp) mutableState.update { it.copy(connected = false, needsLogin = true) }
+            scope.launch { if (generation == stamp) mutableState.update { it.copy(connected = false, needsLogin = true) } }
         })
 
     private suspend fun restore() {

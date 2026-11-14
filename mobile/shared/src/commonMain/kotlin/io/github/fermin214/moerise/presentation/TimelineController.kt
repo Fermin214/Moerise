@@ -20,6 +20,7 @@ class TimelineController(
     private val repository: suspend () -> NoteRepository,
     private val core: () -> CoreClient?,
     private val scope: CoroutineScope,
+    private val filter: String = "NORMAL",
 ) {
     private val mutable = MutableStateFlow(TimelineUiState())
     val state = mutable.asStateFlow()
@@ -37,6 +38,7 @@ class TimelineController(
     }
 
     suspend fun readCache() {
+        if (filter != "NORMAL") return
         val account = key ?: return
         val stamp = accountGeneration
         val cached = repository().snapshot(account) ?: return
@@ -63,12 +65,12 @@ class TimelineController(
         request = scope.launch {
             try {
                 val page = CoreJson.decodeFromString<NotePage>(active.api(HttpMethod.Get,
-                    "/notes?state=NORMAL&order=created_desc&page_size=20" +
+                    "/notes?state=$filter&order=created_desc&page_size=20" +
                         if (token.isEmpty()) "" else "&page_token=${token.encodeURLQueryComponent()}"))
                 require(page.notes.all { it.instanceId == account.split('\u0000')[1] }) { "ACCOUNT_CHANGED" }
                 if (stamp != generation) return@launch
                 val notes = (if (append) state.value.notes + page.notes else page.notes).distinctBy { it.name }
-                repository().cache(account, NotePage(notes, page.nextPageToken))
+                if (filter == "NORMAL") repository().cache(account, NotePage(notes, page.nextPageToken))
                 if (stamp == generation) mutable.value = TimelineUiState(notes, page.nextPageToken, fresh = true)
             } catch (error: Exception) {
                 if (error is CancellationException) throw error
@@ -77,9 +79,9 @@ class TimelineController(
         }
     }
 
-    fun onSaved(note: Note) {
-        if (key?.split('\u0000')?.getOrNull(1) != note.instanceId) return
-        mutable.update { it.copy(notes = orderedNotes(listOf(note) + it.notes.filter { old -> old.name != note.name })) }
+    fun onSaved(accountKey: String, note: Note) {
+        if (key != accountKey || key?.split('\u0000')?.getOrNull(1) != note.instanceId) return
+        mutable.update { it.copy(notes = orderedNotes((listOf(note) + it.notes.filter { old -> old.name != note.name }).filter { it.state == "NORMAL" })) }
         refresh()
     }
 }

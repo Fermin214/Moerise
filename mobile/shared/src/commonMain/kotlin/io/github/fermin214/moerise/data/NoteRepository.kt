@@ -7,6 +7,8 @@ import io.github.fermin214.moerise.domain.NotePage
 import kotlinx.serialization.json.*
 import kotlin.time.Instant
 import kotlin.time.ExperimentalTime
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 expect fun newLocalId(): String
 
@@ -15,34 +17,72 @@ data class RestoredDraft(val draft: DraftEntity, val pending: PendingWriteEntity
 @OptIn(ExperimentalTime::class)
 fun orderedNotes(notes: List<Note>): List<Note> = notes.sortedByDescending { Instant.parse(it.createTime) }
 
-class NoteRepository(private val db: LocalDatabase) {
+class NoteRepository(private val db: LocalDatabase, private val files: AttachmentFiles? = null) {
     private suspend fun <T> transaction(block: suspend () -> T): T =
         db.useWriterConnection { it.immediateTransaction { block() } }
 
-    suspend fun restore(key: String): RestoredDraft = transaction {
+    suspend fun restore(key: String, note: Note? = null): RestoredDraft = transaction {
         db.dao().recoverSending(key)
-        val draft = db.dao().homeDraft(key) ?: DraftEntity(newLocalId(), key, "", 0).also { db.dao().putDraft(it) }
-        RestoredDraft(draft, db.dao().pending(draft.id))
+        val slot = note?.name ?: "home"
+        val existing = db.dao().draftForSlot(key, slot)
+        val pending = existing?.let { db.dao().pending(it.id) }
+        val draft = when {
+            existing == null -> if (note == null) DraftEntity(newLocalId(), key, "", 0) else
+                DraftEntity(newLocalId(), key, note.content, 0, note.name, note.sourceHash,
+                    baselineJson = CoreJson.encodeToString(note), slot = slot)
+            note == null || pending != null || existing.conflictJson != null || existing.sourceHash == note.sourceHash -> existing
+            else -> {
+                val baseline = existing.baselineJson?.let { CoreJson.decodeFromString<Note>(it) }
+                if (existing.content == baseline?.content && existing.attachmentEdits() == AttachmentEdits()) {
+                    existing.copy(content = note.content, sourceHash = note.sourceHash, baselineJson = CoreJson.encodeToString(note))
+                } else existing.copy(conflictJson = buildJsonObject {
+                    put("submitted", buildJsonObject { put("content", baseline?.content ?: existing.content) })
+                    put("remote", CoreJson.encodeToJsonElement(note))
+                }.toString())
+            }
+        }
+        db.dao().putDraft(draft)
+        RestoredDraft(draft, pending)
     }
 
     suspend fun persist(draft: DraftEntity) { db.dao().putDraft(draft) }
 
-    suspend fun prepare(draft: DraftEntity): PendingWriteEntity = transaction {
-        db.dao().pending(draft.id)?.let { return@transaction it }
+    suspend fun prepare(draft: DraftEntity): PendingWriteEntity = withContext(Dispatchers.Default) {
+        db.dao().pending(draft.id)?.let { return@withContext it }
         require(draft.conflictJson == null) { "SOURCE_CHANGED" }
-        require(draft.content.isNotBlank()) { "CONTENT_EMPTY" }
+        val edits = draft.attachmentEdits()
+        val baseline = draft.baselineJson?.let { CoreJson.decodeFromString<Note>(it) }
+        require(draft.content.isNotBlank() || edits.staged.isNotEmpty() ||
+            baseline?.attachments?.any { it["name"]?.jsonPrimitive?.content !in edits.removed } == true) { "CONTENT_EMPTY" }
         require(draft.content.encodeToByteArray().size <= 65_536) { "CONTENT_TOO_LARGE" }
+        require(edits.staged.size <= 10 && edits.staged.sumOf { it.size } <= 8 * 1024 * 1024) { "ATTACHMENTS_TOO_LARGE" }
         val target = draft.targetName
         if (target != null) require(Regex("^memos/[A-Za-z0-9_-]+$").matches(target) && !draft.sourceHash.isNullOrBlank())
+        val encodedFiles = edits.staged.map { file ->
+            val content = requireNotNull(files).encoded(file)
+            buildJsonObject {
+                put("filename", file.filename); put("type", file.type)
+                put("content", content)
+            }
+        }
         val body = buildJsonObject {
             put("content", draft.content)
             if (target != null) put("source_hash", draft.sourceHash)
+            if (encodedFiles.isNotEmpty()) put("attachments", JsonArray(encodedFiles))
+            if (edits.removed.isNotEmpty()) {
+                require(target != null)
+                put("remove_attachments", JsonArray(edits.removed.map(::JsonPrimitive)))
+            }
         }.toString()
-        db.dao().putDraft(draft)
-        PendingWriteEntity(newLocalId(), draft.id, draft.accountKey, newLocalId(),
-            if (target == null) "POST" else "PATCH", if (target == null) "/notes" else "/notes/${target.removePrefix("memos/")}",
-            body, draft.revision,
-        ).also { db.dao().putWrite(it) }
+        require(body.encodeToByteArray().size <= 12 * 1024 * 1024) { "ATTACHMENTS_TOO_LARGE" }
+        transaction {
+            db.dao().pending(draft.id)?.let { return@transaction it }
+            db.dao().putDraft(draft)
+            PendingWriteEntity(newLocalId(), draft.id, draft.accountKey, newLocalId(),
+                if (target == null) "POST" else "PATCH", if (target == null) "/notes" else "/notes/${target.removePrefix("memos/")}",
+                body, draft.revision,
+            ).also { db.dao().putWrite(it) }
+        }
     }
 
     suspend fun status(write: PendingWriteEntity, status: String) { db.dao().putWrite(write.copy(status = status)) }
@@ -70,4 +110,38 @@ class NoteRepository(private val db: LocalDatabase) {
     }
 
     suspend fun clearCache(key: String) { db.dao().deleteSnapshots(key) }
+
+    suspend fun collectFiles() = withContext(Dispatchers.Default) {
+        files?.collect(db.dao().attachmentReferences().flatMap { body ->
+            if (body == "[]") emptyList() else CoreJson.decodeFromString<AttachmentEdits>(body).staged.map { it.id }
+        }.toSet())
+        Unit
+    }
+
+    private fun actionSlot(key: String, name: String) = "$key\u0000action:$name"
+
+    suspend fun action(key: String, name: String): PendingWriteEntity? = transaction {
+        db.dao().recoverSending(key)
+        db.dao().pending(actionSlot(key, name))
+    }
+
+    suspend fun prepareAction(key: String, name: String, method: String, body: String): PendingWriteEntity = transaction {
+        require(method in setOf("PATCH", "DELETE") && Regex("^memos/[A-Za-z0-9_-]+$").matches(name))
+        val slot = actionSlot(key, name)
+        db.dao().pending(slot)?.let {
+            require(it.method == method) { "WRITE_OUTCOME_UNKNOWN" }
+            return@transaction it
+        }
+        PendingWriteEntity(newLocalId(), slot, key, newLocalId(), method,
+            "/notes/${name.removePrefix("memos/")}", body, 0).also { db.dao().putWrite(it) }
+    }
+
+    suspend fun finishAction(write: PendingWriteEntity, remote: Note?, name: String) = transaction {
+        db.dao().deleteWrite(write.id)
+        if (remote != null) updateSnapshot(write.accountKey, remote)
+        else {
+            val notes = snapshot(write.accountKey)?.notes?.filter { it.name != name } ?: emptyList()
+            db.dao().putSnapshot(SnapshotEntity(write.accountKey, "home", CoreJson.encodeToString(NotePage(notes)), epochMillis()))
+        }
+    }
 }

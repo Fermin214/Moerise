@@ -27,7 +27,14 @@ class CoreIntegrationTest {
             }
         }
         val content = "Android session integration ${UUID.randomUUID()} #android"
-        val body = buildJsonObject { put("content", content) }.toString()
+        val fileBytes = "Android attachment".encodeToByteArray()
+        val body = buildJsonObject {
+            put("content", content)
+            put("attachments", buildJsonArray { add(buildJsonObject {
+                put("filename", "android.txt"); put("type", "text/plain")
+                put("content", java.util.Base64.getEncoder().encodeToString(fileBytes))
+            }) })
+        }.toString()
         val key = UUID.randomUUID().toString()
         var noteName = ""
         val first = CoreClient(origin, SessionCookies(origin, secrets))
@@ -48,11 +55,34 @@ class CoreIntegrationTest {
             val id = replay.name.removePrefix("memos/")
             val read = CoreJson.decodeFromString<Note>(reopened.api(HttpMethod.Get, "/notes/$id"))
             assertEquals(content, read.content)
+            assertContentEquals(fileBytes, reopened.attachmentBytes(read, read.attachments.single(), 1024))
+            val patchKey = UUID.randomUUID().toString()
+            val patchBody = buildJsonObject {
+                put("source_hash", read.sourceHash); put("content", "$content edited")
+                put("remove_attachments", buildJsonArray { add(read.attachments.single().getValue("name")) })
+                put("attachments", buildJsonArray { add(buildJsonObject {
+                    put("filename", "edited.txt"); put("type", "text/plain"); put("content", "ZWRpdGVk")
+                }) })
+            }.toString()
+            val edited = CoreJson.decodeFromString<Note>(reopened.api(HttpMethod.Patch, "/notes/$id", patchBody, patchKey))
+            val replayEdit = CoreJson.decodeFromString<Note>(reopened.api(HttpMethod.Patch, "/notes/$id", patchBody, patchKey))
+            assertEquals(edited, replayEdit)
+            assertEquals("$content edited", edited.content)
+            assertEquals(1, edited.attachments.size)
+            assertEquals("edited.txt", edited.attachments.single().getValue("filename").jsonPrimitive.content)
+            assertContentEquals("edited".encodeToByteArray(), reopened.attachmentBytes(edited, edited.attachments.single(), 1024))
+            var live = edited
+            for (state in listOf("ARCHIVED", "NORMAL")) {
+                live = CoreJson.decodeFromString(reopened.api(HttpMethod.Patch, "/notes/$id", buildJsonObject {
+                    put("source_hash", live.sourceHash); put("state", state)
+                }.toString(), UUID.randomUUID().toString()))
+                assertEquals(state, live.state)
+            }
             val page = CoreJson.decodeFromString<NotePage>(reopened.api(HttpMethod.Get, "/notes?page_size=100&order=created_desc"))
             assertEquals(1, page.notes.count { it.name == read.name })
             val snapshot = reopened.api(HttpMethod.Get, "/map")
             assertEquals("disabled", CoreJson.parseToJsonElement(snapshot).jsonObject.getValue("status").jsonPrimitive.content)
-            reopened.api(HttpMethod.Delete, "/notes/$id", buildJsonObject { put("source_hash", read.sourceHash) }.toString())
+            reopened.api(HttpMethod.Delete, "/notes/$id", buildJsonObject { put("source_hash", live.sourceHash) }.toString())
             val oldSession = secrets.read("session:$origin")
             reopened.logout()
             assertNull(secrets.read("session:$origin"))

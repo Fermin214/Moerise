@@ -36,5 +36,28 @@ class QuickNoteTest {
         compose.waitUntil(20_000) { compose.onAllNodesWithText(text, substring = false).fetchSemanticsNodes().isNotEmpty() }
         compose.onNodeWithTag("note_editor").assert(SemanticsMatcher.expectValue(SemanticsProperties.EditableText, AnnotatedString("")))
         compose.onNodeWithText(text, substring = false).assertIsDisplayed()
+        compose.onNodeWithText(text, substring = false).performClick()
+        compose.waitUntil(20_000) { compose.onAllNodesWithTag("note_edit").fetchSemanticsNodes().isNotEmpty() }
+        compose.onNodeWithTag("note_edit").performClick()
+        compose.waitUntil(10_000) { compose.onAllNodesWithTag("note_editor").fetchSemanticsNodes().isNotEmpty() }
+        val edited = "$text edited"
+        compose.onNodeWithTag("note_editor").performTextReplacement(edited)
+        compose.onNodeWithTag("save_note").performScrollTo().performClick()
+        compose.waitUntil(20_000) { compose.onAllNodesWithTag("note_server_saved").fetchSemanticsNodes().isNotEmpty() }
+        compose.onNodeWithTag("editor_back").performScrollTo().performClick()
+        compose.waitUntil(10_000) { compose.onAllNodesWithTag("note_edit").fetchSemanticsNodes().isNotEmpty() }
+        compose.onNodeWithTag("note_archive").performClick()
+        compose.waitUntil(20_000) {
+            compose.onAllNodesWithText("恢复").fetchSemanticsNodes().isNotEmpty() ||
+                compose.onAllNodesWithText("Restore").fetchSemanticsNodes().isNotEmpty()
+        }
+        compose.onNodeWithTag("note_archive").performClick()
+        compose.waitUntil(20_000) {
+            compose.onAllNodesWithText("归档").fetchSemanticsNodes().isNotEmpty() ||
+                compose.onAllNodesWithText("Archive").fetchSemanticsNodes().isNotEmpty()
+        }
+        compose.onNodeWithTag("note_delete").performClick()
+        compose.onNodeWithTag("delete_confirm").performClick()
+        compose.waitUntil(20_000) { compose.onAllNodesWithTag("note_edit").fetchSemanticsNodes().isEmpty() }
     }
 }

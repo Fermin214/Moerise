@@ -233,4 +233,49 @@ class EditorRecoveryTest {
             folder.deleteRecursively()
         }
     }
+
+    @Test
+    fun reopeningWaitsForCanceledWriteJournalBeforeAllowingRetry() = runBlocking {
+        val folder = Files.createTempDirectory("moerise-retired-write-").toFile()
+        val dispatcher = Executors.newSingleThreadExecutor().asCoroutineDispatcher()
+        val scope = CoroutineScope(SupervisorJob() + dispatcher)
+        val db = jvmDatabase(folder.resolve("data.sqlite3").absolutePath)
+        val arrived = CompletableDeferred<Unit>()
+        val writerHeld = CompletableDeferred<Unit>()
+        val releaseWriter = CompletableDeferred<Unit>()
+        val writes = mutableListOf<Pair<String?, String>>()
+        val engine = MockEngine { request ->
+            if (request.url.encodedPath.endsWith("/session")) respond(session())
+            else {
+                writes += request.headers["Idempotency-Key"] to request.body.toByteArray().decodeToString()
+                if (writes.size == 1) { arrived.complete(Unit); awaitCancellation() }
+                respond(CoreJson.encodeToString(note("A", "hash-a")))
+            }
+        }
+        val core = CoreClient("https://notes.example", SessionCookies("https://notes.example", MemorySecrets()), engine)
+        try {
+            val editor = EditorController({ NoteRepository(db) }, { core }, scope)
+            withContext(dispatcher) { editor.open(account); editor.change("A"); editor.save() }
+            withTimeout(10_000) { arrived.await() }
+            val blocker = launch(Dispatchers.IO) {
+                db.useWriterConnection { it.immediateTransaction { writerHeld.complete(Unit); releaseWriter.await() } }
+            }
+            withTimeout(10_000) { writerHeld.await() }
+            val reopening = scope.async { editor.open(account) }
+            delay(30)
+            assertFalse(reopening.isCompleted)
+            releaseWriter.complete(Unit)
+            blocker.join()
+            withTimeout(10_000) { reopening.await() }
+            assertEquals("unknown", editor.state.value.pending?.status)
+            withContext(dispatcher) { editor.save() }
+            withTimeout(10_000) { editor.state.first { !it.busy } }
+            assertEquals(writes[0], writes[1])
+            assertNull(db.dao().pending(editor.state.value.draft!!.id))
+            assertEquals("", db.dao().homeDraft(account)?.content)
+        } finally {
+            releaseWriter.complete(Unit)
+            scope.cancel(); core.close(); dispatcher.close(); db.close(); folder.deleteRecursively()
+        }
+    }
 }

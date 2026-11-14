@@ -13,9 +13,12 @@ import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 class AndroidSecretStore(context: Context) : SecretStore {
-    private val directory = File(context.applicationContext.noBackupFilesDir, "credentials").apply { mkdirs() }
+    private val directory = File(context.applicationContext.noBackupFilesDir, "credentials")
+    private val lock = Mutex()
     private val alias = "moerise-session-v1"
     @Synchronized private fun key(): SecretKey {
         val store = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
@@ -31,7 +34,7 @@ class AndroidSecretStore(context: Context) : SecretStore {
         return AtomicFile(File(directory, digest))
     }
 
-    override suspend fun read(key: String): String? = withContext(Dispatchers.IO) {
+    override suspend fun read(key: String): String? = lock.withLock { withContext(Dispatchers.IO) {
         val file = file(key)
         if (!file.baseFile.exists()) return@withContext null
         try {
@@ -48,9 +51,10 @@ class AndroidSecretStore(context: Context) : SecretStore {
             file.delete()
             null
         }
-    }
+    } }
 
-    override suspend fun write(key: String, value: String?) = withContext(Dispatchers.IO) {
+    override suspend fun write(key: String, value: String?) = lock.withLock { withContext(Dispatchers.IO) {
+        check(directory.isDirectory || directory.mkdirs())
         val file = file(key)
         if (value == null) { file.delete(); return@withContext }
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
@@ -60,5 +64,5 @@ class AndroidSecretStore(context: Context) : SecretStore {
         val output = file.startWrite()
         try { output.write(payload); file.finishWrite(output) }
         catch (error: Exception) { file.failWrite(output); throw error }
-    }
+    } }
 }

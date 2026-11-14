@@ -88,5 +88,11 @@ class CoreProtocolTest {
         next.addCookie(url, cookie.copy(value = "new"))
         old.addCookie(url, cookie.copy(value = "", maxAge = 0))
         assertEquals("new", SessionCookies("https://notes.example", secrets).get(url).single().value)
+        val retired = SessionCookies("https://notes.example", secrets)
+        retired.get(url)
+        retired.close()
+        next.addCookie(url, cookie.copy(value = "latest"))
+        retired.addCookie(url, cookie.copy(value = "late"))
+        assertEquals("latest", SessionCookies("https://notes.example", secrets).get(url).single().value)
     }
 }

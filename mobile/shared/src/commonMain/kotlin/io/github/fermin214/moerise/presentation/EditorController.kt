@@ -14,7 +14,7 @@ class EditorController(
     private val repository: suspend () -> NoteRepository,
     private val core: () -> CoreClient?,
     private val scope: CoroutineScope,
-    private val onConfirmed: (Note) -> Unit = {},
+    private val onConfirmed: (String, Note) -> Unit = { _, _ -> },
 ) {
     private val mutable = MutableStateFlow(EditorUiState())
     val state = mutable.asStateFlow()
@@ -23,16 +23,16 @@ class EditorController(
     private var sendJob: Job? = null
     private var generation = 0L
 
-    suspend fun open(key: String?) {
+    suspend fun open(key: String?, note: Note? = null) {
         val stamp = ++generation
-        editJob?.cancel()
-        sendJob?.cancel()
+        editJob?.cancelAndJoin()
+        sendJob?.cancelAndJoin()
         // Flush the previous editor before changing the account.
         if (!flushWithFeedback()) return
         mutable.value = EditorUiState(accountKey = key)
         if (key == null) return
         try {
-            val restored = localLock.withLock { repository().restore(key) }
+            val restored = localLock.withLock { repository().restore(key, note) }
             if (generation == stamp) mutable.value = EditorUiState(key, restored.draft, restored.pending, savedRevision = restored.draft.revision)
         } catch (error: Exception) {
             if (error is CancellationException) throw error
@@ -44,6 +44,10 @@ class EditorController(
         val before = mutable.value
         val draft = before.draft ?: return
         mutable.value = before.copy(draft = draft.copy(content = content, revision = draft.revision + 1), error = null, serverSaved = false)
+        scheduleFlush()
+    }
+
+    private fun scheduleFlush() {
         editJob?.cancel()
         editJob = scope.launch {
             delay(300)
@@ -63,7 +67,7 @@ class EditorController(
                 serverSaved = latest.serverSaved || confirmation != null && !confirmation.conflict,
                 confirmation = if (latest.confirmation == confirmation) null else latest.confirmation)
         }
-        if (confirmation != null && !confirmation.conflict) confirmation.remote?.let(onConfirmed)
+        if (confirmation != null && !confirmation.conflict) confirmation.remote?.let { onConfirmed(draft.accountKey, it) }
     }
 
     private suspend fun flushWithFeedback(): Boolean = try {
@@ -97,10 +101,17 @@ class EditorController(
                 attempt = write
                 repository().status(write, "sending")
                 networkStarted = true
-                val remote = CoreJson.decodeFromString<Note>(active.api(HttpMethod.parse(write.method), write.path, write.body, write.idempotencyKey))
+                val response = active.api(HttpMethod.parse(write.method), write.path, write.body, write.idempotencyKey)
+                val remote = withContext(Dispatchers.Default) { CoreJson.decodeFromString<Note>(response) }
+                val draftBeforeCheck = requireNotNull(state.value.draft)
+                val expected = withContext(Dispatchers.Default) {
+                    try { expectedSubmittedResult(draftBeforeCheck, write, remote, active) }
+                    catch (failure: Exception) { if (failure is CancellationException) throw failure; false }
+                }
+                val conflictMaterial = withContext(Dispatchers.Default) { conflictBody(write, remote) }
                 if (stamp != generation) throw CancellationException("Account changed")
                 val before = state.value
-                val next = completedDraft(requireNotNull(before.draft), write, remote)
+                val next = completedDraft(requireNotNull(before.draft), write, remote, expected, conflictMaterial)
                 mutable.value = before.copy(draft = next, pending = null,
                     confirmation = ConfirmedChange(write, remote, next.conflictJson != null))
                 attempt = null
@@ -108,14 +119,15 @@ class EditorController(
             } catch (error: Exception) {
                 val write = attempt
                 if (write != null) {
-                    if (error is CoreException && error.detail.code in setOf("SOURCE_CHANGED", "IDEMPOTENCY_CONFLICT") && stamp == generation) {
+                    if (error is CoreException && error.detail.code in setOf("SOURCE_CHANGED", "IDEMPOTENCY_CONFLICT", "ATTACHMENT_REFERENCED", "ATTACHMENT_DELETE_REJECTED", "WRITE_CONFLICT") && stamp == generation) {
                         val remote = if (write.method == "PATCH") runCatching {
                             CoreJson.decodeFromString<Note>(active.api(HttpMethod.Get, write.path))
                         }.getOrNull() else null
+                        val material = withContext(Dispatchers.Default) { conflictBody(write, remote) }
                         val before = state.value
                         val draft = before.draft
                         if (draft != null && stamp == generation) {
-                            mutable.value = before.copy(draft = draft.copy(conflictJson = conflictBody(write, remote)),
+                            mutable.value = before.copy(draft = draft.copy(conflictJson = material),
                                 pending = null, confirmation = ConfirmedChange(write, remote, true), error = error.detail.code)
                             flushWithFeedback()
                         }
@@ -133,14 +145,53 @@ class EditorController(
         }
     }
 
-    fun merge(content: String, remote: Note) {
+    fun merge(content: String, remote: Note, attachments: AttachmentEdits = AttachmentEdits()) {
         val before = state.value
         val draft = before.draft ?: return
         require(draft.conflictJson != null && draft.targetName == remote.name)
         mutable.value = before.copy(draft = draft.copy(content = content, revision = draft.revision + 1,
-            sourceHash = remote.sourceHash, baselineJson = CoreJson.encodeToString(remote), conflictJson = null), error = null)
+            sourceHash = remote.sourceHash, baselineJson = CoreJson.encodeToString(remote), conflictJson = null,
+            attachmentsJson = CoreJson.encodeToString(attachments)), error = null)
         editJob?.cancel()
         editJob = scope.launch { flushWithFeedback() }
+    }
+
+    fun attachmentError(code: String) { mutable.update { it.copy(error = code) } }
+
+    fun attach(accountKey: String, files: List<StagedAttachment>): Boolean {
+        val before = state.value
+        val draft = before.draft ?: return false
+        if (before.busy || before.pending != null || draft.conflictJson != null || draft.accountKey != accountKey) return false
+        val edits = draft.attachmentEdits()
+        val combined = edits.staged + files
+        if (combined.size > 10 || combined.sumOf { it.size } > 8 * 1024 * 1024) {
+            attachmentError("ATTACHMENTS_TOO_LARGE")
+            return false
+        }
+        updateAttachments(edits.copy(staged = combined))
+        return true
+    }
+
+    fun removeStaged(id: String) {
+        val edits = state.value.draft?.attachmentEdits() ?: return
+        updateAttachments(edits.copy(staged = edits.staged.filter { it.id != id }))
+    }
+
+    fun toggleRemoval(name: String) {
+        val draft = state.value.draft ?: return
+        val baseline = draft.baselineJson?.let { CoreJson.decodeFromString<Note>(it) } ?: return
+        if (baseline.attachments.none { it["name"]?.jsonPrimitive?.content == name }) return
+        val edits = draft.attachmentEdits()
+        updateAttachments(edits.copy(removed = if (name in edits.removed) edits.removed - name else edits.removed + name))
+    }
+
+    private fun updateAttachments(edits: AttachmentEdits) {
+        val before = state.value
+        val draft = before.draft ?: return
+        if (before.busy || before.pending != null || draft.conflictJson != null) return
+        mutable.value = before.copy(draft = draft.copy(attachmentsJson = CoreJson.encodeToString(edits), revision = draft.revision + 1),
+            error = null, serverSaved = false)
+        scheduleFlush()
     }
 
     fun refreshConflict() {
