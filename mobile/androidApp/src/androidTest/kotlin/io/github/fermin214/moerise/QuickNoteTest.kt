@@ -59,6 +59,12 @@ class QuickNoteTest {
         compose.onNodeWithTag("chat_tab_1").performClick()
         compose.onNodeWithTag("chat_material_query").assertIsDisplayed()
         compose.onNodeWithTag("open_menu").performClick()
+        compose.onNodeWithTag("nav_map").performClick()
+        compose.onNodeWithTag("map_page").assertIsDisplayed()
+        compose.waitUntil(20_000) { compose.onAllNodesWithTag("map_status").fetchSemanticsNodes().isNotEmpty() }
+        compose.onNodeWithTag("map_fullscreen").performClick()
+        compose.onNodeWithTag("map_fullscreen").performClick()
+        compose.onNodeWithTag("open_menu").performClick()
         compose.onNodeWithTag("nav_home").performClick()
         compose.onNodeWithText(text, substring = false).performClick()
         compose.waitUntil(20_000) { compose.onAllNodesWithTag("note_edit").fetchSemanticsNodes().isNotEmpty() }

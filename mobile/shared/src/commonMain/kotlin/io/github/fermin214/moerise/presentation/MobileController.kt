@@ -18,6 +18,7 @@ class MobileController(
     val walk = WalkController({ session.core }, { session.state.value.profile?.accountKey }, scope)
     val insights = InsightController(repository, { session.core }, { session.state.value.profile?.accountKey }, scope,
         { Strings(session.language.value).text("zh-CN", "en") }) { key, note -> timeline.onSaved(key, note) }
+    val stars = StarMapController(repository, { session.core }, { session.state.value.profile?.accountKey }, scope)
     val detail = NoteDetailController(repository, { session.state.value.profile?.accountKey }, { session.core }, scope) {
         timeline.refresh()
         if (archive.state.value.fresh) archive.refresh()
@@ -43,6 +44,7 @@ class MobileController(
         review.visible(connected && visiblePage == "review")
         walk.visible(connected && visiblePage == "walk")
         insights.visible(connected && visiblePage == "insights")
+        stars.visible(connected && visiblePage == "map")
     }
 
     init {
@@ -54,6 +56,7 @@ class MobileController(
                 review.clear()
                 walk.clear()
                 insights.clear()
+                stars.clear()
                 detail.clear()
                 mutableEditing.value = false
                 editor.open(key)
@@ -65,7 +68,7 @@ class MobileController(
                 session.state.map { Triple(it.profile?.accountKey, it.connected, it.needsLogin) }.distinctUntilChanged(),
                 editor.state.map { it.accountKey.takeIf { _ -> it.draft != null } }.distinctUntilChanged(),
             ) { connection, ready -> connection to ready }.collect { (connection, ready) ->
-                if (connection.third) { timeline.hideAccountData(); archive.hideAccountData(); search.clear(); review.clear(); walk.clear(); insights.clear(); detail.clear(); clearFiles() }
+                if (connection.third) { timeline.hideAccountData(); archive.hideAccountData(); search.clear(); review.clear(); walk.clear(); insights.clear(); stars.clear(); detail.clear(); clearFiles() }
                 else if (connection.second && connection.first == ready && ready != null) timeline.refresh()
                 updateDiscovery()
             }

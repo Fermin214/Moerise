@@ -12,6 +12,7 @@ import androidx.tracing.Trace
 import io.github.fermin214.moerise.data.*
 import io.github.fermin214.moerise.presentation.*
 import kotlinx.coroutines.*
+import kotlinx.coroutines.flow.collect
 
 class AppModel(application: Application) : AndroidViewModel(application) {
     private val database = viewModelScope.async(Dispatchers.IO) { androidDatabase(application) }
@@ -19,6 +20,14 @@ class AppModel(application: Application) : AndroidViewModel(application) {
     private val repository = viewModelScope.async(Dispatchers.IO) { NoteRepository(database.await(), androidAttachmentFiles(application)) }
     val mobile = MobileController(session, { repository.await() }, viewModelScope) {
         withContext(Dispatchers.IO) { java.io.File(application.cacheDir, "attachments").deleteRecursively(); Unit }
+    }
+    init {
+        viewModelScope.launch {
+            mobile.stars.metrics.collect { metric ->
+                android.util.Log.i("MoeriseMap", "${metric.kind}=${metric.value} version=${metric.version}")
+                Trace.setCounter("moerise_map_${metric.kind}", metric.value.toInt())
+            }
+        }
     }
     override fun onCleared() {
         session.close()
