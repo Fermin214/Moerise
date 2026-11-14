@@ -14,10 +14,10 @@ import io.github.fermin214.moerise.domain.Note
 import kotlinx.serialization.json.*
 
 @Composable
-fun NoteDetailScreen(state: NoteDetailState, mobile: MobileController, strings: Strings, scroll: ScrollState, onTag: (String, Note) -> Unit) {
+fun NoteDetailScreen(state: NoteDetailState, mobile: MobileController, strings: Strings, scroll: ScrollState, onWalk: (Note) -> Unit, onTag: (String, Note) -> Unit) {
     var confirmDelete by remember(state.name) { mutableStateOf(false) }
     Column(Modifier.safeDrawingPadding().verticalScroll(scroll).padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        TextButton(onClick = mobile::closeNote, modifier = Modifier.testTag("detail_back")) { Text(strings.text("返回列表", "Back to notes")) }
+        TextButton(onClick = mobile::closeNote, modifier = Modifier.testTag("detail_back")) { Text(strings.text("返回", "Back")) }
         if (state.loading) LinearProgressIndicator(Modifier.fillMaxWidth())
         state.error?.let { Text(editorError(it, strings), color = MaterialTheme.colorScheme.error) }
         val note = state.note
@@ -31,6 +31,8 @@ fun NoteDetailScreen(state: NoteDetailState, mobile: MobileController, strings: 
                 TextButton(onClick = { confirmDelete = true }, modifier = Modifier.testTag("note_delete"), enabled = !state.busy && !state.pendingAction) { Text(strings.text("删除", "Delete")) }
             }
             if (state.deleteUnknown) TextButton(onClick = mobile.detail::checkDeletion, enabled = !state.busy) { Text(strings.text("检查删除结果", "Check deletion")) }
+            if (note.state == "NORMAL") TextButton(onClick = { onWalk(note) }, enabled = !state.busy && mobile.session.state.value.connected,
+                modifier = Modifier.testTag("note_walk")) { Text(strings.text("从这条漫步", "Walk from this note")) }
             if (state.error == "SOURCE_CHANGED") TextButton(onClick = { mobile.detail.open(note.name) }) { Text(strings.text("重新读取", "Read again")) }
             Text(displayServiceTime(note.createTime, mobile.session.state.value.profile?.timezone ?: "UTC"), style = MaterialTheme.typography.labelSmall)
             Row(Modifier.horizontalScroll(rememberScrollState())) {

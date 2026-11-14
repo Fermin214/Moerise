@@ -21,6 +21,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import io.github.fermin214.moerise.data.*
 import io.github.fermin214.moerise.domain.Note
+import kotlinx.coroutines.launch
 import kotlinx.serialization.json.*
 
 object MoeriseColors {
@@ -43,12 +44,18 @@ fun MoeriseApp(mobile: MobileController, onEditorReady: () -> Unit = {}) {
     val archivedTimeline by mobile.archive.state.collectAsState()
     val detail by mobile.detail.state.collectAsState()
     val editing by mobile.editing.collectAsState()
+    val review by mobile.review.state.collectAsState()
+    val walk by mobile.walk.state.collectAsState()
     var page by rememberSaveable(connection.profile?.accountKey) { mutableStateOf("home") }
+    val drawer = rememberDrawerState(DrawerValue.Closed)
+    val uiScope = rememberCoroutineScope()
     val homeScroll = key(connection.profile?.accountKey) { rememberLazyListState() }
     val archiveScroll = key(connection.profile?.accountKey) { rememberLazyListState() }
     val searchScroll = key(connection.profile?.accountKey) { rememberLazyListState() }
     var searchFrom by rememberSaveable(connection.profile?.accountKey) { mutableStateOf("home") }
     val detailScroll = key(connection.profile?.accountKey, detail.name) { rememberScrollState() }
+    val reviewScroll = key(connection.profile?.accountKey, review.batch?.id, review.position) { rememberScrollState() }
+    val walkScroll = key(connection.profile?.accountKey, walk.result?.item?.note?.name) { rememberScrollState() }
     val timeline = if (page == "archive") archivedTimeline else homeTimeline
     val timelineController = if (page == "archive") mobile.archive else mobile.timeline
     var conflict by remember { mutableStateOf(false) }
@@ -57,10 +64,16 @@ fun MoeriseApp(mobile: MobileController, onEditorReady: () -> Unit = {}) {
     LaunchedEffect(ready) {
         if (ready) { withFrameNanos { }; onEditorReady() }
     }
-    fun navigate(next: String) { mobile.flush(); if (page == "search") mobile.search.leave(); page = next }
-    PlatformBackHandler(page != "home" || detail.name != null || editing || conflict) {
+    fun navigate(next: String) { mobile.flush(); if (page == "search") mobile.search.leave(); page = next; mobile.page(next) }
+    fun startWalk(note: Note) { mobile.closeNote(); navigate("walk"); mobile.walk.start(note.name) }
+    LaunchedEffect(page, detail.name, editing, connection.connected) {
+        mobile.page(page.takeIf { detail.name == null && !editing })
+    }
+    DisposableEffect(mobile) { onDispose { mobile.page(null) } }
+    PlatformBackHandler(drawer.isOpen || page != "home" || detail.name != null || editing || conflict) {
         mobile.flush()
         when {
+            drawer.isOpen -> uiScope.launch { drawer.close() }
             conflict -> conflict = false
             editing -> mobile.finishEditing()
             detail.name != null -> mobile.closeNote()
@@ -71,6 +84,21 @@ fun MoeriseApp(mobile: MobileController, onEditorReady: () -> Unit = {}) {
         primary = MoeriseColors.Blue, background = MoeriseColors.Paper,
         surface = Color.White, onSurface = MoeriseColors.Ink,
     )) {
+        ModalNavigationDrawer(drawerState = drawer, gesturesEnabled = drawer.isOpen,
+            drawerContent = {
+                ModalDrawerSheet {
+                    Text("Moerise", style = MaterialTheme.typography.headlineSmall, modifier = Modifier.padding(24.dp))
+                    listOf("home" to strings.text("主页", "Home"), "review" to strings.text("回顾", "Review"),
+                        "walk" to strings.text("漫步", "Walk"), "settings" to strings.text("设置", "Settings")).forEach { (target, label) ->
+                        NavigationDrawerItem(label = { Text(label) }, selected = page == target,
+                            modifier = Modifier.padding(horizontal = 12.dp).testTag("nav_$target"), onClick = {
+                                uiScope.launch { drawer.close() }
+                                navigate(target)
+                            })
+                    }
+                }
+            },
+        ) {
         Surface(Modifier.fillMaxSize(), color = MoeriseColors.Paper) {
             if (connection.loading) {
                 Box(Modifier.safeDrawingPadding().padding(24.dp)) { CircularProgressIndicator() }
@@ -105,7 +133,7 @@ fun MoeriseApp(mobile: MobileController, onEditorReady: () -> Unit = {}) {
                 return@Surface
             }
             if (detail.name != null && !editing) {
-                NoteDetailScreen(detail, mobile, strings, detailScroll) { tag, note ->
+                NoteDetailScreen(detail, mobile, strings, detailScroll, onWalk = ::startWalk) { tag, note ->
                     mobile.search.change(SearchQuery(tags = setOf(tag), state = note.state))
                     mobile.search.tab(0)
                     mobile.search.search()
@@ -119,6 +147,11 @@ fun MoeriseApp(mobile: MobileController, onEditorReady: () -> Unit = {}) {
                 SearchScreen(mobile, strings, searchScroll) { navigate(searchFrom) }
                 return@Surface
             }
+            if (page in setOf("review", "walk")) {
+                DiscoveryScreen(page, mobile, strings, if (page == "review") reviewScroll else walkScroll,
+                    onMenu = { uiScope.launch { drawer.open() } }, onWalk = ::startWalk)
+                return@Surface
+            }
             LazyColumn(
                 Modifier.safeDrawingPadding().imePadding().fillMaxSize().testTag("home"),
                 state = if (page == "archive") archiveScroll else homeScroll,
@@ -128,7 +161,10 @@ fun MoeriseApp(mobile: MobileController, onEditorReady: () -> Unit = {}) {
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                         if (editing) TextButton(onClick = mobile::finishEditing, modifier = Modifier.testTag("editor_back")) { Text(strings.text("返回笔记", "Back to note")) }
                         else if (page == "archive") TextButton(onClick = { navigate("home") }) { Text(strings.text("返回主页", "Back to home")) }
-                        else Text("Moerise", fontSize = 22.sp, modifier = Modifier.padding(top = 8.dp))
+                        else Row {
+                            TextButton(onClick = { uiScope.launch { drawer.open() } }, modifier = Modifier.testTag("open_menu")) { Text(strings.text("导航", "Menu")) }
+                            Text("Moerise", fontSize = 22.sp, modifier = Modifier.padding(top = 8.dp))
+                        }
                         if (!editing) Row {
                             TextButton(onClick = { searchFrom = page; navigate("search") }, modifier = Modifier.testTag("open_search")) { Text(strings.text("搜索", "Search")) }
                             TextButton(onClick = { navigate("settings") }) { Text(strings.text("设置", "Settings")) }
@@ -180,6 +216,7 @@ fun MoeriseApp(mobile: MobileController, onEditorReady: () -> Unit = {}) {
                 }
             }
             if (conflict && ready) ConflictDialog(editor, mobile.editor, strings) { conflict = false }
+        }
         }
     }
 }

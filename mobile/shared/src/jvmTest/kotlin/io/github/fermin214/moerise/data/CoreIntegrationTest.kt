@@ -3,6 +3,7 @@ package io.github.fermin214.moerise.data
 import io.github.fermin214.moerise.domain.CoreException
 import io.github.fermin214.moerise.domain.Note
 import io.github.fermin214.moerise.domain.NotePage
+import io.github.fermin214.moerise.presentation.ReviewBatch
 import io.ktor.http.HttpMethod
 import java.io.File
 import java.util.UUID
@@ -78,6 +79,9 @@ class CoreIntegrationTest {
                     put("source_hash", live.sourceHash); put("state", state)
                 }.toString(), UUID.randomUUID().toString()))
                 assertEquals(state, live.state)
+                if (state == "ARCHIVED") assertEquals("WALK_ARCHIVED", assertFailsWith<CoreException> {
+                    reopened.api(HttpMethod.Post, "/walks/start", buildJsonObject { put("name", live.name) }.toString())
+                }.detail.code)
             }
             val page = CoreJson.decodeFromString<NotePage>(reopened.api(HttpMethod.Get, "/notes?page_size=100&order=created_desc"))
             assertEquals(1, page.notes.count { it.name == read.name })
@@ -99,6 +103,16 @@ class CoreIntegrationTest {
             }
             val snapshot = reopened.api(HttpMethod.Get, "/map")
             assertEquals("disabled", CoreJson.parseToJsonElement(snapshot).jsonObject.getValue("status").jsonPrimitive.content)
+            val review = CoreJson.decodeFromString<ReviewBatch>(reopened.api(HttpMethod.Get, "/reviews/daily"))
+            assertEquals(restoredIdentity.timezone, review.timezone)
+            assertEquals(java.time.LocalDate.now(java.time.ZoneId.of(review.timezone)).toString(), review.date)
+            assertTrue(review.items.all { it.unavailable || (it.note?.name == it.name && it.note.instanceId == live.instanceId) })
+            assertEquals(review.id, CoreJson.decodeFromString<ReviewBatch>(reopened.api(HttpMethod.Get, "/reviews/daily")).id)
+            for (walkBody in listOf("{}", buildJsonObject { put("name", live.name) }.toString())) {
+                assertEquals("EMBEDDING_DISABLED", assertFailsWith<CoreException> {
+                    reopened.api(HttpMethod.Post, "/walks/start", walkBody)
+                }.detail.code)
+            }
             reopened.api(HttpMethod.Delete, "/notes/$id", buildJsonObject { put("source_hash", live.sourceHash) }.toString())
             val oldSession = secrets.read("session:$origin")
             reopened.logout()

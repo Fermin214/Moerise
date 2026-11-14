@@ -47,7 +47,13 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    override fun onStart() {
+        super.onStart()
+        model.mobile.foreground(true)
+    }
+
     override fun onStop() {
+        model.mobile.foreground(false)
         model.mobile.flush()
         super.onStop()
     }

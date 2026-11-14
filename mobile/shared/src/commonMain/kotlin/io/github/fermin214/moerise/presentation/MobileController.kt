@@ -14,6 +14,8 @@ class MobileController(
     val timeline = TimelineController(repository, { session.core }, scope)
     val archive = TimelineController(repository, { session.core }, scope, "ARCHIVED")
     val search = SearchController({ session.core }, { session.state.value.profile?.accountKey }, scope)
+    val review = ReviewController({ session.core }, { session.state.value.profile?.accountKey }, scope)
+    val walk = WalkController({ session.core }, { session.state.value.profile?.accountKey }, scope)
     val detail = NoteDetailController(repository, { session.state.value.profile?.accountKey }, { session.core }, scope) {
         timeline.refresh()
         if (archive.state.value.fresh) archive.refresh()
@@ -25,6 +27,20 @@ class MobileController(
     }
     private val mutableEditing = MutableStateFlow(false)
     val editing = mutableEditing.asStateFlow()
+    private var visiblePage: String? = null
+    private var inForeground = true
+
+    fun page(value: String?) { visiblePage = value; updateDiscovery() }
+    fun foreground(value: Boolean) {
+        inForeground = value
+        if (!value) search.leave()
+        updateDiscovery()
+    }
+    private fun updateDiscovery() {
+        val connected = session.state.value.connected && inForeground
+        review.visible(connected && visiblePage == "review")
+        walk.visible(connected && visiblePage == "walk")
+    }
 
     init {
         scope.launch {
@@ -32,6 +48,8 @@ class MobileController(
                 timeline.reset(key)
                 archive.reset(key)
                 search.clear()
+                review.clear()
+                walk.clear()
                 detail.clear()
                 mutableEditing.value = false
                 editor.open(key)
@@ -43,8 +61,9 @@ class MobileController(
                 session.state.map { Triple(it.profile?.accountKey, it.connected, it.needsLogin) }.distinctUntilChanged(),
                 editor.state.map { it.accountKey.takeIf { _ -> it.draft != null } }.distinctUntilChanged(),
             ) { connection, ready -> connection to ready }.collect { (connection, ready) ->
-                if (connection.third) { timeline.hideAccountData(); archive.hideAccountData(); search.clear(); detail.clear(); clearFiles() }
+                if (connection.third) { timeline.hideAccountData(); archive.hideAccountData(); search.clear(); review.clear(); walk.clear(); detail.clear(); clearFiles() }
                 else if (connection.second && connection.first == ready && ready != null) timeline.refresh()
+                updateDiscovery()
             }
         }
     }
@@ -59,7 +78,7 @@ class MobileController(
     fun flush() { scope.launch { editor.flushForLifecycle() } }
     fun retryDraft() { scope.launch { editor.open(session.state.value.profile?.accountKey) } }
 
-    fun openNote(name: String) { flush(); search.leave(); detail.open(name) }
+    fun openNote(name: String) { flush(); search.leave(); page(null); detail.open(name) }
     fun closeNote() { flush(); detail.clear() }
     fun editNote(note: Note) {
         scope.launch {

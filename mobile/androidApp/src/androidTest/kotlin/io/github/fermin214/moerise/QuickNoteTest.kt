@@ -45,6 +45,16 @@ class QuickNoteTest {
         compose.onNodeWithTag("search_submit").performClick()
         compose.waitUntil(20_000) { compose.onAllNodesWithText(text, substring = false).fetchSemanticsNodes().isNotEmpty() }
         compose.onNodeWithTag("search_back").performScrollTo().performClick()
+        compose.onNodeWithTag("open_menu").performScrollTo().performClick()
+        compose.onNodeWithTag("nav_review").performClick()
+        compose.onNodeWithTag("review_page").assertIsDisplayed()
+        compose.onNodeWithTag("open_menu").performClick()
+        compose.onNodeWithTag("nav_walk").performClick()
+        compose.onNodeWithTag("walk_start").performClick()
+        compose.waitUntil(20_000) { compose.onAllNodesWithTag("discovery_error").fetchSemanticsNodes().isNotEmpty() }
+        compose.onNodeWithTag("walk_end").performClick()
+        compose.onNodeWithTag("open_menu").performClick()
+        compose.onNodeWithTag("nav_home").performClick()
         compose.onNodeWithText(text, substring = false).performClick()
         compose.waitUntil(20_000) { compose.onAllNodesWithTag("note_edit").fetchSemanticsNodes().isNotEmpty() }
         compose.onNodeWithTag("note_edit").performClick()
