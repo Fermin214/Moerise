@@ -61,8 +61,10 @@ class SessionController(
             mutableState.value = SessionUiState(loading = false, profile = profile)
             if (profile == null) return
             val active = client(profile.origin, stamp).also { it.bindAccount(profile.accountKey); core = it }
-            active.session()
-            if (stamp == generation) mutableState.update { it.copy(connected = true, needsLogin = false) }
+            val identity = active.session()
+            if (stamp != generation) return
+            val refreshed = repository.select(profile.origin, identity)
+            if (stamp == generation) mutableState.update { it.copy(profile = refreshed, connected = true, needsLogin = false) }
         } catch (error: Exception) {
             if (error is CancellationException) throw error
             if (stamp == generation) mutableState.update { it.copy(loading = false, error = errorCode(error)) }

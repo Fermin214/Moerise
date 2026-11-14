@@ -51,5 +51,6 @@ fun connectionError(code: String, strings: Strings): String = when (code) {
     "RATE_LIMITED" -> strings.text("请求过于频繁，请稍后重试。", "Too many requests. Try again later.")
     "CSRF_REJECTED", "ORIGIN_REJECTED" -> strings.text("服务连接校验失败，请检查服务地址。", "Connection validation failed. Check the server address.")
     "INCOMPATIBLE_CORE" -> strings.text("此服务未提供兼容的笔记接口。", "This server does not provide a compatible notes API.")
+    "INVALID_PAGE_TOKEN", "SOURCE_CHANGED" -> strings.text("笔记列表已变化，请刷新后重试。", "Notes changed. Refresh and try again.")
     else -> strings.text("无法连接服务，请检查地址和网络后重试。", "Could not connect. Check the address and network, then retry.")
 }

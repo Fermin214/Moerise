@@ -24,15 +24,17 @@ fun androidAttachmentFiles(context: android.content.Context) =
     AttachmentFiles(File(context.applicationContext.noBackupFilesDir, "attachments").absolutePath)
 
 @Composable
-actual fun AttachmentPicker(enabled: Boolean, strings: Strings, onPicked: (List<StagedAttachment>) -> Boolean, onError: (String) -> Unit) {
+actual fun AttachmentPicker(enabled: Boolean, strings: Strings, onPicked: (List<StagedAttachment>) -> Boolean, onError: (String) -> Unit, onBusy: (Boolean) -> Unit) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var busy by remember { mutableStateOf(false) }
     val accept by rememberUpdatedState(onPicked)
     val fail by rememberUpdatedState(onError)
+    val pending by rememberUpdatedState(onBusy)
     val launcher = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
         if (uris.isNotEmpty()) scope.launch {
             busy = true
+            pending(true)
             val files = androidAttachmentFiles(context)
             val staged = mutableListOf<StagedAttachment>()
             var accepted = false
@@ -72,6 +74,7 @@ actual fun AttachmentPicker(enabled: Boolean, strings: Strings, onPicked: (List<
             } finally {
                 if (!accepted) withContext(NonCancellable) { staged.forEach { runCatching { files.remove(it) } } }
                 busy = false
+                pending(false)
             }
         }
     }

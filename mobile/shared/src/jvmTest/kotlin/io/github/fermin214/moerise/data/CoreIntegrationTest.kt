@@ -49,7 +49,8 @@ class CoreIntegrationTest {
         val reopened = CoreClient(origin, SessionCookies(origin, secrets))
         try {
             reopened.bindAccount(accountKey)
-            assertEquals(accountKey, reopened.session().accountKey(origin))
+            val restoredIdentity = reopened.session()
+            assertEquals(accountKey, restoredIdentity.accountKey(origin))
             val replay = CoreJson.decodeFromString<Note>(reopened.api(HttpMethod.Post, "/notes", body, key))
             assertEquals(noteName, replay.name)
             val id = replay.name.removePrefix("memos/")
@@ -80,6 +81,22 @@ class CoreIntegrationTest {
             }
             val page = CoreJson.decodeFromString<NotePage>(reopened.api(HttpMethod.Get, "/notes?page_size=100&order=created_desc"))
             assertEquals(1, page.notes.count { it.name == read.name })
+            val date = java.time.Instant.parse(live.createTime).atZone(java.time.ZoneId.of(restoredIdentity.timezone)).toLocalDate().toString()
+            val month = date.substring(0, 7)
+            val tags = CoreJson.parseToJsonElement(reopened.api(HttpMethod.Get, "/tags?state=NORMAL")).jsonObject.getValue("tags").jsonArray
+            assertTrue(tags.any { it.jsonObject.getValue("tag").jsonPrimitive.content == "android" })
+            val calendar = CoreJson.parseToJsonElement(reopened.api(HttpMethod.Get, "/calendar?state=NORMAL&month=$month")).jsonObject
+            assertEquals(month, calendar.getValue("month").jsonPrimitive.content)
+            assertTrue(calendar.getValue("days").jsonArray.any { it.jsonObject.getValue("date").jsonPrimitive.content == date })
+            for (mode in listOf("keyword", "hybrid")) {
+                val search = CoreJson.parseToJsonElement(reopened.api(HttpMethod.Post, "/search", buildJsonObject {
+                    put("query", content.substringAfter("integration ").substringBefore(" #")); put("mode", mode)
+                    put("state", "NORMAL"); put("date", date); put("tags", buildJsonArray { add("android") }); put("page_size", 20)
+                }.toString())).jsonObject
+                assertEquals("keyword", search.getValue("mode").jsonPrimitive.content)
+                assertFalse(search.getValue("semantic").jsonObject.getValue("used").jsonPrimitive.boolean)
+                assertEquals(live.name, search.getValue("notes").jsonArray.single().jsonObject.getValue("name").jsonPrimitive.content)
+            }
             val snapshot = reopened.api(HttpMethod.Get, "/map")
             assertEquals("disabled", CoreJson.parseToJsonElement(snapshot).jsonObject.getValue("status").jsonPrimitive.content)
             reopened.api(HttpMethod.Delete, "/notes/$id", buildJsonObject { put("source_hash", live.sourceHash) }.toString())

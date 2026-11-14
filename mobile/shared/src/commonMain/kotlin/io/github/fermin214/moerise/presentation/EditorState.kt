@@ -15,6 +15,7 @@ data class EditorUiState(
     val busy: Boolean = false,
     val error: String? = null,
     val serverSaved: Boolean = false,
+    val importing: Boolean = false,
 )
 
 fun completedDraft(draft: DraftEntity, write: PendingWriteEntity, remote: Note, expected: Boolean, conflictMaterial: String): DraftEntity {

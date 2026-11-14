@@ -8,7 +8,7 @@ import io.github.fermin214.moerise.domain.Note
 import kotlinx.serialization.json.JsonObject
 
 @Composable
-actual fun AttachmentPicker(enabled: Boolean, strings: Strings, onPicked: (List<StagedAttachment>) -> Boolean, onError: (String) -> Unit) = Unit
+actual fun AttachmentPicker(enabled: Boolean, strings: Strings, onPicked: (List<StagedAttachment>) -> Boolean, onError: (String) -> Unit, onBusy: (Boolean) -> Unit) = Unit
 
 @Composable
 actual fun OpenAttachmentButton(note: Note, item: JsonObject, core: CoreClient, strings: Strings) = Unit

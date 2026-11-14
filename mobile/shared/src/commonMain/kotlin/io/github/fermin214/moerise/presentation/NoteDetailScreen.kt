@@ -3,15 +3,18 @@ package io.github.fermin214.moerise.presentation
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.ScrollState
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
+import io.github.fermin214.moerise.domain.Note
+import kotlinx.serialization.json.*
 
 @Composable
-fun NoteDetailScreen(state: NoteDetailState, mobile: MobileController, strings: Strings, scroll: ScrollState) {
+fun NoteDetailScreen(state: NoteDetailState, mobile: MobileController, strings: Strings, scroll: ScrollState, onTag: (String, Note) -> Unit) {
     var confirmDelete by remember(state.name) { mutableStateOf(false) }
     Column(Modifier.safeDrawingPadding().verticalScroll(scroll).padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         TextButton(onClick = mobile::closeNote, modifier = Modifier.testTag("detail_back")) { Text(strings.text("返回列表", "Back to notes")) }
@@ -29,10 +32,18 @@ fun NoteDetailScreen(state: NoteDetailState, mobile: MobileController, strings: 
             }
             if (state.deleteUnknown) TextButton(onClick = mobile.detail::checkDeletion, enabled = !state.busy) { Text(strings.text("检查删除结果", "Check deletion")) }
             if (state.error == "SOURCE_CHANGED") TextButton(onClick = { mobile.detail.open(note.name) }) { Text(strings.text("重新读取", "Read again")) }
-            Text(note.createTime, style = MaterialTheme.typography.labelSmall)
+            Text(displayServiceTime(note.createTime, mobile.session.state.value.profile?.timezone ?: "UTC"), style = MaterialTheme.typography.labelSmall)
+            Row(Modifier.horizontalScroll(rememberScrollState())) {
+                note.tags.forEach { tag -> TextButton(onClick = { onTag(tag, note) }) { Text("#$tag") } }
+            }
             MarkdownBody(note.content, modifier = Modifier.testTag("note_detail"), note = note, core = mobile.session.core)
             mobile.session.core?.let { core ->
-                note.attachments.forEach { item -> OpenAttachmentButton(note, item, core, strings) }
+                note.attachments.forEach { item ->
+                    if (item["type"]?.jsonPrimitive?.content in setOf("image/png", "image/jpeg", "image/webp", "image/gif")) {
+                        item["content_url"]?.jsonPrimitive?.content?.let { url -> MarkdownBody("![]($url)", note = note, core = core) }
+                    }
+                    OpenAttachmentButton(note, item, core, strings)
+                }
             }
         } else if (!state.loading && state.name != null) TextButton(onClick = { mobile.detail.open(state.name) }) { Text(strings.text("重试读取", "Read again")) }
     }

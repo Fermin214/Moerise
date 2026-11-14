@@ -13,6 +13,7 @@ class MobileController(
 ) {
     val timeline = TimelineController(repository, { session.core }, scope)
     val archive = TimelineController(repository, { session.core }, scope, "ARCHIVED")
+    val search = SearchController({ session.core }, { session.state.value.profile?.accountKey }, scope)
     val detail = NoteDetailController(repository, { session.state.value.profile?.accountKey }, { session.core }, scope) {
         timeline.refresh()
         if (archive.state.value.fresh) archive.refresh()
@@ -30,6 +31,7 @@ class MobileController(
             session.state.map { it.profile?.accountKey }.distinctUntilChanged().collectLatest { key ->
                 timeline.reset(key)
                 archive.reset(key)
+                search.clear()
                 detail.clear()
                 mutableEditing.value = false
                 editor.open(key)
@@ -41,7 +43,7 @@ class MobileController(
                 session.state.map { Triple(it.profile?.accountKey, it.connected, it.needsLogin) }.distinctUntilChanged(),
                 editor.state.map { it.accountKey.takeIf { _ -> it.draft != null } }.distinctUntilChanged(),
             ) { connection, ready -> connection to ready }.collect { (connection, ready) ->
-                if (connection.third) { timeline.hideAccountData(); archive.hideAccountData(); detail.clear(); clearFiles() }
+                if (connection.third) { timeline.hideAccountData(); archive.hideAccountData(); search.clear(); detail.clear(); clearFiles() }
                 else if (connection.second && connection.first == ready && ready != null) timeline.refresh()
             }
         }
@@ -57,7 +59,7 @@ class MobileController(
     fun flush() { scope.launch { editor.flushForLifecycle() } }
     fun retryDraft() { scope.launch { editor.open(session.state.value.profile?.accountKey) } }
 
-    fun openNote(name: String) { flush(); detail.open(name) }
+    fun openNote(name: String) { flush(); search.leave(); detail.open(name) }
     fun closeNote() { flush(); detail.clear() }
     fun editNote(note: Note) {
         scope.launch {

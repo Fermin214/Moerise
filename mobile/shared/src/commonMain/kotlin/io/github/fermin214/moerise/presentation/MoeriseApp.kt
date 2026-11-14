@@ -46,6 +46,8 @@ fun MoeriseApp(mobile: MobileController, onEditorReady: () -> Unit = {}) {
     var page by rememberSaveable(connection.profile?.accountKey) { mutableStateOf("home") }
     val homeScroll = key(connection.profile?.accountKey) { rememberLazyListState() }
     val archiveScroll = key(connection.profile?.accountKey) { rememberLazyListState() }
+    val searchScroll = key(connection.profile?.accountKey) { rememberLazyListState() }
+    var searchFrom by rememberSaveable(connection.profile?.accountKey) { mutableStateOf("home") }
     val detailScroll = key(connection.profile?.accountKey, detail.name) { rememberScrollState() }
     val timeline = if (page == "archive") archivedTimeline else homeTimeline
     val timelineController = if (page == "archive") mobile.archive else mobile.timeline
@@ -55,14 +57,14 @@ fun MoeriseApp(mobile: MobileController, onEditorReady: () -> Unit = {}) {
     LaunchedEffect(ready) {
         if (ready) { withFrameNanos { }; onEditorReady() }
     }
-    fun navigate(next: String) { mobile.flush(); page = next }
+    fun navigate(next: String) { mobile.flush(); if (page == "search") mobile.search.leave(); page = next }
     PlatformBackHandler(page != "home" || detail.name != null || editing || conflict) {
         mobile.flush()
         when {
             conflict -> conflict = false
             editing -> mobile.finishEditing()
             detail.name != null -> mobile.closeNote()
-            else -> page = "home"
+            else -> navigate(if (page == "search") searchFrom else "home")
         }
     }
     MaterialTheme(colorScheme = lightColorScheme(
@@ -103,7 +105,18 @@ fun MoeriseApp(mobile: MobileController, onEditorReady: () -> Unit = {}) {
                 return@Surface
             }
             if (detail.name != null && !editing) {
-                NoteDetailScreen(detail, mobile, strings, detailScroll)
+                NoteDetailScreen(detail, mobile, strings, detailScroll) { tag, note ->
+                    mobile.search.change(SearchQuery(tags = setOf(tag), state = note.state))
+                    mobile.search.tab(0)
+                    mobile.search.search()
+                    mobile.closeNote()
+                    if (page != "search") searchFrom = page
+                    page = "search"
+                }
+                return@Surface
+            }
+            if (page == "search") {
+                SearchScreen(mobile, strings, searchScroll) { navigate(searchFrom) }
                 return@Surface
             }
             LazyColumn(
@@ -116,7 +129,10 @@ fun MoeriseApp(mobile: MobileController, onEditorReady: () -> Unit = {}) {
                         if (editing) TextButton(onClick = mobile::finishEditing, modifier = Modifier.testTag("editor_back")) { Text(strings.text("返回笔记", "Back to note")) }
                         else if (page == "archive") TextButton(onClick = { navigate("home") }) { Text(strings.text("返回主页", "Back to home")) }
                         else Text("Moerise", fontSize = 22.sp, modifier = Modifier.padding(top = 8.dp))
-                        TextButton(onClick = { navigate("settings") }) { Text(strings.text("设置", "Settings")) }
+                        if (!editing) Row {
+                            TextButton(onClick = { searchFrom = page; navigate("search") }, modifier = Modifier.testTag("open_search")) { Text(strings.text("搜索", "Search")) }
+                            TextButton(onClick = { navigate("settings") }) { Text(strings.text("设置", "Settings")) }
+                        }
                     }
                 }
                 if (connection.needsLogin || connection.error != null) item {
@@ -150,7 +166,7 @@ fun MoeriseApp(mobile: MobileController, onEditorReady: () -> Unit = {}) {
                     ) {
                         Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                             Text(note.content, maxLines = 7, lineHeight = 25.sp)
-                            Text(note.createTime, style = MaterialTheme.typography.labelSmall, color = MoeriseColors.Muted)
+                            Text(displayServiceTime(note.createTime, connection.profile!!.timezone), style = MaterialTheme.typography.labelSmall, color = MoeriseColors.Muted)
                         }
                     }
                 }
@@ -186,14 +202,17 @@ private fun HomeEditor(state: EditorUiState, controller: EditorController, strin
                 },
             )
             val edits = draft.attachmentEdits()
-            AttachmentPicker(
-                enabled = !state.busy && state.pending == null && draft.conflictJson == null,
-                strings = strings, onPicked = { controller.attach(draft.accountKey, it) }, onError = controller::attachmentError,
-            )
+            key(draft.accountKey, draft.id) {
+                AttachmentPicker(
+                    enabled = !state.busy && !state.importing && state.pending == null && draft.conflictJson == null,
+                    strings = strings, onPicked = { controller.attach(draft.accountKey, draft.id, it) },
+                    onError = { controller.attachmentError(it, draft.id) }, onBusy = { controller.importing(draft.id, it) },
+                )
+            }
             edits.staged.forEach { file ->
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                     Text(file.filename, modifier = Modifier.weight(1f).padding(top = 12.dp))
-                    TextButton(onClick = { controller.removeStaged(file.id) }, enabled = !state.busy && state.pending == null) {
+                    TextButton(onClick = { controller.removeStaged(file.id) }, enabled = !state.busy && state.pending == null && draft.conflictJson == null) {
                         Text(strings.text("移除", "Remove"))
                     }
                 }
@@ -203,7 +222,7 @@ private fun HomeEditor(state: EditorUiState, controller: EditorController, strin
                 val name = item["name"]?.jsonPrimitive?.content ?: return@forEach
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                     Text(item["filename"]?.jsonPrimitive?.content ?: name, modifier = Modifier.weight(1f).padding(top = 12.dp))
-                    TextButton(onClick = { controller.toggleRemoval(name) }, enabled = !state.busy && state.pending == null) {
+                    TextButton(onClick = { controller.toggleRemoval(name) }, enabled = !state.busy && state.pending == null && draft.conflictJson == null) {
                         Text(if (name in edits.removed) strings.text("保留", "Keep") else strings.text("移除", "Remove"))
                     }
                 }
@@ -221,7 +240,7 @@ private fun HomeEditor(state: EditorUiState, controller: EditorController, strin
                     Button(onClick = onConflict) { Text(strings.text("处理冲突", "Resolve conflict")) }
                 } else Button(
                     onClick = controller::save, modifier = Modifier.testTag("save_note"),
-                    enabled = !state.busy && connected && (draft.content.isNotBlank() || edits.staged.isNotEmpty() ||
+                    enabled = !state.busy && !state.importing && connected && (draft.content.isNotBlank() || edits.staged.isNotEmpty() ||
                         baseline?.attachments?.any { it["name"]?.jsonPrimitive?.content !in edits.removed } == true || state.pending != null),
                 ) {
                     Text(when {

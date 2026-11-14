@@ -36,6 +36,15 @@ class QuickNoteTest {
         compose.waitUntil(20_000) { compose.onAllNodesWithText(text, substring = false).fetchSemanticsNodes().isNotEmpty() }
         compose.onNodeWithTag("note_editor").assert(SemanticsMatcher.expectValue(SemanticsProperties.EditableText, AnnotatedString("")))
         compose.onNodeWithText(text, substring = false).assertIsDisplayed()
+        compose.onNodeWithTag("open_search").performScrollTo().performClick()
+        compose.onNodeWithTag("search_query").performTextReplacement(text.substringAfter("note ").substringBefore(" #"))
+        compose.onNodeWithTag("search_submit").performClick()
+        compose.waitUntil(20_000) { compose.onAllNodesWithText(text, substring = false).fetchSemanticsNodes().isNotEmpty() }
+        compose.onNodeWithText(text, substring = false).assertIsDisplayed()
+        compose.onNodeWithTag("search_mode_hybrid").performScrollTo().performClick()
+        compose.onNodeWithTag("search_submit").performClick()
+        compose.waitUntil(20_000) { compose.onAllNodesWithText(text, substring = false).fetchSemanticsNodes().isNotEmpty() }
+        compose.onNodeWithTag("search_back").performScrollTo().performClick()
         compose.onNodeWithText(text, substring = false).performClick()
         compose.waitUntil(20_000) { compose.onAllNodesWithTag("note_edit").fetchSemanticsNodes().isNotEmpty() }
         compose.onNodeWithTag("note_edit").performClick()

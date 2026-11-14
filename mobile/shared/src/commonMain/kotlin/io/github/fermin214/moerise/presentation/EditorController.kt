@@ -82,7 +82,7 @@ class EditorController(
     suspend fun flushForLifecycle(): Boolean = flushWithFeedback()
 
     fun save() {
-        if (state.value.busy || state.value.draft == null) return
+        if (state.value.busy || state.value.importing || state.value.draft == null) return
         val active = core() ?: return
         val stamp = generation
         mutable.update { it.copy(busy = true, error = null) }
@@ -156,12 +156,18 @@ class EditorController(
         editJob = scope.launch { flushWithFeedback() }
     }
 
-    fun attachmentError(code: String) { mutable.update { it.copy(error = code) } }
+    fun attachmentError(code: String, draftId: String? = null) {
+        mutable.update { if (draftId == null || it.draft?.id == draftId) it.copy(error = code) else it }
+    }
 
-    fun attach(accountKey: String, files: List<StagedAttachment>): Boolean {
+    fun importing(draftId: String, value: Boolean) {
+        mutable.update { if (it.draft?.id == draftId) it.copy(importing = value) else it }
+    }
+
+    fun attach(accountKey: String, draftId: String, files: List<StagedAttachment>): Boolean {
         val before = state.value
         val draft = before.draft ?: return false
-        if (before.busy || before.pending != null || draft.conflictJson != null || draft.accountKey != accountKey) return false
+        if (before.busy || before.pending != null || draft.conflictJson != null || draft.accountKey != accountKey || draft.id != draftId) return false
         val edits = draft.attachmentEdits()
         val combined = edits.staged + files
         if (combined.size > 10 || combined.sumOf { it.size } > 8 * 1024 * 1024) {
