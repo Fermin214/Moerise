@@ -57,6 +57,9 @@ data class PendingWriteEntity(
 @Entity(tableName = "snapshots", primaryKeys = ["accountKey", "filterKey"])
 data class SnapshotEntity(val accountKey: String, val filterKey: String, val body: String, val fetchedAt: Long)
 
+@Entity(tableName = "feature_states", primaryKeys = ["accountKey", "feature"])
+data class FeatureStateEntity(val accountKey: String, val feature: String, val body: String)
+
 @Dao
 interface LocalDao {
     @Upsert suspend fun putProfile(profile: ProfileEntity)
@@ -79,9 +82,12 @@ interface LocalDao {
     @Query("SELECT * FROM snapshots WHERE accountKey = :key AND filterKey = :filter")
     suspend fun snapshot(key: String, filter: String): SnapshotEntity?
     @Query("DELETE FROM snapshots WHERE accountKey = :key") suspend fun deleteSnapshots(key: String)
+    @Upsert suspend fun putFeature(state: FeatureStateEntity)
+    @Query("SELECT body FROM feature_states WHERE accountKey = :key AND feature = :feature")
+    suspend fun feature(key: String, feature: String): String?
 }
 
-@Database(entities = [ProfileEntity::class, DraftEntity::class, PendingWriteEntity::class, SnapshotEntity::class], version = 2)
+@Database(entities = [ProfileEntity::class, DraftEntity::class, PendingWriteEntity::class, SnapshotEntity::class, FeatureStateEntity::class], version = 3)
 @ConstructedBy(LocalDatabaseConstructor::class)
 abstract class LocalDatabase : RoomDatabase() {
     abstract fun dao(): LocalDao
@@ -98,6 +104,10 @@ fun RoomDatabase.Builder<LocalDatabase>.configureDatabase(): LocalDatabase =
             override fun migrate(connection: SQLiteConnection) {
                 connection.execSQL("ALTER TABLE drafts ADD COLUMN baselineJson TEXT DEFAULT NULL")
                 connection.execSQL("ALTER TABLE drafts ADD COLUMN slot TEXT NOT NULL DEFAULT 'home'")
+            }
+        }, object : Migration(2, 3) {
+            override fun migrate(connection: SQLiteConnection) {
+                connection.execSQL("CREATE TABLE IF NOT EXISTS feature_states (accountKey TEXT NOT NULL, feature TEXT NOT NULL, body TEXT NOT NULL, PRIMARY KEY(accountKey, feature))")
             }
         })
         .setQueryCoroutineContext(Dispatchers.IO).build()

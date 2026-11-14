@@ -110,6 +110,8 @@ class NoteRepository(private val db: LocalDatabase, private val files: Attachmen
     }
 
     suspend fun clearCache(key: String) { db.dao().deleteSnapshots(key) }
+    suspend fun feature(key: String, feature: String): String? = db.dao().feature(key, feature)
+    suspend fun putFeature(key: String, feature: String, body: String) { db.dao().putFeature(FeatureStateEntity(key, feature, body)) }
 
     suspend fun collectFiles() = withContext(Dispatchers.Default) {
         files?.collect(db.dao().attachmentReferences().flatMap { body ->

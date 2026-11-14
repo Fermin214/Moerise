@@ -113,6 +113,7 @@ class CoreIntegrationTest {
                     reopened.api(HttpMethod.Post, "/walks/start", walkBody)
                 }.detail.code)
             }
+            checkLiveChat(reopened, live, File(field("modelStats")))
             reopened.api(HttpMethod.Delete, "/notes/$id", buildJsonObject { put("source_hash", live.sourceHash) }.toString())
             val oldSession = secrets.read("session:$origin")
             reopened.logout()

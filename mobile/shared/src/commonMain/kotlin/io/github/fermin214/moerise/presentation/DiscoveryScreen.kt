@@ -17,7 +17,8 @@ import io.github.fermin214.moerise.domain.Note
 import kotlinx.serialization.json.*
 
 @Composable
-fun DiscoveryScreen(page: String, mobile: MobileController, strings: Strings, readingScroll: ScrollState, onMenu: () -> Unit, onWalk: (Note) -> Unit) {
+fun DiscoveryScreen(page: String, mobile: MobileController, strings: Strings, readingScroll: ScrollState, onMenu: () -> Unit,
+    onInsight: (Note) -> Unit, onWalk: (Note) -> Unit) {
     val review by mobile.review.state.collectAsState()
     val walk by mobile.walk.state.collectAsState()
     val connection by mobile.session.state.collectAsState()
@@ -42,7 +43,7 @@ fun DiscoveryScreen(page: String, mobile: MobileController, strings: Strings, re
                     if (batch.items.isEmpty()) Text(strings.text("今天没有可回顾的旧笔记。", "No older notes to review today."))
                     batch.items.getOrNull(review.position)?.let { item ->
                         if (item.unavailable) Text(strings.text("这条笔记已不存在或无法访问。", "This note is missing or unavailable."))
-                        else item.note?.let { DiscoveryNote(it, batch.timezone, mobile, strings, onWalk) }
+                        else item.note?.let { DiscoveryNote(it, batch.timezone, mobile, strings, onInsight, onWalk) }
                     }
                 }
             } else {
@@ -55,7 +56,7 @@ fun DiscoveryScreen(page: String, mobile: MobileController, strings: Strings, re
                         Text(previous.content, maxLines = 3, modifier = Modifier.padding(12.dp), color = MoeriseColors.Muted)
                     }
                 }
-                walk.result?.item?.note?.let { DiscoveryNote(it, connection.profile?.timezone ?: "UTC", mobile, strings, onWalk = null) }
+                walk.result?.item?.note?.let { DiscoveryNote(it, connection.profile?.timezone ?: "UTC", mobile, strings, onInsight, onWalk = null) }
                 if (walk.result?.exhausted == true) Text(strings.text(
                     if (walk.result?.item != null) "能走的路都走完了。" else "没有可漫步的笔记。",
                     if (walk.result?.item != null) "You’ve reached the end of this walk." else "No notes available for a walk.",
@@ -107,7 +108,7 @@ fun DiscoveryScreen(page: String, mobile: MobileController, strings: Strings, re
 }
 
 @Composable
-private fun DiscoveryNote(note: Note, timezone: String, mobile: MobileController, strings: Strings, onWalk: ((Note) -> Unit)?) {
+private fun DiscoveryNote(note: Note, timezone: String, mobile: MobileController, strings: Strings, onInsight: (Note) -> Unit, onWalk: ((Note) -> Unit)?) {
     Surface(shape = RoundedCornerShape(16.dp), border = BorderStroke(1.dp, MoeriseColors.Line)) {
         Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Text(displayServiceTime(note.createTime, timezone), color = MoeriseColors.Muted, style = MaterialTheme.typography.labelMedium)
@@ -122,6 +123,9 @@ private fun DiscoveryNote(note: Note, timezone: String, mobile: MobileController
             Row(Modifier.horizontalScroll(rememberScrollState())) {
                 TextButton(onClick = { mobile.openNote(note.name) }, modifier = Modifier.testTag("discovery_open")) {
                     Text(strings.text("打开笔记", "Open note"))
+                }
+                TextButton(onClick = { onInsight(note) }, enabled = mobile.session.state.value.connected) {
+                    Text(strings.text("洞察这条", "Explore this note"))
                 }
                 if (note.state == "NORMAL" && onWalk != null) TextButton(onClick = { onWalk(note) },
                     enabled = mobile.session.state.value.connected, modifier = Modifier.testTag("review_walk")) {

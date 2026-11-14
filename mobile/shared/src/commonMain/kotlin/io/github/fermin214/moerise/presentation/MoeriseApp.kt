@@ -56,6 +56,7 @@ fun MoeriseApp(mobile: MobileController, onEditorReady: () -> Unit = {}) {
     val detailScroll = key(connection.profile?.accountKey, detail.name) { rememberScrollState() }
     val reviewScroll = key(connection.profile?.accountKey, review.batch?.id, review.position) { rememberScrollState() }
     val walkScroll = key(connection.profile?.accountKey, walk.result?.item?.note?.name) { rememberScrollState() }
+    val insightScroll = key(connection.profile?.accountKey) { rememberScrollState() }
     val timeline = if (page == "archive") archivedTimeline else homeTimeline
     val timelineController = if (page == "archive") mobile.archive else mobile.timeline
     var conflict by remember { mutableStateOf(false) }
@@ -66,6 +67,7 @@ fun MoeriseApp(mobile: MobileController, onEditorReady: () -> Unit = {}) {
     }
     fun navigate(next: String) { mobile.flush(); if (page == "search") mobile.search.leave(); page = next; mobile.page(next) }
     fun startWalk(note: Note) { mobile.closeNote(); navigate("walk"); mobile.walk.start(note.name) }
+    fun startInsight(note: Note) { mobile.closeNote(); navigate("insights"); mobile.insights.seed(note.name) }
     LaunchedEffect(page, detail.name, editing, connection.connected) {
         mobile.page(page.takeIf { detail.name == null && !editing })
     }
@@ -89,7 +91,8 @@ fun MoeriseApp(mobile: MobileController, onEditorReady: () -> Unit = {}) {
                 ModalDrawerSheet {
                     Text("Moerise", style = MaterialTheme.typography.headlineSmall, modifier = Modifier.padding(24.dp))
                     listOf("home" to strings.text("主页", "Home"), "review" to strings.text("回顾", "Review"),
-                        "walk" to strings.text("漫步", "Walk"), "settings" to strings.text("设置", "Settings")).forEach { (target, label) ->
+                        "walk" to strings.text("漫步", "Walk"), "insights" to strings.text("洞察", "Insights"),
+                        "settings" to strings.text("设置", "Settings")).forEach { (target, label) ->
                         NavigationDrawerItem(label = { Text(label) }, selected = page == target,
                             modifier = Modifier.padding(horizontal = 12.dp).testTag("nav_$target"), onClick = {
                                 uiScope.launch { drawer.close() }
@@ -133,7 +136,7 @@ fun MoeriseApp(mobile: MobileController, onEditorReady: () -> Unit = {}) {
                 return@Surface
             }
             if (detail.name != null && !editing) {
-                NoteDetailScreen(detail, mobile, strings, detailScroll, onWalk = ::startWalk) { tag, note ->
+                NoteDetailScreen(detail, mobile, strings, detailScroll, onWalk = ::startWalk, onInsight = ::startInsight) { tag, note ->
                     mobile.search.change(SearchQuery(tags = setOf(tag), state = note.state))
                     mobile.search.tab(0)
                     mobile.search.search()
@@ -149,7 +152,11 @@ fun MoeriseApp(mobile: MobileController, onEditorReady: () -> Unit = {}) {
             }
             if (page in setOf("review", "walk")) {
                 DiscoveryScreen(page, mobile, strings, if (page == "review") reviewScroll else walkScroll,
-                    onMenu = { uiScope.launch { drawer.open() } }, onWalk = ::startWalk)
+                    onMenu = { uiScope.launch { drawer.open() } }, onInsight = ::startInsight, onWalk = ::startWalk)
+                return@Surface
+            }
+            if (page == "insights") {
+                InsightScreen(mobile, strings, insightScroll) { uiScope.launch { drawer.open() } }
                 return@Surface
             }
             LazyColumn(

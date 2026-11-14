@@ -13,8 +13,8 @@ actual fun platformHttpEngine(): HttpClientEngine = OkHttp.create {
         retryOnConnectionFailure(false)
         callTimeout(0, TimeUnit.MILLISECONDS)
         connectTimeout(10, TimeUnit.SECONDS)
-        readTimeout(65, TimeUnit.SECONDS)
-        writeTimeout(65, TimeUnit.SECONDS)
+        readTimeout(135, TimeUnit.SECONDS)
+        writeTimeout(135, TimeUnit.SECONDS)
     }
 }
 

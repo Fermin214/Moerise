@@ -4,12 +4,14 @@ import io.github.fermin214.moerise.domain.*
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.HttpClientEngine
 import io.ktor.client.plugins.HttpTimeout
+import io.ktor.client.plugins.timeout
 import io.ktor.client.plugins.cookies.HttpCookies
 import io.ktor.client.request.*
 import io.ktor.client.statement.bodyAsText
 import io.ktor.client.statement.bodyAsChannel
 import io.ktor.http.*
 import io.ktor.utils.io.readAvailable
+import kotlinx.coroutines.*
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.json.Json
@@ -81,6 +83,50 @@ class CoreClient(
                 if (identity?.csrfToken == current.csrfToken) refreshSession() else identity ?: refreshSession()
             }
             return send(method, path, body, refreshed.csrfToken, idempotencyKey)
+        }
+    }
+
+    suspend fun chatStream(chatId: String, input: ChatGenerate, onEvent: suspend (ChatEvent) -> Unit) {
+        require(Regex("^[0-9a-fA-F-]{36}$").matches(chatId) &&
+            Regex("^[A-Za-z0-9_-]{8,128}$").matches(input.requestId) && input.language in setOf("", "zh-CN", "en")) { "CHAT_PROTOCOL" }
+        var current = sessionLock.withLock { identity ?: refreshSession() }
+        val callerContext = currentCoroutineContext()
+        for (attempt in 0..1) {
+            var accepted = false
+            try {
+                client.preparePost("$origin/api/app/v1/chats/$chatId/messages") {
+                    header(HttpHeaders.Origin, origin)
+                    header("X-CSRF-Token", current.csrfToken)
+                    header(HttpHeaders.Accept, "text/event-stream")
+                    contentType(ContentType.Application.Json)
+                    setBody(CoreJson.encodeToString(input))
+                    timeout { requestTimeoutMillis = 135_000; socketTimeoutMillis = 135_000; connectTimeoutMillis = 10_000 }
+                }.execute { response ->
+                    if (response.status.value !in 200..299) {
+                        val detail = runCatching { CoreJson.decodeFromString<ErrorEnvelope>(response.bodyAsText()).error }
+                            .getOrElse { ApiError("HTTP_${response.status.value}") }
+                        if (response.status.value == 401) { identity = null; onUnauthorized() }
+                        throw CoreException(response.status.value, detail)
+                    }
+                    accepted = true
+                    require(response.contentType()?.match(ContentType.Text.EventStream) == true) { "CHAT_PROTOCOL" }
+                    val parser = ChatStreamParser(input.requestId) { event -> withContext(callerContext) { onEvent(event) } }
+                    val channel = response.bodyAsChannel()
+                    val buffer = ByteArray(16 * 1024)
+                    while (true) {
+                        val count = channel.readAvailable(buffer, 0, buffer.size)
+                        if (count < 0) break
+                        if (count > 0) withContext(Dispatchers.Default) { parser.feed(buffer, count) }
+                    }
+                    parser.finish()
+                }
+                return
+            } catch (error: CoreException) {
+                if (accepted || attempt != 0 || error.detail.code != "CSRF_REJECTED") throw error
+                current = sessionLock.withLock {
+                    if (identity?.csrfToken == current.csrfToken) refreshSession() else identity ?: refreshSession()
+                }
+            }
         }
     }
 

@@ -3,6 +3,7 @@ import { spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { once } from 'node:events';
 import { createServer } from 'node:http';
+import { text as requestText } from 'node:stream/consumers';
 import { mkdir, readFile, writeFile, open, rm } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -15,7 +16,7 @@ const root = resolve(process.argv[2] || '.local/android/fixture');
 assert.ok(root.startsWith(resolve(repo, '.local/android/') + '/'), 'fixture 必须放在 .local/android/ 下');
 const name = `moerise-android-${randomBytes(6).toString('hex')}`;
 const username = 'android-owner', password = randomBytes(24).toString('hex');
-let core, web, containerStarted = false;
+let core, web, model, containerStarted = false;
 const stop = new AbortController();
 for (const signal of ['SIGINT', 'SIGTERM']) process.once(signal, () => stop.abort());
 
@@ -53,6 +54,33 @@ try {
   const sourceOrigin = `http://127.0.0.1:${sourcePort}`;
   const coreOrigin = `http://127.0.0.1:${corePort}`;
   const origin = `http://127.0.0.1:${webPort}`;
+  const modelKey = randomBytes(32).toString('hex'), modelStats = resolve(root, 'model-stats.json');
+  let modelCalls = 0;
+  await writeFile(modelStats, JSON.stringify({ calls: 0 }), { mode: 0o600 });
+  model = createServer(async (req, res) => {
+    try {
+      assert.equal(req.url, '/v1/chat/completions');
+      assert.equal(req.headers.authorization, `Bearer ${modelKey}`);
+      const body = JSON.parse(await requestText(req));
+      assert.equal(body.model, 'android-fixture'); assert.equal(body.stream, true);
+      modelCalls++;
+      await writeFile(modelStats, JSON.stringify({ calls: modelCalls }), { mode: 0o600 });
+      const question = body.messages.at(-1).content;
+      res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+      res.write(`data: ${JSON.stringify({ model: 'android-fixture', choices: [{
+        index: 0, delta: { content: 'Android 洞察 🌌\n\n来自隔离模型的回复。' }, finish_reason: null,
+      }] })}\n\n`);
+      if (question.includes('ANDROID_HOLD')) return;
+      if (question.includes('ANDROID_FAIL')) { res.end(); return; }
+      res.end(`data: ${JSON.stringify({ model: 'android-fixture', choices: [{
+        index: 0, delta: {}, finish_reason: 'stop',
+      }] })}\n\ndata: [DONE]\n\n`);
+    } catch {
+      if (!res.headersSent) res.writeHead(400);
+      res.end();
+    }
+  });
+  model.listen(0, '127.0.0.1'); await once(model, 'listening');
   await docker(['run', '-d', '--name', name, '--cpus', '0.5', '--memory', '512m',
     '--mount', 'type=volume,target=/var/opt/memos', '-p', `127.0.0.1:${sourcePort}:5230`,
     'neosmemo/memos:0.31.0@sha256:24c2707ddd8fbd2ceaa7a61ecab86a53cdcde640b24ce572b73da14b00b5785f']);
@@ -69,7 +97,9 @@ try {
   config.state_dir = resolve(root, 'state'); config.index_dir = resolve(root, 'index');
   config.cursor_secret = randomBytes(32).toString('hex');
   config.access_tokens = [{ name: 'fixture-read', token: randomBytes(32).toString('hex'), scopes: ['notes:read'] }];
-  config.llm.enabled = false; config.embedding.enabled = false;
+  config.llm = { ...config.llm, enabled: true, protocol: 'openai-compatible',
+    base_url: `http://127.0.0.1:${model.address().port}/v1`, api_key: modelKey, model: 'android-fixture', max_retries: 0 };
+  config.embedding.enabled = false;
   config.notifications.enabled = false;
   await writeFile(resolve(root, 'config.json'), JSON.stringify(config), { mode: 0o600 });
   const log = await open(resolve(root, 'core.log'), 'w', 0o600);
@@ -82,7 +112,8 @@ try {
   await waitReady(coreOrigin, '/health/ready');
   web = createWebServer({ coreOrigin, publicOrigin: origin, dist: resolve(repo, 'web/src') });
   web.listen(webPort, '127.0.0.1'); await once(web, 'listening');
-  const fixture = { origin, username, password, sourceOrigin, sourceToken: pat, coreCommit: (await runProcess('git', ['rev-parse', 'HEAD'], { cwd: repo })).trim() };
+  const fixture = { origin, username, password, sourceOrigin, sourceToken: pat, modelStats,
+    coreCommit: (await runProcess('git', ['rev-parse', 'HEAD'], { cwd: repo })).trim() };
   await writeFile(resolve(root, 'connection.json'), JSON.stringify(fixture), { mode: 0o600 });
   console.log(`Android fixture: ${origin}`);
   console.log(`连接档案：${resolve(root, 'connection.json')}`);
@@ -91,9 +122,10 @@ try {
 } finally {
   if (web) { web.closeAllConnections(); await new Promise(done => web.close(done)); }
   if (core && core.exitCode === null) { core.kill('SIGTERM'); await Promise.race([once(core, 'exit'), delay(5_000)]); if (core.exitCode === null) core.kill('SIGKILL'); }
+  if (model) { model.closeAllConnections(); await new Promise(done => model.close(done)); }
   try {
     if (containerStarted) await docker(['rm', '-fv', name]);
   } finally {
-    for (const entry of ['config.json', 'connection.json', 'state', 'index', 'moerise']) await rm(resolve(root, entry), { force: true, recursive: true });
+    for (const entry of ['config.json', 'connection.json', 'state', 'index', 'moerise', 'model-stats.json']) await rm(resolve(root, entry), { force: true, recursive: true });
   }
 }

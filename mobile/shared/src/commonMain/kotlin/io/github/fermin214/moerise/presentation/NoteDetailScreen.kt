@@ -14,7 +14,8 @@ import io.github.fermin214.moerise.domain.Note
 import kotlinx.serialization.json.*
 
 @Composable
-fun NoteDetailScreen(state: NoteDetailState, mobile: MobileController, strings: Strings, scroll: ScrollState, onWalk: (Note) -> Unit, onTag: (String, Note) -> Unit) {
+fun NoteDetailScreen(state: NoteDetailState, mobile: MobileController, strings: Strings, scroll: ScrollState,
+    onWalk: (Note) -> Unit, onInsight: (Note) -> Unit, onTag: (String, Note) -> Unit) {
     var confirmDelete by remember(state.name) { mutableStateOf(false) }
     Column(Modifier.safeDrawingPadding().verticalScroll(scroll).padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         TextButton(onClick = mobile::closeNote, modifier = Modifier.testTag("detail_back")) { Text(strings.text("返回", "Back")) }
@@ -33,6 +34,8 @@ fun NoteDetailScreen(state: NoteDetailState, mobile: MobileController, strings: 
             if (state.deleteUnknown) TextButton(onClick = mobile.detail::checkDeletion, enabled = !state.busy) { Text(strings.text("检查删除结果", "Check deletion")) }
             if (note.state == "NORMAL") TextButton(onClick = { onWalk(note) }, enabled = !state.busy && mobile.session.state.value.connected,
                 modifier = Modifier.testTag("note_walk")) { Text(strings.text("从这条漫步", "Walk from this note")) }
+            TextButton(onClick = { onInsight(note) }, enabled = !state.busy && mobile.session.state.value.connected,
+                modifier = Modifier.testTag("note_insight")) { Text(strings.text("洞察这条", "Explore this note")) }
             if (state.error == "SOURCE_CHANGED") TextButton(onClick = { mobile.detail.open(note.name) }) { Text(strings.text("重新读取", "Read again")) }
             Text(displayServiceTime(note.createTime, mobile.session.state.value.profile?.timezone ?: "UTC"), style = MaterialTheme.typography.labelSmall)
             Row(Modifier.horizontalScroll(rememberScrollState())) {
