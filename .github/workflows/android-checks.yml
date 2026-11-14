@@ -1,0 +1,25 @@
+name: Android checks
+on:
+  push:
+    paths: ['mobile/**', 'scripts/android/**', 'internal/client_*.go', 'internal/*models.go', '.github/workflows/android-checks.yml']
+  pull_request:
+    paths: ['mobile/**', 'scripts/android/**', 'internal/client_*.go', 'internal/*models.go', '.github/workflows/android-checks.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  android:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+      - run: sdkmanager 'platforms;android-36' 'build-tools;36.0.0'
+      - run: scripts/android/check.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: moerise-android-debug
+          path: mobile/androidApp/build/outputs/apk/debug/*.apk

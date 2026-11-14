@@ -13,3 +13,7 @@ build/
 *.test
 coverage.out
 node_modules/
+mobile/.gradle/
+mobile/.kotlin/
+mobile/local.properties
+*.hprof

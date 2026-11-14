@@ -23,4 +23,5 @@
 | 开发指南 | [指南](DEVELOPMENT.md) |
 | 参与贡献 | [指南](../CONTRIBUTING.md) |
 | Android 开发计划 | [v0.1.0 范围、里程碑与验收](ROADMAP.md#1-阶段四android-客户端) |
+| Android 开发 | [工具链、构建与设备安装](ANDROID.md) |
 | 路线图 | [路线图](ROADMAP.md) |
