@@ -31,6 +31,7 @@ type ProductSettings struct {
 	Review        ReviewConfig       `json:"review"`
 	Notifications NotificationConfig `json:"notifications"`
 	Embedding     EmbeddingConfig    `json:"embedding"`
+	Stargazing    StargazingConfig   `json:"stargazing"`
 	LLM           LLMConfig          `json:"llm"`
 	Channel       ChannelConfig      `json:"channel"`
 	Insights      InsightsConfig     `json:"insights"`
@@ -77,12 +78,13 @@ type SettingsView struct {
 }
 
 func productSettings(s Settings) ProductSettings {
-	return ProductSettings{s.Timezone, s.Review, s.Notifications, s.Embedding, s.LLM, s.Channel, s.Insights, s.daily, s.notificationChannels}
+	return ProductSettings{s.Timezone, s.Review, s.Notifications, s.Embedding, s.Stargazing, s.LLM, s.Channel, s.Insights, s.daily, s.notificationChannels}
 }
 
 func (p ProductSettings) apply(s Settings) Settings {
 	s.Timezone, s.Review, s.Notifications = p.Timezone, p.Review, p.Notifications
 	s.Embedding, s.LLM, s.Channel, s.Insights = p.Embedding, p.LLM, p.Channel, p.Insights
+	s.Stargazing = p.Stargazing
 	s.daily = p.Daily
 	s.notificationChannels = p.NotificationChannels
 	return s
@@ -137,7 +139,7 @@ func decryptProduct(settings Settings, version int64, body []byte) (Settings, er
 	if err != nil {
 		return settings, bad
 	}
-	var product ProductSettings
+	product := ProductSettings{Stargazing: StargazingConfig{Enabled: true}}
 	if strictJSON(bytes.NewReader(plain), &product) != nil {
 		return settings, bad
 	}

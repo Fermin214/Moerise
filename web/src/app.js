@@ -98,7 +98,15 @@ async function request(path, { method = 'GET', body, headers = {}, controller = 
 }
 function validIdentity(value) {
   if (!value?.user?.name || !value.csrf_token) throw Object.assign(new Error('Invalid session response'), { code: 'SESSION_RESPONSE_INVALID' });
+  if (value.stargazing_enabled !== undefined && typeof value.stargazing_enabled !== 'boolean') {
+    throw Object.assign(new Error('Invalid stargazing configuration'), { code: 'SESSION_RESPONSE_INVALID' });
+  }
   return value;
+}
+function updateStargazing(enabled = identity?.stargazing_enabled !== false) {
+  if (identity) identity.stargazing_enabled = enabled;
+  document.querySelectorAll('a[data-route][href="/map"]').forEach(link => { link.hidden = !enabled; });
+  if (!enabled) mapView = mapSnapshot = null;
 }
 async function sessionRequest(path, options = {}) {
   const headers = { ...options.headers, 'X-CSRF-Token': identity?.csrf_token || logoutCSRF };
@@ -111,7 +119,7 @@ async function sessionRequest(path, options = {}) {
       if (options.method === 'DELETE' && refreshError.status === 401) return request(path, { ...options, headers });
       throw refreshError;
     }
-    if (identity) identity = value;
+    if (identity) { identity = value; updateStargazing(); }
     else logoutCSRF = value.csrf_token;
     return request(path, { ...options, headers: { ...headers, 'X-CSRF-Token': value.csrf_token } });
   }
@@ -246,6 +254,7 @@ async function reloadTimeline(pages = pageCount || 1, scroll = window.scrollY) {
 }
 async function enter(value) {
   identity = validIdentity(value);
+  updateStargazing();
   if (draftOwner && draftOwner !== identity.user.name) clearDrafts();
   draftOwner = null;
   logoutCSRF = null;
@@ -1245,7 +1254,7 @@ async function showRoute() {
       sessionRequest, csrfToken: () => identity?.csrf_token, handleFailure, openNote,
       navigate: (url, options) => { if (url === currentURL) showRoute(); else navigate(url, options); },
       closeMenus,
-      renewCSRF: async () => { identity = validIdentity(await request('/session')); },
+      renewCSRF: async () => { identity = validIdentity(await request('/session')); updateStargazing(); },
       replaceURL: url => {
         history.replaceState({ ...history.state }, '', url);
         currentURL = location.pathname + location.search;
@@ -1257,6 +1266,10 @@ async function showRoute() {
   } else if (location.pathname === '/map') {
     setText($('view-title'), l("观星")); $('view-title').hidden = false;
     window.scrollTo(0, 0);
+    if (identity.stargazing_enabled === false) {
+      setText($('capability'), l("观星已关闭。")); $('capability').hidden = false;
+      return;
+    }
     const module = await routeModule(() => import('./map.js'), generation, sequence);
     if (!module) return;
     const saved = history.state?.mapView?.owner === identity.user.name ? history.state.mapView :
@@ -1266,7 +1279,10 @@ async function showRoute() {
       initialView: saved,
       initialData: mapSnapshot,
       onData: value => {
-        if (identity && generation === epoch && sequence === viewSequence) mapSnapshot = value;
+        if (identity && generation === epoch && sequence === viewSequence) {
+          mapSnapshot = value;
+          if (value.disabled_reason === 'stargazing') updateStargazing(false);
+        }
       },
       onViewChange: value => {
         if (!identity || generation !== epoch || sequence !== viewSequence) return;
@@ -1284,6 +1300,7 @@ async function showRoute() {
       sessionRequest, handleFailure,
       onSaved: data => {
         identity.timezone = data.settings.timezone;
+        updateStargazing(data.settings.stargazing.enabled);
         walkConfiguration = null;
         month = sourceTimeline().values.date?.slice(0, 7) || localToday().slice(0, 7);
         dirtySnapshots(); invalidateSidebar(); loadSidebar();

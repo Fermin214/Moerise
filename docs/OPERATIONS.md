@@ -24,6 +24,7 @@ Moerise 支持 Linux 原生二进制运行以及 Docker 容器部署。本文档
 | `MOERISE_STATE_DIR` | `state_dir` | `/data/state` | 保存业务数据库 `state.sqlite3` 的持久化目录 |
 | `MOERISE_INDEX_DIR` | `index_dir` | `/data/index` | 保存可重建索引库 `index.sqlite3` 的持久化目录 |
 | `MOERISE_LAYOUT_URL` | — | 原生 `http://127.0.0.1:8766`；Compose `http://layout:8766` | Core 访问的私有布局服务地址 |
+| `MOERISE_STARGAZING_ENABLED` | `stargazing.enabled` | `true` | 观星开关，仅首次初始化读取，之后在设置页调整 |
 | `MOERISE_LAYOUT_STATE` | — | `/data` | Python 布局服务的模型、缓存和任务目录 |
 | `LAYOUT_MEMORY_LIMIT` / `LAYOUT_CPU_LIMIT` | — | `1g` / `1.0` | Compose 布局服务的内存和 CPU 上限 |
 
@@ -65,12 +66,28 @@ docker compose ps
 在已有自托管 Memos 实例的场景下，在 `.env` 中关闭内置 Memos profile 并指定已有地址：
 
 ```dotenv
-COMPOSE_PROFILES=
+COMPOSE_PROFILES=stargazing
 MOERISE_MEMOS_BASE_URL=https://memos.example.com
 MOERISE_MEMOS_PUBLIC_URL=https://memos.example.com
 ```
 
 已有实例需为 Memos 0.31.x，绑定账号与 PAT 须与 `.env` 中的资源名一致；容器内的 `localhost` 指容器自身。随后运行 `docker compose pull moerise web layout` 和 `docker compose up -d` 完成对接。源码部署使用 `docker compose up -d --build`；Core、Web、布局服务使用同一版本的代码。
+
+### 观星按需启用
+
+`COMPOSE_PROFILES` 中，`memos` 启动内置 Memos，`stargazing` 启动布局服务。默认模板为 `memos,stargazing`；外接 Memos 且启用观星时设为 `stargazing`。
+
+不使用观星时，在「设置 → 通用」关闭「启用观星」，将 profile 设为 `memos`（内置 Memos）或留空（外接 Memos），再停止布局服务：
+
+```bash
+docker compose stop layout
+docker compose pull moerise web
+docker compose up -d
+```
+
+新安装可在 `.env` 中设置 `MOERISE_STARGAZING_ENABLED=false` 初始化开关。已有实例以持久设置为准。关闭后 Core 不再调度布局，已有快照、向量和模型卷保留，语义检索与漫步照常使用。
+
+恢复时在 profile 中加回 `stargazing`，执行 `docker compose pull moerise web layout` 和 `docker compose up -d`，再开启应用开关。应用开关不会启停 Docker 容器；仅移除 profile 不会停止已运行的布局容器。保留 `layout-data` 卷可以复用 UMAP 模型。
 
 ### 3. HTTPS 与运行检查
 
@@ -180,7 +197,7 @@ docker compose up -d --no-build moerise
 ## 五、升级与回滚
 
 1. 备份 Memos 数据、Moerise 产品状态及配置，记录源码提交或镜像摘要。
-2. 保持 Compose 项目名、来源绑定、数据卷和状态加密密钥一致，将 `.env` 中的 `MOERISE_IMAGE_TAG` 设为目标版本，执行 `docker compose pull moerise web layout` 和 `docker compose up -d`。
+2. 保持 Compose 项目名、来源绑定、数据卷和状态加密密钥一致，将 `.env` 中的 `MOERISE_IMAGE_TAG` 设为目标版本。启用观星时，确保 `COMPOSE_PROFILES` 包含 `stargazing`，执行 `docker compose pull moerise web layout` 和 `docker compose up -d`；停用观星时只拉取 `moerise web`。
 3. 检查就绪状态、原文和附件、设置版本、回顾与聊天历史；启用 Embedding 时另查索引构建状态。
 4. 回滚时先停止服务并切换代码或镜像；数据库结构不兼容时，恢复目标版本对应的状态备份，再启动。
 

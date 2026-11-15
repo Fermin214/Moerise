@@ -25,6 +25,7 @@ function settings() {
         max_concurrency: 2, max_retries: 2, query_instruction: null },
       channel: { kind: 'none', app_id: null, user_open_id: null, destination: null },
       insights: { default_prompt: '用户自定义 Prompt' },
+      stargazing: { enabled: true },
     },
     secrets: Object.fromEntries(['llm_api_key', 'embedding_api_key', 'app_secret', 'verification_token',
       'encrypt_key', 'webhook_url', 'webhook_secret', 'bot_token'].map(name => [name, { configured: name === 'llm_api_key' }])),
@@ -33,7 +34,7 @@ function settings() {
 }
 async function fixture(t, language = 'zh-CN') {
   const state = { value: settings(), session: false, gets: 0, patches: [], fail: null, hold: false, pending: [], csrf: false,
-    checks: [], checkFail: null, holdCheck: false, modelPending: [], index: 'disabled' };
+    checks: [], checkFail: null, holdCheck: false, modelPending: [], index: 'disabled', mapReads: 0 };
   const core = http.createServer(async (req, res) => {
     const path = new URL(req.url, 'http://localhost').pathname;
     const raw = await readRequestText(req);
@@ -42,7 +43,8 @@ async function fixture(t, language = 'zh-CN') {
       res.writeHead(status, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(data));
     };
     const error = (code, status) => json({ error: { code } }, status);
-    const identity = { user: { name: 'users/1', display_name: '设置测试' }, timezone: state.value.settings.timezone, csrf_token: 'csrf-settings' };
+    const identity = { user: { name: 'users/1', display_name: '设置测试' }, timezone: state.value.settings.timezone,
+      stargazing_enabled: state.value.settings.stargazing.enabled, csrf_token: 'csrf-settings' };
     if (path === '/api/app/v1/session') {
       if (req.method === 'POST') state.session = true;
       if (req.method === 'DELETE') { state.session = false; res.writeHead(204); res.end(); return; }
@@ -60,6 +62,7 @@ async function fixture(t, language = 'zh-CN') {
       return;
     }
     if (path === '/api/app/v1/map') {
+      state.mapReads++;
       json({ status: state.value.settings.embedding.enabled ? state.index === 'building' ? 'building' : 'waiting' : 'disabled',
         algorithm: 'pca-fixed-v2', projection_revision: 0, layout_version: '', layout_frame: '', vector_generation: '', points: [] });
       return;
@@ -153,6 +156,49 @@ const setting = (page, path) => page.locator(`[name="${path}"]`);
 const operation = (page, label) => page.getByRole('combobox', { name: `${label}操作`, exact: true });
 const secret = (page, label) => page.getByLabel(`${label}新值`, { exact: true });
 const tab = (page, id) => page.locator(`#settings-tab-${id}`).click();
+
+for (const language of ['zh-CN', 'en-US']) {
+  for (const mobile of [false, true]) {
+    test(`stargazing toggle hides navigation and restores it independently of embedding (${language}, ${mobile ? 'mobile' : 'desktop'})`, async t => {
+      const { page, state, url, errors } = await fixture(t, language);
+      if (mobile) await page.setViewportSize({ width: 390, height: 844 });
+      const saveLabel = language === 'zh-CN' ? '保存设置' : 'Save settings';
+      const savedLabel = language === 'zh-CN' ? '设置已保存。' : 'Settings saved.';
+      const disabledLabel = language === 'zh-CN' ? '观星已关闭。' : 'Stargazing is disabled.';
+      const navigate = async path => {
+        if (mobile) await page.locator('#navigation-toggle').click();
+        await page.locator(`a[data-route][href="${path}"]`).click();
+      };
+      await page.goto(url + '/settings'); await login(page);
+      const save = page.getByRole('button', { name: saveLabel, exact: true });
+      await save.waitFor();
+      const link = page.locator('a[data-route][href="/map"]');
+      assert.equal(await link.evaluate(node => node.hidden), false);
+      const embedding = structuredClone(state.value.settings.embedding);
+      await tab(page, 'general');
+      await setting(page, 'stargazing.enabled').uncheck();
+      await save.click(); await page.getByText(savedLabel, { exact: true }).waitFor();
+      assert.equal(await link.evaluate(node => node.hidden), true);
+      assert.deepEqual(state.patches.at(-1).settings, { stargazing: { enabled: false } });
+      await page.goto(url + '/map');
+      await page.locator('#capability').filter({ hasText: disabledLabel }).waitFor();
+      await page.reload();
+      await page.locator('#capability').filter({ hasText: disabledLabel }).waitFor();
+      assert.equal(await page.locator('.map-page').count(), 0);
+      assert.equal(state.mapReads, 0);
+      assert.equal(await link.evaluate(node => node.hidden), true);
+      await navigate('/settings'); await save.waitFor();
+      await tab(page, 'general'); await setting(page, 'stargazing.enabled').check();
+      await save.click(); await page.getByText(savedLabel, { exact: true }).waitFor();
+      assert.equal(await link.evaluate(node => node.hidden), false);
+      assert.deepEqual(state.value.settings.embedding, embedding);
+      await navigate('/map'); await page.locator('#map-field').waitFor();
+      assert.equal(state.mapReads, 1);
+      assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+      assert.deepEqual(errors, []);
+    });
+  }
+}
 
 test('lazy page modules isolate navigation during loading and recover from a failed download', { timeout: 60_000 }, async t => {
   const { page, state, url, errors } = await fixture(t);

@@ -52,6 +52,9 @@
     "max_retries": 2,
     "query_instruction": null
   },
+  "stargazing": {
+    "enabled": true
+  },
   "llm": {
     "enabled": false,
     "protocol": "openai-compatible",

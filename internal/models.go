@@ -148,6 +148,7 @@ type MapResponse struct {
 	Topics             []MapTopic `json:"topics"`
 	Links              []MapLink  `json:"links"`
 	UpdateState        string     `json:"update_state,omitempty"`
+	DisabledReason     string     `json:"disabled_reason,omitempty"`
 }
 
 type CreateNote struct {

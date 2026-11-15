@@ -34,6 +34,7 @@ type MapService struct {
 	schedule    atomic.Pointer[mapSchedule]
 	lastFailure atomic.Pointer[mapSchedule]
 	activity    atomic.Pointer[mapActivity]
+	epoch       atomic.Uint64
 	algorithm   string
 	workerURL   string
 	scope       string
@@ -49,6 +50,7 @@ func NewMapService(store *Store) *MapService {
 }
 
 func (s *MapService) Reset() {
+	s.epoch.Add(1)
 	s.cache.Store(nil)
 	s.schedule.Store(nil)
 	s.lastFailure.Store(nil)
@@ -63,8 +65,8 @@ func (s *MapService) readState(response MapResponse, key string) MapResponse {
 }
 
 func (s *MapService) cacheKey() string {
-	return hashBytes(canonicalJSON([]string{s.Store.Settings.Memos.InstanceID,
-		s.Store.Settings.Memos.User, embeddingSpace(s.Store.Settings.Embedding), s.algorithm}))
+	return hashBytes(canonicalJSON([]any{s.Store.Settings.Memos.InstanceID,
+		s.Store.Settings.Memos.User, embeddingSpace(s.Store.Settings.Embedding), s.algorithm, s.epoch.Load()}))
 }
 
 func mapRequestError(ctx context.Context, err error) error {
@@ -105,7 +107,12 @@ func (s *MapService) Read(ctx context.Context) (_ MapResponse, result error) {
 	if err := ctx.Err(); err != nil {
 		return MapResponse{}, err
 	}
+	if !s.Store.Settings.Stargazing.Enabled {
+		response.DisabledReason = "stargazing"
+		return response, nil
+	}
 	if !s.Store.Settings.Embedding.Enabled {
+		response.DisabledReason = "embedding"
 		return response, nil
 	}
 	key := s.cacheKey()
@@ -181,7 +188,7 @@ func (s *MapService) update(ctx context.Context, now time.Time) error {
 	slog.Info("stars layout computed", "points", len(layout.points), "elapsed", time.Since(started))
 	unlockRuntime := s.Store.lockRuntime()
 	defer unlockRuntime()
-	if job.key != s.cacheKey() {
+	if !s.Store.Settings.Stargazing.Enabled || !s.Store.Settings.Embedding.Enabled || job.key != s.cacheKey() {
 		return mapIndexChanged()
 	}
 	unlock, err := s.Store.lockBackground(ctx)
@@ -234,7 +241,7 @@ func (s *MapService) loadLayout(ctx context.Context, store *Store, space string)
 func (s *MapService) prepare(ctx context.Context, now time.Time) (*mapJob, error) {
 	unlockRuntime := s.Store.lockRuntime()
 	defer unlockRuntime()
-	if !s.Store.Settings.Embedding.Enabled {
+	if !s.Store.Settings.Stargazing.Enabled || !s.Store.Settings.Embedding.Enabled {
 		return nil, nil
 	}
 	key := s.cacheKey()
@@ -282,6 +289,9 @@ func (s *MapService) prepare(ctx context.Context, now time.Time) (*mapJob, error
 }
 
 func (s *MapService) Rebuild(ctx context.Context) error {
+	if !s.Store.Settings.Stargazing.Enabled {
+		return failure("STARGAZING_DISABLED", "Enable stargazing before rebuilding stars", 409, false)
+	}
 	if !s.Store.Settings.Embedding.Enabled {
 		return failure("EMBEDDING_DISABLED", "Enable embedding before rebuilding stars", 409, false)
 	}

@@ -17,7 +17,7 @@ node scripts/acceptance/check-compose.mjs --browser
 
 | 脚本 | 覆盖内容 |
 | --- | --- |
-| `check-compose.mjs` | Compose 构建、启动、健康检查、代理、会话、持久化与备份恢复；`--browser` 增加浏览器流程 |
+| `check-compose.mjs` | Compose 构建、启动、健康检查、代理、会话、观星开关与可选布局服务、持久化与备份恢复；`--browser` 增加浏览器流程 |
 | `check-discovery.mjs` | Web 每日回顾、语义漫步、只读机器接口和模型异常 |
 | `check-chat.mjs` | 材料选择、流式回复、追问、保存成笔记与重启恢复 |
 | `check-models.mjs` | 设置热更新、模型诊断、多种 LLM/Embedding 协议与失败响应 |

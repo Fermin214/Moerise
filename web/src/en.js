@@ -9,6 +9,8 @@ export const english = {
   "正在重新生成星图…": "Regenerating star map…",
   "正在生成观星布局…": "Generating star map…",
   "观星暂时不可用，稍后重试。": "Stargazing is unavailable. Please try again shortly.",
+  "启用观星": "Enable stargazing",
+  "观星已关闭。": "Stargazing is disabled.",
   "未定位笔记": "Notes without positions",
   "未定位笔记（{0}）": "Notes without positions ({0})",
   "星图生成失败，请重试。": "Star map generation failed. Please try again.",

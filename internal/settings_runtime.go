@@ -65,6 +65,7 @@ func (a *App) UpdateSettings(ctx context.Context, update SettingsUpdate) (Settin
 	old := a.Store.Settings
 	llmChanged := !reflect.DeepEqual(old.LLM, settings.LLM)
 	embeddingChanged := !reflect.DeepEqual(old.Embedding, settings.Embedding)
+	stargazingChanged := old.Stargazing != settings.Stargazing
 	channelChanged := !reflect.DeepEqual(old.Channel, settings.Channel)
 	llm, embedding := a.LLM, a.Search.Provider
 	events, transport := a.Feishu, a.Notifications.Transport
@@ -139,10 +140,10 @@ func (a *App) UpdateSettings(ctx context.Context, update SettingsUpdate) (Settin
 	a.LLM, a.Search.Provider = llm, embedding
 	a.Chat.Provider = llm
 	a.Feishu, a.Notifications.Transport = events, transport
+	if (embeddingChanged || stargazingChanged) && a.Map != nil {
+		a.Map.Reset()
+	}
 	if embeddingChanged {
-		if a.Map != nil {
-			a.Map.Reset()
-		}
 		a.Search.mu.Lock()
 		a.Search.matrix = nil
 		a.Search.mu.Unlock()

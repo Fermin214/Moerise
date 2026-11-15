@@ -7,6 +7,8 @@ const digest = /^[a-f0-9]{64}$/;
 export function validMap(value) {
   if (!value || !statuses.has(value.status) || typeof value.algorithm !== 'string' || !value.algorithm ||
       !Number.isSafeInteger(value.projection_revision) || value.projection_revision < 0 || !Array.isArray(value.points)) return false;
+  if (value.disabled_reason !== undefined && (value.status !== 'disabled' ||
+      !['stargazing', 'embedding'].includes(value.disabled_reason))) return false;
   const ready = value.status === 'ready' || value.status === 'empty';
   if (ready ? !digest.test(value.layout_version) || !digest.test(value.layout_frame) || typeof value.vector_generation !== 'string' || !value.vector_generation :
       value.layout_version !== '' || value.layout_frame !== '' || value.vector_generation !== '' || value.points.length) return false;
@@ -320,6 +322,7 @@ export function createMapPage({ request, handleFailure, validNote, renderNote, i
   function display(next) {
     setHover(''); clearExcerpts(); resetPointers(); scene?.destroy(); scene = null;
     result = next; field.replaceChildren(); points.clear(); field.dataset.rendered = 'false';
+    tools.hidden = next.disabled_reason === 'stargazing';
     root.classList.toggle('stargazing', next.algorithm === 'umap-balanced-v1');
     atmosphere.hidden = framing.hidden = rebuild.hidden = next.algorithm !== 'umap-balanced-v1';
     for (const point of next.points) points.set(point.name, point);
@@ -329,7 +332,7 @@ export function createMapPage({ request, handleFailure, validNote, renderNote, i
     setText(unplaced, l("未定位笔记（{0}）", { 0: missing }));
     if (!['ready', 'empty'].includes(next.status)) {
       clearReader();
-      say({ disabled: l("请在设置中启用 Embedding。"), waiting: l("语义索引正在等待同步或构建。"),
+      say({ disabled: next.disabled_reason === 'stargazing' ? l("观星已关闭。") : l("请在设置中启用 Embedding。"), waiting: l("语义索引正在等待同步或构建。"),
         building: l("正在生成观星布局…"), unavailable: l("观星暂时不可用，稍后重试。") }[next.status]);
       if (next.status !== 'disabled') refreshLater(next.status === 'unavailable' ? 10000 : 3000);
       return;

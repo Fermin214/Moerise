@@ -4,6 +4,7 @@ const fields = {
   notifications: ['enabled', 'times'],
   llm: ['enabled', 'protocol', 'base_url', 'model', 'timeout_seconds', 'max_concurrency', 'max_retries', 'max_output_tokens'],
   embedding: ['enabled', 'provider', 'protocol', 'base_url', 'model', 'dimensions', 'send_dimensions', 'batch_size', 'timeout_seconds', 'max_concurrency', 'max_retries', 'query_instruction'],
+  stargazing: ['enabled'],
   channel: ['kind', 'app_id', 'user_open_id', 'destination'],
   insights: ['default_prompt'],
 };
@@ -403,6 +404,7 @@ export function createSettingsPage({ sessionRequest, handleFailure, onSaved = ()
     language.value = languagePreference();
     language.addEventListener('change', () => setLanguage(language.value, { persist: true }));
     row(general, l("语言"), language);
+    field(general, 'stargazing.enabled', l("启用观星"), { type: 'checkbox' });
     const review = section('review', l("回顾"));
     field(review, 'timezone', l("时区"), { hint: l("使用 IANA 名称，例如 Asia/Hong_Kong。") });
     field(review, 'review.count', l("每次数量（条）"), { type: 'number', min: 1, max: 20 });
@@ -480,7 +482,8 @@ export function createSettingsPage({ sessionRequest, handleFailure, onSaved = ()
       const data = await sessionRequest('/settings', { controller });
       if (!active || sequence !== ticket) return;
       if (!data?.settings || !Number.isSafeInteger(data.version) || !data.settings.review || !data.settings.notifications ||
-          !data.settings.llm || !data.settings.embedding || !data.settings.channel || !data.settings.insights) {
+          !data.settings.llm || !data.settings.embedding || !data.settings.stargazing ||
+          !data.settings.channel || !data.settings.insights) {
         throw invalid(l("服务返回的设置不完整，请重新加载。"));
       }
       snapshot = data; render();
