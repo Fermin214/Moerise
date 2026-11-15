@@ -347,7 +347,13 @@ test('mobile navigation, touch gestures, search and rotation preserve drafts and
   const client = await context.newCDPSession(page);
   const swipe = async (from, to) => {
     await client.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: from[0], y: from[1], id: 1 }] });
-    await client.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x: to[0], y: to[1], id: 1 }] });
+    for (let step = 1; step <= 8; step++) {
+      const fraction = step / 8;
+      await client.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{
+        x: from[0] + (to[0] - from[0]) * fraction, y: from[1] + (to[1] - from[1]) * fraction, id: 1,
+      }] });
+      await page.waitForTimeout(16);
+    }
     await client.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
   };
   await swipe([8, 600], [10, 450]);

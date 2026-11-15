@@ -15,5 +15,6 @@ coverage.out
 node_modules/
 mobile/.gradle/
 mobile/.kotlin/
+mobile/.idea/
 mobile/local.properties
 *.hprof
