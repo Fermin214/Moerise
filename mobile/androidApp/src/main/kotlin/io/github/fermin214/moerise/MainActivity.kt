@@ -15,8 +15,13 @@ import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.collect
 
 class AppModel(application: Application) : AndroidViewModel(application) {
+    private val requests = java.util.concurrent.atomic.AtomicInteger()
     private val database = viewModelScope.async(Dispatchers.IO) { androidDatabase(application) }
-    val session = SessionController(AndroidSecretStore(application), BuildConfig.DEBUG, viewModelScope)
+    val session = SessionController(AndroidSecretStore(application), BuildConfig.ALLOW_LOOPBACK_HTTP, viewModelScope) {
+        val count = requests.incrementAndGet()
+        Trace.setCounter("moerise_network_requests", count)
+        android.util.Log.i("MoeriseStartup", "network_requests=$count")
+    }
     private val repository = viewModelScope.async(Dispatchers.IO) { NoteRepository(database.await(), androidAttachmentFiles(application)) }
     val mobile = MobileController(session, { repository.await() }, viewModelScope) {
         clearAttachmentCache(application)
@@ -40,6 +45,13 @@ class AppModel(application: Application) : AndroidViewModel(application) {
 class MainActivity : ComponentActivity() {
     private lateinit var model: AppModel
     private var editorReady = false
+    private var foregroundTrace = false
+    private fun foregroundReady() {
+        if (foregroundTrace) {
+            Trace.endAsyncSection("note_foreground_ready", hashCode())
+            foregroundTrace = false
+        }
+    }
     override fun onCreate(savedInstanceState: Bundle?) {
         Trace.beginAsyncSection("note_editor_ready", hashCode())
         super.onCreate(savedInstanceState)
@@ -52,6 +64,7 @@ class MainActivity : ComponentActivity() {
                     Trace.endAsyncSection("note_editor_ready", hashCode())
                     reportFullyDrawn()
                 }
+                foregroundReady()
             }
         }
     }
@@ -59,11 +72,17 @@ class MainActivity : ComponentActivity() {
     override fun onStart() {
         super.onStart()
         model.mobile.foreground(true)
+        foregroundTrace = true
+        Trace.beginAsyncSection("note_foreground_ready", hashCode())
+        if (editorReady) window.decorView.postOnAnimation {
+            window.decorView.postOnAnimation { foregroundReady() }
+        }
     }
 
     override fun onStop() {
         model.mobile.foreground(false)
         model.mobile.flush()
+        foregroundReady()
         super.onStop()
     }
 

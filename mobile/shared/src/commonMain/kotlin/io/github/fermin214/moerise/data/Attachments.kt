@@ -19,7 +19,7 @@ expect class AttachmentFiles(root: String) {
     suspend fun stage(filename: String, type: String, content: ByteArray): StagedAttachment
     suspend fun encoded(file: StagedAttachment): String
     suspend fun remove(file: StagedAttachment)
-    suspend fun collect(referenced: Set<String>)
+    suspend fun collect(referenced: Set<String>, minimumAgeMillis: Long = 24 * 60 * 60 * 1000L)
 }
 
 expect fun sha256(bytes: ByteArray): String

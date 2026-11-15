@@ -61,7 +61,10 @@ class MobileController(
 
     init {
         scope.launch {
+            var previousAccount: String? = null
             session.state.map { it.profile?.accountKey }.distinctUntilChanged().collectLatest { key ->
+                val switched = previousAccount != null && key != null && previousAccount != key
+                previousAccount = key
                 editorFrameAccount.value = null
                 timeline.reset(key)
                 archive.reset(key)
@@ -73,6 +76,7 @@ class MobileController(
                 detail.clear()
                 localDrafts.clear()
                 mutableEditing.value = false
+                if (switched) clearFiles()
                 editor.open(key)
             }
         }
@@ -176,6 +180,7 @@ class MobileController(
         updateDiscovery()
         scope.launch {
             try {
+                session.stopForRemoval()
                 search.clear(); review.clear(); walk.clear()
                 editor.stopForRemoval(); detail.stopForRemoval()
                 insights.stopForRemoval(); stars.stopForRemoval()
@@ -186,8 +191,9 @@ class MobileController(
                 session.logout()
             } catch (error: Exception) {
                 if (error is CancellationException) throw error
-                mutableLocalError.value = "LOCAL_WRITE_FAILED"
+                mutableLocalError.value = "LOCAL_REMOVE_FAILED"
                 if (account == session.state.value.profile?.accountKey) {
+                    session.recoverAfterRemovalFailure()
                     timeline.reset(account); archive.reset(account); editor.open(account)
                 }
             } finally { mutableClearing.value = false }

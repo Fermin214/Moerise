@@ -23,6 +23,7 @@ class SessionController(
     private val secrets: SecretStore,
     private val allowLoopbackHttp: Boolean,
     private val scope: CoroutineScope,
+    private val onNetworkRequest: () -> Unit = {},
 ) : AutoCloseable {
     private val repository = ConnectionRepository(secrets)
     private val mutableState = MutableStateFlow(SessionUiState())
@@ -71,7 +72,7 @@ class SessionController(
     private fun client(origin: String, stamp: Long): CoreClient =
         CoreClient(origin, SessionCookies(origin, secrets), onUnauthorized = {
             scope.launch { if (generation == stamp) mutableState.update { it.copy(connected = false, needsLogin = true) } }
-        })
+        }, onRequest = onNetworkRequest)
 
     private suspend fun restore() {
         val stamp = ++generation
@@ -126,23 +127,36 @@ class SessionController(
         operation = scope.launch { restore() }
     }
 
-    fun logout() {
+    suspend fun stopForRemoval() {
+        ++generation
+        mutableState.update { it.copy(connected = false, busy = true) }
+        operation?.cancelAndJoin()
+        operation = null
+    }
+
+    fun recoverAfterRemovalFailure() {
+        mutableState.update { it.copy(busy = false) }
+        retrySession()
+    }
+
+    suspend fun logout() {
+        stopForRemoval()
         val active = core
-        val stamp = ++generation
-        operation?.cancel()
+        val logout = try {
+            val request = active?.clearLocalSession()
+            repository.clear()
+            request
+        } catch (error: Exception) {
+            if (error !is CancellationException) recoverAfterRemovalFailure()
+            throw error
+        }
         core = null
-        mutableState.value = SessionUiState(loading = false, busy = true)
+        mutableState.value = SessionUiState(loading = false)
         scope.launch {
-            try {
-                val logout = active?.clearLocalSession()
-                repository.clear()
-                mutableState.value = SessionUiState(loading = false)
-                if (logout != null) active.revokeSession(logout)
-            }
+            try { if (logout != null) active?.revokeSession(logout) }
             catch (error: Exception) {
                 if (error is CancellationException) throw error
                 runCatching { repository.recordLogoutFailure(errorCode(error)) }
-                if (generation == stamp && state.value.busy) mutableState.value = SessionUiState(loading = false)
             }
             finally { active?.close() }
         }

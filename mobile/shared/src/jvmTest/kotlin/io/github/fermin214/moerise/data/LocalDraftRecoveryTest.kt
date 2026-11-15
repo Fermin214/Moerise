@@ -2,10 +2,54 @@ package io.github.fermin214.moerise.data
 
 import androidx.sqlite.driver.bundled.BundledSQLiteDriver
 import java.nio.file.Files
+import java.util.concurrent.Executors
 import kotlin.test.*
-import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.*
+import kotlinx.coroutines.flow.first
+import io.github.fermin214.moerise.presentation.EditorController
+import io.github.fermin214.moerise.presentation.MobileController
+import io.github.fermin214.moerise.presentation.SessionController
 
 class LocalDraftRecoveryTest {
+    @Test
+    fun restoredAccountSwitchClearsProtectedDownloadsAndKeepsThePreviousDraft() = runBlocking<Unit> {
+        val folder = Files.createTempDirectory("moerise-switch-account-").toFile()
+        val db = jvmDatabase(folder.resolve("data.sqlite3").absolutePath)
+        val repository = NoteRepository(db)
+        val dispatcher = Executors.newSingleThreadExecutor().asCoroutineDispatcher()
+        val scope = CoroutineScope(SupervisorJob() + dispatcher)
+        val secrets = object : SecretStore {
+            val values = java.util.concurrent.ConcurrentHashMap<String, String>()
+            override suspend fun read(key: String) = values[key]
+            override suspend fun write(key: String, value: String?) {
+                if (value == null) values.remove(key) else values[key] = value
+            }
+        }
+        fun profile(user: String) = ConnectionProfile("http://127.0.0.1:1",
+            "http://127.0.0.1:1\u0000instance\u0000users/$user", "instance", "users/$user", user, "UTC")
+        val first = profile("first"); val second = profile("second")
+        val cleared = java.util.concurrent.atomic.AtomicInteger()
+        secrets.write("selected-profile", CoreJson.encodeToString(first))
+        val session = SessionController(secrets, true, scope)
+        try {
+            val mobile = MobileController(session, { repository }, scope) { cleared.incrementAndGet(); Unit }
+            withTimeout(5000) { mobile.editor.state.first { it.accountKey == first.accountKey && it.draft != null } }
+            assertEquals(0, cleared.get())
+            withContext(dispatcher) {
+                mobile.editor.change("Previous account draft"); mobile.editor.flush()
+                secrets.write("selected-profile", CoreJson.encodeToString(second))
+                session.retrySession()
+            }
+            withTimeout(5000) { mobile.editor.state.first { it.accountKey == second.accountKey && it.draft != null } }
+            assertEquals(1, cleared.get())
+            assertEquals("Previous account draft", repository.drafts(first.accountKey).single().content)
+        } finally {
+            withContext(dispatcher) { session.close() }
+            scope.coroutineContext[Job]!!.cancelAndJoin()
+            db.close(); dispatcher.close(); folder.deleteRecursively()
+        }
+    }
+
     @Test
     fun conflictForkKeepsOriginalRequestAndAccountPurgePreservesOtherAccountsAndFiles() = runBlocking<Unit> {
         val folder = Files.createTempDirectory("moerise-local-drafts-").toFile()
@@ -18,6 +62,7 @@ class LocalDraftRecoveryTest {
             var repo = NoteRepository(db, files)
             val file = files.stage("first.txt", "text/plain", "first".encodeToByteArray())
             val otherFile = files.stage("second.txt", "text/plain", "second".encodeToByteArray())
+            val orphan = files.stage("interrupted.txt", "text/plain", "unbound".encodeToByteArray())
             val home = DraftEntity("home", first, "原主页草稿", 3)
             val conflict = DraftEntity("conflict", first, "冲突正文", 7, targetName = "memos/deleted", sourceHash = "hash",
                 attachmentsJson = CoreJson.encodeToString(AttachmentEdits(listOf(file))), conflictJson = """{"submitted":{"content":"原提交"}}""",
@@ -50,10 +95,52 @@ class LocalDraftRecoveryTest {
             assertEquals(other, repo.storedDraft(second, other.id).draft)
             assertEquals("kept", repo.feature(second, "insights"))
             assertFails { files.encoded(file) }
+            assertFails { files.encoded(orphan) }
             assertEquals("c2Vjb25k", files.encoded(otherFile))
             db.close(); db = jvmDatabase(path); repo = NoteRepository(db, files)
             assertTrue(repo.drafts(first).isEmpty())
             assertEquals(other, repo.storedDraft(second, other.id).draft)
         } finally { db.close(); folder.deleteRecursively() }
+    }
+
+    @Test
+    fun accountRemovalWaitsForImportCleanupAndRecordsAcceptedFilesBeforePurge() = runBlocking<Unit> {
+        val folder = Files.createTempDirectory("moerise-remove-import-").toFile()
+        val db = jvmDatabase(folder.resolve("data.sqlite3").absolutePath)
+        val files = AttachmentFiles(folder.resolve("files").absolutePath)
+        val repository = NoteRepository(db, files)
+        val dispatcher = Executors.newSingleThreadExecutor().asCoroutineDispatcher()
+        val scope = CoroutineScope(SupervisorJob() + dispatcher)
+        try {
+            val editor = EditorController({ repository }, { null }, scope)
+            withContext(dispatcher) { editor.open("account") }
+            val started = CompletableDeferred<StagedAttachment>()
+            val cleaned = CompletableDeferred<Unit>()
+            val copying = editor.attachmentScope.launch {
+                val file = files.stage("copy.txt", "text/plain", "copy".encodeToByteArray())
+                started.complete(file)
+                try { awaitCancellation() }
+                finally { withContext(NonCancellable) { files.remove(file); cleaned.complete(Unit) } }
+            }
+            val copyingFile = withTimeout(5000) { started.await() }
+            withContext(dispatcher) { editor.stopForRemoval() }
+            assertTrue(copying.isCompleted && cleaned.isCompleted)
+            assertFails { files.encoded(copyingFile) }
+
+            val accepted = files.stage("accepted.txt", "text/plain", "accepted".encodeToByteArray())
+            withContext(dispatcher) {
+                editor.open("account")
+                val draft = editor.state.value.draft!!
+                assertTrue(editor.attach(draft.accountKey, draft.id, listOf(accepted)))
+                editor.stopForRemoval()
+            }
+            assertTrue(repository.drafts("account").any { accepted in it.attachmentEdits().staged })
+            repository.clearAccount("account")
+            assertFails { files.encoded(accepted) }
+            assertTrue(repository.drafts("account").isEmpty())
+        } finally {
+            scope.coroutineContext[Job]!!.cancelAndJoin()
+            db.close(); dispatcher.close(); folder.deleteRecursively()
+        }
     }
 }

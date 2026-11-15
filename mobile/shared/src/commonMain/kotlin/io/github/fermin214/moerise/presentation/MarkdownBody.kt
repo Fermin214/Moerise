@@ -9,6 +9,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.painter.BitmapPainter
 import androidx.compose.ui.graphics.painter.ColorPainter
+import androidx.compose.ui.graphics.painter.Painter
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.boundsInWindow
 import androidx.compose.ui.layout.onGloballyPositioned
@@ -64,6 +66,7 @@ fun MarkdownBody(content: String, modifier: Modifier = Modifier, note: Note? = n
         override fun openUri(uri: String) { if (externalLink(uri)) runCatching { platformUri.openUri(uri) } }
     } }
     val transformer = remember(note, core) { object : ImageTransformer {
+        @Composable override fun intrinsicSize(painter: Painter): Size = Size(1600f, 900f)
         @Composable override fun transform(link: String): ImageData? {
             val item = managedAttachment(note, link) ?: return null
             val type = item["type"]?.jsonPrimitive?.content ?: return null

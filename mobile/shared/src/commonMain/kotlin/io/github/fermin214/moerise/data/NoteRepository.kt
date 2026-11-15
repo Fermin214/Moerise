@@ -87,6 +87,7 @@ class NoteRepository(private val db: LocalDatabase, private val files: Attachmen
             if (it == "[]") emptyList() else CoreJson.decodeFromString<AttachmentEdits>(it).staged.map { file -> file.id }
         }.toSet()
         owned.distinctBy { it.id }.filter { it.id !in remaining }.forEach { files?.remove(it) }
+        files?.collect(remaining, 0)
     }
 
     suspend fun prepare(draft: DraftEntity): PendingWriteEntity = withContext(Dispatchers.Default) {

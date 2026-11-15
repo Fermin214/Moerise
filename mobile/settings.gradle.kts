@@ -13,4 +13,4 @@ dependencyResolutionManagement {
     }
 }
 rootProject.name = "MoeriseMobile"
-include(":androidApp", ":shared")
+include(":androidApp", ":shared", ":benchmark")

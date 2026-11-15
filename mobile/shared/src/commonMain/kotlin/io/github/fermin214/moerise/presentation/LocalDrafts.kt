@@ -41,7 +41,7 @@ class LocalDraftController(
                 if (stamp == generation && key == account()) mutable.value = LocalDraftState(drafts, pending)
             } catch (error: Exception) {
                 if (error is CancellationException) throw error
-                if (stamp == generation) mutable.update { it.copy(loading = false, error = "LOCAL_WRITE_FAILED") }
+                if (stamp == generation) mutable.update { it.copy(loading = false, error = "LOCAL_READ_FAILED") }
             }
         }
     }

@@ -24,12 +24,21 @@ class EditorController(
     private var sendJob: Job? = null
     private var generation = 0L
     private var lastEdit = TimeSource.Monotonic.markNow()
+    private val importJob = SupervisorJob(scope.coroutineContext[Job])
+    val attachmentScope = CoroutineScope(scope.coroutineContext + importJob)
+
+    private suspend fun stopImports() {
+        val children = importJob.children.toList()
+        children.forEach { it.cancel() }
+        children.joinAll()
+    }
 
     suspend fun open(key: String?, note: Note? = null) = openDraft(key) { it.restore(requireNotNull(key), note) }
     suspend fun openStored(key: String, id: String) = openDraft(key) { it.storedDraft(key, id) }
 
     private suspend fun openDraft(key: String?, restore: suspend (NoteRepository) -> RestoredDraft) {
         val stamp = ++generation
+        stopImports()
         editJob?.cancelAndJoin()
         sendJob?.cancelAndJoin()
         // Flush the previous editor before changing the account.
@@ -48,7 +57,9 @@ class EditorController(
 
     suspend fun stopForRemoval() {
         ++generation
+        stopImports()
         editJob?.cancelAndJoin(); sendJob?.cancelAndJoin()
+        flush()
         localLock.withLock { mutable.value = EditorUiState() }
     }
 
@@ -69,7 +80,6 @@ class EditorController(
         }
     }
 
-    val attachmentScope: CoroutineScope get() = scope
     fun change(content: String) {
         val before = mutable.value
         val draft = before.draft ?: return

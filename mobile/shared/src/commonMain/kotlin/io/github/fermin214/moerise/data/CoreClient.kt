@@ -32,6 +32,7 @@ class CoreClient(
     private val cookies: SessionCookies,
     engine: HttpClientEngine = platformHttpEngine(),
     private val onUnauthorized: () -> Unit = {},
+    private val onRequest: () -> Unit = {},
 ) : AutoCloseable {
     private val sessionLock = Mutex()
     private val attachmentDownloads = Semaphore(2)
@@ -97,6 +98,7 @@ class CoreClient(
         for (attempt in 0..1) {
             var accepted = false
             try {
+                onRequest()
                 client.preparePost("$origin/api/app/v1/chats/$chatId/messages") {
                     header(HttpHeaders.Origin, origin)
                     header("X-CSRF-Token", current.csrfToken)
@@ -146,6 +148,7 @@ class CoreClient(
         val current = sessionLock.withLock { identity ?: refreshSession() }
         require(note.instanceId == current.instanceId)
         val path = "/notes/${note.name.removePrefix("memos/")}/attachments/${name.removePrefix("attachments/")}/content"
+        onRequest()
         client.prepareGet("$origin/api/app/v1$path").execute { response ->
             if (response.status.value !in 200..299) {
                 val detail = runCatching { CoreJson.decodeFromString<ErrorEnvelope>(response.bodyAsText()).error }
@@ -185,6 +188,7 @@ class CoreClient(
 
     private suspend fun send(method: HttpMethod, path: String, body: String? = null, csrf: String? = null, idempotencyKey: String? = null, cookie: String? = null): String {
         require(path.startsWith("/") && !path.startsWith("//") && '#' !in path)
+        onRequest()
         val response = client.request("$origin/api/app/v1$path") {
             this.method = method
             if (method != HttpMethod.Get && method != HttpMethod.Head) {

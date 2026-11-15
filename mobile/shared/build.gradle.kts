@@ -58,12 +58,19 @@ tasks.withType<Test>().configureEach {
     testLogging.events("passed", "failed", "skipped")
 }
 val sharedJvmTest = tasks.named<Test>("jvmTest") {
-    exclude("**/CoreIntegrationTest*")
+    exclude("**/CoreIntegrationTest*", "**/StarMapIntegrationTest*")
 }
 tasks.register<Test>("coreIntegrationTest") {
     dependsOn("jvmTestClasses")
     testClassesDirs = sharedJvmTest.get().testClassesDirs
     classpath = sharedJvmTest.get().classpath
     include("**/CoreIntegrationTest*")
+    outputs.upToDateWhen { false }
+}
+tasks.register<Test>("starsIntegrationTest") {
+    dependsOn("jvmTestClasses")
+    testClassesDirs = sharedJvmTest.get().testClassesDirs
+    classpath = sharedJvmTest.get().classpath
+    include("**/StarMapIntegrationTest*")
     outputs.upToDateWhen { false }
 }

@@ -119,7 +119,7 @@ fun MoeriseApp(mobile: MobileController, onEditorReady: () -> Unit = {}) {
                 }
             },
         ) {
-        Surface(Modifier.fillMaxSize(), color = MoeriseColors.Paper) {
+        Surface(Modifier.fillMaxSize().platformTestTags(), color = MoeriseColors.Paper) {
             if (connection.loading) {
                 Box(Modifier.safeDrawingPadding().padding(24.dp)) { CircularProgressIndicator() }
                 return@Surface
@@ -414,6 +414,8 @@ private fun ConflictDialog(state: EditorUiState, controller: EditorController, s
 }
 
 fun editorError(code: String, strings: Strings): String = when (code) {
+    "LOCAL_REMOVE_FAILED" -> strings.text("本机数据未能全部删除，请重试。", "Could not delete all local data. Try again.")
+    "LOCAL_READ_FAILED" -> strings.text("无法读取本机草稿，请重试。", "Could not read local drafts. Try again.")
     "LOCAL_WRITE_FAILED" -> strings.text("草稿落盘失败，请保留此页面并释放存储空间后重试。", "Draft could not be saved on device. Free storage and retry.")
     "CONTENT_TOO_LARGE" -> strings.text("正文不能超过 64 KiB。", "Content must fit within 64 KiB.")
     "CONTENT_EMPTY" -> strings.text("请先写下笔记。", "Write a note first.")

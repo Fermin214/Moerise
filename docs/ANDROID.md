@@ -23,7 +23,7 @@ Gradle Wrapper 固定为 8.13，并校验发行包 SHA-256。依赖版本见 [�
 
 构建默认限制一个 Gradle worker、单 CPU、1.5 GiB JVM 堆与 768 MiB 元空间；不并发执行多个构建。`MOERISE_ANDROID_CPU` 可指定允许使用的 CPU 编号。构建日志和设备产物放在 `.local/android/`。
 
-APK 位于 `mobile/androidApp/build/outputs/apk/debug/androidApp-debug.apk`。连接启用 USB 调试的设备后安装：
+APK 位于 `mobile/androidApp/build/outputs/apk/debug/androidApp-debug.apk`。开发包名为 `io.github.fermin214.moerise.dev`，桌面名称为 Moerise Dev，可与发行包并存。连接启用 USB 调试的设备后安装：
 
 ```bash
 source scripts/android/environment.sh
@@ -53,7 +53,17 @@ scripts/android/live-check.sh
 
 脚本构建独立 Core，启动受 CPU 和内存限制的 Memos 容器、Web 代理和本机可控假模型，使用虚构账号检查登录、重开会话、同键创建、实时读回、删除与注销，以及洞察的生成、重放、异常结束、停止和回复存笔记。假模型只接受隔离服务的临时密钥，不连接外部模型。测试结束清理容器、来源数据和临时凭据；非敏感日志留在 `.local/android/live-*/`。Linux JVM 检查使用与 Android 相同的 OkHttp 引擎；Keystore、设备生命周期和触控通过 Android 设备流程检查。
 
+隔离实例通过 Memos 官方 API 将 `contentLengthLimit` 设为 65,536，用于覆盖 Core 的
+64 KiB 内容上限。真实服务的笔记长度还受其 Memos 实例配置约束。
+
 单独联调设备时运行 `scripts/android/start-fixture.sh`。脚本输出 Web 来源、私有连接档案路径和 `adb reverse` 命令；连接档案只用于隔离环境，包含虚构账号和临时凭据。按 Ctrl+C 清理服务与来源数据。观星六类顶层状态及更新中的固定响应样本位于 `mobile/shared/src/commonTest/resources/contracts/map/`。
+
+`scripts/android/stars-check.sh` 构建独立布局镜像，启动限制为半个 CPU、1 GiB 内存的
+布局 worker、私有模型卷和 32 篇固定笔记。共享 OkHttp 客户端读取真实 UMAP 快照，
+检查新增与向量变化的 transform、删除、主动重建和模型文件丢失后的重新拟合。
+检查比较旧坐标、星体属性、frame 与正文摘要，并从 worker 模型文件确认 UMAP 类型
+和首次拟合数量；布局镜像摘要与结果保存在隔离服务日志目录。结束时清理专用容器、
+卷及凭据。该入口与 Gradle 构建串行执行。
 
 ## 草稿与设备流程
 
@@ -77,7 +87,7 @@ scripts/android/acceptance.sh
 
 选择文件后复制到免备份目录，完成大小检查、SHA-256 计算和落盘再绑定草稿。文件复制期间禁用服务器保存；绑定时检查账号和草稿 UUID，迟到结果不能写入其他草稿。新增文件最多 10 个，合计不超过 8 MiB；请求以 JSON Base64 提交，编码后的 JSON 不超过 Core 的 12 MiB 限制。发送期间可续写正文，附件变更在请求完成后操作。未确认请求和冲突草稿持有文件引用；没有引用且超过一天的暂存文件在保存后回收。
 
-详情中的图片只读取该笔记管理的附件，可见时下载并持有位图，离开视口释放。图片下载和解码最多并行两个任务，图片内容上限为 8 MiB，解码最长边为 1024 像素。外部图片显示链接，由系统浏览器打开；原始 HTML 作为文本显示。下载按来源与笔记资源校验，写入应用缓存，通过只读 FileProvider URI 交给系统应用。系统打开附件的缓存按 256 MiB 和 24 小时回收；账号退出或会话失效清理受保护下载缓存。
+详情中的图片只读取该笔记管理的附件，可见时下载并持有位图，离开视口释放。图片下载和解码最多并行两个任务，图片内容上限为 8 MiB，解码最长边为 1024 像素。外部图片显示链接，由系统浏览器打开；原始 HTML 作为文本显示。下载按来源与笔记资源校验，写入应用缓存，通过只读 FileProvider URI 交给系统应用。系统打开附件的缓存按 256 MiB 和 24 小时回收；账号切换、退出或会话失效清理受保护下载缓存。
 
 编辑来源冲突时展示提交正文、服务器正文和本机合并文本。附件列表用于确认要移除的远端文件，以及需要重新添加的本机文件；不根据同名判断上传完成。笔记保存成功后，续写绑定前会比较完整附件集合，并用字节摘要确认新增文件。
 
@@ -126,3 +136,78 @@ scripts/android/acceptance.sh
 重新生成在 POST 前保存账号、原框架、发起时间和观察状态。202 丢失时保留结果不明记录，返回或重启只通过 GET 观察；出现新框架表示有新快照可用。失败后按退避时间重试，再次提交由确认按钮触发。快照更新失败结束观察，客户端不自动重发重建 POST。
 
 Android 将响应体积、解析、首绘、绘制和摘要请求计数写入 `MoeriseMap` 日志及 `moerise_map_*` Trace 计数器，日志仅含指标和布局版本。设备测量可通过 `adb logcat -s MoeriseMap:I` 收集，结合系统帧耗时和 Perfetto 分析。
+
+## 性能测量与 Baseline Profile
+
+`mobile/benchmark/` 是独立的 AndroidX Macrobenchmark 测试模块。目标包为
+`io.github.fermin214.moerise.benchmark`：`benchmark` 构建启用 R8 和资源裁剪，
+`profile` 构建保留原始方法名用于采集，二者均关闭应用调试、使用测试签名并只对回环
+地址开放 HTTP。固定星图 Activity 只包含在这两个构建中。
+测试 runner 使用相同的调试签名，Perfetto 三个组件固定为 1.0.1；应用包与 runner
+均检查签名、ZIP 和 64 位 native 库的 16 KiB 对齐。
+
+连接固定 arm64 真机和隔离服务后执行：
+
+```bash
+export ANDROID_SERIAL=设备序列号
+export MOERISE_ANDROID_FIXTURE=/绝对路径/connection.json
+scripts/android/benchmark.sh profile
+scripts/android/benchmark.sh run
+```
+
+脚本清空性能包的数据，通过真实 Core/Memos 准备 100 篇固定笔记，其中包括 64 KiB
+正文和 10 个附件。测试在计时区间外完成登录。Profile 采集使用 API 33 及以上设备，
+将设备生成的规则写入 `androidApp/src/main/baselineProfiles/` 下的
+`baseline-prof.txt` 和 `startup-prof.txt`；
+启动规则与星图规则分别采集，AGP 在构建时合并和转写。更新规则后提交源文件，再构建
+发行包。设备性能测试最低 API 为 28。
+
+| 场景 | 采样与输出 |
+| --- | --- |
+| 冷启动 | 无 Profile 与使用 Profile 各 50 次，记录 TTID、TTFD、`note_editor_ready` |
+| 后台返回 | 同进程 HOT 启动，两种编译模式各 50 次，记录 `note_foreground_ready` |
+| 星图首绘 | 1,000/5,000 点与两种氛围共四组，每组 50 次，记录解析、完整首绘和系统帧耗时 |
+| 星图手势 | 四组场景分别执行平移、双指缩放、摘要到达和快照刷新，每组 10 次 |
+
+星图场景复用共享 `StarCanvas`，使用确定性的坐标、星体属性、主题与关联；计时从
+完整 JSON 可读时开始，摄影氛围包含密度柔光生成。网络和 Core 布局耗时通过真实观星
+流程另行记录。场景名、编译模式、响应体积、JSON、系统 trace、APK SHA-256、提交号、
+设备、页大小、电池和温度信息保存在 `.local/android/benchmark-*`。
+`benchmark-report.py` 从原始 `benchmarkData.json` 计算每项指标的 P50/P95，
+写入 `summary.json`。可用 `benchmark.sh startup` 或 `benchmark.sh stars` 单独测量。
+Core 请求累计数写入 `MoeriseStartup` 日志与 `moerise_network_requests` Trace 计数器，
+可按启动区间区分会话恢复和首帧后的列表请求。
+
+性能目标和取样条件见[路线图](ROADMAP.md#18-快速启动与性能目标)，完整设备操作见
+[设备检查](android/DEVICE-CHECKS.md)。
+
+## 发行
+
+发行 ABI 为 `arm64-v8a`、`x86_64`。构建、R8、发行 lint、依赖许可检查和静态
+16 KiB 对齐检查共用以下入口：
+
+```bash
+scripts/android/release.sh --unsigned
+```
+
+签名时设置 `MOERISE_ANDROID_KEYSTORE`、`MOERISE_ANDROID_KEY_ALIAS`、
+`MOERISE_ANDROID_STORE_PASSWORD` 和 `MOERISE_ANDROID_KEY_PASSWORD`，然后运行
+`scripts/android/release.sh --sign`。密码通过环境变量传给 `apksigner`，密钥放在
+私有目录或 CI Secret 中。入口要求 Git 工作区干净，产物归档到
+`.local/android/releases/v版本-提交号/`，包含 APK、SHA-256、构建信息、
+安装说明和第三方声明；R8 mapping 随构建保存。
+
+`verify-apk.py` 检查包名、版本、发行调试标志、签名、ZIP 和 native ELF 的
+16 KiB 对齐。设备实际运行、HTTPS 与同签名升级采用
+[设备检查](android/DEVICE-CHECKS.md)中的发行流程。
+[安装与升级](android/INSTALL.md)可随发行包分发。
+
+运行时依赖来自 `:androidApp:exportReleaseDependencies`，第三方许可清单见
+[Android 第三方许可](android/THIRD_PARTY_NOTICES.md)。更新依赖后重新导出清单并执行
+`python3 scripts/android/licenses.py`；CI 使用 `--check` 比较。
+
+Android 标签采用 `android-v*`。`android-release.yml` 在标签事件中读取
+`ANDROID_SIGNING_KEYSTORE`（Base64 keystore）、`ANDROID_KEY_ALIAS`、
+`ANDROID_STORE_PASSWORD`、`ANDROID_KEY_PASSWORD`，校验标签与 APK 版本后创建草稿发行。
+手动 workflow 默认构建 unsigned 包，可通过 `sign` 输入选择签名。APK、SHA-256、
+构建 JSON 和许可 ZIP 用作发行附件，mapping 保存在构建产物中。

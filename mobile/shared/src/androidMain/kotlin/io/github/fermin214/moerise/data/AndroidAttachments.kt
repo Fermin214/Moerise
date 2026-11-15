@@ -32,9 +32,9 @@ actual class AttachmentFiles actual constructor(private val root: String) {
         Base64.getEncoder().encodeToString(bytes)
     }
     actual suspend fun remove(file: StagedAttachment) = withContext(Dispatchers.IO) { file(file.id).delete(); Unit }
-    actual suspend fun collect(referenced: Set<String>) = withContext(Dispatchers.IO) {
-        val cutoff = System.currentTimeMillis() - 24 * 60 * 60 * 1000L
-        File(root).listFiles()?.filter { it.name !in referenced && it.lastModified() < cutoff }?.forEach { it.delete() }
+    actual suspend fun collect(referenced: Set<String>, minimumAgeMillis: Long) = withContext(Dispatchers.IO) {
+        val cutoff = System.currentTimeMillis() - minimumAgeMillis
+        File(root).listFiles()?.filter { it.name !in referenced && it.lastModified() <= cutoff }?.forEach { it.delete() }
         Unit
     }
 }

@@ -68,6 +68,16 @@ private suspend fun densityCloud(stars: List<PaintedStar>): StarCloud? = withCon
 
 @Composable
 fun StarCanvas(state: StarMapState, controller: StarMapController, strings: Strings) {
+    StarCanvas(state, strings, controller::size, controller::transform, controller::focus, controller::pick,
+        controller::excerpts, controller::drawn)
+}
+
+@Composable
+fun StarCanvas(
+    state: StarMapState, strings: Strings, onSize: (Double, Double) -> Unit,
+    onTransform: (Double, Double, Double, Double, Double) -> Unit, onFocus: (List<String>) -> Unit,
+    onPick: (Double, Double, Double) -> Unit, onExcerpts: (List<String>) -> Unit, onDrawn: (Long) -> Unit,
+) {
     val map = state.snapshot ?: return
     val density = LocalDensity.current.density
     val measurer = rememberTextMeasurer(cacheSize = 128)
@@ -103,7 +113,9 @@ fun StarCanvas(state: StarMapState, controller: StarMapController, strings: Stri
     val halos = remember(stars) { stars.map { it.color }.distinct().associateWith { color ->
         Brush.radialGradient(listOf(color.copy(alpha = .20f), color.copy(alpha = .035f), Color.Transparent), center = Offset.Zero, radius = 7f)
     } }
-    val cloud by produceState<StarCloud?>(null, map.layoutVersion) { value = densityCloud(stars) }
+    val cloud by key(map.layoutVersion) {
+        produceState<StarCloud?>(null) { value = densityCloud(stars) }
+    }
     val excerptLayouts = remember(state.excerpts, density) { state.excerpts.mapValues { (_, text) ->
         measurer.measure(AnnotatedString(text), TextStyle(fontSize = 12.sp, color = Color(0xFFD5DFEA)),
             maxLines = 2, constraints = Constraints(maxWidth = (180 * density).toInt()))
@@ -144,17 +156,17 @@ fun StarCanvas(state: StarMapState, controller: StarMapController, strings: Stri
                 val position = view.screen(it.point.x, it.point.y, width, height)
                 position.x in 20.0..(width - 20) && position.y in 60.0..(height - 60)
             }.sortedByDescending { it.point.stellar?.luminosity ?: .55 }.take(3).map { it.point.name }.toList()
-            controller.excerpts(names)
-        } else controller.excerpts(emptyList())
+            onExcerpts(names)
+        } else onExcerpts(emptyList())
     }
     Canvas(Modifier.fillMaxSize().testTag("star_canvas").semantics { contentDescription = strings.text("观星，拖动平移，双指缩放", "Star map. Drag to pan; pinch to zoom.") }
         .onSizeChanged { size ->
             width = size.width.toDouble(); height = size.height.toDouble()
-            controller.size(width, height)
+            onSize(width, height)
         }
         .pointerInput(map.layoutVersion, density) {
             detectTransformGestures { centroid, pan, zoom, _ ->
-                controller.transform(zoom.toDouble(), centroid.x - size.width / 2.0, centroid.y - size.height / 2.0,
+                onTransform(zoom.toDouble(), centroid.x - size.width / 2.0, centroid.y - size.height / 2.0,
                     pan.x.toDouble(), pan.y.toDouble())
             }
         }
@@ -162,8 +174,8 @@ fun StarCanvas(state: StarMapState, controller: StarMapController, strings: Stri
             detectTapGestures { at ->
                 val view = live.view ?: return@detectTapGestures
                 val label = livePlacements.firstOrNull { it.bounds.contains(at) }
-                if (label != null) controller.focus(label.label.members)
-                else controller.pick(at.x.toDouble(), at.y.toDouble(), 24.0 * density)
+                if (label != null) onFocus(label.label.members)
+                else onPick(at.x.toDouble(), at.y.toDouble(), 24.0 * density)
             }
         },
     ) {
@@ -236,6 +248,6 @@ fun StarCanvas(state: StarMapState, controller: StarMapController, strings: Stri
             drawRoundRect(Color(0xD9030A14), rect.topLeft, rect.size, androidx.compose.ui.geometry.CornerRadius(6 * density))
             drawText(layout, topLeft = rect.topLeft + Offset(6 * density, 4 * density))
         }
-        controller.drawn((epochMillis() - started).coerceAtLeast(0))
+        if (!state.photo || cloud != null || stars.isEmpty()) onDrawn((epochMillis() - started).coerceAtLeast(0))
     }
 }

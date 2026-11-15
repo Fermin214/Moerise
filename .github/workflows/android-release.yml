@@ -1,0 +1,69 @@
+name: Android release
+on:
+  push:
+    tags: ['android-v*']
+  workflow_dispatch:
+    inputs:
+      sign:
+        description: Sign with the Android release identity
+        type: boolean
+        default: false
+permissions:
+  contents: write
+jobs:
+  apk:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+      - run: sdkmanager 'platforms;android-36' 'build-tools;36.0.0'
+      - name: Prepare signing identity
+        if: startsWith(github.ref, 'refs/tags/android-v') || inputs.sign
+        env:
+          ANDROID_SIGNING_KEYSTORE: ${{ secrets.ANDROID_SIGNING_KEYSTORE }}
+        run: |
+          umask 077
+          printf '%s' "$ANDROID_SIGNING_KEYSTORE" | base64 --decode > "$RUNNER_TEMP/moerise-release.jks"
+          test -s "$RUNNER_TEMP/moerise-release.jks"
+      - name: Build APK
+        env:
+          SIGN_APK: ${{ startsWith(github.ref, 'refs/tags/android-v') || inputs.sign }}
+          MOERISE_ANDROID_KEYSTORE: ${{ runner.temp }}/moerise-release.jks
+          MOERISE_ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          MOERISE_ANDROID_STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
+          MOERISE_ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          if [ "$SIGN_APK" = true ]; then
+            scripts/android/release.sh --sign
+          else
+            scripts/android/release.sh --unsigned
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android-release
+          include-hidden-files: true
+          path: .local/android/releases/
+      - name: Create draft release
+        if: startsWith(github.ref, 'refs/tags/android-v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 - <<'PY'
+          import json, os, pathlib, subprocess
+          metadata = pathlib.Path("mobile/androidApp/build/outputs/apk/release/output-metadata.json")
+          version = json.loads(metadata.read_text())["elements"][0]["versionName"]
+          assert os.environ["GITHUB_REF_NAME"] == "android-v" + version, "Tag and APK version differ"
+          root = next(pathlib.Path(".local/android/releases").glob("v" + version + "-*"))
+          files = [root / ("moerise-android-v" + version + suffix) for suffix in
+                   (".apk", ".apk.sha256", ".apk.json", "-notices.zip")]
+          subprocess.run(["gh", "release", "create", os.environ["GITHUB_REF_NAME"], "--draft",
+                          "--title", "Moerise Android " + version,
+                          "--notes-file", "docs/android/INSTALL.md", *map(str, files)], check=True)
+          PY
+      - name: Remove signing file
+        if: always()
+        run: rm -f "$RUNNER_TEMP/moerise-release.jks"

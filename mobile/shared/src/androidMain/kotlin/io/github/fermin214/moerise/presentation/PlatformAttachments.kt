@@ -90,7 +90,8 @@ actual fun AttachmentPicker(enabled: Boolean, importScope: CoroutineScope, strin
                             }
                             output.toByteArray()
                         } ?: error("ATTACHMENT_READ_FAILED")
-                        staged += files.stage(filename, type, bytes)
+                        ensureActive()
+                        withContext(NonCancellable) { staged += files.stage(filename, type, bytes) }
                     }
                 }
                 accepted = accept(staged)

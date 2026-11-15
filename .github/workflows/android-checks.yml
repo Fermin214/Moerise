@@ -1,9 +1,9 @@
 name: Android checks
 on:
   push:
-    paths: ['mobile/**', 'scripts/android/**', 'internal/client_*.go', 'internal/*models.go', '.github/workflows/android-checks.yml']
+    paths: ['mobile/**', 'scripts/android/**', 'docs/android/**', 'internal/client_*.go', 'internal/*models.go', 'internal/openapi.json', '.github/workflows/android-checks.yml']
   pull_request:
-    paths: ['mobile/**', 'scripts/android/**', 'internal/client_*.go', 'internal/*models.go', '.github/workflows/android-checks.yml']
+    paths: ['mobile/**', 'scripts/android/**', 'docs/android/**', 'internal/client_*.go', 'internal/*models.go', 'internal/openapi.json', '.github/workflows/android-checks.yml']
   workflow_dispatch:
 permissions:
   contents: read
@@ -18,7 +18,19 @@ jobs:
           java-version: '17'
       - uses: android-actions/setup-android@v3
       - run: sdkmanager 'platforms;android-36' 'build-tools;36.0.0'
-      - run: scripts/android/check.sh
+      - run: >-
+          scripts/android/check.sh
+          :androidApp:assembleFixture :androidApp:assembleFixtureAndroidTest
+          :androidApp:assembleRelease :androidApp:lintRelease
+          :androidApp:assembleBenchmark :androidApp:assembleProfile
+          :benchmark:assembleBenchmark :benchmark:assembleProfile
+          :androidApp:exportReleaseDependencies
+      - run: |
+          python3 scripts/android/licenses.py --check
+          python3 scripts/android/verify-apk.py mobile/androidApp/build/outputs/apk/release/androidApp-release-unsigned.apk --unsigned --release --package io.github.fermin214.moerise
+          for variant in benchmark profile; do
+            python3 scripts/android/verify-apk.py "mobile/benchmark/build/outputs/apk/$variant/benchmark-$variant.apk" --package io.github.fermin214.moerise.benchmark.runner
+          done
       - uses: actions/setup-go@4dc6199c7b1a012772edbd06daecab0f50c9053c
         with:
           go-version: "1.27.x"
@@ -26,7 +38,17 @@ jobs:
         with:
           node-version: "24"
       - run: scripts/android/live-check.sh
+      - run: scripts/android/stars-check.sh
+        if: github.event_name == 'workflow_dispatch'
       - uses: actions/upload-artifact@v4
         with:
           name: moerise-android-debug
           path: mobile/androidApp/build/outputs/apk/debug/*.apk
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: android-check-reports
+          path: |
+            mobile/shared/build/reports/tests/
+            mobile/androidApp/build/reports/lint-results-*.html
+            mobile/androidApp/build/outputs/mapping/release/

@@ -41,6 +41,14 @@ class QuickNoteTest {
         compose.onNodeWithTag("search_submit").performClick()
         compose.waitUntil(20_000) { compose.onAllNodesWithText(text, substring = false).fetchSemanticsNodes().isNotEmpty() }
         compose.onNodeWithText(text, substring = false).assertIsDisplayed()
+        compose.onNodeWithText(text, substring = false).performClick()
+        compose.waitUntil(20_000) { compose.onAllNodesWithTag("note_edit").fetchSemanticsNodes().isNotEmpty() }
+        compose.onNodeWithTag("note_edit").performClick()
+        compose.waitUntil(10_000) { compose.onAllNodesWithTag("note_editor").fetchSemanticsNodes().isNotEmpty() }
+        compose.onNodeWithTag("note_editor").assertTextContains(text)
+        compose.onNodeWithTag("editor_back").performScrollTo().performClick()
+        compose.waitUntil(10_000) { compose.onAllNodesWithTag("detail_back").fetchSemanticsNodes().isNotEmpty() }
+        compose.onNodeWithTag("detail_back").performScrollTo().performClick()
         compose.onNodeWithTag("search_mode_hybrid").performScrollTo().performClick()
         compose.onNodeWithTag("search_submit").performClick()
         compose.waitUntil(20_000) { compose.onAllNodesWithText(text, substring = false).fetchSemanticsNodes().isNotEmpty() }
@@ -89,5 +97,14 @@ class QuickNoteTest {
         compose.onNodeWithTag("note_delete").performClick()
         compose.onNodeWithTag("delete_confirm").performClick()
         compose.waitUntil(20_000) { compose.onAllNodesWithTag("note_edit").fetchSemanticsNodes().isEmpty() }
+        val draft = "Local recovery ${System.currentTimeMillis()}"
+        compose.onNodeWithTag("note_editor").performScrollTo().performTextReplacement(draft)
+        compose.onNodeWithTag("open_menu").performScrollTo().performClick()
+        compose.onNodeWithTag("nav_settings").performClick()
+        compose.onNodeWithTag("open_local_drafts").performScrollTo().performClick()
+        compose.waitUntil(10_000) { compose.onAllNodesWithText(draft, substring = false).fetchSemanticsNodes().isNotEmpty() }
+        compose.onNodeWithText(draft, substring = false).performClick()
+        compose.waitUntil(10_000) { compose.onAllNodesWithTag("note_editor").fetchSemanticsNodes().isNotEmpty() }
+        compose.onNodeWithTag("note_editor").assertTextContains(draft)
     }
 }
