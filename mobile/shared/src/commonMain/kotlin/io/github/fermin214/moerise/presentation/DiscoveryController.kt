@@ -91,6 +91,9 @@ data class WalkRequest(val start: Boolean, val name: String = "", val path: List
 data class WalkState(
     val result: WalkResult? = null, val previous: Note? = null, val loading: Boolean = false,
     val error: String? = null, val retry: WalkRequest? = null,
+    val embeddingEnabled: Boolean? = null, val embeddingConfigured: Boolean? = null,
+    val configurationLoading: Boolean = false, val configurationError: String? = null,
+    val floaters: List<Note> = emptyList(), val floatersLoading: Boolean = false, val floaterError: String? = null,
 )
 
 class WalkController(
@@ -101,25 +104,96 @@ class WalkController(
     private var visible = false
     private var generation = 0L
     private var request: Job? = null
+    private var configurationJob: Job? = null
+    private var floaterJob: Job? = null
+    private var configurationGeneration = 0L
+    private var floaterGeneration = 0L
+    private var pendingStart: WalkRequest? = null
 
     fun visible(value: Boolean) {
+        if (value == visible) return
         visible = value
-        if (!value) {
+        if (value) {
+            loadConfiguration()
+            loadFloaters()
+        } else {
             ++generation; request?.cancel()
-            mutable.update { it.copy(loading = false, error = if (it.loading) "WALK_INTERRUPTED" else it.error) }
+            ++configurationGeneration; configurationJob?.cancel()
+            ++floaterGeneration; floaterJob?.cancel()
+            mutable.update { it.copy(loading = false, configurationLoading = false, floatersLoading = false,
+                error = if (it.loading) "WALK_INTERRUPTED" else it.error) }
         }
     }
-    fun clear() { visible(false); mutable.value = WalkState() }
-    fun end() { ++generation; request?.cancel(); mutable.value = WalkState() }
-    fun start(name: String = "") { send(WalkRequest(start = true, name = name)) }
+    fun clear() { visible(false); pendingStart = null; mutable.value = WalkState() }
+    fun end() {
+        ++generation; request?.cancel(); pendingStart = null
+        mutable.update { it.copy(result = null, previous = null, loading = false, error = null, retry = null) }
+    }
+    fun start(name: String = "") {
+        val input = WalkRequest(start = true, name = name)
+        if (state.value.embeddingEnabled == null) { pendingStart = input; loadConfiguration() } else send(input)
+    }
     fun next() {
         val result = state.value.result ?: return
         if (!result.exhausted && result.item != null) send(WalkRequest(false, result.item.note.name, result.path))
     }
     fun retry() { state.value.retry?.let(::send) }
+    fun retryConfiguration() = loadConfiguration()
+    fun retryFloaters() = loadFloaters()
+    fun configurationChanged() {
+        mutable.update { it.copy(embeddingEnabled = null, embeddingConfigured = null) }
+        if (visible) loadConfiguration()
+    }
+
+    private fun loadConfiguration() {
+        if (!visible) return
+        val active = core() ?: return
+        val key = account() ?: return
+        val stamp = ++configurationGeneration
+        configurationJob?.cancel()
+        mutable.update { it.copy(configurationLoading = true, configurationError = null) }
+        configurationJob = scope.launch {
+            try {
+                val models = CoreJson.parseToJsonElement(active.api(HttpMethod.Get, "/models")).jsonObject
+                val embedding = models.getValue("embedding").jsonObject
+                val enabled = requireNotNull(embedding["enabled"]?.jsonPrimitive?.booleanOrNull) { "WALK_RESPONSE_INVALID" }
+                val configured = embedding["configured"]?.jsonPrimitive?.booleanOrNull
+                if (stamp != configurationGeneration || key != account() || active !== core()) return@launch
+                mutable.update { it.copy(embeddingEnabled = enabled, embeddingConfigured = configured, configurationLoading = false) }
+                if (enabled) pendingStart?.let { pendingStart = null; send(it) }
+            } catch (error: Exception) {
+                if (error is CancellationException) throw error
+                if (stamp == configurationGeneration && key == account() && active === core())
+                    mutable.update { it.copy(configurationLoading = false, configurationError = errorCode(error)) }
+            }
+        }
+    }
+
+    private fun loadFloaters() {
+        if (!visible) return
+        val active = core() ?: return
+        val key = account() ?: return
+        val stamp = ++floaterGeneration
+        floaterJob?.cancel()
+        mutable.update { it.copy(floatersLoading = true, floaterError = null) }
+        floaterJob = scope.launch {
+            try {
+                val page = CoreJson.decodeFromString<io.github.fermin214.moerise.domain.NotePage>(
+                    active.api(HttpMethod.Get, "/notes?state=NORMAL&page_size=6"))
+                require(page.notes.all { it.belongsTo(key) && it.state == "NORMAL" } &&
+                    page.notes.map { it.name }.distinct().size == page.notes.size) { "NOTE_LIST_INVALID" }
+                if (stamp == floaterGeneration && key == account() && active === core())
+                    mutable.update { it.copy(floaters = page.notes.take(6), floatersLoading = false) }
+            } catch (error: Exception) {
+                if (error is CancellationException) throw error
+                if (stamp == floaterGeneration && key == account() && active === core())
+                    mutable.update { it.copy(floatersLoading = false, floaterError = errorCode(error)) }
+            }
+        }
+    }
 
     private fun send(input: WalkRequest) {
-        if (!visible || state.value.loading) return
+        if (!visible || state.value.loading || state.value.embeddingEnabled != true) return
         val active = core() ?: return
         val key = account() ?: return
         val stamp = ++generation
@@ -136,11 +210,19 @@ class WalkController(
                         result.item.note.belongsTo(key) && result.item.note.state == "NORMAL" &&
                             result.path.lastOrNull() == result.item.note.name && result.path.size == prior.size + 1 &&
                             (!input.start || input.name.isEmpty() || input.name == result.item.note.name)
-                    } else result.exhausted && result.path.size == prior.size
+                    } else result.path.size == prior.size
                 ) { "WALK_RESPONSE_INVALID" }
                 if (stamp != generation || key != account() || active !== core()) return@launch
-                mutable.update { it.copy(result = result, previous = if (input.start) null else it.result?.item?.note,
-                    loading = false, retry = null) }
+                if (result.item == null && !result.exhausted) {
+                    mutable.update { it.copy(loading = false, error = "WALK_RESOURCE_LIMIT",
+                        result = it.result?.copy(warnings = result.warnings), retry = input) }
+                } else {
+                    mutable.update { previous ->
+                        val displayed = if (result.item == null && !input.start) result.copy(item = previous.result?.item) else result
+                        previous.copy(result = displayed, previous = if (result.item == null) previous.previous
+                            else if (input.start) null else previous.result?.item?.note, loading = false, retry = null)
+                    }
+                }
             } catch (error: Exception) {
                 if (error is CancellationException) throw error
                 if (stamp == generation && key == account() && active === core())

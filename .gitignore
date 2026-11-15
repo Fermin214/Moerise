@@ -17,4 +17,14 @@ mobile/.gradle/
 mobile/.kotlin/
 mobile/.idea/
 mobile/local.properties
+mobile/**/.cxx/
+mobile/**/captures/
+mobile/**/*.apk
+mobile/**/*.aab
+mobile/**/*.perfetto-trace
+mobile/**/*.jks
+mobile/**/*.keystore
+docs/android/licenses/artifacts/
+__pycache__/
+*.pyc
 *.hprof

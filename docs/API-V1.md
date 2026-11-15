@@ -23,6 +23,8 @@ Moerise 服务端提供两组 RESTful API 以及一个 Model Context Protocol (M
 | `GET` | `/api/app/v1/session` | 校验登录状态，返回用户身份、时区与会话过期时间。 |
 | `DELETE` | `/api/app/v1/session` | 登出并销毁会话，清除浏览器 Cookie。 |
 
+登录与会话读取均返回 `stargazing_enabled` 布尔值，供客户端控制观星入口；该字段与 Embedding 开关独立。
+
 ### 2. 笔记管理与时间线
 
 | 方法 | 路径 | 功能说明 |
@@ -47,6 +49,8 @@ Moerise 服务端提供两组 RESTful API 以及一个 Model Context Protocol (M
 | `POST` | `/api/app/v1/map/rebuild` | 排队重新生成星图与主题，返回 `202 {"status":"queued"}`；要求本人会话、同源与 CSRF 校验。 |
 
 观星使用均衡 UMAP，普通变化按一分钟间隔合并，未变笔记复用坐标。`stellar` 定义可复现的星体属性；`layout_frame` 标识坐标框架，主动重建或更换向量空间时变化；更新期间 `update_state` 可为 `building` 或 `unavailable`，已发布快照继续可读。笔记原文通过笔记接口实时读取。字段定义见 [OpenAPI](../internal/openapi.json)，布局说明见[观星](STARGAZING.md)。
+
+`stargazing.enabled=false` 时，读取返回 `status: disabled`、`disabled_reason: stargazing` 和空点集；重建返回 `409 STARGAZING_DISABLED`。Embedding 关闭时对应 `disabled_reason: embedding` 与 `409 EMBEDDING_DISABLED`。关闭不删除已发布快照或向量。
 
 ### 4. 每日回顾
 

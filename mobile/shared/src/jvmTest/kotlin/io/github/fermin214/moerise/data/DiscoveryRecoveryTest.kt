@@ -70,6 +70,14 @@ class DiscoveryRecoveryTest {
         val calls = AtomicInteger()
         val engine = MockEngine { request ->
             if (request.url.encodedPath.endsWith("/session")) respond(identity)
+            else if (request.url.encodedPath.endsWith("/models")) {
+                assertEquals(HttpMethod.Get, request.method)
+                respond("""{"embedding":{"enabled":true,"configured":true}}""")
+            } else if (request.url.encodedPath.endsWith("/notes")) {
+                assertEquals(HttpMethod.Get, request.method)
+                assertEquals("NORMAL", request.url.parameters["state"])
+                respond("""{"notes":[],"next_page_token":""}""")
+            }
             else {
                 assertEquals("https://notes.example", request.headers[HttpHeaders.Origin])
                 assertEquals("token", request.headers["X-CSRF-Token"])

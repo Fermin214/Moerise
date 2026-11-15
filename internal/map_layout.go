@@ -9,6 +9,7 @@ import (
 )
 
 const mapAlgorithm = "pca-topics-v3"
+const mapLegacyAlgorithm = "pca-fixed-v2"
 const mapPointGap = 0.22
 
 type mapDocument struct {
@@ -267,7 +268,7 @@ func (grid mapGrid) place(ctx context.Context, point MapPoint) (MapPoint, error)
 }
 
 func buildMapLayout(ctx context.Context, snapshot mapSnapshot, previous *mapLayout) (*mapLayout, error) {
-	layout := &mapLayout{points: make([]MapPoint, 0, len(snapshot.documents))}
+	layout := &mapLayout{algorithm: mapAlgorithm, points: make([]MapPoint, 0, len(snapshot.documents))}
 	if previous != nil {
 		layout.basis = previous.basis
 	}

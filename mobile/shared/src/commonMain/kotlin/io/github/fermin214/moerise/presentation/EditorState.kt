@@ -24,11 +24,19 @@ fun completedDraft(draft: DraftEntity, write: PendingWriteEntity, remote: Note, 
     require(Regex("^memos/[A-Za-z0-9_-]+$").matches(remote.name) && remote.sourceHash.isNotBlank())
     require(write.method != "PATCH" || remote.name == draft.targetName)
     return when {
-        draft.revision == write.draftRevision -> if (draft.slot == "home") DraftEntity(newLocalId(), draft.accountKey, "", 0)
+        draft.revision == write.draftRevision -> if (draft.slot == "home") DraftEntity(newLocalId(), draft.accountKey, "", 0, createdAt = epochMillis())
             else DraftEntity(newLocalId(), draft.accountKey, remote.content, 0, remote.name, remote.sourceHash,
-                baselineJson = CoreJson.encodeToString(remote), slot = draft.slot)
-        expected -> draft.copy(targetName = remote.name, sourceHash = remote.sourceHash,
-            attachmentsJson = "[]", baselineJson = CoreJson.encodeToString(remote))
+                baselineJson = CoreJson.encodeToString(remote), slot = draft.slot, createdAt = draft.createdAt)
+        expected -> {
+            val submitted = write.submittedDraftJson?.let { CoreJson.decodeFromString<DraftEntity>(it) } ?: draft
+            val sentFiles = submitted.attachmentEdits().staged.map { it.id }.toSet()
+            val remoteNames = remote.attachments.mapNotNull { it["name"]?.jsonPrimitive?.content }.toSet()
+            val remaining = draft.attachmentEdits().let { edits ->
+                edits.copy(staged = edits.staged.filter { it.id !in sentFiles }, removed = edits.removed.filter { it in remoteNames })
+            }
+            draft.copy(targetName = remote.name, sourceHash = remote.sourceHash,
+                attachmentsJson = CoreJson.encodeToString(remaining), baselineJson = CoreJson.encodeToString(remote))
+        }
         else -> draft.copy(targetName = remote.name, conflictJson = conflictMaterial)
     }
 }

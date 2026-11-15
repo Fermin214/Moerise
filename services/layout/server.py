@@ -4,6 +4,7 @@ import argparse
 import base64
 import hashlib
 import json
+import math
 import os
 import re
 import resource
@@ -25,6 +26,36 @@ PARAMETERS = {"n_neighbors": 15, "min_dist": .12, "spread": 1.0, "metric": "cosi
 STATE = Path(os.environ.get("MOERISE_LAYOUT_STATE", "/data"))
 GATE = threading.Semaphore(1)
 LAST_JOB = {}
+
+
+def separate_points(positions, documents):
+    """Give coincident stars a small stable gap while pinning published points."""
+    gap = min(.012, .2 / math.sqrt(max(1, len(documents))))
+    cells = {}
+
+    def cell(point):
+        return math.floor(point[0] / gap), math.floor(point[1] / gap)
+
+    def vacant(point):
+        x, y = cell(point)
+        return all(math.dist(point, other) >= gap
+                   for dx in (-1, 0, 1) for dy in (-1, 0, 1)
+                   for other in cells.get((x + dx, y + dy), ()))
+
+    order = sorted(range(len(documents)),
+                   key=lambda i: (not documents[i].get("unchanged", False), documents[i]["name"]))
+    for i in order:
+        point = positions[i].copy()
+        if not documents[i].get("unchanged") and not vacant(point):
+            seed = int(hashlib.sha256(documents[i]["name"].encode()).hexdigest()[:12], 16)
+            angle = seed / (16 ** 12) * math.tau
+            for step in range(1, 16 * len(documents) + 1):
+                radius, theta = gap * math.sqrt(step), angle + step * 2.399963229728653
+                candidate = (point[0] + radius * math.cos(theta), point[1] + radius * math.sin(theta))
+                if vacant(candidate):
+                    positions[i] = candidate
+                    break
+        cells.setdefault(cell(positions[i]), []).append(tuple(positions[i]))
 
 
 def compute(request):
@@ -54,7 +85,7 @@ def compute(request):
     path = root / (frame + ".joblib")
     state = joblib.load(path) if frame and path.exists() else None
     if state and (state["dimensions"] != dimensions or state["algorithm"] != ALGORITHM
-                  or state.get("fit_count", 0) < 12 and count != state.get("fit_count", 0)):
+                  or state.get("fit_count", 0) < 2 and count > state.get("fit_count", 0)):
         state = None
     with threadpool_limits(limits=2):
         if state:
@@ -93,7 +124,8 @@ def compute(request):
                 model = UMAP(**dict(PARAMETERS, n_neighbors=min(15, count - 1)))
                 positions = model.fit_transform(matrix)
             center = positions.mean(axis=0) if count else np.zeros(2)
-            radius = max(1e-5, float(np.percentile(np.linalg.norm(positions - center, axis=1), 90))) if count else 1.
+            radius = float(np.percentile(np.linalg.norm(positions - center, axis=1), 90)) if count else 1.
+            radius = radius if radius > 1e-5 else 1.
             positions = (positions - center) / radius
             state = {"algorithm": ALGORITHM, "dimensions": dimensions, "model": model, "fit_count": count,
                      "center": center, "radius": radius, "parameters": PARAMETERS}
@@ -104,6 +136,7 @@ def compute(request):
             previous = None
         if not np.isfinite(positions).all():
             raise ValueError("invalid coordinates")
+        separate_points(positions, documents)
         topics, attributes, links = describe(matrix, documents, positions, previous) if count else ([], [], [])
     path.touch()
     for obsolete in sorted(root.glob("*.joblib"), key=lambda file: file.stat().st_mtime, reverse=True)[3:]:

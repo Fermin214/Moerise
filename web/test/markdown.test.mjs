@@ -65,6 +65,42 @@ test('preserves supported Markdown blocks, inline delimiters and literal untrust
   assert.match(result.textContent, /\[bad\]\(javascript:alert\(1\)\)/);
 });
 
+test('shows native tags once outside the body while preserving Markdown headings and literal markers', () => {
+  const result = renderMarkdown([
+    '正文 #阅读 和 #工作/计划。',
+    '',
+    '#阅读 #阅读',
+    '',
+    '# 阅读',
+    '',
+    '## 标题',
+    '',
+    '`#阅读` \\#阅读 [#阅读](https://example.test/#阅读) https://example.test/#阅读',
+    '',
+    '```text',
+    '#阅读',
+    '```',
+    '',
+    '    #阅读',
+    '',
+    '[#阅读][reference] <span data-tag="#阅读">字面值</span>',
+    '',
+    '#工作/计划/后续 #未知',
+  ].join('\n'), { tags: ['阅读', '工作/计划', '阅读'] });
+  assert.equal(elements(result, 'p')[0].textContent, '正文  和 。');
+  assert.equal(elements(result, 'h1')[0].textContent, '阅读');
+  assert.equal(elements(result, 'h2')[0].textContent, '标题');
+  assert.equal(elements(result, 'pre')[0].textContent, '#阅读');
+  assert.match(result.textContent, /\\#阅读/);
+  assert.match(result.textContent, /https:\/\/example.test\/#阅读/);
+  assert.match(result.textContent, /#工作\/计划\/后续 #未知/);
+  assert.match(result.textContent, /    #阅读/);
+  assert.match(result.textContent, /\[#阅读\]\[reference\]/);
+  assert.match(result.textContent, /data-tag="#阅读"/);
+  assert.equal(elements(result, 'a')[0].textContent, '#阅读');
+  assert.equal(elements(result, 'p').length, 5);
+});
+
 test('resolves native links and raster images through the parent attachment map in every block', () => {
   const result = renderMarkdown([
     '# [资料](/file/attachments/a/report.pdf)',

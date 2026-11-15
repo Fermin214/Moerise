@@ -25,11 +25,22 @@ android {
         }
     }
     experimentalProperties["android.experimental.self-instrumenting"] = true
+    sourceSets.getByName("main").assets.srcDir(layout.buildDirectory.dir("generated/traceProcessor"))
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
 }
+val prepareTraceProcessor by tasks.registering(Exec::class) {
+    val script = rootProject.file("../scripts/android/trace-processor.py")
+    val output = layout.buildDirectory.dir("generated/traceProcessor")
+    inputs.file(script)
+    outputs.dir(output)
+    val python = providers.environmentVariable("MOERISE_ANDROID_PYTHON")
+        .orElse(if (System.getProperty("os.name").startsWith("Windows")) "python" else "python3")
+    commandLine(python.get(), script.absolutePath, output.get().asFile.absolutePath)
+}
+tasks.named("preBuild") { dependsOn(prepareTraceProcessor) }
 kotlin { compilerOptions.jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17) }
 androidComponents {
     beforeVariants(selector().all()) { it.enable = it.buildType in setOf("benchmark", "profile") }

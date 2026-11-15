@@ -98,7 +98,15 @@ async function request(path, { method = 'GET', body, headers = {}, controller = 
 }
 function validIdentity(value) {
   if (!value?.user?.name || !value.csrf_token) throw Object.assign(new Error('Invalid session response'), { code: 'SESSION_RESPONSE_INVALID' });
+  if (value.stargazing_enabled !== undefined && typeof value.stargazing_enabled !== 'boolean') {
+    throw Object.assign(new Error('Invalid stargazing configuration'), { code: 'SESSION_RESPONSE_INVALID' });
+  }
   return value;
+}
+function updateStargazing(enabled = identity?.stargazing_enabled !== false) {
+  if (identity) identity.stargazing_enabled = enabled;
+  document.querySelectorAll('a[data-route][href="/map"]').forEach(link => { link.hidden = !enabled; });
+  if (!enabled) mapView = mapSnapshot = null;
 }
 async function sessionRequest(path, options = {}) {
   const headers = { ...options.headers, 'X-CSRF-Token': identity?.csrf_token || logoutCSRF };
@@ -111,7 +119,7 @@ async function sessionRequest(path, options = {}) {
       if (options.method === 'DELETE' && refreshError.status === 401) return request(path, { ...options, headers });
       throw refreshError;
     }
-    if (identity) identity = value;
+    if (identity) { identity = value; updateStargazing(); }
     else logoutCSRF = value.csrf_token;
     return request(path, { ...options, headers: { ...headers, 'X-CSRF-Token': value.csrf_token } });
   }
@@ -178,13 +186,16 @@ function localToday() {
     return ['year', 'month', 'day'].map(type => parts.find(part => part.type === type).value).join('-');
   } catch { return new Date().toISOString().slice(0, 10); }
 }
-function formatTime(value, full = false) {
+function formatTime(value) {
   if (!Number.isFinite(Date.parse(value))) return '';
-  const options = { timeZone: identity?.timezone, month: 'long', day: 'numeric', weekday: 'short' };
-  if (full) Object.assign(options, { year: 'numeric', hour: '2-digit', minute: '2-digit' });
   return () => {
-    try { return new Intl.DateTimeFormat(locale(), options).format(new Date(value)); }
-    catch { return value.slice(0, 10); }
+    try {
+      const parts = Object.fromEntries(new Intl.DateTimeFormat('en-CA-u-ca-gregory-nu-latn', {
+        timeZone: identity?.timezone, year: 'numeric', month: '2-digit', day: '2-digit',
+        hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
+      }).formatToParts(new Date(value)).map(part => [part.type, part.value]));
+      return `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute}`;
+    } catch { return ''; }
   };
 }
 const isTimeline = () => location.pathname === '/' || location.pathname === '/archived';
@@ -246,13 +257,14 @@ async function reloadTimeline(pages = pageCount || 1, scroll = window.scrollY) {
 }
 async function enter(value) {
   identity = validIdentity(value);
+  updateStargazing();
   if (draftOwner && draftOwner !== identity.user.name) clearDrafts();
   draftOwner = null;
   logoutCSRF = null;
   $('auth').hidden = true;
   $('app').hidden = $('workspace').hidden = false;
   $('password').value = '';
-  setText($('account-name'), identity.user.display_name || identity.user.name);
+  setText($('account-name'), identity.user.display_name?.trim() || identity.user.name.replace(/^users\//, ''));
   $('account').hidden = false;
   month = localToday().slice(0, 7);
   $('content').value = draft.content;
@@ -483,7 +495,7 @@ function renderNote(note, detail = false) {
   const card = el('article', `card${detail ? ' note' : ''}`);
   card.dataset.name = note.name;
   card.dataset.sourceHash = note.source_hash;
-  const header = el('div', 'hd'), time = el('time', '', formatTime(note.create_time, detail));
+  const header = el('div', 'hd'), time = el('time', '', formatTime(note.create_time));
   if (Number.isFinite(Date.parse(note.create_time))) time.dateTime = note.create_time;
   if (detail) header.append(time);
   else {
@@ -505,7 +517,7 @@ function renderNote(note, detail = false) {
   more.setAttribute('aria-haspopup', 'menu'); more.setAttribute('aria-expanded', 'false');
   const content = el('div', 'note-content'); content.append(renderMarkdown(note.content, note));
   const tags = el('div', 'note-tags');
-  for (const tag of note.tags || []) tags.append(button(`#${tag}`, 'tag', () => {
+  for (const tag of new Set(note.tags || [])) tags.append(button(`#${tag}`, 'tag', () => {
     const source = sourceTimeline();
     sidebarFilter({ tags: [...new Set([...source.values.tags, tag])] });
   }));
@@ -666,6 +678,7 @@ function startEdit(note) {
   form.dataset.name = note.name; setAttr(form, 'aria-label', l("编辑笔记"));
   const text = el('textarea'); text.value = note.content; text.rows = notePath.test(location.pathname) ? 5 : 3;
   setAttr(text, 'aria-label', l("编辑笔记内容"));
+  setAttr(text, 'placeholder', l("今天想到了什么……"));
   const retained = el('div', 'attachment-list'), added = el('div', 'attachment-list');
   const bar = el('div', 'bar'), actions = el('div', 'editor-actions'), input = el('input', 'sr');
   input.type = 'file'; input.multiple = true; input.tabIndex = -1;
@@ -843,7 +856,7 @@ function discoveryCard(note, review = false, className = 'card big discovery-not
     const days = Math.max(0, Math.floor((Date.now() - Date.parse(note.create_time)) / 86_400_000));
     header.append(el('span', 'pill', days ? l("{0} 天前", { 0: days }) : l("今天"))); metadata.append(time);
   } else header.append(time);
-  for (const tag of note.tags || []) metadata.append(el('span', 'tag', `#${tag}`));
+  for (const tag of new Set(note.tags || [])) metadata.append(el('span', 'tag', `#${tag}`));
   metadata.append(open); header.append(metadata);
   const content = el('div', 'note-content'); content.append(renderMarkdown(note.content, note));
   card.append(header, content, renderAttachments(note));
@@ -1245,7 +1258,7 @@ async function showRoute() {
       sessionRequest, csrfToken: () => identity?.csrf_token, handleFailure, openNote,
       navigate: (url, options) => { if (url === currentURL) showRoute(); else navigate(url, options); },
       closeMenus,
-      renewCSRF: async () => { identity = validIdentity(await request('/session')); },
+      renewCSRF: async () => { identity = validIdentity(await request('/session')); updateStargazing(); },
       replaceURL: url => {
         history.replaceState({ ...history.state }, '', url);
         currentURL = location.pathname + location.search;
@@ -1257,6 +1270,10 @@ async function showRoute() {
   } else if (location.pathname === '/map') {
     setText($('view-title'), l("观星")); $('view-title').hidden = false;
     window.scrollTo(0, 0);
+    if (identity.stargazing_enabled === false) {
+      setText($('capability'), l("观星已关闭。")); $('capability').hidden = false;
+      return;
+    }
     const module = await routeModule(() => import('./map.js'), generation, sequence);
     if (!module) return;
     const saved = history.state?.mapView?.owner === identity.user.name ? history.state.mapView :
@@ -1266,7 +1283,10 @@ async function showRoute() {
       initialView: saved,
       initialData: mapSnapshot,
       onData: value => {
-        if (identity && generation === epoch && sequence === viewSequence) mapSnapshot = value;
+        if (identity && generation === epoch && sequence === viewSequence) {
+          mapSnapshot = value;
+          if (value.disabled_reason === 'stargazing') updateStargazing(false);
+        }
       },
       onViewChange: value => {
         if (!identity || generation !== epoch || sequence !== viewSequence) return;
@@ -1284,6 +1304,7 @@ async function showRoute() {
       sessionRequest, handleFailure,
       onSaved: data => {
         identity.timezone = data.settings.timezone;
+        updateStargazing(data.settings.stargazing.enabled);
         walkConfiguration = null;
         month = sourceTimeline().values.date?.slice(0, 7) || localToday().slice(0, 7);
         dirtySnapshots(); invalidateSidebar(); loadSidebar();

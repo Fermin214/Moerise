@@ -2,6 +2,9 @@
     <application>
         <profileable android:shell="true" />
         <activity
+            android:name="io.github.fermin214.moerise.PrepareBenchmarkActivity"
+            android:exported="true" />
+        <activity
             android:name="io.github.fermin214.moerise.StarBenchmarkActivity"
             android:exported="true" />
     </application>

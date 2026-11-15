@@ -120,6 +120,8 @@ docker compose up -d
 
 源码部署使用 `docker compose up -d --build`，同时构建 Core、Web 和布局服务。
 
+`.env.example` 默认通过 `memos,stargazing` profiles 启用内置 Memos 和布局服务。不使用观星时，在「设置 → 通用」关闭「启用观星」，移除 `stargazing` profile 并执行 `docker compose stop layout`。语义检索和漫步不受影响，恢复方式见[运行指南](docs/OPERATIONS.md#观星按需启用)。
+
 启动完成后，访问 `http://localhost:3000`，使用你的 Memos 账户名和密码直接登录 Moerise Web。
 
 > 详细的环境变量配置、连接现有 Memos 实例、HTTPS 反向代理及服务器资源规格建议，请参阅[安装与运行指南](docs/OPERATIONS.md)。

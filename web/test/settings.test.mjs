@@ -10,6 +10,7 @@ const snapshot = {
     notifications: { enabled: false, times: ['09:00'] },
     llm: { enabled: false, model: null },
     embedding: { enabled: false, dimensions: 1024 },
+    stargazing: { enabled: true },
     channel: { kind: 'none', app_id: null },
     insights: { default_prompt: '默认提示词' },
   },

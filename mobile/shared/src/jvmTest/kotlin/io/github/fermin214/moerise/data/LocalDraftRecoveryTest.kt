@@ -32,7 +32,7 @@ class LocalDraftRecoveryTest {
         secrets.write("selected-profile", CoreJson.encodeToString(first))
         val session = SessionController(secrets, true, scope)
         try {
-            val mobile = MobileController(session, { repository }, scope) { cleared.incrementAndGet(); Unit }
+            val mobile = MobileController(session, { repository }, scope, clearFiles = { cleared.incrementAndGet(); Unit })
             withTimeout(5000) { mobile.editor.state.first { it.accountKey == first.accountKey && it.draft != null } }
             assertEquals(0, cleared.get())
             withContext(dispatcher) {

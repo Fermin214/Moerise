@@ -120,6 +120,8 @@ docker compose up -d
 
 For source deployments, use `docker compose up -d --build` to build Core, Web, and the layout service together.
 
+The `.env.example` enables bundled Memos and the layout service through the `memos,stargazing` profiles. To disable stargazing, turn off **Settings → General → Enable stargazing**, remove the `stargazing` profile, and run `docker compose stop layout`. Semantic search and walks remain available. See the [Operations Guide](docs/OPERATIONS.md#观星按需启用) to enable it again.
+
 Once running, navigate to `http://localhost:3000` and sign in using your Memos username and password.
 
 > For detailed environment variables, existing Memos connections, HTTPS reverse proxy configuration, and server resource profiles, see [Operations Guide](docs/OPERATIONS.md).

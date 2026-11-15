@@ -15,6 +15,7 @@ import kotlinx.serialization.Serializable
 @Serializable data class ChatSummary(
     val id: String, val title: String, val preview: String, val version: Long,
     @SerialName("material_count") val materialCount: Int, @SerialName("updated_at") val updatedAt: String,
+    @SerialName("preview_kind") val previewKind: String = "",
 )
 @Serializable data class ChatSession(
     val id: String, val title: String, val version: Long, val materials: List<ChatMaterial>, val turns: List<ChatTurn>,
@@ -35,4 +36,5 @@ import kotlinx.serialization.Serializable
     val chatId: String? = null, val selected: List<String> = emptyList(), val question: String = "",
     val creation: ChatCreate? = null, val generation: ChatGeneration? = null, val mutation: ChatMutation? = null,
     val partial: ChatTurn? = null,
+    val selectionInitialized: Boolean = false,
 )

@@ -14,6 +14,7 @@ data class StarMapState(
     val loading: Boolean = false, val posting: Boolean = false, val error: String? = null, val rebuild: MapRebuild? = null,
     val excerpts: Map<String, String> = emptyMap(), val photo: Boolean = true, val fullScreen: Boolean = false,
     val allFraming: Boolean = false, val tab: Int = 0, val compatible: Boolean = true, val unplacedOnly: Boolean = false,
+    val disabledReason: String = "",
 )
 data class MapMetric(val kind: String, val value: Long, val version: String)
 
@@ -143,7 +144,8 @@ class StarMapController(
                 if (snapshot?.layoutVersion != previousMap?.layoutVersion) cancelExcerpts()
                 val hashes = snapshot?.points?.associate { it.name to it.sourceHash }.orEmpty()
                 excerptCache.keys.toList().filter { excerptCache[it]?.first != hashes[it] }.forEach { excerptCache.remove(it) }
-                mutable.update { it.copy(snapshot = snapshot, status = map.status, loading = false, compatible = true,
+                mutable.update { it.copy(snapshot = snapshot, status = map.status, disabledReason = map.disabledReason,
+                    loading = false, compatible = true,
                     view = if (map.readable && frameChanged) null else it.view,
                     selected = if (map.readable && point == null || map.status == "disabled") null else it.selected,
                     reader = if (map.readable && point?.sourceHash != oldPoint?.sourceHash || map.status == "disabled") null else it.reader,
@@ -248,7 +250,7 @@ class StarMapController(
     }
     fun cancelExcerpts() { ++excerptGeneration; excerptJob?.cancel(); desired = emptyList() }
     fun excerpts(names: List<String>) {
-        val requested = names.distinct().take(3)
+        val requested = names.distinct().take(10)
         if (!visible || requested == desired) return
         cancelExcerpts(); desired = requested
         val active = core() ?: return
@@ -263,7 +265,7 @@ class StarMapController(
                 excerptCache[name]?.takeIf { it.first == point.sourceHash }?.let { result[name] = it.second }
                 if (name in result) continue
                 state.value.reader?.takeIf { it.name == name && it.sourceHash == point.sourceHash }?.let {
-                    result[name] = it.content.lineSequence().firstOrNull { it.isNotBlank() }?.take(100).orEmpty()
+                    result[name] = mapExcerpt(it)
                 }
                 if (name in result) continue
                 try {
@@ -272,7 +274,7 @@ class StarMapController(
                     require(note.instanceId == account.split('\u0000')[1] && note.name == name) { "ACCOUNT_CHANGED" }
                     if (ticket != excerptGeneration || !current(stamp, account, active)) return@launch
                     if (note.sourceHash == point.sourceHash && state.value.snapshot?.points?.firstOrNull { it.name == name }?.sourceHash == point.sourceHash) {
-                        result[name] = note.content.lineSequence().firstOrNull { it.isNotBlank() }?.take(100).orEmpty()
+                        result[name] = mapExcerpt(note)
                         excerptCache[name] = point.sourceHash to result.getValue(name)
                         while (excerptCache.size > 32) excerptCache.remove(excerptCache.keys.first())
                     }
@@ -290,4 +292,22 @@ class StarMapController(
         }
     }
     private fun metric(kind: String, value: Long) { mutableMetrics.tryEmit(MapMetric(kind, value, state.value.snapshot?.layoutVersion.orEmpty())) }
+}
+
+private fun mapExcerpt(note: Note): String {
+    val text = note.content
+        .replace(Regex("!\\[[^\\]]*\\]\\([^)]*\\)"), "")
+        .replace(Regex("\\[([^\\]]*)\\]\\([^)]*\\)"), "$1")
+        .replace(Regex("[#*`>]"), "")
+        .replace(Regex("[\\s\\u00A0\\u1680\\u2000-\\u200A\\u2028\\u2029\\u202F\\u205F\\u3000\\uFEFF]+"), " ")
+        .trim()
+    var index = 0
+    var characters = 0
+    while (index < text.length && characters < 100) {
+        index += if (text[index].isHighSurrogate() && index + 1 < text.length && text[index + 1].isLowSurrogate()) 2 else 1
+        characters++
+    }
+    return text.substring(0, index).ifEmpty {
+        note.attachments.firstOrNull()?.get("filename")?.jsonPrimitive?.contentOrNull.orEmpty()
+    }
 }

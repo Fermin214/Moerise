@@ -25,6 +25,7 @@ import kotlinx.serialization.json.jsonPrimitive
 expect fun platformHttpEngine(): HttpClientEngine
 
 val CoreJson = Json { ignoreUnknownKeys = true; encodeDefaults = true }
+const val CORE_REQUEST_TIMEOUT_MILLIS = 65_000L
 data class RemoteLogout(val cookie: String?, val csrf: String?)
 
 class CoreClient(
@@ -43,9 +44,9 @@ class CoreClient(
         expectSuccess = false
         install(HttpCookies) { storage = cookies }
         install(HttpTimeout) {
-            requestTimeoutMillis = 65_000
+            requestTimeoutMillis = CORE_REQUEST_TIMEOUT_MILLIS
             connectTimeoutMillis = 10_000
-            socketTimeoutMillis = 65_000
+            socketTimeoutMillis = CORE_REQUEST_TIMEOUT_MILLIS
         }
     }
 

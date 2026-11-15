@@ -39,7 +39,14 @@ private fun fixedSnapshot(count: Int, revision: Int): StarMap {
 
 class StarBenchmarkActivity : ComponentActivity() {
     private var traceOpen = false
+    private val traceCookie = System.identityHashCode(this)
+    private fun beginSceneTrace() {
+        if (traceOpen) Trace.endAsyncSection("star_scene_ready", traceCookie)
+        Trace.beginAsyncSection("star_scene_ready", traceCookie)
+        traceOpen = true
+    }
     override fun onCreate(savedInstanceState: Bundle?) {
+        beginSceneTrace()
         super.onCreate(savedInstanceState)
         val count = intent.getIntExtra("points", 1000).also { require(it in setOf(1000, 5000)) }
         val photo = intent.getBooleanExtra("photo", false)
@@ -51,9 +58,8 @@ class StarBenchmarkActivity : ComponentActivity() {
                 var summaries by remember { mutableStateOf(false) }
                 var fitted by remember { mutableStateOf<StarView?>(null) }
                 LaunchedEffect(revision) {
+                    if (revision > 1) beginSceneTrace()
                     val body = withContext(Dispatchers.Default) { CoreJson.encodeToString(StarMap.serializer(), fixedSnapshot(count, revision)) }
-                    if (traceOpen) Trace.endAsyncSection("star_scene_ready", hashCode())
-                    Trace.beginAsyncSection("star_scene_ready", hashCode()); traceOpen = true
                     Trace.setCounter("moerise_map_body_bytes", body.encodeToByteArray().size)
                     val map = withContext(Dispatchers.Default) {
                         Trace.beginSection("star_scene_parse")
@@ -101,7 +107,7 @@ class StarBenchmarkActivity : ComponentActivity() {
                                 if (drawnVersion != version) {
                                     drawnVersion = version
                                     if (traceOpen) {
-                                        Trace.endAsyncSection("star_scene_ready", hashCode()); traceOpen = false
+                                        Trace.endAsyncSection("star_scene_ready", traceCookie); traceOpen = false
                                     }
                                     reportFullyDrawn()
                                 }
@@ -112,7 +118,7 @@ class StarBenchmarkActivity : ComponentActivity() {
         }
     }
     override fun onDestroy() {
-        if (traceOpen) { Trace.endAsyncSection("star_scene_ready", hashCode()); traceOpen = false }
+        if (traceOpen) { Trace.endAsyncSection("star_scene_ready", traceCookie); traceOpen = false }
         super.onDestroy()
     }
 }

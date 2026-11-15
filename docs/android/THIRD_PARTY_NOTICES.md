@@ -5,7 +5,9 @@
 
 Apache License 2.0 全文见 [licenses/Apache-2.0.txt](licenses/Apache-2.0.txt)。
 SQLite 原始引擎属于公有领域，说明见 [licenses/SQLite.txt](licenses/SQLite.txt)。
-依赖归档内附带的许可和声明保存在 `licenses/artifacts/`。
+依赖归档内附带的许可和声明由脚本提取到
+`mobile/androidApp/build/reports/third-party-notices/licenses/artifacts/`，
+随发行许可 ZIP 分发。
 
 | Maven 坐标 | 依赖声明的许可 |
 | --- | --- |

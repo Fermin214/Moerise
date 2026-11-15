@@ -35,6 +35,7 @@ class SessionController(
     private val languageLock = Mutex()
     private var languageRevision = 0L
     private var generation = 0L
+    private var settingsRevision = 0L
     private var operation: Job? = null
     var core: CoreClient? = null
         private set
@@ -76,6 +77,7 @@ class SessionController(
 
     private suspend fun restore() {
         val stamp = ++generation
+        val timeStamp = settingsRevision
         core?.close()
         core = null
         try {
@@ -84,12 +86,20 @@ class SessionController(
             mutableState.value = SessionUiState(loading = false, profile = profile)
             if (profile == null) return
             val active = client(profile.origin, stamp).also { it.bindAccount(profile.accountKey); core = it }
-            val identity = active.session()
+            val identity = withTimeout(CORE_REQUEST_TIMEOUT_MILLIS) { active.session() }
             if (stamp != generation) return
-            val refreshed = repository.select(profile.origin, identity)
-            if (stamp == generation) mutableState.update { it.copy(profile = refreshed, connected = true, needsLogin = false) }
+            val refreshed = repository.select(profile.origin, identity) { selected ->
+                if (stamp != generation) throw CancellationException("Account changed")
+                if (timeStamp == settingsRevision) selected else selected.copy(
+                    timezone = state.value.profile?.timezone ?: selected.timezone,
+                    stargazingEnabled = state.value.profile?.stargazingEnabled ?: selected.stargazingEnabled)
+            }
+            if (stamp == generation) mutableState.update { it.copy(profile = if (timeStamp == settingsRevision) refreshed
+                else refreshed.copy(timezone = it.profile?.timezone ?: refreshed.timezone,
+                    stargazingEnabled = it.profile?.stargazingEnabled ?: refreshed.stargazingEnabled),
+                connected = true, needsLogin = false) }
         } catch (error: Exception) {
-            if (error is CancellationException) throw error
+            if (error is CancellationException && error !is TimeoutCancellationException) throw error
             if (stamp == generation) mutableState.update { it.copy(loading = false, error = errorCode(error)) }
         }
     }
@@ -110,7 +120,10 @@ class SessionController(
                 require("password" in capabilities.loginMethods && capabilities.notes == "ready") { "INCOMPATIBLE_CORE" }
                 val identity = active.login(username, password)
                 if (stamp != generation) return@launch
-                val profile = repository.select(origin, identity)
+                val profile = repository.select(origin, identity) {
+                    if (stamp != generation) throw CancellationException("Account changed")
+                    it
+                }
                 core = active
                 active = null
                 mutableState.value = SessionUiState(loading = false, profile = profile, connected = true)
@@ -125,6 +138,65 @@ class SessionController(
         if (state.value.busy) return
         operation?.cancel()
         operation = scope.launch { restore() }
+    }
+
+    suspend fun checkConnection(): Boolean {
+        if (state.value.busy) return false
+        val stamp = generation
+        val timeStamp = settingsRevision
+        val profile = state.value.profile ?: return false
+        val active = core ?: client(profile.origin, stamp).also {
+            it.bindAccount(profile.accountKey)
+            core = it
+        }
+        return try {
+            val identity = withTimeout(CORE_REQUEST_TIMEOUT_MILLIS) { active.session() }
+            if (stamp != generation) return false
+            val refreshed = repository.select(profile.origin, identity) { selected ->
+                if (stamp != generation) throw CancellationException("Account changed")
+                if (timeStamp == settingsRevision) selected else selected.copy(
+                    timezone = state.value.profile?.timezone ?: selected.timezone,
+                    stargazingEnabled = state.value.profile?.stargazingEnabled ?: selected.stargazingEnabled)
+            }
+            if (stamp != generation) return false
+            mutableState.update { it.copy(profile = if (timeStamp == settingsRevision) refreshed
+                else refreshed.copy(timezone = it.profile?.timezone ?: refreshed.timezone,
+                    stargazingEnabled = it.profile?.stargazingEnabled ?: refreshed.stargazingEnabled),
+                connected = true, needsLogin = false, error = null) }
+            true
+        } catch (error: Exception) {
+            if (error is CancellationException && error !is TimeoutCancellationException) throw error
+            if (stamp == generation) mutableState.update {
+                it.copy(connected = false,
+                    needsLogin = it.needsLogin || error is IdentityChangedException ||
+                        error is CoreException && error.status == 401,
+                    error = errorCode(error))
+            }
+            false
+        }
+    }
+
+    fun acceptSettings(accountKey: String, timezone: String, stargazingEnabled: Boolean) {
+        if (state.value.profile?.accountKey != accountKey) return
+        serviceMonth(timezone)
+        ++settingsRevision
+        mutableState.update { if (it.profile?.accountKey == accountKey)
+            it.copy(profile = it.profile.copy(timezone = timezone, stargazingEnabled = stargazingEnabled)) else it }
+        scope.launch {
+            try {
+                repository.updateSettings(accountKey) {
+                    state.value.profile?.takeIf { it.accountKey == accountKey }
+                }
+            }
+            catch (error: Exception) {
+                if (error is CancellationException) throw error
+                if (state.value.profile?.accountKey == accountKey) mutablePreferencesError.value = "LOCAL_PREFERENCES_FAILED"
+            }
+        }
+    }
+
+    fun connectionFailed(account: String) {
+        if (account == state.value.profile?.accountKey) mutableState.update { it.copy(connected = false) }
     }
 
     suspend fun stopForRemoval() {

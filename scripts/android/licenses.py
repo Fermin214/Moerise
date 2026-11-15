@@ -5,6 +5,7 @@ import io
 import os
 from pathlib import Path
 import re
+import shutil
 import xml.etree.ElementTree as E
 import zipfile
 
@@ -15,6 +16,7 @@ root = Path(__file__).resolve().parents[2]
 cache = Path(os.environ.get("GRADLE_USER_HOME", Path.home() / ".gradle")) / "caches/modules-2/files-2.1"
 inventory = root / "mobile/androidApp/build/reports/release-dependencies.tsv"
 destination = root / "docs/android/THIRD_PARTY_NOTICES.md"
+bundle = root / "mobile/androidApp/build/reports/third-party-notices"
 namespace = {"m": "http://maven.apache.org/POM/4.0.0"}
 
 def pom_info(coordinate, seen=()):
@@ -64,22 +66,29 @@ body = """# Android 第三方许可
 
 Apache License 2.0 全文见 [licenses/Apache-2.0.txt](licenses/Apache-2.0.txt)。
 SQLite 原始引擎属于公有领域，说明见 [licenses/SQLite.txt](licenses/SQLite.txt)。
-依赖归档内附带的许可和声明保存在 `licenses/artifacts/`。
+依赖归档内附带的许可和声明由脚本提取到
+`mobile/androidApp/build/reports/third-party-notices/licenses/artifacts/`，
+随发行许可 ZIP 分发。
 
 | Maven 坐标 | 依赖声明的许可 |
 | --- | --- |
 """ + "\n".join(rows) + "\n"
 expected = {destination: body}
-expected.update({destination.parent / "licenses/artifacts" / name: text for name, text in notices.items()})
 if args.check:
     for path, text in expected.items():
         assert path.is_file() and path.read_text() == text, f"第三方许可需要更新：{path.relative_to(root)}"
 else:
-    artifact_dir = destination.parent / "licenses/artifacts"
-    for stale in artifact_dir.glob("*.txt"):
-        if stale not in expected:
-            stale.unlink()
     for path, text in expected.items():
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text)
+artifact_dir = bundle / "licenses/artifacts"
+artifact_dir.mkdir(parents=True, exist_ok=True)
+for stale in artifact_dir.glob("*.txt"):
+    if stale.name not in notices:
+        stale.unlink()
+for name, text in notices.items():
+    (artifact_dir / name).write_text(text)
+shutil.copyfile(destination, bundle / destination.name)
+for source in (destination.parent / "licenses").glob("*.txt"):
+    shutil.copyfile(source, bundle / "licenses" / source.name)
 print(f"发行依赖：{len(rows)}；归档许可与声明：{len(notices)}。")

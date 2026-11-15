@@ -53,7 +53,7 @@ button.tag{cursor:pointer;font-family:inherit}button.tag:hover{background:#E3ECF
 .composer{border-radius:18px;padding:14px 20px 8px;transition:border-color .15s,box-shadow .15s}
 .composer:focus-within{border-color:#B5CCF2;box-shadow:0 6px 24px rgba(91,141,239,.12)}
 .composer textarea{border:0;outline:0;resize:none;width:100%;font-size:17px;line-height:1.8;color:#1F2328;background:transparent}
-.composer textarea::placeholder{color:#6F7681}
+.composer textarea::placeholder{color:#9299A3;font-size:14px;opacity:1}
 .composer.editing{border-color:#B5CCF2}
 .composer.editing textarea{font-size:16px;line-height:1.85}
 .bar{display:flex;align-items:center;justify-content:space-between;margin-top:2px}

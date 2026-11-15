@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Moerise API",
-    "version": "0.1.0"
+    "version": "0.1.1"
   },
   "paths": {
     "/api/ext/v1/search/index": {
@@ -8463,7 +8463,7 @@
             }
           },
           "409": {
-            "description": "Embedding 未启用。",
+            "description": "观星关闭（STARGAZING_DISABLED）或 Embedding 未启用（EMBEDDING_DISABLED）。",
             "content": {
               "application/json": {
                 "schema": {
@@ -8836,6 +8836,19 @@
             "required": [
               "default_prompt"
             ]
+          },
+          "stargazing": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "enabled": {
+                "type": "boolean",
+                "description": "独立启用观星，默认 true；关闭后停止布局调度，保留快照、模型与向量索引。"
+              }
+            },
+            "required": [
+              "enabled"
+            ]
           }
         },
         "required": [
@@ -8845,7 +8858,8 @@
           "llm",
           "embedding",
           "channel",
-          "insights"
+          "insights",
+          "stargazing"
         ]
       },
       "SettingsUpdate": {
@@ -9056,6 +9070,16 @@
                 "minLength": 1,
                 "maxLength": 16000,
                 "description": "默认洞察 Prompt，不能仅含空白。"
+              }
+            }
+          },
+          "stargazing": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "enabled": {
+                "type": "boolean",
+                "description": "独立启用观星，默认 true；关闭后停止布局调度，保留快照、模型与向量索引。"
               }
             }
           }
@@ -10530,7 +10554,8 @@
           "user",
           "timezone",
           "expires_at",
-          "csrf_token"
+          "csrf_token",
+          "stargazing_enabled"
         ],
         "properties": {
           "instance_id": {
@@ -10561,6 +10586,10 @@
           },
           "csrf_token": {
             "type": "string"
+          },
+          "stargazing_enabled": {
+            "type": "boolean",
+            "description": "观星功能开关，客户端据此显示入口。"
           }
         }
       },
@@ -11885,6 +11914,14 @@
               "unavailable"
             ],
             "description": "后台布局任务状态；已有点集在更新或失败期间继续可读。"
+          },
+          "disabled_reason": {
+            "type": "string",
+            "enum": [
+              "stargazing",
+              "embedding"
+            ],
+            "description": "仅 disabled 状态返回；stargazing 表示观星关闭，embedding 表示向量功能关闭。"
           }
         },
         "required": [

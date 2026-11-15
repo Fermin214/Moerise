@@ -14,6 +14,7 @@ data class SessionIdentity(
     val timezone: String,
     @SerialName("expires_at") val expiresAt: String,
     @SerialName("csrf_token") val csrfToken: String,
+    @SerialName("stargazing_enabled") val stargazingEnabled: Boolean = true,
 ) {
     fun accountKey(origin: String): String = "$origin\u0000$instanceId\u0000${user.name}"
 }

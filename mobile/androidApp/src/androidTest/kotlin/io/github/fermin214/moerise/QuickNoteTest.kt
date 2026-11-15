@@ -1,110 +1,287 @@
 package io.github.fermin214.moerise
 
-import androidx.compose.ui.test.*
-import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.semantics.SemanticsProperties
-import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.semantics.getOrNull
+import androidx.compose.ui.test.*
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
-import java.io.FileInputStream
-import org.json.JSONObject
+import io.github.fermin214.moerise.data.CORE_REQUEST_TIMEOUT_MILLIS
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 
 @RunWith(AndroidJUnit4::class)
 class QuickNoteTest {
-    @get:Rule val compose = createAndroidComposeRule<MainActivity>()
+    @get:Rule val compose = fixtureComposeRule()
+
+    private fun visualSetup() = InstrumentationRegistry.getArguments().getString("visualSetup") == "true"
+
+    private fun saveNew(text: String): String {
+        compose.homeNode("note_editor").performTextReplacement(text)
+        compose.waitForEditor("note_editor", text)
+        saveComposer()
+        return compose.waitForCard(text.removeSuffix(" #android"))
+    }
+
+    private fun saveComposer() {
+        compose.clickHomeTag("save_note")
+        try {
+            compose.waitForEditor("note_editor", "")
+        } catch (failure: AssertionError) {
+            val mobile = compose.model().mobile
+            val state = mobile.editor.state.value
+            throw AssertionError("新建保存后未清空：busy=${state.busy}；importing=${state.importing}；" +
+                "error=${state.error}；revision=${state.draft?.revision}；savedRevision=${state.savedRevision}；" +
+                "pending=${state.pending?.status}；编辑目标=${mobile.noteEditors.value.keys}", failure)
+        }
+    }
+
+    private fun search(text: String) {
+        if (!compose.hasTag("search_query")) compose.clickTag("open_search")
+        compose.onNodeWithTag("search_query").performTextReplacement(text)
+        compose.onNodeWithTag("search_query").performImeAction()
+    }
+
+    private fun deleteCard(name: String) {
+        compose.cardAction(name, "delete_note")
+        compose.homeNode("delete_confirm_$name").performClick()
+        val mobile = compose.model().mobile
+        try {
+            compose.waitUntil(CORE_REQUEST_TIMEOUT_MILLIS + 5_000) {
+                !mobile.noteActions.state.value.busy
+            }
+            val confirmed = mobile.noteActions.state.value
+            check(confirmed.error == null && !confirmed.pendingAction && confirmed.note == null)
+            // 删除确认后才发起列表读取，两次请求各自使用完整的等待预算。
+            compose.waitUntil(CORE_REQUEST_TIMEOUT_MILLIS + 5_000) {
+                mobile.timeline.state.value.notes.none { it.name == name }
+            }
+        } catch (failure: Throwable) {
+            val action = mobile.noteActions.state.value
+            val timeline = mobile.timeline.state.value
+            throw AssertionError("删除未完成：name=$name；busy=${action.busy}；error=${action.error}；" +
+                "unknown=${action.deleteUnknown}；pending=${action.pendingAction}；" +
+                "timelineLoading=${timeline.loading}；timelineError=${timeline.error}；" +
+                "stillListed=${timeline.notes.any { it.name == name }}", failure)
+        }
+        compose.onNodeWithTag("note_card_$name").assertDoesNotExist()
+    }
+
+    private fun changeState(name: String, expected: String) {
+        compose.cardAction(name, "archive_note")
+        val actions = compose.model().mobile.noteActions
+        try {
+            compose.waitUntil(CORE_REQUEST_TIMEOUT_MILLIS + 5_000) { !actions.state.value.busy }
+            val state = actions.state.value
+            check(state.error == null && !state.pendingAction && state.note?.state == expected)
+        } catch (failure: Throwable) {
+            throw AssertionError("笔记状态未确认：name=$name；expected=$expected；state=${actions.state.value}；" +
+                deviceDiagnostics(), failure)
+        }
+    }
 
     @Test
     fun loginWriteRecreateSaveAndReadBack() {
-        val instrumentation = InstrumentationRegistry.getInstrumentation()
-        val descriptor = instrumentation.uiAutomation.executeShellCommand("cat /data/local/tmp/moerise-android-fixture.json")
-        val fixture = descriptor.use { JSONObject(FileInputStream(it.fileDescriptor).bufferedReader().readText()) }
-        compose.onNodeWithTag("server_origin").performTextReplacement(fixture.getString("origin"))
-        compose.onNodeWithTag("server_username").performTextReplacement(fixture.getString("username"))
-        compose.onNodeWithTag("server_password").performTextReplacement(fixture.getString("password"))
-        compose.onNodeWithTag("server_login").performClick()
-        compose.waitUntil(20_000) { compose.onAllNodesWithTag("note_editor").fetchSemanticsNodes().isNotEmpty() }
-        val text = "Android quick note ${System.currentTimeMillis()} #android"
-        compose.onNodeWithTag("note_editor").performTextInput(text)
-        compose.waitForIdle()
-        Thread.sleep(500)
+        compose.signIntoFixture()
+        if (visualSetup()) return
+        val marker = System.currentTimeMillis()
+        val text = "Android quick note $marker #android"
+        val displayed = text.removeSuffix(" #android")
+        compose.homeNode("note_editor").performTextReplacement(text)
         compose.activityRule.scenario.recreate()
-        compose.onNodeWithTag("note_editor").assertTextContains(text)
-        compose.onNodeWithTag("save_note").performScrollTo().performClick()
-        compose.waitUntil(20_000) { compose.onAllNodesWithText(text, substring = false).fetchSemanticsNodes().isNotEmpty() }
-        compose.onNodeWithTag("note_editor").assert(SemanticsMatcher.expectValue(SemanticsProperties.EditableText, AnnotatedString("")))
-        compose.onNodeWithText(text, substring = false).assertIsDisplayed()
-        compose.onNodeWithTag("open_search").performScrollTo().performClick()
-        compose.onNodeWithTag("search_query").performTextReplacement(text.substringAfter("note ").substringBefore(" #"))
-        compose.onNodeWithTag("search_submit").performClick()
-        compose.waitUntil(20_000) { compose.onAllNodesWithText(text, substring = false).fetchSemanticsNodes().isNotEmpty() }
-        compose.onNodeWithText(text, substring = false).assertIsDisplayed()
-        compose.onNodeWithText(text, substring = false).performClick()
-        compose.waitUntil(20_000) { compose.onAllNodesWithTag("note_edit").fetchSemanticsNodes().isNotEmpty() }
-        compose.onNodeWithTag("note_edit").performClick()
-        compose.waitUntil(10_000) { compose.onAllNodesWithTag("note_editor").fetchSemanticsNodes().isNotEmpty() }
-        compose.onNodeWithTag("note_editor").assertTextContains(text)
-        compose.onNodeWithTag("editor_back").performScrollTo().performClick()
-        compose.waitUntil(10_000) { compose.onAllNodesWithTag("detail_back").fetchSemanticsNodes().isNotEmpty() }
-        compose.onNodeWithTag("detail_back").performScrollTo().performClick()
-        compose.onNodeWithTag("search_mode_hybrid").performScrollTo().performClick()
-        compose.onNodeWithTag("search_submit").performClick()
-        compose.waitUntil(20_000) { compose.onAllNodesWithText(text, substring = false).fetchSemanticsNodes().isNotEmpty() }
-        compose.onNodeWithTag("search_back").performScrollTo().performClick()
-        compose.onNodeWithTag("open_menu").performScrollTo().performClick()
-        compose.onNodeWithTag("nav_review").performClick()
-        compose.onNodeWithTag("review_page").assertIsDisplayed()
-        compose.onNodeWithTag("open_menu").performClick()
-        compose.onNodeWithTag("nav_walk").performClick()
-        compose.onNodeWithTag("walk_start").performClick()
-        compose.waitUntil(20_000) { compose.onAllNodesWithTag("discovery_error").fetchSemanticsNodes().isNotEmpty() }
-        compose.onNodeWithTag("walk_end").performClick()
-        compose.onNodeWithTag("open_menu").performClick()
-        compose.onNodeWithTag("nav_insights").performClick()
-        compose.onNodeWithTag("insights_page").assertIsDisplayed()
-        compose.onNodeWithTag("chat_tab_1").performClick()
-        compose.onNodeWithTag("chat_material_query").assertIsDisplayed()
-        compose.onNodeWithTag("open_menu").performClick()
-        compose.onNodeWithTag("nav_map").performClick()
-        compose.onNodeWithTag("map_page").assertIsDisplayed()
-        compose.waitUntil(20_000) { compose.onAllNodesWithTag("map_status").fetchSemanticsNodes().isNotEmpty() }
-        compose.onNodeWithTag("map_fullscreen").performClick()
-        compose.onNodeWithTag("map_fullscreen").performClick()
-        compose.onNodeWithTag("open_menu").performClick()
-        compose.onNodeWithTag("nav_home").performClick()
-        compose.onNodeWithText(text, substring = false).performClick()
-        compose.waitUntil(20_000) { compose.onAllNodesWithTag("note_edit").fetchSemanticsNodes().isNotEmpty() }
-        compose.onNodeWithTag("note_edit").performClick()
-        compose.waitUntil(10_000) { compose.onAllNodesWithTag("note_editor").fetchSemanticsNodes().isNotEmpty() }
-        val edited = "$text edited"
-        compose.onNodeWithTag("note_editor").performTextReplacement(edited)
-        compose.onNodeWithTag("save_note").performScrollTo().performClick()
-        compose.waitUntil(20_000) { compose.onAllNodesWithTag("note_server_saved").fetchSemanticsNodes().isNotEmpty() }
-        compose.onNodeWithTag("editor_back").performScrollTo().performClick()
-        compose.waitUntil(10_000) { compose.onAllNodesWithTag("note_edit").fetchSemanticsNodes().isNotEmpty() }
-        compose.onNodeWithTag("note_archive").performClick()
+        compose.waitForEditor("note_editor", text)
+        saveComposer()
+        val firstName = compose.waitForCard(displayed)
+        val peerText = "Android peer note $marker #android"
+        val peerName = saveNew(peerText)
+
+        val unfinished = "Unfinished composer $marker"
+        compose.homeNode("note_editor").performTextReplacement(unfinished)
+        compose.cardAction(firstName, "edit_note")
+        compose.assertSingleEditor(firstName, text)
+        val edited = "Android quick note $marker local revision #android"
+        compose.homeNode("note_editor_$firstName").performTextReplacement(edited)
+
+        // 切换先落盘前一条；两条笔记的本机修订均不应进入阅读卡片。
+        compose.cardAction(peerName, "edit_note")
+        compose.assertSingleEditor(peerName, peerText)
+        compose.waitForCard(displayed)
+        val peerEdited = "Android peer note $marker local revision #android"
+        compose.homeNode("note_editor_$peerName").performTextReplacement(peerEdited)
+        compose.activityRule.scenario.recreate()
+        compose.assertSingleEditor(peerName, peerEdited)
+        compose.navigate("settings")
+        compose.navigate("home")
+        compose.assertSingleEditor(peerName, peerEdited)
+
+        compose.cardAction(firstName, "edit_note")
+        compose.assertSingleEditor(firstName, edited)
+        compose.waitForCard(peerText.removeSuffix(" #android"))
+        // 不等待防抖落盘，保存必须采用点击时的最新修订。
+        val saved = "Android quick note $marker saved revision #android"
+        compose.homeNode("note_editor_$firstName").performTextReplacement(saved)
+        compose.clickHomeTag("save_note_$firstName")
+        compose.waitForCard(saved.removeSuffix(" #android"))
+        compose.waitForEditor("note_editor", unfinished)
+
+        // 保存另一条不能提交或覆盖这条的本机修订；取消后重新编辑仍可恢复。
+        compose.cardAction(peerName, "edit_note")
+        compose.assertSingleEditor(peerName, peerEdited)
+        compose.homeNode("cancel_note_$peerName").performClick()
+        compose.waitForCard(peerText.removeSuffix(" #android"))
+        compose.waitForEditor("note_editor", unfinished)
+        compose.activityRule.scenario.recreate()
+        compose.waitForEditor("note_editor", unfinished)
+        compose.cardAction(peerName, "edit_note")
+        compose.assertSingleEditor(peerName, peerEdited)
+        val peerSaved = "Android peer note $marker saved revision #android"
+        compose.homeNode("note_editor_$peerName").performTextReplacement(peerSaved)
+        compose.clickHomeTag("save_note_$peerName")
+        compose.waitForCard(peerSaved.removeSuffix(" #android"))
+        compose.waitForEditor("note_editor", unfinished)
+        compose.cardAction(firstName, "edit_note")
+        compose.assertSingleEditor(firstName, saved)
+        compose.homeNode("cancel_note_$firstName").performClick()
+        compose.waitForEditor("note_editor", unfinished)
+
+    }
+
+    @Test
+    fun searchKeywordHybridAndReadingStayOnHome() {
+        compose.signIntoFixture()
+        if (visualSetup()) return
+        val query = "Android search note ${System.currentTimeMillis()}"
+        val name = saveNew("$query #android")
+        search(query)
+        compose.waitForCard(query)
+        compose.onNode(readingText(query)).performClick()
+        compose.waitForHome()
+        val timestamp = SemanticsMatcher("笔记时间戳") {
+            it.config.getOrNull(SemanticsProperties.Text)?.any { value ->
+                Regex("\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}").matches(value.text)
+            } == true
+        } and hasAnyAncestor(hasTestTag("note_card_$name"))
+        compose.onNode(timestamp).performTouchInput { click() }
+        compose.waitForHome()
+        compose.onNodeWithTag("open_note_$name").assertDoesNotExist()
+        compose.clickTag("search_close")
+        search(query)
+        compose.onNode(hasText("关键词") or hasText("Keyword")).performClick()
+        compose.onNode(hasText("混合") or hasText("Hybrid")).performClick()
+        compose.onNodeWithTag("search_query").performImeAction()
+        compose.waitForCard(query)
+        compose.clickTag("search_close")
+        compose.navigate("home")
+        compose.waitForCard(query)
+    }
+
+    @Test
+    fun archiveRestoreAndDeletePreserveUnfinishedInput() {
+        compose.signIntoFixture()
+        if (visualSetup()) return
+        val marker = System.currentTimeMillis()
+        val text = "Android archive note $marker #android"
+        val firstName = saveNew(text)
+        val peerText = "Android delete peer $marker #android"
+        val peerName = saveNew(peerText)
+        val unfinished = "Unfinished action input $marker"
+        compose.homeNode("note_editor").performTextReplacement(unfinished)
+        changeState(firstName, "ARCHIVED")
+        compose.navigate("archive")
+        compose.waitForCard(text.removeSuffix(" #android"))
+        changeState(firstName, "NORMAL")
+        compose.navigate("home")
+        compose.waitForCard(text.removeSuffix(" #android"))
+        deleteCard(firstName)
+        compose.waitForCard(peerText.removeSuffix(" #android"))
+        deleteCard(peerName)
+        compose.waitForEditor("note_editor", unfinished)
+    }
+
+    @Test
+    fun insightsPickerAndSourceReadingReturnToHome() {
+        compose.signIntoFixture()
+        if (visualSetup()) return
+        val unfinished = compose.homeNode("note_editor").fetchSemanticsNode()
+            .config[SemanticsProperties.EditableText].text
+        val text = "Android picker note ${System.currentTimeMillis()} #android"
+        val name = saveNew(text)
+        compose.homeNode("note_editor").performTextReplacement(unfinished)
+
+        compose.navigate("review")
+        compose.navigate("walk")
         compose.waitUntil(20_000) {
-            compose.onAllNodesWithText("恢复").fetchSemanticsNodes().isNotEmpty() ||
-                compose.onAllNodesWithText("Restore").fetchSemanticsNodes().isNotEmpty()
+            compose.hasTag("walk_settings") || compose.onAllNodesWithTag("walk_start").fetchSemanticsNodes().any {
+                it.config.getOrNull(SemanticsProperties.Disabled) == null
+            }
         }
-        compose.onNodeWithTag("note_archive").performClick()
+        if (compose.hasTag("walk_settings")) {
+            compose.onNodeWithTag("walk_start").assertIsNotEnabled()
+        } else {
+            compose.clickTag("walk_start")
+            compose.waitForTag("walk_end")
+            compose.clickTag("walk_end")
+        }
+        compose.navigate("insights")
+        // 材料读取和页面进入都是异步的，按钮可用后再打开选材弹窗。
+        compose.clickTag("chat_add_materials")
+        compose.waitForTag("chat_material_dialog")
+        compose.clickTag("chat_picker_tab_1")
+        try {
+            compose.waitUntil(60_000) {
+                compose.hasTag("chat_picker_note_$name") || compose.model().mobile.insights.state.value.picker.error != null
+            }
+            check(compose.hasTag("chat_picker_note_$name"))
+        } catch (failure: Throwable) {
+            val picker = compose.model().mobile.insights.state.value.picker
+            throw AssertionError("选材未出现：tab=${picker.tab}；busy=${picker.busy}；error=${picker.error}；" +
+                "候选=${picker.candidates.map { it.name }}；next=${picker.next}；${deviceDiagnostics()}", failure)
+        }
+        compose.clickTag("chat_picker_note_$name")
         compose.waitUntil(20_000) {
-            compose.onAllNodesWithText("归档").fetchSemanticsNodes().isNotEmpty() ||
-                compose.onAllNodesWithText("Archive").fetchSemanticsNodes().isNotEmpty()
+            compose.model().mobile.insights.state.value.picker.selected.any { it.name == name }
         }
-        compose.onNodeWithTag("note_delete").performClick()
-        compose.onNodeWithTag("delete_confirm").performClick()
-        compose.waitUntil(20_000) { compose.onAllNodesWithTag("note_edit").fetchSemanticsNodes().isEmpty() }
-        val draft = "Local recovery ${System.currentTimeMillis()}"
-        compose.onNodeWithTag("note_editor").performScrollTo().performTextReplacement(draft)
-        compose.onNodeWithTag("open_menu").performScrollTo().performClick()
-        compose.onNodeWithTag("nav_settings").performClick()
-        compose.onNodeWithTag("open_local_drafts").performScrollTo().performClick()
-        compose.waitUntil(10_000) { compose.onAllNodesWithText(draft, substring = false).fetchSemanticsNodes().isNotEmpty() }
-        compose.onNodeWithText(draft, substring = false).performClick()
-        compose.waitUntil(10_000) { compose.onAllNodesWithTag("note_editor").fetchSemanticsNodes().isNotEmpty() }
-        compose.onNodeWithTag("note_editor").assertTextContains(draft)
+        compose.clickTag("chat_apply_materials")
+        try {
+            compose.waitUntil(CORE_REQUEST_TIMEOUT_MILLIS + 5_000) {
+                val state = compose.model().mobile.insights.state.value
+                !state.busy && !state.picker.visible || state.error != null
+            }
+            val state = compose.model().mobile.insights.state.value
+            check(!state.picker.visible && state.error == null && state.recovery.creation == null &&
+                state.recovery.selected.contains(name) && state.materials?.notes?.any { it.name == name } == true)
+        } catch (failure: Throwable) {
+            val state = compose.model().mobile.insights.state.value
+            throw AssertionError("选材完成失败：busy=${state.busy}；error=${state.error}；" +
+                "pickerBusy=${state.picker.busy}；pickerError=${state.picker.error}；" +
+                "selected=${state.picker.selected.map { it.name }}", failure)
+        }
+        compose.waitForTag("chat_remove_$name")
+        compose.clickTag("chat_material_toggle")
+        compose.onNodeWithTag("chat_remove_$name").assertDoesNotExist()
+        compose.clickTag("chat_material_toggle")
+        compose.waitForTag("chat_remove_$name")
+        compose.clickTag("chat_session_menu")
+        compose.clickTag("chat_history")
+        compose.waitForTag("chat_history_dialog")
+        compose.clickTag("chat_history_dialog_close")
+        compose.waitUntil(20_000) { !compose.hasTag("chat_history_dialog") }
+
+        // 材料中的阅读动作应回到主页并定位该笔记，不借助测试滚动掩盖定位失败。
+        compose.onNode(hasClickAction() and hasAnySibling(hasTestTag("chat_remove_$name"))).performClick()
+        compose.waitForHome()
+        compose.waitUntil(20_000) {
+            runCatching { compose.onNodeWithTag("note_card_$name").assertIsDisplayed() }.isSuccess
+        }
+        compose.waitForEditor("note_editor", unfinished)
+        compose.navigate("map")
+        compose.clickTag("map_fullscreen")
+        compose.clickTag("map_fullscreen")
+        compose.navigate("settings")
+        for (index in 0..4) compose.clickTag("settings_tab_$index")
+        compose.navigate("home")
+        compose.waitForEditor("note_editor", unfinished)
+        deleteCard(name)
+        compose.waitForEditor("note_editor", unfinished)
     }
 }

@@ -40,7 +40,8 @@ class NoteDetailController(
         val previous = operation
         previous?.cancel()
         pending = null
-        mutable.value = NoteDetailState(name = name, loading = true)
+        mutable.value = NoteDetailState(name = name, note = fallback, cached = fallback != null,
+            snapshotAt = snapshotAt, loading = true)
         operation = scope.launch {
             try {
                 previous?.join()
@@ -53,7 +54,7 @@ class NoteDetailController(
                 val note = CoreJson.decodeFromString<Note>(active.api(HttpMethod.Get, path(name)))
                 require(note.name == name && note.instanceId == key.split('\u0000')[1])
                 if (stamp == generation) mutable.value = NoteDetailState(name = name, note = note,
-                    deleteUnknown = restored?.method == "DELETE", pendingAction = restored != null)
+                    deleteUnknown = restored?.method == "DELETE", pendingAction = restored != null, snapshotAt = epochMillis())
             } catch (error: Exception) {
                 if (error is CancellationException) throw error
                 if (stamp == generation) {
@@ -76,6 +77,27 @@ class NoteDetailController(
             put("source_hash", note.sourceHash)
             put("state", if (note.state == "ARCHIVED") "NORMAL" else "ARCHIVED")
         }.toString())
+    }
+
+    fun changeState(note: Note) {
+        if (!selectAction(note)) return
+        changeState()
+    }
+
+    fun delete(note: Note) {
+        if (!selectAction(note)) return
+        delete()
+    }
+
+    private fun selectAction(note: Note): Boolean {
+        if (state.value.busy || state.value.loading) return false
+        val key = account() ?: return false
+        require(note.instanceId == key.split('\u0000')[1] && Regex("^memos/[A-Za-z0-9_-]+$").matches(note.name))
+        if (state.value.name == note.name && state.value.pendingAction) return true
+        ++generation
+        pending = null
+        mutable.value = NoteDetailState(name = note.name, note = note)
+        return true
     }
 
     fun delete() {
@@ -153,6 +175,8 @@ class NoteDetailController(
         error.detail.code in setOf("SOURCE_NOT_FOUND", "NOT_FOUND")
 
     fun acceptSaved(key: String, note: Note) {
-        if (key == account() && state.value.name == note.name) mutable.update { it.copy(note = note) }
+        if (key == account() && state.value.name == note.name) mutable.update {
+            it.copy(note = note, cached = false, snapshotAt = epochMillis())
+        }
     }
 }

@@ -46,7 +46,7 @@ class InsightRecoveryTest {
                     generationBodies += input
                     val running = ChatTurn("turn-${generationBodies.size}", input.requestId, input.kind,
                         ChatMessage("u", "user", input.content, 1, "completed"), ChatMessage("a", "assistant", "", 1, "running"))
-                    remote = remote.copy(version = remote.version + 1, turns = remote.turns + running.copy(
+                    remote = remote.copy(turns = remote.turns + running.copy(
                         assistant = running.assistant.copy(status = if (generationBodies.size == 1) "interrupted" else "completed", content = "部分🌌")))
                     fun frame(kind: String, event: ChatEvent) = "event: $kind\ndata: ${CoreJson.encodeToString(event)}\n\n"
                     val text = frame("message", ChatEvent("message", running)) + frame("delta", ChatEvent("delta", text = "部分🌌")) +
@@ -100,7 +100,7 @@ class InsightRecoveryTest {
             withTimeout(10_000) { controller.state.first { !it.busy && it.recovery.generation == null } }
             assertEquals(2, generationBodies.size)
             assertNotEquals(generationBodies[0].requestId, generationBodies[1].requestId)
-            assertEquals(2, generationBodies[1].version)
+            assertEquals(1, generationBodies[1].version)
             assertEquals("问题🌌", generationBodies[1].content)
             assertEquals("", controller.state.value.recovery.question)
             assertEquals("completed", controller.state.value.chat?.turns?.last()?.assistant?.status)

@@ -2,14 +2,25 @@ name: Checks
 
 on:
   push:
+    branches: [main]
   pull_request:
   workflow_dispatch:
+    inputs:
+      mode:
+        type: choice
+        options: [full, android-device]
+        default: full
+      suite:
+        type: choice
+        options: [all, ime, editing, search, actions, insights, recovery]
+        default: all
 
 permissions:
   contents: read
 
 jobs:
   go:
+    if: inputs.mode != 'android-device'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -39,6 +50,7 @@ jobs:
       - name: Run Memos acceptance scenarios
         run: go test -tags=integration ./tests -v -count=1
   web:
+    if: inputs.mode != 'android-device'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -58,3 +70,9 @@ jobs:
           MOERISE_PLAYWRIGHT_MODULE: ${{ github.workspace }}/web/node_modules/playwright/index.mjs
           MOERISE_PLAYWRIGHT_CHANNEL: chrome
         run: npm --prefix web run test:browser
+  android-device:
+    if: github.event_name == 'workflow_dispatch' && inputs.mode == 'android-device'
+    uses: ./.github/workflows/android-checks.yml
+    with:
+      mode: device
+      suite: ${{ inputs.suite }}

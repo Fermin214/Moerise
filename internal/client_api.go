@@ -296,6 +296,7 @@ func (a *ClientAPI) route(w http.ResponseWriter, r *http.Request) (any, int, err
 			return nil, 0, err
 		}
 		identity.Timezone = a.app.Store.Settings.Timezone
+		identity.StargazingEnabled = a.app.Store.Settings.Stargazing.Enabled
 		a.cookie(w, rawID, identity.ExpiresAt)
 		return identity, 200, nil
 	}
@@ -345,6 +346,7 @@ func (a *ClientAPI) route(w http.ResponseWriter, r *http.Request) (any, int, err
 	case "/api/app/v1/session":
 		if method == http.MethodGet {
 			identity.Timezone = a.app.Store.Settings.Timezone
+			identity.StargazingEnabled = a.app.Store.Settings.Stargazing.Enabled
 			return identity, 200, nil
 		}
 	case "/api/app/v1/settings":

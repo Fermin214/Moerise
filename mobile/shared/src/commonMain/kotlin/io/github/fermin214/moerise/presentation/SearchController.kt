@@ -73,16 +73,33 @@ class SearchController(
         mutable.update { it.copy(loading = true, error = null) }
         request = scope.launch {
             try {
-                require(query.mode == "keyword" || query.text.isNotBlank()) { "SEARCH_QUERY_REQUIRED" }
-                val body = buildJsonObject {
-                    put("query", query.text); put("mode", query.mode); put("state", query.state)
-                    put("tags", JsonArray(query.tags.sorted().map(::JsonPrimitive)))
-                    put("date", query.date); put("page_size", 20); put("page_token", token)
-                }.toString()
-                val response = active.api(HttpMethod.Post, "/search", body)
-                val page = withContext(Dispatchers.Default) { CoreJson.decodeFromString<SearchPage>(response) }
+                require(query.mode in setOf("keyword", "semantic", "hybrid")) { "SEARCH_MODE_INVALID" }
+                val effectiveMode = if (query.text.isBlank()) "keyword" else query.mode
+                val page = if (effectiveMode == "keyword") {
+                    val parameters = buildList {
+                        add("state" to query.state); add("order" to "created_desc"); add("page_size" to "20")
+                        if (query.text.isNotEmpty()) add("query" to query.text)
+                        query.tags.sorted().forEach { add("tag" to it) }
+                        if (query.date.isNotEmpty()) add("date" to query.date)
+                        if (token.isNotEmpty()) add("page_token" to token)
+                    }.joinToString("&") { (name, value) -> "$name=${value.encodeURLQueryComponent(encodeFull = true)}" }
+                    val response = active.api(HttpMethod.Get, "/notes?$parameters")
+                    val notes = withContext(Dispatchers.Default) { CoreJson.decodeFromString<io.github.fermin214.moerise.domain.NotePage>(response) }
+                    SearchPage(notes.notes, notes.nextPageToken, "keyword", SearchSemantic())
+                } else {
+                    val body = buildJsonObject {
+                        put("query", query.text); put("mode", effectiveMode); put("state", query.state)
+                        put("tags", JsonArray(query.tags.sorted().map(::JsonPrimitive)))
+                        put("date", query.date); put("page_size", 20); put("page_token", token)
+                    }.toString()
+                    val response = active.api(HttpMethod.Post, "/search", body)
+                    withContext(Dispatchers.Default) { CoreJson.decodeFromString<SearchPage>(response) }
+                }
                 require(page.mode in setOf("keyword", "semantic", "hybrid")) { "INCOMPATIBLE_CORE" }
-                require(page.notes.all { it.instanceId == key.split('\u0000')[1] }) { "ACCOUNT_CHANGED" }
+                require(page.notes.all { it.instanceId == key.split('\u0000')[1] &&
+                    Regex("^memos/[A-Za-z0-9_-]+$").matches(it.name) && it.sourceHash.isNotBlank() &&
+                    it.state in setOf("NORMAL", "ARCHIVED") && (query.state == "ALL" || it.state == query.state)
+                }) { "ACCOUNT_CHANGED" }
                 if (stamp != generation || key != account()) return@launch
                 mutable.update { it.copy(notes = (if (append) it.notes + page.notes else page.notes).distinctBy { note -> note.name },
                     next = page.nextPageToken, responseMode = page.mode, semantic = page.semantic, loading = false) }
@@ -105,7 +122,7 @@ class SearchController(
                 coroutineScope {
                     val tags = async { CoreJson.decodeFromString<TagPage>(active.api(HttpMethod.Get, "/tags?state=$sourceState")) }
                     val calendar = async { CoreJson.decodeFromString<CalendarPage>(active.api(HttpMethod.Get,
-                        "/calendar?state=$sourceState&month=${month.encodeURLQueryComponent()}")) }
+                        "/calendar?state=$sourceState&month=${month.encodeURLQueryComponent(encodeFull = true)}")) }
                     val tagPage = tags.await()
                     val calendarPage = calendar.await()
                     require(calendarPage.month == month)

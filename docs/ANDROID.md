@@ -2,6 +2,25 @@
 
 Android 工程位于 `mobile/`，应用模块为 `androidApp`，共享界面、协议与持久化模块为 `shared`。Android 包名为 `io.github.fermin214.moerise`，最低系统版本为 Android 8.0（API 26），目标和编译 SDK 为 36。
 
+## 文件与产物
+
+| 路径 | 职责与版本管理 |
+| --- | --- |
+| `mobile/androidApp/src/main/`、`src/debug/` | 应用入口、平台集成、资源及开发网络配置，提交源码 |
+| `mobile/shared/src/commonMain/`、`androidMain/`、`jvmMain/` | 共享实现及 Android、JVM 平台适配，提交源码 |
+| `mobile/shared/src/commonTest/`、`jvmTest/`、`mobile/androidApp/src/androidTest/` | 协议、恢复与设备回归流程，提交测试和虚构契约数据 |
+| `mobile/benchmark/`、`mobile/androidApp/src/benchmark/` | 性能 runner 与隔离性能场景，提交源码，发行包不包含性能 Activity |
+| `mobile/shared/schemas/` | Room 数据库版本契约，提交并保留已发行版本 |
+| `mobile/gradle/`、`gradlew*`、`*.gradle.kts` | 可复现构建、依赖版本与摘要校验，提交；Wrapper JAR 是构建入口 |
+| `mobile/androidApp/src/main/baselineProfiles/` | 经设备采集、整理后用于发行的文本优化规则，提交；原始采集包放在 `.local/android/` |
+| `scripts/android/` | 可重复使用的构建、设备、隔离服务与发行工具，提交；入口见[脚本说明](../scripts/README.md) |
+| `docs/android/THIRD_PARTY_NOTICES.md`、`docs/android/licenses/*.txt` | 发行依赖清单和基础许可正文，随依赖更新 |
+| `mobile/**/build/`、`.gradle/`、`.kotlin/`、`.cxx/` | 构建、代码生成、报告、缓存与提取的依赖许可，忽略 |
+| `.local/android/` | APK、ADB 日志、截图、录屏、Perfetto trace、Profile 原始采集、隔离服务数据与发行归档，忽略 |
+| `mobile/local.properties`、`.idea/`、签名档案与密钥 | 机器配置或私密资料，忽略；发行密钥放在仓库外 |
+
+新增文件先归入对应模块；可复用的测试与脚本属于源码。一次性排障脚本、执行记录和设备导出物放在 `.local/android/`。不把整个测试、schema、Profile 源规则或 Gradle 校验目录加入忽略规则。第三方归档中的许可由 `licenses.py` 写入构建报告目录，并随发行许可 ZIP 分发。
+
 ## Linux 工具链
 
 需要 Linux x86_64、Python 3.11 以上、curl 和 util-linux。安装脚本下载 Temurin JDK 17.0.21+9 与 Android 官方命令行工具，核验固定 SHA-256，然后安装 SDK 平台和构建工具：
@@ -19,7 +38,9 @@ Gradle Wrapper 固定为 8.13，并校验发行包 SHA-256。依赖版本见 [�
 
 `scripts/android/check.sh` 顺序运行共享 JVM 测试、Android lint 和 debug APK 构建，并检查测试报告中实际执行的数量。JVM 测试使用 Room 与 BundledSQLiteDriver 的临时文件数据库，覆盖关闭重开后草稿和冻结请求的恢复及账号隔离。
 
-共享检查覆盖 schema 1→3 迁移、创建与编辑的丢失响应恢复、保存确认事务期间续写，以及原键重放返回外部修改时的冲突合并。洞察使用真实 Room 文件检查重开后保留新建请求、生成请求和部分回复，读取恢复不会自动生成。
+Android 0.1.0 是首次发行，Room 版本为 1，以完整的 [schema 1](../mobile/shared/schemas/io.github.fermin214.moerise.data.LocalDatabase/1.json) 建立初始结构，包含账号、草稿、冻结请求、快照和功能恢复记录。开发期 APK 与数据库不提供兼容迁移，也不作为首版升级验证的起点；首版设备流程使用新安装数据。正式发行后发生结构变化时，递增 Room 版本并新增迁移，保留已发行的 schema。
+
+共享检查覆盖数据库关闭重开、创建与编辑的丢失响应恢复、保存确认事务期间续写，以及原键重放返回外部修改时的冲突合并。队列保存每次点击时的内容快照；后续输入只在本机保存，继续提交的修订在创建确认后绑定远端笔记。洞察使用真实 Room 文件检查重开后保留新建请求、生成请求和部分回复，读取恢复不会自动生成。
 
 构建默认限制一个 Gradle worker、单 CPU、1.5 GiB JVM 堆与 768 MiB 元空间；不并发执行多个构建。`MOERISE_ANDROID_CPU` 可指定允许使用的 CPU 编号。构建日志和设备产物放在 `.local/android/`。
 
@@ -39,9 +60,24 @@ adb install -r mobile/androidApp/build/outputs/apk/debug/androidApp-debug.apk
 
 `commonMain` 使用 Compose、Coroutines 和 Room；Android 数据库路径位于 `androidMain`，Linux JVM 文件数据库构造位于 `jvmMain`。共享代码不引用 `android.*`。独立本地模式、iOS 平台和各功能的交付范围见[开发路线图](ROADMAP.md#1-阶段四android-客户端)。
 
+主页的颜色、字号、编辑器、笔记卡片和导航侧栏与手机 Web 共用视觉规范。笔记列表在平板上居中显示，阅读区最大宽度为 800 dp。侧栏的日历、导航与标签共用一个纵向滚动区域；设置与账号占用独立的底部空间，滚动内容不会被底部控件遮挡。
+
+笔记卡片时间使用服务时区，统一显示 `YYYY-MM-DD HH:mm`。正文和时间戳点击均保持在主页，三点菜单提供编辑、归档、删除和探索操作。应用不提供“打开笔记”按钮或独立详情页，来源阅读动作回到主页并定位对应卡片。
+
+同一时间只编辑一条笔记。编辑已有笔记时隐藏顶部新建输入框，未提交的新建内容保存在本机；保存或取消编辑后恢复顶部输入。切换到另一条笔记前先完成前一条输入的本机落盘，重新编辑时恢复对应内容。切页和 Activity 重建恢复单个编辑器及其输入，未点击保存的修订不上传。
+
+编辑目标通过按账号隔离的 `active-note-editor` 功能记录持久保存，记录笔记键与草稿 ID；进程重开时恢复该目标，保存或取消后清空记录中的编辑目标。顶部新建草稿与各笔记的本机修订分别落盘，界面只显示一个编辑器。
+
+从页面横向 25%–75% 的中部向右滑动呼出侧栏，屏幕两侧留给系统返回；输入器、选字和地图拖动不触发侧栏。
+
+笔记的原生 `#标签` 集中显示为去重胶囊，正文省去对应的标签标记。`# 标题`、`## 标题` 按 Markdown 标题层级显示；代码、链接与转义标记保留字面内容。编辑和保存使用原始 Markdown。
+
 ## Core 连接与真实服务联调
 
 连接页接受与 `web.public_origin` 相同的 Web 入口，API 位于 `/api/app/v1`。登录密码仅用于登录请求；会话 Cookie 使用 Android Keystore 的 AES-GCM 密钥加密后存入免备份目录，CSRF 只保存在内存。Cookie 限定同一 scheme、host 和端口，不跟随重定向，不启用底层写入自动重试。
+会话恢复、连接检查与普通 API 共用 65 秒请求时限，建立连接的时限为 10 秒。
+
+首次登录需要输入服务器地址。已有账号重新登录时沿用保存的地址，点击更换服务器后显示地址输入框；修改地址清除密码。
 
 服务来源、实例 ID 和作者资源名共同组成账号隔离键。恢复会话时重新读取身份，身份变化要求登录；非 GET/HEAD 操作携带 Origin 和 CSRF，CSRF 校验失败时仅刷新一次。退出先清除本机身份，再尝试撤销服务端会话；旧响应不能覆盖新登录的 Cookie。
 
@@ -58,6 +94,14 @@ scripts/android/live-check.sh
 
 单独联调设备时运行 `scripts/android/start-fixture.sh`。脚本输出 Web 来源、私有连接档案路径和 `adb reverse` 命令；连接档案只用于隔离环境，包含虚构账号和临时凭据。按 Ctrl+C 清理服务与来源数据。观星六类顶层状态及更新中的固定响应样本位于 `mobile/shared/src/commonTest/resources/contracts/map/`。
 
+Windows 通过公共锁调用 `scripts/android/start-fixture.ps1`，命令见[设备检查](android/DEVICE-CHECKS.md#fixture-生命周期)。复用已有观星语料时，设置
+`MOERISE_ANDROID_CORPUS` 为笔记 JSON 数组路径、`MOERISE_ANDROID_VECTORS` 为按相同行序排列的
+Float32 小端向量文件、`MOERISE_ANDROID_DIMENSIONS` 为向量维度（默认 1024）。
+脚本通过 Memos 官方 API 导入正文，向量服务直接返回已有数据，Core 生成真实索引与 UMAP
+快照；运行环境需要 `moerise-android-layout:fixture` 镜像。连接档案记录语料数量、维度和
+两份输入的 SHA-256。`MOERISE_ANDROID_LAYOUT_IMAGE` 可指定布局镜像，
+`MOERISE_ANDROID_FIXTURE_PORT` 指定 Web 端口，`MOERISE_ANDROID_WEB_DIST` 指定 Web 构建目录。
+
 `scripts/android/stars-check.sh` 构建独立布局镜像，启动限制为半个 CPU、1 GiB 内存的
 布局 worker、私有模型卷和 32 篇固定笔记。共享 OkHttp 客户端读取真实 UMAP 快照，
 检查新增与向量变化的 transform、删除、主动重建和模型文件丢失后的重新拟合。
@@ -65,9 +109,21 @@ scripts/android/live-check.sh
 和首次拟合数量；布局镜像摘要与结果保存在隔离服务日志目录。结束时清理专用容器、
 卷及凭据。该入口与 Gradle 构建串行执行。
 
-## 草稿与设备流程
+## 记录、同步与设备流程
 
-已配置账号启动后异步恢复本机草稿和检查会话；编辑器不等待网络，时间线读取安排在编辑器首帧之后。短输入在 300 毫秒防抖后落盘，持续输入最多等待约一秒合并落盘；保存、切页和进入后台时立即刷入数据库。保存请求在发送前冻结正文、来源摘要和幂等键，重试沿用原始请求。提交期间的续写保留在同一篇笔记中，服务器版本发生变化时进入合并页面。
+手机窗口固定竖屏。Activity 重建、切入后台和进程重开时，编辑内容仍通过本机数据库恢复。
+自动化按输入法、编辑、搜索、归档删除、洞察和离线恢复分组，集中结果与定向重跑见
+[设备检查](android/DEVICE-CHECKS.md#集中检查与定向重跑)。
+
+已配置账号启动后异步恢复输入内容和检查会话；编辑器不等待网络，时间线读取安排在编辑器首帧之后。空正文显示浅色提示“今天想到了什么……”。输入在 300 毫秒防抖后落盘，持续输入最多等待约一秒合并落盘；切页和进入后台时立即刷入数据库。
+
+点击保存先在 SQLite 中冻结正文、来源摘要、附件和幂等键，将记录加入同步队列，并腾出输入框。离线笔记直接显示在时间线中；连接恢复后串行上传，重开应用也会恢复队列。尚未点击保存的输入内容不自动提交。账号、服务实例与原始请求绑定，重试复用原键原体；响应丢失不创建重复笔记，来源冲突保留原文并进入合并界面。
+
+队列记录保存稳定的本机时间与已提交修订的快照。编辑队列笔记后再次点击保存，会记住这次修订；原请求确认后使用新的远端来源摘要继续提交。确认期间的后续输入作为本机编辑副本保留，只有再次点击保存才进入发送队列。本机保存时间为 0 的记录不推算日期。
+
+主页工具栏的同步图标位于搜索按钮旁，显示“同步中”“连接成功”“断开连接”三种状态。`SYNCING` 与 `Pending` 显示“同步中”，`Connected` 与 `Attention` 显示“连接成功”，`Offline` 与 `SignIn` 显示“断开连接”。每次真实进入 `SYNCING` 时，图标在 800 毫秒内旋转一周，随后静止；同步完成或失败时立即将旋转角度归零，动画不循环。点击图标立即检查连接、发送队列并刷新笔记；登录失效时进入登录页。前台正常连接每 30 秒检查一次，离线时每 5 秒重试，后台返回立即恢复检查。待同步笔记在卡片中使用图标标记，通过时间线三点菜单编辑；冲突通过对应笔记的合并界面处理。界面不提供独立的本机草稿页面，不显示普通保存状态或连接状态段落。
+
+Android Application 持有同一组会话、数据库和控制器；界面与系统任务共享串行发送入口。已保存队列通过持久 JobScheduler 网络任务恢复，系统停止任务只取消这次同步，原键原体仍可重放。网络回调在前台立即唤醒检查；后台任务使用系统退避与执行配额。普通进程回收和重启保留任务，系统“强行停止”后需要重新启动 App 才恢复调度。
 
 `note_editor_ready` 标记从 Activity 创建开始，到本机草稿恢复后编辑器完成首个可输入帧结束，同时调用 `reportFullyDrawn`。此标记用于设备启动测量。
 
@@ -83,39 +139,51 @@ scripts/android/acceptance.sh
 
 ## 笔记管理与附件
 
-时间线点选笔记后读取 Core 的实时正文。详情页支持编辑、归档、恢复与删除；归档列表位于设置。编辑草稿按笔记资源名独立保存，返回主页恢复主页草稿。归档和恢复在发送前记录原始请求和幂等键；删除结果不明时读取详情确认，资源确实不存在才清理本机记录。
+时间线的三个点菜单支持就地编辑、归档、恢复与删除；来源阅读在主页定位卡片并读取 Core 的实时正文，归档列表位于账号菜单。编辑内容按笔记资源名保存在本机，切换编辑目标先落盘前一条，保存或取消后恢复顶部新建输入。归档和恢复在发送前记录原始请求和幂等键；删除结果不明时通过笔记读取接口复查，资源确实不存在才清理本机记录。
+
+卡片恢复内容后在共享本机锁内登记单个编辑器，网络确认会同步更新正在编辑的笔记。请求途中开始编辑也会收到确认，后续保存沿用对应远端笔记，避免重新创建。
 
 选择文件后复制到免备份目录，完成大小检查、SHA-256 计算和落盘再绑定草稿。文件复制期间禁用服务器保存；绑定时检查账号和草稿 UUID，迟到结果不能写入其他草稿。新增文件最多 10 个，合计不超过 8 MiB；请求以 JSON Base64 提交，编码后的 JSON 不超过 Core 的 12 MiB 限制。发送期间可续写正文，附件变更在请求完成后操作。未确认请求和冲突草稿持有文件引用；没有引用且超过一天的暂存文件在保存后回收。
 
-详情中的图片只读取该笔记管理的附件，可见时下载并持有位图，离开视口释放。图片下载和解码最多并行两个任务，图片内容上限为 8 MiB，解码最长边为 1024 像素。外部图片显示链接，由系统浏览器打开；原始 HTML 作为文本显示。下载按来源与笔记资源校验，写入应用缓存，通过只读 FileProvider URI 交给系统应用。系统打开附件的缓存按 256 MiB 和 24 小时回收；账号切换、退出或会话失效清理受保护下载缓存。
+笔记中的图片只读取该笔记管理的附件，可见时下载并持有位图，离开视口释放。图片下载和解码最多并行两个任务，图片内容上限为 8 MiB，解码最长边为 1024 像素。外部图片显示链接，由系统浏览器打开；原始 HTML 作为文本显示。下载按来源与笔记资源校验，写入应用缓存，通过只读 FileProvider URI 交给系统应用。系统打开附件的缓存按 256 MiB 和 24 小时回收；账号切换、退出或会话失效清理受保护下载缓存。
 
 编辑来源冲突时展示提交正文、服务器正文和本机合并文本。附件列表用于确认要移除的远端文件，以及需要重新添加的本机文件；不根据同名判断上传完成。笔记保存成功后，续写绑定前会比较完整附件集合，并用字节摘要确认新增文件。
 
-设置中的本机草稿列出有修改、冲突或保存结果不明的记录，远端笔记删除后仍可恢复本机正文。冲突可合并到远端笔记，或另存为使用新 UUID 的主页草稿；另存保留原始冲突请求和已有主页草稿，附件按显式选择加入，不继承远端移除操作，也不自动提交。
+待同步与冲突记录通过时间线三点菜单编辑，远端笔记删除后仍可恢复本机正文。冲突可合并到远端笔记，或另存为使用新 UUID 的主页输入；另存保留原始冲突请求和已有主页输入，附件按显式选择加入，不继承远端移除操作。点击保存后加入同步队列。
 
 “删除本机账号数据”经确认后停止旧任务，等待取消记账和本机写入结束，再删除该账号的草稿、请求、功能恢复记录、快照和暂存附件并退出。其他账号的记录和引用文件保留。
 
 ## 搜索与日期
 
-搜索入口位于列表顶部。关键词、语义和混合检索共用正文、标签、状态和日期筛选，结果通过 Core 的游标分页。更换条件会取消旧查询并清除旧游标；游标失效时保留阅读结果，重新搜索从第一页开始。混合检索降为关键词时显示降级结果，语义不可用时可切换关键词检索。
+搜索入口位于列表顶部。关键词、语义和混合检索共用正文、标签、状态和日期筛选，结果通过 Core 的游标分页。关键词查询及空查询通过笔记列表接口读取，按创建时间倒序；非空语义与混合查询保持服务器相关度顺序，包括混合查询降为关键词后的结果。空查询保留用户选择的模式，更换条件取消旧查询并清除旧游标；游标失效时保留阅读结果，重新搜索从第一页开始。
 
-搜索页通过结果、标签和日历页签组织内容，底部按钮提交组合筛选。标签来自 Core 的使用统计；日历显示指定月份的笔记日期，正常、归档和全部状态分别读取统计。详情中的标签可直接打开对应筛选。
+搜索在主页工具栏展开，通过输入和 IME 搜索操作提交查询；标签与日历筛选通过侧栏访问。标签来自 Core 的使用统计；日历显示指定月份的笔记日期，正常、归档和全部状态分别读取统计。笔记卡片中的标签可直接应用对应筛选。
 
-月份和笔记时间使用会话提供的服务时区，日期查询直接提交服务端日期字符串。搜索结果和列表的滚动位置保留在账号内，详情返回后恢复原查询；退出或会话失效清理搜索内容。
+月份和笔记时间使用会话提供的服务时区，日期查询直接提交服务端日期字符串。搜索结果和列表的滚动位置保留在账号内，原位编辑不跳转独立页面；退出或会话失效清理搜索内容。
+
+## 设置
+
+设置页沿用手机 Web 的五页签，提供语言、时区与回顾、LLM 和 Embedding、洞察提示词及飞书和 Telegram 渠道配置。语言支持简体中文、英语和跟随系统；时区保存成功后同步更新本机连接档案、卡片时间与日历，刷新受影响的列表和探索配置。
+
+通用设置中的观星开关与 Core 共用配置。关闭后隐藏导航入口，停止观星读取并清除本机星图视图；重新启用后按服务状态恢复。连接身份携带 `stargazing_enabled`，禁用响应通过 `disabled_reason` 区分观星关闭与 Embedding 关闭。
+
+设置通过版本化 PATCH 保存。发送时冻结改动，保存期间继续编辑的字段按修订合并，版本冲突保留输入并提供重新加载入口。密钥采用保持、替换和清除操作，只在编辑内存中保存，离页时清除；模型检查使用已保存的配置，配置与账号变化会取消旧检查及轮询。
 
 ## 回顾与漫步
 
-导航抽屉提供主页、回顾和漫步入口。回顾读取 `/reviews/daily` 的固定计划，显示服务返回的日期和时区；条目通过底部选择按钮和下一条切换。计划更新时，同一批次保持选择位置，新批次从第一条开始。不可用条目可继续切换，空计划显示空状态；打开详情后返回原条目和阅读位置。
+导航抽屉提供主页、回顾和漫步入口。回顾读取 `/reviews/daily` 的固定计划，使用叠卡、圆点与下一条切换，漫步和洞察操作位于卡片外。计划更新时，同一批次保持选择位置，新批次从第一条开始。不可用条目可继续切换，空计划显示空状态；来源阅读回到主页定位笔记，再次进入回顾恢复原条目和阅读位置。
 
-漫步支持随机开始，以及从正常笔记的详情和回顾条目指定起点。继续请求只提交服务返回的笔记资源名和访问路径；拒绝重复路径、错误成员和不属于账号的数据。同一页面最多一个漫步请求，失败保留已访问路径，重试沿用原请求内容。结束漫步清理本机会话。
+漫步支持随机开始，以及从正常笔记卡片和回顾条目指定起点。继续请求只提交服务返回的笔记资源名和访问路径；拒绝重复路径、错误成员和不属于账号的数据。同一页面最多一个漫步请求，失败保留已访问路径，重试沿用原请求内容。结束漫步清理本机会话。
 
-离开页面或进入后台会取消回顾与漫步读取。回顾在返回时刷新计划；漫步返回后保留结果和重试入口，不自动再次请求。会话失效、退出和账号变化会清理探索内容。向量索引关闭、尚未就绪、起点归档、来源变化和读取中断分别显示错误；向量设置通过系统浏览器打开 Web 设置。
+漫步初始页面独立读取六篇正常笔记作为浮动预览，并读取模型配置；配置和预览读取失败均可重试。资源限制保留阅读内容和重试请求，路径耗尽保留最后一篇笔记。向量配置入口打开 App 设置。
+
+离开页面或进入后台会取消回顾与漫步读取。回顾在返回时刷新计划；漫步返回后保留结果和重试入口，不自动再次请求。会话失效、退出和账号变化会清理探索内容。向量索引关闭、尚未就绪、起点归档、来源变化和读取中断分别显示对应状态。
 
 ## 洞察
 
-洞察使用对话、材料和历史页签。材料可从正常和归档笔记中搜索选择，也可从笔记详情、回顾和漫步直接加入。材料预算及来源摘要以 `/chat-materials/resolve` 为准；修改材料后显式应用到会话，再发起一键洞察或提问。历史列表通过游标分页。
+洞察以消息对话为中心，材料栏可展开和收起，历史会话与添加笔记使用弹窗。材料可从正常和归档笔记中搜索选择，也可从笔记卡片、回顾和漫步直接加入；材料阅读回到主页定位对应笔记。选材弹窗使用独立事务，完成后应用，关闭时放弃弹窗内的改动；移除已有材料立即持久化，允许空材料。材料预算按 Unicode 码点计算，来源摘要以 `/chat-materials/resolve` 为准；生成自动创建会话并提交材料。历史列表通过游标分页，提供消息类型预览。
 
-新建、材料变更、生成、删除和保存回复在发送前持久记录原始请求。新建使用固定 `request_id`，生成使用 `request_id`、会话版本和语言；请求结果不明时保留原体。材料更新通过读取会话版本与材料引用判断是否成功；删除先读取结果，仍然存在时再次确认。保存回复使用服务端消息版本，可按原请求恢复。
+新建、材料变更、生成、删除和保存回复在发送前持久记录原始请求。新建使用固定 `request_id`，生成使用 `request_id`、会话版本和语言；请求结果不明时保留原体。材料更新通过读取会话版本与材料引用判断是否成功；删除生成中的会话先确认停止终态，再按会话版本删除。保存回复使用服务端消息版本，成功后先记录笔记资源名，后续读取失败也不会重复保存。
 
 生成使用 POST SSE，单次预算为 135 秒，连接预算为 10 秒。解析器按完整行解码 UTF-8，识别 CRLF、多行数据、半帧、错误帧及异常结束；只有合法 `complete` 帧表示成功。普通 API 请求维持 65 秒预算，底层关闭写入重试和自动重连。流式文本合并后批量更新界面，部分回复定期落盘。
 
@@ -127,13 +195,15 @@ scripts/android/acceptance.sh
 
 观星直接使用 Compose Canvas 绘制 Core 发布的快照，支持 `umap-balanced-v1` 和旧 `pca-topics-v3`。坐标、星体属性、主题、子主题与关联来自服务端，客户端校验有限数值、资源唯一性和成员引用。未知算法或缺失契约显示兼容错误并停止自动读取和重建。
 
-星图支持单指平移、双指缩放、放大缩小、主题聚焦、主体与全图取景、星图与摄影氛围及系统全屏。绘制和点击共用坐标变换，扩大触控范围后选择最近的真实笔记。主题与笔记页签提供列表入口，未定位笔记通过筛选读取；点星或点选列表后显示实时正文，可进入完整详情、漫步和洞察。
+星图支持单指平移、双指缩放、放大缩小、主题聚焦、主体与全图取景、星图与摄影氛围及系统全屏。绘制和点击共用坐标变换，扩大触控范围后选择最近的真实笔记。地图工具位于右上，未定位笔记入口位于左下；点星或点选未定位笔记后回主页定位卡片并读取实时正文，编辑、漫步和洞察操作通过卡片菜单完成。未定位笔记列表在手机底部显示，宽屏使用右侧区域。
 
-辉光、密度柔光和主题文字按快照缓存，密度柔光只由真实语义点生成。单个 Canvas 绘制星点，按视口裁剪；静止页面不运行持续动画。近景最多读取三个可见摘要，串行请求并按资源名和来源摘要缓存；手势、页签、页面或后台变化会取消旧请求。返回星图恢复视口、选择与阅读位置。
+辉光、密度柔光和主题文字按快照缓存，密度柔光只由真实语义点生成。单个 Canvas 绘制星点，按视口裁剪；静止页面不运行持续动画。近景摘要数量由画布按布局与视口选择，最多读取十条，串行请求并按资源名和来源摘要缓存；手势、页面或后台变化会取消旧请求。返回星图恢复视口、选择与阅读位置。
+
+星点摘要沿用 Web 处理：移除 Markdown 图片，保留链接文字，去除标题、粗体与引用标记，压缩空白后按 Unicode 码点取前 100 字符。正文为空时使用首个附件文件名。
 
 同一坐标框架更新保留视口，新框架重新取景；来源摘要变化会清除旧摘要和阅读结果，迟到响应不能覆盖新选择。更新失败和网络中断保留可读快照。稳定页面每 60 秒检查，生成或重建期间每 3 秒检查，失败后至少退避 10 秒；离页和后台停止读取。
 
-重新生成在 POST 前保存账号、原框架、发起时间和观察状态。202 丢失时保留结果不明记录，返回或重启只通过 GET 观察；出现新框架表示有新快照可用。失败后按退避时间重试，再次提交由确认按钮触发。快照更新失败结束观察，客户端不自动重发重建 POST。
+重新生成在 POST 前保存账号、原框架、发起时间和观察状态。202 丢失时保留结果不明记录，返回或重启只通过 GET 观察；出现新框架表示有新快照可用。失败后按退避时间重试，再次提交由工具栏按钮触发。快照更新失败结束观察，客户端不自动重发重建 POST。
 
 Android 将响应体积、解析、首绘、绘制和摘要请求计数写入 `MoeriseMap` 日志及 `moerise_map_*` Trace 计数器，日志仅含指标和布局版本。设备测量可通过 `adb logcat -s MoeriseMap:I` 收集，结合系统帧耗时和 Perfetto 分析。
 
@@ -143,8 +213,9 @@ Android 将响应体积、解析、首绘、绘制和摘要请求计数写入 `M
 `io.github.fermin214.moerise.benchmark`：`benchmark` 构建启用 R8 和资源裁剪，
 `profile` 构建保留原始方法名用于采集，二者均关闭应用调试、使用测试签名并只对回环
 地址开放 HTTP。固定星图 Activity 只包含在这两个构建中。
-测试 runner 使用相同的调试签名，Perfetto 三个组件固定为 1.0.1；应用包与 runner
+测试 runner 使用相同的调试签名，Perfetto tracing 三个组件固定为 1.0.1；应用包与 runner
 均检查签名、ZIP 和 64 位 native 库的 16 KiB 对齐。
+runner 的 Trace Processor 固定为官方 v59.1，`trace-processor.py` 校验各 ABI 的 SHA-256 并下载到忽略的构建目录。该版本可识别 Android 16 trace 中的 RenderThread 线程名；程序仅进入测试 runner。
 
 连接固定 arm64 真机和隔离服务后执行：
 
@@ -155,12 +226,16 @@ scripts/android/benchmark.sh profile
 scripts/android/benchmark.sh run
 ```
 
-脚本清空性能包的数据，通过真实 Core/Memos 准备 100 篇固定笔记，其中包括 64 KiB
-正文和 10 个附件。测试在计时区间外完成登录。Profile 采集使用 API 33 及以上设备，
+脚本构建 APK 后通过 `benchmark-device.py` 执行带安装日志的 `adb install -r -t` 和 instrumentation，清空性能包的数据，通过真实 Core/Memos 准备后端固定数据集 100 篇笔记。
+启动首屏实际缓存 20 篇，其中包含一篇 64 KiB 长文及其 10 个附件元数据；
+登录和首屏缓存准备在计时区间外完成，之后测量冷启动与后台返回。
+100 条本机快照的长列表场景通过额外分页加载检查。
+Profile 采集使用 API 33 及以上设备，
 将设备生成的规则写入 `androidApp/src/main/baselineProfiles/` 下的
 `baseline-prof.txt` 和 `startup-prof.txt`；
-启动规则与星图规则分别采集，AGP 在构建时合并和转写。更新规则后提交源文件，再构建
-发行包。设备性能测试最低 API 为 28。
+启动规则与星图规则分别采集；Baseline 规则合并两组路径，Startup 规则只保留启动路径。AGP 在构建时转写。更新规则后提交源文件，再构建
+发行包。Profile 为可选优化；同时存在两份非空规则时，发行脚本检查 APK 内的编译产物。
+设备性能测试最低 API 为 28，后续性能工作见[路线图](ROADMAP.md#112-android-010-后续工作)。
 
 | 场景 | 采样与输出 |
 | --- | --- |
@@ -170,13 +245,77 @@ scripts/android/benchmark.sh run
 | 星图手势 | 四组场景分别执行平移、双指缩放、摘要到达和快照刷新，每组 10 次 |
 
 星图场景复用共享 `StarCanvas`，使用确定性的坐标、星体属性、主题与关联；计时从
-完整 JSON 可读时开始，摄影氛围包含密度柔光生成。网络和 Core 布局耗时通过真实观星
+Activity 创建开始，包含固定快照生成、JSON 解析和完整首绘，摄影氛围包含密度柔光生成。网络和 Core 布局耗时通过真实观星
 流程另行记录。场景名、编译模式、响应体积、JSON、系统 trace、APK SHA-256、提交号、
 设备、页大小、电池和温度信息保存在 `.local/android/benchmark-*`。
 `benchmark-report.py` 从原始 `benchmarkData.json` 计算每项指标的 P50/P95，
 写入 `summary.json`。可用 `benchmark.sh startup` 或 `benchmark.sh stars` 单独测量。
 Core 请求累计数写入 `MoeriseStartup` 日志与 `moerise_network_requests` Trace 计数器，
 可按启动区间区分会话恢复和首帧后的列表请求。
+
+### Windows 性能入口
+
+Windows 使用 PowerShell 7.2 以上、JDK 17、Android API 36、Build Tools 36.0.0、
+Platform-Tools 和 Node.js 24 以上；性能汇总另需 Python 3.11 以上。工具路径按下述规则解析，
+在仓库根目录输入设备序列号和隔离连接档案路径后执行：
+
+```powershell
+$env:ANDROID_SERIAL = Read-Host '输入真机设备序列号'
+$env:MOERISE_ANDROID_FIXTURE = (Resolve-Path -LiteralPath (
+    Read-Host '输入隔离实例 connection.json 的绝对路径')).Path
+.\scripts\android\with-device-lock.ps1 -Owner android-performance -Task profile -Command {
+    param($context)
+    & "$($context.source_root)\scripts\android\benchmark.ps1" profile -SourceRoot $context.source_root
+}
+.\scripts\android\with-device-lock.ps1 -Owner android-performance -Task benchmark -Command {
+    param($context)
+    & "$($context.source_root)\scripts\android\benchmark.ps1" run -SourceRoot $context.source_root
+}
+```
+
+`profile` 采集并合并设备生成的 Baseline 与 Startup Profile；`run` 测量启动和星图，
+`startup` 仅测启动，`stars` 仅测星图。每次调用只启动一次 Gradle，限制单 worker、
+单 JVM 处理器，关闭并行构建与常驻进程。所有 Windows 构建和设备操作通过
+`with-device-lock.ps1` 共用主仓库的公共锁，子入口要求有效的锁令牌。Profile 采集至少需要 API 33，测量至少需要
+API 28。带 Profile 的测量要求已有非空的 `baseline-prof.txt`；`startup-without-profile` 只执行两组不带 Profile 的启动与前台恢复场景，无需源规则。完整对比要求两组使用同一 APK、设备、缓存数据和工具版本。
+
+设备和连接档案也可通过 `-Serial`、`-Fixture` 参数传入。档案必须来自
+`start-fixture.ps1` 或 `start-fixture.sh` 启动的隔离服务，包含 HTTP 回环来源、
+`android-owner` 账号与临时密码。
+服务在服务器运行时，先建立电脑到服务器的 SSH 本地端口转发并保持连接，端口与
+档案来源一致；脚本负责该设备的 `adb reverse`。数据准备复用 `seed-benchmark.mjs`，
+通过真实 Core/Memos 创建并检查后端固定数据集 100 篇笔记，同时核对启动首屏的
+20 条缓存包含 64 KiB 长文及其 10 个附件元数据。性能包登录后等待该缓存就绪再开始测量。
+
+Windows 的 `environment.ps1` 固定使用主仓库 `.local/android/tools/android-sdk`、
+`.local/android/gradle-home` 和 `.local/android/project-cache`。
+JDK 优先使用 `JAVA_HOME`，随后依次查找
+`C:\Program Files\Microsoft\jdk-17.0.12.7-hotspot`、
+`.local/android/tools/jdk-17.0.21+9` 和 PATH，并校验完整 JDK 17。
+性能脚本的 `MOERISE_ANDROID_ADB`、`MOERISE_ANDROID_NODE`、
+`MOERISE_ANDROID_PYTHON` 可分别指定程序的完整路径，支持路径中含空格。Python 的
+WindowsApps 商店别名不会作为解释器使用。脚本只为子进程配置环境，退出时恢复调用方
+会话，不写入用户或系统环境。
+
+`environment.ps1` 提供 `Get-MoeriseAndroidEnvironment`，返回工具链和缓存路径，
+并导出仓库根目录变量 `$androidRepoRoot`。点调用时初始化进程内的 `JAVA_HOME`、
+SDK、PATH 与 Gradle 缓存；加 `-ResolveOnly` 则只加载路径解析功能。
+Windows 入口使用上述共享 Gradle 缓存和工程缓存，
+`GRADLE_OPTS` 和 `JAVA_OPTS` 继续传给 Gradle。
+仅检查参数、档案格式、Profile 前置条件和工具路径时执行：
+
+```powershell
+pwsh -NoProfile -File scripts/android/benchmark.ps1 startup -ValidateOnly
+```
+
+该检查读取本机配置并查询 Node.js、Python 版本，不调用 ADB、Gradle 或数据准备脚本。
+正式执行会清空 `.benchmark` 包的数据，在结束或发生错误时删除设备上的临时连接档案。
+Windows 结果目录为公共锁任务目录下的 `benchmark-<模式>/`，可从
+`queue.json` 的 `output_root` 定位；目录保存运行日志、原始 JSON、
+系统 trace、测试报告、目标 APK 与 `device.json`。元数据包含提交号、工作区改动标记、
+设备序列号、系统、ABI、页大小、电池、温度、内存和 APK SHA-256，不复制连接档案。
+构建失败时也归档已生成的原始结果和错误信息；测量成功后复用
+`benchmark-report.py` 输出每项指标的 P50/P95 和 `summary.json`。报告支持 AndroidX `Mode.First` 的 `FirstMs` 字段，保留原字段名，并严格检查迭代数、非空 trace、成功的安装和 instrumentation 记录。缺失采样不能计作通过。
 
 性能目标和取样条件见[路线图](ROADMAP.md#18-快速启动与性能目标)，完整设备操作见
 [设备检查](android/DEVICE-CHECKS.md)。
@@ -198,8 +337,9 @@ scripts/android/release.sh --unsigned
 安装说明和第三方声明；R8 mapping 随构建保存。
 
 `verify-apk.py` 检查包名、版本、发行调试标志、签名、ZIP 和 native ELF 的
-16 KiB 对齐。设备实际运行、HTTPS 与同签名升级采用
-[设备检查](android/DEVICE-CHECKS.md)中的发行流程。
+16 KiB 对齐。首次发行以新安装数据完成设备实际运行与 HTTPS 检查，使用完整 schema 1；
+后续正式版本再验证同签名覆盖升级及所需的数据库迁移。具体操作见
+[设备检查](android/DEVICE-CHECKS.md#发行与升级)。
 [安装与升级](android/INSTALL.md)可随发行包分发。
 
 运行时依赖来自 `:androidApp:exportReleaseDependencies`，第三方许可清单见
@@ -208,6 +348,61 @@ scripts/android/release.sh --unsigned
 
 Android 标签采用 `android-v*`。`android-release.yml` 在标签事件中读取
 `ANDROID_SIGNING_KEYSTORE`（Base64 keystore）、`ANDROID_KEY_ALIAS`、
-`ANDROID_STORE_PASSWORD`、`ANDROID_KEY_PASSWORD`，校验标签与 APK 版本后创建草稿发行。
+`ANDROID_STORE_PASSWORD`、`ANDROID_KEY_PASSWORD`，校验标签与 APK 版本后发布 Android Release。
+发行构建在 GitHub Actions 执行，并在 API 26 模拟器检查签名 APK 的安装和登录页启动。
+Android 检查在 API 36 模拟器运行登录、记录、编辑、草稿恢复与离线队列流程。
 手动 workflow 默认构建 unsigned 包，可通过 `sign` 输入选择签名。APK、SHA-256、
 构建 JSON 和许可 ZIP 用作发行附件，mapping 保存在构建产物中。
+
+### Windows 发行入口
+
+Windows 使用 PowerShell 7.2 以上与 Python 3.11 以上，工具链及本机缓存路径由
+`environment.ps1` 解析。在仓库根目录执行：
+
+```powershell
+$env:MOERISE_ANDROID_PYTHON = 'C:\工具\Python\python.exe'
+.\scripts\android\with-device-lock.ps1 -Owner android-release -Task release-unsigned -Command {
+    param($context)
+    & "$($context.source_root)\scripts\android\release.ps1" unsigned -SourceRoot $context.source_root
+}
+```
+
+`unsigned` 是默认模式。签名模式读取已有的 `MOERISE_ANDROID_KEYSTORE`、
+`MOERISE_ANDROID_KEY_ALIAS`、`MOERISE_ANDROID_STORE_PASSWORD` 和
+`MOERISE_ANDROID_KEY_PASSWORD` 环境变量，然后执行：
+
+```powershell
+.\scripts\android\with-device-lock.ps1 -Owner android-release -Task release-sign -Command {
+    param($context)
+    & "$($context.source_root)\scripts\android\release.ps1" sign -SourceRoot $context.source_root
+}
+```
+
+也可在上述锁内调用 `release.ps1 sign -SigningFile <本机签名档案绝对路径>`。
+`signing.json` 保存本机签名档案，字段为 `keystore`、`alias`、`store_password`、
+`key_password`；`keystore` 指向已有发行密钥。签名档案和密钥保存在仓库外的私有目录，
+不随源码或发行产物分发。
+首次发行使用默认 `-VersionCode 1`；后续正式版本使用比已发行版本更高的值。
+
+密码通过 `apksigner` 的 `env:` 参数读取，不写入命令行参数或归档。脚本使用已有密钥，
+只进行本机构建、签名与归档。发行构建要求已跟踪文件没有修改，未跟踪文件不阻断。
+每次调用通过一次 Gradle 执行 release APK、发行 lint 和运行时依赖导出，限制
+单 worker、单 JVM 处理器，并关闭并行构建和常驻进程；多个构建顺序运行。
+随后执行许可检查、16 KiB ZIP 与 ELF 对齐检查；签名模式另检查 APK 签名。
+Windows SDK 工具按 `.exe`、`.bat`、无扩展名依次选择。
+
+版本名、版本号和源 APK 路径读取实际的 `output-metadata.json`。产物保存到
+公共锁任务目录下的 `releases/v<版本>-code<versionCode>-<提交号前七位>/`，包含 APK、SHA-256、构建元数据、
+原始输出元数据、构建和校验日志、第三方许可 ZIP、许可目录、安装说明及 R8 mapping；
+许可 ZIP 不包含 mapping。
+
+无设备检查使用：
+
+```powershell
+pwsh -NoProfile -File scripts/android/release.ps1 unsigned -ValidateOnly
+pwsh -NoProfile -File scripts/android/release.ps1 sign -ValidateOnly
+```
+
+该模式检查工具路径、Python 版本及签名配置，输出构建参数和 `tracked_clean`；
+正式构建才要求 `tracked_clean` 为 `true`。检查不运行 Gradle、ADB、签名或 APK 构建，
+不修改环境变量。

@@ -3,12 +3,14 @@ package io.github.fermin214.moerise.data
 import io.github.fermin214.moerise.domain.CoreException
 import io.github.fermin214.moerise.domain.Note
 import io.github.fermin214.moerise.domain.NotePage
+import io.github.fermin214.moerise.presentation.NoteDetailController
 import io.github.fermin214.moerise.presentation.ReviewBatch
 import io.ktor.http.HttpMethod
 import java.io.File
 import java.util.UUID
 import kotlin.test.*
-import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.*
+import kotlinx.coroutines.flow.first
 import kotlinx.serialization.json.*
 
 class CoreIntegrationTest {
@@ -28,11 +30,11 @@ class CoreIntegrationTest {
             }
         }
         val content = "Android session integration ${UUID.randomUUID()} #android"
-        val fileBytes = "Android attachment".encodeToByteArray()
+        val fileBytes = ByteArray(2_852_127) { (it % 251).toByte() }
         val body = buildJsonObject {
             put("content", content)
             put("attachments", buildJsonArray { add(buildJsonObject {
-                put("filename", "android.txt"); put("type", "text/plain")
+                put("filename", "android.mp4"); put("type", "video/mp4")
                 put("content", java.util.Base64.getEncoder().encodeToString(fileBytes))
             }) })
         }.toString()
@@ -57,7 +59,7 @@ class CoreIntegrationTest {
             val id = replay.name.removePrefix("memos/")
             val read = CoreJson.decodeFromString<Note>(reopened.api(HttpMethod.Get, "/notes/$id"))
             assertEquals(content, read.content)
-            assertContentEquals(fileBytes, reopened.attachmentBytes(read, read.attachments.single(), 1024))
+            assertContentEquals(fileBytes, reopened.attachmentBytes(read, read.attachments.single(), 8 * 1024 * 1024))
             val patchKey = UUID.randomUUID().toString()
             val patchBody = buildJsonObject {
                 put("source_hash", read.sourceHash); put("content", "$content edited")
@@ -114,7 +116,27 @@ class CoreIntegrationTest {
                 }.detail.code)
             }
             checkLiveChat(reopened, live, File(field("modelStats")))
-            reopened.api(HttpMethod.Delete, "/notes/$id", buildJsonObject { put("source_hash", live.sourceHash) }.toString())
+            val db = jvmDatabase(File(folder, "actions.sqlite3").absolutePath)
+            try {
+                coroutineScope {
+                    var deletionConfirmed = false
+                    val repository = NoteRepository(db)
+                    repository.cache(accountKey, NotePage(listOf(live)))
+                    val actions = NoteDetailController({ repository }, { accountKey }, { reopened }, this) {
+                        assertNull(it)
+                        deletionConfirmed = true
+                    }
+                    actions.delete(live)
+                    val deleted = withTimeout(30_000) { actions.state.first { !it.busy } }
+                    assertNull(deleted.error, "删除动作失败：$deleted")
+                    assertTrue(deletionConfirmed, "删除动作未通知列表刷新")
+                    assertTrue(repository.snapshot(accountKey)?.notes?.isEmpty() == true)
+                    assertNull(repository.action(accountKey, live.name))
+                    assertEquals(404, assertFailsWith<CoreException> {
+                        reopened.api(HttpMethod.Get, "/notes/$id")
+                    }.status)
+                }
+            } finally { db.close() }
             val oldSession = secrets.read("session:$origin")
             reopened.logout()
             assertNull(secrets.read("session:$origin"))

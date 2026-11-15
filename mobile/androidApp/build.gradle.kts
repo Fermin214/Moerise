@@ -12,7 +12,8 @@ android {
         applicationId = "io.github.fermin214.moerise"
         minSdk = 26
         targetSdk = 36
-        versionCode = 1
+        versionCode = providers.gradleProperty("moeriseVersionCode").orElse("1").get().toInt()
+            .also { require(it > 0) { "moeriseVersionCode 必须为正整数" } }
         versionName = "0.1.0"
         manifestPlaceholders["appLabel"] = "Moerise"
         ndk { abiFilters += listOf("arm64-v8a", "x86_64") }
@@ -76,6 +77,7 @@ dependencies {
     androidTestImplementation(libs.androidx.test.runner)
     androidTestImplementation(libs.androidx.test.junit)
     androidTestImplementation(libs.androidx.compose.test)
+    androidTestImplementation(libs.ktor.client.core)
     listOf("benchmarkImplementation", "profileImplementation").forEach { configuration ->
         add(configuration, libs.androidx.compose.foundation)
         add(configuration, libs.androidx.compose.material3)

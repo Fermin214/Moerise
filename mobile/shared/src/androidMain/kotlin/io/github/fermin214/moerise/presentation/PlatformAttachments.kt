@@ -2,12 +2,19 @@ package io.github.fermin214.moerise.presentation
 
 import android.content.ClipData
 import android.content.Intent
+import android.content.ActivityNotFoundException
+import android.util.Log
 import android.graphics.BitmapFactory
 import android.provider.OpenableColumns
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.IconButton
+import androidx.compose.foundation.layout.size
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.unit.dp
 import androidx.compose.runtime.*
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
@@ -105,8 +112,9 @@ actual fun AttachmentPicker(enabled: Boolean, importScope: CoroutineScope, strin
             }
         }
     }
-    TextButton(onClick = { launcher.launch(arrayOf("*/*")) }, enabled = enabled && !busy) {
-        Text(if (busy) strings.text("读取附件…", "Reading files…") else strings.text("添加附件", "Add files"))
+    IconButton(onClick = { launcher.launch(arrayOf("*/*")) }, enabled = enabled && !busy,
+        modifier = Modifier.size(40.dp).testTag("add_attachment")) {
+        WebIcon(WebIcon.Plus, if (busy) strings.text("读取附件…", "Reading files…") else strings.text("添加附件", "Add files"))
     }
 }
 
@@ -153,7 +161,10 @@ actual fun OpenAttachmentButton(note: Note, item: JsonObject, core: CoreClient, 
                 })
             } catch (failure: Exception) {
                 if (failure is CancellationException) throw failure
-                error = strings.text("附件无法打开，请重试。", "Could not open the file. Try again.")
+                Log.w("MoeriseAttachment", "open_failed=${failure.javaClass.simpleName}")
+                error = if (failure is ActivityNotFoundException)
+                    strings.text("没有可打开此类型文件的应用。", "No app is available to open this file type.")
+                else strings.text("附件读取失败，请重试。", "Could not read the file. Try again.")
             } finally { busy = false }
         }
     }, enabled = !busy) { Text(if (busy) strings.text("下载中…", "Downloading…") else filename) }

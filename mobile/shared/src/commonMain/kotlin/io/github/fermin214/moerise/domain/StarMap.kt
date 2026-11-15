@@ -21,12 +21,15 @@ import kotlin.math.*
     @SerialName("projection_revision") val projectionRevision: Long, @SerialName("generated_at") val generatedAt: String = "",
     val points: List<StarPoint>, val topics: List<StarTopic>, val links: List<StarLink>,
     @SerialName("update_state") val updateState: String = "",
+    @SerialName("disabled_reason") val disabledReason: String = "",
 ) {
     val readable get() = status == "ready" || status == "empty"
     fun validate(): StarMap {
         require(algorithm in setOf("umap-balanced-v1", "pca-topics-v3")) { "MAP_INCOMPATIBLE" }
         require(status in setOf("disabled", "waiting", "building", "unavailable", "ready", "empty") &&
             projectionRevision >= 0 && updateState in setOf("", "building", "unavailable")) { "MAP_PROTOCOL" }
+        require(disabledReason.isEmpty() || status == "disabled" &&
+            disabledReason in setOf("stargazing", "embedding")) { "MAP_PROTOCOL" }
         val digest = Regex("^[a-f0-9]{64}$")
         require(if (readable) digest.matches(layoutVersion) && digest.matches(layoutFrame) && vectorGeneration.isNotBlank()
             else layoutVersion.isEmpty() && layoutFrame.isEmpty() && vectorGeneration.isEmpty() && points.isEmpty()) { "MAP_PROTOCOL" }

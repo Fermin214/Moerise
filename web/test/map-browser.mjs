@@ -45,6 +45,10 @@ async function fixture(t, mobile = false, language = 'zh-CN') {
     if (path === '/tags') { json({ tags: [{ tag: '\u60f3\u6cd5', count: 1 }] }); return; }
     if (path === '/calendar') { json({ month: url.searchParams.get('month'), days: [] }); return; }
     if (path === '/notes') { json({ notes: notes.filter(note => note.state === 'NORMAL'), next_page_token: '' }); return; }
+    if (path === '/map/rebuild') {
+      assert.equal(req.method, 'POST');
+      reply({ status: 'queued' }); return;
+    }
     if (path === '/map') {
       assert.equal(req.method, 'GET'); assert.equal(url.search, '');
       if (state.error) { error(state.error.code, state.error.status, state.error.retryable); return; }
@@ -96,6 +100,69 @@ const view = page => page.evaluate(() => history.state.mapView);
 async function ready(page) { await page.waitForFunction(() => document.querySelector('#map-field')?.dataset.rendered === 'true' && document.querySelector('.map-page').getAttribute('aria-busy') === 'false'); }
 async function wait(condition) { for (let i = 0; i < 100; i++) { if (condition()) return; await new Promise(resolve => setTimeout(resolve, 20)); } assert.ok(condition()); }
 async function capture(page, name) { if (process.env.MOERISE_BROWSER_ARTIFACTS) { await mkdir(process.env.MOERISE_BROWSER_ARTIFACTS, { recursive: true }); await page.screenshot({ path: join(process.env.MOERISE_BROWSER_ARTIFACTS, name), fullPage: true }); } }
+
+test('stars pick the closest visible note and bring offscreen keyboard focus into view', async t => {
+  const { page, state, url } = await fixture(t);
+  state.malformed = { status: 'ready', algorithm: 'umap-balanced-v1', layout_version: state.version,
+    layout_frame: state.frame, vector_generation: 'published', projection_revision: 3, topics: [], links: [],
+    points: state.notes.slice(0, 5).map((note, i) => ({ name: note.name, source_hash: note.source_hash,
+      x: [-1, 0, .02, 1, 2][i], y: 0, semantic: true, tags: note.tags,
+      stellar: { seed: .5, role: 'ordinary', radius: 1, luminosity: .6 } })) };
+  await login(page, url); await ready(page);
+  const field = page.locator('#map-field'), point = marker(page, 1), box = await point.boundingBox();
+  await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+  await page.locator('.map-note[data-name="memos/n1"]').waitFor();
+  await field.focus();
+  for (let i = 0; i < 16; i++) await page.keyboard.press('ArrowRight');
+  await page.waitForFunction(() => {
+    const rect = document.querySelector('.map-dot[data-name="memos/n1"]')?.getBoundingClientRect();
+    const field = document.querySelector('#map-field').getBoundingClientRect();
+    return rect && rect.right < field.left;
+  });
+  await point.focus();
+  await page.waitForFunction(() => {
+    const rect = document.activeElement.getBoundingClientRect();
+    const field = document.querySelector('#map-field').getBoundingClientRect();
+    return rect.left >= field.left + 20 && rect.right <= field.right - 20;
+  });
+  assert.equal(await point.evaluate(element => element === document.activeElement), true);
+  await point.press('Enter'); await page.locator('.map-note[data-name="memos/n1"]').waitFor();
+});
+
+test('star regeneration recovers from worker failure with and without a published snapshot', async t => {
+  const { page, state, url } = await fixture(t);
+  state.malformed = { status: 'unavailable', algorithm: 'umap-balanced-v1', layout_version: '',
+    layout_frame: '', vector_generation: '', projection_revision: 3, points: [], topics: [], links: [] };
+  await login(page, url);
+  const rebuild = page.getByRole('button', { name: '重新生成星图', exact: true });
+  const refresh = page.getByRole('button', { name: '刷新地图', exact: true });
+  const queued = () => state.requests.filter(request => request.path === '/map/rebuild').length;
+  await rebuild.click(); await wait(() => queued() === 1);
+  assert.equal(await rebuild.isDisabled(), true);
+  await refresh.click();
+  await page.getByRole('alert').filter({ hasText: '星图生成失败，请重试。' }).waitFor();
+  assert.equal(await rebuild.isEnabled(), true);
+
+  state.malformed = { status: 'ready', algorithm: 'umap-balanced-v1', layout_version: state.version,
+    layout_frame: state.frame, vector_generation: 'published', projection_revision: 3, topics: [], links: [],
+    points: state.notes.slice(0, 2).map((note, i) => ({ name: note.name, source_hash: note.source_hash,
+      x: i, y: 0, semantic: true, tags: note.tags,
+      stellar: { seed: .5, role: 'ordinary', radius: 1, luminosity: .6 } })) };
+  await refresh.click(); await ready(page);
+  await rebuild.click(); await wait(() => queued() === 2);
+  state.malformed.update_state = 'unavailable';
+  await refresh.click();
+  await page.getByRole('alert').filter({ hasText: '星图生成失败，请重试。' }).waitFor();
+  assert.equal(await rebuild.isEnabled(), true);
+  assert.equal(await page.locator('.map-dot').count(), 2);
+
+  delete state.malformed.update_state;
+  await rebuild.click(); await wait(() => queued() === 3);
+  state.malformed.layout_frame = 'c'.repeat(64);
+  state.malformed.layout_version = 'd'.repeat(64);
+  await refresh.click(); await ready(page);
+  assert.equal(await rebuild.isEnabled(), true);
+});
 
 test('full workspace map, protected complete reading, archive, pure file and independent detail return', async t => {
   const { page, state, url } = await fixture(t); await login(page, url); await ready(page);
@@ -389,7 +456,7 @@ test('English map labels and dates update without refetching notes or losing the
   await page.getByRole('group', { name: '观星', exact: true }).waitFor();
   assert.deepEqual(await view(page), saved); assert.equal(readCount(), reads);
   await setUILanguage(page, 'en');
-  assert.match(await card(page).locator('time').textContent(), /Oct/);
+  assert.equal(await card(page).locator('time').textContent(), '2026-10-20 16:00');
   assert.match(await card(page).locator('.note-content').textContent(), /完整笔记/);
   await page.setViewportSize({ width: 390, height: 844 });
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);

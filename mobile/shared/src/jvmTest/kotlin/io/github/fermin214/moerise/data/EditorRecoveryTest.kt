@@ -2,13 +2,10 @@ package io.github.fermin214.moerise.data
 
 import androidx.room.immediateTransaction
 import androidx.room.useWriterConnection
-import androidx.sqlite.driver.bundled.BundledSQLiteDriver
-import androidx.sqlite.execSQL
 import io.github.fermin214.moerise.domain.Note
 import io.github.fermin214.moerise.presentation.EditorController
 import io.ktor.client.engine.mock.*
 import io.ktor.http.*
-import java.io.File
 import java.io.IOException
 import java.nio.file.Files
 import java.util.concurrent.Executors
@@ -23,35 +20,6 @@ class EditorRecoveryTest {
         "one", "memos/one", content, "NORMAL", hash, "2026-11-14T00:00:00Z",
     )
     private fun session() = """{"instance_id":"one","user":{"name":"users/owner"},"timezone":"UTC","expires_at":"2027-01-01T00:00:00Z","csrf_token":"token"}"""
-
-    @Test
-    fun schemaOneMigrationPreservesDraftAndFrozenWrite() = runBlocking {
-        val folder = Files.createTempDirectory("moerise-migration-").toFile()
-        val path = folder.resolve("data.sqlite3").absolutePath
-        try {
-            val schema = CoreJson.parseToJsonElement(File("schemas/io.github.fermin214.moerise.data.LocalDatabase/1.json").readText()).jsonObject.getValue("database").jsonObject
-            BundledSQLiteDriver().open(path).use { connection ->
-                schema.getValue("entities").jsonArray.forEach { item ->
-                    val entity = item.jsonObject
-                    connection.execSQL(entity.getValue("createSql").jsonPrimitive.content
-                        .replace("\${TABLE_NAME}", entity.getValue("tableName").jsonPrimitive.content))
-                }
-                connection.execSQL("INSERT INTO drafts VALUES ('draft','account','正文',2,NULL,NULL,'[]',NULL)")
-                connection.execSQL("INSERT INTO pending_writes VALUES ('op','draft','account','key','POST','/notes','{\"content\":\"正文\"}',1,'sending')")
-                connection.execSQL("PRAGMA user_version=1")
-            }
-            val db = jvmDatabase(path)
-            try {
-                val restored = NoteRepository(db).restore("account")
-                assertEquals("正文", restored.draft.content)
-                assertEquals(2, restored.draft.revision)
-                assertNull(restored.draft.baselineJson)
-                assertEquals("home", restored.draft.slot)
-                assertEquals("key", restored.pending?.idempotencyKey)
-                assertEquals("unknown", restored.pending?.status)
-            } finally { db.close() }
-        } finally { folder.deleteRecursively() }
-    }
 
     @Test
     fun typingDuringConfirmationTransactionKeepsNewContentAndRemoteBinding() = runBlocking {

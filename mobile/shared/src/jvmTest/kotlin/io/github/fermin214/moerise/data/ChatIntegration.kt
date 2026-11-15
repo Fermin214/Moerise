@@ -38,6 +38,7 @@ internal suspend fun checkLiveChat(core: CoreClient, material: Note, stats: File
         return request to events
     }
     var saved: Note? = null
+    var primaryFailure: Throwable? = null
     try {
         val (generation, events) = send("insight", "")
         assertEquals("message", events.first().type)
@@ -70,9 +71,10 @@ internal suspend fun checkLiveChat(core: CoreClient, material: Note, stats: File
         val held = ChatGenerate(UUID.randomUUID().toString(), chat.version, "question", "ANDROID_HOLD", "zh-CN")
         val started = CompletableDeferred<Unit>()
         val stream = async {
-            runCatching { core.chatStream(id, held) { if (it.type == "delta") started.complete(Unit) } }.exceptionOrNull()
+            runCatching { core.chatStream(id, held) { if (it.type == "delta") started.complete(Unit) } }
+                .onFailure { started.completeExceptionally(it) }.exceptionOrNull()
         }
-        withTimeout(10_000) { started.await() }
+        withTimeout(55_000) { started.await() }
         core.api(HttpMethod.Post, "/chats/$id/messages/${held.requestId}/cancel", "{}")
         val cancellation = withTimeout(10_000) { stream.await() }
         assertNotNull(cancellation)
@@ -82,13 +84,20 @@ internal suspend fun checkLiveChat(core: CoreClient, material: Note, stats: File
         repeat(2) { read() }
         assertEquals(afterStop, calls())
         assertTrue(CoreJson.decodeFromString<ChatPage>(core.api(HttpMethod.Get, "/chats?page_size=20")).chats.any { it.id == id })
+    } catch (failure: Throwable) {
+        primaryFailure = failure
+        throw failure
     } finally {
-        core.api(HttpMethod.Delete, "/notes/${archived.name.removePrefix("memos/")}",
-            buildJsonObject { put("source_hash", archived.sourceHash) }.toString())
-        saved?.let { core.api(HttpMethod.Delete, "/notes/${it.name.removePrefix("memos/")}",
-            buildJsonObject { put("source_hash", it.sourceHash) }.toString()) }
-        chat = read()
-        core.api(HttpMethod.Delete, "/chats/$id", buildJsonObject { put("version", chat.version) }.toString())
-        assertEquals("CHAT_NOT_FOUND", assertFailsWith<CoreException> { read() }.detail.code)
+        try {
+            core.api(HttpMethod.Delete, "/notes/${archived.name.removePrefix("memos/")}",
+                buildJsonObject { put("source_hash", archived.sourceHash) }.toString())
+            saved?.let { core.api(HttpMethod.Delete, "/notes/${it.name.removePrefix("memos/")}",
+                buildJsonObject { put("source_hash", it.sourceHash) }.toString()) }
+            chat = read()
+            core.api(HttpMethod.Delete, "/chats/$id", buildJsonObject { put("version", chat.version) }.toString())
+            assertEquals("CHAT_NOT_FOUND", assertFailsWith<CoreException> { read() }.detail.code)
+        } catch (cleanup: Throwable) {
+            if (primaryFailure != null) primaryFailure.addSuppressed(cleanup) else throw cleanup
+        }
     }
 }

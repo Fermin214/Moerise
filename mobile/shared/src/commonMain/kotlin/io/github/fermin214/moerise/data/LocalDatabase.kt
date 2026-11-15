@@ -10,9 +10,6 @@ import androidx.room.Query
 import androidx.room.RoomDatabase
 import androidx.room.RoomDatabaseConstructor
 import androidx.room.Upsert
-import androidx.room.migration.Migration
-import androidx.sqlite.SQLiteConnection
-import androidx.sqlite.execSQL
 import androidx.sqlite.driver.bundled.BundledSQLiteDriver
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.IO
@@ -27,6 +24,7 @@ data class ProfileEntity(
     val timezone: String,
 )
 
+@kotlinx.serialization.Serializable
 @Entity(tableName = "drafts")
 data class DraftEntity(
     @PrimaryKey val id: String,
@@ -39,6 +37,8 @@ data class DraftEntity(
     val conflictJson: String? = null,
     @ColumnInfo(defaultValue = "NULL") val baselineJson: String? = null,
     @ColumnInfo(defaultValue = "'home'") val slot: String = "home",
+    @ColumnInfo(defaultValue = "0") val createdAt: Long = 0,
+    val queuedRevisionJson: String? = null,
 )
 
 @Entity(tableName = "pending_writes")
@@ -52,6 +52,7 @@ data class PendingWriteEntity(
     val body: String,
     val draftRevision: Long,
     val status: String = "prepared",
+    @ColumnInfo(defaultValue = "NULL") val submittedDraftJson: String? = null,
 )
 
 @Entity(tableName = "snapshots", primaryKeys = ["accountKey", "filterKey"])
@@ -73,10 +74,18 @@ interface LocalDao {
     suspend fun drafts(key: String): List<DraftEntity>
     @Query("SELECT draftId FROM pending_writes WHERE accountKey = :key AND status != 'conflict'")
     suspend fun pendingDraftIds(key: String): List<String>
+    @Query("SELECT pending_writes.* FROM pending_writes INNER JOIN drafts ON drafts.id = pending_writes.draftId WHERE pending_writes.accountKey = :key AND pending_writes.status IN ('prepared', 'unknown') ORDER BY pending_writes.rowid")
+    suspend fun queuedWrites(key: String): List<PendingWriteEntity>
     @Query("SELECT * FROM drafts WHERE id = :id") suspend fun draft(id: String): DraftEntity?
     @Query("DELETE FROM drafts WHERE id = :id") suspend fun deleteDraft(id: String)
     @Query("SELECT attachmentsJson FROM drafts") suspend fun attachmentReferences(): List<String>
+    @Query("SELECT queuedRevisionJson FROM drafts WHERE queuedRevisionJson IS NOT NULL")
+    suspend fun queuedRevisions(): List<String>
+    @Query("SELECT submittedDraftJson FROM pending_writes WHERE submittedDraftJson IS NOT NULL")
+    suspend fun submittedRevisions(): List<String>
     @Upsert suspend fun putWrite(write: PendingWriteEntity)
+    @Query("UPDATE pending_writes SET status = :status WHERE id = :id AND accountKey = :key")
+    suspend fun writeStatus(id: String, key: String, status: String)
     @Query("SELECT * FROM pending_writes WHERE draftId = :draftId AND status != 'conflict' LIMIT 1")
     suspend fun pending(draftId: String): PendingWriteEntity?
     @Query("DELETE FROM pending_writes WHERE id = :id") suspend fun deleteWrite(id: String)
@@ -95,7 +104,7 @@ interface LocalDao {
     @Query("DELETE FROM profiles WHERE accountKey = :key") suspend fun deleteProfile(key: String)
 }
 
-@Database(entities = [ProfileEntity::class, DraftEntity::class, PendingWriteEntity::class, SnapshotEntity::class, FeatureStateEntity::class], version = 3)
+@Database(entities = [ProfileEntity::class, DraftEntity::class, PendingWriteEntity::class, SnapshotEntity::class, FeatureStateEntity::class], version = 1)
 @ConstructedBy(LocalDatabaseConstructor::class)
 abstract class LocalDatabase : RoomDatabase() {
     abstract fun dao(): LocalDao
@@ -108,14 +117,4 @@ expect object LocalDatabaseConstructor : RoomDatabaseConstructor<LocalDatabase> 
 
 fun RoomDatabase.Builder<LocalDatabase>.configureDatabase(): LocalDatabase =
     setDriver(BundledSQLiteDriver())
-        .addMigrations(object : Migration(1, 2) {
-            override fun migrate(connection: SQLiteConnection) {
-                connection.execSQL("ALTER TABLE drafts ADD COLUMN baselineJson TEXT DEFAULT NULL")
-                connection.execSQL("ALTER TABLE drafts ADD COLUMN slot TEXT NOT NULL DEFAULT 'home'")
-            }
-        }, object : Migration(2, 3) {
-            override fun migrate(connection: SQLiteConnection) {
-                connection.execSQL("CREATE TABLE IF NOT EXISTS feature_states (accountKey TEXT NOT NULL, feature TEXT NOT NULL, body TEXT NOT NULL, PRIMARY KEY(accountKey, feature))")
-            }
-        })
         .setQueryCoroutineContext(Dispatchers.IO).build()

@@ -7,45 +7,21 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.ViewModelProvider
-import androidx.lifecycle.viewModelScope
 import androidx.tracing.Trace
-import io.github.fermin214.moerise.data.*
+import androidx.core.view.doOnPreDraw
 import io.github.fermin214.moerise.presentation.*
-import kotlinx.coroutines.*
-import kotlinx.coroutines.flow.collect
 
 class AppModel(application: Application) : AndroidViewModel(application) {
-    private val requests = java.util.concurrent.atomic.AtomicInteger()
-    private val database = viewModelScope.async(Dispatchers.IO) { androidDatabase(application) }
-    val session = SessionController(AndroidSecretStore(application), BuildConfig.ALLOW_LOOPBACK_HTTP, viewModelScope) {
-        val count = requests.incrementAndGet()
-        Trace.setCounter("moerise_network_requests", count)
-        android.util.Log.i("MoeriseStartup", "network_requests=$count")
-    }
-    private val repository = viewModelScope.async(Dispatchers.IO) { NoteRepository(database.await(), androidAttachmentFiles(application)) }
-    val mobile = MobileController(session, { repository.await() }, viewModelScope) {
-        clearAttachmentCache(application)
-    }
-    init {
-        viewModelScope.launch {
-            mobile.stars.metrics.collect { metric ->
-                android.util.Log.i("MoeriseMap", "${metric.kind}=${metric.value} version=${metric.version}")
-                Trace.setCounter("moerise_map_${metric.kind}", metric.value.toInt())
-            }
-        }
-    }
-    override fun onCleared() {
-        session.close()
-        if (database.isCompleted && !database.isCancelled) {
-            runBlocking(Dispatchers.IO) { database.await().close() }
-        }
-    }
+    private val runtime = (application as MoeriseApplication).runtime
+    val session = runtime.session
+    val mobile = runtime.mobile
 }
 
 class MainActivity : ComponentActivity() {
     private lateinit var model: AppModel
     private var editorReady = false
     private var foregroundTrace = false
+    private var foregroundGeneration = 0
     private fun foregroundReady() {
         if (foregroundTrace) {
             Trace.endAsyncSection("note_foreground_ready", hashCode())
@@ -69,19 +45,32 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    override fun onStart() {
-        super.onStart()
-        model.mobile.foreground(true)
+    override fun onRestart() {
+        super.onRestart()
+        // HOT 启动从重新进入 Activity 开始，每次恢复对应一个首绘回执。
+        beginForeground()
+    }
+
+    private fun beginForeground() {
+        if (foregroundTrace) return
         foregroundTrace = true
+        val generation = ++foregroundGeneration
         Trace.beginAsyncSection("note_foreground_ready", hashCode())
-        if (editorReady) window.decorView.postOnAnimation {
-            window.decorView.postOnAnimation { foregroundReady() }
+        window.decorView.doOnPreDraw {
+            window.decorView.post {
+                if (generation == foregroundGeneration && editorReady) foregroundReady()
+            }
         }
     }
 
+    override fun onStart() {
+        super.onStart()
+        beginForeground()
+    }
+
     override fun onStop() {
-        model.mobile.foreground(false)
         model.mobile.flush()
+        ++foregroundGeneration
         foregroundReady()
         super.onStop()
     }

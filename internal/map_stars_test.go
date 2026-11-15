@@ -137,3 +137,52 @@ func TestStarsWorkerOwnsNoRuntimeOrIndexLockAndRejectsNewSpace(t *testing.T) {
 		t.Fatalf("stale snapshot retained: %d %v", count, err)
 	}
 }
+
+func TestStarsDisableAndReenableRejectsInFlightResult(t *testing.T) {
+	entered, release := make(chan struct{}), make(chan struct{})
+	var blocked atomic.Bool
+	var once sync.Once
+	unblock := func() { once.Do(func() { close(release) }) }
+	service, _, _, calls := starsFixture(t, func() {
+		if blocked.Load() {
+			close(entered)
+			<-release
+		}
+	})
+	defer unblock()
+	service.Store.runtimeMu = &sync.RWMutex{}
+	if err := service.Update(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	first, err := service.Read(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Rebuild(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	blocked.Store(true)
+	done := make(chan error, 1)
+	go func() { done <- service.Update(t.Context()) }()
+	<-entered
+	service.Store.runtimeMu.Lock()
+	service.Store.Settings.Stargazing.Enabled = false
+	service.Reset()
+	service.Store.runtimeMu.Unlock()
+	disabled, err := service.Read(t.Context())
+	if err != nil || disabled.Status != "disabled" || disabled.DisabledReason != "stargazing" || len(disabled.Points) != 0 {
+		t.Fatalf("disabled stars: %+v %v", disabled, err)
+	}
+	service.Store.runtimeMu.Lock()
+	service.Store.Settings.Stargazing.Enabled = true
+	service.Reset()
+	service.Store.runtimeMu.Unlock()
+	unblock()
+	if err := <-done; errorCode(err) != "MAP_INDEX_CHANGED" {
+		t.Fatalf("result from before disabling was published: %v", err)
+	}
+	restored, err := service.Read(t.Context())
+	if err != nil || !reflect.DeepEqual(first, restored) || calls.Load() != 2 {
+		t.Fatalf("saved snapshot changed: %+v %v", restored, err)
+	}
+}

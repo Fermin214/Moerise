@@ -2,11 +2,20 @@ package io.github.fermin214.moerise.presentation
 
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.painter.BitmapPainter
 import androidx.compose.ui.graphics.painter.ColorPainter
 import androidx.compose.ui.graphics.painter.Painter
@@ -15,13 +24,17 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.boundsInWindow
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.platform.UriHandler
 import androidx.compose.ui.text.LinkAnnotation
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.withLink
 import com.mikepenz.markdown.compose.components.markdownComponents
 import com.mikepenz.markdown.compose.elements.MarkdownImage
 import com.mikepenz.markdown.m3.Markdown
+import com.mikepenz.markdown.m3.markdownTypography
 import com.mikepenz.markdown.model.*
 import com.mikepenz.markdown.utils.getUnescapedTextInNode
 import io.github.fermin214.moerise.data.CoreClient
@@ -41,6 +54,33 @@ private fun ASTNode.findChildOfTypeRecursive(type: IElementType): ASTNode? =
 
 expect suspend fun decodeProtectedImage(bytes: ByteArray): ImageBitmap?
 private val protectedImages = Semaphore(2)
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+fun NoteTags(tags: List<String>, modifier: Modifier = Modifier, onTag: ((String) -> Unit)? = null) {
+    if (tags.isEmpty()) return
+    FlowRow(modifier, horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        tags.distinct().forEach { tag ->
+            if (onTag != null) WebTag(tag, { onTag(tag) })
+            else Surface(color = MoeriseColors.TagSurface, shape = RoundedCornerShape(50),
+                border = BorderStroke(1.dp, MoeriseColors.TagLine)) {
+                Text("#${tag.removePrefix("#")}", fontSize = 13.sp, lineHeight = 22.sp,
+                    color = Color(0xFF2A5BB5), modifier = Modifier.padding(horizontal = 9.dp))
+            }
+        }
+    }
+}
+
+@Composable
+fun NoteAttachments(note: Note, core: CoreClient?, strings: Strings) {
+    if (core == null) return
+    note.attachments.forEach { item ->
+        if (item["type"]?.jsonPrimitive?.content in setOf("image/png", "image/jpeg", "image/webp", "image/gif")) {
+            item["content_url"]?.jsonPrimitive?.content?.let { MarkdownBody("![]($it)", note = note, core = core) }
+        }
+        OpenAttachmentButton(note, item, core, strings)
+    }
+}
 
 fun externalLink(link: String): Boolean = runCatching {
     link.none { it.code <= 32 || it == '\\' } && when {
@@ -109,8 +149,21 @@ fun MarkdownBody(content: String, modifier: Modifier = Modifier, note: Note? = n
         }
     } }
     CompositionLocalProvider(LocalUriHandler provides safeUri) {
+        val body = MaterialTheme.typography.bodyLarge
+        val heading = body.copy(fontSize = 18.4.sp, lineHeight = 27.6.sp, fontWeight = FontWeight.Bold)
         Markdown(
             content = content, modifier = modifier, imageTransformer = transformer, annotator = annotator,
+            typography = markdownTypography(
+                h1 = heading.copy(fontSize = 21.6.sp, lineHeight = 32.4.sp),
+                h2 = heading, h3 = heading, h4 = heading,
+                h5 = body.copy(fontWeight = FontWeight.Bold),
+                h6 = body.copy(fontWeight = FontWeight.Bold),
+                text = body, paragraph = body, quote = body.copy(color = MoeriseColors.Muted),
+                list = body, ordered = body, bullet = body,
+                code = body.copy(fontFamily = FontFamily.Monospace, fontSize = 13.sp, lineHeight = 20.8.sp),
+                inlineCode = body.copy(fontFamily = FontFamily.Monospace, fontSize = 13.sp),
+                table = body,
+            ),
             components = markdownComponents(
                 image = { model ->
                     val link = model.node.findChildOfTypeRecursive(MarkdownElementTypes.LINK_DESTINATION)?.getUnescapedTextInNode(model.content)
