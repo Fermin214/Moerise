@@ -124,7 +124,7 @@ func (a *App) Run(ctx context.Context, server *http.Server) error {
 		name string
 		err  error
 	}
-	done := make(chan outcome, 5)
+	done := make(chan outcome, 6)
 	var workers sync.WaitGroup
 	start := func(name string, run func(context.Context) error) {
 		workers.Go(func() { done <- outcome{name, run(workerCtx)} })
@@ -133,6 +133,7 @@ func (a *App) Run(ctx context.Context, server *http.Server) error {
 	start("notifications", a.Notifications.Run)
 	start("Feishu", a.RunFeishu)
 	start("vector index", a.runVector)
+	start("stars", a.runMap)
 	go func() { done <- outcome{"HTTP", server.ListenAndServe()} }()
 	var result error
 	select {

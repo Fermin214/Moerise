@@ -216,7 +216,8 @@ func TestSessionRestartSerialRefreshAndPrivateIdentity(t *testing.T) {
 	_ = json.Unmarshal(public, &fields)
 	var userFields map[string]any
 	_ = json.Unmarshal(mustSessionJSON(t, identity.User), &userFields)
-	if len(fields) != 5 || len(userFields) != 2 || fields["csrf_token"] == "" ||
+	_, hasStargazing := fields["stargazing_enabled"].(bool)
+	if len(fields) != 6 || !hasStargazing || len(userFields) != 2 || fields["csrf_token"] == "" ||
 		bytes.Contains(public, []byte(hash)) || bytes.Contains(public, []byte("secret")) || bytes.Contains(public, []byte(raw)) {
 		t.Fatalf("unexpected public identity: %s", public)
 	}

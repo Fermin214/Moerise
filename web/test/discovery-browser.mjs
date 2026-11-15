@@ -1,3 +1,4 @@
+import { setUILanguage } from './browser-helpers.mjs';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import { once } from 'node:events';
@@ -12,7 +13,7 @@ const runtime = process.env.MOERISE_PLAYWRIGHT_MODULE;
 const { chromium } = runtime ? await import(pathToFileURL(runtime).href) : await import('playwright');
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aP9sAAAAASUVORK5CYII=', 'base64');
 
-async function fixture(t, language = 'zh-CN') {
+async function fixture(t, language = 'zh-CN', options = {}) {
   const notes = Array.from({ length: 110 }, (_, i) => ({
     name: `memos/n${i}`, content: `真实笔记 ${i}\n\n${i === 0 ? '完整正文'.repeat(120) : '第二段内容'}\n\n末尾文字 ${i}`,
     state: 'NORMAL', tags: ['原始标签', '第二标签'], source_hash: `hash-${i}`,
@@ -27,7 +28,7 @@ async function fixture(t, language = 'zh-CN') {
   const state = {
     session: false, notes, requests: [], pending: [], aborts: [], csrf: 'csrf-1', rejectCSRF: false,
     empty: false, reviewID: 'fixed-day', reviewDate: '2026-10-30', reviewError: null, walkError: null, modelsError: null,
-    exhausted: false, technical: false, embedding: true, hold: null,
+    exhausted: false, technical: false, embedding: true, hold: null, notesError: null,
   };
   const core = http.createServer(async (req, res) => {
     const url = new URL(req.url, 'http://localhost'), path = url.pathname.replace('/api/app/v1', '');
@@ -63,7 +64,11 @@ async function fixture(t, language = 'zh-CN') {
       if (state.modelsError) { error(state.modelsError); return; }
       json({ embedding: { enabled: state.embedding }, index_status: state.embedding ? 'ready' : 'disabled' }); return;
     }
-    if (path === '/notes') { json({ notes: notes.slice(0, 3), next_page_token: '' }); return; }
+    if (path === '/notes') {
+      if (state.notesError) { error(state.notesError); return; }
+      assert.equal(url.searchParams.get('state'), 'NORMAL');
+      reply({ notes: notes.filter(note => note.state === 'NORMAL').slice(0, 6), next_page_token: '' }); return;
+    }
     if (path === '/reviews/daily') {
       assert.equal(req.method, 'GET');
       if (state.reviewError) { error(state.reviewError); return; }
@@ -80,7 +85,7 @@ async function fixture(t, language = 'zh-CN') {
     if (id !== undefined) { json(notes[Number(id)]); return; }
     if (path === '/walks/start' || path === '/walks/next') {
       assert.equal(req.method, 'POST');
-      if (state.walkError) { error(state.walkError); return; }
+      if (state.walkError && path === '/walks/next') { error(state.walkError); return; }
       if (state.technical) {
         reply({ mode: 'continue', path: body.path || [], exhausted: false, warnings: ['RESOURCE_LIMIT'] }); return;
       }
@@ -108,7 +113,8 @@ async function fixture(t, language = 'zh-CN') {
     await Promise.all([web, core].map(server => new Promise(resolve => { server.close(resolve); server.closeAllConnections(); })));
   });
   browser = await chromium.launch({ headless: true, channel: process.env.MOERISE_PLAYWRIGHT_CHANNEL || undefined });
-  const page = await browser.newPage({ locale: language, viewport: { width: 1360, height: 960 } }), errors = [];
+  const page = await browser.newPage({ locale: language, viewport: { width: 1360, height: 960 }, ...options }), errors = [];
+  await page.clock.setFixedTime(new Date('2026-10-30T04:00:00Z'));
   page.on('pageerror', error => errors.push(error.message));
   t.after(() => assert.deepEqual(errors, []));
   return { page, state, url };
@@ -130,11 +136,15 @@ const waitFor = async condition => {
 };
 async function screenshot(page, name) {
   if (!process.env.MOERISE_BROWSER_ARTIFACTS) return;
+  await settleAnimation(page);
   await mkdir(process.env.MOERISE_BROWSER_ARTIFACTS, { recursive: true });
   await page.screenshot({ path: join(process.env.MOERISE_BROWSER_ARTIFACTS, name), fullPage: true });
 }
+const settleAnimation = page => page.evaluate(() => Promise.all(document.getAnimations()
+  .filter(animation => animation.effect.getTiming().iterations !== Infinity)
+  .map(animation => animation.finished.catch(() => {}))));
 async function assertDiscoverySpacing(page, content) {
-  const heading = await page.locator('#view-title').boundingBox(), body = await content.boundingBox();
+  const heading = await page.locator('.discovery-heading').boundingBox(), body = await content.boundingBox();
   assert.ok(body.y - heading.y - heading.height < 100, 'Discovery content should follow the heading without a large blank area');
 }
 
@@ -157,7 +167,7 @@ test('daily review exposes all six fixed positions, full text/images, unavailabl
   await card(page).getByRole('button', { name: '打开笔记' }).click();
   await page.locator('article.note[data-name="memos/n5"]').waitFor();
   assert.equal(new URL(page.url()).searchParams.get('from'), '/review');
-  await page.getByRole('button', { name: '‹ 返回每日回顾', exact: true }).click();
+  await page.getByRole('button', { name: '‹ 返回回顾', exact: true }).click();
   await card(page).filter({ hasText: '末尾文字 5' }).waitFor();
   assert.equal(await page.getByRole('button', { name: '第 6 / 6 条', exact: true }).getAttribute('aria-pressed'), 'true');
   const reads = requests(state, '/reviews/daily').length;
@@ -190,7 +200,71 @@ test('review empty pool differs from source failure and can retry; leaving abort
   assert.equal(await page.locator('#discovery-page').count(), 0);
 });
 
-test('review hides cached notes during reloads and failures, restores the same plan position and resets for a new day', { timeout: 60_000 }, async t => {
+test('review and walk share title coordinates through loading, reading, empty states and retry', { timeout: 90_000 }, async t => {
+  for (const language of ['zh-CN', 'en-US']) {
+    for (const viewport of [{ width: 1360, height: 960 }, { width: 390, height: 844 }]) {
+      await t.test(`${language} ${viewport.width}`, async t => {
+        const { page, state, url } = await fixture(t, language, { viewport });
+        state.hold = '/reviews/daily';
+        await login(page, url, '/review');
+        await waitFor(() => state.pending.length === 1);
+        const heading = await page.locator('.discovery-heading').boundingBox();
+        const assertPosition = async () => {
+          const actual = await page.locator('.discovery-heading').boundingBox();
+          for (const axis of ['x', 'y', 'width', 'height']) {
+            assert.ok(Math.abs(actual[axis] - heading[axis]) < 1, `${axis}: ${JSON.stringify({ actual, heading })}`);
+          }
+          assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
+        };
+        const navigate = async path => {
+          if (viewport.width <= 960) await page.locator('#navigation-toggle').click();
+          await page.locator(`nav a[href="${path}"]`).click();
+        };
+        const reopenReview = async () => { await navigate('/'); await navigate('/review'); };
+        state.hold = null; state.pending.shift().release();
+        await page.locator('.review-positions button').nth(5).waitFor();
+        await assertPosition();
+        await page.locator('.review-positions button').nth(5).click();
+        await assertPosition();
+        await navigate('/walk');
+        await page.locator('.walk-start > .save:enabled').waitFor();
+        await assertPosition();
+        state.hold = '/walks/next';
+        await page.locator('.walk-start > .save').click();
+        await card(page).waitFor(); await assertPosition();
+        state.hold = '/walks/next';
+        await page.locator('.discovery-actions .save').click();
+        await waitFor(() => state.pending.length === 1);
+        await assertPosition();
+        state.exhausted = true;
+        state.hold = null; state.pending.shift().release();
+        await card(page).filter({ hasText: '末尾文字 1' }).waitFor();
+        await assertPosition();
+        state.exhausted = true;
+        await page.locator('.discovery-actions .save').click();
+        await page.locator('.discovery-content [role="status"]').waitFor();
+        await assertPosition();
+        state.empty = true;
+        await reopenReview();
+        await page.locator('#discovery-page[aria-busy="false"] .discovery-content [role="status"]').waitFor();
+        await assertPosition();
+        state.reviewError = 'UPSTREAM_UNAVAILABLE';
+        await reopenReview();
+        await page.locator('.discovery-content [role="alert"]').waitFor();
+        await assertPosition();
+        state.reviewError = null; state.hold = '/reviews/daily';
+        await page.locator('.discovery-retry').click();
+        await waitFor(() => state.pending.length === 1);
+        await assertPosition();
+        state.hold = null; state.pending.shift().release();
+        await page.locator('#discovery-page[aria-busy="false"]').waitFor();
+        await assertPosition();
+      });
+    }
+  }
+});
+
+test('review retains same-day cached notes during reloads and failures and resets for a new day', { timeout: 60_000 }, async t => {
   const { page, state, url } = await fixture(t);
   await login(page, url, '/review');
   await page.getByRole('button', { name: '第 6 / 6 条', exact: true }).click();
@@ -203,30 +277,35 @@ test('review hides cached notes during reloads and failures, restores the same p
   const assertHidden = async () => {
     assert.equal(await page.locator('[data-review-index]').count(), 0);
     assert.equal(await page.getByRole('button', { name: '第 6 / 6 条', exact: true }).count(), 0);
-    assert.doesNotMatch(await page.locator('#discovery-page').innerText(), /10月30日|末尾文字/);
+    assert.doesNotMatch(await page.locator('#discovery-page').innerText(), /末尾文字/);
+  };
+  const assertRetained = async () => {
+    assert.equal(await page.locator('[data-review-index]').count(), 6);
+    assert.equal(await page.getByRole('button', { name: '第 6 / 6 条', exact: true }).getAttribute('aria-pressed'), 'true');
+    assert.match(await card(page).innerText(), /末尾文字 5/);
   };
   state.hold = '/reviews/daily';
   await reopen();
   await waitFor(() => state.pending.length === 1);
-  await assertHidden();
-  await page.getByRole('status').filter({ hasText: '正在加载每日回顾' }).waitFor();
+  await assertRetained();
   state.hold = null; state.pending.shift().release();
   await card(page).filter({ hasText: '末尾文字 5' }).waitFor();
 
   state.reviewError = 'UPSTREAM_UNAVAILABLE';
   await reopen();
   await page.getByRole('alert').filter({ hasText: 'Memos 服务暂时无法连接' }).waitFor();
-  await assertHidden();
+  await assertRetained();
   assert.equal(await page.getByText('今天没有可回顾的旧笔记。', { exact: true }).count(), 0);
   state.reviewError = null; state.hold = '/reviews/daily';
   state.notes[5].content = '重试后从来源读取的新正文';
   await page.getByRole('button', { name: '重试', exact: true }).click();
   await waitFor(() => state.pending.length === 1);
-  await assertHidden();
+  await assertRetained();
   state.hold = null; state.pending.shift().release();
   await card(page).filter({ hasText: '重试后从来源读取的新正文' }).waitFor();
   assert.equal(await page.getByRole('button', { name: '第 6 / 6 条', exact: true }).getAttribute('aria-pressed'), 'true');
 
+  await page.clock.setFixedTime(new Date('2026-10-31T04:00:00Z'));
   state.reviewID = 'next-day'; state.reviewDate = '2026-10-31'; state.reviewError = 'UPSTREAM_UNAVAILABLE';
   await reopen();
   await page.getByRole('alert').filter({ hasText: 'Memos 服务暂时无法连接' }).waitFor();
@@ -235,7 +314,6 @@ test('review hides cached notes during reloads and failures, restores the same p
   state.reviewError = null;
   await page.getByRole('button', { name: '重试', exact: true }).click();
   await card(page).filter({ hasText: '末尾文字 0' }).waitFor();
-  assert.match(await page.locator('#discovery-page').innerText(), /10月31日/);
   assert.equal(await page.getByRole('button', { name: '第 1 / 6 条', exact: true }).getAttribute('aria-pressed'), 'true');
 });
 
@@ -255,19 +333,19 @@ test('walk random start uses session CSRF, can continue past 100 notes, and rest
     await next(page).click();
     await page.locator(`.discovery-note[data-name="memos/n${index}"]:visible`).waitFor();
   }
-  const last = requests(state, '/walks/next').at(-1);
+  const last = requests(state, '/walks/next').findLast(request => request.body.name === 'memos/n101');
   assert.equal(last.body.name, 'memos/n101');
   assert.equal(last.body.path.length, 102);
   assert.equal(new Set(last.body.path).size, 102);
-  assert.match(await page.locator('#discovery-page').innerText(), /已漫步 103 条/);
+  assert.doesNotMatch(await page.locator('#discovery-page').innerText(), /已漫步.*条/);
   assert.doesNotMatch(await page.locator('#discovery-page').innerText(), /强关联|弱关联|0\.817|下一站可能/);
   await card(page).getByRole('button', { name: '打开笔记' }).click();
   await page.locator('article.note[data-name="memos/n102"]').waitFor();
-  await page.getByRole('button', { name: '‹ 返回随机漫步', exact: true }).click();
+  await page.getByRole('button', { name: '‹ 返回漫步', exact: true }).click();
   await page.locator('.discovery-note[data-name="memos/n102"]:visible').waitFor();
   await next(page).click();
   await page.locator('.discovery-note[data-name="memos/n103"]:visible').waitFor();
-  assert.equal(requests(state, '/walks/next').at(-1).body.path.length, 103);
+  assert.equal(requests(state, '/walks/next').findLast(request => request.body.name === 'memos/n102').body.path.length, 103);
   assert.equal(state.requests.some(request => /reads|opened|skip|complete/.test(request.path)), false);
 });
 
@@ -279,7 +357,7 @@ test('detail and review can start at the selected note; mobile cards keep full t
   await page.locator('.discovery-note[data-name="memos/n5"]:visible').waitFor();
   assert.deepEqual(requests(state, '/walks/start').at(-1).body, { name: 'memos/n5' });
   await card(page).getByRole('button', { name: '打开笔记' }).click();
-  await page.getByRole('button', { name: '‹ 返回随机漫步', exact: true }).click();
+  await page.getByRole('button', { name: '‹ 返回漫步', exact: true }).click();
   await page.locator('.discovery-note[data-name="memos/n5"]:visible').waitFor();
   assert.equal(requests(state, '/walks/start').length, 1);
   await next(page).click();
@@ -306,17 +384,18 @@ test('archived notes keep the insights entry and have no walk entry in detail or
   const detail = page.locator('article.note[data-name="memos/n0"]');
   await detail.waitFor();
   assert.equal(await detail.getByRole('button', { name: '从这条漫步', exact: true }).count(), 0);
-  await detail.getByRole('button', { name: 'AI 洞察这条', exact: true }).waitFor();
+  await detail.getByRole('button', { name: '洞察这条', exact: true }).waitFor();
   await page.goto(url + '/review');
   await page.getByRole('button', { name: '第 6 / 6 条', exact: true }).waitFor();
   assert.equal(await page.getByRole('button', { name: '从这条漫步', exact: true }).count(), 0);
-  await page.getByRole('button', { name: 'AI 洞察这条', exact: true }).waitFor();
+  await page.getByRole('button', { name: '洞察这条', exact: true }).waitFor();
   assert.equal(requests(state, '/walks/start').length, 0);
 });
 
 test('resource errors and non-exhausted technical responses can retry the same path; exhaustion preserves the last note', { timeout: 60_000 }, async t => {
   const { page, state, url } = await fixture(t);
   await login(page, url, '/walk');
+  state.walkError = 'RESOURCE_LIMIT';
   await page.getByRole('button', { name: '随机开始', exact: true }).click();
   await card(page).filter({ hasText: '末尾文字 0' }).waitFor();
   state.walkError = 'RESOURCE_LIMIT';
@@ -328,8 +407,10 @@ test('resource errors and non-exhausted technical responses can retry the same p
   await page.locator('#discovery-page[aria-busy="false"]').waitFor();
   await page.getByRole('alert').filter({ hasText: '技术资源限制' }).waitFor();
   assert.match(await card(page).innerText(), /末尾文字 0/);
-  state.technical = false;
+  state.technical = false; state.hold = '/walks/next';
   await page.getByRole('button', { name: '重试', exact: true }).click();
+  await waitFor(() => state.pending.length === 1);
+  state.exhausted = true; state.hold = null; state.pending.shift().release();
   await card(page).filter({ hasText: '末尾文字 1' }).waitFor();
   assert.deepEqual(requests(state, '/walks/next').slice(0, 3).map(request => request.body),
     Array(3).fill({ name: 'memos/n0', path: ['memos/n0'] }));
@@ -359,10 +440,10 @@ test('stop, navigation and logout abort pending walk requests and isolate late r
   await waitFor(() => state.pending.length === 1);
   await page.getByRole('button', { name: '停止', exact: true }).click();
   await waitFor(() => state.aborts.includes('/walks/start'));
-  state.pending.shift().release(); state.hold = null;
+  state.pending.shift().release(); state.hold = '/walks/next';
+  await page.evaluate(() => { window.ignoreDiscoveryAbort = true; });
   await page.getByRole('button', { name: '随机开始', exact: true }).click();
   await card(page).filter({ hasText: '末尾文字 0' }).waitFor();
-  await page.evaluate(() => { window.ignoreDiscoveryAbort = true; });
   state.hold = '/walks/next';
   await next(page).click(); await waitFor(() => state.pending.length === 1);
   await page.getByRole('button', { name: '停止', exact: true }).click();
@@ -372,6 +453,7 @@ test('stop, navigation and logout abort pending walk requests and isolate late r
   await page.waitForFunction(count => window.discoveryResponses > count, count);
   await page.evaluate(() => new Promise(requestAnimationFrame));
   assert.equal(await card(page).count(), 0);
+  state.hold = '/walks/next';
   await page.getByRole('button', { name: '随机开始', exact: true }).click();
   await card(page).filter({ hasText: '末尾文字 0' }).waitFor();
   state.hold = '/walks/next';
@@ -379,7 +461,7 @@ test('stop, navigation and logout abort pending walk requests and isolate late r
   await card(page).getByRole('button', { name: '打开笔记' }).click();
   await page.locator('article.note[data-name="memos/n0"]').waitFor();
   state.pending.shift().release(); state.hold = null;
-  await page.getByRole('button', { name: '‹ 返回随机漫步', exact: true }).click();
+  await page.getByRole('button', { name: '‹ 返回漫步', exact: true }).click();
   await card(page).filter({ hasText: '末尾文字 0' }).waitFor();
   state.hold = '/walks/next'; await next(page).click(); await waitFor(() => state.pending.length === 1);
   await page.locator('#user-menu').click(); await page.locator('#logout').click();
@@ -410,21 +492,102 @@ test('model availability can retry, disabled Embedding links to configuration, a
   assert.equal(await page.locator('#discovery-page').count(), 0);
 });
 
-test('English review and walk localize dates, navigation, errors and singular note counts', async t => {
+test('English review and walk localize dates, navigation, errors and floating cards', async t => {
   const { page, state, url } = await fixture(t, 'en-US');
   await login(page, url, '/review');
   await page.getByRole('button', { name: 'Note 6 of 6', exact: true }).waitFor();
-  assert.match(await page.locator('#discovery-page').textContent(), /October 30 · 6 old notes for today/);
-  await page.locator('#app [data-language]').selectOption('zh-CN');
+  assert.equal(await page.locator('.discovery-heading').innerText(), 'Review');
+  await setUILanguage(page, 'zh-CN');
   await page.getByRole('button', { name: '第 6 / 6 条', exact: true }).click();
-  await page.locator('#app [data-language]').selectOption('en');
+  await setUILanguage(page, 'en');
   assert.equal(await page.getByRole('button', { name: 'Note 6 of 6', exact: true }).getAttribute('aria-pressed'), 'true');
   await page.locator('nav a[href="/walk"]').click();
+  state.walkError = 'INDEX_NOT_READY';
   await page.getByRole('button', { name: 'Start anywhere', exact: true }).click();
-  await page.getByText('1 note visited', { exact: true }).waitFor();
+  await card(page).waitFor();
+  assert.doesNotMatch(await page.locator('#discovery-page').innerText(), /note visited/);
   state.walkError = 'INDEX_NOT_READY';
   await page.getByRole('button', { name: 'Keep walking', exact: true }).click();
   await page.getByRole('alert').filter({ hasText: 'The semantic index is not ready.' }).waitFor();
   await page.setViewportSize({ width: 390, height: 844 });
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
+});
+
+test('floating note starts, centered groups and reduced motion work across desktop and touch viewports', { timeout: 60_000 }, async t => {
+  const { page, state, url } = await fixture(t, 'zh-CN', { hasTouch: true, isMobile: true });
+  await login(page, url, '/walk');
+  await page.locator('.walk-floater').nth(5).waitFor();
+  for (const viewport of [{ width: 1360, height: 960 }, { width: 390, height: 844 },
+    { width: 320, height: 568 }, { width: 430, height: 932 }, { width: 932, height: 430 }]) {
+    await page.setViewportSize(viewport);
+    const geometry = await page.evaluate(() => {
+      const box = node => node.getBoundingClientRect().toJSON();
+      const root = document.querySelector('#discovery-page');
+      return { heading: box(root.firstElementChild), end: box(root.lastElementChild),
+        toolbar: box(document.querySelector('#mobile-header')), width: innerWidth, height: innerHeight,
+        overflow: document.documentElement.scrollWidth > innerWidth,
+        cards: [...document.querySelectorAll('.walk-floater')].map(box),
+        start: box(document.querySelector('.walk-start .save')) };
+    });
+    assert.equal(geometry.overflow, false);
+    assert.ok(geometry.heading.y >= geometry.toolbar.height, 'Heading stays below the toolbar');
+    if (geometry.end.bottom < viewport.height) {
+      assert.ok(Math.abs((geometry.heading.y + geometry.end.bottom) / 2 -
+        (geometry.toolbar.height + viewport.height) / 2) < 12, 'The whole group is vertically centered');
+    }
+    for (const card of geometry.cards) {
+      assert.ok(card.x >= 0 && card.right <= viewport.width, 'Floating notes fit the viewport');
+      assert.ok(card.bottom <= geometry.start.y || card.y >= geometry.start.bottom, 'Notes leave the start button clear');
+    }
+    await screenshot(page, `walk-start-${viewport.width}.png`);
+  }
+  await page.setViewportSize({ width: 390, height: 844 });
+  const target = await page.locator('.walk-floater[data-name="memos/n3"]').boundingBox();
+  await page.touchscreen.tap(target.x + target.width / 2, target.y + target.height / 2);
+  await page.locator('.discovery-note[data-name="memos/n3"]:visible').waitFor();
+  await page.getByRole('button', { name: '停止', exact: true }).tap();
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  assert.equal(await page.locator('.walk-floater').first().evaluate(node => getComputedStyle(node).animationName), 'none');
+  await page.locator('.walk-floater[data-name="memos/n4"]').tap();
+  await page.locator('.discovery-note[data-name="memos/n4"]:visible').waitFor();
+  assert.deepEqual(requests(state, '/walks/start').at(-1).body, { name: 'memos/n4' });
+  assert.equal(await card(page).evaluate(node => getComputedStyle(node).animationName), 'none');
+  await page.locator('#navigation-toggle').tap();
+  await page.locator('nav a[href="/review"]').tap();
+  await page.getByRole('button', { name: '第 6 / 6 条', exact: true }).click();
+  const heading = await page.locator('.discovery-heading').boundingBox();
+  assert.ok(heading.y >= 56);
+  await page.emulateMedia({ reducedMotion: 'no-preference' });
+  await page.getByRole('button', { name: '第 5 / 6 条', exact: true }).click();
+  assert.equal(await card(page).evaluate(node => getComputedStyle(node).animationName), 'mobile-card-enter');
+  await screenshot(page, 'review-centered-mobile.png');
+  await page.locator('#navigation-toggle').tap();
+  await page.locator('nav a[href="/"]').tap();
+  state.notes[0].content = '长笔记完整内容'.repeat(2500);
+  await page.locator('#navigation-toggle').tap();
+  await page.locator('nav a[href="/review"]').tap();
+  await page.getByRole('button', { name: '第 1 / 6 条', exact: true }).click();
+  await settleAnimation(page);
+  assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+  assert.ok((await page.locator('.discovery-heading').boundingBox()).y >= 56, 'Long notes keep their heading accessible');
+  await card(page).locator('.note-content').getByText(state.notes[0].content, { exact: true }).waitFor();
+});
+
+test('floating previews retry source failures without disabling random start or publishing a departed response', async t => {
+  const { page, state, url } = await fixture(t);
+  state.notesError = 'UPSTREAM_UNAVAILABLE';
+  await login(page, url, '/walk');
+  await page.getByRole('button', { name: '重试加载笔记', exact: true }).waitFor();
+  assert.ok(await page.getByRole('button', { name: '随机开始', exact: true }).isEnabled());
+  state.notesError = null;
+  await page.getByRole('button', { name: '重试加载笔记', exact: true }).click();
+  await page.locator('.walk-floater').nth(5).waitFor();
+  await page.locator('nav a[href="/"]').click();
+  state.hold = '/notes';
+  await page.locator('nav a[href="/walk"]').click();
+  await waitFor(() => state.pending.length === 1);
+  await page.locator('nav a[href="/review"]').click();
+  state.hold = null; state.pending.shift().release();
+  await page.getByRole('button', { name: '第 6 / 6 条', exact: true }).waitFor();
+  assert.equal(await page.locator('.walk-floater').count(), 0);
 });

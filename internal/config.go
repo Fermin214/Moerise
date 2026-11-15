@@ -19,7 +19,7 @@ import (
 	_ "time/tzdata"
 )
 
-const Version = "0.1.0"
+const Version = "0.1.1"
 
 type MemosConfig struct {
 	InstanceID     string  `json:"instance_id"`
@@ -92,6 +92,10 @@ type EmbeddingConfig struct {
 	QueryInstruction *string `json:"query_instruction"`
 }
 
+type StargazingConfig struct {
+	Enabled bool `json:"enabled"`
+}
+
 type ChannelConfig struct {
 	Kind              string  `json:"kind"`
 	AppID             *string `json:"app_id"`
@@ -124,6 +128,7 @@ type Settings struct {
 	Review        ReviewConfig       `json:"review"`
 	Notifications NotificationConfig `json:"notifications"`
 	Embedding     EmbeddingConfig    `json:"embedding"`
+	Stargazing    StargazingConfig   `json:"stargazing"`
 	LLM           LLMConfig          `json:"llm"`
 	Channel       ChannelConfig      `json:"channel"`
 	Insights      InsightsConfig     `json:"insights"`
@@ -142,6 +147,7 @@ func DefaultSettings() Settings {
 		Notifications: NotificationConfig{Times: []string{"09:00"}},
 		Embedding: EmbeddingConfig{Provider: "bailian", Protocol: "dashscope", Model: &embeddingModel,
 			Dimensions: 1024, BatchSize: 20, TimeoutSeconds: 30, MaxConcurrency: 2, MaxRetries: 2},
+		Stargazing: StargazingConfig{Enabled: true},
 		LLM: LLMConfig{Protocol: "openai-compatible", TimeoutSeconds: 90, MaxConcurrency: 2,
 			MaxRetries: 2, MaxOutputTokens: 2048},
 		Channel:  ChannelConfig{Kind: "none"},

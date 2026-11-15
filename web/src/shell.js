@@ -6,7 +6,7 @@ export function initShell() {
   const searchToggle = document.getElementById('search-toggle'), query = document.getElementById('q');
   const searchHome = document.createComment('search');
   search.before(searchHome);
-  const compact = matchMedia('(max-width:760px), (max-width:1024px) and (pointer:coarse)');
+  const compact = matchMedia('(max-width:960px)');
   let searchOpen = false, gesture = null;
 
   function closeNavigation() {

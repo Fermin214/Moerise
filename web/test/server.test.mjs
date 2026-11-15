@@ -40,7 +40,7 @@ function raw(url, path) {
 
 test('build assets are served with no-store and a same-origin CSP', async t => {
   const { url } = await fixture(t, () => assert.fail('Static files must not reach Core'));
-  for (const path of ['/', '/app.js', '/shell.js', '/i18n.js', '/en.js', '/draft.js', '/errors.js', '/routes.js', '/markdown.js', '/insights.js', '/map.js', '/chat-stream.js', '/styles.css', '/favicon.svg']) {
+  for (const path of ['/', '/app.js', '/shell.js', '/i18n.js', '/en.js', '/draft.js', '/errors.js', '/routes.js', '/markdown.js', '/insights.js', '/map.js', '/map-scene.js', '/map-paint.js', '/map-worker.js', '/chat-stream.js', '/styles.css', '/favicon.svg']) {
     const response = await fetch(url + path);
     assert.equal(response.status, 200);
     assert.equal(response.headers.get('cache-control'), 'no-store');
@@ -54,7 +54,10 @@ test('build assets are served with no-store and a same-origin CSP', async t => {
 });
 
 test('versioned public assets negotiate compression and cache without caching private API or HTML', async t => {
-  const { url } = await fixture(t, (req, res) => res.end('{}'));
+  const { url } = await fixture(t, (req, res) => {
+    res.writeHead(200, { 'Content-Type': 'application/json', 'Content-Length': '2' });
+    res.end('{}');
+  });
   const page = await fetch(url);
   const html = await page.text();
   assert.equal(page.headers.get('cache-control'), 'no-store');
@@ -96,6 +99,13 @@ test('versioned public assets negotiate compression and cache without caching pr
   for (const path of ['/app.js', '/api/app/v1/session', '/api/app/v1/notes']) {
     const response = await fetch(url + path);
     assert.equal(response.headers.get('cache-control'), 'no-store');
+  }
+  for (const accept of ['gzip', 'identity', 'gzip;q=0']) {
+    const response = await fetch(url + '/api/app/v1/map', { headers: { 'Accept-Encoding': accept } });
+    assert.equal(response.headers.get('content-encoding'), accept === 'gzip' ? 'gzip' : null);
+    assert.equal(response.headers.get('cache-control'), 'no-store');
+    if (accept === 'gzip') assert.equal(response.headers.get('content-length'), null);
+    assert.deepEqual(await response.json(), {});
   }
 });
 
@@ -258,6 +268,89 @@ test('returns a structured no-store error when Core disconnects', async t => {
   assert.equal(error.code, 'CORE_UNAVAILABLE');
   assert.equal(error.retryable, true);
   assert.ok(error.request_id);
+});
+
+test('map tracing correlates gzip transfer stages and byte counts without logging private input', async t => {
+  const events = [], body = JSON.stringify({ points: Array.from({ length: 500 }, (_, i) => ({ name: `memos/${i}`, x: i / 7 })) });
+  const { url } = await fixture(t, (req, res) => {
+    res.writeHead(200, { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) });
+    res.end(body);
+  }, { requestLogger: event => events.push(event) });
+  const { headers, bytes } = await new Promise((resolve, reject) => {
+    http.get(url + '/api/app/v1/map?private=query-secret', {
+      headers: { 'Accept-Encoding': 'gzip', Cookie: 'session=cookie-secret', 'X-CSRF-Token': 'csrf-secret',
+        'X-Moerise-Trace': '11111111-1111-1111-1111-111111111111' },
+    }, async response => {
+      try {
+        const chunks = [];
+        for await (const chunk of response) chunks.push(chunk);
+        resolve({ headers: response.headers, bytes: Buffer.concat(chunks) });
+      } catch (err) { reject(err); }
+    }).on('error', reject);
+  });
+  await new Promise(setImmediate);
+  assert.equal(headers['content-encoding'], 'gzip');
+  assert.match(headers['server-timing'], /^upstream;dur=\d/);
+  for (const name of ['request_start', 'upstream_headers', 'upstream_end', 'compression_end', 'response_finish', 'response_close']) {
+    assert.ok(events.some(event => event.event === name), name);
+  }
+  assert.equal(new Set(events.map(event => event.request_id)).size, 1);
+  assert.equal(events[0].request_id, headers['x-request-id']);
+  assert.equal(events[0].client_id, '11111111-1111-1111-1111-111111111111');
+  const finished = events.find(event => event.event === 'response_finish');
+  assert.equal(finished.upstream_bytes, Buffer.byteLength(body));
+  assert.equal(finished.body_bytes, bytes.length);
+  assert.equal(finished.upstream_ended, true);
+  assert.ok(bytes.length < finished.upstream_bytes);
+  assert.equal(events.find(event => event.event === 'response_close').write_completed, true);
+  assert.doesNotMatch(JSON.stringify(events), /query-secret|cookie-secret|csrf-secret/);
+  events.length = 0;
+  await (await fetch(url + '/api/app/v1/notes')).text();
+  assert.equal(events.length, 0);
+  const session = await fetch(url + '/api/app/v1/session');
+  await session.text();
+  await new Promise(setImmediate);
+  assert.ok(events.some(event => event.path === '/api/app/v1/session' && event.event === 'response_finish'));
+});
+
+test('map tracing distinguishes upstream timeout, truncated response and downstream cancellation', async t => {
+  let mode = 'timeout';
+  const events = [];
+  const { url } = await fixture(t, (req, res) => {
+    if (mode === 'timeout') return;
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.write('{"points":[');
+    if (mode === 'truncated') { setImmediate(() => res.destroy()); return; }
+    const timer = setInterval(() => res.write('"point",'.repeat(1024)), 5);
+    res.on('close', () => clearInterval(timer));
+  }, { proxyTimeout: 100, requestLogger: event => events.push(event) });
+  const waitFor = async predicate => {
+    for (let i = 0; i < 100 && !predicate(); i++) await new Promise(resolve => setTimeout(resolve, 10));
+    assert.ok(predicate());
+  };
+  const timeout = await fetch(url + '/api/app/v1/map', { headers: { 'Accept-Encoding': 'identity' } });
+  assert.equal(timeout.status, 502);
+  await timeout.text();
+  await waitFor(() => events.some(event => event.event === 'response_close'));
+  assert.ok(events.some(event => event.event === 'upstream_timeout'));
+
+  mode = 'truncated'; events.length = 0;
+  await assert.rejects(async () => (await fetch(url + '/api/app/v1/map', { headers: { 'Accept-Encoding': 'identity' } })).text());
+  await waitFor(() => events.some(event => event.event === 'response_close'));
+  assert.ok(events.some(event => event.event === 'upstream_aborted' || event.event === 'upstream_response_error'));
+  assert.equal(events.find(event => event.event === 'response_close').write_completed, false);
+  assert.ok(!events.some(event => event.event === 'response_finish'));
+
+  mode = 'slow'; events.length = 0;
+  const controller = new AbortController();
+  const response = await fetch(url + '/api/app/v1/map', { headers: { 'Accept-Encoding': 'identity' }, signal: controller.signal });
+  const reader = response.body.getReader();
+  await reader.read();
+  controller.abort();
+  await reader.cancel().catch(() => {});
+  await waitFor(() => events.some(event => event.event === 'response_close'));
+  assert.equal(events.find(event => event.event === 'response_close').write_completed, false);
+  assert.ok(!events.some(event => event.event === 'response_finish'));
 });
 
 test('does not follow upstream redirects or send credentials to a redirect target', async t => {

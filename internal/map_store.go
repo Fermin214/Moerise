@@ -25,7 +25,8 @@ func (s *Store) mapSnapshot(ctx context.Context) (mapSnapshot, error) {
 			Scan(&snapshot.generation, &snapshot.space, &snapshot.revision); err != nil {
 			return err
 		}
-		rows, err := tx.QueryContext(ctx, `SELECT n.name, n.source_hash, json_extract(m.payload_json, '$.tags'), c.content_hash, c.vector
+		rows, err := tx.QueryContext(ctx, `SELECT n.name, n.source_hash, json_extract(m.payload_json, '$.tags'),
+			substr(json_extract(m.payload_json, '$.content'), 1, 2048), c.content_hash, c.vector
 			FROM vector_notes n JOIN vector_generations g ON g.id = n.generation_id
 			JOIN memos m ON m.instance_id = g.instance_id AND m.user_name = g.user_name AND m.name = n.name
 			LEFT JOIN vector_chunks c USING (generation_id, name)
@@ -40,14 +41,15 @@ func (s *Store) mapSnapshot(ctx context.Context) (mapSnapshot, error) {
 		for rows.Next() {
 			var name, sourceHash string
 			var chunkHash sql.NullString
-			var tags sql.NullString
+			var tags, content sql.NullString
 			var data []byte
-			if err := rows.Scan(&name, &sourceHash, &tags, &chunkHash, &data); err != nil {
+			if err := rows.Scan(&name, &sourceHash, &tags, &content, &chunkHash, &data); err != nil {
 				return err
 			}
 			if current == nil || current.name != name {
 				snapshot.documents = append(snapshot.documents, mapDocument{name: name, sourceHash: sourceHash})
 				current = &snapshot.documents[len(snapshot.documents)-1]
+				current.keywords = mapKeywords(content.String)
 				if tags.Valid && tags.String != "null" {
 					if err := json.Unmarshal([]byte(tags.String), &current.tags); err != nil {
 						return err
@@ -98,12 +100,13 @@ func (s *Store) mapSnapshot(ctx context.Context) (mapSnapshot, error) {
 func (s *Store) loadMapLayout(ctx context.Context, snapshot mapSnapshot) (*mapLayout, error) {
 	layout := &mapLayout{points: []MapPoint{}}
 	err := transactionContext(ctx, s.index, func(tx *sql.Tx) error {
-		var basis []byte
+		var basis, topics, links []byte
 		var generatedAt string
-		err := tx.QueryRowContext(ctx, `SELECT version, basis_json, generation_id, projection_revision, generated_at FROM map_layouts
-			WHERE instance_id = ? AND user_name = ? AND space_hash = ? AND algorithm = ?`,
-			s.Settings.Memos.InstanceID, s.Settings.Memos.User, snapshot.space, mapAlgorithm).
-			Scan(&layout.version, &basis, &layout.generation, &layout.revision, &generatedAt)
+		err := tx.QueryRowContext(ctx, `SELECT algorithm, version, basis_json, generation_id, projection_revision, generated_at,
+			topics_json, links_json FROM map_layouts
+			WHERE instance_id = ? AND user_name = ? AND space_hash = ? AND algorithm IN (?, ?)`,
+			s.Settings.Memos.InstanceID, s.Settings.Memos.User, snapshot.space, mapAlgorithm, mapLegacyAlgorithm).
+			Scan(&layout.algorithm, &layout.version, &basis, &layout.generation, &layout.revision, &generatedAt, &topics, &links)
 		if err != nil {
 			return err
 		}
@@ -113,6 +116,10 @@ func (s *Store) loadMapLayout(ctx context.Context, snapshot mapSnapshot) (*mapLa
 		}
 		if json.Unmarshal(basis, &layout.basis) != nil || !validMapBasis(layout.basis, snapshot.dimensions) {
 			return failure("MAP_LAYOUT_INVALID", "Stored map layout is invalid; rebuild the index", 503, false)
+		}
+		if json.Unmarshal(topics, &layout.topics) != nil || json.Unmarshal(links, &layout.links) != nil ||
+			layout.topics == nil || layout.links == nil {
+			return failure("MAP_LAYOUT_INVALID", "Stored map topics are invalid; rebuild the index", 503, false)
 		}
 		rows, err := tx.QueryContext(ctx, `SELECT name, source_hash, vector_hash, x, y, semantic, tags_json
 			FROM map_points WHERE instance_id = ? AND user_name = ? ORDER BY name`, s.Settings.Memos.InstanceID, s.Settings.Memos.User)
@@ -179,16 +186,25 @@ func (s *Store) publishMapLayout(ctx context.Context, snapshot mapSnapshot, layo
 		if err != nil {
 			return err
 		}
+		topics, err := json.Marshal(layout.topics)
+		if err != nil {
+			return err
+		}
+		links, err := json.Marshal(layout.links)
+		if err != nil {
+			return err
+		}
 		// Replace metadata and the complete point set together, retaining no old-space points.
 		if _, err := tx.ExecContext(ctx, "DELETE FROM map_layouts WHERE instance_id = ? AND user_name = ?",
 			s.Settings.Memos.InstanceID, s.Settings.Memos.User); err != nil {
 			return err
 		}
 		if _, err := tx.ExecContext(ctx, `INSERT INTO map_layouts
-			(instance_id, user_name, space_hash, algorithm, generation_id, projection_revision, version, basis_json, generated_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			(instance_id, user_name, space_hash, algorithm, generation_id, projection_revision, version, basis_json, generated_at,
+				topics_json, links_json)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			s.Settings.Memos.InstanceID, s.Settings.Memos.User, snapshot.space, mapAlgorithm, snapshot.generation,
-			snapshot.revision, layout.version, string(basis), generatedAt.Format(time.RFC3339Nano)); err != nil {
+			snapshot.revision, layout.version, string(basis), generatedAt.Format(time.RFC3339Nano), string(topics), string(links)); err != nil {
 			return err
 		}
 		for _, point := range layout.points {

@@ -199,7 +199,7 @@ async function cleanupResources() {
     try { await removeNamedContainer(name); } catch { errors.push(`删除 ${name} 失败`); }
   }
   try {
-    await compose(['down', '--volumes', '--remove-orphans', '--timeout', '10'], { cleanup: true });
+    await compose(['--profile', '*', 'down', '--volumes', '--remove-orphans', '--timeout', '10'], { cleanup: true });
   } catch { errors.push('compose down 失败'); }
   if (errors.length) throw new Error(errors.join('; '));
   active = false;
@@ -248,12 +248,20 @@ async function runScenario(kind) {
   writeEnv(values);
   active = true;
   evidence.scenarios.push({ scenario: kind, project, url, sourceURL });
+  await check('布局服务由 stargazing profile 独立启用', async () => {
+    const base = (await compose(['config', '--services'])).split(/\s+/);
+    assert.ok(base.includes('moerise') && base.includes('web') && !base.includes('layout'));
+    assert.equal(base.includes('memos'), kind === 'bundled');
+    const enabled = (await compose(['--profile', 'stargazing', 'config', '--services'])).split(/\s+/);
+    assert.ok(enabled.includes('layout'));
+  });
   if (!skipBuild && !buildAttempted) {
-    await check('构建 Core 与 Web', async () => {
+    await check('构建 Core、Web 与布局服务', async () => {
       buildAttempted = true;
-      await compose(['build', 'moerise', 'web'], { timeout: 1_200_000 });
+      await compose(['build', 'moerise', 'web', 'layout'], { timeout: 1_200_000 });
       evidence.images = {};
-      for (const image of [`ghcr.io/fermin214/moerise:${imageTag}`, `ghcr.io/fermin214/moerise-web:${imageTag}`]) {
+      for (const image of [`ghcr.io/fermin214/moerise:${imageTag}`, `ghcr.io/fermin214/moerise-web:${imageTag}`,
+        `ghcr.io/fermin214/moerise-layout:${imageTag}`]) {
         evidence.images[image] = (await docker(['image', 'inspect', '--format', '{{.Id}}', image])).trim();
       }
     });
@@ -299,7 +307,7 @@ async function runScenario(kind) {
     values.MOERISE_MEMOS_USER = me.user.name;
     values.MOERISE_MEMOS_TOKEN = pat;
     writeEnv(values);
-    await compose(['up', '-d', '--no-build', 'moerise', 'web']);
+    await compose(['up', '-d', '--no-build', 'moerise', 'web', 'layout']);
     await ready(url);
   });
 
@@ -438,11 +446,38 @@ async function runScenario(kind) {
       assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1));
       screenshots.set(`browser-${kind}-mobile.png`, await page.screenshot({ fullPage: true }));
       await page.reload(); await card.waitFor();
+      await page.locator('#navigation-toggle').click();
       await page.locator('#user-menu').click(); await page.locator('#logout').click();
       await page.locator('#login-form').waitFor({ state: 'visible' });
       assert.equal(await page.locator('#notes article').count(), 0);
       assert.deepEqual(pageErrors, []);
     } finally { await browser.close(); }
+  });
+  await check('关闭观星并停用布局容器，Core/Web 继续运行且可以恢复', async () => {
+    const embedding = saved.settings.embedding;
+    saved = (await api('PATCH', '/api/app/v1/settings', {
+      version: saved.version, settings: { stargazing: { enabled: false } },
+    })).value;
+    assert.deepEqual(saved.settings.embedding, embedding);
+    await compose(['stop', 'layout']);
+    await compose(['up', '-d', '--no-build']);
+    await ready(url);
+    const layout = (await compose(['--profile', 'stargazing', 'ps', '--all', '--quiet', 'layout'])).trim();
+    assert.ok(layout);
+    assert.equal((await docker(['inspect', '--format', '{{.State.Running}}', layout])).trim(), 'false');
+    const map = (await api('GET', '/api/app/v1/map')).value;
+    assert.equal(map.status, 'disabled');
+    assert.equal(map.disabled_reason, 'stargazing');
+    assert.deepEqual(map.points, []);
+    assert.equal((await api('GET', '/api/app/v1/session')).value.stargazing_enabled, false);
+    assert.equal((await api('POST', '/api/app/v1/map/rebuild', {}, 409)).value.error.code, 'STARGAZING_DISABLED');
+    await retained();
+    await compose(['--profile', 'stargazing', 'up', '-d', '--no-build', 'layout']);
+    saved = (await api('PATCH', '/api/app/v1/settings', {
+      version: saved.version, settings: { stargazing: { enabled: true } },
+    })).value;
+    assert.equal((await api('GET', '/api/app/v1/session')).value.stargazing_enabled, true);
+    assert.equal((await api('GET', '/api/app/v1/map')).value.disabled_reason, 'embedding');
   });
   await check('停止 Core 并重建索引后保留产品状态', async () => {
     await compose(['stop', 'moerise']);
@@ -567,7 +602,8 @@ try {
     }
     if (buildAttempted) {
       try {
-        for (const image of [`ghcr.io/fermin214/moerise:${imageTag}`, `ghcr.io/fermin214/moerise-web:${imageTag}`]) {
+        for (const image of [`ghcr.io/fermin214/moerise:${imageTag}`, `ghcr.io/fermin214/moerise-web:${imageTag}`,
+          `ghcr.io/fermin214/moerise-layout:${imageTag}`]) {
           const found = await docker(['image', 'ls', '--quiet', image], { cleanup: true });
           if (found) await docker(['image', 'rm', image], { cleanup: true });
         }

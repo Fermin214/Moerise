@@ -96,13 +96,44 @@ type Note struct {
 }
 
 type MapPoint struct {
-	Name       string   `json:"name"`
-	SourceHash string   `json:"source_hash"`
-	X          float64  `json:"x"`
-	Y          float64  `json:"y"`
-	Semantic   bool     `json:"semantic"`
-	Tags       []string `json:"tags"`
+	Name       string      `json:"name"`
+	SourceHash string      `json:"source_hash"`
+	X          float64     `json:"x"`
+	Y          float64     `json:"y"`
+	Semantic   bool        `json:"semantic"`
+	Tags       []string    `json:"tags"`
+	Stellar    *MapStellar `json:"stellar,omitempty"`
 	vectorHash string
+}
+
+type MapStellar struct {
+	Seed       float64 `json:"seed"`
+	Role       string  `json:"role"`
+	Radius     float64 `json:"radius"`
+	Luminosity float64 `json:"luminosity"`
+}
+
+type MapTopic struct {
+	ID        string        `json:"id"`
+	Label     string        `json:"label"`
+	X         float64       `json:"x"`
+	Y         float64       `json:"y"`
+	Members   []string      `json:"members"`
+	Districts []MapDistrict `json:"districts,omitempty"`
+}
+
+type MapDistrict struct {
+	ID      string   `json:"id"`
+	Label   string   `json:"label"`
+	X       float64  `json:"x"`
+	Y       float64  `json:"y"`
+	Members []string `json:"members"`
+}
+
+type MapLink struct {
+	Source string  `json:"source"`
+	Target string  `json:"target"`
+	Weight float64 `json:"weight"`
 }
 
 type MapResponse struct {
@@ -114,6 +145,10 @@ type MapResponse struct {
 	ProjectionRevision int64      `json:"projection_revision"`
 	GeneratedAt        string     `json:"generated_at,omitempty"`
 	Points             []MapPoint `json:"points"`
+	Topics             []MapTopic `json:"topics"`
+	Links              []MapLink  `json:"links"`
+	UpdateState        string     `json:"update_state,omitempty"`
+	DisabledReason     string     `json:"disabled_reason,omitempty"`
 }
 
 type CreateNote struct {

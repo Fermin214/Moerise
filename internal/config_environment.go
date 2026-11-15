@@ -41,6 +41,7 @@ func (s *Settings) loadEnvironment() error {
 		{"REVIEW_INCLUDE_ARCHIVED", &s.Review.IncludeArchived},
 		{"NOTIFICATIONS_ENABLED", &s.Notifications.Enabled},
 		{"NOTIFICATIONS_TIMES", &s.Notifications.Times},
+		{"STARGAZING_ENABLED", &s.Stargazing.Enabled},
 		{"CHANNEL_KIND", &s.Channel.Kind},
 		{"FEISHU_APP_ID", &s.Channel.AppID},
 		{"FEISHU_APP_SECRET", &s.Channel.AppSecret},

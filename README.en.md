@@ -6,7 +6,7 @@
 
 ---
 
-Moerise uses [Memos](https://usememos.com/) as its underlying note storage, providing an enhanced personal knowledge experience around capturing, reading, reviewing, and reflective thinking. It complements Memos with a modern bilingual Web interface, hybrid full-text and vector search, an exploratory "Random Walk", a 2D "Cognitive Map", context-aware AI conversations, and low-friction multi-channel "Daily Reviews" (via Telegram and Feishu).
+Moerise uses [Memos](https://usememos.com/) as its note storage, with a bilingual Web interface, hybrid full-text and vector search, and four sections: Review, Walk, Insights, and Stargazing. Stargazing presents notes as semantic star clusters; Review supports scheduled Telegram and Feishu delivery.
 
 Your raw notes, tags, and media attachments always remain authoritative inside Memos. Moerise reads and writes exclusively through Memos' official APIs and preserves the content you enter.
 
@@ -20,16 +20,17 @@ Your raw notes, tags, and media attachments always remain authoritative inside M
 - 🔍 **Dual-Engine Search**
   - Live keyword filtering in the timeline, plus SQLite FTS5 search with Chinese segmentation through machine REST/MCP and hybrid search.
   - Optional vector embeddings (supporting OpenAI-compatible providers and Alibaba Bailian) enabling semantic search and Reciprocal Rank Fusion (RRF) hybrid retrieval.
-- 🧭 **Random Walk**
+- 🧭 **Walk**
   - Break free from rigid folder hierarchies and tag silos: wander through related notes starting from an arbitrary note or a random seed.
   - Controlled semantic sampling with single-walk deduplication to spark unexpected cross-domain associations.
-- 🗺️ **Cognitive Map**
-  - Dimensionally projects high-dimensional note vectors onto an interactive 2D map, visualizing thematic clusters and thought patterns.
-  - Builds snapshots in the background, combining ordinary changes at 24-hour intervals; supports pan/zoom and direct note opening.
-- 💬 **Context-Aware AI Insights**
+- ✨ **Stargazing**
+  - Balanced UMAP projects existing note embeddings into semantic star clusters, with clear star cores and subtle light derived from actual density.
+  - Places new notes incrementally while keeping unchanged notes fixed. Supports chart and photographic rendering, pan, zoom, fullscreen, and live note reading.
+  - A private layout service computes background snapshots. See the [Stargazing guide](docs/STARGAZING.md).
+- 💬 **Insights**
   - Handpick any combination of notes as contextual material to engage in streaming multi-turn dialogues, critique, and brainstorming.
   - Compatible with OpenAI Chat Completions, OpenAI Responses, and Anthropic Messages protocols; supports customizable prompt templates and one-click saving back to Memos.
-- 📬 **Stress-Free Daily Review**
+- 📬 **Review**
   - Randomly selects older notes based on configurable maturity delays (e.g. at least 3 days old) and recent repetition filters.
   - Saves a fixed full-day plan distributed across configured time slots; no unread badges, streaks, or mandatory checklist pressures.
   - Optional scheduled delivery through **Telegram bots** or **Feishu bots / webhooks**.
@@ -58,6 +59,7 @@ flowchart LR
     Core -->|"Official API / Sync"| Memos["Official Memos (0.31.x)"]
     Core --> State["state.sqlite3 (Application State)"]
     Core --> Index["index.sqlite3 (Rebuildable Indexes)"]
+    Core -->|"Existing vectors / Background layout"| Layout["Private Python Layout Service"]
     Core -.-> Embedding["Embedding Provider (Optional)"]
     Core -.-> LLM["LLM Provider (Optional)"]
 ```
@@ -112,9 +114,13 @@ openssl rand -base64 32  # MOERISE_STATE_ENCRYPTION_KEY
 ### 2. Start Moerise
 
 ```bash
-docker compose pull moerise web
+docker compose pull moerise web layout
 docker compose up -d
 ```
+
+For source deployments, use `docker compose up -d --build` to build Core, Web, and the layout service together.
+
+The `.env.example` enables bundled Memos and the layout service through the `memos,stargazing` profiles. To disable stargazing, turn off **Settings → General → Enable stargazing**, remove the `stargazing` profile, and run `docker compose stop layout`. Semantic search and walks remain available. See the [Operations Guide](docs/OPERATIONS.md#观星按需启用) to enable it again.
 
 Once running, navigate to `http://localhost:3000` and sign in using your Memos username and password.
 
@@ -131,6 +137,7 @@ Once running, navigate to `http://localhost:3000` and sign in using your Memos u
 | **Setup & Operations** | [Getting Started](docs/GETTING-STARTED.md) | First-time setup, Docker Compose, and account binding |
 | | [Operations](docs/OPERATIONS.md) | Deployment, resource profiles, backups, and recovery procedures |
 | **User & Features** | [Web Interface](docs/WEB.md) | UI layout, bilingual settings, same-origin model, and security |
+| | [Stargazing](docs/STARGAZING.md) | Balanced UMAP, semantic themes, incremental coordinates, and star rendering |
 | | [Daily Review](docs/DAILY-REVIEW.md) | Review selection logic, schedule allocation, and reading flow |
 | | [Feishu Integration](docs/FEISHU.md) | Feishu bot note capture, review notifications, and webhooks |
 | | [Telegram Delivery](docs/TELEGRAM.md) | Scheduled review delivery via Telegram bots |

@@ -73,7 +73,7 @@ flowchart TD
 | 客户端适配 | `client_notes.go`、`client_attachments.go`、`client_search.go`、`client_discovery.go`、`client_chat.go`、`client_map.go` 将共享服务接到本人会话接口 |
 | 同步与存储 | `sync.go` 完整分页并发布投影；`store.go` 管理双库、绑定、任务与同步水位；`maintenance.go` 负责备份、恢复和索引重建 |
 | 检索与漫步 | `chunks.go` 分块并保留原文偏移；`search_index.go` 维护 FTS5；`search.go` 混合排序；`related.go` 查找相关笔记；`discovery.go` 选择漫步候选；`discovery_api.go` 适配只读接口 |
-| 向量与地图 | `embedding.go` 适配向量协议；`vector_index.go` 构建和发布向量代次；`map_layout.go` 计算布局；`map_store.go` 持久化布局；`map.go` 管理后台快照与读取缓存 |
+| 向量与观星 | `embedding.go` 适配向量协议；`vector_index.go` 发布向量代次；`map_stars.go` 调用 `services/layout/`；`map_stars_store.go` 保存快照；`map.go` 调度与缓存；`map_layout.go`、`map_store.go` 读取旧 PCA 快照 |
 | 每日回顾 | `reviews.go` 选择笔记并读取计划；`review_plans.go` 冻结规则与时段分配；`reviews_api.go` 提供只读查询 |
 | AI 聊天 | `chat_selection.go` 解析所选材料；`chat.go` 编排生成；`chat_store.go` 保存会话和消息；`llm*.go` 适配模型协议与错误；`models_api.go` 提供模型诊断 |
 | 通知与渠道 | `notifications.go` 管理调度、发送尝试和结果确认；`notification_channels.go` 绑定任务接收方；`review_delivery.go` 生成有序回顾分片；`feishu_delivery.go`、`feishu_review_parts.go`、`telegram_delivery.go` 适配平台 |
@@ -88,7 +88,7 @@ flowchart TD
 | `web/src/app.js` | 页面启动、会话、笔记列表、编辑与附件交互 |
 | `shell.js` | 桌面与手机布局切换、导航侧栏、搜索展开与触控手势 |
 | `routes.js`、`draft.js`、`errors.js` | 导航状态、草稿恢复与错误文案 |
-| `settings.js`、`insights.js`、`map.js` | 按需加载的设置、AI 洞察和地图页面 |
+| `settings.js`、`insights.js`、`map.js` | 按需加载的设置、洞察和观星页面；`map-stars-scene.js`、`map-star-paint.js` 绘制星图 |
 | `chat-stream.js`、`markdown.js` | SSE 消息解析与 Markdown 渲染 |
 | `i18n.js`、`en.js` | 语言选择、消息绑定与英语翻译 |
 | `styles.css`、`shell.css`、`memos.css` | 应用样式入口、主界面布局与 Memos 登录界面样式 |

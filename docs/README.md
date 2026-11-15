@@ -6,6 +6,7 @@
 | 快速上手 | [指南](GETTING-STARTED.md) |
 | 运行与恢复 | [指南](OPERATIONS.md) |
 | Web 界面 | [指南](WEB.md) |
+| 观星 | [布局、增量快照与渲染](STARGAZING.md) |
 | 每日回顾 | [指南](DAILY-REVIEW.md) |
 | 通知调度 | [指南](NOTIFICATIONS.md) |
 | 飞书接入 | [指南](FEISHU.md) |
@@ -19,6 +20,8 @@
 | API v1 | [规范](API-V1.md) |
 | 代码导览 | [指南](CODEBASE.md) |
 | 开发脚本 | [指南](../scripts/README.md) |
+| 群星布局实验 | [独立实验工具](../experiments/stars/README.md) |
 | 开发指南 | [指南](DEVELOPMENT.md) |
+| Android 开发计划 | [v0.1.0 范围、里程碑与验收](ROADMAP.md#1-阶段四android-客户端) |
 | 参与贡献 | [指南](../CONTRIBUTING.md) |
 | 路线图 | [路线图](ROADMAP.md) |

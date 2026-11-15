@@ -99,7 +99,6 @@ export function createInsightsPage({ sessionRequest, csrfToken, renewCSRF, handl
       setAttr(remove, 'aria-label', l("移除这条笔记")); remove.disabled = busy || running || stopping || deleting || conflicted || !!pendingGenerate;
       chip.append(open, remove); list.append(chip);
     }
-    if (!selected.size) list.append(el('span', 'sub', l("还没有添加笔记")));
     controls();
   }
   function renderTurns() {
@@ -110,7 +109,6 @@ export function createInsightsPage({ sessionRequest, csrfToken, renewCSRF, handl
     if (!turns.length) {
       turnNodes.clear(); list.replaceChildren();
       const empty = el('div', 'insight-empty');
-      empty.append(el('p', 'sub', l("添加材料后，一键洞察，或直接提问。")));
       const start = button(l("一键洞察"), 'save', () => generate('insight'));
       start.dataset.generate = 'insight'; empty.append(start); list.append(empty);
       controls(); return;
@@ -215,7 +213,7 @@ export function createInsightsPage({ sessionRequest, csrfToken, renewCSRF, handl
     const ticket = disposed, names = [...selected.keys()];
     if (!chat) {
       if (!names.length) return;
-      pendingCreate ||= { request_id: crypto.randomUUID(), title: resolveText(l("AI 洞察")), names };
+      pendingCreate ||= { request_id: crypto.randomUUID(), title: resolveText(l("洞察")), names };
       const created = await writeSelection('/chats', 'POST', pendingCreate, ticket);
       if (!current(ticket)) throw new DOMException('Stale chat', 'AbortError');
       chat = created; pendingCreate = null; sourceWarning = ''; warning(); setURL(); renderTurns();
@@ -390,7 +388,7 @@ export function createInsightsPage({ sessionRequest, csrfToken, renewCSRF, handl
           seen.add(value.id);
           const row = button('', `ent insight-history-row${value.id === chat?.id ? ' on' : ''}`,
             () => navigate(`/insights?${new URLSearchParams({ chat: value.id })}`));
-          const label = el('span', '', value.preview_kind === 'insight' ? l("一键洞察") : value.preview || value.title || l("AI 洞察"));
+          const label = el('span', '', value.preview_kind === 'insight' ? l("一键洞察") : value.preview || value.title || l("洞察"));
           label.append(el('small', 'sub insight-history-date', l("{0} · {1} 条材料", { 0: formatTime(value.updated_at), 1: value.material_count })));
           row.append(label); list.append(row);
         }
@@ -687,13 +685,13 @@ export function createInsightsPage({ sessionRequest, csrfToken, renewCSRF, handl
       active = true;
       root = el('div', 'stage insights-page');
       root.innerHTML = `<div class="insight-top" data-chat="top">
-        <div class="insight-heading"><h1 class="vt" data-i18n="AI 洞察">AI 洞察</h1><div class="insight-heading-right"><span class="sub" data-i18n="带笔记上下文的对话">带笔记上下文的对话</span>
-          <div class="mw insight-session"><button class="btn" type="button" data-chat="menu" aria-label="会话" aria-haspopup="menu" aria-expanded="false" data-i18n-aria-label="会话" data-i18n="会话 ▾">会话 ▾</button>
+        <div class="insight-heading"><h1 class="vt" data-i18n="洞察">洞察</h1>
+          <div class="mw insight-session"><button class="btn" type="button" data-chat="menu" aria-label="会话" aria-haspopup="menu" aria-expanded="false" data-i18n-aria-label="会话"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"></path></svg></button>
             <div class="menu" data-chat="session-menu" role="menu" hidden>
               <button class="mi" type="button" role="menuitem" data-chat="new" data-i18n="新建会话">新建会话</button>
               <button class="mi" type="button" role="menuitem" data-chat="history" data-i18n="历史会话">历史会话</button>
               <button class="mi dg" type="button" role="menuitem" data-chat="delete" data-i18n="删除当前会话">删除当前会话</button>
-            </div></div></div></div>
+            </div></div></div>
         <div class="card insight-material-card"><div class="insight-material-header">
           <button class="btn insight-material-toggle" type="button" data-chat="material-toggle"></button>
           <button class="pbtn" type="button" data-chat="add" data-i18n="添加笔记">添加笔记</button>

@@ -23,6 +23,8 @@ Moerise 服务端提供两组 RESTful API 以及一个 Model Context Protocol (M
 | `GET` | `/api/app/v1/session` | 校验登录状态，返回用户身份、时区与会话过期时间。 |
 | `DELETE` | `/api/app/v1/session` | 登出并销毁会话，清除浏览器 Cookie。 |
 
+登录与会话读取均返回 `stargazing_enabled` 布尔值，供客户端控制观星入口；该字段与 Embedding 开关独立。
+
 ### 2. 笔记管理与时间线
 
 | 方法 | 路径 | 功能说明 |
@@ -36,14 +38,19 @@ Moerise 服务端提供两组 RESTful API 以及一个 Model Context Protocol (M
 | `GET` | `/api/app/v1/calendar` | 获取指定月份每天的笔记数量分布。 |
 | `GET`, `HEAD` | `/api/app/v1/notes/{memo_id}/attachments/{attachment_id}/content` | 受保护的媒体附件内容流，支持分段 Range 请求。 |
 
-### 3. 检索、漫步与认知地图
+### 3. 检索、漫步与观星
 
 | 方法 | 路径 | 功能说明 |
 | --- | --- | --- |
 | `POST` | `/api/app/v1/search` | 默认 `keyword`，按创建时间返回 Memos 实时筛选结果；`semantic` 与 `hybrid` 使用索引召回，按相关度分页。 |
 | `POST` | `/api/app/v1/walks/start` | 启动一次随机漫步，可指定起始笔记或由系统随机挑选起点。 |
 | `POST` | `/api/app/v1/walks/next` | 提交走过的路径，基于语义关联抽取未访问过的下一篇漫步笔记。 |
-| `GET` | `/api/app/v1/map` | 读取 2D 认知地图最新预建快照（含全量点位投影坐标与标签）。 |
+| `GET` | `/api/app/v1/map` | 读取观星快照，包含完整点集 `points`、语义主题 `topics` 和笔记关联 `links`；主题可包含语义子主题 `districts`。 |
+| `POST` | `/api/app/v1/map/rebuild` | 排队重新生成星图与主题，返回 `202 {"status":"queued"}`；要求本人会话、同源与 CSRF 校验。 |
+
+观星使用均衡 UMAP，普通变化按一分钟间隔合并，未变笔记复用坐标。`stellar` 定义可复现的星体属性；`layout_frame` 标识坐标框架，主动重建或更换向量空间时变化；更新期间 `update_state` 可为 `building` 或 `unavailable`，已发布快照继续可读。笔记原文通过笔记接口实时读取。字段定义见 [OpenAPI](../internal/openapi.json)，布局说明见[观星](STARGAZING.md)。
+
+`stargazing.enabled=false` 时，读取返回 `status: disabled`、`disabled_reason: stargazing` 和空点集；重建返回 `409 STARGAZING_DISABLED`。Embedding 关闭时对应 `disabled_reason: embedding` 与 `409 EMBEDDING_DISABLED`。关闭不删除已发布快照或向量。
 
 ### 4. 每日回顾
 

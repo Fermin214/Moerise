@@ -17,15 +17,22 @@ node scripts/acceptance/check-compose.mjs --browser
 
 | 脚本 | 覆盖内容 |
 | --- | --- |
-| `check-compose.mjs` | Compose 构建、启动、健康检查、代理、会话、持久化与备份恢复；`--browser` 增加浏览器流程 |
+| `check-compose.mjs` | Compose 构建、启动、健康检查、代理、会话、观星开关与可选布局服务、持久化与备份恢复；`--browser` 增加浏览器流程 |
 | `check-discovery.mjs` | Web 每日回顾、语义漫步、只读机器接口和模型异常 |
 | `check-chat.mjs` | 材料选择、流式回复、追问、保存成笔记与重启恢复 |
 | `check-models.mjs` | 设置热更新、模型诊断、多种 LLM/Embedding 协议与失败响应 |
-| `check-map.mjs` | 真实点集、浏览器画布交互、快照刷新、来源变化与备份恢复 |
+| `check-stars.mjs` | 既有真实向量、UMAP 快照、浏览器星图、API/绘制延迟、内存、增量与主动重建 |
+| `check-map.mjs` | `check-stars.mjs` 的兼容入口，参数相同 |
 
-除 Compose 脚本的可选浏览器模式外，其余联合验收都需要 `MOERISE_PLAYWRIGHT_MODULE`。若使用已安装的 Chrome，可设置 `MOERISE_PLAYWRIGHT_CHANNEL=chrome`。地图脚本需要 Linux，`MOERISE_MAP_SCALE` 可设为 100 至 10000，默认 1000。
+除 Compose 脚本的可选浏览器模式外，其余联合验收都需要 `MOERISE_PLAYWRIGHT_MODULE`。若使用已安装的 Chrome，可设置 `MOERISE_PLAYWRIGHT_CHANNEL=chrome`。观星脚本需要 Linux、已运行的布局服务以及顺序对应的笔记 JSON 和 Float32 小端向量：
 
-脚本使用独立容器、测试账号和虚构笔记。模型服务由本地替身提供，不需要真实模型凭据。报告和截图写入 `.local/` 下各自的随机目录，退出时清理所创建的服务和测试数据。Compose 脚本支持 `--help`；`--keep` 在成功后保留测试环境，`--skip-build` 复用已构建镜像。
+```bash
+node scripts/acceptance/check-stars.mjs \
+  --notes .local/corpus/notes.json \
+  --vectors .local/corpus/vectors.f32 --dimensions 1024
+```
+
+脚本使用独立容器与测试账号。观星导入指定语料并复用已有向量；其他脚本使用虚构笔记。模型服务由本地替身提供，不需要真实模型凭据。报告和截图写入 `.local/` 下各自的随机目录。观星脚本失败时保留来源容器，使用相同语料参数加 `--resume .local/stars-acceptance-<id>` 可复用已导入的笔记、状态与索引。成功退出后清理来源容器，`--keep` 可保留它。Compose 脚本支持 `--help`；`--keep` 在成功后保留测试环境，`--skip-build` 复用已构建镜像。
 
 ---
 

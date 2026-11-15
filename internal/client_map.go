@@ -11,6 +11,13 @@ func isMapRead(r *http.Request) bool {
 }
 
 func (a *ClientAPI) mapRoute(r *http.Request) (any, int, error) {
+	if r.URL.Path == "/api/app/v1/map/rebuild" {
+		if r.Method != http.MethodPost {
+			return nil, 0, failure("METHOD_NOT_ALLOWED", "Method Not Allowed", 405, false)
+		}
+		err := a.app.Map.Rebuild(r.Context())
+		return map[string]string{"status": "queued"}, http.StatusAccepted, err
+	}
 	if r.Method != http.MethodGet {
 		return nil, 0, failure("METHOD_NOT_ALLOWED", "Method Not Allowed", 405, false)
 	}

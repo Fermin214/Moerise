@@ -3,13 +3,77 @@ package moerise
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 )
+
+func TestClientStargazingTogglePreservesIndexAndSnapshot(t *testing.T) {
+	api, fixture := clientFixture(t)
+	cookie, identity := settingsSession(t, api)
+	clientMapIndex(t, api)
+	store := api.app.Store
+	before, err := api.app.Map.Read(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	vectors, err := store.VectorStatusContext(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	version := store.productVersion
+	toggle := func(enabled bool) {
+		t.Helper()
+		body := fmt.Sprintf(`{"version":%d,"settings":{"stargazing":{"enabled":%t}}}`, version, enabled)
+		reply := clientCall(api, "PATCH", clientSettingsPath, body, cookie, fixture.settings.Web.PublicOrigin, identity.CSRFToken)
+		if reply.Code != 200 {
+			t.Fatalf("toggle: %d %s", reply.Code, reply.Body)
+		}
+		version++
+		validateAPISchema(t, clientChatSchema(t, "SettingsView"), reply.Body.Bytes())
+	}
+	toggle(false)
+	reply := clientCall(api, "GET", "/api/app/v1/map", "", cookie, "", "")
+	var disabled MapResponse
+	if reply.Code != 200 || json.Unmarshal(reply.Body.Bytes(), &disabled) != nil ||
+		disabled.Status != "disabled" || disabled.DisabledReason != "stargazing" || len(disabled.Points) != 0 {
+		t.Fatalf("disabled response: %d %s", reply.Code, reply.Body)
+	}
+	validateAPISchema(t, clientChatSchema(t, "MapResponse"), reply.Body.Bytes())
+	assertSettingsError(t, clientCall(api, "POST", "/api/app/v1/map/rebuild", "", cookie,
+		fixture.settings.Web.PublicOrigin, identity.CSRFToken), 409, "STARGAZING_DISABLED")
+	api.app.Map.generate = func(context.Context, mapSnapshot, *mapLayout) (*mapLayout, error) {
+		t.Error("disabled stars scheduled a layout")
+		return nil, fmt.Errorf("unexpected layout")
+	}
+	if err := api.app.Map.Update(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	reply = clientCall(api, "GET", "/api/app/v1/session", "", cookie, "", "")
+	var session SessionIdentity
+	if reply.Code != 200 || json.Unmarshal(reply.Body.Bytes(), &session) != nil || session.StargazingEnabled {
+		t.Fatalf("disabled session: %d %s", reply.Code, reply.Body)
+	}
+	validateAPISchema(t, clientChatSchema(t, "ClientSession"), reply.Body.Bytes())
+	loaded, err := loadPersistedProduct(fixture.settings)
+	if err != nil || loaded.Stargazing.Enabled || !loaded.Embedding.Enabled {
+		t.Fatalf("persisted independent toggle: %+v %v", loaded.Stargazing, err)
+	}
+	toggle(true)
+	restored, err := api.app.Map.Read(t.Context())
+	if err != nil || !reflect.DeepEqual(before, restored) {
+		t.Fatalf("snapshot changed: %+v %v", restored, err)
+	}
+	after, err := store.VectorStatusContext(t.Context())
+	if err != nil || !reflect.DeepEqual(vectors, after) || !store.Settings.Embedding.Enabled {
+		t.Fatalf("embedding index changed: %+v %v", after, err)
+	}
+}
 
 func TestClientMapContractAndMachineIsolation(t *testing.T) {
 	api, fixture := clientFixture(t)

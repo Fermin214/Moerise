@@ -5,6 +5,7 @@ import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { resolve } from 'node:path';
 import { BlockList, isIP } from 'node:net';
+import { createGzip } from 'node:zlib';
 
 const prefix = '/api/app/v1';
 const pages = new Set(['/', '/archived', '/review', '/walk', '/insights', '/map', '/settings']);
@@ -23,6 +24,12 @@ const assets = new Map([
   ['/settings.js', ['settings.js', 'text/javascript; charset=utf-8']],
   ['/insights.js', ['insights.js', 'text/javascript; charset=utf-8']],
   ['/map.js', ['map.js', 'text/javascript; charset=utf-8']],
+  ['/map-stars-scene.js', ['map-stars-scene.js', 'text/javascript; charset=utf-8']],
+  ['/map-star-paint.js', ['map-star-paint.js', 'text/javascript; charset=utf-8']],
+  ['/map-scene.js', ['map-scene.js', 'text/javascript; charset=utf-8']],
+  ['/map-regions.js', ['map-regions.js', 'text/javascript; charset=utf-8']],
+  ['/map-paint.js', ['map-paint.js', 'text/javascript; charset=utf-8']],
+  ['/map-worker.js', ['map-worker.js', 'text/javascript; charset=utf-8']],
   ['/chat-stream.js', ['chat-stream.js', 'text/javascript; charset=utf-8']],
   ['/styles.css', ['styles.css', 'text/css; charset=utf-8']],
   ['/shell.css', ['shell.css', 'text/css; charset=utf-8']],
@@ -100,6 +107,73 @@ function acceptedEncodings(header = '') {
   return ['br', 'gzip', 'identity'].filter(name => quality(name) > 0).sort((a, b) => quality(b) - quality(a));
 }
 
+export function traceResponse(req, res, log, { interval = 5000 } = {}) {
+  const started = performance.now(), socket = res.socket;
+  const initialSocketBytes = socket?.bytesWritten || 0;
+  const requestId = randomUUID();
+  const clientId = /^[a-f0-9-]{36}$/.test(req.headers['x-moerise-trace'] || '') ? req.headers['x-moerise-trace'] : undefined;
+  let bodyBytes = 0, upstreamBytes = 0, firstBody = null, lastBody = null;
+  let blockedAt = null, blockedMs = 0, blockedWrites = 0, finished = false, upstreamEnded = false;
+  const elapsed = () => Math.round((performance.now() - started) * 100) / 100;
+  function event(event, details = {}) {
+    try {
+      log({ time: new Date().toISOString(), source: 'web', event, request_id: requestId, client_id: clientId,
+        path: req.url.split('?')[0], method: req.method, elapsed_ms: elapsed(),
+        status: res.headersSent ? res.statusCode : null, body_bytes: bodyBytes, upstream_bytes: upstreamBytes,
+        upstream_ended: upstreamEnded, first_body_ms: firstBody, last_body_ms: lastBody,
+        socket_bytes: Math.max(0, (socket?.bytesWritten || initialSocketBytes) - initialSocketBytes),
+        queued_bytes: res.writableLength, need_drain: res.writableNeedDrain,
+        blocked_writes: blockedWrites, blocked_ms: Math.round(blockedMs + (blockedAt === null ? 0 : performance.now() - blockedAt)),
+        ...details });
+    } catch { /* Diagnostic output must not interrupt the response. */ }
+  }
+  function count(chunk, encoding) {
+    if (chunk === undefined || chunk === null || typeof chunk === 'function') return;
+    bodyBytes += Buffer.byteLength(chunk, typeof encoding === 'string' ? encoding : undefined);
+    lastBody = elapsed();
+    if (firstBody === null) { firstBody = lastBody; event('body_first_chunk'); }
+  }
+  const write = res.write, end = res.end;
+  res.write = function (chunk, ...args) {
+    count(chunk, args[0]);
+    const ready = write.call(this, chunk, ...args);
+    if (!ready && blockedAt === null) { blockedAt = performance.now(); blockedWrites++; }
+    return ready;
+  };
+  res.end = function (chunk, ...args) { count(chunk, args[0]); return end.call(this, chunk, ...args); };
+  const timer = setInterval(() => event('progress'), interval);
+  timer.unref();
+  function drain() {
+    if (blockedAt !== null) { blockedMs += performance.now() - blockedAt; blockedAt = null; }
+  }
+  res.on('drain', drain);
+  res.on('finish', () => {
+    finished = true; drain(); clearInterval(timer); event('response_finish');
+  });
+  res.on('close', () => {
+    drain(); clearInterval(timer); event('response_close', { write_completed: finished });
+  });
+  res.on('error', err => event('response_error', { error: err.code || err.name }));
+  req.on('aborted', () => event('request_aborted'));
+  res.setHeader('X-Request-ID', requestId);
+  event('request_start', {
+    remote_address: req.socket.remoteAddress,
+    forwarded_for: String(req.headers['x-forwarded-for'] || '').slice(0, 256),
+    device: /mobile|android|iphone|ipad/i.test(req.headers['user-agent'] || '') ? 'mobile' : 'desktop',
+    accept_encoding: String(req.headers['accept-encoding'] || '').slice(0, 128),
+  });
+  return {
+    event, requestId, elapsed,
+    upstream(response) {
+      event('upstream_headers', { upstream_status: response.statusCode, content_length: response.headers['content-length'] || null });
+      response.on('data', chunk => { upstreamBytes += chunk.length; });
+      response.on('end', () => { upstreamEnded = true; event('upstream_end'); });
+      response.on('aborted', () => event('upstream_aborted'));
+      response.on('close', () => event('upstream_close', { upstream_complete: response.complete }));
+    },
+  };
+}
+
 export function createWebServer({
   coreOrigin = process.env.CORE_ORIGIN || 'http://127.0.0.1:8787',
   publicOrigin = process.env.PUBLIC_ORIGIN || 'http://localhost:3000',
@@ -107,6 +181,7 @@ export function createWebServer({
   proxyTimeout = 60_000,
   chatProxyTimeout = 125_000,
   healthTimeout = 2_000,
+  requestLogger,
 } = {}) {
   const core = origin(coreOrigin, 'CORE_ORIGIN');
   const publicURL = webOrigin(publicOrigin);
@@ -154,6 +229,8 @@ export function createWebServer({
       return;
     }
     if (path === prefix || path.startsWith(`${prefix}/`)) {
+      const trace = ['/api/app/v1/map', '/api/app/v1/session'].includes(path) && typeof requestLogger === 'function'
+        ? traceResponse(req, res, requestLogger) : null;
       if (req.headers.authorization !== undefined) {
         error(res, 403, 'AUTHORIZATION_REJECTED', '客户端 API 仅使用登录会话，不接受 Authorization 请求头。');
         return;
@@ -177,6 +254,7 @@ export function createWebServer({
         protocol: core.protocol, hostname: core.hostname.replace(/^\[|\]$/g, ''),
         port: core.port || undefined, method: req.method, path: target, headers,
       }, response => {
+        trace?.upstream(response);
         res.statusCode = response.statusCode;
         const connectionHeaders = new Set(String(response.headers.connection || '').split(',').map(name => name.trim().toLowerCase()));
         for (const [name, value] of Object.entries(response.headers)) {
@@ -186,12 +264,31 @@ export function createWebServer({
             res.setHeader(name, value);
           }
         }
-        response.on('error', () => res.destroy());
-        response.pipe(res);
+        if (trace) {
+          res.setHeader('X-Request-ID', trace.requestId);
+          res.setHeader('Server-Timing', `upstream;dur=${trace.elapsed()}`);
+        }
+        response.on('error', err => {
+          trace?.event('upstream_response_error', { error: err.code || err.name }); res.destroy();
+        });
+        if (req.method === 'GET' && path === '/api/app/v1/map' && response.statusCode === 200 &&
+            !response.headers['content-encoding'] && acceptedEncodings(req.headers['accept-encoding']).includes('gzip')) {
+          const compression = createGzip({ level: 1 });
+          res.removeHeader('Content-Length');
+          res.setHeader('Content-Encoding', 'gzip'); res.setHeader('Vary', 'Accept-Encoding');
+          compression.on('end', () => trace?.event('compression_end'));
+          compression.on('error', err => {
+            trace?.event('compression_error', { error: err.code || err.name }); res.destroy();
+          });
+          response.pipe(compression).pipe(res);
+        } else response.pipe(res);
       });
       const chatStream = req.method === 'POST' && /^\/api\/app\/v1\/chats\/[a-zA-Z0-9-]+\/messages$/.test(path);
-      upstream.setTimeout(chatStream ? chatProxyTimeout : proxyTimeout, () => upstream.destroy(new Error('timeout')));
-      upstream.on('error', () => {
+      upstream.setTimeout(chatStream ? chatProxyTimeout : proxyTimeout, () => {
+        trace?.event('upstream_timeout'); upstream.destroy(new Error('timeout'));
+      });
+      upstream.on('error', err => {
+        trace?.event('upstream_request_error', { error: err.code || err.message });
         if (res.destroyed) return;
         if (res.headersSent) res.destroy();
         else error(res, 502, 'CORE_UNAVAILABLE', '服务暂时无法连接，请重试；创建请求请继续使用原提交。');

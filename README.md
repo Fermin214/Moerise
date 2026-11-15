@@ -6,7 +6,7 @@
 
 ---
 
-Moerise 以 [Memos](https://usememos.com/) 为笔记数据底座，围绕记录、阅读、回顾与思考构建完整的增强体验。它为 Memos 补充了现代化的双语 Web 界面、全文与向量混合检索、打破笔记孤岛的“随机漫步”、全局思维可视化的“认知地图”、带上下文的 AI 深度对话，以及无压力的多渠道“每日回顾”（支持 Telegram 与飞书）。
+Moerise 以 [Memos](https://usememos.com/) 为笔记数据底座，提供双语 Web 界面、全文与向量混合检索，以及“回顾”“漫步”“洞察”“观星”四个栏目。观星将笔记呈现为语义星群；回顾支持 Telegram 与飞书定时推送。
 
 笔记原文、标签与附件始终保存在 Memos 原生数据库中，Moerise 通过官方 API 读写，按用户输入保存正文与附件。
 
@@ -20,16 +20,17 @@ Moerise 以 [Memos](https://usememos.com/) 为笔记数据底座，围绕记录�
 - 🔍 **双引擎智能检索**
   - 时间线支持实时关键词筛选；机器 REST/MCP 与混合搜索使用 SQLite FTS5 中文预分词索引。
   - 支持接入 OpenAI 兼容接口或阿里云百炼等向量模型（Embedding），提供语义搜索与基于 RRF 算法的混合检索。
-- 🧭 **随机漫步 (Random Walk)**
+- 🧭 **漫步 (Walk)**
   - 打破传统线性和标签分类的壁垒，从任意笔记或随机起点出发，基于语义相似度与受控随机抽样在笔记间漫游。
   - 单次漫步自动去重，激发跨主题的思想碰撞。
-- 🗺️ **认知地图 (Cognitive Map)**
-  - 将长期积累的笔记经高维向量降维投影至二维语义地图，直观呈现个人思考的重心、知识集群与主题脉络。
-  - 后台预建轻量快照，普通变化按 24 小时间隔合并更新，支持平移缩放与点击直达实时笔记。
-- 💬 **上下文 AI 洞察 (AI Insights)**
+- ✨ **观星 (Stargazing)**
+  - 均衡 UMAP 将已有笔记向量投影为语义星群，清晰星核与真实密度辉光呈现笔记的整体分布。
+  - 新增笔记增量定位，未变笔记保持原有位置；支持星图与摄影氛围、平移缩放、全屏及点星阅读原文。
+  - 布局在独立服务中后台计算，页面直接读取快照。算法与部署见[观星指南](docs/STARGAZING.md)。
+- 💬 **洞察 (Insights)**
   - 支持在 Web 界面中自由多选笔记作为上下文材料，与大语言模型展开流式对话、反思与深度追问。
   - 支持 OpenAI Chat Completions、OpenAI Responses 与 Anthropic Messages 协议；支持自定义 Prompt，将完整助手回复原样保存回 Memos。
-- 📬 **无压力每日回顾 (Daily Review)**
+- 📬 **回顾 (Review)**
   - 每日从符合条件的历史笔记中等概率随机抽取条目（支持成熟等待期与近期去重过滤）。
   - 采用全天固定计划与分时段分配策略；不设未读红点、不搞打卡激励，拒绝任务焦虑。
   - 支持定时推送到 **Telegram 机器人**或**飞书应用机器人 / Webhook**。
@@ -58,6 +59,7 @@ flowchart LR
     Core -->|"官方 API / 同步与读写"| Memos["官方 Memos (0.31.x)"]
     Core --> State["state.sqlite3 (业务状态)"]
     Core --> Index["index.sqlite3 (可重建索引)"]
+    Core -->|"已有向量 / 后台布局"| Layout["私有 Python 布局服务"]
     Core -.-> Embedding["向量服务 (可选)"]
     Core -.-> LLM["大语言模型 (可选)"]
 ```
@@ -112,9 +114,13 @@ openssl rand -base64 32  # MOERISE_STATE_ENCRYPTION_KEY
 ### 2. 启动完整服务
 
 ```bash
-docker compose pull moerise web
+docker compose pull moerise web layout
 docker compose up -d
 ```
+
+源码部署使用 `docker compose up -d --build`，同时构建 Core、Web 和布局服务。
+
+`.env.example` 默认通过 `memos,stargazing` profiles 启用内置 Memos 和布局服务。不使用观星时，在「设置 → 通用」关闭「启用观星」，移除 `stargazing` profile 并执行 `docker compose stop layout`。语义检索和漫步不受影响，恢复方式见[运行指南](docs/OPERATIONS.md#观星按需启用)。
 
 启动完成后，访问 `http://localhost:3000`，使用你的 Memos 账户名和密码直接登录 Moerise Web。
 
@@ -131,6 +137,7 @@ docker compose up -d
 | **入门与部署** | [快速上手](docs/GETTING-STARTED.md) | 从零安装与初始化流程 |
 | | [运行与恢复](docs/OPERATIONS.md) | 生产部署、配置参数、资源配置档位、数据备份与升级回滚 |
 | **功能指南** | [Web 界面](docs/WEB.md) | 界面交互、双语偏好、同源架构与安全模型 |
+| | [观星](docs/STARGAZING.md) | 均衡 UMAP、语义主题、增量坐标和星图渲染 |
 | | [每日回顾](docs/DAILY-REVIEW.md) | 回顾抽取算法、全天计划分时分配与无压力交互 |
 | | [飞书接入](docs/FEISHU.md) | 飞书应用机器人私聊速记与群 Webhook 定时推送 |
 | | [Telegram 接入](docs/TELEGRAM.md) | Telegram 机器人定时回顾推送配置 |

@@ -25,11 +25,12 @@ type SessionUser struct {
 }
 
 type SessionIdentity struct {
-	InstanceID string      `json:"instance_id"`
-	User       SessionUser `json:"user"`
-	Timezone   string      `json:"timezone"`
-	ExpiresAt  time.Time   `json:"expires_at"`
-	CSRFToken  string      `json:"csrf_token"`
+	InstanceID        string      `json:"instance_id"`
+	User              SessionUser `json:"user"`
+	Timezone          string      `json:"timezone"`
+	ExpiresAt         time.Time   `json:"expires_at"`
+	CSRFToken         string      `json:"csrf_token"`
+	StargazingEnabled bool        `json:"stargazing_enabled"`
 
 	sessionHash string
 	binding     string

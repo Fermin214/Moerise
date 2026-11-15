@@ -21,7 +21,8 @@ Moerise 是基于 Memos 的单用户自托管个人笔记增强服务。Moerise 
 | --- | --- | --- |
 | **官方 Memos (0.31.x)** | 原生数据存储底座：管理用户账户、笔记原文、`#标签`、图片与附件资源，执行原生权限校验。 | 独立存储（SQLite） |
 | **Moerise Core** | 业务核心引擎：通过官方 API 轮询同步 Memos，提供笔记读写、双库数据管理、检索与向量构建、回顾计划调度、AI 会话编排、渠道消息推送及外部 MCP 协议服务。 | Go 单体二进制、`state.sqlite3`、`index.sqlite3` |
-| **Moerise Web** | 现代化浏览器客户端：提供浅色两栏式界面、中英双语自适应、Markdown 编辑器、时间线组合筛选、认知地图交互及流式 AI 聊天。 | 静态资源 + 轻量 Node 同源反代服务 |
+| **Moerise Web** | 浏览器客户端：两栏式阅读界面、中英双语、Markdown 编辑器、时间线筛选、观星及流式 AI 聊天。 | 静态资源 + 轻量 Node 同源反代服务 |
+| **布局服务** | 均衡 UMAP、语义主题识别、增量定位与星体属性生成。 | Python 私有 HTTP 服务、独立模型与计算缓存卷 |
 | **消息渠道适配器** | 消息触达与便捷交互：Telegram 机器人（英文回顾推送）、飞书应用机器人（私聊双向速记与定时回顾）、飞书群 Webhook（定时回顾推送）。 | 由 Core 内部常驻工作线程驱动 |
 | **外部 MCP 服务** | 开放生态接入：提供符合 Model Context Protocol 标准的只读工具接口，供支持远程 MCP 的外部 Agent 检索与阅读笔记。 | `/mcp` 无会话 Streamable HTTP，JSON 响应 |
 
@@ -54,6 +55,7 @@ flowchart LR
     Core --> Index
     Worker -->|"轮询同步"| Memos
     Worker --> Index
+    Worker -->|"已有笔记向量"| Layout["Python 布局服务"]
     Core -->|"回顾推送"| Telegram["Telegram Bot API"]
     Core -.->|"查询向量"| Embedding["Embedding (可选)"]
     Worker -.->|"正文向量"| Embedding
@@ -84,16 +86,17 @@ flowchart LR
   - Core 将幂等键、内容哈希与分配的 `memoId` 记录在 `state.sqlite3` 中。
   - 遭遇网络抖动或超时重试时，系统识别相同幂等键，避免在 Memos 中创建重复笔记。
 
-### 3. 检索与认知地图
+### 3. 检索与观星
 
 - **双引擎混合检索**：
   - 中文关键词通道：采用 SQLite FTS5，对中文文本执行单字与相邻双字分词，准确匹配中文短语。
   - 语义检索通道：通过独立的 Embedding Provider 将文本分块向量化，计算余弦相似度。
   - 排序融合：利用 Reciprocal Rank Fusion (RRF, k=60) 算法将关键词、标签匹配与语义检索结果进行多通道打分融合。
-- **2D 认知地图算法**：
-  - 采用确定性二维主成分分析（PCA）投影算法，将高维笔记向量稳定降维到二维平面。
-  - 针对密集语义簇采用局部螺旋避让算法，防止点位在视觉上严重重叠。
-  - 向量索引就绪后在后台预建快照，普通变化按 24 小时间隔合并，未变时跳过计算。地图读取复用持久化快照，不调用模型；平移缩放在浏览器本地完成，点选节点再实时拉取 Memos 最新正文。
+- **观星布局**：
+  - 使用均衡 UMAP 将已有笔记向量降为二维；独立 10 维 UMAP 与 HDBSCAN 识别主题，并以原向量近邻验证，允许独立星体。
+  - 持久化模型与坐标框架；新增或向量变化的笔记增量定位，未变笔记复用坐标和星体属性。主动重新生成或更换模型空间时建立新框架。
+  - 普通变化按一分钟间隔后台合并，计算期间旧快照继续可读，不占用同步与向量构建名额。浏览器 Canvas 绘制清晰星核与真实密度辉光，点选后实时读取原文。
+  - 数据、迁移与服务边界见[观星](STARGAZING.md)。
 
 ### 4. 每日回顾与消息渠道
 
@@ -132,7 +135,7 @@ flowchart LR
 | `internal/reviews.go`, `review_plans.go` | 每日回顾抽样算法、全天计划生成与时段分配策略 |
 | `internal/search.go`, `search_index.go` | FTS5 预分词、向量扫描、余弦相似度与 RRF 混合融合算法 |
 | `internal/discovery.go` | 语义漫步候选抽取、单次漫步去重算法 |
-| `internal/map.go`, `map_layout.go`, `map_store.go` | 2D 认知地图 PCA 投影、局部螺旋避让与后台快照 |
+| `internal/map.go`, `map_stars.go`, `map_stars_store.go`, `services/layout/` | 观星调度、UMAP 增量布局、语义主题与持久化快照 |
 | `internal/chat.go`, `llm.go` | AI 洞察流式会话编排、上下文容量控制与多模型协议通信 |
 | `internal/embedding.go`, `vector_index.go` | 文本分块、向量批量生成、代次管理与索引维护 |
 | `internal/notifications.go`, `review_delivery.go` | 通知调度器、长文本分片器、发送状态机与管理恢复接口 |

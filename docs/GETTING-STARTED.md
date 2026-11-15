@@ -89,7 +89,7 @@ docker compose up -d
 
 基础记录、阅读、关键词筛选和每日回顾无需第三方模型或消息渠道。在 Web「设置」中启用增强能力：
 
-- **向量模型**：配置 OpenAI 兼容接口或百炼 DashScope，检查连接并等待索引构建完成，随后可使用语义搜索、混合搜索、随机漫步与认知地图。
+- **向量模型**：配置 OpenAI 兼容接口或百炼 DashScope，检查连接并等待索引构建完成，随后可使用语义搜索、混合搜索、漫步与观星。观星还需运行 Compose 中的 `layout` 服务，详见[观星指南](STARGAZING.md)。
 - **大语言模型**：配置 OpenAI Chat Completions、OpenAI Responses 或 Anthropic Messages，检查连接后在 AI 洞察中选择笔记并展开对话。聊天无需 Embedding。
 - **消息渠道**：[Telegram](TELEGRAM.md) 提供英文标题的回顾推送，[飞书](FEISHU.md) 提供中文回顾与私聊记录。新安装默认不启用渠道。
 

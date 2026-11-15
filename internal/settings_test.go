@@ -2,6 +2,7 @@ package moerise
 
 import (
 	"bytes"
+	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
 	"os"
@@ -23,6 +24,36 @@ func settingsChange(version int64, fields string) SettingsUpdate {
 	_ = json.Unmarshal([]byte(fields), &update.Settings)
 	update.Version = version
 	return update
+}
+
+func TestProductSettingsWithoutStargazingKeepsEnabledDefault(t *testing.T) {
+	settings, _ := settingsFixture(t)
+	body, err := json.Marshal(productSettings(settings))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var legacy map[string]json.RawMessage
+	if err := json.Unmarshal(body, &legacy); err != nil {
+		t.Fatal(err)
+	}
+	delete(legacy, "stargazing")
+	body, err = json.Marshal(legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	aead, err := newStateCipher(settings, "product_settings")
+	if err != nil {
+		t.Fatal(err)
+	}
+	nonce := make([]byte, aead.NonceSize())
+	if _, err := rand.Read(nonce); err != nil {
+		t.Fatal(err)
+	}
+	settings.Stargazing.Enabled = false
+	loaded, err := decryptProduct(settings, 1, aead.Seal(nonce, nonce, body, settingsAAD(settings, 1)))
+	if err != nil || !loaded.Stargazing.Enabled {
+		t.Fatalf("legacy settings disabled stargazing: %+v %v", loaded.Stargazing, err)
+	}
 }
 
 func TestProductSettingsNotificationTimesPatch(t *testing.T) {
