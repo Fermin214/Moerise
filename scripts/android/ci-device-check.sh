@@ -9,10 +9,13 @@ export MOERISE_ANDROID_FIXTURE="$MOERISE_ANDROID_FIXTURE_ROOT/connection.json"
 export ANDROID_SERIAL="${ANDROID_SERIAL:-emulator-5554}"
 case "${MOERISE_ANDROID_SUITE:-all}" in
     all)
-        android_device_classes=io.github.fermin214.moerise.ImeLifecycleTest,io.github.fermin214.moerise.QuickNoteTest
+        android_device_classes=io.github.fermin214.moerise.ImeLifecycleTest,io.github.fermin214.moerise.QuickNoteTest,io.github.fermin214.moerise.StarRenderingTest
         android_device_recovery=1 ;;
     ime)
         android_device_classes=io.github.fermin214.moerise.ImeLifecycleTest
+        android_device_recovery=0 ;;
+    stars)
+        android_device_classes=io.github.fermin214.moerise.StarRenderingTest
         android_device_recovery=0 ;;
     editing|search|actions|insights)
         case "$MOERISE_ANDROID_SUITE" in

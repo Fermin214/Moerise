@@ -12,7 +12,7 @@ on:
         default: full
       suite:
         type: choice
-        options: [all, ime, editing, search, actions, insights, recovery]
+        options: [all, ime, editing, search, actions, insights, recovery, stars]
         default: all
       fixture_run:
         description: Reuse fixture APKs from this workflow run

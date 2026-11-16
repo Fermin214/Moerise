@@ -250,6 +250,8 @@ Profile 采集使用 API 33 及以上设备，
 Activity 创建开始，包含固定快照生成、JSON 解析和完整首绘，摄影氛围包含密度柔光生成。网络和 Core 布局耗时通过真实观星
 流程另行记录。场景名、编译模式、响应体积、JSON、系统 trace、APK SHA-256、提交号、
 设备、页大小、电池和温度信息保存在 `.local/android/benchmark-*`。
+`StarSprites` 按配色将星核与径向光晕缓存到同一张纹理，逐星复用，减少渐变着色器切换。
+星核与光晕分别应用透明度，通过浮点变换保持平移和缩放连续；特殊星光芒和选中环单独绘制。
 `benchmark-report.py` 从原始 `benchmarkData.json` 计算每项指标的 P50/P95，
 写入 `summary.json`。可用 `benchmark.sh startup` 或 `benchmark.sh stars` 单独测量。
 Core 请求累计数写入 `MoeriseStartup` 日志与 `moerise_network_requests` Trace 计数器，

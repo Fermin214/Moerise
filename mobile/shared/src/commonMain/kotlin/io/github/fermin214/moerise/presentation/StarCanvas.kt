@@ -150,9 +150,8 @@ fun StarCanvas(
             }
         }
     }
-    val halos = remember(stars) { stars.map { it.color }.distinct().associateWith { color ->
-        Brush.radialGradient(listOf(color.copy(alpha = .20f), color.copy(alpha = .035f), Color.Transparent), center = Offset.Zero, radius = 7f)
-    } }
+    val spriteColors = remember(stars, stellar) { if (stellar) stars.map { it.color }.distinct() else emptyList() }
+    val sprites = remember(spriteColors) { spriteColors.takeIf { it.isNotEmpty() }?.let(::StarSprites) }
     val cloud by key(map.layoutVersion) {
         produceState<StarCloud?>(null) { if (stellar) value = densityCloud(stars) }
     }
@@ -497,17 +496,10 @@ fun StarCanvas(
                     position.x > size.width + 30 * density || position.y > size.height + 30 * density) continue
                 val active = star.point.name == state.selected || star.point.name == activePreview
                 val radius = (star.radius * growth + if (active) .45f else 0f) * density
-                if (stellar && (state.photo || star.special || active)) {
-                    withTransform({
-                        translate(position.x, position.y)
-                        scale(radius, radius, pivot = Offset.Zero)
-                    }) {
-                        drawCircle(halos.getValue(star.color), radius = 7f, center = Offset.Zero,
-                            alpha = star.alpha * if (active) .95f else if (star.special) .85f else .55f)
-                    }
-                }
-                drawCircle(if (star.special) Color(0xFFFBF5E8) else star.color, radius * if (state.photo) .76f else .8f,
-                    center = position, alpha = star.alpha)
+                if (state.photo || star.special || active) {
+                    sprites?.draw(drawContext.canvas, position, radius, star.color, star.alpha,
+                        if (active) .95f else if (star.special) .85f else .55f, star.special, state.photo)
+                } else drawCircle(star.color, radius * .8f, center = position, alpha = star.alpha)
                 if (stellar && state.photo && star.special) {
                     val length = radius * if (star.point.stellar?.role == "core") 5 else 3
                     drawLine(star.color.copy(alpha = .28f), position - Offset(length, 0f), position + Offset(length, 0f), .45f * density)

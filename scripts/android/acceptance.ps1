@@ -5,8 +5,8 @@ param(
     [string] $Serial = $env:ANDROID_SERIAL,
     [string] $Fixture = $env:MOERISE_ANDROID_FIXTURE,
     [string] $BuildManifest,
-    [ValidatePattern('^(QuickNoteTest|ImeLifecycleTest)(#[A-Za-z][A-Za-z0-9_]*)?$')]
-    [string[]] $TestClass = @('QuickNoteTest', 'ImeLifecycleTest'),
+    [ValidatePattern('^(QuickNoteTest|ImeLifecycleTest|StarRenderingTest)(#[A-Za-z][A-Za-z0-9_]*)?$')]
+    [string[]] $TestClass = @('QuickNoteTest', 'ImeLifecycleTest', 'StarRenderingTest'),
     [switch] $SkipBuild,
     [switch] $Recovery,
     [switch] $VisualSetup,

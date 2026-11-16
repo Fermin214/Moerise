@@ -13,7 +13,7 @@ on:
         default: full
       suite:
         type: choice
-        options: [all, ime, editing, search, actions, insights, recovery]
+        options: [all, ime, editing, search, actions, insights, recovery, stars]
         default: all
       fixture_run:
         description: Reuse fixture APKs from this workflow run
@@ -51,7 +51,7 @@ jobs:
         run: |
           python3 - <<'PY'
           import json, os
-          suites = ['ime', 'editing', 'search', 'actions', 'insights', 'recovery']
+          suites = ['ime', 'editing', 'search', 'actions', 'insights', 'recovery', 'stars']
           suite = os.environ['SUITE']
           if suite != 'all' and suite not in suites:
               raise SystemExit('Unknown device suite')

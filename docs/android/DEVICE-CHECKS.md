@@ -32,8 +32,8 @@ Linux 入口按 `MOERISE_ANDROID_TEST_CLASS` 的逗号分隔列表逐组运行�
 
 ## 集中检查与定向重跑
 
-Android CI 先构建一对 fixture APK，再并行运行六组设备流程：输入法、编辑恢复、
-搜索阅读、归档删除、洞察导航、离线恢复。每组使用独立模拟器和 Core/Memos 数据集，
+Android CI 先构建一对 fixture APK，再并行运行七组设备流程：输入法、编辑恢复、
+搜索阅读、归档删除、洞察导航、离线恢复、星图渲染。每组使用独立模拟器和 Core/Memos 数据集，
 单组失败不取消其他组。JVM、lint、发行构建和接口检查同时运行。
 结果页按组显示成功、失败和耗时，`android-device-<组名>` 附件保存该组的日志和诊断。
 修复依据整批结果整理，重跑时选择涉及的组。
@@ -46,7 +46,9 @@ gh workflow run checks.yml --ref debug/android-device -f mode=android-device -f 
 gh workflow run checks.yml --ref debug/android-device -f mode=android-device -f suite=ime
 ```
 
-`suite` 支持 `all`、`ime`、`editing`、`search`、`actions`、`insights`、`recovery`。
+`suite` 支持 `all`、`ime`、`editing`、`search`、`actions`、`insights`、`recovery`、`stars`。
+`stars` 覆盖 1000/5000 点的星点与光晕模式、选中、平移、双指缩放、近景摘要和快照刷新，
+保存总览与近景截图。该组检查渲染和交互，性能阈值由真机性能队列测量。
 `android-device` 模式只执行所选设备组；PR 的自动检查执行完整流程。
 相同源码需要重试偶发失败时，用 `gh run rerun <运行编号> --failed` 只重跑失败任务。
 修改源码后需要重新构建；重试旧运行仍检查原提交。
