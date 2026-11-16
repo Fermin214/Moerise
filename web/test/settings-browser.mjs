@@ -597,6 +597,39 @@ test('settings leave confirmation covers navigation, browser history and reload 
   assert.deepEqual(errors, []);
 });
 
+for (const noNavigation of [false, true]) for (const step of [-1, 1, -2]) test(`legacy settings history keeps the form and URL together: step ${step}, navigation fallback ${noNavigation}`, async t => {
+  const { page, url } = await fixture(t);
+  if (noNavigation) await page.addInitScript(() => Object.defineProperty(window, 'navigation', { value: undefined }));
+  await page.goto(url); await login(page);
+  await page.evaluate(step => {
+    history.replaceState({ webKey: 'legacy-home' }, '', '/');
+    if (step > 0) {
+      history.pushState({ webKey: 'legacy-settings' }, '', '/settings');
+      history.pushState({ webKey: 'legacy-map' }, '', '/map');
+      history.back();
+    } else {
+      history.pushState({ webKey: 'legacy-map' }, '', '/map');
+      history.pushState({ webKey: 'legacy-settings' }, '', '/settings');
+    }
+  }, step);
+  await page.waitForURL(url + '/settings'); await page.reload(); await pageReady(page);
+  const nativeKey = await page.evaluate(() => window.navigation?.currentEntry?.key);
+  await tab(page, 'review'); await setting(page, 'review.count').fill('7');
+  const mounted = await setting(page, 'review.count').elementHandle();
+  await page.evaluate(step => history.go(step), step);
+  await page.getByRole('button', { name: '继续编辑', exact: true }).click();
+  assert.equal(new URL(page.url()).pathname, '/settings');
+  assert.equal(await mounted.evaluate(node => node.isConnected), true);
+  assert.equal(await setting(page, 'review.count').inputValue(), '7');
+  assert.equal(await page.evaluate(() => history.state.webKey), 'legacy-settings');
+  if (nativeKey) assert.equal(await page.evaluate(() => navigation.currentEntry.key), nativeKey);
+  await page.evaluate(step => history.go(step), nativeKey ? step : -1);
+  await page.getByRole('button', { name: '放弃修改', exact: true }).click();
+  await page.waitForURL(url + (step === -2 ? '/' : '/map'));
+  await page.locator('#settings-page').waitFor({ state: 'detached' });
+  assert.equal(await page.evaluate(() => localStorage.length + sessionStorage.length), 0);
+});
+
 test('settings button changes enable refresh protection and returning to saved values clears it', async t => {
   const { page, url, errors, state } = await fixture(t);
   state.value.settings.notifications.times = ['09:00', '18:00'];
