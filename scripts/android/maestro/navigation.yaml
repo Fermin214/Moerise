@@ -1,0 +1,13 @@
+appId: ${APP_ID}
+name: Independent navigation roundtrips
+onFlowComplete:
+  - takeScreenshot:
+      path: ${SCREENSHOT_PREFIX}-navigation-final
+      label: Capture navigation completion or failure
+---
+- runFlow:
+    file: subflows/settings-roundtrip.yaml
+    label: Exercise home settings home independently
+- runFlow:
+    file: subflows/insights-roundtrip.yaml
+    label: Exercise home insights home independently

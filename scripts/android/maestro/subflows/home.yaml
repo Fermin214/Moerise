@@ -1,0 +1,39 @@
+appId: ${APP_ID}
+name: Return to signed-in home
+onFlowComplete:
+  - takeScreenshot:
+      path: ${SCREENSHOT_PREFIX}-home-final
+      label: Capture home completion or failure
+---
+- launchApp:
+    clearState: false
+    stopApp: false
+    label: Bring the installed app to the foreground
+- extendedWaitUntil:
+    visible:
+      id: open_menu
+    timeout: 15000
+    label: Wait for signed-in navigation
+- tapOn:
+    id: open_menu
+    enabled: true
+    label: Open navigation
+- extendedWaitUntil:
+    visible:
+      id: nav_home
+    timeout: 15000
+    label: Wait for the home navigation entry
+- tapOn:
+    id: nav_home
+    enabled: true
+    label: Navigate to home
+- extendedWaitUntil:
+    visible:
+      id: note_editor
+    timeout: 15000
+    label: Wait for the existing home draft
+- extendedWaitUntil:
+    visible:
+      id: save_note
+    timeout: 15000
+    label: Wait for the save control without saving

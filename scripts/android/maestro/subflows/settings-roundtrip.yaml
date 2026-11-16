@@ -1,0 +1,34 @@
+appId: ${APP_ID}
+name: Home settings home
+onFlowComplete:
+  - takeScreenshot:
+      path: ${SCREENSHOT_PREFIX}-settings-roundtrip-final
+      label: Capture settings roundtrip completion or failure
+---
+- runFlow:
+    file: home.yaml
+    label: Start the settings scenario from home
+- tapOn:
+    id: open_menu
+    enabled: true
+    label: Open navigation for settings
+- extendedWaitUntil:
+    visible:
+      id: nav_settings
+    timeout: 15000
+    label: Wait for the settings navigation entry
+- tapOn:
+    id: nav_settings
+    enabled: true
+    label: Navigate to settings
+- extendedWaitUntil:
+    visible:
+      id: settings_page
+    timeout: 15000
+    label: Wait for the settings page
+- takeScreenshot:
+    path: ${SCREENSHOT_PREFIX}-settings
+    label: Capture the settings page
+- runFlow:
+    file: home.yaml
+    label: Return from settings to the existing home draft

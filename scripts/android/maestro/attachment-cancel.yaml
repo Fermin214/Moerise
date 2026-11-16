@@ -1,0 +1,54 @@
+appId: ${APP_ID}
+name: Open and cancel the system attachment picker
+onFlowComplete:
+  - takeScreenshot:
+      path: ${SCREENSHOT_PREFIX}-attachment-cancel-final
+      label: Capture attachment cancellation completion or failure
+---
+- runFlow:
+    file: subflows/home.yaml
+    label: Enter home with the existing draft and attachments
+- extendedWaitUntil:
+    visible:
+      id: add_attachment
+      enabled: true
+    timeout: 15000
+    label: Wait for attachment selection to become available
+- takeScreenshot:
+    path: ${SCREENSHOT_PREFIX}-attachment-before
+    label: Capture the draft before opening the picker
+- tapOn:
+    id: add_attachment
+    enabled: true
+    label: Open the Android document picker
+- extendedWaitUntil:
+    notVisible:
+      id: note_editor
+    timeout: 15000
+    label: Wait for the system picker to cover the editor
+- takeScreenshot:
+    path: ${SCREENSHOT_PREFIX}-attachment-picker
+    label: Capture the system picker without selecting a file
+- runFlow:
+    label: Cancel the system picker with one Android Back action
+    commands:
+      - back
+- extendedWaitUntil:
+    visible:
+      id: note_editor
+    timeout: 15000
+    label: Wait for the existing draft after cancellation
+- extendedWaitUntil:
+    visible:
+      id: add_attachment
+      enabled: true
+    timeout: 15000
+    label: Wait for attachment selection to be available again
+- extendedWaitUntil:
+    visible:
+      id: save_note
+    timeout: 15000
+    label: Wait for the save control without saving the draft
+- takeScreenshot:
+    path: ${SCREENSHOT_PREFIX}-attachment-cancelled
+    label: Capture the editor after cancelling the picker

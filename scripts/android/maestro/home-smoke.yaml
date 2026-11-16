@@ -1,0 +1,32 @@
+appId: ${APP_ID}
+name: Signed-in home smoke
+onFlowComplete:
+  - takeScreenshot:
+      path: ${SCREENSHOT_PREFIX}-home-smoke-final
+      label: Capture home smoke completion or failure
+---
+- runFlow:
+    file: subflows/home.yaml
+    label: Enter home with existing session and data
+- tapOn:
+    id: note_editor
+    enabled: true
+    label: Focus the existing draft without entering text
+- extendedWaitUntil:
+    visible:
+      id: note_editor
+      focused: true
+    timeout: 15000
+    label: Wait for editor focus
+- takeScreenshot:
+    path: ${SCREENSHOT_PREFIX}-home-editor-focused
+    label: Capture the reachable editor
+- runFlow:
+    label: Dismiss the editor keyboard
+    commands:
+      - hideKeyboard
+- extendedWaitUntil:
+    visible:
+      id: save_note
+    timeout: 15000
+    label: Wait for the reachable save control

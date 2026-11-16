@@ -1,0 +1,102 @@
+appId: ${APP_ID}
+name: Archive and restore one existing test note
+onFlowComplete:
+  - takeScreenshot:
+      path: ${SCREENSHOT_PREFIX}-archive-final
+      label: Capture archive completion or failure before further actions
+---
+- runFlow:
+    file: subflows/home.yaml
+    label: Enter home with the existing draft
+- extendedWaitUntil:
+    visible:
+      id: note_card_${NOTE_NAME}
+    timeout: 15000
+    label: Wait for the specified existing test note on home
+- takeScreenshot:
+    path: ${SCREENSHOT_PREFIX}-archive-before
+    label: Capture the original home and test note
+- tapOn:
+    id: note_more_${NOTE_NAME}
+    enabled: true
+    label: Open only the specified test note menu
+- extendedWaitUntil:
+    visible:
+      id: archive_note_${NOTE_NAME}
+      enabled: true
+    timeout: 15000
+    label: Wait for the archive action
+- tapOn:
+    id: archive_note_${NOTE_NAME}
+    enabled: true
+    label: Archive the specified test note
+- extendedWaitUntil:
+    notVisible:
+      id: note_card_${NOTE_NAME}
+    timeout: 15000
+    label: Wait for the archived test note to leave home
+- tapOn:
+    id: open_menu
+    enabled: true
+    label: Open navigation for the account menu
+- extendedWaitUntil:
+    visible:
+      id: account_menu
+    timeout: 15000
+    label: Wait for the account menu
+- tapOn:
+    id: account_menu
+    enabled: true
+    label: Open the account menu
+- extendedWaitUntil:
+    visible:
+      id: nav_archive
+    timeout: 15000
+    label: Wait for the archived notes entry
+- tapOn:
+    id: nav_archive
+    enabled: true
+    label: Open archived notes through the account menu
+- extendedWaitUntil:
+    visible:
+      id: archive_page
+    timeout: 15000
+    label: Wait for the archived notes page
+- extendedWaitUntil:
+    visible:
+      id: note_card_${NOTE_NAME}
+    timeout: 15000
+    label: Wait for the specified archived test note
+- takeScreenshot:
+    path: ${SCREENSHOT_PREFIX}-archived
+    label: Capture the archived test note
+- tapOn:
+    id: note_more_${NOTE_NAME}
+    enabled: true
+    label: Open only the archived test note menu
+- extendedWaitUntil:
+    visible:
+      id: archive_note_${NOTE_NAME}
+      enabled: true
+    timeout: 15000
+    label: Wait for the restore action using its shared ID
+- tapOn:
+    id: archive_note_${NOTE_NAME}
+    enabled: true
+    label: Restore the specified test note to home
+- extendedWaitUntil:
+    notVisible:
+      id: note_card_${NOTE_NAME}
+    timeout: 15000
+    label: Wait for the restored test note to leave the archive
+- runFlow:
+    file: subflows/home.yaml
+    label: Return to the existing home draft
+- extendedWaitUntil:
+    visible:
+      id: note_card_${NOTE_NAME}
+    timeout: 15000
+    label: Wait for the restored test note on home
+- takeScreenshot:
+    path: ${SCREENSHOT_PREFIX}-archive-restored
+    label: Capture home after restoring the test note
