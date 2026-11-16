@@ -11,6 +11,7 @@ import androidx.tracing.Trace
 import io.github.fermin214.moerise.data.AndroidSecretStore
 import io.github.fermin214.moerise.data.NoteRepository
 import io.github.fermin214.moerise.data.androidDatabase
+import io.github.fermin214.moerise.domain.CoreException
 import io.github.fermin214.moerise.presentation.MobileController
 import io.github.fermin214.moerise.presentation.SessionController
 import io.github.fermin214.moerise.presentation.androidAttachmentFiles
@@ -47,7 +48,13 @@ class AndroidRuntime(application: MoeriseApplication) {
     private val repository = scope.async(Dispatchers.IO) {
         NoteRepository(database.await(), androidAttachmentFiles(application))
     }
-    val session = SessionController(AndroidSecretStore(application), BuildConfig.ALLOW_LOOPBACK_HTTP, scope) {
+    val session = SessionController(AndroidSecretStore(application), BuildConfig.ALLOW_LOOPBACK_HTTP, scope,
+        onConnectionFailure = { error ->
+            val chain = generateSequence<Throwable>(error) { it.cause }.take(5)
+                .joinToString("->") { it.javaClass.simpleName }
+            val http = (error as? CoreException)?.status
+            Log.w("MoeriseSync", "connection_failed=$chain http_status=$http")
+        }) {
         val count = requests.incrementAndGet()
         Trace.setCounter("moerise_network_requests", count)
         Log.i("MoeriseStartup", "network_requests=$count")

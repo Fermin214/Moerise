@@ -73,14 +73,35 @@ def main():
         return process.stdout if binary else process.stdout.decode("utf-8", errors="replace")
 
     def instrument(phase):
+        print(f"设备恢复阶段 {phase} 开始。", flush=True)
         text = command("shell", "am", "instrument", "-w", "-e", "class",
                        "io.github.fermin214.moerise.OfflineQueueTest", "-e", "recoveryPhase", phase,
-                       "-e", "markerId", marker, RUNNER)
+                       "-e", "markerId", marker, "-e", "timeout_msec", "120000", RUNNER)
         (output / f"recovery-{phase}.log").write_text(text, encoding="utf-8")
         if not re.search(r"^OK \([1-9][0-9]* tests?\)", text, re.M) or re.search(
                 r"FAILURES!!!|INSTRUMENTATION_FAILED", text):
             raise AssertionError(f"设备恢复阶段 {phase} 失败")
         report["stages"].append(phase)
+        print(f"设备恢复阶段 {phase} 通过。", flush=True)
+
+    def background_diagnostics(label):
+        for name, arguments in {
+            "jobs": ("shell", "dumpsys", "jobscheduler", PACKAGE),
+            "connectivity": ("shell", "dumpsys", "connectivity"),
+            "services": ("shell", "dumpsys", "activity", "services", PACKAGE),
+        }.items():
+            try:
+                text = command(*arguments)
+                (output / f"background-{label}-{name}.log").write_text(text, encoding="utf-8")
+            except Exception as error:
+                (output / f"background-{label}-{name}.log").write_text(type(error).__name__, encoding="utf-8")
+        try:
+            pid = command("shell", "pidof", PACKAGE).strip()
+            if re.fullmatch(r"[0-9]+", pid):
+                text = command("shell", "logcat", "-d", "-v", "threadtime", "-t", "1000", "--pid=" + pid)
+                (output / f"background-{label}-app.log").write_text(text, encoding="utf-8")
+        except Exception:
+            pass
 
     def persisted():
         archive = command("exec-out", "run-as", PACKAGE, "tar", "-C", "no_backup/data", "-cf", "-", ".", binary=True)
@@ -168,6 +189,7 @@ def main():
         # 后台恢复阶段不使用 force-stop：Android 会禁止被强停包的系统任务自动启动。
         command("reverse", mapping, mapping)
         disconnected = False
+        background_diagnostics("start")
         deadline = time.monotonic() + 120
         while time.monotonic() < deadline:
             counts = remote_counts()
@@ -175,6 +197,8 @@ def main():
                 break
             time.sleep(3)
         else:
+            report["remote_counts"] = counts
+            background_diagnostics("timeout")
             raise AssertionError("恢复连接后后台队列没有自动排空")
         report["stages"].append("background_auto_upload")
         command("shell", "am", "force-stop", PACKAGE)

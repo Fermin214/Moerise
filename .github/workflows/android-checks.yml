@@ -15,6 +15,10 @@ on:
         type: choice
         options: [all, ime, editing, search, actions, insights, recovery]
         default: all
+      fixture_run:
+        description: Reuse fixture APKs from this workflow run
+        type: string
+        default: ''
   workflow_call:
     inputs:
       mode:
@@ -23,8 +27,12 @@ on:
       suite:
         type: string
         default: all
+      fixture_run:
+        type: string
+        default: ''
 permissions:
   contents: read
+  actions: read
 concurrency:
   group: android-${{ github.workflow }}-${{ github.ref }}-${{ inputs.mode || 'full' }}-${{ inputs.suite || 'all' }}
   cancel-in-progress: true
@@ -50,12 +58,24 @@ jobs:
           with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
               output.write('value=' + json.dumps(suites if suite == 'all' else [suite]) + '\n')
           PY
+      - uses: actions/download-artifact@v4
+        if: inputs.fixture_run != ''
+        with:
+          name: android-fixture-apks
+          path: .
+          run-id: ${{ inputs.fixture_run }}
+          github-token: ${{ github.token }}
+      - name: Verify reused fixture APKs
+        if: inputs.fixture_run != ''
+        run: python3 scripts/android/fixture-artifacts.py verify
       - uses: actions/setup-java@v4
+        if: inputs.fixture_run == ''
         with:
           distribution: temurin
           java-version: '17'
       - uses: actions/cache/restore@v4
         id: android-cache
+        if: inputs.fixture_run == ''
         with:
           path: |
             ~/.gradle/caches
@@ -68,10 +88,13 @@ jobs:
           key: android-checks-${{ runner.os }}-${{ hashFiles('mobile/**/*.gradle.kts', 'mobile/gradle/libs.versions.toml', 'mobile/gradle/verification-metadata.xml', 'mobile/gradle/wrapper/gradle-wrapper.properties') }}-${{ github.sha }}
           restore-keys: android-checks-${{ runner.os }}-${{ hashFiles('mobile/**/*.gradle.kts', 'mobile/gradle/libs.versions.toml', 'mobile/gradle/verification-metadata.xml', 'mobile/gradle/wrapper/gradle-wrapper.properties') }}-
       - uses: android-actions/setup-android@v3
+        if: inputs.fixture_run == ''
         with:
           packages: platform-tools
       - run: sdkmanager 'platforms;android-36' 'build-tools;36.0.0'
+        if: inputs.fixture_run == ''
       - name: Build fixture APKs once
+        if: inputs.fixture_run == ''
         run: |
           source scripts/android/environment.sh
           mobile/gradlew -p mobile --no-daemon --max-workers=1 :androidApp:assembleFixture :androidApp:assembleFixtureAndroidTest
@@ -181,6 +204,7 @@ jobs:
           distribution: temurin
           java-version: '17'
       - uses: actions/cache/restore@v4
+        id: android-cache
         with:
           path: |
             ~/.gradle/caches
@@ -202,7 +226,7 @@ jobs:
         with:
           node-version: "24"
       - run: >-
-          scripts/android/check.sh
+          scripts/android/check.sh --continue
           :androidApp:assembleRelease :androidApp:lintRelease
           :androidApp:assembleBenchmark :androidApp:assembleProfile
           :benchmark:assembleBenchmark :benchmark:assembleProfile
@@ -229,3 +253,15 @@ jobs:
             mobile/shared/build/reports/tests/
             mobile/androidApp/build/reports/lint-results-*.html
             mobile/androidApp/build/outputs/mapping/release/
+      - uses: actions/cache/save@v4
+        if: always() && steps.android-cache.outcome == 'success'
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+            mobile/.gradle
+            mobile/shared/build
+            mobile/androidApp/build/intermediates
+            mobile/androidApp/build/kotlin
+            mobile/androidApp/build/tmp
+          key: android-checks-${{ runner.os }}-${{ hashFiles('mobile/**/*.gradle.kts', 'mobile/gradle/libs.versions.toml', 'mobile/gradle/verification-metadata.xml', 'mobile/gradle/wrapper/gradle-wrapper.properties') }}-${{ github.sha }}-full

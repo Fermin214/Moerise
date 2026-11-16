@@ -38,15 +38,20 @@ Android CI 先构建一对 fixture APK，再并行运行六组设备流程：输
 结果页按组显示成功、失败和耗时，`android-device-<组名>` 附件保存该组的日志和诊断。
 修复依据整批结果整理，重跑时选择涉及的组。
 
-通过已有的 `Checks` 工作流，可在功能分支运行设备检查：
+设备调试使用没有开放 PR 的独立分支，推送后通过已有的 `Checks` 工作流选择设备组。
+修复集中通过后更新 PR 分支，触发完整检查：
 
 ```bash
-gh workflow run checks.yml --ref feat/android-v0.1.0 -f mode=android-device -f suite=all
-gh workflow run checks.yml --ref feat/android-v0.1.0 -f mode=android-device -f suite=ime
+gh workflow run checks.yml --ref debug/android-device -f mode=android-device -f suite=all
+gh workflow run checks.yml --ref debug/android-device -f mode=android-device -f suite=ime
 ```
 
 `suite` 支持 `all`、`ime`、`editing`、`search`、`actions`、`insights`、`recovery`。
 `android-device` 模式只执行所选设备组；PR 的自动检查执行完整流程。
+相同源码需要重试偶发失败时，用 `gh run rerun <运行编号> --failed` 只重跑失败任务。
+修改源码后需要重新构建；重试旧运行仍检查原提交。
+仅修改宿主脚本或文档时，可以传入 `-f fixture_run=<原运行编号>` 复用原运行的
+`android-fixture-apks`，跳过 Gradle。Android 源码或 APK 摘要不一致时，复用校验失败。
 同一源码的 APK 在各组之间复用；安装前核对 Android 源文件和两个 APK 的 SHA-256。
 源码或包有变化时拒绝复用。Linux 手动复用入口为：
 

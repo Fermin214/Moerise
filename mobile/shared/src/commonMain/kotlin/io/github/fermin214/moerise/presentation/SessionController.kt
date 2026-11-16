@@ -23,6 +23,7 @@ class SessionController(
     private val secrets: SecretStore,
     private val allowLoopbackHttp: Boolean,
     private val scope: CoroutineScope,
+    private val onConnectionFailure: (Exception) -> Unit = {},
     private val onNetworkRequest: () -> Unit = {},
 ) : AutoCloseable {
     private val repository = ConnectionRepository(secrets)
@@ -100,6 +101,7 @@ class SessionController(
                 connected = true, needsLogin = false) }
         } catch (error: Exception) {
             if (error is CancellationException && error !is TimeoutCancellationException) throw error
+            onConnectionFailure(error)
             if (stamp == generation) mutableState.update { it.copy(loading = false, error = errorCode(error)) }
         }
     }
@@ -166,6 +168,7 @@ class SessionController(
             true
         } catch (error: Exception) {
             if (error is CancellationException && error !is TimeoutCancellationException) throw error
+            onConnectionFailure(error)
             if (stamp == generation) mutableState.update {
                 it.copy(connected = false,
                     needsLogin = it.needsLogin || error is IdentityChangedException ||

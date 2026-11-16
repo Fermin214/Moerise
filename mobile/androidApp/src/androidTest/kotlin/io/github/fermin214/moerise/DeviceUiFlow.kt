@@ -13,6 +13,7 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.lifecycle.ViewModelProvider
 import androidx.test.ext.junit.rules.ActivityScenarioRule
 import androidx.test.platform.app.InstrumentationRegistry
+import io.github.fermin214.moerise.data.CORE_REQUEST_TIMEOUT_MILLIS
 import java.io.FileInputStream
 import java.io.File
 import org.json.JSONObject
@@ -90,7 +91,7 @@ class FixtureActivityRule(private val inputMethod: FixtureInputMethod? = null) :
 internal fun fixtureComposeRule(inputMethod: FixtureInputMethod? = null) =
     AndroidComposeTestRule(FixtureActivityRule(inputMethod)) { it.activity }
 
-internal fun ComposeTestRule.signIntoFixture() {
+internal fun AndroidComposeTestRule<FixtureActivityRule, MainActivity>.signIntoFixture() {
     val instrumentation = InstrumentationRegistry.getInstrumentation()
     require(instrumentation.targetContext.packageName == "io.github.fermin214.moerise.fixture")
     waitUntil(20_000) {
@@ -107,9 +108,18 @@ internal fun ComposeTestRule.signIntoFixture() {
         onNodeWithTag("server_origin").performScrollTo().performTextReplacement(fixture.getString("origin"))
         onNodeWithTag("server_username").performScrollTo().performTextReplacement(fixture.getString("username"))
         onNodeWithTag("server_password").performScrollTo().performTextReplacement(fixture.getString("password"))
-        onNodeWithTag("server_login").performScrollTo().performClick()
+        dismissKeyboard()
+        clickTag("server_login")
     }
     try {
+        val session = (instrumentation.targetContext.applicationContext as MoeriseApplication).runtime.session
+        waitUntil(5_000) {
+            session.state.value.let { it.busy || it.profile != null || it.error != null }
+        }
+        waitUntil(CORE_REQUEST_TIMEOUT_MILLIS + 5_000) {
+            session.state.value.let { it.profile != null || it.error != null }
+        }
+        check(session.state.value.let { it.profile != null && it.error == null })
         waitForHome()
     } catch (failure: Throwable) {
         val session = (instrumentation.targetContext.applicationContext as MoeriseApplication)
@@ -291,7 +301,7 @@ internal fun AndroidComposeTestRule<FixtureActivityRule, MainActivity>.navigate(
         when (page) {
             "home" -> waitForHome()
             "archive" -> { waitForHome(); waitForTag("archive_page") }
-            "settings" -> waitForTag("settings_tab_0")
+            "settings" -> waitForTag("settings_page")
             else -> waitForTag("${page}_page")
         }
     } catch (failure: ComposeTimeoutException) {
@@ -301,7 +311,7 @@ internal fun AndroidComposeTestRule<FixtureActivityRule, MainActivity>.navigate(
 
 private fun ComposeTestRule.pageDiagnostics(): String {
     val pages = listOf("home", "review_page", "walk_page", "insights_page", "map_page",
-        "settings_tab_0", "sidebar_scroll", "server_login")
+        "settings_page", "settings_tab_0", "sidebar_scroll", "server_login")
     return "页面标记=" + pages.filter { hasTag(it) }.joinToString(",")
 }
 

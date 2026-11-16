@@ -72,7 +72,9 @@ done
 if [[ "${MOERISE_ANDROID_RECOVERY:-0}" == 1 ]]; then
     android_acceptance_started=$SECONDS
     android_acceptance_status=passed
-    if ! python3 scripts/android/device-recovery.py --serial "$android_device" \
+    if [[ "${MOERISE_ANDROID_VISUAL_SETUP:-false}" == true && "$android_acceptance_failed" == 1 ]]; then
+        android_acceptance_status=blocked
+    elif ! python3 scripts/android/device-recovery.py --serial "$android_device" \
         --fixture "$android_fixture_connection" --source-root "$android_repo_root" \
         --output "$android_repo_root/.local/android/device-recovery"; then
         android_acceptance_failed=1

@@ -16,6 +16,8 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
+import kotlinx.io.EOFException
+import kotlinx.io.IOException
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
@@ -66,7 +68,17 @@ class CoreClient(
     suspend fun session(): SessionIdentity = sessionLock.withLock { refreshSession() }
 
     private suspend fun refreshSession(): SessionIdentity {
-        val next = CoreJson.decodeFromString<SessionIdentity>(send(HttpMethod.Get, "/session"))
+        val next = withTimeout(CORE_REQUEST_TIMEOUT_MILLIS) {
+            val text = try {
+                send(HttpMethod.Get, "/session")
+            } catch (error: IOException) {
+                currentCoroutineContext().ensureActive()
+                // 会话读取遇到失效的复用连接时重连一次，两个请求共用 65 秒时限。
+                if (generateSequence<Throwable>(error) { it.cause }.take(5).none { it is EOFException }) throw error
+                send(HttpMethod.Get, "/session")
+            }
+            CoreJson.decodeFromString<SessionIdentity>(text)
+        }
         val key = next.accountKey(origin)
         if (expectedAccount != null && expectedAccount != key) {
             identity = null

@@ -76,6 +76,8 @@ adb install -r mobile/androidApp/build/outputs/apk/debug/androidApp-debug.apk
 
 连接页接受与 `web.public_origin` 相同的 Web 入口，API 位于 `/api/app/v1`。登录密码仅用于登录请求；会话 Cookie 使用 Android Keystore 的 AES-GCM 密钥加密后存入免备份目录，CSRF 只保存在内存。Cookie 限定同一 scheme、host 和端口，不跟随重定向，不启用底层写入自动重试。
 会话恢复、连接检查与普通 API 共用 65 秒请求时限，建立连接的时限为 10 秒。
+会话读取遇到复用连接的 EOF 错误时立即重连一次，两次请求共用 65 秒时限；
+写入的传输失败仍交给持久队列按原幂等键和正文恢复。
 
 首次登录需要输入服务器地址。已有账号重新登录时沿用保存的地址，点击更换服务器后显示地址输入框；修改地址清除密码。
 

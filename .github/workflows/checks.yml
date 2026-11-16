@@ -14,9 +14,14 @@ on:
         type: choice
         options: [all, ime, editing, search, actions, insights, recovery]
         default: all
+      fixture_run:
+        description: Reuse fixture APKs from this workflow run
+        type: string
+        default: ''
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
   go:
@@ -76,3 +81,4 @@ jobs:
     with:
       mode: device
       suite: ${{ inputs.suite }}
+      fixture_run: ${{ inputs.fixture_run }}
