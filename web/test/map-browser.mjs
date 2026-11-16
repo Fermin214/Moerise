@@ -10,7 +10,7 @@ import { test } from 'node:test';
 import { createWebServer } from '../server.mjs';
 
 const runtime = process.env.MOERISE_PLAYWRIGHT_MODULE;
-const { chromium } = runtime ? await import(pathToFileURL(runtime).href) : await import('playwright');
+const { [process.env.MOERISE_PLAYWRIGHT_ENGINE || 'chromium']: browserType } = runtime ? await import(pathToFileURL(runtime).href) : await import('playwright');
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aP9sAAAAASUVORK5CYII=', 'base64');
 
 async function fixture(t, mobile = false, language = 'zh-CN') {
@@ -84,7 +84,7 @@ async function fixture(t, mobile = false, language = 'zh-CN') {
     await browser?.close();
     await Promise.all([web, core].map(server => new Promise(resolve => { server.close(resolve); server.closeAllConnections(); })));
   });
-  browser = await chromium.launch({ headless: true, channel: process.env.MOERISE_PLAYWRIGHT_CHANNEL || undefined });
+  browser = await browserType.launch({ headless: true, channel: process.env.MOERISE_PLAYWRIGHT_CHANNEL || undefined });
   const context = await browser.newContext({ locale: language, viewport: mobile ? { width: 390, height: 844 } : { width: 1360, height: 960 }, hasTouch: mobile, isMobile: mobile });
   const page = await context.newPage(), errors = [];
   page.on('pageerror', error => errors.push(error.message)); t.after(() => assert.deepEqual(errors, []));
@@ -462,4 +462,83 @@ test('English map labels and dates update without refetching notes or losing the
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
   await page.getByRole('button', { name: 'Open navigation', exact: true }).click();
   await page.getByRole('region', { name: 'Calendar', exact: true }).waitFor({ state: 'visible' });
+});
+test('star density survives worker failure, matches worker pixels and cancels replaced or destroyed jobs', async t => {
+  const { page, url } = await fixture(t);
+  await login(page, url);
+  const prepare = async () => page.evaluate(async () => {
+    const script = document.querySelector('script[type="module"]').src;
+    const { createDensityProcessor } = await import(script.replace(/\/app(?=\.|$)/, '/map-star-cloud'));
+    const points = Array.from({ length: 256 }, (_, i) => [Math.sin(i) * .4, Math.cos(i) * .6]);
+    const processor = createDensityProcessor();
+    const data = await processor.prepare(points, points.map((_, i) => i % 4));
+    const replaced = processor.prepare(points, []);
+    const destroyed = processor.prepare(points.slice(1), []);
+    processor.destroy();
+    const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', data.pixels));
+    return { mode: data.mode, pixels: [...digest], replaced: await replaced, destroyed: await destroyed };
+  });
+  const worker = await prepare();
+  assert.equal(worker.mode, 'worker');
+  await page.route('**/map-star-worker*.js', route => route.abort());
+  const fallback = await prepare();
+  assert.equal(fallback.mode, 'fallback');
+  assert.deepEqual(fallback.pixels, worker.pixels);
+  for (const result of [worker, fallback]) {
+    assert.equal(result.replaced, null);
+    assert.equal(result.destroyed, null);
+  }
+});
+
+test('star drawing falls back after a worker download failure and keeps keyboard reading usable', async t => {
+  const { page, state, url } = await fixture(t);
+  state.malformed = { status: 'ready', algorithm: 'umap-balanced-v1', layout_version: state.version,
+    layout_frame: state.frame, vector_generation: 'published', projection_revision: 3, topics: [], links: [],
+    points: state.notes.slice(0, 5).map((note, i) => ({ name: note.name, source_hash: note.source_hash,
+      x: i - 2, y: 0, semantic: true, tags: note.tags,
+      stellar: { seed: .5, role: 'ordinary', radius: 1, luminosity: .6 } })) };
+  await page.route('**/map-stars-worker*.js', route => route.abort());
+  await login(page, url); await ready(page);
+  await page.waitForFunction(() => document.querySelector('#map-field canvas')?.dataset.renderer === 'fallback');
+  await marker(page, 2).focus(); await page.keyboard.press('Enter');
+  await page.locator('.map-note[data-name="memos/n2"]').waitFor();
+  await page.locator('nav a[href="/"]').click();
+  await page.locator('#notes .card').first().waitFor();
+  assert.equal(await page.locator('#map-field').count(), 0);
+});
+
+test('ten thousand stars keep grid picking equivalent to the nearest-point rule', async t => {
+  const { page, url } = await fixture(t);
+  await login(page, url);
+  const result = await page.evaluate(async () => {
+    const src = document.querySelector('script[type="module"]').src.replace(/\/app(?=\.|$)/, '/map-stars-scene');
+    const { createMapScene } = await import(src);
+    const field = document.createElement('div');
+    Object.assign(field.style, { position: 'fixed', width: '1000px', height: '800px', left: '0', top: '0' });
+    document.body.append(field);
+    const points = Array.from({ length: 10000 }, (_, i) => ({ name: `memos/p${i}`, semantic: true,
+      x: Math.sin(i * 2.399963) * Math.sqrt((i + .5) / 10000),
+      y: Math.cos(i * 2.399963) * Math.sqrt((i + .5) / 10000),
+      stellar: { seed: .5, radius: .7, luminosity: .5, role: 'ordinary' } }));
+    const scene = createMapScene(field, { algorithm: 'umap-balanced-v1', onPick() {}, onHover() {}, onTopic() {} });
+    scene.setData({ points, topics: [], links: [] }, 330);
+    scene.draw({ x: 0, y: 0, scale: 330 }, '', 330);
+    while (field.dataset.rendered !== 'true') await new Promise(requestAnimationFrame);
+    const rect = field.getBoundingClientRect();
+    let mismatches = 0;
+    for (let j = 0; j < 200; j++) {
+      const x = (j * 137.13) % 1000, y = (j * 83.47) % 800;
+      let expected = '', distance = 13;
+      for (const point of points) {
+        const delta = Math.hypot(x - 500 - point.x * 330, y - 400 - point.y * 330);
+        if (delta < distance) { distance = delta; expected = point.name; }
+      }
+      if (scene.pick(rect.left + x, rect.top + y) !== expected) mismatches++;
+    }
+    const markers = field.querySelectorAll('.map-dot').length;
+    scene.destroy(); field.remove();
+    return { mismatches, markers };
+  });
+  assert.equal(result.mismatches, 0);
+  assert.ok(result.markers <= 120);
 });
