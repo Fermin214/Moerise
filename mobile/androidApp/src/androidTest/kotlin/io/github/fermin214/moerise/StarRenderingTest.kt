@@ -68,11 +68,14 @@ class StarRenderingTest {
             }
             compose.runOnIdle { check(scene.state.value.view!!.x != fit.x) { "平移未改变视图" } }
             canvas.performTouchInput {
-                pinch(Offset(width * .4f, height * .5f), Offset(width * .6f, height * .5f),
-                    Offset(width * .3f, height * .5f), Offset(width * .7f, height * .5f), 400)
+                pinch(start0 = Offset(width * .4f, height * .5f), end0 = Offset(width * .3f, height * .5f),
+                    start1 = Offset(width * .6f, height * .5f), end1 = Offset(width * .7f, height * .5f),
+                    durationMillis = 400)
             }
             compose.runOnIdle {
-                check(scene.state.value.view!!.scale > fit.scale * 1.5) { "双指缩放未改变视图" }
+                check(scene.state.value.view!!.scale > fit.scale * 1.5) {
+                    "双指缩放未改变视图：before=${fit.scale}，after=${scene.state.value.view!!.scale}"
+                }
                 val point = scene.map.points.first()
                 scene.state.value = scene.state.value.copy(
                     view = fit.copy(x = point.x, y = point.y, scale = fit.scale * 3.4),

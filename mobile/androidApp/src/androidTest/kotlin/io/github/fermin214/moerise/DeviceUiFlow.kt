@@ -271,7 +271,8 @@ internal fun ComposeTestRule.waitForCard(text: String, queued: Boolean = false):
         waitUntil(70_000) {
             key = runCatching {
                 if (!onNode(card).isDisplayed()) onNode(homeListMatcher()).performScrollToNode(card)
-                onNode(card).fetchSemanticsNode().config[SemanticsProperties.TestTag].removePrefix(prefix)
+                val node = onNode(card).fetchSemanticsNode()
+                runOnIdle { node.config[SemanticsProperties.TestTag].removePrefix(prefix) }
             }.getOrNull()
             key != null
         }
@@ -336,13 +337,17 @@ internal fun ComposeTestRule.waitForEditor(tag: String, text: String) {
     if (tag == "note_editor" && !hasTag(tag)) homeList().performScrollToIndex(0)
     try {
         waitUntil(20_000) {
-            onAllNodesWithTag(tag).fetchSemanticsNodes().singleOrNull()
-                ?.config?.getOrNull(SemanticsProperties.EditableText)?.text == text
+            editorConfiguration(tag)?.getOrNull(SemanticsProperties.EditableText)?.text == text
         }
     } catch (failure: ComposeTimeoutException) {
-        val actual = onAllNodesWithTag(tag).fetchSemanticsNodes().singleOrNull()
-            ?.config?.getOrNull(SemanticsProperties.EditableText)?.text
+        val actual = editorConfiguration(tag)?.getOrNull(SemanticsProperties.EditableText)?.text
         throw AssertionError("编辑器=$tag；期望=${JSONObject.quote(text)}；实际=${actual?.let { JSONObject.quote(it) }}；" +
             pageDiagnostics(), failure)
     }
+}
+
+/** 合并语义会遍历布局节点，和测量、绘制一样在主线程读取。 */
+internal fun ComposeTestRule.editorConfiguration(tag: String): androidx.compose.ui.semantics.SemanticsConfiguration? {
+    val node = onAllNodesWithTag(tag).fetchSemanticsNodes().singleOrNull() ?: return null
+    return runOnIdle { node.config.copy() }
 }

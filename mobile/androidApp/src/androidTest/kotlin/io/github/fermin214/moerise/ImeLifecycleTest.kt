@@ -32,7 +32,8 @@ class ImeLifecycleTest {
         assertEquals("手机使用竖屏", ActivityInfo.SCREEN_ORIENTATION_PORTRAIT, compose.activity.requestedOrientation)
         assertEquals("手机编辑窗口为竖屏", Configuration.ORIENTATION_PORTRAIT,
             compose.activity.resources.configuration.orientation)
-        val initial = compose.homeNode("note_editor").fetchSemanticsNode().config[SemanticsProperties.EditableText].text
+        compose.homeNode("note_editor")
+        val initial = requireNotNull(compose.editorConfiguration("note_editor"))[SemanticsProperties.EditableText].text
         val prefix = if (initial.isEmpty()) "" else "$initial\n"
         var connection = editorConnection()
         edit(connection, "将光标移到草稿末尾", initial) { setSelection(initial.length, initial.length) }
@@ -123,7 +124,7 @@ class ImeLifecycleTest {
 
     private fun textFailure(operation: String, expected: String, failure: Throwable): Nothing {
         val config = runCatching {
-            compose.onAllNodesWithTag("note_editor").fetchSemanticsNodes().singleOrNull()?.config
+            compose.editorConfiguration("note_editor")
         }.getOrElse { failure.addSuppressed(it); null }
         val actual = config?.getOrNull(SemanticsProperties.EditableText)?.text
         val selection = config?.getOrNull(SemanticsProperties.TextSelectionRange)

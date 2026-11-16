@@ -214,7 +214,10 @@ jobs:
             mobile/androidApp/build/intermediates
             mobile/androidApp/build/kotlin
             mobile/androidApp/build/tmp
-          key: android-checks-${{ runner.os }}-${{ hashFiles('mobile/**/*.gradle.kts', 'mobile/gradle/libs.versions.toml', 'mobile/gradle/verification-metadata.xml', 'mobile/gradle/wrapper/gradle-wrapper.properties') }}-${{ github.sha }}
+          key: android-full-${{ runner.os }}-${{ hashFiles('mobile/**/*.gradle.kts', 'mobile/gradle/libs.versions.toml', 'mobile/gradle/verification-metadata.xml', 'mobile/gradle/wrapper/gradle-wrapper.properties') }}-${{ github.sha }}
+          restore-keys: |
+            android-full-${{ runner.os }}-${{ hashFiles('mobile/**/*.gradle.kts', 'mobile/gradle/libs.versions.toml', 'mobile/gradle/verification-metadata.xml', 'mobile/gradle/wrapper/gradle-wrapper.properties') }}-
+            android-checks-${{ runner.os }}-${{ hashFiles('mobile/**/*.gradle.kts', 'mobile/gradle/libs.versions.toml', 'mobile/gradle/verification-metadata.xml', 'mobile/gradle/wrapper/gradle-wrapper.properties') }}-
       - uses: android-actions/setup-android@v3
         with:
           packages: platform-tools
@@ -264,4 +267,4 @@ jobs:
             mobile/androidApp/build/intermediates
             mobile/androidApp/build/kotlin
             mobile/androidApp/build/tmp
-          key: android-checks-${{ runner.os }}-${{ hashFiles('mobile/**/*.gradle.kts', 'mobile/gradle/libs.versions.toml', 'mobile/gradle/verification-metadata.xml', 'mobile/gradle/wrapper/gradle-wrapper.properties') }}-${{ github.sha }}-full
+          key: ${{ steps.android-cache.outputs.cache-primary-key }}

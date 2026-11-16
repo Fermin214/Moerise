@@ -202,8 +202,8 @@ class QuickNoteTest {
     fun insightsPickerAndSourceReadingReturnToHome() {
         compose.signIntoFixture()
         if (visualSetup()) return
-        val unfinished = compose.homeNode("note_editor").fetchSemanticsNode()
-            .config[SemanticsProperties.EditableText].text
+        compose.homeNode("note_editor")
+        val unfinished = requireNotNull(compose.editorConfiguration("note_editor"))[SemanticsProperties.EditableText].text
         val text = "Android picker note ${System.currentTimeMillis()} #android"
         val name = saveNew(text)
         compose.homeNode("note_editor").performTextReplacement(unfinished)
@@ -211,9 +211,8 @@ class QuickNoteTest {
         compose.navigate("review")
         compose.navigate("walk")
         compose.waitUntil(20_000) {
-            compose.hasTag("walk_settings") || compose.onAllNodesWithTag("walk_start").fetchSemanticsNodes().any {
-                it.config.getOrNull(SemanticsProperties.Disabled) == null
-            }
+            compose.hasTag("walk_settings") ||
+                compose.onAllNodes(hasTestTag("walk_start") and isEnabled()).fetchSemanticsNodes().isNotEmpty()
         }
         if (compose.hasTag("walk_settings")) {
             compose.onNodeWithTag("walk_start").assertIsNotEnabled()
