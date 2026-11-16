@@ -33,6 +33,7 @@ export function bindMenu(trigger, menu, { signal } = {}) {
   trigger.setAttribute('aria-controls', menu.id);
   trigger.setAttribute('aria-expanded', 'false');
   if (nativePopover) menu.setAttribute('popover', 'auto');
+  else { menu.style.position = 'fixed'; menu.style.inset = 'auto'; }
   if (nativeInvoker) {
     trigger.setAttribute('commandfor', menu.id);
     trigger.setAttribute('command', 'toggle-popover');

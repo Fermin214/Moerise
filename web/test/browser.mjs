@@ -520,6 +520,27 @@ test('search composition, menu keyboard, route focus and refresh protection pres
   assert.deepEqual(errors, []);
 });
 
+test('menu fallback uses viewport positioning and keyboard navigation without Popover or focusgroup', async t => {
+  const { page, url } = await fixture(t);
+  await page.addInitScript(() => {
+    delete HTMLElement.prototype.popover;
+    delete HTMLElement.prototype.focusGroup;
+  });
+  await page.goto(url); await login(page);
+  const more = page.locator('[data-name="memos/n00"] .more');
+  await more.focus(); await page.keyboard.press('ArrowDown');
+  const edit = page.getByRole('menuitem', { name: '编辑', exact: true });
+  await edit.waitFor();
+  assert.equal(await edit.evaluate(node => node === document.activeElement), true);
+  const anchor = await more.boundingBox(), menu = await page.locator('.menu').filter({ has: edit }).boundingBox();
+  assert.ok(Math.abs(menu.y - anchor.y - anchor.height - 4) < 2);
+  assert.ok(menu.x >= 8 && menu.x + menu.width <= 1360 - 8);
+  await page.keyboard.press('End');
+  assert.equal(await page.evaluate(() => document.activeElement.textContent), '删除');
+  await page.keyboard.press('Escape');
+  assert.equal(await more.evaluate(node => node === document.activeElement), true);
+});
+
 test('browser timeline management, attachment retries, history, conflicts and private cleanup', { timeout: 120_000 }, async t => {
   const { page, context, state, errors, url } = await fixture(t);
   await page.goto(`${url}/notes/n02?from=${encodeURIComponent('/?tag=想法')}`);
