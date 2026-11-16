@@ -224,7 +224,7 @@ export function createSettingsPage({ sessionRequest, handleFailure, onSaved = ()
       const line = el('div', 'settings-time'), input = el('input');
       input.type = 'time'; input.required = true; input.value = value;
       const remove = button(l("移除"), 'ghost', () => {
-        times = times.filter(item => item !== input); line.remove(); update();
+        times = times.filter(item => item !== input); line.remove(); update(); onDirtyChange();
       });
       line.append(input, remove); list.append(line); times.push(input); update();
     }
@@ -235,7 +235,7 @@ export function createSettingsPage({ sessionRequest, handleFailure, onSaved = ()
       });
       append.disabled = times.length >= 24;
     }
-    const append = button(l("添加时段"), 'ghost', () => add());
+    const append = button(l("添加时段"), 'ghost', () => { add(); onDirtyChange(); });
     const clocks = snapshot.settings.notifications.times;
     for (const clock of clocks) add(clock);
     box.append(list, append, el('span', 'sub', l("时段数即每日推送次数；每个时段分配不同笔记。")));
@@ -433,6 +433,7 @@ export function createSettingsPage({ sessionRequest, handleFailure, onSaved = ()
     prompt.rows = 7;
     const restore = button(l("恢复默认"), 'ghost', () => {
       prompt.value = snapshot.default_insight_prompt; setText(status, l("已恢复默认 Prompt，保存后生效。"));
+      onDirtyChange();
     });
     restore.disabled = typeof snapshot.default_insight_prompt !== 'string'; insights.append(restore);
     const channel = section('channel', l("消息渠道"));

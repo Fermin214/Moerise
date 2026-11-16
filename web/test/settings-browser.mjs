@@ -568,6 +568,17 @@ test('settings leave confirmation covers navigation, browser history and reload 
   await page.locator('a[data-route][href="/settings"]').click(); await pageReady(page);
   await tab(page, 'review');
   await setting(page, 'review.count').fill('7');
+  const mounted = await setting(page, 'review.count').elementHandle();
+  await page.locator('.skip-link').focus(); await page.keyboard.press('Enter');
+  await page.waitForURL(value => value.hash === '#main');
+  assert.equal(await mounted.evaluate(node => node.isConnected), true);
+  assert.equal(await setting(page, 'review.count').inputValue(), '7');
+  assert.equal(await page.getByRole('dialog').count(), 0);
+  await page.goBack(); await page.waitForURL(value => !value.hash);
+  assert.equal(await mounted.evaluate(node => node.isConnected), true);
+  await page.goForward(); await page.waitForURL(value => value.hash === '#main');
+  assert.equal(await setting(page, 'review.count').inputValue(), '7');
+  await page.goBack(); await page.waitForURL(value => !value.hash);
   await page.locator('a[data-route][href="/review"]').click();
   await page.getByRole('button', { name: '继续编辑', exact: true }).click();
   assert.equal(new URL(page.url()).pathname, '/settings');
@@ -583,6 +594,43 @@ test('settings leave confirmation covers navigation, browser history and reload 
   await page.waitForURL(value => value.pathname === '/');
   assert.equal(await page.locator('#settings-page').count(), 0);
   assert.deepEqual(await page.evaluate(() => ({ local: localStorage.length, session: sessionStorage.length })), { local: 0, session: 0 });
+  assert.deepEqual(errors, []);
+});
+
+test('settings button changes enable refresh protection and returning to saved values clears it', async t => {
+  const { page, url, errors, state } = await fixture(t);
+  state.value.settings.notifications.times = ['09:00', '18:00'];
+  await page.goto(url + '/settings'); await login(page); await pageReady(page);
+  const rejectReload = async () => {
+    const shown = page.waitForEvent('dialog').then(dialog => {
+      assert.equal(dialog.type(), 'beforeunload'); return dialog.dismiss();
+    });
+    const reload = page.reload({ timeout: 1500 }).catch(() => {});
+    await shown; await reload;
+  };
+  await tab(page, 'insights');
+  await page.getByRole('button', { name: '恢复默认', exact: true }).click();
+  await rejectReload();
+  assert.equal(await setting(page, 'insights.default_prompt').inputValue(), '内置默认洞察 Prompt');
+  await setting(page, 'insights.default_prompt').fill('用户自定义 Prompt');
+  await tab(page, 'review');
+  await page.getByRole('button', { name: '移除', exact: true }).nth(1).click();
+  await rejectReload();
+  assert.equal(await page.locator('input[type="time"]').count(), 1);
+  await page.getByRole('button', { name: '添加时段', exact: true }).click();
+  await page.locator('input[type="time"]').nth(1).fill('18:00');
+  await page.getByRole('button', { name: '添加时段', exact: true }).click();
+  await rejectReload();
+  assert.equal(await page.locator('input[type="time"]').count(), 3);
+  await page.getByRole('button', { name: '移除', exact: true }).nth(2).click();
+  const dialogs = [];
+  const unexpected = dialog => { dialogs.push(dialog.type()); dialog.accept(); };
+  page.on('dialog', unexpected);
+  await page.reload(); await pageReady(page);
+  page.off('dialog', unexpected);
+  assert.deepEqual(dialogs, []);
+  assert.equal(await setting(page, 'insights.default_prompt').inputValue(), '用户自定义 Prompt');
+  assert.equal(await page.locator('input[type="time"]').count(), 2);
   assert.deepEqual(errors, []);
 });
 

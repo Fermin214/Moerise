@@ -18,8 +18,14 @@ export function createRouter({ beforeNavigate, onChange, isDirty, confirmLeave }
     const target = {
       url: location.pathname + location.search,
       key: history.state?.webKey || crypto.randomUUID(),
-      index: history.state?.webIndex ?? index,
+      index: history.state?.webIndex ?? index + 1,
     };
+    // Native fragment entries belong to the mounted page, including back/forward.
+    if (target.url === url) {
+      key = target.key; index = target.index;
+      history.replaceState({ ...history.state, webKey: key, webIndex: index }, '');
+      return;
+    }
     if (approved === target.index) { approved = null; apply(target, 'return'); return; }
     const distance = index - target.index;
     if (isDirty() && distance) {
