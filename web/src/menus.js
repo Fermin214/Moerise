@@ -3,6 +3,15 @@ const nativePopover = 'popover' in HTMLElement.prototype;
 const nativeInvoker = nativePopover && 'commandForElement' in HTMLButtonElement.prototype;
 const nativeGroup = 'focusGroup' in HTMLElement.prototype;
 const anchors = CSS.supports('position-area', 'block-end');
+let positionFrame = null;
+function queuePosition() {
+  if (positionFrame !== null || !active) return;
+  positionFrame = requestAnimationFrame(() => { positionFrame = null; active?.position(); });
+}
+document.addEventListener('scroll', queuePosition, { capture: true, passive: true });
+window.addEventListener('resize', queuePosition);
+window.visualViewport?.addEventListener('resize', queuePosition);
+window.visualViewport?.addEventListener('scroll', queuePosition);
 
 export function closeMenus() { active?.close(); }
 
@@ -52,8 +61,12 @@ export function bindMenu(trigger, menu, { signal } = {}) {
     node?.focus({ preventScroll: true });
   }
   function position() {
-    if (anchors && nativePopover) return;
-    const rect = trigger.getBoundingClientRect(), size = menu.getBoundingClientRect();
+    if (!open || anchors && nativePopover) return;
+    const rect = trigger.getBoundingClientRect();
+    if (!trigger.isConnected || rect.bottom <= 0 || rect.top >= innerHeight || rect.right <= 0 || rect.left >= innerWidth) {
+      close(true); return;
+    }
+    const size = menu.getBoundingClientRect();
     const left = Math.max(8, Math.min(rect.right - size.width, innerWidth - size.width - 8));
     const top = rect.bottom + size.height + 8 <= innerHeight ? rect.bottom + 4 : Math.max(8, rect.top - size.height - 4);
     menu.style.left = `${left}px`;
@@ -77,7 +90,7 @@ export function bindMenu(trigger, menu, { signal } = {}) {
     else trigger.focus({ preventScroll: true, focusVisible: false });
     enter = last = false;
   }
-  const api = { close, contains: node => trigger.contains(node) || menu.contains(node) };
+  const api = { close, position, contains: node => trigger.contains(node) || menu.contains(node) };
   trigger.addEventListener('pointerdown', event => { if (event.button === 0) event.preventDefault(); }, options);
   trigger.addEventListener('click', event => {
     if (open) {

@@ -520,14 +520,22 @@ test('search composition, menu keyboard, route focus and refresh protection pres
   assert.deepEqual(errors, []);
 });
 
-test('menu fallback uses viewport positioning and keyboard navigation without Popover or focusgroup', async t => {
+for (const mode of ['no-popover', 'no-anchor']) test(`menu fallback follows scrolling and viewport changes with ${mode}`, async t => {
   const { page, url } = await fixture(t);
-  await page.addInitScript(() => {
-    delete HTMLElement.prototype.popover;
+  await page.addInitScript(mode => {
+    if (mode === 'no-popover') delete HTMLElement.prototype.popover;
+    else {
+      const supports = CSS.supports.bind(CSS);
+      CSS.supports = (...args) => String(args[0]).includes('position-area') ? false : supports(...args);
+    }
     delete HTMLElement.prototype.focusGroup;
-  });
+  }, mode);
   await page.goto(url); await login(page);
   const more = page.locator('[data-name="memos/n00"] .more');
+  await more.waitFor();
+  if (mode === 'no-anchor') await page.locator('.menu').evaluateAll(nodes => {
+    for (const menu of nodes) { menu.style.setProperty('position-area', 'none'); menu.style.positionAnchor = 'auto'; }
+  });
   await more.focus(); await page.keyboard.press('ArrowDown');
   const edit = page.getByRole('menuitem', { name: '编辑', exact: true });
   await edit.waitFor();
@@ -539,6 +547,22 @@ test('menu fallback uses viewport positioning and keyboard navigation without Po
   assert.equal(await page.evaluate(() => document.activeElement.textContent), '删除');
   await page.keyboard.press('Escape');
   assert.equal(await more.evaluate(node => node === document.activeElement), true);
+
+  await more.click(); await edit.waitFor();
+  await page.evaluate(() => scrollBy(0, 80));
+  await page.waitForFunction(() => {
+    const trigger = document.querySelector('[data-name="memos/n00"] .more').getBoundingClientRect();
+    const menu = document.querySelector('[data-name="memos/n00"] .menu').getBoundingClientRect();
+    return Math.abs(menu.top - trigger.bottom - 4) < 2;
+  });
+  await page.setViewportSize({ width: 800, height: 700 });
+  await page.waitForFunction(() => {
+    const menu = document.querySelector('[data-name="memos/n00"] .menu').getBoundingClientRect();
+    return menu.left >= 8 && menu.right <= innerWidth - 8 && menu.top >= 8 && menu.bottom <= innerHeight - 8;
+  });
+  await page.evaluate(() => scrollBy(0, 500));
+  await edit.waitFor({ state: 'hidden' });
+  assert.equal(await more.getAttribute('aria-expanded'), 'false');
 });
 
 test('browser timeline management, attachment retries, history, conflicts and private cleanup', { timeout: 120_000 }, async t => {

@@ -15,13 +15,14 @@ export function createRouter({ beforeNavigate, onChange, isDirty, confirmLeave }
       const resume = restore; restore = null; resume();
       return;
     }
+    const targetURL = location.pathname + location.search;
     const target = {
-      url: location.pathname + location.search,
-      key: history.state?.webKey || crypto.randomUUID(),
+      url: targetURL,
+      key: history.state?.webKey || (targetURL === url ? key : crypto.randomUUID()),
       index: history.state?.webIndex ?? index + 1,
     };
     // Native fragment entries belong to the mounted page, including back/forward.
-    if (target.url === url) {
+    if (target.url === url && target.key === key) {
       key = target.key; index = target.index;
       history.replaceState({ ...history.state, webKey: key, webIndex: index }, '');
       return;

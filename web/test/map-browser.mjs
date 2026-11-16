@@ -420,6 +420,10 @@ test('each map history entry restores its own viewport and reader on back, reloa
   await marker(page, 1).click(); await page.waitForFunction(() => document.querySelector('.map-note')?.dataset.name === 'memos/n1');
   await page.locator('#map-field').press('+'); await page.locator('#map-field').press('ArrowDown'); const second = await view(page);
   assert.notDeepEqual(first, second);
+  await page.evaluate(() => history.go(-2)); await page.locator('.map-note[data-name="memos/n0"]').waitFor();
+  await ready(page); assert.deepEqual(await view(page), first);
+  await page.evaluate(() => history.go(2)); await page.locator('.map-note[data-name="memos/n1"]').waitFor();
+  await ready(page); assert.deepEqual(await view(page), second);
   await page.goBack(); await page.waitForURL(url + '/'); await page.goBack(); await ready(page);
   await page.locator('.map-note[data-name="memos/n0"]').waitFor(); assert.deepEqual(await view(page), first);
   await page.reload(); await ready(page); await page.locator('.map-note[data-name="memos/n0"]').waitFor(); assert.deepEqual(await view(page), first);
