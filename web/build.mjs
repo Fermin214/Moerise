@@ -26,11 +26,14 @@ for (const name of (await readdir(source)).filter(name => name.endsWith('.js')).
   modules.set(name, await readFile(`${source}/${name}`, 'utf8'));
 }
 const styles = await readFile(`${source}/styles.css`, 'utf8');
-const combined = [];
-for (const match of styles.matchAll(/^@import url\('\/([a-z-]+\.css)'\);$/gm)) {
-  combined.push(await readFile(`${source}/${match[1]}`, 'utf8'));
+const layerOrder = styles.match(/^@layer [^;{]+;$/m)?.[0] || '';
+const imports = /^@import url\('\/([a-z-]+\.css)'\)(?: layer\(([a-z-]+)\))?;$/gm;
+const combined = [layerOrder];
+for (const match of styles.matchAll(imports)) {
+  const body = await readFile(`${source}/${match[1]}`, 'utf8');
+  combined.push(match[2] ? `@layer ${match[2]} {\n${body}\n}` : body);
 }
-combined.push(styles.replace(/^@import url\('\/[a-z-]+\.css'\);\n?/gm, ''), rules.join('\n'));
+combined.push(styles.replace(imports, '').replace(layerOrder, ''), rules.join('\n'));
 const contents = new Map([
   ['index.html', html], ['styles.css', combined.join('\n') + '\n'],
   ...modules, ['favicon.svg', await readFile(`${source}/favicon.svg`, 'utf8')],

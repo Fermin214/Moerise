@@ -1,4 +1,5 @@
 import { attachmentURL, rasterImage } from './routes.js';
+import { prepareImage } from './media.js';
 
 // Build DOM nodes rather than inserting HTML; note text is always untrusted.
 export function safeLink(value) {
@@ -16,7 +17,7 @@ function attachmentLinks(note) {
   for (const item of note?.attachments || []) {
     const url = attachmentURL(note, item);
     if (!url) continue;
-    const target = { url, image: rasterImage(item.type) };
+    const target = { url, image: rasterImage(item.type), key: `${note.source_hash}:${url}` };
     names.set(item.name, target);
     urls.set(url, target);
   }
@@ -125,7 +126,7 @@ function inline(parent, text, attachments, cleanText, depth = 0) {
         const image = document.createElement('img');
         image.src = target.url;
         image.alt = content;
-        image.loading = 'lazy';
+        prepareImage(image, target.key);
         parent.append(image);
       } else {
         parent.append(document.createTextNode(text.slice(i, match.end)));

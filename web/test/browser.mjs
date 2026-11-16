@@ -10,7 +10,7 @@ import { test } from 'node:test';
 import { createWebServer } from '../server.mjs';
 
 const runtime = process.env.MOERISE_PLAYWRIGHT_MODULE;
-const { chromium } = runtime ? await import(pathToFileURL(runtime).href) : await import('playwright');
+const { [process.env.MOERISE_PLAYWRIGHT_ENGINE || 'chromium']: browserType } = runtime ? await import(pathToFileURL(runtime).href) : await import('playwright');
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aP9sAAAAASUVORK5CYII=', 'base64');
 
 async function fixture(t, language = 'zh-CN', options = {}) {
@@ -153,7 +153,7 @@ async function fixture(t, language = 'zh-CN', options = {}) {
     await browser?.close();
     await Promise.all([core, live].map(server => new Promise(resolve => { server.close(resolve); server.closeAllConnections(); })));
   });
-  browser = await chromium.launch({ headless: true, channel: process.env.MOERISE_PLAYWRIGHT_CHANNEL || undefined });
+  browser = await browserType.launch({ headless: true, channel: process.env.MOERISE_PLAYWRIGHT_CHANNEL || undefined });
   const context = await browser.newContext({ locale: language, viewport: { width: 1360, height: 960 }, ...options });
   const page = await context.newPage(), errors = [];
   await page.clock.setFixedTime(new Date('2026-10-30T04:00:00Z'));
@@ -370,9 +370,11 @@ test('mobile navigation, touch gestures, search and rotation preserve drafts and
   await screenshot(page, 'navigation-mobile.png');
   await page.locator('#user-menu').focus();
   await page.keyboard.press('Tab');
+  assert.equal(await page.evaluate(() => document.activeElement === document.body ||
+    document.querySelector('#navigation-dialog').contains(document.activeElement)), true);
+  await page.locator('#navigation-close').focus();
+  await page.locator('#content').evaluate(node => node.focus());
   assert.equal(await page.locator('#navigation-close').evaluate(node => node === document.activeElement), true);
-  await page.keyboard.press('Shift+Tab');
-  assert.equal(await page.locator('#user-menu').evaluate(node => node === document.activeElement), true);
   await page.keyboard.press('Escape');
   await drawer.waitFor({ state: 'hidden' });
   assert.equal(await toggle.evaluate(node => node === document.activeElement), true);
@@ -470,13 +472,62 @@ test('mobile navigation, touch gestures, search and rotation preserve drafts and
   assert.deepEqual(errors, []);
 });
 
+test('search composition, menu keyboard, route focus and refresh protection preserve input', async t => {
+  const { page, state, url, errors } = await fixture(t);
+  await page.goto(url); await login(page);
+  const query = page.locator('#q');
+  await query.focus();
+  await query.evaluate(node => {
+    node.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true }));
+    node.value = '组词中的文字';
+    node.dispatchEvent(new InputEvent('input', { bubbles: true, isComposing: true }));
+    node.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', isComposing: true, keyCode: 229, bubbles: true }));
+  });
+  await page.waitForTimeout(300);
+  assert.equal(new URL(page.url()).search, '');
+  await query.evaluate(node => { node.value = '笔记'; node.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true })); });
+  await page.waitForURL(value => value.searchParams.get('query') === '笔记');
+  assert.ok(await query.evaluate(node => node === document.activeElement));
+  await query.fill(''); await query.press('Enter');
+  await page.waitForURL(value => !value.search);
+  const more = page.locator('[data-name="memos/n00"] .more');
+  await more.focus(); await page.keyboard.press('ArrowDown');
+  await page.getByRole('menuitem', { name: '编辑', exact: true }).waitFor();
+  assert.equal(await page.evaluate(() => document.activeElement.textContent), '编辑');
+  await page.keyboard.press('End');
+  assert.equal(await page.evaluate(() => document.activeElement.textContent), '删除');
+  await page.keyboard.press('Home');
+  await page.keyboard.press('ArrowDown');
+  assert.equal(await page.evaluate(() => document.activeElement.textContent), '打开笔记');
+  await page.keyboard.press('Escape');
+  assert.ok(await more.evaluate(node => node === document.activeElement));
+  const link = page.locator('[data-name="memos/n00"] .dlink');
+  await link.focus(); await page.keyboard.press('Enter');
+  await page.locator('article.note').waitFor();
+  assert.equal(await page.evaluate(() => document.activeElement.id), 'main');
+  await page.locator('#back').click();
+  await page.waitForFunction(() => document.activeElement.matches('.dlink'));
+  await page.locator('#content').fill('刷新保护正文');
+  const rejected = page.waitForEvent('dialog').then(dialog => { assert.equal(dialog.type(), 'beforeunload'); return dialog.dismiss(); });
+  const reload = page.reload({ timeout: 1500 }).catch(() => {});
+  await rejected; await reload;
+  assert.equal(await page.locator('#content').inputValue(), '刷新保护正文');
+  await page.locator('#user-menu').click(); await page.locator('#logout').click();
+  await page.getByRole('button', { name: '继续编辑', exact: true }).click();
+  assert.equal(state.session, true);
+  assert.equal(await page.locator('#content').inputValue(), '刷新保护正文');
+  assert.deepEqual(await page.evaluate(() => ({ local: localStorage.length, session: sessionStorage.length })), { local: 0, session: 0 });
+  assert.deepEqual(errors, []);
+});
+
 test('browser timeline management, attachment retries, history, conflicts and private cleanup', { timeout: 120_000 }, async t => {
   const { page, context, state, errors, url } = await fixture(t);
   await page.goto(`${url}/notes/n02?from=${encodeURIComponent('/?tag=想法')}`);
   await login(page);
   await page.locator('article.note').waitFor();
   assert.equal(new URL(page.url()).pathname, '/notes/n02');
-  assert.equal(await page.locator('.attachment-list img').count(), 1);
+  assert.equal(await page.locator('article.note img').count(), 1);
+  assert.equal(await page.locator('.attachment-list img').count(), 0);
   assert.equal(await page.locator('a[download="document.pdf"]').count(), 1);
   const nativeLink = page.locator('.note-content a', { hasText: '资料' });
   assert.equal(await nativeLink.getAttribute('href'), '/api/app/v1/notes/n02/attachments/doc/content');
@@ -607,6 +658,7 @@ test('browser timeline management, attachment retries, history, conflicts and pr
   await page.locator('#navigation-toggle').click();
   await page.locator('#user-menu').click();
   await page.locator('#logout').click();
+  await page.getByRole('button', { name: '放弃修改', exact: true }).click();
   await page.locator('#login-form').waitFor({ state: 'visible' });
   assert.equal(await page.locator('#notes').textContent(), '');
   assert.equal(await page.locator('#content').inputValue(), '');
@@ -654,6 +706,7 @@ test('late list and file reads cannot restore private data or overwrite a newer 
   await page.locator('#attachment-input').setInputFiles({ name: 'late.txt', mimeType: 'text/plain', buffer: Buffer.from('private late bytes') });
   await page.locator('#user-menu').click();
   await page.locator('#logout').click();
+  await page.getByRole('button', { name: '放弃修改', exact: true }).click();
   await page.locator('#login-form').waitFor({ state: 'visible' });
   await page.evaluate(() => { globalThis.releaseFile(); File.prototype.arrayBuffer = globalThis.originalRead; });
   await login(page);

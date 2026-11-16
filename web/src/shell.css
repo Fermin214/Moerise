@@ -32,7 +32,7 @@ body{margin:0}*{box-sizing:border-box}a{color:inherit;text-decoration:none}butto
 .tg .ent{min-height:34px;font-size:13px}
 .card{position:relative;background:#fff;border:1px solid var(--line,#E3E8EF);border-radius:14px;padding:14px 18px 16px}
 .card .hd{display:flex;align-items:center;justify-content:space-between;font-size:13px;color:#5F6672;min-height:32px}
-.card p{margin:4px 0 10px;font-size:16px;line-height:1.85;white-space:pre-line}
+.card .note-content p{margin:4px 0 10px;font-size:16px;line-height:1.85;white-space:pre-line}
 .tag{display:inline-block;font-size:13px;line-height:22px;padding:0 9px;border-radius:999px;border:1px solid #C9DAF5;background:#EEF4FD;color:#2A5BB5}
 button.tag{cursor:pointer;font-family:inherit}button.tag:hover{background:#E3ECFA}
 .dlink{border:0;background:transparent;padding:0;font-size:13px;color:#5F6672;cursor:pointer}
@@ -76,7 +76,7 @@ button.flc{cursor:pointer;font-size:13px;line-height:1.6}
 @media (prefers-reduced-motion:reduce){.fl,.wa,.wb{animation:none}}
 .peek{position:absolute;left:0;right:0;top:0;bottom:22px;background:#fff;border:1px solid var(--line,#E3E8EF);border-radius:22px}
 .card.big.rv{border-radius:22px;padding:30px 36px;min-height:230px;border-color:var(--line,#E3E8EF);box-shadow:0 12px 36px rgba(31,35,40,.06)}
-.card.big.rv p{font-size:22px!important;line-height:2!important;margin:14px 0 6px}
+.card.big.rv .note-content p{font-size:22px;line-height:2;margin:14px 0 6px}
 .pill{font-size:12px;font-weight:600;color:#1E4A9A;background:#E3ECFA;border-radius:999px;padding:2px 10px}
 .ghost{height:40px;padding:0 12px;border:0;border-radius:10px;background:transparent;color:#5F6672;font-size:14px;cursor:pointer}.ghost:hover{background:var(--surface-muted,#F0F4F9)}
 .ghost.dg{color:#B42318}.ghost.dg:hover{background:#FDF3F2}
@@ -90,9 +90,9 @@ button.flc{cursor:pointer;font-size:13px;line-height:1.6}
 .pbtn.on{background:#DCE8FB;border-color:#B5CCF2}
 .stage{flex:1;display:flex;flex-direction:column;gap:16px}
 .card.big{padding:28px 32px}
-.card.big p{font-size:21px!important;line-height:1.9!important;margin:12px 0 6px}
+.card.big .note-content p{font-size:21px;line-height:1.9;margin:12px 0 6px}
 .card.note{padding:26px 32px 22px;border-radius:18px}
-.card.note p{font-size:18px;line-height:1.95;margin:10px 0 14px}
+.card.note .note-content p{font-size:18px;line-height:1.95;margin:10px 0 14px}
 .meta{font-size:12px;color:#8A909A;margin-top:14px}
 .pbtn{height:40px;padding:0 16px;border:1px solid #D5E1F7;border-radius:10px;background:#fff;color:#1E4A9A;font-size:14px;font-weight:600;cursor:pointer}
 .pbtn:hover{background:#EEF4FD}

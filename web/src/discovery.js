@@ -1,0 +1,348 @@
+import { l, setAttr } from './i18n.js';
+import { el, button } from './dom.js';
+import { noteID, listQuery } from './routes.js';
+import { validNote } from './notes.js';
+import { errorMessage as errorText } from './errors.js';
+
+function discoveryText(value) {
+  const code = typeof value === 'string' ? value : value?.code;
+  return {
+    EMBEDDING_DISABLED: l("请在设置中启用 Embedding。"),
+    EMBEDDING_UNAVAILABLE: l("Embedding 暂时无法连接，请重试或在设置中检查连接。"),
+    EMBEDDING_RATE_LIMITED: l("Embedding 调用受限，请稍后重试。"),
+    EMBEDDING_PROTOCOL: l("Embedding 返回格式或维度与配置不符，请在设置中检查连接。"),
+    INDEX_NOT_READY: l("语义索引尚未就绪，请在设置中查看构建进度后重试。"),
+    NO_SOURCE_VECTORS: l("这条笔记没有可用的正文向量，请从其他笔记开始。"),
+    SEMANTIC_UNAVAILABLE: l("语义索引暂时不可用，请稍后重试。"),
+    WALK_RESOURCE_LIMIT: l("漫步暂时达到技术资源限制，请重试。"),
+    WALK_ARCHIVED: l("归档笔记不参与漫步，请选择其他笔记。"),
+    RESOURCE_LIMIT: l("漫步暂时达到技术资源限制，请重试。"),
+    WALK_RESPONSE_INVALID: l("服务返回的漫步内容不完整，请重试。"),
+    REVIEW_RESPONSE_INVALID: l("服务返回的回顾内容不完整，请重试。"),
+    REQUEST_TIMEOUT: l("读取超时，请重试。"),
+  }[code] || (typeof value === 'string' ? l("服务提示：{0}", { 0: value }) : errorText(value));
+}
+
+export function createDiscovery({ request, sessionRequest, getIdentity, localToday, formatTime, discoveryCard, navigate, startFromNote, expire }) {
+  let reviewView = null, walkView = null, walkConfiguration = null, walkFloaters = null;
+  function createPage(kind, { key: pageKey, seedName }) {
+    let alive = true, sequence = 0, controller = null, busy = false, failure = null, retry = null;
+    let modelHint = '', configured = walkConfiguration?.enabled === true, modelController = null;
+    let floaters = walkFloaters || [], floaterController, floaterFailure, animatedNote, preparedNext = null;
+    let seedPending = kind === 'walk' && !!seedName && walkView?.key !== pageKey;
+    const root = el('div', `stage discovery-page ${kind}-page`);
+    root.id = 'discovery-page';
+    const heading = el('header', 'discovery-heading');
+    heading.append(el('h1', 'vt', kind === 'review' ? l("回顾") : l("漫步")));
+    const content = el('div', 'discovery-content'), controls = el('div', 'discovery-controls');
+    root.append(heading, content, controls);
+    const active = ticket => alive && ticket === sequence;
+    function discardNext() {
+      preparedNext?.controller.abort(); preparedNext = null;
+    }
+    function cancel() {
+      sequence++; controller?.abort(); controller = null; busy = false; discardNext();
+    }
+    function message(text, error = false) {
+      const node = el('p', error ? 'error' : 'sub', text);
+      node.setAttribute('role', error ? 'alert' : 'status'); content.append(node);
+    }
+    function updateBusy() {
+      root.setAttribute('aria-busy', String(kind === 'review' ? busy && !reviewView :
+        busy || (!!modelController && !walkConfiguration)));
+    }
+    function render() {
+      if (!alive) return;
+      content.replaceChildren(); controls.replaceChildren();
+      updateBusy();
+      if (kind === 'review') renderReview();
+      else renderWalk();
+      if (failure) {
+        message(discoveryText(failure), true);
+        content.append(button(l("重试"), 'ghost discovery-retry', () => retry?.()));
+      }
+    }
+    function renderReview() {
+      const batch = reviewView?.batch;
+      if (!batch) {
+        if (busy) message(l("正在加载回顾…"));
+        return;
+      }
+      if (!batch.items.length) { message(l("今天没有可回顾的旧笔记。")); return; }
+      const selected = reviewView.position;
+      const stack = el('div', 'review-stack');
+      for (let i = 0; i < Math.min(2, batch.items.length - selected - 1); i++) {
+        const peek = el('div', `peek peek-${i + 1}`); peek.setAttribute('aria-hidden', 'true'); stack.append(peek);
+      }
+      batch.items.forEach((item, index) => {
+        let card;
+        if (item.unavailable) {
+          card = el('article', 'card big rv discovery-note');
+          card.append(el('p', 'sub', l("这条笔记已不存在或无法访问。")));
+        } else card = discoveryCard(item.note, true);
+        if (index === selected && animatedNote !== `${batch.id}:${selected}`) card.classList.add(selected % 2 ? 'wb' : 'wa');
+        card.hidden = index !== selected; card.dataset.reviewIndex = String(index); stack.append(card);
+      });
+      animatedNote = `${batch.id}:${selected}`;
+      content.append(stack);
+      const positions = el('div', 'pg review-positions');
+      positions.setAttribute('role', 'group'); setAttr(positions, 'aria-label', l("回顾条目"));
+      batch.items.forEach((_, index) => {
+        const dot = button('', `dt${index === selected ? ' on' : ''}`, () => {
+          reviewView.position = index; render();
+          root.querySelectorAll('.review-positions button')[index].focus({ preventScroll: true });
+        });
+        setAttr(dot, 'aria-label', l("第 {0} / {1} 条", { 0: index + 1, 1: batch.items.length }));
+        dot.setAttribute('aria-pressed', String(index === selected)); positions.append(dot);
+      });
+      const actions = el('div', 'discovery-actions'), current = batch.items[selected];
+      if (!current.unavailable) {
+        if (current.note.state === 'NORMAL') actions.append(button(l("从这条漫步"), 'ghost', () => startFromNote(current.note)));
+        actions.append(button(l("洞察这条"), 'ghost', () => navigate(`/insights?${new URLSearchParams({ note: current.note.name })}`)));
+      }
+      actions.append(button(selected + 1 < batch.items.length ? l("下一条") : l("再看一遍"), 'save', () => {
+        reviewView.position = (selected + 1) % batch.items.length; render();
+        root.querySelector('.discovery-actions .save').focus({ preventScroll: true });
+      }));
+      controls.append(positions, actions);
+    }
+    async function loadReview() {
+      cancel();
+      const ticket = sequence;
+      if (reviewView?.batch.date !== localToday() || reviewView?.batch.timezone !== getIdentity()?.timezone) reviewView = null;
+      controller = new AbortController(); busy = true; failure = null; retry = loadReview; render();
+      let changed = false;
+      try {
+        const batch = await request('/reviews/daily', { controller });
+        if (!active(ticket)) return;
+        if (!batch?.id || !/^\d{4}-\d{2}-\d{2}$/.test(batch.date) || !batch.timezone || !Array.isArray(batch.items) ||
+            batch.items.some(item => !item || !noteID(item.name) || typeof item.unavailable !== 'boolean' ||
+              (!item.unavailable && (!validNote(item.note) || item.note.name !== item.name)))) {
+          throw Object.assign(new Error('Invalid daily review'), { code: 'REVIEW_RESPONSE_INVALID' });
+        }
+        changed = JSON.stringify(batch) !== JSON.stringify(reviewView?.batch);
+        const position = reviewView?.batch.id === batch.id ? reviewView.position : 0;
+        reviewView = { batch, position: Math.min(position, Math.max(0, batch.items.length - 1)) };
+      } catch (err) {
+        if (!active(ticket) || err.name === 'AbortError') return;
+        if (err.status === 401) { expire(err); return; }
+        failure = err;
+      } finally {
+        if (active(ticket)) {
+          controller = null; busy = false;
+          if (changed || failure || !reviewView) render();
+          else root.setAttribute('aria-busy', 'false');
+        }
+      }
+    }
+    function stopWalk() {
+      cancel(); seedPending = false; walkView = { key: pageKey, result: null, previous: null };
+      animatedNote = null; failure = retry = null; render();
+    }
+    function renderWalk() {
+      if (modelHint) {
+        message(modelHint);
+        const settings = el('a', 'dlink', l("打开设置")); settings.href = '/settings'; settings.dataset.route = ''; content.append(settings);
+      }
+      const result = walkView?.result;
+      if (result?.item) {
+        const notes = el('div', 'walk-cards');
+        if (walkView.previous) {
+          const previous = el('div', 'card walk-trail');
+          previous.append(el('span', 'sub', formatTime(walkView.previous.create_time)),
+            el('div', 'walk-trail-text', walkView.previous.content));
+          previous.setAttribute('aria-hidden', 'true'); notes.append(previous);
+        }
+        const current = discoveryCard(result.item.note);
+        if (animatedNote !== result.item.note.name) current.classList.add(result.path.length % 2 ? 'wa' : 'wb');
+        animatedNote = result.item.note.name;
+        notes.append(current); content.append(notes);
+      } else if (!result?.exhausted) {
+        const start = el('div', 'walk-start');
+        floaters.forEach(note => {
+          const preview = [...note.content.replace(/\s+/gu, ' ').trim()].slice(0, 64).join('') || note.attachments?.[0]?.filename || l("笔记");
+          const floater = button('', 'flc fl walk-floater', () => walkRequest('/walks/start', { name: note.name }));
+          floater.append(el('span', '', preview));
+          floater.dataset.name = note.name;
+          setAttr(floater, 'aria-label', l("从这条笔记开始：{0}", { 0: preview }));
+          floater.disabled = busy || !configured;
+          start.append(floater);
+        });
+        const control = button(busy || (modelController && !walkConfiguration) ? l("翻找中…") : l("随机开始"), 'save', () => walkRequest('/walks/start', {}));
+        control.disabled = busy || !configured; start.append(control); content.append(start);
+        if (floaterFailure) {
+          message(errorText(floaterFailure), true);
+          content.append(button(l("重试加载笔记"), 'ghost discovery-retry', loadFloaters));
+        }
+      }
+      for (const warning of walkView?.warnings || []) message(discoveryText(warning));
+      if (result?.exhausted) message(result.item ? l("能走的路都走完了。") : l("没有可漫步的笔记。"));
+      if (result || ((busy || failure) && retry !== loadWalk)) {
+        const actions = el('div', 'discovery-actions');
+        actions.append(button(l("停止"), 'pbtn', stopWalk));
+        if (result?.item && !result.exhausted) {
+          const next = button(busy ? l("翻找中…") : l("继续漫步"), 'save', () => walkRequest('/walks/next', {
+            name: result.item.note.name, path: [...result.path],
+          }));
+          next.disabled = busy || !configured; actions.append(next);
+        }
+        controls.append(actions);
+      }
+    }
+    async function loadFloaters() {
+      floaterController?.abort();
+      const pending = new AbortController(); floaterController = pending; floaterFailure = null;
+      try {
+        const page = await request(`/notes?${listQuery('/', { tags: [] })}`, { controller: pending });
+        if (!alive || floaterController !== pending) return;
+        if (!Array.isArray(page?.notes) || page.notes.some(note => !validNote(note) || note.state !== 'NORMAL')) {
+          throw Object.assign(new Error('Invalid notes'), { code: 'NOTE_LIST_INVALID' });
+        }
+        walkFloaters = floaters = page.notes.slice(0, 6);
+      } catch (err) {
+        if (!alive || floaterController !== pending || err.name === 'AbortError') return;
+        if (err.status === 401) { expire(err); return; }
+        floaterFailure = err;
+      } finally {
+        if (alive && floaterController === pending) {
+          floaterController = null;
+          if (!walkView?.result) render();
+        }
+      }
+    }
+    async function fetchWalk(path, body, pending) {
+      const result = await sessionRequest(path, { method: 'POST', body, controller: pending });
+      const validPath = Array.isArray(result?.path) && result.path.every(name => typeof name === 'string' && noteID(name)) &&
+        new Set(result.path).size === result.path.length;
+      const prior = path === '/walks/next' ? body.path : [];
+      if (!validPath || typeof result.mode !== 'string' || typeof result.exhausted !== 'boolean' ||
+          !Array.isArray(result.warnings) || result.warnings.some(value => typeof value !== 'string') ||
+          prior.some((name, index) => result.path[index] !== name) ||
+          (result.item ? !validNote(result.item.note) || result.item.note.state !== 'NORMAL' || result.path.at(-1) !== result.item.note.name ||
+            result.path.length !== prior.length + 1 || (body.name && !prior.length && result.item.note.name !== body.name)
+            : result.path.length !== prior.length)) {
+        throw Object.assign(new Error('Invalid walk response'), { code: 'WALK_RESPONSE_INVALID' });
+      }
+      return result;
+    }
+    function prepareNext() {
+      const source = walkView?.result;
+      if (!alive || busy || !configured || !source?.item || source.exhausted || preparedNext?.source === source) return;
+      discardNext();
+      const body = { name: source.item.note.name, path: [...source.path] };
+      const pending = { source, key: JSON.stringify(body), controller: new AbortController(), outcome: null, loadedAt: 0 };
+      preparedNext = pending;
+      pending.promise = fetchWalk('/walks/next', body, pending.controller).then(result => {
+        pending.loadedAt = Date.now();
+        return pending.outcome = { result };
+      }, error => {
+        if (alive && preparedNext === pending && error.status === 401) expire(error);
+        return pending.outcome = { error };
+      });
+    }
+    async function walkRequest(path, body) {
+      if (busy || !configured) return;
+      let pending = path === '/walks/next' && preparedNext?.source === walkView?.result &&
+        preparedNext.key === JSON.stringify(body) ? preparedNext : null;
+      if (pending?.outcome?.error || (pending?.loadedAt && Date.now() - pending.loadedAt >= 60_000)) pending = null;
+      if (pending) preparedNext = null;
+      else discardNext();
+      const ticket = ++sequence;
+      controller = pending?.controller || new AbortController(); busy = true; failure = null;
+      retry = () => walkRequest(path, body); walkView.warnings = [];
+      if (!pending?.outcome?.result) render();
+      try {
+        const outcome = pending ? pending.outcome || await pending.promise : { result: await fetchWalk(path, body, controller) };
+        if (!active(ticket)) return;
+        if (outcome.error) throw outcome.error;
+        const result = outcome.result;
+        walkView.warnings = result.warnings;
+        if (!result.item && !result.exhausted) {
+          failure = { code: 'WALK_RESOURCE_LIMIT' };
+        } else {
+          if (result.item) {
+            walkView.previous = walkView.result?.item?.note || null; walkView.result = result;
+          } else walkView.result = { ...result, item: walkView.result?.item };
+        }
+      } catch (err) {
+        if (!active(ticket) || err.name === 'AbortError') return;
+        if (err.status === 401) { expire(err); return; }
+        failure = err;
+      } finally {
+        if (active(ticket)) {
+          controller = null; busy = false; render();
+          if (!failure) prepareNext();
+        }
+      }
+    }
+    function startSeed() {
+      if (!seedPending || !configured || busy) return;
+      seedPending = false;
+      if (!noteID(seedName)) { failure = { code: 'SOURCE_NOT_FOUND' }; render(); return; }
+      return walkRequest('/walks/start', { name: seedName });
+    }
+    async function loadWalk() {
+      const ticket = sequence, pending = new AbortController();
+      let redraw = !walkConfiguration;
+      modelController?.abort(); modelController = pending;
+      if (!walkConfiguration) { failure = null; retry = loadWalk; }
+      render();
+      try {
+        const models = await sessionRequest('/models', { controller: pending });
+        if (!alive || modelController !== pending) return;
+        if (typeof models?.embedding?.enabled !== 'boolean') {
+          throw Object.assign(new Error('Invalid models response'), { code: 'WALK_RESPONSE_INVALID' });
+        }
+        redraw ||= configured !== models.embedding.enabled;
+        walkConfiguration = { enabled: models.embedding.enabled };
+        configured = models.embedding?.enabled === true;
+        modelHint = configured ? '' : l("请在设置中启用 Embedding，再开始漫步。");
+        if (!configured) discardNext();
+        else { startSeed(); prepareNext(); }
+      } catch (err) {
+        if (!alive || modelController !== pending || err.name === 'AbortError') return;
+        if (err.status === 401) { expire(err); return; }
+        if (active(ticket)) { failure = err; retry = loadWalk; redraw = true; }
+      } finally {
+        if (alive && modelController === pending) {
+          modelController = null;
+          if (redraw || !walkView?.result) render();
+          else updateBusy();
+        }
+      }
+    }
+    return {
+      async mount(parent) {
+        parent.append(root);
+        if (kind === 'review') await loadReview();
+        else {
+          walkView ||= { key: null, result: null, previous: null };
+          if (seedPending) walkView = { key: pageKey, result: null, previous: null };
+          if (walkConfiguration) {
+            modelHint = configured ? '' : l("请在设置中启用 Embedding，再开始漫步。");
+            startSeed(); prepareNext();
+          }
+          await Promise.all([loadWalk(), loadFloaters()]);
+        }
+      },
+      refresh() {
+        cancel(); floaterController?.abort(); floaters = [];
+        if (kind === 'review') loadReview();
+        else {
+          walkView = { key: pageKey, result: null, previous: null };
+          animatedNote = null; failure = retry = null; render();
+          loadWalk(); loadFloaters();
+        }
+      },
+      destroy() { alive = false; cancel(); modelController?.abort(); floaterController?.abort(); root.remove(); },
+    };
+  }
+  return {
+    createPage,
+    clear() { reviewView = walkView = walkConfiguration = walkFloaters = null; },
+    invalidate({ settings = false } = {}) {
+      reviewView = walkView = walkFloaters = null;
+      if (settings) walkConfiguration = null;
+    },
+  };
+}

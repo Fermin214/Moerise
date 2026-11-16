@@ -10,7 +10,7 @@ import { test } from 'node:test';
 import { createWebServer } from '../server.mjs';
 
 const runtime = process.env.MOERISE_PLAYWRIGHT_MODULE;
-const { chromium } = runtime ? await import(pathToFileURL(runtime).href) : await import('playwright');
+const { [process.env.MOERISE_PLAYWRIGHT_ENGINE || 'chromium']: browserType } = runtime ? await import(pathToFileURL(runtime).href) : await import('playwright');
 function settings() {
   return {
     version: 1, default_insight_prompt: '内置默认洞察 Prompt',
@@ -137,9 +137,9 @@ async function fixture(t, language = 'zh-CN') {
     await Promise.all([web, core].map(server => new Promise(resolve => { server.close(resolve); server.closeAllConnections(); })));
     await rm(dist, { recursive: true, force: true });
   });
-  browser = await chromium.launch({
+  browser = await browserType.launch({
     headless: true, channel: process.env.MOERISE_PLAYWRIGHT_CHANNEL || undefined,
-    args: [`--log-file=${join(dist, 'chromium.log')}`],
+    args: process.env.MOERISE_PLAYWRIGHT_ENGINE ? [] : [`--log-file=${join(dist, 'chromium.log')}`],
     env: { ...process.env, CHROME_LOG_FILE: join(dist, 'chromium.log') },
   });
   const page = await browser.newPage({ locale: language, viewport: { width: 1360, height: 960 } }), errors = [];
@@ -483,6 +483,8 @@ test('model settings pair protocols, check saved versions and discard obsolete r
   assert.equal(await setting(page, 'embedding.provider').inputValue(), 'bailian');
   assert.equal(await setting(page, 'embedding.send_dimensions').isChecked(), false);
   await page.locator('a[data-route][href="/review"]').click();
+  await page.getByRole('button', { name: '放弃修改', exact: true }).click();
+  await page.locator('#settings-page').waitFor({ state: 'detached' });
   assert.equal(await page.locator('#settings-page').count(), 0);
   await page.locator('a[data-route][href="/map"]').click();
   await page.locator('.map-page [role="status"]').filter({ hasText: '正在生成观星布局' }).waitFor();
@@ -512,7 +514,9 @@ test('conflict requires reload, busy can retry, and leaving or expiring removes 
   assert.ok(await page.getByRole('button', { name: '保存设置', exact: true }).isDisabled());
   assert.equal(await setting(page, 'review.count').inputValue(), '4');
   assert.equal(await secret(page, 'LLM API Key').inputValue(), '');
-  await page.getByRole('button', { name: '重新加载设置' }).click(); await pageReady(page);
+  await page.getByRole('button', { name: '重新加载设置' }).click();
+  await page.getByRole('button', { name: '放弃修改', exact: true }).click();
+  await pageReady(page);
   assert.equal(await setting(page, 'review.count').inputValue(), '3');
   await setting(page, 'review.count').fill('4'); state.fail = 'SETTINGS_BUSY';
   await page.getByRole('button', { name: '保存设置', exact: true }).click();
@@ -523,6 +527,8 @@ test('conflict requires reload, busy can retry, and leaving or expiring removes 
   await tab(page, 'models');
   await operation(page, 'LLM API Key').selectOption('replace'); await secret(page, 'LLM API Key').fill('route-key');
   await page.locator('a[data-route][href="/review"]').click();
+  await page.getByRole('button', { name: '放弃修改', exact: true }).click();
+  await page.locator('#settings-page').waitFor({ state: 'detached' });
   assert.equal(await page.locator('#settings-page').count(), 0);
   assert.equal(await page.locator('input[type="password"]').count(), 1);
   state.hold = true;
@@ -540,6 +546,7 @@ test('conflict requires reload, busy can retry, and leaving or expiring removes 
   await page.getByRole('button', { name: '保存设置', exact: true }).click();
   await page.waitForFunction(() => document.querySelector('.settings-form')?.getAttribute('aria-busy') === 'true');
   await page.locator('#user-menu').click(); await page.locator('#logout').click();
+  await page.getByRole('button', { name: '放弃修改', exact: true }).click();
   await page.locator('#login-form').waitFor({ state: 'visible' });
   for (const release of state.pending.splice(0)) release();
   state.hold = false;
@@ -549,8 +556,33 @@ test('conflict requires reload, busy can retry, and leaving or expiring removes 
   await operation(page, 'LLM API Key').selectOption('replace'); await secret(page, 'LLM API Key').fill('expired-key');
   state.session = false;
   await page.getByRole('button', { name: '重新加载设置' }).click();
+  await page.getByRole('button', { name: '放弃修改', exact: true }).click();
   await page.locator('#login-form').waitFor({ state: 'visible' });
   assert.equal(await page.locator('#settings-page').count(), 0);
+  assert.deepEqual(errors, []);
+});
+
+test('settings leave confirmation covers navigation, browser history and reload without storing fields', async t => {
+  const { page, url, errors } = await fixture(t);
+  await page.goto(url); await login(page);
+  await page.locator('a[data-route][href="/settings"]').click(); await pageReady(page);
+  await tab(page, 'review');
+  await setting(page, 'review.count').fill('7');
+  await page.locator('a[data-route][href="/review"]').click();
+  await page.getByRole('button', { name: '继续编辑', exact: true }).click();
+  assert.equal(new URL(page.url()).pathname, '/settings');
+  assert.equal(await setting(page, 'review.count').inputValue(), '7');
+  await page.goBack();
+  await page.getByRole('button', { name: '继续编辑', exact: true }).click();
+  assert.equal(new URL(page.url()).pathname, '/settings');
+  await page.getByRole('button', { name: '重新加载设置', exact: true }).click();
+  await page.getByRole('button', { name: '继续编辑', exact: true }).click();
+  assert.equal(await setting(page, 'review.count').inputValue(), '7');
+  await page.goBack();
+  await page.getByRole('button', { name: '放弃修改', exact: true }).click();
+  await page.waitForURL(value => value.pathname === '/');
+  assert.equal(await page.locator('#settings-page').count(), 0);
+  assert.deepEqual(await page.evaluate(() => ({ local: localStorage.length, session: sessionStorage.length })), { local: 0, session: 0 });
   assert.deepEqual(errors, []);
 });
 

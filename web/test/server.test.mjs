@@ -3,7 +3,7 @@ import http from 'node:http';
 import { once } from 'node:events';
 import { text as readRequestText } from 'node:stream/consumers';
 import { test } from 'node:test';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createWebServer } from '../server.mjs';
@@ -40,7 +40,8 @@ function raw(url, path) {
 
 test('build assets are served with no-store and a same-origin CSP', async t => {
   const { url } = await fixture(t, () => assert.fail('Static files must not reach Core'));
-  for (const path of ['/', '/app.js', '/shell.js', '/i18n.js', '/en.js', '/draft.js', '/errors.js', '/routes.js', '/markdown.js', '/insights.js', '/map.js', '/map-scene.js', '/map-paint.js', '/map-worker.js', '/chat-stream.js', '/styles.css', '/favicon.svg']) {
+  const files = (await readdir(new URL('../src/', import.meta.url))).filter(name => /\.(?:js|css)$/.test(name));
+  for (const path of ['/', ...files.map(name => `/${name}`), '/favicon.svg']) {
     const response = await fetch(url + path);
     assert.equal(response.status, 200);
     assert.equal(response.headers.get('cache-control'), 'no-store');
