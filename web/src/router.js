@@ -23,6 +23,7 @@ export function createRouter({ beforeNavigate, onChange, isDirty, confirmLeave }
     };
     // Native fragment entries belong to the mounted page, including back/forward.
     if (target.url === url && target.key === key) {
+      beforeNavigate(true);
       key = target.key; index = target.index;
       history.replaceState({ ...history.state, webKey: key, webIndex: index }, '');
       return;

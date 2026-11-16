@@ -429,6 +429,16 @@ test('each map history entry restores its own viewport and reader on back, reloa
   await page.reload(); await ready(page); await page.locator('.map-note[data-name="memos/n0"]').waitFor(); assert.deepEqual(await view(page), first);
   await page.goForward(); await page.waitForURL(url + '/'); await page.goForward(); await ready(page);
   await page.locator('.map-note[data-name="memos/n1"]').waitFor(); assert.deepEqual(await view(page), second);
+
+  await page.locator('.skip-link').focus(); await page.keyboard.press('Enter'); await page.waitForURL(url + '/map#main');
+  assert.deepEqual(await view(page), second);
+  await page.locator('nav a[href="/"]').click(); await page.waitForURL(url + '/');
+  await page.locator('nav a[href="/map"]').click(); await ready(page);
+  await page.locator('#map-field').press('Home');
+  await marker(page, 0).click(); await page.locator('.map-note[data-name="memos/n0"]').waitFor();
+  await page.evaluate(() => history.go(-2)); await page.waitForURL(url + '/map#main');
+  await page.locator('.map-note[data-name="memos/n1"]').waitFor(); await ready(page);
+  assert.deepEqual(await view(page), second);
 });
 
 

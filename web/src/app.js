@@ -181,6 +181,10 @@ function sidebarFilter(change) {
   navigate(timelineURL(source.path, { ...source.values, query: $('q').value, ...change }));
 }
 function rememberView(writeHistory = true, clean = false) {
+  if (writeHistory && identity && (mapPage || notePath.test(location.pathname))) {
+    const state = mapPage ? { mapView } : { returnKey: routeReturnKey };
+    history.replaceState({ ...history.state, ...state }, '');
+  }
   if (!identity || !pageCount || !['/', '/archived'].includes(new URL(router.url, location.origin).pathname)) return;
   const previous = snapshots.get(router.key);
   snapshots.delete(router.key);
