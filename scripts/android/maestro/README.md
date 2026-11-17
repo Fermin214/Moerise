@@ -89,7 +89,7 @@ python -B scripts/android/maestro/validate.py --flow editing --parameters-json $
 
 `flow` 接受 catalog 入口名或对应 YAML 文件名。凭据仍从进程环境读取，不能混入 JSON。默认无参数检查兼容运行器已有的主机检查入口。校验错误只输出规则说明，不回显凭据或原始解析片段。
 
-允许的命令包括已知控件的点击、断言、有限等待与滚动、ASCII `inputText`、有界 `eraseText` 和有明确元素条件的 `runFlow`。普通界面等待为 15 秒；归档、删除、选材保存和附件上传的结果等待为 65 秒，与客户端请求预算一致，结果出现后立即继续。`longPressOn` 只接受指定测试输入框，全选动作必须跟随已知输入框的聚焦，一次退格必须跟随全选动作。系统全选动作隐藏时，先打开已识别的文本工具栏溢出菜单。搜索提交限定在聚焦的 `search_query` 上执行 `pressKey` 的 `Enter`，对应界面的 `ImeAction.Search`；收起键盘不替代提交。时间戳匹配限定在指定笔记内，原测试的 `detail_back`、`note_detail`、`open_note_${NOTE_NAME}` 仅允许用于缺席断言。条件分支首先断言其前置状态。拒绝清数据、停止应用、网络修改、安装卸载、任意脚本、坐标、自动 retry／repeat 和吞错参数。
+允许的命令包括已知控件的点击、断言、有限等待与滚动、ASCII `inputText`、有界 `eraseText` 和有明确元素条件的 `runFlow`。普通界面等待为 15 秒；列表刷新、归档、删除、选材保存和附件上传的结果等待为 65 秒，与客户端请求预算一致，结果出现后立即继续。`longPressOn` 只接受指定测试输入框，全选动作必须跟随已知输入框的聚焦，一次退格必须跟随全选动作。系统全选动作隐藏时，先打开已识别的文本工具栏溢出菜单。搜索提交限定在聚焦的 `search_query` 上执行 `pressKey` 的 `Enter`，对应界面的 `ImeAction.Search`；收起键盘不替代提交。时间戳匹配限定在指定笔记内，原测试的 `detail_back`、`note_detail`、`open_note_${NOTE_NAME}` 仅允许用于缺席断言。条件分支首先断言其前置状态。拒绝清数据、停止应用、网络修改、安装卸载、任意脚本、坐标、自动 retry／repeat 和吞错参数。
 
 ## 执行结果
 

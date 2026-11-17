@@ -31,7 +31,7 @@ onFlowComplete:
     element:
       id: note_card_${PEER_NOTE_NAME}
     direction: DOWN
-    timeout: 15000
+    timeout: 65000
     centerElement: true
     label: Locate the specified control without coordinates
 - assertVisible:
@@ -43,7 +43,7 @@ onFlowComplete:
     element:
       id: note_card_${NOTE_NAME}
     direction: DOWN
-    timeout: 15000
+    timeout: 65000
     centerElement: true
     label: Locate the specified control without coordinates
 - tapOn:
@@ -92,7 +92,7 @@ onFlowComplete:
     element:
       id: note_card_${PEER_NOTE_NAME}
     direction: DOWN
-    timeout: 15000
+    timeout: 65000
     centerElement: true
     label: Locate the specified control without coordinates
 - assertVisible:
