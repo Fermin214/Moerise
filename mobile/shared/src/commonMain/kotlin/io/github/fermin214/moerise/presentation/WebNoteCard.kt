@@ -82,7 +82,8 @@ fun WebNoteMenu(strings: Strings, actions: List<NoteMenuAction>, tag: String = "
         }) {
             WebIcon(WebIcon.More, strings.text("更多操作", "More actions"), Modifier.size(16.dp))
         }
-        DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+        DropdownMenu(expanded = open, onDismissRequest = { open = false },
+            modifier = Modifier.platformTestTags()) {
             actions.forEach { action ->
                 DropdownMenuItem(
                     text = { Text(action.label, color = if (action.danger) MaterialTheme.colorScheme.error else MoeriseColors.Ink) },

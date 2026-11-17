@@ -92,7 +92,8 @@ fun WebSidebar(
                             modifier = Modifier.weight(1f))
                         WebIcon(WebIcon.More, strings.text("用户菜单", "Account menu"), Modifier.size(16.dp))
                     }
-                    DropdownMenu(accountMenu, onDismissRequest = { accountMenu = false }) {
+                    DropdownMenu(accountMenu, onDismissRequest = { accountMenu = false },
+                        modifier = Modifier.platformTestTags()) {
                         DropdownMenuItem(text = { Text(strings.text("归档笔记", "Archived notes")) },
                             onClick = { accountMenu = false; onArchive() }, modifier = Modifier.testTag("nav_archive"))
                         DropdownMenuItem(text = { Text(strings.text("退出登录", "Sign out")) },

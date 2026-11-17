@@ -29,10 +29,15 @@ def source_digest():
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("operation", choices=("write", "verify"))
+    parser.add_argument("--target-only", action="store_true",
+                        help="Verify Android sources and the target APK without requiring the test APK")
     args = parser.parse_args()
+    if args.target_only and args.operation != "verify":
+        parser.error("--target-only 仅用于 verify；write 始终记录完整双包。")
+    apks = APKS[:1] if args.target_only else APKS
     actual = {
         "android_sources_sha256": source_digest(),
-        "apks": {relative: hashlib.sha256((ROOT / relative).read_bytes()).hexdigest() for relative in APKS},
+        "apks": {relative: hashlib.sha256((ROOT / relative).read_bytes()).hexdigest() for relative in apks},
     }
     if args.operation == "write":
         actual["commit"] = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
@@ -40,9 +45,11 @@ def main():
         MANIFEST.write_text(json.dumps(actual, indent=2) + "\n")
     else:
         recorded = json.loads(MANIFEST.read_text())
+        if args.target_only:
+            recorded["apks"] = {relative: recorded.get("apks", {}).get(relative) for relative in apks}
         if any(recorded.get(key) != value for key, value in actual.items()):
             raise SystemExit("APK 或 Android 源码已变化，需要重新构建 fixture APK。")
-    print("Fixture APK 与 Android 源码摘要一致。")
+    print("Fixture 目标 APK 与 Android 源码摘要一致。" if args.target_only else "Fixture APK 与 Android 源码摘要一致。")
 
 
 if __name__ == "__main__":

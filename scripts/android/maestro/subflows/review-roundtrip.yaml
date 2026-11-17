@@ -1,0 +1,83 @@
+appId: ${APP_ID}
+name: Home review home with explicit results
+onFlowComplete:
+- takeScreenshot:
+    path: ${SCREENSHOT_PREFIX}-review-roundtrip-final
+    label: Capture the isolated test UI
+---
+- runFlow:
+    file: home.yaml
+    label: Start review from home
+- runFlow:
+    file: open-menu.yaml
+    label: Open navigation
+- scrollUntilVisible:
+    element:
+      id: nav_review
+    direction: DOWN
+    timeout: 15000
+    centerElement: false
+    label: Locate the specified control without coordinates
+- tapOn:
+    id: nav_review
+    enabled: true
+    label: Activate the specified control
+- extendedWaitUntil:
+    visible:
+      id: review_page
+    timeout: 15000
+    label: Wait for the expected UI state
+- extendedWaitUntil:
+    visible:
+      text: 今天没有可回顾的旧笔记。|No old notes to review today\.|下一条|Next note|再看一遍|Start again
+    timeout: 15000
+    label: Wait for the expected UI state
+- assertNotVisible:
+    id: discovery_error
+    label: Check the expected UI state
+- runFlow:
+    when:
+      visible:
+        id: review_next
+    commands:
+    - assertVisible:
+        id: review_next
+        label: Check the conditional branch precondition
+    - assertVisible:
+        id: review_next
+        enabled: true
+        label: Check the expected UI state
+    - tapOn:
+        id: review_next
+        enabled: true
+        label: Activate the specified control
+    - extendedWaitUntil:
+        visible:
+          id: review_next
+        timeout: 15000
+        label: Wait for the expected UI state
+    - takeScreenshot:
+        path: ${SCREENSHOT_PREFIX}-review-items
+        label: Capture the isolated test UI
+    label: Exercise a populated review batch
+- runFlow:
+    when:
+      visible:
+        text: 今天没有可回顾的旧笔记。|No old notes to review today\.
+    commands:
+    - assertVisible:
+        text: 今天没有可回顾的旧笔记。|No old notes to review today\.
+        label: Check the conditional branch precondition
+    - assertNotVisible:
+        id: review_next
+        label: Check the expected UI state
+    - takeScreenshot:
+        path: ${SCREENSHOT_PREFIX}-review-empty
+        label: Capture the isolated test UI
+    label: Check the explicit empty review result
+- assertNotVisible:
+    id: discovery_error
+    label: Check the expected UI state
+- runFlow:
+    file: home.yaml
+    label: Return from review

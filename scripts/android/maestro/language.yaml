@@ -1,0 +1,87 @@
+appId: ${APP_ID}
+name: Switch Chinese and English and restore the original preference
+onFlowComplete:
+- takeScreenshot:
+    path: ${SCREENSHOT_PREFIX}-language-final
+    label: Capture the isolated test UI
+---
+- runFlow:
+    file: subflows/home.yaml
+    label: Enter the signed-in home without clearing data
+- runFlow:
+    file: subflows/go-settings.yaml
+    label: Open account language settings
+- extendedWaitUntil:
+    visible:
+      id: settings_tab_0
+      enabled: true
+    timeout: 15000
+    label: Wait for the expected UI state
+- tapOn:
+    id: settings_tab_0
+    enabled: true
+    label: Activate the specified control
+- extendedWaitUntil:
+    visible:
+      id: settings_language
+      enabled: true
+      text: 简体中文|English|跟随系统|Follow system
+    timeout: 15000
+    label: Wait for the expected UI state
+- runFlow:
+    when:
+      visible:
+        id: settings_language
+        text: 简体中文
+    commands:
+    - assertVisible:
+        id: settings_language
+        text: 简体中文
+        label: Check the conditional branch precondition
+    - runFlow:
+        file: subflows/language-from-chinese.yaml
+        label: Exercise both languages and restore the original setting
+    - assertVisible:
+        id: settings_language
+        text: 简体中文
+        label: Check the expected UI state
+    label: Restore the detected language preference
+- runFlow:
+    when:
+      visible:
+        id: settings_language
+        text: English
+    commands:
+    - assertVisible:
+        id: settings_language
+        text: English
+        label: Check the conditional branch precondition
+    - runFlow:
+        file: subflows/language-from-english.yaml
+        label: Exercise both languages and restore the original setting
+    - assertVisible:
+        id: settings_language
+        text: English
+        label: Check the expected UI state
+    label: Restore the detected language preference
+- runFlow:
+    when:
+      visible:
+        id: settings_language
+        text: 跟随系统|Follow system
+    commands:
+    - assertVisible:
+        id: settings_language
+        text: 跟随系统|Follow system
+        label: Check the conditional branch precondition
+    - runFlow:
+        file: subflows/language-from-system.yaml
+        label: Exercise both languages and restore the original setting
+    - assertVisible:
+        id: settings_language
+        text: 跟随系统|Follow system
+        label: Check the expected UI state
+    label: Restore the detected language preference
+- runFlow:
+    file: subflows/home.yaml
+    label: Enter the signed-in home without clearing data

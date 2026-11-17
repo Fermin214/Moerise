@@ -1,102 +1,34 @@
 appId: ${APP_ID}
-name: Add and remove one existing insight material
+name: Independent insight material smoke
 onFlowComplete:
-  - takeScreenshot:
-      path: ${SCREENSHOT_PREFIX}-insights-material-final
-      label: Capture material selection completion or failure
+- takeScreenshot:
+    path: ${SCREENSHOT_PREFIX}-insights-material-final
+    label: Capture the isolated test UI
 ---
 - runFlow:
     file: subflows/home.yaml
-    label: Enter home with the existing draft
-- tapOn:
-    id: open_menu
-    enabled: true
-    label: Open navigation for direct insights access
-- extendedWaitUntil:
-    visible:
-      id: nav_insights
-    timeout: 15000
-    label: Wait for the insights navigation entry
-- tapOn:
-    id: nav_insights
-    enabled: true
-    label: Enter insights directly
-- extendedWaitUntil:
-    visible:
-      id: insights_page
-    timeout: 15000
-    label: Wait for the insights page
-- extendedWaitUntil:
-    visible:
-      id: chat_add_materials
-      enabled: true
-    timeout: 15000
-    label: Wait for the material picker action
-- assertNotVisible:
-    id: chat_remove_${NOTE_NAME}
-    label: Require the test note to be absent from the visible materials
-- tapOn:
-    id: chat_add_materials
-    enabled: true
-    label: Open the material picker
-- extendedWaitUntil:
-    visible:
-      id: chat_material_dialog
-    timeout: 15000
-    label: Wait for the material dialog
-- extendedWaitUntil:
-    visible:
-      id: chat_picker_tab_1
-      enabled: true
-    timeout: 15000
-    label: Wait for individual note selection
-- tapOn:
-    id: chat_picker_tab_1
-    enabled: true
-    label: Select the tag and individual note tab
-- extendedWaitUntil:
-    visible:
-      id: chat_picker_note_${NOTE_NAME}
-      enabled: true
-    timeout: 15000
-    label: Wait for the specified existing note candidate
-- tapOn:
-    id: chat_picker_note_${NOTE_NAME}
-    enabled: true
-    label: Add only the specified test note to the selection
-- extendedWaitUntil:
-    visible:
-      id: chat_apply_materials
-      enabled: true
-    timeout: 15000
-    label: Wait for the apply materials control
-- tapOn:
-    id: chat_apply_materials
-    enabled: true
-    label: Apply the selected materials
-- extendedWaitUntil:
-    notVisible:
-      id: chat_material_dialog
-    timeout: 15000
-    label: Wait for material selection to finish
-- extendedWaitUntil:
-    visible:
-      id: chat_remove_${NOTE_NAME}
-      enabled: true
-    timeout: 15000
-    label: Wait for the added material chip
+    label: Enter the signed-in home without clearing data
+- runFlow:
+    file: subflows/new-insight.yaml
+    label: Create a clean independent insight
+- runFlow:
+    file: subflows/add-material.yaml
+    label: Add the existing dedicated note
 - takeScreenshot:
     path: ${SCREENSHOT_PREFIX}-insights-material-added
-    label: Capture the added existing note material
+    label: Capture the isolated test UI
 - tapOn:
     id: chat_remove_${NOTE_NAME}
     enabled: true
-    label: Remove only the material added by this scenario
+    label: Activate the specified control
 - extendedWaitUntil:
     notVisible:
       id: chat_remove_${NOTE_NAME}
     timeout: 15000
-    label: Wait for the test material to be removed
+    label: Wait for the expected UI state
+- assertNotVisible:
+    id: chat_error
+    label: Check the expected UI state
 - runFlow:
     file: subflows/home.yaml
-    label: Return to the existing home draft
+    label: Enter the signed-in home without clearing data

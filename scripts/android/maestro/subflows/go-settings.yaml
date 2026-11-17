@@ -1,0 +1,26 @@
+appId: ${APP_ID}
+name: Navigate directly to settings
+onFlowComplete:
+- takeScreenshot:
+    path: ${SCREENSHOT_PREFIX}-go-settings-final
+    label: Capture the isolated test UI
+---
+- runFlow:
+    file: open-menu.yaml
+    label: Open navigation
+- scrollUntilVisible:
+    element:
+      id: nav_settings
+    direction: DOWN
+    timeout: 15000
+    centerElement: false
+    label: Locate the specified control without coordinates
+- tapOn:
+    id: nav_settings
+    enabled: true
+    label: Activate the specified control
+- extendedWaitUntil:
+    visible:
+      id: settings_page
+    timeout: 15000
+    label: Wait for the expected UI state

@@ -101,7 +101,8 @@ fun WebSearchPanel(query: SearchQuery, strings: Strings, onChange: (SearchQuery)
                     Text(when (query.mode) { "semantic" -> strings.text("语义", "Semantic"); "hybrid" -> strings.text("混合", "Hybrid"); else -> strings.text("关键词", "Keyword") })
                     WebIcon(WebIcon.ChevronRight, modifier = Modifier.size(14.dp))
                 }
-                DropdownMenu(modeMenu, onDismissRequest = { modeMenu = false }) {
+                DropdownMenu(modeMenu, onDismissRequest = { modeMenu = false },
+                    modifier = Modifier.platformTestTags()) {
                     listOf("keyword" to strings.text("关键词", "Keyword"), "semantic" to strings.text("语义", "Semantic"), "hybrid" to strings.text("混合", "Hybrid")).forEach { (value, label) ->
                         DropdownMenuItem(text = { Text(label) }, onClick = { modeMenu = false; onChange(query.copy(mode = value)) })
                     }

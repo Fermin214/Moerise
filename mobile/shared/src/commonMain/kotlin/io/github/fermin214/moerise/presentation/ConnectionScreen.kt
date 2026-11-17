@@ -65,7 +65,8 @@ fun ConnectionScreen(controller: SessionController, strings: Strings, onConnecte
                                 UiLanguage.ENGLISH -> "English"
                             })
                         }
-                        DropdownMenu(languageMenu, onDismissRequest = { languageMenu = false }) {
+                        DropdownMenu(languageMenu, onDismissRequest = { languageMenu = false },
+                            modifier = Modifier.platformTestTags()) {
                             UiLanguage.entries.forEach { choice -> DropdownMenuItem(text = { Text(when (choice) {
                                 UiLanguage.SYSTEM -> strings.text("跟随系统", "System")
                                 UiLanguage.CHINESE -> "简体中文"

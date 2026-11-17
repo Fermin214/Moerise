@@ -23,17 +23,21 @@ python3 scripts/android/device-recovery.py --serial "$ANDROID_SERIAL" \
   --fixture "$MOERISE_ANDROID_FIXTURE" --output .local/android/recovery
 ```
 
-`acceptance.sh` 会清空 `.fixture` 包的数据，覆盖登录、记录、Activity 重建、搜索、
-单条笔记原位编辑、切换落盘、顶部草稿恢复、归档恢复、删除和探索导航。恢复脚本通过设备测试输入唯一标记，
+`acceptance.sh` 仅接受隔离模拟器，会清空 `.fixture` 包的数据。界面组使用 Maestro，
+Activity 重建、输入连接、离线恢复与星图绘制使用 instrumentation。
+流程覆盖登录、记录、搜索、单条笔记原位编辑、切换落盘、顶部草稿恢复、归档恢复、删除和探索导航。
+恢复脚本通过设备测试输入唯一标记，
 读取隔离包的 SQLite 与 WAL 副本，证明离线队列和未完成输入落盘后再终止进程。
-Linux 入口按 `MOERISE_ANDROID_TEST_CLASS` 的逗号分隔列表逐组运行，每组启动新的应用进程；
-单个用例限制为 5 分钟，一组 instrumentation 限制为 10 分钟。超时后仍提取设备诊断并关闭隔离包。
+Linux 入口通过 `MOERISE_ANDROID_SUITE` 选择组；Maestro 场景时限由 `catalog.json` 定义，
+一组 instrumentation 限制为 10 分钟。手动类筛选使用 `MOERISE_ANDROID_TEST_CLASS` 的
+逗号分隔列表，并设置 `MOERISE_ANDROID_SUITE=diagnostic`。超时后仍提取设备诊断并关闭隔离包。
 一组失败后继续收集其他组与离线恢复的结果，任何阶段失败都会使验收退出失败。
 
 ## 集中检查与定向重跑
 
-Android CI 先构建一对 fixture APK，再并行运行七组设备流程：输入法、编辑恢复、
-搜索阅读、归档删除、洞察导航、离线恢复、星图渲染。每组使用独立模拟器和 Core/Memos 数据集，
+Android CI 先构建一对 fixture APK，再并行运行八组 Maestro 界面流程和四组专项：
+编辑、搜索、归档删除、洞察、导航、附件、语言、主页，以及 Activity 重建、输入法、离线恢复、星图渲染。
+界面组只下载和安装目标 APK，专项另需测试 APK。每组使用独立模拟器和 Core/Memos 数据集，
 单组失败不取消其他组。JVM、lint、发行构建和接口检查同时运行。
 设备 APK 构建与完整检查使用独立缓存；完整检查优先恢复自身的编译产物，再回退到设备构建缓存。
 结果页按组显示成功、失败和耗时，`android-device-<组名>` 附件保存该组的日志和诊断。
@@ -47,7 +51,9 @@ gh workflow run checks.yml --ref debug/android-device -f mode=android-device -f 
 gh workflow run checks.yml --ref debug/android-device -f mode=android-device -f suite=ime
 ```
 
-`suite` 支持 `all`、`ime`、`editing`、`search`、`actions`、`insights`、`recovery`、`stars`。
+`suite` 支持 `all`、`ui`、`editing`、`search`、`actions`、`insights`、`navigation`、
+`attachments`、`language`、`home`、`lifecycle`、`ime`、`recovery`、`stars`。
+`ui` 运行全部 Maestro 界面组。
 `stars` 覆盖 1000/5000 点的星点与光晕模式、选中、平移、双指缩放、近景摘要和快照刷新，
 保存总览与近景截图。该组检查渲染和交互，性能阈值由真机性能队列测量。
 `android-device` 模式只执行所选设备组；PR 的自动检查执行完整流程。
@@ -55,7 +61,8 @@ gh workflow run checks.yml --ref debug/android-device -f mode=android-device -f 
 修改源码后需要重新构建；重试旧运行仍检查原提交。
 仅修改宿主脚本或文档时，可以传入 `-f fixture_run=<原运行编号>` 复用原运行的
 `android-fixture-apks`，跳过 Gradle。Android 源码或 APK 摘要不一致时，复用校验失败。
-同一源码的 APK 在各组之间复用；安装前核对 Android 源文件和两个 APK 的 SHA-256。
+同一源码的 APK 在各组之间复用；安装前核对 Android 源文件和所需 APK 的 SHA-256。
+界面组使用 `fixture-artifacts.py verify --target-only`，专项校验两个 APK。
 源码或包有变化时拒绝复用。Linux 手动复用入口为：
 
 ```bash
@@ -69,6 +76,97 @@ scripts/android/ci-device-check.sh
 `.local/android/device-results.tsv`。
 
 ## Windows 集中入口
+
+### 真机持续会话
+
+人工验收与可续跑的真机检查使用 `scripts/android/phone.ps1`。构建由开发或 CI 完成，
+传入交付 APK 的 `build-artifacts.json` 或 CI 的 `fixture-artifacts.json`；
+APK 放在清单记载的仓库相对路径，手机流程不构建 APK。
+`prepare` 先检查隔离服务与手机代理，再比对设备 APK 的 SHA-256，只安装缺失或摘要不同的包。
+普通界面回归只安装目标包；`-Specialists` 同时准备 instrumentation 测试包。
+安装确认被取消时，处理手机确认后对同一会话重新执行 `prepare`，已完成的安装会复用。
+整个会话保留应用数据，不自动清空数据或卸载。
+
+```powershell
+scripts/android/phone.ps1 -Action prepare -Serial $serial `
+    -Fixture $fixture -BuildManifest $buildManifest
+# 将 prepare 输出的 session 路径赋给 $session
+scripts/android/phone.ps1 -Action manual -Session $session
+scripts/android/phone.ps1 -Action run -Session $session
+scripts/android/phone.ps1 -Action run -Session $session -Group search,actions
+scripts/android/phone.ps1 -Action ui -Session $session -Flow navigation
+scripts/android/phone.ps1 -Action status -Session $session
+# 全部检查结束后，显式清理
+scripts/android/phone.ps1 -Action cleanup -Session $session
+```
+
+`prepare` 使用 Maestro 完成登录，再打开 `Moerise Fixture` 主页。
+业务连接固定为 USB `adb reverse` 与 HTTP 回环隔离服务，不设置手机全局代理、
+Wi-Fi 代理、DNS、VPN 或移动网络。重连后重建该会话的单个映射即可。
+存在全局代理时先报告环境阻塞，不能把一处连接故障展开成多个业务失败。
+正式签名包的 HTTPS 检查使用手机能直接到达、系统信任证书的服务；
+缺少该地址时不改写整台手机的代理来补齐环境。
+
+`run` 默认执行 Maestro 的编辑、搜索、归档删除、洞察、导航、附件、语言和主页八组。
+每组通过客户端 API 准备独立笔记；编辑、删除和附件保存另以服务端读回结果核对。
+已通过且流程及执行脚本摘要一致的同会话结果自动复用；`-Retry` 显式重跑指定组。
+目标包缺失或摘要不同而重新安装后，重新登录并清除已存通过结果。
+APK 摘要和设备身份必须与会话一致；报告分别记录构建提交和流程提交，
+仅修改 YAML 或宿主脚本不要求重编译和重装 APK。界面等待和宿主超时记为
+`inconclusive`，安装及工具异常记为环境或工具问题；自动化断言与人工确认分别记录。
+失败后先在 `manual` 模式复现对应动作，再决定是否记录产品缺陷。
+中文输入法、Activity 重建、SQLite/WAL 与离线恢复、固定数据的绘制断言继续使用专项入口：
+
+```powershell
+scripts/android/phone.ps1 -Action prepare -Session $session -Fixture $fixture `
+    -BuildManifest $buildManifest -Specialists
+scripts/android/phone.ps1 -Action run -Session $session -Group ime,lifecycle,recovery,stars
+```
+
+`lifecycle` 复用已有编辑重建用例，`ime` 检查输入连接，`recovery` 检查进程与后台恢复，
+`stars` 检查固定星图绘制。首绘与帧耗时仍由 benchmark 测量，不包含在默认功能流程中。
+
+人工结果可写回同一会话：
+
+```powershell
+scripts/android/phone.ps1 -Action record -Session $session `
+    -Group actions -Outcome passed -Note '归档、恢复和删除均成功，顶部草稿保留'
+```
+
+`cleanup` 仅卸载会话使用的 fixture 应用和测试组件；未准备专项的会话不卸载既有测试 APK。
+清理删除临时登录档案，
+移除该会话新增的映射，并读回包列表和网络字段。复用的既有映射、
+既有 Maestro 驱动和其他应用不受清理影响。网络字段变化单独报告，
+不覆盖会话之外的网络设置。断连或清理失败时重新执行 `cleanup`；
+已完成清理的会话再次调用会返回原清理报告。
+
+### Maestro 界面检查
+
+Maestro MCP 用于读取实时控件层级、单步复现和查看截图。CLI 入口复用同一会话与设备锁：
+
+```powershell
+scripts/android/phone.ps1 -Action ui -Session $session -Flow home-smoke
+scripts/android/phone.ps1 -Action ui -Session $session -Flow archive `
+    -NoteName 'memos/测试笔记ID'
+scripts/android/phone.ps1 -Action ui -Session $session -Flow insights-material `
+    -NoteName 'memos/测试笔记ID'
+scripts/android/phone.ps1 -Action ui -Session $session -Flow attachment-cancel
+```
+
+流程位于 `scripts/android/maestro/`，入口与分组由 `catalog.json` 管理。
+`maestro_runner.py` 统一负责隔离数据、凭据注入、JUnit 判定、服务端断言和日志脱敏，
+`phone.ps1` 负责安装身份、持久结果、人工接管与最终清理。
+用例使用已有 testTag，按场景独立执行。
+每次运行保留 JUnit 报告、步骤、截图及 CLI 日志。`launchApp` 保留数据，
+`--no-reinstall-driver` 复用驱动；首次运行可能需要安装 Maestro 驱动并在手机确认。
+流程不安装或卸载业务 APK，不执行 `clearState`，也不修改网络设置。
+会话记录 Maestro 驱动与端口映射的原有状态，最终清理只移除该会话新增的组件。
+
+系统文件选择器按实时层级选择测试文件并确认，随后验证返回应用、附件名、保存和打开。
+不同厂商的确认按钮不靠固定坐标猜测；自动操作无法确认时，保留界面并交给人工完成该步。
+Android 中文组合输入不使用 Maestro 的 `inputText` 替代输入法验证。
+
+### 单次隔离检查
 
 构建与设备操作从 `C:\Projects\Moerise` 的整合源码执行。SDK、工具和 Gradle 缓存共用
 主仓库 `.local/android/tools`、`.local/android/gradle-home` 与
@@ -103,7 +201,9 @@ $fixture = (Resolve-Path -LiteralPath (
 
 `-Offline` 仅适用于所需依赖已缓存的环境；首次下载依赖时省略该参数。
 省略 `-Serial` 时，从 `adb devices` 动态选择唯一已就绪设备；有多个设备时必须指定。
-`-SkipBuild` 复用同一源码提交生成的 APK，通过 `build-artifacts.json` 核对提交和两个 APK 摘要；
+下述 `acceptance.ps1` 包含安装和清空 fixture 数据，用于单次隔离检查。
+持续人工复测使用 `phone.ps1`。`-SkipBuild` 复用同一源码提交生成的 APK，
+通过 `build-artifacts.json` 核对提交和两个 APK 摘要；
 跨任务复用时用 `-BuildManifest` 指定原构建清单。`-VisualSetup` 只运行登录准备，
 可用于后续截图。输入通过 instrumentation，避免中文输入法改写 `shell input text`。
 测试只清空 `.fixture`，设备连接档案只包含登录字段，宿主临时文件和设备副本在结束时删除。
@@ -152,6 +252,9 @@ CI 同时保存 `device-fixture-core.log` 和 `device-fixture-fixture.log`，用
 2. 用 `run-as tar` 读取 SQLite/WAL，在临时目录确认两篇笔记和未完成输入落盘；
    宿主机 `force-stop` 后重开，验证两篇已保存队列笔记与一份未提交新建输入恢复；分别从队列卡片菜单编辑，
    检查单编辑器及 Activity 重建恢复，取消后恢复顶部未完成输入。
+   SQLite/WAL 辅助读取记录文件存在性、tar/SQLite 错误和匹配布尔值，不保留正文或数据库。
+   读取故障记为 `inconclusive` 并继续后续设备步骤；成功读取后仍缺少目标内容时，
+   单独报告该断言，不把读取故障描述成数据丢失。
 3. 返回桌面并恢复反向端口，全程不点击同步；从 Memos 官方 API 读回两篇笔记，
    验证后台自动排空且未完成输入没有上传。
 4. 再次终止进程并重开，验证输入恢复、远端每篇恰好一份。结果写入

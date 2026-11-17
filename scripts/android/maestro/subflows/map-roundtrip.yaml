@@ -1,0 +1,111 @@
+appId: ${APP_ID}
+name: Check map configuration and fullscreen navigation
+onFlowComplete:
+- takeScreenshot:
+    path: ${SCREENSHOT_PREFIX}-map-roundtrip-final
+    label: Capture the isolated test UI
+---
+- runFlow:
+    file: home.yaml
+    label: Start map checks from home
+- runFlow:
+    file: go-settings.yaml
+    label: Read map availability
+- extendedWaitUntil:
+    visible:
+      id: settings_tab_0
+      enabled: true
+    timeout: 15000
+    label: Wait for the expected UI state
+- tapOn:
+    id: settings_tab_0
+    enabled: true
+    label: Activate the specified control
+- extendedWaitUntil:
+    visible:
+      id: settings_stargazing_enabled
+      enabled: true
+    timeout: 15000
+    label: Wait for the expected UI state
+- runFlow:
+    when:
+      visible:
+        id: settings_stargazing_enabled
+        checked: true
+    commands:
+    - assertVisible:
+        id: settings_stargazing_enabled
+        checked: true
+        label: Check the conditional branch precondition
+    - runFlow:
+        file: open-menu.yaml
+        label: Open navigation
+    - scrollUntilVisible:
+        element:
+          id: nav_map
+        direction: DOWN
+        timeout: 15000
+        centerElement: false
+        label: Locate the specified control without coordinates
+    - tapOn:
+        id: nav_map
+        enabled: true
+        label: Activate the specified control
+    - extendedWaitUntil:
+        visible:
+          id: map_page
+        timeout: 15000
+        label: Wait for the expected UI state
+    - extendedWaitUntil:
+        visible:
+          id: map_fullscreen
+          enabled: true
+        timeout: 15000
+        label: Wait for the expected UI state
+    - tapOn:
+        id: map_fullscreen
+        enabled: true
+        label: Activate the specified control
+    - assertNotVisible:
+        id: open_menu
+        label: Check the expected UI state
+    - takeScreenshot:
+        path: ${SCREENSHOT_PREFIX}-map-fullscreen
+        label: Capture the isolated test UI
+    - tapOn:
+        id: map_fullscreen
+        enabled: true
+        label: Activate the specified control
+    - extendedWaitUntil:
+        visible:
+          id: open_menu
+        timeout: 15000
+        label: Wait for the expected UI state
+    - assertVisible:
+        id: map_page
+        label: Check the expected UI state
+    - runFlow:
+        file: home.yaml
+        label: Return from the enabled map
+    label: Navigate to map only when stargazing is enabled
+- runFlow:
+    when:
+      visible:
+        id: settings_stargazing_enabled
+        checked: false
+    commands:
+    - assertVisible:
+        id: settings_stargazing_enabled
+        checked: false
+        label: Check the conditional branch precondition
+    - takeScreenshot:
+        path: ${SCREENSHOT_PREFIX}-map-disabled
+        label: Capture the isolated test UI
+    - assertVisible:
+        id: settings_stargazing_enabled
+        checked: false
+        label: Check the expected UI state
+    label: Check the explicit disabled map setting
+- runFlow:
+    file: home.yaml
+    label: Return from map configuration checks

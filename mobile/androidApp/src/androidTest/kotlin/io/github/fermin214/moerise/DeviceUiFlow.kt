@@ -3,6 +3,7 @@ package io.github.fermin214.moerise
 import android.view.inputmethod.InputMethodManager
 import android.app.Application
 import android.graphics.Bitmap
+import android.os.Bundle
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.semantics.getOrNull
 import androidx.compose.ui.test.*
@@ -20,6 +21,13 @@ import org.json.JSONObject
 import org.junit.rules.TestRule
 import org.junit.runner.Description
 import org.junit.runners.model.Statement
+
+/** 状态流只发送步骤标签，不包含笔记正文、凭据或会话数据。 */
+internal fun acceptanceStep(label: String) {
+    InstrumentationRegistry.getInstrumentation().sendStatus(0, Bundle().apply {
+        putString("acceptance_step", label)
+    })
+}
 
 class FixtureActivityRule(private val inputMethod: FixtureInputMethod? = null) : TestRule {
     private val delegate = ActivityScenarioRule(MainActivity::class.java)
@@ -39,6 +47,7 @@ class FixtureActivityRule(private val inputMethod: FixtureInputMethod? = null) :
             val application = instrumentation.targetContext.applicationContext as Application
             inputMethod?.let(application::registerActivityLifecycleCallbacks)
             try {
+                acceptanceStep("${description.methodName}：启动隔离应用")
                 // 先由 shell 显式打开隔离包，兼容限制后台 Activity 启动的设备系统。
                 instrumentation.uiAutomation.executeShellCommand(
                     "am start -W -n $packageName/${MainActivity::class.java.name}"
@@ -49,6 +58,7 @@ class FixtureActivityRule(private val inputMethod: FixtureInputMethod? = null) :
                 val guarded = object : Statement() {
                     override fun evaluate() {
                         try {
+                            acceptanceStep("${description.methodName}：开始用例")
                             base.evaluate()
                         } catch (failure: Throwable) {
                             runCatching {
@@ -92,6 +102,7 @@ internal fun fixtureComposeRule(inputMethod: FixtureInputMethod? = null) =
     AndroidComposeTestRule(FixtureActivityRule(inputMethod)) { it.activity }
 
 internal fun AndroidComposeTestRule<FixtureActivityRule, MainActivity>.signIntoFixture() {
+    acceptanceStep("登录：等待登录页或主页")
     val instrumentation = InstrumentationRegistry.getInstrumentation()
     require(instrumentation.targetContext.packageName == "io.github.fermin214.moerise.fixture")
     waitUntil(20_000) {
@@ -99,6 +110,7 @@ internal fun AndroidComposeTestRule<FixtureActivityRule, MainActivity>.signIntoF
             onAllNodesWithTag("home").fetchSemanticsNodes().isNotEmpty()
     }
     if (onAllNodesWithTag("server_login").fetchSemanticsNodes().isNotEmpty()) {
+        acceptanceStep("登录：填写隔离服务凭据")
         val fixture = instrumentation.uiAutomation.executeShellCommand(
             "cat /data/local/tmp/moerise-android-fixture.json"
         ).use { JSONObject(FileInputStream(it.fileDescriptor).bufferedReader().readText()) }
@@ -109,9 +121,11 @@ internal fun AndroidComposeTestRule<FixtureActivityRule, MainActivity>.signIntoF
         onNodeWithTag("server_username").performScrollTo().performTextReplacement(fixture.getString("username"))
         onNodeWithTag("server_password").performScrollTo().performTextReplacement(fixture.getString("password"))
         dismissKeyboard()
+        acceptanceStep("登录：提交")
         clickTag("server_login")
     }
     try {
+        acceptanceStep("登录：等待账户与主页就绪")
         val session = (instrumentation.targetContext.applicationContext as MoeriseApplication).runtime.session
         waitUntil(5_000) {
             session.state.value.let { it.busy || it.profile != null || it.error != null }
@@ -196,8 +210,17 @@ internal fun deviceDiagnostics(): String {
     val home = mobile.homeNote.state.value
     val picker = mobile.insights.state.value.picker
     val search = mobile.search.state.value
+    val composer = mobile.editor.state.value
+    val editors = mobile.noteEditors.value.entries.joinToString { (name, controller) ->
+        val state = controller.state.value
+        "$name(busy=${state.busy}, importing=${state.importing}, error=${state.error}, " +
+            "revision=${state.draft?.revision}, savedRevision=${state.savedRevision}, pending=${state.pending?.status})"
+    }
     return "connected=${session.connected}；sessionBusy=${session.busy}；sessionError=${session.error}；" +
         "needsLogin=${session.needsLogin}；sync=${mobile.sync.state.value.status}；" +
+        "composerBusy=${composer.busy}；composerImporting=${composer.importing}；composerError=${composer.error}；" +
+        "composerRevision=${composer.draft?.revision}；composerSavedRevision=${composer.savedRevision}；" +
+        "composerPending=${composer.pending?.status}；noteEditors=[$editors]；" +
         "actionName=${action.name}；actionBusy=${action.busy}；actionPending=${action.pendingAction}；" +
         "actionUnknown=${action.deleteUnknown}；actionError=${action.error}；" +
         "homeBusy=${home.busy}；homeLoading=${home.loading}；homePending=${home.pendingAction}；homeError=${home.error}；" +
@@ -261,6 +284,7 @@ internal fun ComposeTestRule.homeNode(tag: String): SemanticsNodeInteraction {
 }
 
 internal fun ComposeTestRule.waitForCard(text: String, queued: Boolean = false): String {
+    acceptanceStep(if (queued) "主页：等待本机笔记卡片" else "列表：等待目标笔记卡片")
     val prefix = if (queued) "queued_note_" else "note_card_"
     val card = SemanticsMatcher("目标笔记卡") {
         it.config.getOrNull(SemanticsProperties.TestTag)?.startsWith(prefix) == true
@@ -283,19 +307,23 @@ internal fun ComposeTestRule.waitForCard(text: String, queued: Boolean = false):
 }
 
 internal fun AndroidComposeTestRule<FixtureActivityRule, MainActivity>.cardAction(key: String, action: String) {
+    acceptanceStep("笔记操作：打开菜单")
     dismissKeyboard()
     homeNode("note_more_$key").performClick()
     onNodeWithTag("menu_open_note_$key").assertDoesNotExist()
+    acceptanceStep("笔记操作：$action")
     clickTag("${action}_$key")
 }
 
 internal fun AndroidComposeTestRule<FixtureActivityRule, MainActivity>.navigate(page: String) {
+    acceptanceStep("导航：打开侧栏，目标=$page")
     dismissKeyboard()
     clickTag("open_menu")
     waitForTag("sidebar_scroll")
     if (page == "archive") {
         clickTag("account_menu")
     }
+    acceptanceStep("导航：进入$page")
     clickTag("nav_$page")
     waitUntil(20_000) { runCatching { onNodeWithTag("sidebar_scroll").assertIsNotDisplayed() }.isSuccess }
     try {
@@ -334,6 +362,7 @@ internal fun AndroidComposeTestRule<FixtureActivityRule, MainActivity>.assertSin
 }
 
 internal fun ComposeTestRule.waitForEditor(tag: String, text: String) {
+    acceptanceStep(if (tag == "note_editor") "编辑器：等待新建草稿一致" else "编辑器：等待笔记修订一致")
     if (tag == "note_editor" && !hasTag(tag)) homeList().performScrollToIndex(0)
     try {
         waitUntil(20_000) {

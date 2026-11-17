@@ -1,0 +1,284 @@
+appId: ${APP_ID}
+name: Edit dedicated notes and save one new note
+onFlowComplete:
+- takeScreenshot:
+    path: ${SCREENSHOT_PREFIX}-editing-final
+    label: Capture the isolated test UI
+---
+- runFlow:
+    file: subflows/home.yaml
+    label: Enter the signed-in home without clearing data
+- runFlow:
+    file: subflows/prepare-draft.yaml
+    label: Prepare the exact unfinished fixture draft
+- scrollUntilVisible:
+    element:
+      id: note_card_${NOTE_NAME}
+    direction: DOWN
+    timeout: 15000
+    centerElement: false
+    label: Locate the specified control without coordinates
+- tapOn:
+    id: note_more_${NOTE_NAME}
+    enabled: true
+    label: Activate the specified control
+- extendedWaitUntil:
+    visible:
+      id: edit_note_${NOTE_NAME}
+      enabled: true
+    timeout: 15000
+    label: Wait for the expected UI state
+- tapOn:
+    id: edit_note_${NOTE_NAME}
+    enabled: true
+    label: Activate the specified control
+- extendedWaitUntil:
+    visible:
+      id: note_editor_${NOTE_NAME}
+      text: \Q${NOTE_TEXT}\E
+    timeout: 15000
+    label: Wait for the expected UI state
+- runFlow:
+    when:
+      notVisible:
+        id: note_editor_${NOTE_NAME}
+        text: ^$
+    commands:
+    - assertNotVisible:
+        id: note_editor_${NOTE_NAME}
+        text: ^$
+        label: Require the known input to contain text
+    - longPressOn:
+        id: note_editor_${NOTE_NAME}
+        enabled: true
+        label: Open text selection for the known input
+    - extendedWaitUntil:
+        visible:
+          text: Select all|Select All|全选
+        timeout: 15000
+        label: Wait for the text selection action
+    - tapOn:
+        text: Select all|Select All|全选
+        enabled: true
+        label: Select the complete fixture input
+    - eraseText:
+        charactersToErase: 1
+        label: Delete the selected fixture text
+    label: Clear the known input regardless of caret position
+- tapOn:
+    id: note_editor_${NOTE_NAME}
+    enabled: true
+    label: Focus the empty fixture input
+- inputText:
+    text: ${EDITED_TEXT}
+    label: Enter the supplied ASCII fixture value
+- runFlow:
+    commands:
+    - hideKeyboard
+    label: Dismiss the keyboard
+- extendedWaitUntil:
+    visible:
+      id: note_editor_${NOTE_NAME}
+      text: \Q${EDITED_TEXT}\E
+    timeout: 15000
+    label: Wait for the expected UI state
+- extendedWaitUntil:
+    visible:
+      id: save_note_${NOTE_NAME}
+      enabled: true
+    timeout: 15000
+    label: Wait for the expected UI state
+- tapOn:
+    id: save_note_${NOTE_NAME}
+    enabled: true
+    label: Activate the specified control
+- extendedWaitUntil:
+    notVisible:
+      id: note_editor_${NOTE_NAME}
+    timeout: 15000
+    label: Wait for the expected UI state
+- scrollUntilVisible:
+    element:
+      id: note_editor
+    direction: UP
+    timeout: 15000
+    centerElement: false
+    label: Locate the specified control without coordinates
+- extendedWaitUntil:
+    visible:
+      id: note_editor
+      text: \Q${DRAFT_TEXT}\E
+    timeout: 15000
+    label: Wait for the expected UI state
+- scrollUntilVisible:
+    element:
+      id: note_card_${NOTE_NAME}
+    direction: DOWN
+    timeout: 15000
+    centerElement: false
+    label: Locate the specified control without coordinates
+- extendedWaitUntil:
+    visible:
+      text: \Q${EDITED_TEXT}\E
+      childOf:
+        id: note_card_${NOTE_NAME}
+    timeout: 15000
+    label: Wait for the expected UI state
+- scrollUntilVisible:
+    element:
+      id: note_card_${PEER_NOTE_NAME}
+    direction: DOWN
+    timeout: 15000
+    centerElement: false
+    label: Locate the specified control without coordinates
+- tapOn:
+    id: note_more_${PEER_NOTE_NAME}
+    enabled: true
+    label: Activate the specified control
+- extendedWaitUntil:
+    visible:
+      id: edit_note_${PEER_NOTE_NAME}
+      enabled: true
+    timeout: 15000
+    label: Wait for the expected UI state
+- tapOn:
+    id: edit_note_${PEER_NOTE_NAME}
+    enabled: true
+    label: Activate the specified control
+- extendedWaitUntil:
+    visible:
+      id: note_editor_${PEER_NOTE_NAME}
+      text: \Q${PEER_NOTE_TEXT}\E
+    timeout: 15000
+    label: Wait for the expected UI state
+- runFlow:
+    when:
+      notVisible:
+        id: note_editor_${PEER_NOTE_NAME}
+        text: ^$
+    commands:
+    - assertNotVisible:
+        id: note_editor_${PEER_NOTE_NAME}
+        text: ^$
+        label: Require the known input to contain text
+    - longPressOn:
+        id: note_editor_${PEER_NOTE_NAME}
+        enabled: true
+        label: Open text selection for the known input
+    - extendedWaitUntil:
+        visible:
+          text: Select all|Select All|全选
+        timeout: 15000
+        label: Wait for the text selection action
+    - tapOn:
+        text: Select all|Select All|全选
+        enabled: true
+        label: Select the complete fixture input
+    - eraseText:
+        charactersToErase: 1
+        label: Delete the selected fixture text
+    label: Clear the known input regardless of caret position
+- tapOn:
+    id: note_editor_${PEER_NOTE_NAME}
+    enabled: true
+    label: Focus the empty fixture input
+- inputText:
+    text: ${PEER_EDITED_TEXT}
+    label: Type the distinct unsaved peer edit
+- runFlow:
+    commands:
+    - hideKeyboard
+    label: Dismiss the keyboard after editing the peer
+- extendedWaitUntil:
+    visible:
+      id: note_editor_${PEER_NOTE_NAME}
+      text: \Q${PEER_EDITED_TEXT}\E
+    timeout: 15000
+    label: Verify the unsaved peer edit before cancellation
+- tapOn:
+    id: cancel_note_${PEER_NOTE_NAME}
+    enabled: true
+    label: Activate the specified control
+- extendedWaitUntil:
+    notVisible:
+      id: note_editor_${PEER_NOTE_NAME}
+    timeout: 15000
+    label: Wait for the expected UI state
+- scrollUntilVisible:
+    element:
+      id: note_card_${PEER_NOTE_NAME}
+    direction: DOWN
+    timeout: 15000
+    centerElement: false
+    label: Locate the peer card after discarding its unsaved edit
+- extendedWaitUntil:
+    visible:
+      text: \Q${PEER_NOTE_TEXT}\E
+      childOf:
+        id: note_card_${PEER_NOTE_NAME}
+    timeout: 15000
+    label: Require the original peer body after cancellation
+- assertNotVisible:
+    text: \Q${PEER_EDITED_TEXT}\E
+    childOf:
+      id: note_card_${PEER_NOTE_NAME}
+    label: Reject persistence of the cancelled peer edit
+- scrollUntilVisible:
+    element:
+      id: note_editor
+    direction: UP
+    timeout: 15000
+    centerElement: false
+    label: Locate the specified control without coordinates
+- extendedWaitUntil:
+    visible:
+      id: note_editor
+      text: \Q${DRAFT_TEXT}\E
+    timeout: 15000
+    label: Wait for the expected UI state
+- runFlow:
+    file: subflows/clear-draft.yaml
+    label: Clear only the known fixture draft before creating a new note
+- tapOn:
+    id: note_editor
+    enabled: true
+    label: Activate the specified control
+- inputText:
+    text: ${NEW_NOTE_TEXT}
+    label: Enter the supplied ASCII fixture value
+- runFlow:
+    commands:
+    - hideKeyboard
+    label: Dismiss the keyboard
+- extendedWaitUntil:
+    visible:
+      id: save_note
+      enabled: true
+    timeout: 15000
+    label: Wait for the expected UI state
+- tapOn:
+    id: save_note
+    enabled: true
+    label: Activate the specified control
+- extendedWaitUntil:
+    visible:
+      id: note_editor
+      text: ^$
+    timeout: 15000
+    label: Wait for the expected UI state
+- scrollUntilVisible:
+    element:
+      text: \Q${NEW_NOTE_TEXT}\E
+    direction: DOWN
+    timeout: 15000
+    centerElement: false
+    label: Locate the specified control without coordinates
+- assertVisible:
+    text: \Q${NEW_NOTE_TEXT}\E
+    label: Check the expected UI state
+- takeScreenshot:
+    path: ${SCREENSHOT_PREFIX}-editing-created
+    label: Capture the isolated test UI
+- runFlow:
+    file: subflows/home.yaml
+    label: Enter the signed-in home without clearing data

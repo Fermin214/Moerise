@@ -1,0 +1,55 @@
+appId: ${APP_ID}
+name: Select the observed file provider and verify its return
+onFlowComplete:
+- takeScreenshot:
+    path: ${SCREENSHOT_PREFIX}-pick-download-final
+    label: Capture the isolated test UI
+---
+- extendedWaitUntil:
+    visible:
+      id: (com\.android\.documentsui|com\.google\.android\.documentsui):id/toolbar|com\.android\.fileexplorer:id/pick_container
+    timeout: 15000
+    label: Wait for the expected UI state
+- takeScreenshot:
+    path: ${SCREENSHOT_PREFIX}-file-provider
+    label: Capture the isolated test UI
+- runFlow:
+    when:
+      visible:
+        id: (com\.android\.documentsui|com\.google\.android\.documentsui):id/toolbar
+    commands:
+    - assertVisible:
+        id: (com\.android\.documentsui|com\.google\.android\.documentsui):id/toolbar
+        label: Check the conditional branch precondition
+    - runFlow:
+        file: pick-documentsui.yaml
+        label: Select the exact file through DocumentsUI
+    label: Handle the observed DocumentsUI provider
+- runFlow:
+    when:
+      visible:
+        id: com\.android\.fileexplorer:id/pick_container
+    commands:
+    - assertVisible:
+        id: com\.android\.fileexplorer:id/pick_container
+        label: Check the conditional branch precondition
+    - runFlow:
+        file: pick-xiaomi.yaml
+        label: Select and confirm the exact file through Xiaomi File Explorer
+    label: Handle the observed Xiaomi provider
+- extendedWaitUntil:
+    visible:
+      id: note_editor
+    timeout: 15000
+    label: Wait for the expected UI state
+- assertNotVisible:
+    id: (com\.android\.documentsui|com\.google\.android\.documentsui):id/toolbar
+    label: Check that DocumentsUI is closed
+- assertNotVisible:
+    id: com\.android\.fileexplorer:id/pick_container
+    label: Check that Xiaomi File Explorer is closed
+- extendedWaitUntil:
+    visible:
+      text: \Q${ATTACHMENT_NAME}\E
+    timeout: 15000
+    label: Wait for the expected UI state

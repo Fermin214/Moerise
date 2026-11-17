@@ -91,9 +91,13 @@ GitHub Actions 的 Android 检查通过 `android/ci-device-check.sh` 启动隔�
 | --- | --- |
 | `environment.ps1` | 解析 JDK、共享 SDK/Gradle 缓存及 Go/Docker CLI；`-ResolveOnly` 只定义解析函数 |
 | `build.ps1` | 串行 Gradle 任务、统一 JVM 参数和构建日志；支持 `-Offline`、`-ValidateOnly` |
+| `phone.ps1` | 持久真机会话：目标 APK 复用、Maestro 默认回归、按需专项、人工接管与显式清理 |
+| `phone-session.py` | 会话身份、设备 APK 摘要、步骤日志、失败分类与结果持久化 |
+| `maestro_runner.py`、`maestro-run.py` | 共用 UI 执行、独立测试数据、服务端后验、JUnit 与脱敏产物 |
+| `maestro/` | 登录、编辑、搜索、归档删除、洞察、导航、附件和语言流程及静态校验 |
 | `acceptance.ps1` | 动态设备选择、隔离包安装、登录/笔记/输入法；`-Recovery` 增加离线和后台自动同步；`-SkipBuild` 复用 APK |
-| `ci-device-check.sh` | Linux/CI 按组运行设备检查；`MOERISE_ANDROID_SUITE` 选择输入、编辑、搜索、操作、洞察或恢复 |
-| `fixture-artifacts.py` | 记录并校验 Android 源码和两个 fixture APK 的摘要，供设备组复用构建 |
+| `ci-device-check.sh` | 隔离模拟器按 `MOERISE_ANDROID_SUITE` 执行 Maestro 界面组或 instrumentation 专项 |
+| `fixture-artifacts.py` | 记录 Android 源码和两个 fixture APK 的摘要；界面组用 `verify --target-only` 单独校验目标包 |
 | `device-recovery.py` | 分阶段 instrumentation、SQLite/WAL 落盘确认、杀进程重开及官方 API 无重复检查 |
 | `start-fixture.ps1` | 隐藏进程启动隔离 Core/Memos/模型；`-Resume` 复用语料、端口与索引 |
 | `fixture-control.ps1` | 单实例状态、保留数据停止、精确身份旧进程停止和显式销毁 |
@@ -108,7 +112,13 @@ GitHub Actions 的 Android 检查通过 `android/ci-device-check.sh` 启动隔�
 ```powershell
 pwsh -NoProfile -File scripts/android/device-lock.test.ps1
 node --test scripts/android/fixture-policy.test.mjs
+python -B scripts/android/phone-session.test.py
+python -B scripts/android/maestro-runner.test.py
+python -B scripts/android/maestro/validate.py
+python -B scripts/android/maestro/validate_test.py
+python -B scripts/android/device-recovery.test.py
 ```
 
-这些检查覆盖跨进程互斥、残留文件、PID 重用、令牌继承及模型排队。
+这些宿主检查覆盖跨进程互斥、残留文件、PID 重用、令牌继承、模型排队、
+会话复用、安装取消恢复、代理只读检查和 SQLite/WAL 失败分类，不连接手机。
 Android 行为使用上述设备流程集中验证。

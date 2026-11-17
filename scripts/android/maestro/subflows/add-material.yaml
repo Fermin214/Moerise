@@ -1,0 +1,73 @@
+appId: ${APP_ID}
+name: Select one exact existing note
+onFlowComplete:
+- takeScreenshot:
+    path: ${SCREENSHOT_PREFIX}-add-material-final
+    label: Capture the isolated test UI
+---
+- extendedWaitUntil:
+    visible:
+      id: chat_add_materials
+      enabled: true
+    timeout: 15000
+    label: Wait for the expected UI state
+- tapOn:
+    id: chat_add_materials
+    enabled: true
+    label: Activate the specified control
+- extendedWaitUntil:
+    visible:
+      id: chat_material_dialog
+    timeout: 15000
+    label: Wait for the expected UI state
+- extendedWaitUntil:
+    visible:
+      id: chat_picker_tab_1
+      enabled: true
+    timeout: 15000
+    label: Wait for the expected UI state
+- tapOn:
+    id: chat_picker_tab_1
+    enabled: true
+    label: Activate the specified control
+- scrollUntilVisible:
+    element:
+      id: chat_picker_note_${NOTE_NAME}
+    direction: DOWN
+    timeout: 15000
+    centerElement: false
+    label: Locate the specified control without coordinates
+- extendedWaitUntil:
+    visible:
+      id: chat_picker_note_${NOTE_NAME}
+      enabled: true
+    timeout: 15000
+    label: Wait for the expected UI state
+- tapOn:
+    id: chat_picker_note_${NOTE_NAME}
+    enabled: true
+    label: Activate the specified control
+- extendedWaitUntil:
+    visible:
+      id: chat_apply_materials
+      enabled: true
+    timeout: 15000
+    label: Wait for the expected UI state
+- tapOn:
+    id: chat_apply_materials
+    enabled: true
+    label: Activate the specified control
+- extendedWaitUntil:
+    notVisible:
+      id: chat_material_dialog
+    timeout: 15000
+    label: Wait for the expected UI state
+- extendedWaitUntil:
+    visible:
+      id: chat_remove_${NOTE_NAME}
+      enabled: true
+    timeout: 15000
+    label: Wait for the expected UI state
+- assertNotVisible:
+    id: chat_error
+    label: Check the expected UI state

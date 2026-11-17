@@ -213,7 +213,8 @@ fun MoeriseApp(mobile: MobileController, onEditorReady: () -> Unit = {}) {
             if (searchOpen) WebSearchPanel(query, strings, onChange = mobile.search::change,
                 onClose = { searchOpen = false }, onSubmit = { showFilter(query) })
         }) {
-            ModalNavigationDrawer(drawerState = drawer, gesturesEnabled = drawer.isOpen, drawerContent = {
+            ModalNavigationDrawer(modifier = Modifier.platformTestTags(),
+                drawerState = drawer, gesturesEnabled = drawer.isOpen, drawerContent = {
                 ModalDrawerSheet(Modifier.width(320.dp), drawerShape = androidx.compose.ui.graphics.RectangleShape,
                     drawerContainerColor = MoeriseColors.Paper) {
                     WebSidebar(page, strings, connection.profile?.let { it.displayName.trim().ifBlank { it.userName.removePrefix("users/") } }.orEmpty(),

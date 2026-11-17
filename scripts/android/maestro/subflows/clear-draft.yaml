@@ -1,0 +1,52 @@
+appId: ${APP_ID}
+name: Remove only the exact fixture draft
+onFlowComplete:
+- takeScreenshot:
+    path: ${SCREENSHOT_PREFIX}-clear-draft-final
+    label: Capture the isolated test UI
+---
+- assertVisible:
+    id: note_editor
+    text: \Q${DRAFT_TEXT}\E
+    label: Check the expected UI state
+- runFlow:
+    when:
+      notVisible:
+        id: note_editor
+        text: ^$
+    commands:
+    - assertNotVisible:
+        id: note_editor
+        text: ^$
+        label: Require the known input to contain text
+    - longPressOn:
+        id: note_editor
+        enabled: true
+        label: Open text selection for the known input
+    - extendedWaitUntil:
+        visible:
+          text: Select all|Select All|全选
+        timeout: 15000
+        label: Wait for the text selection action
+    - tapOn:
+        text: Select all|Select All|全选
+        enabled: true
+        label: Select the complete fixture input
+    - eraseText:
+        charactersToErase: 1
+        label: Delete the selected fixture text
+    label: Clear the known input regardless of caret position
+- tapOn:
+    id: note_editor
+    enabled: true
+    label: Focus the empty fixture input
+- runFlow:
+    commands:
+    - hideKeyboard
+    label: Dismiss the keyboard
+- extendedWaitUntil:
+    visible:
+      id: note_editor
+      text: ^$
+    timeout: 15000
+    label: Wait for the expected UI state

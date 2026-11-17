@@ -729,7 +729,8 @@ private fun SettingsSelect(
                 )
             }
         }
-        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false },
+            modifier = Modifier.platformTestTags()) {
             options.forEach { (choice, title) ->
                 DropdownMenuItem(
                     text = { Text(title, fontSize = 16.sp) },
