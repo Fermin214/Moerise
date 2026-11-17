@@ -12,22 +12,22 @@
     },
     "search": {
       "file": "search.yaml",
-      "timeout_seconds": 180,
+      "timeout_seconds": 420,
       "seed_notes": true
     },
     "actions": {
       "file": "actions.yaml",
-      "timeout_seconds": 240,
+      "timeout_seconds": 600,
       "seed_notes": true
     },
     "insights": {
       "file": "insights.yaml",
-      "timeout_seconds": 240,
+      "timeout_seconds": 420,
       "seed_notes": true
     },
     "navigation": {
       "file": "navigation.yaml",
-      "timeout_seconds": 360,
+      "timeout_seconds": 600,
       "seed_notes": true
     },
     "language": {
@@ -47,7 +47,7 @@
     },
     "archive": {
       "file": "archive.yaml",
-      "timeout_seconds": 180,
+      "timeout_seconds": 360,
       "seed_notes": true
     },
     "insights-material": {

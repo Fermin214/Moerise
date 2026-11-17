@@ -66,12 +66,31 @@ onFlowComplete:
         id: map_fullscreen
         enabled: true
         label: Activate the specified control
+    - runFlow:
+        when:
+          visible:
+            id: com.android.systemui:id/ok
+        commands:
+        - assertVisible:
+            id: com.android.systemui:id/ok
+            label: Require the Android fullscreen introduction
+        - tapOn:
+            id: com.android.systemui:id/ok
+            enabled: true
+            label: Dismiss the Android fullscreen introduction
+        label: Close the introduction shown on the first fullscreen entry
     - assertNotVisible:
         id: open_menu
         label: Check the expected UI state
     - takeScreenshot:
         path: ${SCREENSHOT_PREFIX}-map-fullscreen
         label: Capture the isolated test UI
+    - extendedWaitUntil:
+        visible:
+          id: map_fullscreen
+          enabled: true
+        timeout: 15000
+        label: Require the fullscreen exit control after the system introduction
     - tapOn:
         id: map_fullscreen
         enabled: true

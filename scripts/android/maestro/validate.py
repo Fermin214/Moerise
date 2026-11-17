@@ -50,8 +50,10 @@ XIAOMI = r"com\.android\.fileexplorer:id/"
 SYSTEM_IDS |= {XIAOMI + suffix for suffix in ("pick_container", "file_name", "btnConfirm")}
 SYSTEM_IDS.add("android:id/list")
 SYSTEM_IDS.add("android:id/overflow")
+SYSTEM_IDS.add("com.android.systemui:id/ok")
 SYSTEM_TAP_IDS = {PROVIDER + "action_menu_select", XIAOMI + "file_name", XIAOMI + "btnConfirm"}
 SYSTEM_TAP_IDS.add("android:id/overflow")
+SYSTEM_TAP_IDS.add("com.android.systemui:id/ok")
 UNION_IDS = {
     "open_menu|server_login", "walk_settings|walk_start|walk_end",
     "note_editor|" + PROVIDER + "action_menu_select",
