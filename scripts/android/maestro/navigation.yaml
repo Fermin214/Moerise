@@ -62,6 +62,12 @@ onFlowComplete:
 - assertVisible:
     id: settings_page
     label: Check the expected UI state
+- swipe:
+    from:
+      id: settings_tab_2
+    direction: LEFT
+    duration: 400
+    label: Reveal the remaining settings tabs in the horizontal strip
 - extendedWaitUntil:
     visible:
       id: settings_tab_3
