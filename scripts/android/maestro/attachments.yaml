@@ -9,8 +9,7 @@ onFlowComplete:
     file: attachment-cancel.yaml
     label: Cover picker cancellation without changing a draft
 - assertVisible:
-    id: note_editor
-    text: ^$
+    id: note_editor_empty
     label: Check the expected UI state
 - tapOn:
     id: note_editor
@@ -68,8 +67,7 @@ onFlowComplete:
     label: Activate the specified control
 - extendedWaitUntil:
     visible:
-      id: note_editor
-      text: ^$
+      id: note_editor_empty
     timeout: 15000
     label: Wait for the expected UI state
 - scrollUntilVisible:

@@ -383,7 +383,7 @@ private fun HomeEditor(
                 cursorBrush = SolidColor(MoeriseColors.Blue),
                 textStyle = TextStyle(color = MoeriseColors.Ink, fontSize = 17.sp, lineHeight = 30.6.sp),
                 decorationBox = { input ->
-                    Box {
+                    Box(Modifier.testTag(if (draft.content.isEmpty()) "${editorTag}_empty" else "${editorTag}_filled")) {
                         if (draft.content.isEmpty()) Text(
                             strings.text("今天想到了什么……", "What came to mind today…"),
                             color = Color(0xFF9299A3), fontSize = 14.sp, lineHeight = 30.6.sp,

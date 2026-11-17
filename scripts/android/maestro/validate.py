@@ -140,6 +140,7 @@ def source_ids():
 
     for identifier in ("open_menu", "open_search", "search_query", "search_close", "sync_notes"):
         add("MoeriseUi.kt", identifier)
+    add("MoeriseUi.kt", "search_query_empty", '"search_query_empty"')
     for identifier in ("account_menu", "nav_settings", "nav_archive", "sidebar_account"):
         add("WebSidebar.kt", identifier)
     for target in ("home", "review", "walk", "insights", "map"):
@@ -151,9 +152,11 @@ def source_ids():
         add("WebSettings.kt", f"settings_tab_{index}", 'tagPrefix = "settings_tab"')
     for identifier in ("server_origin", "server_username", "server_password"):
         add("ConnectionScreen.kt", identifier, f'"{identifier}", !state.busy')
+        add("ConnectionScreen.kt", identifier + "_empty", '"${tag}_empty"')
     add("ConnectionScreen.kt", "server_login")
     add("ConnectionScreen.kt", "server_change")
     add("MoeriseApp.kt", "note_editor", 'editorTag: String = "note_editor"')
+    add("MoeriseApp.kt", "note_editor_empty", '"${editorTag}_empty"')
     add("MoeriseApp.kt", "save_note", 'saveTag: String = "save_note"')
     add("MoeriseApp.kt", "archive_page")
     add("MoeriseApp.kt", "home")
@@ -166,6 +169,7 @@ def source_ids():
                                ("save_note", 'saveTag = "save_note_$id"'),
                                ("cancel_note", 'cancelTag = "cancel_note_$id"')):
             add("MoeriseApp.kt", prefix + "_${" + variable + "}", source)
+        add("MoeriseApp.kt", "note_editor_${" + variable + "}_empty", '"${editorTag}_empty"')
         add("InsightScreen.kt", "chat_remove_${" + variable + "}", 'testTag("chat_remove_$name")')
     for identifier in ("insights_page", "chat_session_menu", "chat_new", "chat_delete", "chat_history",
                        "chat_add_materials", "chat_apply_materials", "chat_material_toggle", "chat_error"):

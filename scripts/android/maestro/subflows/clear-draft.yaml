@@ -12,12 +12,10 @@ onFlowComplete:
 - runFlow:
     when:
       notVisible:
-        id: note_editor
-        text: ^$
+        id: note_editor_empty
     commands:
     - assertNotVisible:
-        id: note_editor
-        text: ^$
+        id: note_editor_empty
         label: Require the known input to contain text
     - longPressOn:
         id: note_editor
@@ -46,7 +44,6 @@ onFlowComplete:
     label: Dismiss the keyboard
 - extendedWaitUntil:
     visible:
-      id: note_editor
-      text: ^$
+      id: note_editor_empty
     timeout: 15000
     label: Wait for the expected UI state

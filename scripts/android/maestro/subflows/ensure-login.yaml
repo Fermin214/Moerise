@@ -56,12 +56,10 @@ onFlowComplete:
     - runFlow:
         when:
           notVisible:
-            id: server_origin
-            text: ^$
+            id: server_origin_empty
         commands:
         - assertNotVisible:
-            id: server_origin
-            text: ^$
+            id: server_origin_empty
             label: Require the known input to contain text
         - longPressOn:
             id: server_origin
@@ -90,12 +88,10 @@ onFlowComplete:
     - runFlow:
         when:
           notVisible:
-            id: server_username
-            text: ^$
+            id: server_username_empty
         commands:
         - assertNotVisible:
-            id: server_username
-            text: ^$
+            id: server_username_empty
             label: Require the known input to contain text
         - longPressOn:
             id: server_username
@@ -124,12 +120,10 @@ onFlowComplete:
     - runFlow:
         when:
           notVisible:
-            id: server_password
-            text: ^$
+            id: server_password_empty
         commands:
         - assertNotVisible:
-            id: server_password
-            text: ^$
+            id: server_password_empty
             label: Require the known input to contain text
         - longPressOn:
             id: server_password

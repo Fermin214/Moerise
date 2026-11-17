@@ -47,12 +47,10 @@ onFlowComplete:
 - runFlow:
     when:
       notVisible:
-        id: search_query
-        text: ^$
+        id: search_query_empty
     commands:
     - assertNotVisible:
-        id: search_query
-        text: ^$
+        id: search_query_empty
         label: Require the known input to contain text
     - longPressOn:
         id: search_query
@@ -183,12 +181,10 @@ onFlowComplete:
 - runFlow:
     when:
       notVisible:
-        id: search_query
-        text: ^$
+        id: search_query_empty
     commands:
     - assertNotVisible:
-        id: search_query
-        text: ^$
+        id: search_query_empty
         label: Require the known input to contain text
     - longPressOn:
         id: search_query
@@ -271,12 +267,10 @@ onFlowComplete:
 - runFlow:
     when:
       notVisible:
-        id: search_query
-        text: ^$
+        id: search_query_empty
     commands:
     - assertNotVisible:
-        id: search_query
-        text: ^$
+        id: search_query_empty
         label: Require the known input to contain text
     - longPressOn:
         id: search_query
@@ -308,8 +302,7 @@ onFlowComplete:
     label: Dismiss the keyboard
 - extendedWaitUntil:
     visible:
-      id: search_query
-      text: ^$
+      id: search_query_empty
     timeout: 15000
     label: Wait for the expected UI state
 - extendedWaitUntil:

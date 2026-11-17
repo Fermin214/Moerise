@@ -41,12 +41,10 @@ onFlowComplete:
 - runFlow:
     when:
       notVisible:
-        id: note_editor_${NOTE_NAME}
-        text: ^$
+        id: note_editor_${NOTE_NAME}_empty
     commands:
     - assertNotVisible:
-        id: note_editor_${NOTE_NAME}
-        text: ^$
+        id: note_editor_${NOTE_NAME}_empty
         label: Require the known input to contain text
     - longPressOn:
         id: note_editor_${NOTE_NAME}
@@ -154,12 +152,10 @@ onFlowComplete:
 - runFlow:
     when:
       notVisible:
-        id: note_editor_${PEER_NOTE_NAME}
-        text: ^$
+        id: note_editor_${PEER_NOTE_NAME}_empty
     commands:
     - assertNotVisible:
-        id: note_editor_${PEER_NOTE_NAME}
-        text: ^$
+        id: note_editor_${PEER_NOTE_NAME}_empty
         label: Require the known input to contain text
     - longPressOn:
         id: note_editor_${PEER_NOTE_NAME}
@@ -262,8 +258,7 @@ onFlowComplete:
     label: Activate the specified control
 - extendedWaitUntil:
     visible:
-      id: note_editor
-      text: ^$
+      id: note_editor_empty
     timeout: 15000
     label: Wait for the expected UI state
 - scrollUntilVisible:

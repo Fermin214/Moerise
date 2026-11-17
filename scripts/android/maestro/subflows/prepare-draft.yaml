@@ -8,12 +8,10 @@ onFlowComplete:
 - runFlow:
     when:
       visible:
-        id: note_editor
-        text: ^$
+        id: note_editor_empty
     commands:
     - assertVisible:
-        id: note_editor
-        text: ^$
+        id: note_editor_empty
         label: Check the conditional branch precondition
     - tapOn:
         id: note_editor

@@ -154,7 +154,8 @@ private fun ConnectionField(
                 .testTag(tag).semantics { contentDescription = label },
             decorationBox = { innerTextField ->
                 Box(
-                    Modifier.fillMaxWidth().heightIn(min = 44.dp).padding(horizontal = 12.dp, vertical = 10.dp),
+                    Modifier.fillMaxWidth().heightIn(min = 44.dp).padding(horizontal = 12.dp, vertical = 10.dp)
+                        .testTag(if (value.isEmpty()) "${tag}_empty" else "${tag}_filled"),
                     contentAlignment = Alignment.CenterStart,
                 ) {
                     if (value.isEmpty() && placeholder != null) {
