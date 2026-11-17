@@ -9,6 +9,7 @@ import sqlite3
 import subprocess
 import tarfile
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
 import uuid
@@ -305,7 +306,7 @@ class RecoveryEvidenceTest(unittest.TestCase):
     def test_windows_queue_accepts_child_output_and_rejects_other_directory(self):
         root = recovery.SOURCE_ROOT / ".local/android/synthetic-lock"
         process = subprocess.CompletedProcess([], 0, str(root) + "\n", "")
-        with patch.object(recovery.os, "name", "nt"), \
+        with patch.object(recovery, "os", SimpleNamespace(name="nt", environ=recovery.os.environ)), \
                 patch.object(recovery.subprocess, "run", return_value=process):
             recovery.assert_queue(recovery.SOURCE_ROOT, root / "device-recovery")
             with self.assertRaisesRegex(ValueError, "目录内"):
