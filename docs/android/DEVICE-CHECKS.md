@@ -57,6 +57,13 @@ gh workflow run checks.yml --ref debug/android-device -f mode=android-device -f 
 `stars` 覆盖 1000/5000 点的星点与光晕模式、选中、平移、双指缩放、近景摘要和快照刷新，
 保存总览与近景截图。该组检查渲染和交互，性能阈值由真机性能队列测量。
 `android-device` 模式只执行所选设备组；PR 的自动检查执行完整流程。
+`Android checks` 的 `build` 模式只运行 JVM、lint、发行构建及 Core／星图接口检查，
+可复用 fixture APK。完整构建任务的时限为 45 分钟，覆盖冷缓存编译和两组集成检查：
+
+```bash
+gh workflow run android-checks.yml --ref debug/android-device -f mode=build
+```
+
 相同源码需要重试偶发失败时，用 `gh run rerun <运行编号> --failed` 只重跑失败任务。
 修改源码后需要重新构建；重试旧运行仍检查原提交。
 仅修改宿主脚本或文档时，可以传入 `-f fixture_run=<原运行编号>` 复用原运行的

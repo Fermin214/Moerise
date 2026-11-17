@@ -66,6 +66,13 @@ onFlowComplete:
       enabled: true
     timeout: 15000
     label: Wait for the expected UI state
+- scrollUntilVisible:
+    element:
+      id: delete_confirm_${NOTE_NAME}
+    direction: DOWN
+    timeout: 15000
+    centerElement: true
+    label: Reveal the complete delete confirmation above the system navigation bar
 - tapOn:
     id: delete_confirm_${NOTE_NAME}
     enabled: true
@@ -123,6 +130,13 @@ onFlowComplete:
       enabled: true
     timeout: 15000
     label: Wait for peer deletion confirmation
+- scrollUntilVisible:
+    element:
+      id: delete_confirm_${PEER_NOTE_NAME}
+    direction: DOWN
+    timeout: 15000
+    centerElement: true
+    label: Reveal the complete peer delete confirmation above the system navigation bar
 - tapOn:
     id: delete_confirm_${PEER_NOTE_NAME}
     enabled: true

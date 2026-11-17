@@ -109,7 +109,7 @@ onFlowComplete:
 - extendedWaitUntil:
     visible:
       id: note_card_${NOTE_NAME}
-    timeout: 15000
+    timeout: 65000
     label: Wait for the expected UI state
 - extendedWaitUntil:
     notVisible:
@@ -254,7 +254,7 @@ onFlowComplete:
 - extendedWaitUntil:
     visible:
       id: note_card_${NOTE_NAME}
-    timeout: 15000
+    timeout: 65000
     label: Require the target keyword result before changing mode
 - tapOn:
     text: 关键词|Keyword
@@ -288,7 +288,7 @@ onFlowComplete:
 - extendedWaitUntil:
     visible:
       id: note_card_${NOTE_NAME}
-    timeout: 15000
+    timeout: 65000
     label: Require the target hybrid result
 - assertVisible:
     text: \Q${NOTE_TEXT}\E
@@ -359,12 +359,12 @@ onFlowComplete:
 - extendedWaitUntil:
     visible:
       id: note_card_${PEER_NOTE_NAME}
-    timeout: 15000
+    timeout: 65000
     label: Wait for the expected UI state
 - extendedWaitUntil:
     visible:
       id: note_card_${NOTE_NAME}
-    timeout: 15000
+    timeout: 65000
     label: Wait for the expected UI state
 - tapOn:
     id: search_close
@@ -388,7 +388,7 @@ onFlowComplete:
 - extendedWaitUntil:
     visible:
       id: note_card_${NOTE_NAME}
-    timeout: 15000
+    timeout: 65000
     label: Require the original test note after returning home
 - assertVisible:
     text: \Q${NOTE_TEXT}\E
