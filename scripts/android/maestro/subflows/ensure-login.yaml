@@ -86,6 +86,17 @@ onFlowComplete:
         text: ${MAESTRO_FIXTURE_ORIGIN}
         label: Enter the supplied ASCII fixture value
     - runFlow:
+        commands:
+        - hideKeyboard
+        label: Reveal the next login field before focusing it
+    - scrollUntilVisible:
+        element:
+          id: server_username
+        direction: DOWN
+        timeout: 15000
+        centerElement: false
+        label: Reveal the username field above the keyboard
+    - runFlow:
         when:
           notVisible:
             id: server_username_empty
@@ -117,6 +128,17 @@ onFlowComplete:
     - inputText:
         text: ${MAESTRO_FIXTURE_USERNAME}
         label: Enter the supplied ASCII fixture value
+    - runFlow:
+        commands:
+        - hideKeyboard
+        label: Reveal the password field before focusing it
+    - scrollUntilVisible:
+        element:
+          id: server_password
+        direction: DOWN
+        timeout: 15000
+        centerElement: false
+        label: Reveal the password field above the keyboard
     - runFlow:
         when:
           notVisible:
