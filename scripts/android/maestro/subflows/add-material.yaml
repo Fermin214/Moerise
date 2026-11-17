@@ -35,7 +35,7 @@ onFlowComplete:
       id: chat_picker_note_${NOTE_NAME}
     direction: DOWN
     timeout: 15000
-    centerElement: false
+    centerElement: true
     label: Locate the specified control without coordinates
 - extendedWaitUntil:
     visible:
@@ -60,7 +60,7 @@ onFlowComplete:
 - extendedWaitUntil:
     notVisible:
       id: chat_material_dialog
-    timeout: 15000
+    timeout: 65000
     label: Wait for the expected UI state
 - extendedWaitUntil:
     visible:

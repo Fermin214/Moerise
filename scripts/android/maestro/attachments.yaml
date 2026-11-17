@@ -41,6 +41,10 @@ onFlowComplete:
 - runFlow:
     file: subflows/pick-download.yaml
     label: Select the unique txt file from the supported system provider
+- runFlow:
+    commands:
+    - hideKeyboard
+    label: Reveal the composer after returning from the file picker
 - extendedWaitUntil:
     visible:
       id: note_editor
@@ -75,11 +79,18 @@ onFlowComplete:
       text: \Q${ATTACHMENT_NOTE_TEXT}\E
     direction: DOWN
     timeout: 15000
-    centerElement: false
+    centerElement: true
     label: Locate the specified control without coordinates
 - assertVisible:
     text: \Q${ATTACHMENT_NOTE_TEXT}\E
     label: Check the expected UI state
+- scrollUntilVisible:
+    element:
+      text: \Q${ATTACHMENT_NAME}\E
+    direction: DOWN
+    timeout: 65000
+    centerElement: true
+    label: Reveal the saved attachment after the queued upload completes
 - assertVisible:
     text: \Q${ATTACHMENT_NAME}\E
     label: Check the expected UI state

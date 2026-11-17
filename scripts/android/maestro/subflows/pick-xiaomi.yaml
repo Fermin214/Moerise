@@ -24,7 +24,7 @@ onFlowComplete:
         id: android:id/list
     direction: DOWN
     timeout: 15000
-    centerElement: false
+    centerElement: true
     label: Find the exact media-scanned test file in the observed list
 - tapOn:
     id: com\.android\.fileexplorer:id/file_name

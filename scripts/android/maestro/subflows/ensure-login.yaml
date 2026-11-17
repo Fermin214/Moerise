@@ -111,7 +111,7 @@ onFlowComplete:
           id: server_username
         direction: DOWN
         timeout: 15000
-        centerElement: false
+        centerElement: true
         label: Reveal the username field above the keyboard
     - runFlow:
         when:
@@ -171,7 +171,7 @@ onFlowComplete:
           id: server_password
         direction: DOWN
         timeout: 15000
-        centerElement: false
+        centerElement: true
         label: Reveal the password field above the keyboard
     - runFlow:
         when:

@@ -16,7 +16,7 @@ onFlowComplete:
       id: note_card_${NOTE_NAME}
     direction: DOWN
     timeout: 15000
-    centerElement: false
+    centerElement: true
     label: Locate the specified control without coordinates
 - tapOn:
     id: note_more_${NOTE_NAME}
@@ -117,7 +117,7 @@ onFlowComplete:
       id: note_editor
     direction: UP
     timeout: 15000
-    centerElement: false
+    centerElement: true
     label: Locate the specified control without coordinates
 - extendedWaitUntil:
     visible:
@@ -130,7 +130,7 @@ onFlowComplete:
       id: note_card_${PEER_NOTE_NAME}
     direction: DOWN
     timeout: 15000
-    centerElement: false
+    centerElement: true
     label: Locate the specified control without coordinates
 - tapOn:
     id: note_more_${PEER_NOTE_NAME}
@@ -225,7 +225,7 @@ onFlowComplete:
       id: note_card_${PEER_NOTE_NAME}
     direction: DOWN
     timeout: 15000
-    centerElement: false
+    centerElement: true
     label: Locate the peer card after discarding its unsaved edit
 - extendedWaitUntil:
     visible:
@@ -244,7 +244,7 @@ onFlowComplete:
       id: note_editor
     direction: UP
     timeout: 15000
-    centerElement: false
+    centerElement: true
     label: Locate the specified control without coordinates
 - extendedWaitUntil:
     visible:
@@ -285,7 +285,7 @@ onFlowComplete:
       id: note_editor
     direction: UP
     timeout: 15000
-    centerElement: false
+    centerElement: true
     label: Reveal the replacement composer after saving
 - extendedWaitUntil:
     visible:
@@ -297,7 +297,7 @@ onFlowComplete:
       text: \Q${NEW_NOTE_TEXT}\E
     direction: DOWN
     timeout: 15000
-    centerElement: false
+    centerElement: true
     label: Locate the specified control without coordinates
 - assertVisible:
     text: \Q${NEW_NOTE_TEXT}\E

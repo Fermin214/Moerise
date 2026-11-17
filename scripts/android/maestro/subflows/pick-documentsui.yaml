@@ -66,7 +66,7 @@ onFlowComplete:
         id: (com\.android\.documentsui|com\.google\.android\.documentsui):id/dir_list
     direction: DOWN
     timeout: 15000
-    centerElement: false
+    centerElement: true
     label: Locate the specified control without coordinates
 - tapOn:
     enabled: true

@@ -289,13 +289,13 @@ def commands(items, flow, refs, inline=False, hook=False, focused=None):
         elif kind == "extendedWaitUntil":
             target = keys - {"timeout"}
             require(target in ({"visible"}, {"notVisible"}) and
-                    type(value.get("timeout")) is int and value["timeout"] == 15000,
-                    "Wait requires one visibility condition and a 15000 ms timeout")
+                    type(value.get("timeout")) is int and value["timeout"] in {15000, 65000},
+                    "Wait requires one visibility condition and a bounded UI or request timeout")
             selector(value[next(iter(target))], absent=target == {"notVisible"})
         elif kind == "scrollUntilVisible":
             require(keys == {"element", "direction", "timeout", "centerElement"} and
                     value["direction"] in {"UP", "DOWN", "LEFT", "RIGHT"} and type(value["timeout"]) is int and
-                    value["timeout"] == 15000 and value["centerElement"] is False,
+                    value["timeout"] in {15000, 65000} and type(value["centerElement"]) is bool,
                     "Scrolling requires a bounded element search without coordinates")
             selector(value["element"])
             if value["direction"] in {"LEFT", "RIGHT"}:

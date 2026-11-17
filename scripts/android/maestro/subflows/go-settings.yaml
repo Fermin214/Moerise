@@ -8,13 +8,12 @@ onFlowComplete:
 - runFlow:
     file: open-menu.yaml
     label: Open navigation
-- scrollUntilVisible:
-    element:
+- extendedWaitUntil:
+    visible:
       id: nav_settings
-    direction: DOWN
+      enabled: true
     timeout: 15000
-    centerElement: false
-    label: Locate the specified control without coordinates
+    label: Wait for the fixed settings navigation control
 - tapOn:
     id: nav_settings
     enabled: true

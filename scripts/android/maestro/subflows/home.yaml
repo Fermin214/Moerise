@@ -16,7 +16,7 @@ onFlowComplete:
       id: nav_home
     direction: DOWN
     timeout: 15000
-    centerElement: false
+    centerElement: true
     label: Locate the specified control without coordinates
 - tapOn:
     id: nav_home
@@ -27,7 +27,7 @@ onFlowComplete:
       id: note_editor
     direction: UP
     timeout: 15000
-    centerElement: false
+    centerElement: true
     label: Locate the specified control without coordinates
 - extendedWaitUntil:
     visible:

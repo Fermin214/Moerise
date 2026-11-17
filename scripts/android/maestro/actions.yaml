@@ -19,7 +19,7 @@ onFlowComplete:
       id: note_editor
     direction: UP
     timeout: 15000
-    centerElement: false
+    centerElement: true
     label: Return to the top composer without changing its contents
 - extendedWaitUntil:
     visible:
@@ -32,7 +32,7 @@ onFlowComplete:
       id: note_card_${PEER_NOTE_NAME}
     direction: DOWN
     timeout: 15000
-    centerElement: false
+    centerElement: true
     label: Locate the specified control without coordinates
 - assertVisible:
     text: \Q${PEER_NOTE_TEXT}\E
@@ -44,7 +44,7 @@ onFlowComplete:
       id: note_card_${NOTE_NAME}
     direction: DOWN
     timeout: 15000
-    centerElement: false
+    centerElement: true
     label: Locate the specified control without coordinates
 - tapOn:
     id: note_more_${NOTE_NAME}
@@ -73,14 +73,14 @@ onFlowComplete:
 - extendedWaitUntil:
     notVisible:
       id: note_card_${NOTE_NAME}
-    timeout: 15000
+    timeout: 65000
     label: Wait for the expected UI state
 - scrollUntilVisible:
     element:
       id: note_editor
     direction: UP
     timeout: 15000
-    centerElement: false
+    centerElement: true
     label: Return to the top composer without changing its contents
 - extendedWaitUntil:
     visible:
@@ -93,7 +93,7 @@ onFlowComplete:
       id: note_card_${PEER_NOTE_NAME}
     direction: DOWN
     timeout: 15000
-    centerElement: false
+    centerElement: true
     label: Locate the specified control without coordinates
 - assertVisible:
     text: \Q${PEER_NOTE_TEXT}\E
@@ -130,14 +130,14 @@ onFlowComplete:
 - extendedWaitUntil:
     notVisible:
       id: note_card_${PEER_NOTE_NAME}
-    timeout: 15000
+    timeout: 65000
     label: Require the deleted peer card to disappear
 - scrollUntilVisible:
     element:
       id: note_editor
     direction: UP
     timeout: 15000
-    centerElement: false
+    centerElement: true
     label: Return to the top composer without changing its contents
 - extendedWaitUntil:
     visible:

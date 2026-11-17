@@ -13,7 +13,7 @@ onFlowComplete:
       id: nav_insights
     direction: DOWN
     timeout: 15000
-    centerElement: false
+    centerElement: true
     label: Locate the specified control without coordinates
 - tapOn:
     id: nav_insights

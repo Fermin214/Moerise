@@ -13,7 +13,7 @@ onFlowComplete:
       id: note_card_${NOTE_NAME}
     direction: DOWN
     timeout: 15000
-    centerElement: false
+    centerElement: true
     label: Locate the specified control without coordinates
 - assertVisible:
     id: note_card_${NOTE_NAME}
@@ -23,7 +23,7 @@ onFlowComplete:
       id: note_card_${PEER_NOTE_NAME}
     direction: DOWN
     timeout: 15000
-    centerElement: false
+    centerElement: true
     label: Locate the specified control without coordinates
 - assertVisible:
     id: note_card_${PEER_NOTE_NAME}
@@ -33,7 +33,7 @@ onFlowComplete:
       id: note_editor
     direction: UP
     timeout: 15000
-    centerElement: false
+    centerElement: true
     label: Locate the specified control without coordinates
 - tapOn:
     id: open_search
@@ -56,6 +56,23 @@ onFlowComplete:
         id: search_query
         enabled: true
         label: Open text selection for the known input
+    - runFlow:
+        when:
+          notVisible:
+            text: Select all|Select All|全选
+        commands:
+        - assertNotVisible:
+            text: Select all|Select All|全选
+            label: Require the full-selection action to be outside the toolbar
+        - assertVisible:
+            id: android:id/overflow
+            enabled: true
+            label: Require the observed Android text toolbar overflow
+        - tapOn:
+            id: android:id/overflow
+            enabled: true
+            label: Reveal the remaining text selection actions
+        label: Open text toolbar overflow only when full selection is hidden
     - extendedWaitUntil:
         visible:
           text: Select all|Select All|全选
@@ -190,6 +207,23 @@ onFlowComplete:
         id: search_query
         enabled: true
         label: Open text selection for the known input
+    - runFlow:
+        when:
+          notVisible:
+            text: Select all|Select All|全选
+        commands:
+        - assertNotVisible:
+            text: Select all|Select All|全选
+            label: Require the full-selection action to be outside the toolbar
+        - assertVisible:
+            id: android:id/overflow
+            enabled: true
+            label: Require the observed Android text toolbar overflow
+        - tapOn:
+            id: android:id/overflow
+            enabled: true
+            label: Reveal the remaining text selection actions
+        label: Open text toolbar overflow only when full selection is hidden
     - extendedWaitUntil:
         visible:
           text: Select all|Select All|全选
@@ -213,15 +247,15 @@ onFlowComplete:
 - pressKey:
     key: Enter
     label: Submit search through the focused IME search field
+- runFlow:
+    commands:
+    - hideKeyboard
+    label: Reveal the keyword results after submitting the restored query
 - extendedWaitUntil:
     visible:
       id: note_card_${NOTE_NAME}
     timeout: 15000
     label: Require the target keyword result before changing mode
-- runFlow:
-    commands:
-    - hideKeyboard
-    label: Dismiss the search keyboard before selecting mode
 - tapOn:
     text: 关键词|Keyword
     enabled: true
@@ -276,6 +310,23 @@ onFlowComplete:
         id: search_query
         enabled: true
         label: Open text selection for the known input
+    - runFlow:
+        when:
+          notVisible:
+            text: Select all|Select All|全选
+        commands:
+        - assertNotVisible:
+            text: Select all|Select All|全选
+            label: Require the full-selection action to be outside the toolbar
+        - assertVisible:
+            id: android:id/overflow
+            enabled: true
+            label: Require the observed Android text toolbar overflow
+        - tapOn:
+            id: android:id/overflow
+            enabled: true
+            label: Reveal the remaining text selection actions
+        label: Open text toolbar overflow only when full selection is hidden
     - extendedWaitUntil:
         visible:
           text: Select all|Select All|全选
@@ -332,7 +383,7 @@ onFlowComplete:
       id: note_card_${NOTE_NAME}
     direction: DOWN
     timeout: 15000
-    centerElement: false
+    centerElement: true
     label: Locate the dedicated note after the final home navigation
 - extendedWaitUntil:
     visible:
