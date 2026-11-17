@@ -7,7 +7,7 @@
     },
     "editing": {
       "file": "editing.yaml",
-      "timeout_seconds": 240,
+      "timeout_seconds": 420,
       "seed_notes": true
     },
     "search": {

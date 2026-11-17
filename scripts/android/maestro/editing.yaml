@@ -110,20 +110,6 @@ onFlowComplete:
     label: Wait for the expected UI state
 - scrollUntilVisible:
     element:
-      id: note_card_${NOTE_NAME}
-    direction: DOWN
-    timeout: 15000
-    centerElement: false
-    label: Locate the specified control without coordinates
-- extendedWaitUntil:
-    visible:
-      text: \Q${EDITED_TEXT}\E
-      childOf:
-        id: note_card_${NOTE_NAME}
-    timeout: 15000
-    label: Wait for the expected UI state
-- scrollUntilVisible:
-    element:
       id: note_card_${PEER_NOTE_NAME}
     direction: DOWN
     timeout: 15000
