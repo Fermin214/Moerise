@@ -91,15 +91,17 @@ onFlowComplete:
     enabled: true
     label: Focus the empty fixture input
 - inputText:
-    text: ${QUERY_TEXT}
-    label: Enter the supplied ASCII fixture value
+    text: ${QUERY_TEXT}${INPUT_SUFFIX}
+    label: Enter the exact fixture value through the test input method
+- eraseText:
+    charactersToErase: 1
+    label: Remove only the temporary input suffix
 - pressKey:
     key: Enter
     label: Submit search through the focused IME search field
 - runFlow:
-    commands:
-    - hideKeyboard
-    label: Dismiss the keyboard
+    file: subflows/hide-keyboard.yaml
+    label: Dismiss only an observed visible input method
 - extendedWaitUntil:
     visible:
       id: search_query
@@ -242,15 +244,17 @@ onFlowComplete:
     enabled: true
     label: Focus the empty fixture input
 - inputText:
-    text: ${QUERY_TEXT}
-    label: Restore the exact query before changing mode
+    text: ${QUERY_TEXT}${INPUT_SUFFIX}
+    label: Enter the exact fixture value through the test input method
+- eraseText:
+    charactersToErase: 1
+    label: Remove only the temporary input suffix
 - pressKey:
     key: Enter
     label: Submit search through the focused IME search field
 - runFlow:
-    commands:
-    - hideKeyboard
-    label: Reveal the keyword results after submitting the restored query
+    file: subflows/hide-keyboard.yaml
+    label: Dismiss only an observed visible input method
 - extendedWaitUntil:
     visible:
       id: note_card_${NOTE_NAME}
@@ -282,14 +286,15 @@ onFlowComplete:
     key: Enter
     label: Submit search through the focused IME search field
 - runFlow:
-    commands:
-    - hideKeyboard
-    label: Dismiss the keyboard after hybrid submission
-- extendedWaitUntil:
-    visible:
+    file: subflows/hide-keyboard.yaml
+    label: Dismiss only an observed visible input method
+- scrollUntilVisible:
+    element:
       id: note_card_${NOTE_NAME}
+    direction: DOWN
     timeout: 65000
-    label: Require the target hybrid result
+    centerElement: false
+    label: Find the target anywhere in the relevance-ranked results
 - assertVisible:
     text: \Q${NOTE_TEXT}\E
     childOf:
@@ -348,9 +353,8 @@ onFlowComplete:
     key: Enter
     label: Submit search through the focused IME search field
 - runFlow:
-    commands:
-    - hideKeyboard
-    label: Dismiss the keyboard
+    file: subflows/hide-keyboard.yaml
+    label: Dismiss only an observed visible input method
 - extendedWaitUntil:
     visible:
       id: search_query_empty

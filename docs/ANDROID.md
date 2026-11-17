@@ -76,10 +76,11 @@ adb install -r mobile/androidApp/build/outputs/apk/debug/androidApp-debug.apk
 
 连接页接受与 `web.public_origin` 相同的 Web 入口，API 位于 `/api/app/v1`。登录密码仅用于登录请求；会话 Cookie 使用 Android Keystore 的 AES-GCM 密钥加密后存入免备份目录，CSRF 只保存在内存。Cookie 限定同一 scheme、host 和端口，不跟随重定向，不启用底层写入自动重试。
 会话恢复、连接检查与普通 API 共用 65 秒请求时限，建立连接的时限为 10 秒。
-会话读取遇到复用连接的 EOF 错误时立即重连一次，两次请求共用 65 秒时限；
-写入的传输失败仍交给持久队列按原幂等键和正文恢复。
+GET 与只读 POST `/search`、`/chat-materials/resolve` 遇到复用连接的 EOF 时，
+清除该客户端的空闲连接后重连一次，两次请求共用 65 秒时限。各客户端使用独立连接池；
+空闲连接在 IO 线程清理；写入发送前先清理空闲连接，传输失败交给调用方处理；已持久化的请求沿用原键和正文恢复。连接诊断日志包含操作类型、资源类别及异常类型链。
 
-首次登录需要输入服务器地址。已有账号重新登录时沿用保存的地址，点击更换服务器后显示地址输入框；修改地址清除密码。
+首次登录需要输入服务器地址。已有账号重新登录时沿用保存的地址，点击更换服务器后显示地址输入框；修改地址清除密码。提交登录和打开侧栏时清除输入焦点并收起键盘。
 
 服务来源、实例 ID 和作者资源名共同组成账号隔离键。恢复会话时重新读取身份，身份变化要求登录；非 GET/HEAD 操作携带 Origin 和 CSRF，CSRF 校验失败时仅刷新一次。退出先清除本机身份，再尝试撤销服务端会话；旧响应不能覆盖新登录的 Cookie。
 
@@ -187,7 +188,7 @@ scripts/android/acceptance.sh
 
 新建、材料变更、生成、删除和保存回复在发送前持久记录原始请求。新建使用固定 `request_id`，生成使用 `request_id`、会话版本和语言；请求结果不明时保留原体。材料更新通过读取会话版本与材料引用判断是否成功；删除生成中的会话先确认停止终态，再按会话版本删除。保存回复使用服务端消息版本，成功后先记录笔记资源名，后续读取失败也不会重复保存。
 
-生成使用 POST SSE，单次预算为 135 秒，连接预算为 10 秒。解析器按完整行解码 UTF-8，识别 CRLF、多行数据、半帧、错误帧及异常结束；只有合法 `complete` 帧表示成功。普通 API 请求维持 65 秒预算，底层关闭写入重试和自动重连。流式文本合并后批量更新界面，部分回复定期落盘。
+生成使用 POST SSE，单次预算为 135 秒，连接预算为 10 秒。解析器按完整行解码 UTF-8，识别 CRLF、多行数据、半帧、错误帧及异常结束；只有合法 `complete` 帧表示成功。普通 API 请求维持 65 秒预算，GET 与只读 POST `/search`、`/chat-materials/resolve` 遇到 EOF 时清除空闲连接并重连一次，两个请求共用时限；写操作、HTTP 错误和其他网络错误不自动重试。流式文本合并后批量更新界面，部分回复定期落盘。
 
 离页和进入后台取消流式读取；返回页面和进程重启只读取持久会话，生成中的会话每 3 秒读取状态。停止操作调用服务端 cancel，再重新读取。失败、中断和取消后的重新生成由按钮触发，使用新请求 ID 与适用版本；原请求尚未出现在会话时按原 ID 恢复。服务器完成结果替换本机预览，旧部分回复仍可恢复。完整回复通过服务端 save 接口保存为笔记，正文超过 UTF-8 上限时提示先生成总结。
 
@@ -353,7 +354,11 @@ scripts/android/release.sh --unsigned
 Android 标签采用 `android-v*`。`android-release.yml` 在标签事件中读取
 `ANDROID_SIGNING_KEYSTORE`（Base64 keystore）、`ANDROID_KEY_ALIAS`、
 `ANDROID_STORE_PASSWORD`、`ANDROID_KEY_PASSWORD`，校验标签与 APK 版本后发布 Android Release。
-发行构建在 GitHub Actions 执行，并在 API 26 模拟器检查签名 APK 的安装和登录页启动。
+发行构建在 GitHub Actions 执行，并在 API 26 模拟器使用签名 APK 检查登录、笔记保存读回、
+应用重开、附件字节读回和洞察选材。隔离 HTTPS 的临时 CA 安装到模拟器系统信任库，
+应用使用发行版证书校验与 Secure Cookie；结果归档为 `android-release-checks`。
+合并前可推送 `android-rc-v<版本>-<提交号>` 标签，使用同一发行密钥生成候选包并执行
+API 26 发行检查；候选标签只上传构建产物，不创建 GitHub Release。
 Android 检查在 API 36 模拟器运行登录、记录、编辑、草稿恢复与离线队列流程。
 手动 workflow 默认构建 unsigned 包，可通过 `sign` 输入选择签名。APK、SHA-256、
 构建 JSON 和许可 ZIP 用作发行附件，mapping 保存在构建产物中。

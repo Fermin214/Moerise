@@ -22,10 +22,10 @@ onFlowComplete:
     enabled: true
     label: Activate the specified control
 - extendedWaitUntil:
-    notVisible:
-      id: note_editor
+    visible:
+      id: (com\.android\.documentsui|com\.google\.android\.documentsui):id/toolbar|com\.android\.fileexplorer:id/pick_container
     timeout: 15000
-    label: Wait for the expected UI state
+    label: Confirm that Back will cancel the system picker
 - takeScreenshot:
     path: ${SCREENSHOT_PREFIX}-attachment-picker
     label: Capture the isolated test UI

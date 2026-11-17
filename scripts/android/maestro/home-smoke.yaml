@@ -22,9 +22,8 @@ onFlowComplete:
     path: ${SCREENSHOT_PREFIX}-home-focused
     label: Capture the isolated test UI
 - runFlow:
-    commands:
-    - hideKeyboard
-    label: Dismiss the keyboard
+    file: subflows/hide-keyboard.yaml
+    label: Dismiss only an observed visible input method
 - extendedWaitUntil:
     visible:
       id: save_note

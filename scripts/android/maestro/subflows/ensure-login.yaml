@@ -99,20 +99,34 @@ onFlowComplete:
         id: server_origin
         enabled: true
         label: Focus the empty fixture input
+    - extendedWaitUntil:
+        visible:
+          id: server_origin
+          focused: true
+        timeout: 15000
+        label: Verify the server field has input focus
     - inputText:
-        text: ${MAESTRO_FIXTURE_ORIGIN}
-        label: Enter the supplied ASCII fixture value
-    - runFlow:
-        commands:
-        - hideKeyboard
-        label: Reveal the next login field before focusing it
+        text: ${MAESTRO_FIXTURE_ORIGIN}${INPUT_SUFFIX}
+        label: Enter the exact fixture value through the test input method
+    - eraseText:
+        charactersToErase: 1
+        label: Remove only the temporary input suffix
+    - pressKey:
+        key: Enter
+        label: Advance to username with the form IME action
     - scrollUntilVisible:
         element:
           id: server_username
         direction: DOWN
         timeout: 15000
         centerElement: true
-        label: Reveal the username field above the keyboard
+        label: Bring the complete username field above the input method
+    - extendedWaitUntil:
+        visible:
+          id: server_username
+          focused: true
+        timeout: 15000
+        label: Verify username has input focus above the keyboard
     - runFlow:
         when:
           notVisible:
@@ -159,20 +173,34 @@ onFlowComplete:
         id: server_username
         enabled: true
         label: Focus the empty fixture input
+    - extendedWaitUntil:
+        visible:
+          id: server_username
+          focused: true
+        timeout: 15000
+        label: Verify username has input focus
     - inputText:
-        text: ${MAESTRO_FIXTURE_USERNAME}
-        label: Enter the supplied ASCII fixture value
-    - runFlow:
-        commands:
-        - hideKeyboard
-        label: Reveal the password field before focusing it
+        text: ${MAESTRO_FIXTURE_USERNAME}${INPUT_SUFFIX}
+        label: Enter the exact fixture value through the test input method
+    - eraseText:
+        charactersToErase: 1
+        label: Remove only the temporary input suffix
+    - pressKey:
+        key: Enter
+        label: Advance to password with the form IME action
     - scrollUntilVisible:
         element:
           id: server_password
         direction: DOWN
         timeout: 15000
         centerElement: true
-        label: Reveal the password field above the keyboard
+        label: Bring the complete secret field above the input method
+    - extendedWaitUntil:
+        visible:
+          id: server_password
+          focused: true
+        timeout: 15000
+        label: Verify password has input focus above the keyboard
     - runFlow:
         when:
           notVisible:
@@ -219,23 +247,21 @@ onFlowComplete:
         id: server_password
         enabled: true
         label: Focus the empty fixture input
-    - inputText:
-        text: ${MAESTRO_FIXTURE_PASSWORD}
-        label: Enter the supplied ASCII fixture value
-    - runFlow:
-        commands:
-        - hideKeyboard
-        label: Dismiss the keyboard
     - extendedWaitUntil:
         visible:
-          id: server_login
-          enabled: true
+          id: server_password
+          focused: true
         timeout: 15000
-        label: Wait for the expected UI state
-    - tapOn:
-        id: server_login
-        enabled: true
-        label: Activate the specified control
+        label: Verify password has input focus
+    - inputText:
+        text: ${MAESTRO_FIXTURE_PASSWORD}${INPUT_SUFFIX}
+        label: Enter the exact fixture value through the test input method
+    - eraseText:
+        charactersToErase: 1
+        label: Remove only the temporary input suffix
+    - pressKey:
+        key: Enter
+        label: Submit login with the form IME action
     - extendedWaitUntil:
         visible:
           id: open_menu

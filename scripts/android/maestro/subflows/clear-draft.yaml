@@ -55,12 +55,11 @@ onFlowComplete:
     id: note_editor
     enabled: true
     label: Focus the empty fixture input
-- runFlow:
-    commands:
-    - hideKeyboard
-    label: Dismiss the keyboard
 - extendedWaitUntil:
     visible:
       id: note_editor_empty
     timeout: 15000
     label: Wait for the expected UI state
+- runFlow:
+    file: hide-keyboard.yaml
+    label: Dismiss only an observed visible input method

@@ -23,7 +23,7 @@ CREDENTIALS = {
     "MAESTRO_FIXTURE_PASSWORD": "server_password",
 }
 DATA_VARIABLES = {
-    "APP_ID", "SCREENSHOT_PREFIX", "NOTE_NAME", "PEER_NOTE_NAME", "NOTE_TEXT",
+    "APP_ID", "SCREENSHOT_PREFIX", "INPUT_SUFFIX", "NOTE_NAME", "PEER_NOTE_NAME", "NOTE_TEXT",
     "PEER_NOTE_TEXT", "EDITED_TEXT", "PEER_EDITED_TEXT", "DRAFT_TEXT", "QUERY_TEXT", "ATTACHMENT_NAME",
     "NEW_NOTE_TEXT", "ATTACHMENT_NOTE_TEXT", "CHAT_TITLE",
 }
@@ -47,7 +47,7 @@ ABSENCE_IDS = {
 PROVIDER = r"(com\.android\.documentsui|com\.google\.android\.documentsui):id/"
 SYSTEM_IDS = {PROVIDER + suffix for suffix in ("toolbar", "roots_list", "dir_list", "action_menu_select")}
 XIAOMI = r"com\.android\.fileexplorer:id/"
-SYSTEM_IDS |= {XIAOMI + suffix for suffix in ("pick_container", "file_name", "btnConfirm")}
+SYSTEM_IDS |= {XIAOMI + suffix for suffix in ("pick_container", "file_name", "btnConfirm", "path_item")}
 SYSTEM_IDS.add("android:id/list")
 SYSTEM_IDS.add("android:id/overflow")
 SYSTEM_IDS.add("com.android.systemui:id/ok")
@@ -63,6 +63,7 @@ LITERAL_TEXT = {
     "^$", "在主页查看|View on home", "简体中文", "English", "跟随系统|Follow system",
     "简体中文|English|跟随系统|Follow system", "语言|Language",
     "Show roots|显示根目录", "Downloads|下载",
+    "浏览|Browse", "Download|下载",
     "关键词|Keyword", "混合|Hybrid", TIMESTAMP_TEXT,
     "Select all|Select All|全选",
     "回顾|Review", "漫步|Walk", "观星|Stargazing",
@@ -161,6 +162,8 @@ def source_ids():
     add("ConnectionScreen.kt", "server_login")
     add("ConnectionScreen.kt", "server_change")
     add("MoeriseApp.kt", "note_editor", 'editorTag: String = "note_editor"')
+    for identifier in ("ime_visible", "ime_hidden"):
+        add("MoeriseApp.kt", identifier, f'"{identifier}"')
     add("MoeriseApp.kt", "note_editor_empty", '"${editorTag}_empty"')
     add("MoeriseApp.kt", "save_note", 'saveTag: String = "save_note"')
     add("MoeriseApp.kt", "archive_page")
@@ -199,6 +202,7 @@ SOURCE_IDS = source_ids()
 NON_TAP_IDS = {
     "settings_page", "insights_page", "archive_page", "review_page", "walk_page",
     "home", "map_page", "sidebar_account", "chat_material_dialog", "chat_history_dialog",
+    "ime_visible", "ime_hidden",
     "chat_error", "walk_configuration_error", "discovery_error", "settings_stargazing_enabled",
 }
 
@@ -225,9 +229,9 @@ def selector(value, labelled=False, relation=False, absent=False):
             require(value.get("childOf") == {"id": "note_card_${NOTE_NAME}"},
                     "Timestamp matching must be scoped to the dedicated test note")
     if value.get("id") == XIAOMI + "file_name":
-        require(value.get("text") == r"\Q${ATTACHMENT_NAME}\E" and
+        require(value.get("text") in {r"\Q${ATTACHMENT_NAME}\E", "Download|下载"} and
                 value.get("childOf") == {"id": "android:id/list"},
-                "Xiaomi file selection requires the exact fixture filename in the observed file list")
+                "Xiaomi selection requires Download or the exact fixture filename in the observed file list")
     for key in ("enabled", "focused", "checked"):
         if key in value:
             require(type(value[key]) is bool, "Selector flags must be booleans")
@@ -237,13 +241,13 @@ def selector(value, labelled=False, relation=False, absent=False):
         require(set(value["childOf"]) == {"id"}, "Parent selection requires one exact known ID")
 
 
-def commands(items, flow, refs, inline=False, hook=False, focused=None):
+def commands(items, flow, refs, inline=False, hook=False, focused=None, ime_guarded=False):
     require(isinstance(items, list) and items, "Command lists must not be empty")
     selected_all = False
-    for item in items:
+    for index, item in enumerate(items):
         if isinstance(item, str):
-            require(inline and item in {"back", "hideKeyboard"},
-                    "Only labelled inline flows may contain Back or hideKeyboard")
+            require(inline and item == "back" and flow == "attachment-cancel.yaml",
+                    "Back is only allowed to cancel the verified system file picker")
             focused = None
             continue
         require(isinstance(item, dict) and len(item) == 1, "Expected one command per step")
@@ -317,23 +321,39 @@ def commands(items, flow, refs, inline=False, hook=False, focused=None):
                     "Screenshots must use the supplied prefix with a literal suffix")
         elif kind == "inputText":
             require(keys == {"text"} and isinstance(value["text"], str), "Invalid text input mapping")
-            variable = VARIABLE.fullmatch(value["text"])
+            suffix = "${INPUT_SUFFIX}"
+            require(value["text"].endswith(suffix), "Fixture text requires the temporary input suffix")
+            variable = VARIABLE.fullmatch(value["text"].removesuffix(suffix))
             require(variable is not None and variable[1] in INPUT_FIELDS,
                     "Text input must use an allowed ASCII fixture variable")
             require(focused == INPUT_FIELDS[variable[1]], "Text input must follow focus of its specific test field")
+            following = items[index + 1] if index + 1 < len(items) else {}
+            require(isinstance(following, dict) and isinstance(following.get("eraseText"), dict) and
+                    following["eraseText"].get("charactersToErase") == 1,
+                    "Remove the fixture input suffix before performing other actions")
             if variable[1] in CREDENTIALS:
                 require(flow == "subflows/ensure-login.yaml", "Credentials belong only in ensure-login")
         elif kind == "eraseText":
+            follows_input = index > 0 and isinstance(items[index - 1], dict) and "inputText" in items[index - 1]
             require(keys == {"charactersToErase"} and type(value["charactersToErase"]) is int and
                     (value["charactersToErase"] == 100 or
-                     value["charactersToErase"] == 1 and selected_all) and focused in INPUT_FIELDS.values(),
+                     value["charactersToErase"] == 1 and (selected_all or follows_input)) and focused in INPUT_FIELDS.values(),
                     "Erase requires a known focused field and a bounded character count")
             selected_all = False
         elif kind == "pressKey":
+            login_next = {
+                "server_origin": "server_username", "server_username": "server_password",
+                "server_password": None,
+            }
             require(keys == {"key"} and value["key"] == "Enter" and
-                    flow == "search.yaml" and focused == "search_query",
-                    "Only Enter from the focused search field is supported")
-            focused = None
+                    (flow == "search.yaml" and focused == "search_query" or
+                     flow == "subflows/ensure-login.yaml" and focused in login_next),
+                    "Enter requires the focused search field or a login form field")
+            focused = login_next[focused] if flow == "subflows/ensure-login.yaml" else None
+        elif kind == "hideKeyboard":
+            require(not keys and inline and ime_guarded and flow == "subflows/hide-keyboard.yaml",
+                    "Hide keyboard requires the observed IME visibility guard in its dedicated subflow")
+            focused, selected_all = None, False
         elif kind == "runFlow":
             body_keys = keys - {"when"}
             require(body_keys in ({"file"}, {"commands"}), "Subflow requires one file or command list")
@@ -356,7 +376,8 @@ def commands(items, flow, refs, inline=False, hook=False, focused=None):
                         "Subflow paths must be literal relative YAML paths")
                 refs.add((Path(flow).parent / path).as_posix())
             else:
-                nested_focus, _ = commands(value["commands"], flow, refs, inline=True, focused=focused)
+                nested_focus, _ = commands(value["commands"], flow, refs, inline=True, focused=focused,
+                    ime_guarded=value.get("when") == {"visible": {"id": "ime_visible"}})
                 focused = focused if nested_focus == focused else None
             if "file" in value:
                 focused = None
@@ -489,6 +510,8 @@ def validate_runtime(flow, values, environment=None, catalog=None, documents=Non
         require(isinstance(value, str), "Fixture values must be strings")
         if key in {"NOTE_NAME", "PEER_NOTE_NAME"}:
             require(re.fullmatch(r"memos/[A-Za-z0-9_-]+", value), "Invalid exact note resource name")
+        elif key == "INPUT_SUFFIX":
+            require(value in {".", "。"}, "Use the fixed ASCII or Unicode input suffix")
         elif key == "ATTACHMENT_NAME":
             require(re.fullmatch(r"[A-Za-z0-9_-]+\.txt", value), "Attachment must have one safe ASCII txt filename")
         elif key in TEXT_VARIABLES:

@@ -5,6 +5,9 @@ onFlowComplete:
     path: ${SCREENSHOT_PREFIX}-open-menu-final
     label: Capture the isolated test UI
 ---
+- runFlow:
+    file: hide-keyboard.yaml
+    label: Dismiss only an observed visible input method
 - extendedWaitUntil:
     visible:
       id: open_menu
@@ -19,3 +22,6 @@ onFlowComplete:
       id: sidebar_account
     timeout: 15000
     label: Wait for the expected UI state
+- runFlow:
+    file: hide-keyboard.yaml
+    label: Dismiss an input method that appears during the drawer transition

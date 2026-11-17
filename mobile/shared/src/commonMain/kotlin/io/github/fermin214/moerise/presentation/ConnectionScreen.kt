@@ -18,6 +18,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.focus.FocusDirection
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -31,6 +32,8 @@ import androidx.compose.ui.unit.sp
 
 @Composable
 fun ConnectionScreen(controller: SessionController, strings: Strings, onConnected: () -> Unit = {}) {
+    val focusManager = LocalFocusManager.current
+    val keyboard = LocalSoftwareKeyboardController.current
     val state by controller.state.collectAsState()
     val language by controller.language.collectAsState()
     var origin by rememberSaveable(state.profile?.origin) { mutableStateOf(state.profile?.origin ?: "") }
@@ -41,7 +44,13 @@ fun ConnectionScreen(controller: SessionController, strings: Strings, onConnecte
     var languageMenu by remember { mutableStateOf(false) }
     val canLogin = !state.busy && origin.isNotBlank() && username.isNotBlank() && password.isNotBlank()
     fun submitLogin() {
-        if (canLogin) { submitted = true; controller.login(origin, username, password); password = "" }
+        if (canLogin) {
+            focusManager.clearFocus()
+            keyboard?.hide()
+            submitted = true
+            controller.login(origin, username, password)
+            password = ""
+        }
     }
     LaunchedEffect(state.connected, state.busy) { if (submitted && state.connected && !state.busy) onConnected() }
     BoxWithConstraints(Modifier.fillMaxSize().imePadding()) {

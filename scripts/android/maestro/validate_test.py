@@ -15,6 +15,7 @@ class FlowPolicyTest(unittest.TestCase):
         cls.documents = validate.load_documents()
         cls.values = {
             "APP_ID": "io.github.example.moerise", "SCREENSHOT_PREFIX": "run_20261117/editing",
+            "INPUT_SUFFIX": ".",
             "NOTE_NAME": "memos/unique-note", "PEER_NOTE_NAME": "memos/unique-peer",
             "NOTE_TEXT": "Maestro target unique123", "QUERY_TEXT": "Maestro target unique123",
             "PEER_NOTE_TEXT": "Maestro peer unique123", "EDITED_TEXT": "Maestro edited unique123",
@@ -29,11 +30,18 @@ class FlowPolicyTest(unittest.TestCase):
             "MAESTRO_FIXTURE_PASSWORD": "fixture-password",
         }
 
-    def reject_step(self, step, preceding=()):
+    def reject_step(self, step, preceding=(), following=()):
         documents = deepcopy(self.documents)
-        documents["home-smoke.yaml"][1].extend([*preceding, step])
+        documents["home-smoke.yaml"][1] = [*preceding, step, *following]
         with self.assertRaises(ValueError):
             validate.validate_documents(documents, self.catalog)
+
+    def reject_input(self, variable, preceding=()):
+        self.reject_step(
+            {"inputText": {"text": "${" + variable + "}${INPUT_SUFFIX}", "label": "Input in the wrong field"}},
+            preceding,
+            [{"eraseText": {"charactersToErase": 1, "label": "Remove the temporary input suffix"}}],
+        )
 
     def runtime(self, flow, values=None, environment=None):
         return validate.validate_runtime(
@@ -94,7 +102,7 @@ class FlowPolicyTest(unittest.TestCase):
     def test_network_installation_scripts_retries_and_stop_are_rejected(self):
         for command in ("clearState", "clearKeychain", "installApp", "uninstallApp", "stopApp",
                         "setAirplaneMode", "setPermissions", "openLink", "retry", "repeat",
-                        "runScript", "evalScript", "setLocation"):
+                        "runScript", "evalScript", "setLocation", "hideKeyboard"):
             with self.subTest(command=command):
                 self.reject_step({command: {"label": "Disallowed operation"}})
         for flags in ({"clearState": True, "stopApp": False},
@@ -113,13 +121,13 @@ class FlowPolicyTest(unittest.TestCase):
             self.reject_step({"inputText": {"text": text, "label": "Unbounded text"}})
 
     def test_inputs_require_the_correct_focused_field(self):
-        self.reject_step({"inputText": {"text": "${EDITED_TEXT}", "label": "Missing focus"}})
-        self.reject_step(
-            {"inputText": {"text": "${EDITED_TEXT}", "label": "Wrong target"}},
+        self.reject_input("EDITED_TEXT")
+        self.reject_input(
+            "EDITED_TEXT",
             [{"tapOn": {"id": "note_editor", "enabled": True, "label": "Focus composer"}}],
         )
-        self.reject_step(
-            {"inputText": {"text": "${MAESTRO_FIXTURE_PASSWORD}", "label": "Credential outside login"}},
+        self.reject_input(
+            "MAESTRO_FIXTURE_PASSWORD",
             [{"tapOn": {"id": "server_password", "enabled": True, "label": "Focus password"}}],
         )
         for erase in ({"characters": 100}, {"charactersToErase": 1000}, {"charactersToErase": 1}):
@@ -150,6 +158,16 @@ class FlowPolicyTest(unittest.TestCase):
         self.reject_step({"runFlow": {
             "when": {"true": "${true}"}, "commands": ["back"], "label": "Script condition",
         }})
+        for guard in (None, {"visible": {"id": "server_login"}}):
+            documents = deepcopy(self.documents)
+            branch = documents["subflows/hide-keyboard.yaml"][1][0]["runFlow"]
+            if guard is None:
+                branch.pop("when")
+            else:
+                branch["when"] = guard
+                branch["commands"][0]["assertVisible"]["id"] = "server_login"
+            with self.subTest(guard=guard), self.assertRaises(ValueError):
+                validate.validate_documents(documents, self.catalog)
 
     def test_failure_screenshot_is_required_and_hook_cannot_change_state(self):
         documents = deepcopy(self.documents)
@@ -260,8 +278,8 @@ class FlowPolicyTest(unittest.TestCase):
             ("EDITED_TEXT", "note_editor_${PEER_NOTE_NAME}"),
         ):
             with self.subTest(variable=variable):
-                self.reject_step(
-                    {"inputText": {"text": "${" + variable + "}", "label": "Edit the wrong dedicated note"}},
+                self.reject_input(
+                    variable,
                     [{"tapOn": {"id": field, "enabled": True, "label": "Focus the wrong note field"}}],
                 )
 

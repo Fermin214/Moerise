@@ -1,5 +1,5 @@
 appId: ${APP_ID}
-name: Select one exact recent file in Xiaomi File Explorer
+name: Select one exact file in Xiaomi File Explorer
 onFlowComplete:
 - takeScreenshot:
     path: ${SCREENSHOT_PREFIX}-pick-xiaomi-final
@@ -16,6 +16,62 @@ onFlowComplete:
       enabled: false
     timeout: 15000
     label: Require an empty Xiaomi selection before choosing the test file
+- runFlow:
+    when:
+      notVisible:
+        id: com\.android\.fileexplorer:id/file_name
+        text: \Q${ATTACHMENT_NAME}\E
+        childOf:
+          id: android:id/list
+    commands:
+    - assertNotVisible:
+        id: com\.android\.fileexplorer:id/file_name
+        text: \Q${ATTACHMENT_NAME}\E
+        childOf:
+          id: android:id/list
+        label: Verify that the exact file is missing from the initial view
+    - runFlow:
+        when:
+          visible:
+            text: 浏览|Browse
+        commands:
+        - assertVisible:
+            text: 浏览|Browse
+            label: Identify the tabbed picker
+        - tapOn:
+            text: 浏览|Browse
+            enabled: true
+            label: Open the Xiaomi file browser
+        label: Open Browse only from the tabbed picker
+    - runFlow:
+        when:
+          notVisible:
+            id: com\.android\.fileexplorer:id/path_item
+            text: Download|下载
+        commands:
+        - assertNotVisible:
+            id: com\.android\.fileexplorer:id/path_item
+            text: Download|下载
+            label: Require a location outside Download
+        - scrollUntilVisible:
+            element:
+              id: com\.android\.fileexplorer:id/file_name
+              text: Download|下载
+              childOf:
+                id: android:id/list
+            direction: DOWN
+            timeout: 15000
+            centerElement: false
+            label: Find the Download folder in internal storage
+        - tapOn:
+            id: com\.android\.fileexplorer:id/file_name
+            text: Download|下载
+            childOf:
+              id: android:id/list
+            enabled: true
+            label: Open only the Download folder
+        label: Open Download only if it is not already open
+    label: Browse to Download when the test file is missing from the initial view
 - scrollUntilVisible:
     element:
       id: com\.android\.fileexplorer:id/file_name
@@ -23,9 +79,9 @@ onFlowComplete:
       childOf:
         id: android:id/list
     direction: DOWN
-    timeout: 15000
-    centerElement: true
-    label: Find the exact media-scanned test file in the observed list
+    timeout: 65000
+    centerElement: false
+    label: Find the exact test file in the selected view
 - tapOn:
     id: com\.android\.fileexplorer:id/file_name
     text: \Q${ATTACHMENT_NAME}\E

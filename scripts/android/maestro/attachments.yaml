@@ -16,12 +16,14 @@ onFlowComplete:
     enabled: true
     label: Activate the specified control
 - inputText:
-    text: ${ATTACHMENT_NOTE_TEXT}
-    label: Enter the supplied ASCII fixture value
+    text: ${ATTACHMENT_NOTE_TEXT}${INPUT_SUFFIX}
+    label: Enter the exact fixture value through the test input method
+- eraseText:
+    charactersToErase: 1
+    label: Remove only the temporary input suffix
 - runFlow:
-    commands:
-    - hideKeyboard
-    label: Dismiss the keyboard
+    file: subflows/hide-keyboard.yaml
+    label: Dismiss only an observed visible input method
 - extendedWaitUntil:
     visible:
       id: note_editor
@@ -41,10 +43,6 @@ onFlowComplete:
 - runFlow:
     file: subflows/pick-download.yaml
     label: Select the unique txt file from the supported system provider
-- runFlow:
-    commands:
-    - hideKeyboard
-    label: Reveal the composer after returning from the file picker
 - extendedWaitUntil:
     visible:
       id: note_editor

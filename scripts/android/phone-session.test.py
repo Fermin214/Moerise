@@ -33,7 +33,7 @@ class FakeAdb:
         if args[:4] == ("shell", "settings", "get", "global"):
             return self.network[args[4]]
         if args[:3] == ("shell", "pm", "path"):
-            return "package:/test/" + args[3] + ".apk\n" if args[3] in self.installed else ""
+            return "package:/test/" + args[3] + ".apk\r\n" if args[3] in self.installed else ""
         if args[0] == "pull":
             package = Path(args[1]).name.removesuffix(".apk")
             Path(args[2]).write_bytes(self.installed[package])
@@ -388,6 +388,18 @@ class SessionLifecycle(unittest.TestCase):
         self.assertEqual(result["status"], "harness_error")
         self.assertEqual(result["last_step"], "archive/restore")
 
+    def test_instrumentation_distinguishes_timeout_driver_and_business_failure(self):
+        cases = (
+            ("TestTimedOutException\nFAILURES!!!", "inconclusive", "instrumentation_timeout"),
+            ("UiAutomationService already registered\nINSTRUMENTATION_FAILED", "harness_error",
+             "uiautomation_conflict"),
+            ("Insight picker: CONNECTION_FAILED\nFAILURES!!!", "failed", "automation_assertion"),
+        )
+        for log, status, cause in cases:
+            with self.subTest(cause=cause):
+                result = session.instrument_result(log)
+                self.assertEqual((result["status"], result["cause"]), (status, cause))
+
     def test_maestro_cached_pass_does_not_accept_a_different_test_note(self):
         self.prepare()
         self.driver.state["results"]["maestro:archive"] = {
@@ -412,6 +424,32 @@ class SessionLifecycle(unittest.TestCase):
         self.assertTrue(any("QuickNoteTest#loginWriteRecreateSaveAndReadBack" in " ".join(call)
                             for call in instrumentation))
 
+    def test_switch_to_specialist_releases_maestro_without_uninstalling(self):
+        self.prepare(specialists=True)
+        self.adb.installed.update({package: b"driver" for package in session.DRIVERS})
+        start = len(self.adb.calls)
+        self.assertEqual(self.driver.run(["ime"])["ime"]["status"], "passed")
+        calls = self.adb.calls[start:]
+        instrument = next(i for i, call in enumerate(calls) if call[:3] == ("shell", "am", "instrument"))
+        for package in session.DRIVERS:
+            self.assertIn(("shell", "am", "force-stop", package), calls[:instrument])
+            self.assertIn(package, self.adb.installed)
+
+    def test_ui_timeout_does_not_skip_an_independent_group(self):
+        self.prepare()
+        default_run = self.fake_maestro
+
+        def with_timeout(repo, adb, fixture, output, executable):
+            runner = default_run(repo, adb, fixture, output, executable)
+            runner.run_group.side_effect = lambda group: {
+                group: {"status": "inconclusive" if group == "editing" else "passed"}}
+            return runner
+
+        with mock.patch.object(session, "MaestroRunner", side_effect=with_timeout):
+            results = self.driver.run(["editing", "search"])
+        self.assertEqual({name: result["status"] for name, result in results.items()},
+                         {"editing": "inconclusive", "search": "passed"})
+
     def test_maestro_missing_or_failed_report_is_not_product_failure(self):
         path = self.root / "report.xml"
         self.assertEqual(session.maestro_result(path, 1)["status"], "harness_error")
@@ -423,12 +461,12 @@ class SessionLifecycle(unittest.TestCase):
     def test_cleanup_keeps_existing_maestro_driver_but_removes_new_driver(self):
         self.prepare()
         self.driver.state["maestro_preexisting"] = {
-            session.MAESTRO_PACKAGES[0]: True, session.MAESTRO_PACKAGES[1]: False}
-        for package in session.MAESTRO_PACKAGES:
+            session.DRIVERS[0]: True, session.DRIVERS[1]: False}
+        for package in session.DRIVERS:
             self.adb.installed[package] = b"driver"
         self.driver.cleanup()
-        self.assertIn(session.MAESTRO_PACKAGES[0], self.adb.installed)
-        self.assertNotIn(session.MAESTRO_PACKAGES[1], self.adb.installed)
+        self.assertIn(session.DRIVERS[0], self.adb.installed)
+        self.assertNotIn(session.DRIVERS[1], self.adb.installed)
 
     def test_unavailable_service_blocks_before_install(self):
         with mock.patch.object(session, "probe_fixture", side_effect=session.CommandError("fixture_unavailable", "offline")):

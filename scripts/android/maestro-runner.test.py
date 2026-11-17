@@ -1,4 +1,5 @@
 """Host checks for Maestro isolation, failure evidence and server assertions."""
+import base64
 import hashlib
 import json
 from pathlib import Path
@@ -10,7 +11,7 @@ import maestro_runner as runner
 
 
 class FakeAdb:
-    serial = "host-test-device"
+    serial = "emulator-5584"
 
     def __init__(self):
         self.calls = []
@@ -47,8 +48,9 @@ class MaestroExecutionTest(unittest.TestCase):
     def successful_execution(self, command, log, timeout, environment):
         report = Path(command[command.index("--output") + 1])
         report.write_text('<testsuite><testcase name="host-test"/></testsuite>')
+        encoded = base64.urlsafe_b64encode(("isolated-password-value" + runner.UNICODE_INPUT_SUFFIX).encode())
         Path(log).write_text(
-            "isolated-password-value isolated-token-value", encoding="utf-8")
+            "isolated-password-value isolated-token-value " + encoded.decode().rstrip("="), encoding="utf-8")
         return 0
 
     def test_credentials_use_process_environment_and_artifacts_are_redacted(self):
@@ -64,6 +66,7 @@ class MaestroExecutionTest(unittest.TestCase):
         self.assertEqual(environment["MAESTRO_FIXTURE_PASSWORD"], "isolated-password-value")
         self.assertNotIn("isolated-password-value", Path(log).read_text())
         self.assertNotIn("isolated-token-value", Path(log).read_text())
+        self.assertEqual(Path(log).read_text(), "[redacted] [redacted] [redacted]")
         self.assertFalse(any(call[0] in ("install", "uninstall") for call in self.adb.calls))
         self.engine.api.close.assert_called_once()
 
@@ -77,6 +80,38 @@ class MaestroExecutionTest(unittest.TestCase):
         self.assertTrue((self.engine.output / "login/result.json").exists())
         self.engine.api.close.assert_called_once()
 
+    def test_phone_input_method_restores_default_and_enabled_state_on_timeout(self):
+        original = "org.example.ime/.Service"
+        active, enabled = original, False
+        self.adb.serial = "real-phone"
+        checkpoint = runner.input_method_checkpoint(self.output, self.adb.serial)
+
+        def phone(*args):
+            nonlocal active, enabled
+            if args == ("shell", "settings", "get", "secure", "default_input_method"):
+                return active + "\r\n"
+            if args == ("shell", "ime", "list", "-a", "-s"):
+                return original + "\r\n" + runner.MAESTRO_IME + "\r\n"
+            if args == ("shell", "ime", "list", "-s"):
+                return original + ("\r\n" + runner.MAESTRO_IME if enabled else "")
+            if args[:3] == ("shell", "ime", "set"):
+                active = args[-1]
+            elif args[:3] in (("shell", "ime", "enable"), ("shell", "ime", "disable")):
+                enabled = args[2] == "enable"
+            else:
+                self.fail("Unexpected ADB operation")
+            return ""
+
+        self.adb.run = phone
+        with self.assertRaises(TimeoutError):
+            with runner.preserve_input_method(self.adb, checkpoint):
+                active, enabled = runner.MAESTRO_IME, True  # CLI switched before it timed out.
+                self.assertEqual((active, enabled), (runner.MAESTRO_IME, True))
+                self.assertTrue(checkpoint.exists())
+                raise TimeoutError
+        self.assertEqual((active, enabled), (original, False))
+        self.assertFalse(checkpoint.exists())
+
     def test_fixture_failure_does_not_start_device_interactions(self):
         self.engine.api.login.side_effect = runner.FixtureError(503, "unavailable")
         with mock.patch.object(runner, "execute") as execute:
@@ -84,6 +119,22 @@ class MaestroExecutionTest(unittest.TestCase):
         self.assertEqual(result["status"], "environment_blocked")
         self.assertEqual(self.adb.calls, [])
         execute.assert_not_called()
+
+    def test_release_mode_requires_emulator_and_trusted_loopback_https(self):
+        connection = json.loads(self.connection.read_text())
+        connection["origin"] = "https://localhost:28443"
+        self.connection.write_text(json.dumps(connection))
+        with self.assertRaises(ValueError):
+            runner.FixtureAPI(connection)
+        self.adb.serial = "real-phone"
+        with self.assertRaises(ValueError):
+            runner.MaestroRunner(runner.ROOT, self.adb, self.connection, self.output / "release", release=True)
+        self.adb.serial = "emulator-5554"
+        release = runner.MaestroRunner(runner.ROOT, self.adb, self.connection, self.output / "release", release=True)
+        self.assertEqual(release.app, runner.APP.removesuffix(".fixture"))
+        connection["origin"] = "https://notes.example:443"
+        with self.assertRaises(ValueError):
+            runner.FixtureAPI(connection, trusted_https=True)
 
     def test_unreported_or_failed_maestro_flow_cannot_pass(self):
         report = self.output / "report.xml"
@@ -122,7 +173,7 @@ class MaestroExecutionTest(unittest.TestCase):
         with self.assertRaisesRegex(AssertionError, "edited_note"):
             self.engine.verify("editing", values)
         self.engine.api.note.side_effect = lambda name: {"content": "edited" if name == "memos/first" else "peer"}
-        self.engine.api.notes.return_value = [{"content": "created"}, {"content": "created"}]
+        self.engine.api.matching_notes.return_value = [{"content": "created"}, {"content": "created"}]
         with self.assertRaisesRegex(AssertionError, "created_note_count"):
             self.engine.verify("editing", values)
 
@@ -162,7 +213,7 @@ class MaestroExecutionTest(unittest.TestCase):
     def test_attachment_requires_the_actual_bytes_not_just_a_filename(self):
         values = {"ATTACHMENT_NOTE_TEXT": "file note", "ATTACHMENT_NAME": "test.txt",
                   "ATTACHMENT_SHA256": hashlib.sha256(b"expected").hexdigest()}
-        self.engine.api.notes.return_value = [{
+        self.engine.api.matching_notes.return_value = [{
             "content": "file note", "attachments": [
                 {"filename": "test.txt", "content_url": "/api/app/v1/notes/one/attachments/file/content"}]}]
         self.engine.api.request.return_value = b"wrong"

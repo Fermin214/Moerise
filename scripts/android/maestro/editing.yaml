@@ -85,12 +85,14 @@ onFlowComplete:
     enabled: true
     label: Focus the empty fixture input
 - inputText:
-    text: ${EDITED_TEXT}
-    label: Enter the supplied ASCII fixture value
+    text: ${EDITED_TEXT}${INPUT_SUFFIX}
+    label: Enter the exact fixture value through the test input method
+- eraseText:
+    charactersToErase: 1
+    label: Remove only the temporary input suffix
 - runFlow:
-    commands:
-    - hideKeyboard
-    label: Dismiss the keyboard
+    file: subflows/hide-keyboard.yaml
+    label: Dismiss only an observed visible input method
 - extendedWaitUntil:
     visible:
       id: note_editor_${NOTE_NAME}
@@ -199,12 +201,14 @@ onFlowComplete:
     enabled: true
     label: Focus the empty fixture input
 - inputText:
-    text: ${PEER_EDITED_TEXT}
-    label: Type the distinct unsaved peer edit
+    text: ${PEER_EDITED_TEXT}${INPUT_SUFFIX}
+    label: Enter the exact fixture value through the test input method
+- eraseText:
+    charactersToErase: 1
+    label: Remove only the temporary input suffix
 - runFlow:
-    commands:
-    - hideKeyboard
-    label: Dismiss the keyboard after editing the peer
+    file: subflows/hide-keyboard.yaml
+    label: Dismiss only an observed visible input method
 - extendedWaitUntil:
     visible:
       id: note_editor_${PEER_NOTE_NAME}
@@ -260,12 +264,14 @@ onFlowComplete:
     enabled: true
     label: Activate the specified control
 - inputText:
-    text: ${NEW_NOTE_TEXT}
-    label: Enter the supplied ASCII fixture value
+    text: ${NEW_NOTE_TEXT}${INPUT_SUFFIX}
+    label: Enter the exact fixture value through the test input method
+- eraseText:
+    charactersToErase: 1
+    label: Remove only the temporary input suffix
 - runFlow:
-    commands:
-    - hideKeyboard
-    label: Dismiss the keyboard
+    file: subflows/hide-keyboard.yaml
+    label: Dismiss only an observed visible input method
 - extendedWaitUntil:
     visible:
       id: save_note
@@ -276,10 +282,6 @@ onFlowComplete:
     id: save_note
     enabled: true
     label: Activate the specified control
-- runFlow:
-    commands:
-    - hideKeyboard
-    label: Dismiss the keyboard after saving the composer
 - scrollUntilVisible:
     element:
       id: note_editor

@@ -18,7 +18,10 @@ import time
 import urllib.parse
 import urllib.error
 import urllib.request
-from maestro_runner import MaestroRunner, catalog, flow_digest, junit_result as maestro_result
+from maestro_runner import (
+    DRIVERS, MaestroRunner, catalog, flow_digest, input_method_checkpoint,
+    junit_result as maestro_result, restore_input_method,
+)
 
 APP = "io.github.fermin214.moerise.fixture"
 RUNNER_APP = APP + ".test"
@@ -39,7 +42,6 @@ NETWORK_KEYS = (
     "global_http_proxy_exclusion_list", "global_proxy_pac_url",
     "private_dns_mode", "private_dns_specifier",
 )
-MAESTRO_PACKAGES = ("dev.mobile.maestro", "dev.mobile.maestro.test")
 UI_GROUPS = tuple(catalog()["groups"])
 DEFAULT_UI_GROUPS = ("editing", "search", "actions", "insights", "navigation", "attachments", "language", "home")
 FLOWS = tuple(catalog()["flows"])
@@ -159,10 +161,14 @@ def instrument_result(text):
     if re.search(r"^OK \([1-9][0-9]* tests?\)", text, re.M) and not re.search(
             r"FAILURES!!!|INSTRUMENTATION_FAILED", text):
         return {**result, "status": "passed", "cause": None}
-    if "CONNECTION_FAILED" in text or "SignIntoFixture" in text or "登录后主页未就绪" in text:
-        return {**result, "status": "environment_blocked", "cause": "login_connection"}
+    if "UiAutomationService already registered" in text:
+        return {**result, "status": "harness_error", "cause": "uiautomation_conflict"}
     if re.search(r"INSTRUMENTATION_FAILED|Unable to find instrumentation|ClassNotFoundException", text):
         return {**result, "status": "harness_error", "cause": "runner_unavailable"}
+    if "TestTimedOutException" in text:
+        return {**result, "status": "inconclusive", "cause": "instrumentation_timeout"}
+    if "SignIntoFixture" in text or "登录后主页未就绪" in text:
+        return {**result, "status": "environment_blocked", "cause": "login_connection"}
     if "ComposeTimeoutException" in text or "Condition still not satisfied" in text:
         return {**result, "status": "inconclusive", "cause": "ui_wait_timeout"}
     if not re.search(r"FAILURES!!!|INSTRUMENTATION_STATUS: (?:stack=|failure=)", text):
@@ -197,6 +203,12 @@ class PhoneSession:
         return {key: self.adb.run("shell", "settings", "get", "global", key).strip()
                 for key in NETWORK_KEYS}
 
+    def restore_device_input(self):
+        try:
+            restore_input_method(self.adb, input_method_checkpoint(self.repo, self.adb.serial))
+        except RuntimeError as error:
+            raise CommandError("ime_restore_failed", str(error)) from error
+
     def require_ready(self, preparing=False):
         if not self.state or self.state.get("status") == "cleaned":
             raise ValueError("先执行 prepare，或使用尚未清理的会话")
@@ -206,6 +218,7 @@ class PhoneSession:
             raise ValueError("会话与手机不匹配")
         if self.adb.run("get-state").strip() != "device":
             raise CommandError("device_unavailable", "手机尚未连接")
+        self.restore_device_input()
         network = self.network()
         if proxy_enabled(network):
             raise CommandError("proxy_present", "手机存在全局代理；USB 验收不会改写手机网络设置")
@@ -234,9 +247,11 @@ class PhoneSession:
 
     def package_paths(self, package):
         text = self.adb.run("shell", "pm", "path", package, check=False)
-        paths = re.findall(r"^package:(/[^\r\n]+\.apk)$", text, re.M)
-        if text.strip() and not paths:
+        matches = [re.fullmatch(r"package:(/[^\r\n]+\.apk)", line)
+                   for line in text.splitlines() if line.strip()]
+        if not all(matches):
             raise CommandError("package_query_failed", "无法读取设备安装包路径", text)
+        paths = [match[1] for match in matches]
         if not paths:
             if self.adb.run("get-state").strip() != "device":
                 raise CommandError("device_unavailable", "手机尚未连接")
@@ -347,6 +362,10 @@ class PhoneSession:
         result = {"started_at": now(), "log": str(log), "kind": "automation"}
         # Only the login fields enter the device; source API tokens stay on the host.
         try:
+            # The last Maestro CLI can exit while its device-side instrumentation is still registered.
+            for package in reversed(DRIVERS):
+                if self.package_paths(package):
+                    self.adb.run("shell", "am", "force-stop", package)
             with tempfile.TemporaryDirectory(prefix="moerise-device-login-") as folder:
                 credential = Path(folder) / "connection.json"
                 write_json(credential, {key: data[key] for key in ("origin", "username", "password")})
@@ -362,8 +381,10 @@ class PhoneSession:
                 result.update(instrument_result(text))
         except CommandError as error:
             result.update(instrument_result(str(error.output)))
-            result.update(status="inconclusive" if error.code == "timeout" else "harness_error",
-                          cause="host_timeout" if error.code == "timeout" else error.code)
+            if error.code == "timeout":
+                result.update(status="inconclusive", cause="host_timeout")
+            elif result["cause"] in (None, "runner_result_incomplete"):
+                result.update(status="harness_error", cause=error.code)
         except OSError:
             result.update(status="harness_error", cause="host_io_error")
         finally:
@@ -398,8 +419,11 @@ class PhoneSession:
                        {"kind": "collection_error", "error_type": type(error).__name__})
 
     def execution_digest(self, name):
-        identity = hashlib.sha256(flow_digest(self.repo, name).encode())
-        scripts = ["phone-session.py", "maestro_runner.py"]
+        identity = hashlib.sha256(name.encode())
+        scripts = ["phone-session.py"]
+        if name in UI_GROUPS or name in FLOWS:
+            identity.update(flow_digest(self.repo, name).encode())
+            scripts.append("maestro_runner.py")
         if name == "recovery":
             scripts.append("device-recovery.py")
         for script in scripts:
@@ -440,9 +464,8 @@ class PhoneSession:
             outcome[group]["flow_sha256"] = identity
             self.state["results"][group] = outcome[group]
             self.save()
-            if outcome[group]["status"] in ("environment_blocked", "harness_error") or (
-                    group in UI_GROUPS and outcome[group]["status"] == "inconclusive"):
-                # A shared prerequisite failure must not become seven business failures.
+            if outcome[group]["status"] in ("environment_blocked", "harness_error"):
+                # Shared prerequisites stop the batch; an isolated UI wait does not.
                 break
         return outcome
 
@@ -562,6 +585,7 @@ class PhoneSession:
             return self.state["cleanup"]
         if self.adb.run("get-state").strip() != "device":
             raise CommandError("device_unavailable", "手机尚未连接")
+        self.restore_device_input()
         results = {}
         for package in self.state["artifacts"]:
             if package not in APK_PATHS:
@@ -573,7 +597,7 @@ class PhoneSession:
             results[package] = not bool(self.package_paths(package))
         self.adb.run("shell", "rm", "-f", CREDENTIAL)
         for package, preexisting in self.state.get("maestro_preexisting", {}).items():
-            if package in MAESTRO_PACKAGES and not preexisting:
+            if package in DRIVERS and not preexisting:
                 if self.package_paths(package):
                     self.adb.run("uninstall", package, timeout=90)
                 results[package] = not bool(self.package_paths(package))

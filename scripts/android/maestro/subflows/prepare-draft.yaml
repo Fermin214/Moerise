@@ -18,12 +18,11 @@ onFlowComplete:
         enabled: true
         label: Activate the specified control
     - inputText:
-        text: ${DRAFT_TEXT}
-        label: Enter the supplied ASCII fixture value
-    - runFlow:
-        commands:
-        - hideKeyboard
-        label: Dismiss the keyboard
+        text: ${DRAFT_TEXT}${INPUT_SUFFIX}
+        label: Enter the exact fixture value through the test input method
+    - eraseText:
+        charactersToErase: 1
+        label: Remove only the temporary input suffix
     - extendedWaitUntil:
         visible:
           id: note_editor
@@ -37,3 +36,6 @@ onFlowComplete:
       text: \Q${DRAFT_TEXT}\E
     timeout: 15000
     label: Wait for the expected UI state
+- runFlow:
+    file: hide-keyboard.yaml
+    label: Dismiss only an observed visible input method

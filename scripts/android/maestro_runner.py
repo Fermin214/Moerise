@@ -1,5 +1,7 @@
 """Shared Maestro execution for persistent phones and isolated CI devices."""
+from contextlib import contextmanager
 from datetime import datetime, timezone
+import base64
 import hashlib
 import http.cookiejar
 import json
@@ -20,6 +22,8 @@ ROOT = Path(__file__).resolve().parents[2]
 APP = "io.github.fermin214.moerise.fixture"
 ACTIVITY = APP + "/io.github.fermin214.moerise.MainActivity"
 DRIVERS = ("dev.mobile.maestro", "dev.mobile.maestro.test")
+MAESTRO_IME = DRIVERS[0] + "/.input.MaestroInputMethodService"
+UNICODE_INPUT_SUFFIX = "。"
 
 
 def catalog(root=ROOT):
@@ -53,14 +57,15 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 
 
 class FixtureAPI:
-    def __init__(self, connection):
+    def __init__(self, connection, trusted_https=False):
         self.connection = connection
         origin = urllib.parse.urlsplit(connection["origin"])
-        if (origin.scheme != "http" or origin.hostname not in ("127.0.0.1", "localhost", "::1")
+        if (origin.scheme not in (("http", "https") if trusted_https else ("http",))
+                or origin.hostname not in ("127.0.0.1", "localhost", "::1")
                 or origin.path not in ("", "/") or origin.query or origin.fragment
                 or origin.username or origin.password or not origin.port
                 or connection.get("username") != "android-owner" or not connection.get("password")):
-            raise ValueError("Maestro 仅连接 HTTP 回环隔离服务与 android-owner 测试账号")
+            raise ValueError("Maestro 仅连接回环隔离服务与 android-owner 测试账号")
         self.origin = connection["origin"].rstrip("/")
         self.csrf = ""
         self.opener = urllib.request.build_opener(
@@ -116,13 +121,13 @@ class FixtureAPI:
             raise ValueError("测试笔记资源名无效")
         return self.request("GET", "/api/app/v1/notes/" + name.split("/")[1])
 
-    def notes(self):
+    def matching_notes(self, content):
         token, seen, notes = "", set(), []
         for _ in range(100):
-            query = urllib.parse.urlencode({"state": "NORMAL", "page_size": 100,
+            query = urllib.parse.urlencode({"state": "NORMAL", "page_size": 100, "query": content,
                                             **({"page_token": token} if token else {})})
             page = self.request("GET", "/api/app/v1/notes?" + query)
-            notes.extend(page["notes"])
+            notes.extend(note for note in page["notes"] if note["content"] == content)
             token = page.get("next_page_token", "")
             if not token:
                 return notes
@@ -172,6 +177,55 @@ def execute(command, log, timeout, environment):
             raise
 
 
+def active_input_method(adb):
+    return adb.run("shell", "settings", "get", "secure", "default_input_method").strip()
+
+
+def input_method_checkpoint(root, serial):
+    key = hashlib.sha256(serial.encode()).hexdigest()[:16]
+    return Path(root) / ".local/android" / ("maestro-ime-" + key + ".json")
+
+
+def restore_input_method(adb, checkpoint):
+    if not checkpoint.exists():
+        return
+    saved = json.loads(checkpoint.read_text(encoding="utf-8"))
+    original = saved["original"]
+    if not re.fullmatch(r"[A-Za-z0-9_.]+/[A-Za-z0-9_.]+", original) or type(saved.get("enabled")) is not bool:
+        raise ValueError("无效的 Maestro 输入法恢复记录")
+    # Do not undo a manual switch to a third IME.
+    if original != MAESTRO_IME and active_input_method(adb) == MAESTRO_IME:
+        adb.run("shell", "ime", "set", original)
+        if active_input_method(adb) != original:
+            raise RuntimeError("手机原输入法恢复失败")
+    if not saved["enabled"] and original != MAESTRO_IME and MAESTRO_IME in adb.run(
+            "shell", "ime", "list", "-s").split():
+        adb.run("shell", "ime", "disable", MAESTRO_IME)
+        if MAESTRO_IME in adb.run("shell", "ime", "list", "-s").split():
+            raise RuntimeError("Maestro 测试输入法未恢复到停用状态")
+    checkpoint.unlink()
+
+
+@contextmanager
+def preserve_input_method(adb, checkpoint):
+    """Restore the original state even if the CLI stops during a Unicode input."""
+    if adb.serial.startswith("emulator-"):
+        yield
+        return
+    restore_input_method(adb, checkpoint)
+    original = active_input_method(adb)
+    if not re.fullmatch(r"[A-Za-z0-9_.]+/[A-Za-z0-9_.]+", original):
+        raise RuntimeError("无法读取手机原输入法，未切换输入法")
+    was_enabled = MAESTRO_IME in adb.run("shell", "ime", "list", "-s").split()
+    temporary = checkpoint.with_suffix(".tmp")
+    write_result(temporary, {"original": original, "enabled": was_enabled})
+    os.replace(temporary, checkpoint)
+    try:
+        yield
+    finally:
+        restore_input_method(adb, checkpoint)
+
+
 def redact(directory, secrets):
     for path in Path(directory).rglob("*"):
         if not path.is_file() or path.suffix.lower() not in (
@@ -212,10 +266,14 @@ def last_failed_step(directory):
 
 
 class MaestroRunner:
-    def __init__(self, root, adb, fixture, output, executable="maestro"):
+    def __init__(self, root, adb, fixture, output, executable="maestro", release=False):
         self.root, self.adb, self.output = Path(root), adb, Path(output)
         self.connection = json.loads(Path(fixture).read_text(encoding="utf-8-sig"))
-        self.api = FixtureAPI(self.connection)
+        if release and (not adb.serial.startswith("emulator-") or
+                        urllib.parse.urlsplit(self.connection["origin"]).scheme != "https"):
+            raise ValueError("发行包自动检查需要隔离模拟器与可信 HTTPS")
+        self.app = APP.removesuffix(".fixture") if release else APP
+        self.api = FixtureAPI(self.connection, trusted_https=release)
         self.executable = executable
         self.catalog = catalog(self.root)
         self.remote_file = None
@@ -224,7 +282,10 @@ class MaestroRunner:
     def prepare_data(self, flow, entry, note_name=None):
         marker = uuid.uuid4().hex
         values = {
-            "APP_ID": APP, "SCREENSHOT_PREFIX": flow,
+            "APP_ID": self.app, "SCREENSHOT_PREFIX": flow,
+            # A non-ASCII suffix makes the pinned CLI commit text through its own IME.
+            # The flow removes the suffix immediately; emulators retain ordinary ASCII input.
+            "INPUT_SUFFIX": "." if self.adb.serial.startswith("emulator-") else UNICODE_INPUT_SUFFIX,
             "NOTE_TEXT": f"Maestro {flow} {marker}", "PEER_NOTE_TEXT": f"Maestro peer {marker}",
             "PEER_EDITED_TEXT": f"Maestro cancelled {marker}",
             "EDITED_TEXT": f"Maestro edited {marker}", "DRAFT_TEXT": f"Maestro draft {marker}",
@@ -261,7 +322,7 @@ class MaestroRunner:
         if flow == "editing":
             assert self.api.note(values["NOTE_NAME"])["content"] == values["EDITED_TEXT"], "edited_note_mismatch"
             assert self.api.note(values["PEER_NOTE_NAME"])["content"] == values["PEER_NOTE_TEXT"], "cancelled_edit_uploaded"
-            matches = [note for note in self.api.notes() if note["content"] == values["NEW_NOTE_TEXT"]]
+            matches = self.api.matching_notes(values["NEW_NOTE_TEXT"])
             assert len(matches) == 1, "created_note_count"
             observed.update(edited_note=True, cancelled_edit_not_uploaded=True, created_note_count=len(matches))
         elif flow == "actions":
@@ -278,7 +339,7 @@ class MaestroRunner:
             assert self.api.note(values["NOTE_NAME"])["state"] == "NORMAL", "restored_note_not_normal"
             observed["restored_note"] = True
         elif flow == "attachments":
-            matches = [note for note in self.api.notes() if note["content"] == values["ATTACHMENT_NOTE_TEXT"]]
+            matches = self.api.matching_notes(values["ATTACHMENT_NOTE_TEXT"])
             assert len(matches) == 1, "attachment_note_count"
             files = [file for file in matches[0].get("attachments", [])
                      if file["filename"] == values["ATTACHMENT_NAME"]]
@@ -345,7 +406,8 @@ class MaestroRunner:
             result["drivers_preexisting"] = {package: bool(self.adb.run(
                 "shell", "pm", "path", package, check=False).strip()) for package in DRIVERS}
             # Complete the first Activity launch before attaching the instrumentation driver.
-            self.adb.run("shell", "am", "start", "-W", "-n", ACTIVITY, timeout=60)
+            self.adb.run("shell", "am", "start", "-W", "-n",
+                         self.app + "/io.github.fermin214.moerise.MainActivity", timeout=60)
             environment = dict(os.environ)
             environment.update({
                 "MAESTRO_FIXTURE_ORIGIN": self.connection["origin"],
@@ -366,7 +428,8 @@ class MaestroRunner:
             for key, value in parameters.items():
                 args.extend(["-e", key + "=" + value])
             args.append(str(self.root / "scripts/android/maestro" / entry["file"]))
-            code = execute(args, result["log"], entry["timeout_seconds"], environment)
+            with preserve_input_method(self.adb, input_method_checkpoint(self.root, self.adb.serial)):
+                code = execute(args, result["log"], entry["timeout_seconds"], environment)
             result.update(junit_result(result["report"], code))
             if result["status"] == "passed":
                 result["server_assertions"] = self.wait_verify(flow, values)
@@ -409,10 +472,13 @@ class MaestroRunner:
                 result["cleanup_errors"].append("host_session_logout")
             if result["cleanup_errors"] and result["status"] == "passed":
                 result.update(status="harness_error", cause="cleanup_error")
-            redact(directory, [self.connection["password"], self.connection.get("sourceToken")])
+            password = self.connection["password"]
+            encoded_input = base64.urlsafe_b64encode((password + UNICODE_INPUT_SUFFIX).encode()).decode().rstrip("=")
+            secrets = [password, self.connection.get("sourceToken"), encoded_input]
+            redact(directory, secrets)
             result["last_step"] = last_failed_step(directory)
             serialized = json.dumps(result, ensure_ascii=False)
-            for secret in (self.connection["password"], self.connection.get("sourceToken")):
+            for secret in secrets:
                 if secret:
                     serialized = serialized.replace(secret, "[redacted]")
             result = json.loads(serialized)

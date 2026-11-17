@@ -244,5 +244,5 @@ fun errorCode(error: Exception): String = when (error) {
     is CoreException -> error.detail.code
     is IdentityChangedException -> "ACCOUNT_CHANGED"
     is IllegalArgumentException -> error.message ?: "INVALID_ARGUMENT"
-    else -> "CONNECTION_FAILED"
+    else -> { logClientFailure("client", error); "CONNECTION_FAILED" }
 }
