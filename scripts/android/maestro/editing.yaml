@@ -50,6 +50,23 @@ onFlowComplete:
         id: note_editor_${NOTE_NAME}
         enabled: true
         label: Open text selection for the known input
+    - runFlow:
+        when:
+          notVisible:
+            text: Select all|Select All|全选
+        commands:
+        - assertNotVisible:
+            text: Select all|Select All|全选
+            label: Require the full-selection action to be outside the toolbar
+        - assertVisible:
+            id: android:id/overflow
+            enabled: true
+            label: Require the observed Android text toolbar overflow
+        - tapOn:
+            id: android:id/overflow
+            enabled: true
+            label: Reveal the remaining text selection actions
+        label: Open text toolbar overflow only when full selection is hidden
     - extendedWaitUntil:
         visible:
           text: Select all|Select All|全选
@@ -147,6 +164,23 @@ onFlowComplete:
         id: note_editor_${PEER_NOTE_NAME}
         enabled: true
         label: Open text selection for the known input
+    - runFlow:
+        when:
+          notVisible:
+            text: Select all|Select All|全选
+        commands:
+        - assertNotVisible:
+            text: Select all|Select All|全选
+            label: Require the full-selection action to be outside the toolbar
+        - assertVisible:
+            id: android:id/overflow
+            enabled: true
+            label: Require the observed Android text toolbar overflow
+        - tapOn:
+            id: android:id/overflow
+            enabled: true
+            label: Reveal the remaining text selection actions
+        label: Open text toolbar overflow only when full selection is hidden
     - extendedWaitUntil:
         visible:
           text: Select all|Select All|全选
@@ -242,6 +276,17 @@ onFlowComplete:
     id: save_note
     enabled: true
     label: Activate the specified control
+- runFlow:
+    commands:
+    - hideKeyboard
+    label: Dismiss the keyboard after saving the composer
+- scrollUntilVisible:
+    element:
+      id: note_editor
+    direction: UP
+    timeout: 15000
+    centerElement: false
+    label: Reveal the replacement composer after saving
 - extendedWaitUntil:
     visible:
       id: note_editor_empty

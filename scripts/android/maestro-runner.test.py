@@ -36,7 +36,8 @@ class MaestroExecutionTest(unittest.TestCase):
                                            self.output / "execution", "maestro-host-test")
         self.engine.api = mock.Mock()
         self.engine.api.csrf = ""
-        self.validate = mock.patch.object(runner.subprocess, "run", return_value=mock.Mock(returncode=0))
+        self.validate = mock.patch.object(runner.subprocess, "run",
+                                         return_value=mock.Mock(returncode=0, stdout=b"", stderr=b""))
         self.validate.start()
         self.addCleanup(self.validate.stop)
 
@@ -91,6 +92,28 @@ class MaestroExecutionTest(unittest.TestCase):
         self.assertEqual(runner.junit_result(report, 0)["status"], "inconclusive")
         report.write_text('<testsuite><testcase/></testsuite>')
         self.assertEqual(runner.junit_result(report, 1)["status"], "harness_error")
+
+    def test_driver_death_is_an_environment_failure(self):
+        report = self.output / "driver-report.xml"
+        report.write_text('<testsuite><testcase><failure message="maestro.android.DeviceServerDiedException: '
+                          'UNAVAILABLE"/></testcase></testsuite>')
+        result = runner.junit_result(report, 1)
+        self.assertEqual(result["status"], "environment_blocked")
+        self.assertEqual(result["cause"], "maestro_driver_died")
+
+    def test_server_observation_cannot_turn_a_failed_ui_flow_into_a_pass(self):
+        def failed_execution(command, log, timeout, environment):
+            report = Path(command[command.index("--output") + 1])
+            report.write_text('<testsuite><testcase><failure message="missing UI result"/></testcase></testsuite>')
+            Path(log).write_text("UI did not reach the expected result")
+            return 1
+        with mock.patch.object(self.engine, "prepare_data", return_value=(self.values(), None)), \
+                mock.patch.object(runner, "execute", side_effect=failed_execution), \
+                mock.patch.object(self.engine, "verify", return_value={"edited_note": True}):
+            result = self.engine.run_flow("editing")
+        self.assertEqual(result["status"], "inconclusive")
+        self.assertEqual(result["server_observation"]["status"], "passed")
+        self.assertTrue(result["server_observation"]["assertions"]["edited_note"])
 
     def test_ui_pass_without_server_postcondition_fails(self):
         values = {"NOTE_NAME": "memos/first", "EDITED_TEXT": "edited", "NEW_NOTE_TEXT": "created",

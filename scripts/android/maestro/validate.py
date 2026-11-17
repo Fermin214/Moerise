@@ -49,7 +49,9 @@ SYSTEM_IDS = {PROVIDER + suffix for suffix in ("toolbar", "roots_list", "dir_lis
 XIAOMI = r"com\.android\.fileexplorer:id/"
 SYSTEM_IDS |= {XIAOMI + suffix for suffix in ("pick_container", "file_name", "btnConfirm")}
 SYSTEM_IDS.add("android:id/list")
+SYSTEM_IDS.add("android:id/overflow")
 SYSTEM_TAP_IDS = {PROVIDER + "action_menu_select", XIAOMI + "file_name", XIAOMI + "btnConfirm"}
+SYSTEM_TAP_IDS.add("android:id/overflow")
 UNION_IDS = {
     "open_menu|server_login", "walk_settings|walk_start|walk_end",
     "note_editor|" + PROVIDER + "action_menu_select",
@@ -61,6 +63,7 @@ LITERAL_TEXT = {
     "Show roots|显示根目录", "Downloads|下载",
     "关键词|Keyword", "混合|Hybrid", TIMESTAMP_TEXT,
     "Select all|Select All|全选",
+    "回顾|Review", "漫步|Walk", "观星|Stargazing",
     r"今天没有可回顾的旧笔记。|No old notes to review today\.",
     r"今天没有可回顾的旧笔记。|No old notes to review today\.|下一条|Next note|再看一遍|Start again",
 }
@@ -232,9 +235,8 @@ def selector(value, labelled=False, relation=False, absent=False):
         require(set(value["childOf"]) == {"id"}, "Parent selection requires one exact known ID")
 
 
-def commands(items, flow, refs, inline=False, hook=False):
+def commands(items, flow, refs, inline=False, hook=False, focused=None):
     require(isinstance(items, list) and items, "Command lists must not be empty")
-    focused = None
     selected_all = False
     for item in items:
         if isinstance(item, str):
@@ -265,6 +267,12 @@ def commands(items, flow, refs, inline=False, hook=False):
                 focused, selected_all = value["id"], False
             elif kind == "tapOn":
                 identifier = value.get("id")
+                if identifier == "android:id/overflow":
+                    require(keys == {"id", "enabled"} and value["enabled"] is True and
+                            focused in INPUT_FIELDS.values(),
+                            "Text selection overflow requires a known focused fixture input")
+                    selected_all = False
+                    continue
                 if value.get("text") == "Select all|Select All|全选":
                     require(keys == {"text", "enabled"} and value["enabled"] is True and
                             focused in INPUT_FIELDS.values(),
@@ -286,11 +294,21 @@ def commands(items, flow, refs, inline=False, hook=False):
             selector(value[next(iter(target))], absent=target == {"notVisible"})
         elif kind == "scrollUntilVisible":
             require(keys == {"element", "direction", "timeout", "centerElement"} and
-                    value["direction"] in {"UP", "DOWN"} and type(value["timeout"]) is int and
+                    value["direction"] in {"UP", "DOWN", "LEFT", "RIGHT"} and type(value["timeout"]) is int and
                     value["timeout"] == 15000 and value["centerElement"] is False,
                     "Scrolling requires a bounded element search without coordinates")
             selector(value["element"])
+            if value["direction"] in {"LEFT", "RIGHT"}:
+                require(value["element"].get("id") in {f"settings_tab_{index}" for index in range(5)},
+                        "Horizontal scrolling is limited to the settings tab strip")
             focused = None
+        elif kind == "swipe":
+            require(keys == {"from", "direction", "duration"} and
+                    value["direction"] in {"LEFT", "RIGHT"} and value["duration"] == 400 and
+                    isinstance(value["from"], dict) and set(value["from"]) == {"id"} and
+                    value["from"]["id"] in {f"settings_tab_{index}" for index in range(5)},
+                    "Swipe requires a settings tab origin and a bounded horizontal gesture")
+            focused, selected_all = None, False
         elif kind == "takeScreenshot":
             require(keys == {"path"} and isinstance(value["path"], str) and
                     re.fullmatch(r"\$\{SCREENSHOT_PREFIX\}-[a-z0-9-]+", value["path"]),
@@ -336,10 +354,14 @@ def commands(items, flow, refs, inline=False, hook=False):
                         "Subflow paths must be literal relative YAML paths")
                 refs.add((Path(flow).parent / path).as_posix())
             else:
-                commands(value["commands"], flow, refs, inline=True)
-            focused = None
+                nested_focus, _ = commands(value["commands"], flow, refs, inline=True, focused=focused)
+                focused = focused if nested_focus == focused else None
+            if "file" in value:
+                focused = None
+            selected_all = False
         else:
             raise ValueError("Command is outside the safe allowlist")
+    return focused, selected_all
 
 
 def validate_documents(documents, catalog=None):
@@ -361,8 +383,11 @@ def validate_documents(documents, catalog=None):
         require(isinstance(header["onFlowComplete"], list) and len(header["onFlowComplete"]) == 1,
                 "Every flow requires exactly one terminal screenshot")
         refs = set()
-        commands(header["onFlowComplete"], flow, refs, hook=True)
-        commands(body, flow, refs)
+        try:
+            commands(header["onFlowComplete"], flow, refs, hook=True)
+            commands(body, flow, refs)
+        except ValueError as error:
+            raise ValueError(flow + ": " + str(error)) from error
         return_markers = {
             "subflows/pick-documentsui.yaml": PROVIDER + "toolbar",
             "subflows/pick-xiaomi.yaml": XIAOMI + "pick_container",

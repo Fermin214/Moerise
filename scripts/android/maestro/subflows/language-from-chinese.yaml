@@ -6,9 +6,10 @@ onFlowComplete:
     label: Capture the isolated test UI
 ---
 - assertVisible:
-    id: settings_language
     text: 简体中文
     label: Check the expected UI state
+    childOf:
+      id: settings_language
 - tapOn:
     id: settings_language
     enabled: true
@@ -24,8 +25,9 @@ onFlowComplete:
     label: Activate the specified control
 - extendedWaitUntil:
     visible:
-      id: settings_language
       text: English
+      childOf:
+        id: settings_language
     timeout: 15000
     label: Wait for the expected UI state
 - assertVisible:
@@ -46,8 +48,9 @@ onFlowComplete:
     label: Activate the specified control
 - extendedWaitUntil:
     visible:
-      id: settings_language
       text: 简体中文
+      childOf:
+        id: settings_language
     timeout: 15000
     label: Wait for the expected UI state
 - assertVisible:
@@ -57,6 +60,7 @@ onFlowComplete:
     path: ${SCREENSHOT_PREFIX}-language-restored-chinese
     label: Capture the isolated test UI
 - assertVisible:
-    id: settings_language
     text: 简体中文
     label: Check the expected UI state
+    childOf:
+      id: settings_language

@@ -133,6 +133,13 @@ class FlowPolicyTest(unittest.TestCase):
         self.reject_step({"tapOn": {
             "text": "Select all|Select All|全选", "enabled": True, "label": "Select without input",
         }})
+        self.reject_step({"tapOn": {
+            "id": "android:id/overflow", "enabled": True, "label": "Overflow without a fixture input",
+        }})
+        self.reject_step({"scrollUntilVisible": {
+            "element": {"id": "note_editor"}, "direction": "RIGHT",
+            "timeout": 15000, "centerElement": False, "label": "Wrong horizontal scroll target",
+        }})
 
     def test_conditional_flows_must_check_their_preconditions(self):
         self.reject_step({"runFlow": {

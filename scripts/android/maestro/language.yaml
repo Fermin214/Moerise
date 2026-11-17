@@ -23,64 +23,74 @@ onFlowComplete:
     label: Activate the specified control
 - extendedWaitUntil:
     visible:
-      id: settings_language
       enabled: true
       text: 简体中文|English|跟随系统|Follow system
+      childOf:
+        id: settings_language
     timeout: 15000
     label: Wait for the expected UI state
 - runFlow:
     when:
       visible:
-        id: settings_language
         text: 简体中文
+        childOf:
+          id: settings_language
     commands:
     - assertVisible:
-        id: settings_language
         text: 简体中文
         label: Check the conditional branch precondition
+        childOf:
+          id: settings_language
     - runFlow:
         file: subflows/language-from-chinese.yaml
         label: Exercise both languages and restore the original setting
     - assertVisible:
-        id: settings_language
         text: 简体中文
         label: Check the expected UI state
+        childOf:
+          id: settings_language
     label: Restore the detected language preference
 - runFlow:
     when:
       visible:
-        id: settings_language
         text: English
+        childOf:
+          id: settings_language
     commands:
     - assertVisible:
-        id: settings_language
         text: English
         label: Check the conditional branch precondition
+        childOf:
+          id: settings_language
     - runFlow:
         file: subflows/language-from-english.yaml
         label: Exercise both languages and restore the original setting
     - assertVisible:
-        id: settings_language
         text: English
         label: Check the expected UI state
+        childOf:
+          id: settings_language
     label: Restore the detected language preference
 - runFlow:
     when:
       visible:
-        id: settings_language
         text: 跟随系统|Follow system
+        childOf:
+          id: settings_language
     commands:
     - assertVisible:
-        id: settings_language
         text: 跟随系统|Follow system
         label: Check the conditional branch precondition
+        childOf:
+          id: settings_language
     - runFlow:
         file: subflows/language-from-system.yaml
         label: Exercise both languages and restore the original setting
     - assertVisible:
-        id: settings_language
         text: 跟随系统|Follow system
         label: Check the expected UI state
+        childOf:
+          id: settings_language
     label: Restore the detected language preference
 - runFlow:
     file: subflows/home.yaml

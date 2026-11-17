@@ -18,6 +18,7 @@ import xml.etree.ElementTree as ET
 
 ROOT = Path(__file__).resolve().parents[2]
 APP = "io.github.fermin214.moerise.fixture"
+ACTIVITY = APP + "/io.github.fermin214.moerise.MainActivity"
 DRIVERS = ("dev.mobile.maestro", "dev.mobile.maestro.test")
 
 
@@ -138,8 +139,12 @@ def junit_result(path, returncode):
             return {"status": "harness_error", "cause": "maestro_no_cases"}
         failures = [item for case in cases for item in (*case.iter("failure"), *case.iter("error"))]
         if failures:
+            message = failures[0].text or failures[0].get("message", "")
+            if "DeviceServerDiedException" in message:
+                return {"status": "environment_blocked", "cause": "maestro_driver_died",
+                        "failure_message": message[:500]}
             return {"status": "inconclusive", "cause": "maestro_ui_failure",
-                    "failure_message": (failures[0].text or failures[0].get("message", ""))[:500]}
+                    "failure_message": message[:500]}
         if any(list(case.iter("skipped")) for case in cases):
             return {"status": "inconclusive", "cause": "maestro_skipped"}
         return {"status": "passed", "cause": None} if not returncode else {
@@ -192,8 +197,14 @@ def last_failed_step(directory):
                     continue
                 evaluated = metadata.get("evaluatedCommand") or command.get("command", {})
                 kind, body = next(iter(evaluated.items()))
+                target = body.get("selector", {})
+                if kind == "assertConditionCommand":
+                    condition = body.get("condition", {})
+                    target = condition.get("visible") or condition.get("notVisible") or {}
                 failed.append((metadata.get("depth", 0), metadata.get("sequenceNumber", 0),
                                {"command": kind, "label": body.get("label", kind),
+                                "target_id": target.get("idRegex") or target.get("childOf", {}).get("idRegex"),
+                                "sequence": metadata.get("sequenceNumber"),
                                 "artifact": str(path)}))
         except (OSError, ValueError, AttributeError, StopIteration):
             continue
@@ -323,6 +334,7 @@ class MaestroRunner:
             validation = subprocess.run(
                 [sys.executable, "-B", str(self.root / "scripts/android/maestro/validate.py")],
                 capture_output=True, timeout=20)
+            (directory / "validation.log").write_bytes(validation.stdout + validation.stderr)
             if validation.returncode:
                 raise ValueError("Maestro 流程静态校验失败")
             self.api.login()
@@ -332,6 +344,8 @@ class MaestroRunner:
             before = set(self.adb.run("forward", "--list").splitlines())
             result["drivers_preexisting"] = {package: bool(self.adb.run(
                 "shell", "pm", "path", package, check=False).strip()) for package in DRIVERS}
+            # Complete the first Activity launch before attaching the instrumentation driver.
+            self.adb.run("shell", "am", "start", "-W", "-n", ACTIVITY, timeout=60)
             environment = dict(os.environ)
             environment.update({
                 "MAESTRO_FIXTURE_ORIGIN": self.connection["origin"],
@@ -342,6 +356,7 @@ class MaestroRunner:
                 [sys.executable, "-B", str(self.root / "scripts/android/maestro/validate.py"),
                  "--flow", flow, "--parameters-json", str(directory / "test-data.json")],
                 capture_output=True, timeout=20, env=environment)
+            (directory / "runtime-validation.log").write_bytes(runtime.stdout + runtime.stderr)
             if runtime.returncode:
                 raise ValueError("Maestro 场景参数校验失败")
             args = [self.executable, "--udid", self.adb.serial, "test", "--no-reinstall-driver",
@@ -355,6 +370,15 @@ class MaestroRunner:
             result.update(junit_result(result["report"], code))
             if result["status"] == "passed":
                 result["server_assertions"] = self.wait_verify(flow, values)
+            elif flow in ("editing", "actions", "archive", "attachments", "insights"):
+                try:
+                    observed = self.verify(flow, values)
+                    result["server_observation"] = {"status": "passed", "assertions": observed}
+                except AssertionError as error:
+                    result["server_observation"] = {"status": "not_satisfied", "assertion": str(error)}
+                except FixtureError as error:
+                    result["server_observation"] = {"status": "environment_blocked",
+                                                    "http_status": error.status, "error_code": error.code}
         except subprocess.TimeoutExpired:
             result.update(status="inconclusive", cause="maestro_host_timeout")
         except FixtureError as error:
@@ -363,7 +387,7 @@ class MaestroRunner:
         except AssertionError as error:
             result.update(status="failed", cause="server_assertion", assertion=str(error))
         except (OSError, ValueError, KeyError, RuntimeError) as error:
-            result.update(status="harness_error", cause=type(error).__name__)
+            result.update(status="harness_error", cause=type(error).__name__, harness_message=str(error))
         finally:
             result["cleanup_errors"] = []
             remote = remote or self.remote_file

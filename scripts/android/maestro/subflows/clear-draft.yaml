@@ -21,6 +21,23 @@ onFlowComplete:
         id: note_editor
         enabled: true
         label: Open text selection for the known input
+    - runFlow:
+        when:
+          notVisible:
+            text: Select all|Select All|全选
+        commands:
+        - assertNotVisible:
+            text: Select all|Select All|全选
+            label: Require the full-selection action to be outside the toolbar
+        - assertVisible:
+            id: android:id/overflow
+            enabled: true
+            label: Require the observed Android text toolbar overflow
+        - tapOn:
+            id: android:id/overflow
+            enabled: true
+            label: Reveal the remaining text selection actions
+        label: Open text toolbar overflow only when full selection is hidden
     - extendedWaitUntil:
         visible:
           text: Select all|Select All|全选
