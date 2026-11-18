@@ -182,3 +182,11 @@ python3 scripts/performance/evaluate-search.py --config .local/config.json --cre
 1. **接口规范同步**：当修改 `internal/models.go` 或 `internal/client_models.go` 时，必须同步更新 `internal/openapi.json` 以及 [API 文档](API-V1.md)。
 2. **数据库迁移规范**：涉及 SQLite 数据表结构变动时，必须在 `internal/migrations/` 中新增编号递增的 SQL 迁移文件，**严禁修改已发布的旧迁移文件**。
 3. **敏感信息隔离**：测试用例、脚本与文档中严禁硬编码真实的私有密钥、生产 Token 或包含用户私人数据的笔记原文。
+
+## 发布
+
+PR 运行单元、集成、浏览器和适用的 Android 检查。合并后，`Main CI` 从 `main` 的合并提交构建并冒烟验证 Linux AMD64 和 ARM64 安装包、三个多架构镜像的各架构版本，以及经过生产密钥签名的 Android APK。签名包在 Android 8.0 上验证登录、编辑、会话恢复、附件和洞察。
+
+准备发版时，通过 PR 更新对应版本号。Core 与 Web 的版本以 `internal/config.go` 和 `web/package.json` 为准，Android 在 `mobile/androidApp/build.gradle.kts` 中更新 `versionName` 并递增 `versionCode` 的默认值。
+
+`Main CI` 通过后，在 Actions 中运行 `Publish release`，填写该次 `Main CI` 的运行 ID，选择 Core/Web、Android 或两者。工作流上传已经验证的安装包，并使用同一次构建记录的镜像摘要创建正式标签。已有同名 Release 草稿时保留发布说明并沿用草稿。工作流产物保留 90 天，或以仓库设置允许的期限为准。

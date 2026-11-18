@@ -1,25 +1,10 @@
-name: Release
+name: Core and Web packages
 
 on:
-  push:
-    tags: ["v*"]
-  workflow_dispatch:
-    inputs:
-      tag:
-        description: Release tag
-        required: true
-        default: v0.1.2
-        type: string
+  workflow_call:
 
 permissions:
   contents: read
-
-concurrency:
-  group: release-${{ inputs.tag || github.ref_name }}
-  cancel-in-progress: false
-
-env:
-  RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
 
 jobs:
   build:
@@ -32,10 +17,9 @@ jobs:
           - arch: arm64
             runner: ubuntu-24.04-arm
     runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ env.RELEASE_TAG }}
       - uses: actions/setup-go@4dc6199c7b1a012772edbd06daecab0f50c9053c # v6.1.0
         with:
           go-version: "1.27.x"
@@ -52,43 +36,35 @@ jobs:
           RELEASE_ARCH: ${{ matrix.arch }}
           CGO_ENABLED: "0"
         run: |
-          version="${RELEASE_TAG#v}"
+          mkdir -p build
+          go build -trimpath -ldflags="-s -w" -o build/moerise .
+          version=$(build/moerise version)
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          test "$version" = "$(node -p 'require("./web/package.json").version')"
           name="moerise_${version}_linux_${RELEASE_ARCH}"
           package="build/$name"
           mkdir -p "$package/web" "$package/services/layout" "$package/docs"
-          go build -trimpath -ldflags="-s -w" -o "$package/moerise" .
+          mv build/moerise "$package/"
           npm --prefix web run build
           cp config.example.json .env.example LICENSE "$package/"
           cp -R web/dist "$package/web/"
           cp web/server.mjs web/package.json web/MEMOS-LICENSE "$package/web/"
           cp services/layout/server.py services/layout/semantic.py services/layout/requirements.txt "$package/services/layout/"
           cp docs/OPERATIONS.md docs/STARGAZING.md "$package/docs/"
+          HOST=127.0.0.1 PORT=3000 node "$package/web/server.mjs" &
+          web_pid=$!
+          trap 'kill "$web_pid" 2>/dev/null || true' EXIT
+          curl -fsS --retry 10 --retry-connrefused --max-time 5 http://127.0.0.1:3000/health/live
+          curl -fsS --max-time 5 --output /dev/null http://127.0.0.1:3000/
           tar -czf "build/$name.tar.gz" -C build "$name"
+          printf '%s\n' "$version" > "build/version-${RELEASE_ARCH}.txt"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: linux-${{ matrix.arch }}
-          path: build/*.tar.gz
+          path: |
+            build/*.tar.gz
+            build/version-${{ matrix.arch }}.txt
           compression-level: 0
-          retention-days: 7
-
-  publish:
-    needs: build
-    runs-on: ubuntu-24.04
-    permissions:
-      contents: write
-    env:
-      GH_TOKEN: ${{ github.token }}
-      GH_REPO: ${{ github.repository }}
-    steps:
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
-        with:
-          pattern: linux-*
-          merge-multiple: true
-          path: release/
-      - name: Upload release packages
-        run: |
-          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
-            gh release upload "$RELEASE_TAG" release/*.tar.gz --clobber
-          else
-            gh release create "$RELEASE_TAG" release/*.tar.gz --verify-tag --title "Moerise $RELEASE_TAG" --generate-notes
-          fi
+          if-no-files-found: error
+          retention-days: 90
+          overwrite: true

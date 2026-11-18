@@ -8,11 +8,14 @@ android_release_mode="${1:---unsigned}"
     exit 1
 }
 test -z "$(git status --porcelain --untracked-files=no)"
-android_release_code="${MOERISE_ANDROID_VERSION_CODE:-1}"
-[[ "$android_release_code" =~ ^[1-9][0-9]*$ && "$android_release_code" -le 2147483647 ]] || {
-    echo "MOERISE_ANDROID_VERSION_CODE 必须为有效正整数。" >&2
-    exit 1
-}
+android_release_gradle_args=()
+if [[ -n "${MOERISE_ANDROID_VERSION_CODE:-}" ]]; then
+    [[ "$MOERISE_ANDROID_VERSION_CODE" =~ ^[1-9][0-9]*$ && "$MOERISE_ANDROID_VERSION_CODE" -le 2147483647 ]] || {
+        echo "MOERISE_ANDROID_VERSION_CODE 必须为有效正整数。" >&2
+        exit 1
+    }
+    android_release_gradle_args=("-PmoeriseVersionCode=$MOERISE_ANDROID_VERSION_CODE")
+fi
 android_release_profiles=()
 if test -s mobile/androidApp/src/main/baselineProfiles/baseline-prof.txt &&
    test -s mobile/androidApp/src/main/baselineProfiles/startup-prof.txt; then
@@ -29,18 +32,20 @@ android_release_cpu="${MOERISE_ANDROID_CPU:-$(python3 -c 'import os; print(min(o
 taskset -c "$android_release_cpu" nice -n 10 mobile/gradlew -p mobile --no-daemon --max-workers=1 \
     --no-parallel --console=plain \
     :androidApp:assembleRelease :androidApp:lintRelease :androidApp:exportReleaseDependencies \
-    "-PmoeriseVersionCode=$android_release_code"
+    "${android_release_gradle_args[@]}"
 python3 scripts/android/licenses.py --check
 android_release_commit="$(git rev-parse HEAD)"
 android_release_version="$(python3 -c 'import json; print(json.load(open("mobile/androidApp/build/outputs/apk/release/output-metadata.json"))["elements"][0]["versionName"])')"
+android_release_code="$(python3 -c 'import json; print(json.load(open("mobile/androidApp/build/outputs/apk/release/output-metadata.json"))["elements"][0]["versionCode"])')"
+[[ "$android_release_code" =~ ^[1-9][0-9]*$ && "$android_release_code" -le 2147483647 ]]
+[[ "$android_release_code" == "${MOERISE_ANDROID_VERSION_CODE:-$android_release_code}" ]]
 [[ "$android_release_version" =~ ^[A-Za-z0-9][A-Za-z0-9._+-]*$ ]]
-android_release_source="$(python3 - "$android_release_code" <<'PY'
-import json, pathlib, sys
+android_release_source="$(python3 - <<'PY'
+import json, pathlib
 root = pathlib.Path("mobile/androidApp/build/outputs/apk/release").resolve()
 metadata = json.loads((root / "output-metadata.json").read_text())
 assert metadata["applicationId"] == "io.github.fermin214.moerise" and len(metadata["elements"]) == 1
 element = metadata["elements"][0]
-assert element["versionCode"] == int(sys.argv[1]), "发行 versionCode 不匹配"
 apk = (root / element["outputFile"]).resolve()
 assert apk.parent == root and apk.suffix == ".apk" and apk.is_file(), "发行 APK 路径无效"
 print(apk)

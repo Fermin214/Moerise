@@ -86,9 +86,9 @@ async function request(origin, path, { body, token, method } = {}) {
   if (!response.ok) throw new Error(`fixture HTTP ${response.status} ${path}`);
   return response.json();
 }
-async function waitReady(origin, path) {
+async function waitReady(origin, path, signal = stop.signal) {
   const end = Date.now() + 90_000;
-  while (Date.now() < end && !stop.signal.aborted) {
+  while (Date.now() < end && !signal.aborted) {
     try { await request(origin, path); return; } catch { await delay(1_000); }
   }
   throw new Error('fixture 启动超时');
@@ -108,12 +108,11 @@ try {
     catch (error) { if (error.code !== 'ENOENT') throw error; }
   }
   ownsInstance = true;
-  const sourcePort = prior ? new URL(prior.sourceOrigin).port : await port(), corePort = await port();
+  const sourcePort = prior ? new URL(prior.sourceOrigin).port : await port();
   const webPort = prior ? prior.webPort || Number(new URL(prior.origin).port) :
     process.env.MOERISE_ANDROID_FIXTURE_PORT ? Number(process.env.MOERISE_ANDROID_FIXTURE_PORT) : await port();
   assert.ok(Number.isInteger(webPort) && webPort > 0 && webPort <= 65535, 'fixture 端口无效');
   const sourceOrigin = `http://127.0.0.1:${sourcePort}`;
-  const coreOrigin = `http://127.0.0.1:${corePort}`;
   const origin = prior?.origin || process.env.MOERISE_ANDROID_FIXTURE_ORIGIN || `http://127.0.0.1:${webPort}`;
   const publicUrl = new URL(origin);
   assert.equal(publicUrl.origin, origin, 'fixture 来源只包含协议、主机和端口');
@@ -247,14 +246,32 @@ try {
   config.notifications.enabled = false;
   tuneFixtureConfig(config);
   await writeFile(resolve(root, 'config.json'), JSON.stringify(config), { mode: 0o600 });
-  const log = await open(resolve(root, 'core.log'), 'w', 0o600);
   const coreEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('MOERISE_')));
-  core = spawn(resolve(root, coreExecutable), ['serve', '--config', resolve(root, 'config.json'), '--host', '127.0.0.1', '--port', String(corePort)], {
-    cwd: repo, env: { ...coreEnv, GOMAXPROCS: '1', ...(stars ? { MOERISE_LAYOUT_URL: layoutOrigin } : {}) }, stdio: ['ignore', log.fd, log.fd],
-  });
-  await log.close();
+  const coreLog = resolve(root, 'core.log');
+  let coreOrigin;
+  for (let attempt = 0; ; attempt++) {
+    const corePort = await port();
+    coreOrigin = `http://127.0.0.1:${corePort}`;
+    const log = await open(coreLog, 'w', 0o600);
+    const starting = new AbortController();
+    core = spawn(resolve(root, coreExecutable), ['serve', '--config', resolve(root, 'config.json'), '--host', '127.0.0.1', '--port', String(corePort)], {
+      cwd: repo, env: { ...coreEnv, GOMAXPROCS: '1', ...(stars ? { MOERISE_LAYOUT_URL: layoutOrigin } : {}) }, stdio: ['ignore', log.fd, log.fd],
+    });
+    core.once('exit', () => starting.abort());
+    const spawned = once(core, 'spawn');
+    await log.close();
+    await spawned;
+    try {
+      await waitReady(coreOrigin, '/health/ready', AbortSignal.any([starting.signal, stop.signal]));
+      if (starting.signal.aborted) throw new Error('fixture Core 已退出');
+      break;
+    } catch (error) {
+      const bindFailed = /address already in use|only one usage of each socket address/i.test(await readFile(coreLog, 'utf8'));
+      if (attempt >= 2 || !starting.signal.aborted || !bindFailed || stop.signal.aborted) throw error;
+      console.warn(`Core 测试端口 ${corePort} 被占用，重新分配端口`);
+    }
+  }
   core.once('exit', () => stop.abort());
-  await waitReady(coreOrigin, '/health/ready');
   await applyModelPolicy(coreOrigin, origin, username, password);
   web = createWebServer({ coreOrigin, publicOrigin: origin,
     requestLogger: ({ time, event, method, status, elapsed_ms }) =>
@@ -305,7 +322,7 @@ try {
   if (!resume && ownsInstance && !lifecycle) dispose = true;
   if (control) { control.closeAllConnections(); await new Promise(done => control.close(done)); }
   if (web) { web.closeAllConnections(); await new Promise(done => web.close(done)); }
-  if (core && core.exitCode === null) { core.kill('SIGTERM'); await Promise.race([once(core, 'exit'), delay(5_000)]); if (core.exitCode === null) core.kill('SIGKILL'); }
+  if (core?.pid && core.exitCode === null) { core.kill('SIGTERM'); await Promise.race([once(core, 'exit'), delay(5_000)]); if (core.exitCode === null) core.kill('SIGKILL'); }
   if (memosProxy) { memosProxy.closeAllConnections(); await new Promise(done => memosProxy.close(done)); }
   if (model) { model.closeAllConnections(); await new Promise(done => model.close(done)); }
   if (dispose) {
