@@ -1,0 +1,108 @@
+appId: ${APP_ID}
+name: Review walk map settings and home navigation
+onFlowComplete:
+- takeScreenshot:
+    path: ${SCREENSHOT_PREFIX}-navigation-final
+    label: Capture the isolated test UI
+---
+- runFlow:
+    file: subflows/home.yaml
+    label: Enter the signed-in home without clearing data
+- runFlow:
+    file: subflows/prepare-draft.yaml
+    label: Prepare the exact unfinished navigation draft
+- runFlow:
+    file: subflows/review-roundtrip.yaml
+    label: Check review results
+- runFlow:
+    file: subflows/walk-roundtrip.yaml
+    label: Check enabled or disabled walk behavior
+- runFlow:
+    file: subflows/map-roundtrip.yaml
+    label: Check enabled or disabled map behavior
+- runFlow:
+    file: subflows/go-settings.yaml
+    label: Visit the settings sections
+- extendedWaitUntil:
+    visible:
+      id: settings_tab_0
+      enabled: true
+    timeout: 15000
+    label: Wait for the expected UI state
+- tapOn:
+    id: settings_tab_0
+    enabled: true
+    label: Activate the specified control
+- assertVisible:
+    id: settings_page
+    label: Check the expected UI state
+- extendedWaitUntil:
+    visible:
+      id: settings_tab_1
+      enabled: true
+    timeout: 15000
+    label: Wait for the expected UI state
+- tapOn:
+    id: settings_tab_1
+    enabled: true
+    label: Activate the specified control
+- assertVisible:
+    id: settings_page
+    label: Check the expected UI state
+- extendedWaitUntil:
+    visible:
+      id: settings_tab_2
+      enabled: true
+    timeout: 15000
+    label: Wait for the expected UI state
+- tapOn:
+    id: settings_tab_2
+    enabled: true
+    label: Activate the specified control
+- assertVisible:
+    id: settings_page
+    label: Check the expected UI state
+- swipe:
+    from:
+      id: settings_tab_2
+    direction: LEFT
+    duration: 400
+    label: Reveal the remaining settings tabs in the horizontal strip
+- extendedWaitUntil:
+    visible:
+      id: settings_tab_3
+      enabled: true
+    timeout: 15000
+    label: Wait for the expected UI state
+- tapOn:
+    id: settings_tab_3
+    enabled: true
+    label: Activate the specified control
+- assertVisible:
+    id: settings_page
+    label: Check the expected UI state
+- extendedWaitUntil:
+    visible:
+      id: settings_tab_4
+      enabled: true
+    timeout: 15000
+    label: Wait for the expected UI state
+- tapOn:
+    id: settings_tab_4
+    enabled: true
+    label: Activate the specified control
+- assertVisible:
+    id: settings_page
+    label: Check the expected UI state
+- runFlow:
+    file: subflows/home.yaml
+    label: Enter the signed-in home without clearing data
+- extendedWaitUntil:
+    visible:
+      id: note_editor
+      text: \Q${DRAFT_TEXT}\E
+    timeout: 15000
+    label: Wait for the expected UI state
+- runFlow:
+    file: subflows/clear-draft.yaml
+    label: Clear only the known navigation draft

@@ -1,0 +1,90 @@
+{
+  "flows": {
+    "login": {
+      "file": "login.yaml",
+      "timeout_seconds": 180,
+      "seed_notes": false
+    },
+    "editing": {
+      "file": "editing.yaml",
+      "timeout_seconds": 420,
+      "seed_notes": true
+    },
+    "search": {
+      "file": "search.yaml",
+      "timeout_seconds": 420,
+      "seed_notes": true
+    },
+    "actions": {
+      "file": "actions.yaml",
+      "timeout_seconds": 600,
+      "seed_notes": true
+    },
+    "insights": {
+      "file": "insights.yaml",
+      "timeout_seconds": 420,
+      "seed_notes": true
+    },
+    "navigation": {
+      "file": "navigation.yaml",
+      "timeout_seconds": 600,
+      "seed_notes": true
+    },
+    "language": {
+      "file": "language.yaml",
+      "timeout_seconds": 240,
+      "seed_notes": false
+    },
+    "attachments": {
+      "file": "attachments.yaml",
+      "timeout_seconds": 240,
+      "seed_notes": true
+    },
+    "home-smoke": {
+      "file": "home-smoke.yaml",
+      "timeout_seconds": 120,
+      "seed_notes": false
+    },
+    "archive": {
+      "file": "archive.yaml",
+      "timeout_seconds": 360,
+      "seed_notes": true
+    },
+    "insights-material": {
+      "file": "insights-material.yaml",
+      "timeout_seconds": 180,
+      "seed_notes": true
+    },
+    "attachment-cancel": {
+      "file": "attachment-cancel.yaml",
+      "timeout_seconds": 120,
+      "seed_notes": false
+    }
+  },
+  "groups": {
+    "editing": [
+      "editing"
+    ],
+    "search": [
+      "search"
+    ],
+    "actions": [
+      "actions"
+    ],
+    "insights": [
+      "insights"
+    ],
+    "navigation": [
+      "navigation"
+    ],
+    "attachments": [
+      "attachments"
+    ],
+    "language": [
+      "language"
+    ],
+    "home": [
+      "home-smoke"
+    ]
+  }
+}

@@ -1,0 +1,117 @@
+#!/usr/bin/env bash
+set -euo pipefail
+source "$(dirname "$0")/environment.sh"
+cd "$android_repo_root"
+export ANDROID_SERIAL="${ANDROID_SERIAL:-emulator-5554}"
+[[ "$ANDROID_SERIAL" =~ ^emulator-[0-9]+$ ]]
+[[ "$(adb shell getprop ro.build.version.sdk | tr -d '\r')" == 26 ]]
+mkdir -p .local/android
+android_release_fixture="$(mktemp -d "$android_repo_root/.local/android/release-fixture-XXXXXXXX")"
+chmod 700 "$android_release_fixture"
+android_release_fixture_pid="" android_release_tls_pid=""
+cleanup_android_release_smoke() {
+    if [[ -f "$android_release_fixture/lifecycle.json" ]]; then
+        if python3 - "$android_release_fixture/lifecycle.json" <<'PY'
+import json, sys, urllib.request
+state = json.load(open(sys.argv[1]))
+request = urllib.request.Request(state["origin"] + "/dispose", method="POST",
+    headers={"Authorization": "Bearer " + state["token"]})
+with urllib.request.urlopen(request, timeout=5):
+    pass
+PY
+        then
+            wait "$android_release_fixture_pid" 2>/dev/null || true
+            android_release_fixture_pid=""
+        fi
+    fi
+    for android_release_pid in "$android_release_tls_pid" "$android_release_fixture_pid"; do
+        if [[ -n "$android_release_pid" ]]; then
+            kill -TERM -- "-$android_release_pid" 2>/dev/null || true
+            wait "$android_release_pid" 2>/dev/null || true
+        fi
+    done
+    adb reverse --remove tcp:28443 >/dev/null 2>&1 || true
+    mkdir -p .local/android/release-smoke
+    for android_release_log in fixture core tls; do
+        if [[ -f "$android_release_fixture/$android_release_log.log" ]]; then
+            cp "$android_release_fixture/$android_release_log.log" ".local/android/release-smoke/$android_release_log.log"
+        fi
+    done
+    rm -rf "$android_release_fixture"
+}
+trap cleanup_android_release_smoke EXIT
+umask 077
+openssl req -x509 -newkey rsa:2048 -nodes -sha256 -days 1 \
+    -subj '/CN=Moerise isolated release CA' \
+    -keyout "$android_release_fixture/ca.key" -out "$android_release_fixture/ca.pem" \
+    > "$android_release_fixture/openssl.log" 2>&1
+openssl req -newkey rsa:2048 -nodes -sha256 -subj '/CN=localhost' \
+    -keyout "$android_release_fixture/tls.key" -out "$android_release_fixture/tls.csr" \
+    >> "$android_release_fixture/openssl.log" 2>&1
+cat > "$android_release_fixture/tls.ext" <<'EOF'
+subjectAltName=DNS:localhost
+basicConstraints=CA:FALSE
+keyUsage=digitalSignature,keyEncipherment
+extendedKeyUsage=serverAuth
+EOF
+openssl x509 -req -sha256 -days 1 -in "$android_release_fixture/tls.csr" \
+    -CA "$android_release_fixture/ca.pem" -CAkey "$android_release_fixture/ca.key" \
+    -CAcreateserial -extfile "$android_release_fixture/tls.ext" \
+    -out "$android_release_fixture/tls.pem" >> "$android_release_fixture/openssl.log" 2>&1
+android_release_ca_hash="$(openssl x509 -in "$android_release_fixture/ca.pem" -subject_hash_old -noout)"
+adb root
+adb wait-for-device
+adb remount
+adb push "$android_release_fixture/ca.pem" "/system/etc/security/cacerts/$android_release_ca_hash.0"
+adb shell chmod 644 "/system/etc/security/cacerts/$android_release_ca_hash.0"
+adb reboot
+adb wait-for-device
+python3 - <<'PY'
+import subprocess, time
+deadline = time.monotonic() + 120
+while subprocess.check_output(["adb", "shell", "getprop", "sys.boot_completed"]).strip() != b"1":
+    if time.monotonic() >= deadline:
+        raise SystemExit("模拟器重启超时")
+    time.sleep(1)
+PY
+adb shell input keyevent 82
+adb reverse tcp:28443 tcp:28443
+export MOERISE_ANDROID_FIXTURE_ROOT="$android_release_fixture"
+export MOERISE_ANDROID_FIXTURE_ORIGIN=https://localhost:28443
+export MOERISE_ANDROID_FIXTURE_PORT=28442
+setsid scripts/android/start-fixture.sh > "$android_release_fixture/fixture.log" 2>&1 &
+android_release_fixture_pid=$!
+python3 - "$android_release_fixture/connection.json" "$android_release_fixture_pid" <<'PY'
+from pathlib import Path
+import os, sys, time
+deadline = time.monotonic() + 180
+while not Path(sys.argv[1]).exists():
+    os.kill(int(sys.argv[2]), 0)
+    if time.monotonic() >= deadline:
+        raise SystemExit("HTTPS 隔离服务启动超时")
+    time.sleep(1)
+PY
+setsid node scripts/android/usb-https.mjs --origin "$MOERISE_ANDROID_FIXTURE_ORIGIN" \
+    --upstream http://127.0.0.1:28442 --cert "$android_release_fixture/tls.pem" \
+    --key "$android_release_fixture/tls.key" --proxy-port 28444 \
+    > "$android_release_fixture/tls.log" 2>&1 &
+android_release_tls_pid=$!
+export SSL_CERT_FILE="$android_release_fixture/ca.pem"
+python3 - <<'PY'
+import time, urllib.request
+deadline = time.monotonic() + 20
+while True:
+    try:
+        with urllib.request.urlopen("https://localhost:28443/health/ready") as response:
+            assert response.status == 200
+        break
+    except OSError:
+        if time.monotonic() >= deadline:
+            raise
+        time.sleep(.5)
+PY
+android_release_apk="$(find .local/android/releases -name 'moerise-android-v*.apk' ! -name '*-unsigned.apk' -print -quit)"
+test -n "$android_release_apk"
+python3 scripts/android/release-smoke.py --serial "$ANDROID_SERIAL" \
+    --fixture "$android_release_fixture/connection.json" --apk "$android_release_apk" \
+    --output .local/android/release-smoke

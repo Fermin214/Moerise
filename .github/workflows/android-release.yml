@@ -1,7 +1,7 @@
 name: Android release
 on:
   push:
-    tags: ['android-v*']
+    tags: ['android-v*', 'android-rc-v*']
   workflow_dispatch:
     inputs:
       sign:
@@ -17,6 +17,8 @@ jobs:
   apk:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
+    env:
+      SIGN_APK: ${{ github.event_name == 'push' || inputs.sign }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - uses: actions/setup-java@v4
@@ -33,7 +35,7 @@ jobs:
           packages: platform-tools
       - run: sdkmanager 'platforms;android-36' 'build-tools;36.0.0'
       - name: Prepare signing identity
-        if: startsWith(github.ref, 'refs/tags/android-v') || inputs.sign
+        if: env.SIGN_APK == 'true'
         env:
           ANDROID_SIGNING_KEYSTORE: ${{ secrets.ANDROID_SIGNING_KEYSTORE }}
         run: |
@@ -42,7 +44,6 @@ jobs:
           test -s "$RUNNER_TEMP/moerise-release.jks"
       - name: Build APK
         env:
-          SIGN_APK: ${{ startsWith(github.ref, 'refs/tags/android-v') || inputs.sign }}
           MOERISE_ANDROID_KEYSTORE: ${{ runner.temp }}/moerise-release.jks
           MOERISE_ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           MOERISE_ANDROID_STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
@@ -59,26 +60,40 @@ jobs:
           include-hidden-files: true
           path: .local/android/releases/
       - name: Enable emulator acceleration
-        if: startsWith(github.ref, 'refs/tags/android-v') || inputs.sign
+        if: env.SIGN_APK == 'true'
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
+      - uses: actions/setup-go@4dc6199c7b1a012772edbd06daecab0f50c9053c
+        if: env.SIGN_APK == 'true'
+        with:
+          go-version: "1.27.x"
+      - uses: actions/setup-node@v6.5.0
+        if: env.SIGN_APK == 'true'
+        with:
+          node-version: "24"
+      - name: Prepare signed APK checks
+        if: env.SIGN_APK == 'true'
+        run: |
+          bash scripts/android/install-maestro.sh
+          python3 -m pip install --disable-pip-version-check -r scripts/android/maestro/requirements.txt
       - name: Check signed APK on minimum Android version
-        if: startsWith(github.ref, 'refs/tags/android-v') || inputs.sign
+        if: env.SIGN_APK == 'true'
         uses: reactivecircus/android-emulator-runner@4c44018e59b437e86cdfc41da381398f93ed8808
         with:
           api-level: 26
           arch: x86_64
           target: google_apis
           disable-animations: true
-          script: |
-            adb install "$(find .local/android/releases -name 'moerise-android-v*.apk' ! -name '*-unsigned.apk' -print -quit)"
-            adb shell am start -W -n io.github.fermin214.moerise/io.github.fermin214.moerise.MainActivity
-            adb shell uiautomator dump /sdcard/moerise-release.xml
-            adb pull /sdcard/moerise-release.xml .local/android/release-ui.xml
-            grep -q 'server_login' .local/android/release-ui.xml
-            adb shell pidof io.github.fermin214.moerise
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -writable-system
+          script: bash scripts/android/release-smoke.sh
+      - uses: actions/upload-artifact@v4
+        if: always() && env.SIGN_APK == 'true'
+        with:
+          name: android-release-checks
+          include-hidden-files: true
+          path: .local/android/release-smoke/
       - name: Publish release
         if: startsWith(github.ref, 'refs/tags/android-v')
         env:

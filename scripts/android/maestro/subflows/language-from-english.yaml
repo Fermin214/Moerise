@@ -1,0 +1,66 @@
+appId: ${APP_ID}
+name: Language roundtrip from english
+onFlowComplete:
+- takeScreenshot:
+    path: ${SCREENSHOT_PREFIX}-language-from-english-final
+    label: Capture the isolated test UI
+---
+- assertVisible:
+    text: English
+    label: Check the expected UI state
+    childOf:
+      id: settings_language
+- tapOn:
+    id: settings_language
+    enabled: true
+    label: Activate the specified control
+- extendedWaitUntil:
+    visible:
+      text: 简体中文
+    timeout: 15000
+    label: Wait for the expected UI state
+- tapOn:
+    enabled: true
+    text: 简体中文
+    label: Activate the specified control
+- extendedWaitUntil:
+    visible:
+      text: 简体中文
+      childOf:
+        id: settings_language
+    timeout: 15000
+    label: Wait for the expected UI state
+- assertVisible:
+    text: 语言|Language
+    label: Check the expected UI state
+- tapOn:
+    id: settings_language
+    enabled: true
+    label: Activate the specified control
+- extendedWaitUntil:
+    visible:
+      text: English
+    timeout: 15000
+    label: Wait for the expected UI state
+- tapOn:
+    enabled: true
+    text: English
+    label: Activate the specified control
+- extendedWaitUntil:
+    visible:
+      text: English
+      childOf:
+        id: settings_language
+    timeout: 15000
+    label: Wait for the expected UI state
+- assertVisible:
+    text: 语言|Language
+    label: Check the expected UI state
+- takeScreenshot:
+    path: ${SCREENSHOT_PREFIX}-language-restored-english
+    label: Capture the isolated test UI
+- assertVisible:
+    text: English
+    label: Check the expected UI state
+    childOf:
+      id: settings_language

@@ -83,7 +83,8 @@ fun InsightScreen(mobile: MobileController, strings: Strings, scroll: List<Scrol
                             modifier = Modifier.focusRequester(sessionFocus).testTag("chat_session_menu")) {
                             WebIcon(WebIcon.Menu, strings.text("会话", "Conversation"))
                         }
-                        DropdownMenu(expanded = sessionMenu, onDismissRequest = { sessionMenu = false }) {
+                        DropdownMenu(expanded = sessionMenu, onDismissRequest = { sessionMenu = false },
+                            modifier = Modifier.platformTestTags()) {
                             DropdownMenuItem(text = { Text(strings.text("新建会话", "New conversation")) },
                                 enabled = !state.locked && connection.connected,
                                 onClick = { sessionMenu = false; controller.newChat() },
@@ -481,7 +482,8 @@ private fun InsightOverlay(
         properties = DialogProperties(usePlatformDefaultWidth = false, dismissOnClickOutside = false, dismissOnBackPress = canDismiss)) {
         BoxWithConstraints(Modifier.fillMaxSize().safeDrawingPadding().imePadding().padding(16.dp),
             contentAlignment = Alignment.Center) {
-            Surface(Modifier.widthIn(max = 520.dp).fillMaxWidth().height(minOf(640.dp, maxHeight * .86f)).testTag(tag),
+            Surface(Modifier.widthIn(max = 520.dp).fillMaxWidth().height(minOf(640.dp, maxHeight * .86f))
+                .platformTestTags().testTag(tag),
                 shape = RoundedCornerShape(14.dp), color = Color.White, border = BorderStroke(1.dp, MoeriseColors.Line)) {
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,

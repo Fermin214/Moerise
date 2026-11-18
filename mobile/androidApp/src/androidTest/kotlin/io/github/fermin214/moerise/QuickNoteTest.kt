@@ -202,26 +202,12 @@ class QuickNoteTest {
     fun insightsPickerAndSourceReadingReturnToHome() {
         compose.signIntoFixture()
         if (visualSetup()) return
-        val unfinished = compose.homeNode("note_editor").fetchSemanticsNode()
-            .config[SemanticsProperties.EditableText].text
+        compose.homeNode("note_editor")
+        val unfinished = requireNotNull(compose.editorConfiguration("note_editor"))[SemanticsProperties.EditableText].text
         val text = "Android picker note ${System.currentTimeMillis()} #android"
         val name = saveNew(text)
         compose.homeNode("note_editor").performTextReplacement(unfinished)
 
-        compose.navigate("review")
-        compose.navigate("walk")
-        compose.waitUntil(20_000) {
-            compose.hasTag("walk_settings") || compose.onAllNodesWithTag("walk_start").fetchSemanticsNodes().any {
-                it.config.getOrNull(SemanticsProperties.Disabled) == null
-            }
-        }
-        if (compose.hasTag("walk_settings")) {
-            compose.onNodeWithTag("walk_start").assertIsNotEnabled()
-        } else {
-            compose.clickTag("walk_start")
-            compose.waitForTag("walk_end")
-            compose.clickTag("walk_end")
-        }
         compose.navigate("insights")
         // 材料读取和页面进入都是异步的，按钮可用后再打开选材弹窗。
         compose.clickTag("chat_add_materials")
@@ -274,14 +260,36 @@ class QuickNoteTest {
             runCatching { compose.onNodeWithTag("note_card_$name").assertIsDisplayed() }.isSuccess
         }
         compose.waitForEditor("note_editor", unfinished)
+        deleteCard(name)
+        compose.waitForEditor("note_editor", unfinished)
+    }
+
+    @Test
+    fun navigationPreservesUnfinishedInput() {
+        compose.signIntoFixture()
+        if (visualSetup()) return
+        val unfinished = "Navigation draft ${System.currentTimeMillis()}"
+        compose.homeNode("note_editor").performTextReplacement(unfinished)
+        compose.navigate("review")
+        compose.navigate("walk")
+        acceptanceStep("漫步：等待配置或开始按钮")
+        compose.waitUntil(20_000) {
+            compose.hasTag("walk_settings") ||
+                compose.onAllNodes(hasTestTag("walk_start") and isEnabled()).fetchSemanticsNodes().isNotEmpty()
+        }
+        if (compose.hasTag("walk_settings")) {
+            compose.onNodeWithTag("walk_start").assertIsNotEnabled()
+        } else {
+            compose.clickTag("walk_start")
+            compose.waitForTag("walk_end")
+            compose.clickTag("walk_end")
+        }
         compose.navigate("map")
         compose.clickTag("map_fullscreen")
         compose.clickTag("map_fullscreen")
         compose.navigate("settings")
         for (index in 0..4) compose.clickTag("settings_tab_$index")
         compose.navigate("home")
-        compose.waitForEditor("note_editor", unfinished)
-        deleteCard(name)
         compose.waitForEditor("note_editor", unfinished)
     }
 }

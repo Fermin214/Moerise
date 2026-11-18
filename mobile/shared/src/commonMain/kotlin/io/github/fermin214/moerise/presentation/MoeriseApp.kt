@@ -22,6 +22,8 @@ import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.isCtrlPressed
@@ -46,6 +48,8 @@ import kotlinx.serialization.json.*
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MoeriseApp(mobile: MobileController, onEditorReady: () -> Unit = {}) {
+    val focusManager = LocalFocusManager.current
+    val keyboard = LocalSoftwareKeyboardController.current
     val session = mobile.session
     val language by session.language.collectAsState()
     val strings = remember(language) { Strings(language) }
@@ -135,7 +139,12 @@ fun MoeriseApp(mobile: MobileController, onEditorReady: () -> Unit = {}) {
         }
         mobile.page(next)
     }
-    fun openDrawer() { searchOpen = false; scope.launch { drawer.open() } }
+    fun openDrawer() {
+        focusManager.clearFocus()
+        keyboard?.hide()
+        searchOpen = false
+        scope.launch { drawer.open() }
+    }
     fun showFilter(value: SearchQuery) {
         val target = if (page in setOf("home", "archive")) page else sourceTimeline
         mobile.flush()
@@ -213,7 +222,9 @@ fun MoeriseApp(mobile: MobileController, onEditorReady: () -> Unit = {}) {
             if (searchOpen) WebSearchPanel(query, strings, onChange = mobile.search::change,
                 onClose = { searchOpen = false }, onSubmit = { showFilter(query) })
         }) {
-            ModalNavigationDrawer(drawerState = drawer, gesturesEnabled = drawer.isOpen, drawerContent = {
+            ModalNavigationDrawer(modifier = Modifier.platformTestTags()
+                .testTag(if (platformImeVisible()) "ime_visible" else "ime_hidden"),
+                drawerState = drawer, gesturesEnabled = drawer.isOpen, drawerContent = {
                 ModalDrawerSheet(Modifier.width(320.dp), drawerShape = androidx.compose.ui.graphics.RectangleShape,
                     drawerContainerColor = MoeriseColors.Paper) {
                     WebSidebar(page, strings, connection.profile?.let { it.displayName.trim().ifBlank { it.userName.removePrefix("users/") } }.orEmpty(),
@@ -382,7 +393,7 @@ private fun HomeEditor(
                 cursorBrush = SolidColor(MoeriseColors.Blue),
                 textStyle = TextStyle(color = MoeriseColors.Ink, fontSize = 17.sp, lineHeight = 30.6.sp),
                 decorationBox = { input ->
-                    Box {
+                    Box(Modifier.testTag(if (draft.content.isEmpty()) "${editorTag}_empty" else "${editorTag}_filled")) {
                         if (draft.content.isEmpty()) Text(
                             strings.text("今天想到了什么……", "What came to mind today…"),
                             color = Color(0xFF9299A3), fontSize = 14.sp, lineHeight = 30.6.sp,

@@ -1,0 +1,100 @@
+appId: ${APP_ID}
+name: Cancel the picker then save one note with an exact text attachment
+onFlowComplete:
+- takeScreenshot:
+    path: ${SCREENSHOT_PREFIX}-attachments-final
+    label: Capture the isolated test UI
+---
+- runFlow:
+    file: attachment-cancel.yaml
+    label: Cover picker cancellation without changing a draft
+- assertVisible:
+    id: note_editor_empty
+    label: Check the expected UI state
+- tapOn:
+    id: note_editor
+    enabled: true
+    label: Activate the specified control
+- inputText:
+    text: ${ATTACHMENT_NOTE_TEXT}${INPUT_SUFFIX}
+    label: Enter the exact fixture value through the test input method
+- eraseText:
+    charactersToErase: 1
+    label: Remove only the temporary input suffix
+- runFlow:
+    file: subflows/hide-keyboard.yaml
+    label: Dismiss only an observed visible input method
+- extendedWaitUntil:
+    visible:
+      id: note_editor
+      text: \Q${ATTACHMENT_NOTE_TEXT}\E
+    timeout: 15000
+    label: Wait for the expected UI state
+- extendedWaitUntil:
+    visible:
+      id: add_attachment
+      enabled: true
+    timeout: 15000
+    label: Wait for the expected UI state
+- tapOn:
+    id: add_attachment
+    enabled: true
+    label: Activate the specified control
+- runFlow:
+    file: subflows/pick-download.yaml
+    label: Select the unique txt file from the supported system provider
+- extendedWaitUntil:
+    visible:
+      id: note_editor
+      text: \Q${ATTACHMENT_NOTE_TEXT}\E
+    timeout: 15000
+    label: Wait for the expected UI state
+- extendedWaitUntil:
+    visible:
+      text: \Q${ATTACHMENT_NAME}\E
+    timeout: 15000
+    label: Wait for the expected UI state
+- takeScreenshot:
+    path: ${SCREENSHOT_PREFIX}-attachment-staged
+    label: Capture the isolated test UI
+- extendedWaitUntil:
+    visible:
+      id: save_note
+      enabled: true
+    timeout: 15000
+    label: Wait for the expected UI state
+- tapOn:
+    id: save_note
+    enabled: true
+    label: Activate the specified control
+- extendedWaitUntil:
+    visible:
+      id: note_editor_empty
+    timeout: 15000
+    label: Wait for the expected UI state
+- scrollUntilVisible:
+    element:
+      text: \Q${ATTACHMENT_NOTE_TEXT}\E
+    direction: DOWN
+    timeout: 15000
+    centerElement: true
+    label: Locate the specified control without coordinates
+- assertVisible:
+    text: \Q${ATTACHMENT_NOTE_TEXT}\E
+    label: Check the expected UI state
+- scrollUntilVisible:
+    element:
+      text: \Q${ATTACHMENT_NAME}\E
+    direction: DOWN
+    timeout: 65000
+    centerElement: true
+    label: Reveal the saved attachment after the queued upload completes
+- assertVisible:
+    text: \Q${ATTACHMENT_NAME}\E
+    label: Check the expected UI state
+- takeScreenshot:
+    path: ${SCREENSHOT_PREFIX}-attachment-saved
+    label: Capture the isolated test UI
+- runFlow:
+    file: subflows/home.yaml
+    label: Enter the signed-in home without clearing data

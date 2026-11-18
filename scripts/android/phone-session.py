@@ -1,0 +1,686 @@
+#!/usr/bin/env python3
+"""Persistent USB device acceptance; installation, checks and cleanup are separate actions."""
+import argparse
+from datetime import datetime, timezone
+import hashlib
+import io
+import json
+import os
+from pathlib import Path
+import re
+import shutil
+import subprocess
+import sys
+import tarfile
+import tempfile
+import threading
+import time
+import urllib.parse
+import urllib.error
+import urllib.request
+from maestro_runner import (
+    DRIVERS, MaestroRunner, catalog, flow_digest, input_method_checkpoint,
+    junit_result as maestro_result, restore_input_method,
+)
+
+APP = "io.github.fermin214.moerise.fixture"
+RUNNER_APP = APP + ".test"
+RUNNER = RUNNER_APP + "/androidx.test.runner.AndroidJUnitRunner"
+ACTIVITY = APP + "/io.github.fermin214.moerise.MainActivity"
+CREDENTIAL = "/data/local/tmp/moerise-android-fixture.json"
+APK_PATHS = {
+    APP: "mobile/androidApp/build/outputs/apk/fixture/androidApp-fixture.apk",
+    RUNNER_APP: "mobile/androidApp/build/outputs/apk/androidTest/fixture/androidApp-fixture-androidTest.apk",
+}
+CASES = {
+    "lifecycle": "QuickNoteTest#loginWriteRecreateSaveAndReadBack",
+    "ime": "ImeLifecycleTest#composingCommitCursorEditsAndDraftSurviveRecreation",
+    "stars": "StarRenderingTest#thousandAndFiveThousandStarsRenderSelectPanZoomAndRefresh",
+}
+NETWORK_KEYS = (
+    "http_proxy", "global_http_proxy_host", "global_http_proxy_port",
+    "global_http_proxy_exclusion_list", "global_proxy_pac_url",
+    "private_dns_mode", "private_dns_specifier",
+)
+UI_GROUPS = tuple(catalog()["groups"])
+DEFAULT_UI_GROUPS = ("editing", "search", "actions", "insights", "navigation", "attachments", "language", "home")
+FLOWS = tuple(catalog()["flows"])
+
+
+def now():
+    return datetime.now(timezone.utc).isoformat()
+
+
+def digest(path):
+    with Path(path).open("rb") as stream:
+        return hashlib.file_digest(stream, "sha256").hexdigest()
+
+
+def write_json(path, value):
+    path = Path(path)
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    payload = json.dumps(value, ensure_ascii=False, indent=2) + "\n"
+    for attempt in range(10):
+        try:
+            temporary.write_text(payload, encoding="utf-8")
+            os.replace(temporary, path)
+            return
+        except OSError as error:
+            if getattr(error, "winerror", None) not in (5, 32, 33) or attempt == 9:
+                raise
+            time.sleep(.05)
+
+
+def read_json(path):
+    return json.loads(Path(path).read_text(encoding="utf-8-sig"))
+
+
+def run_logged(command, log, timeout):
+    """Keep subprocess output and stop this command's descendants at its deadline."""
+    with Path(log).open("wb") as stream:
+        process = subprocess.Popen(command, stdout=stream, stderr=subprocess.STDOUT)
+        try:
+            return process.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            # A .bat launcher or recovery Python process can outlive its immediate parent.
+            if os.name == "nt":
+                subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
+            if process.poll() is None:
+                process.kill()
+            process.wait(timeout=5)
+            raise
+
+
+class CommandError(RuntimeError):
+    def __init__(self, code, message, output=""):
+        super().__init__(message)
+        self.code, self.output = code, output
+
+
+class Adb:
+    def __init__(self, executable, serial):
+        if not re.fullmatch(r"[A-Za-z0-9_.:-]+", serial):
+            raise ValueError("无效的设备序列号")
+        self.executable, self.serial = executable, serial
+
+    def run(self, *args, timeout=30, log=None, binary=False, check=True):
+        command = [self.executable, "-s", self.serial, *args]
+        if not log:
+            try:
+                process = subprocess.run(command, capture_output=True, timeout=timeout)
+            except subprocess.TimeoutExpired as error:
+                raise CommandError("timeout", "ADB 操作超时", error.stdout or b"") from None
+            if process.returncode and process.stderr:
+                process.stdout += b"\n" + process.stderr
+            result = process.stdout if binary else process.stdout.decode("utf-8", "replace")
+            if check and process.returncode:
+                raise CommandError("adb_error", f"ADB {args[0]} 失败", result)
+            return result
+        # Stream each status line immediately; a deadline must retain the last completed step.
+        process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        lines = []
+        with Path(log).open("wb") as stream:
+            def drain():
+                for line in iter(process.stdout.readline, b""):
+                    stream.write(line)
+                    stream.flush()
+                    lines.append(line)
+                    text = line.decode("utf-8", "replace").strip()
+                    if text.startswith("INSTRUMENTATION_STATUS: acceptance_step="):
+                        print(text.partition("acceptance_step=")[2], flush=True)
+
+            thread = threading.Thread(target=drain, daemon=True)
+            thread.start()
+            timed_out = False
+            try:
+                process.wait(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                timed_out = True
+                process.kill()
+                process.wait(timeout=5)
+            thread.join(timeout=5)
+        output = b"".join(lines).decode("utf-8", "replace")
+        if timed_out:
+            raise CommandError("timeout", f"ADB 操作超过 {timeout} 秒；保留已输出步骤", output)
+        if check and process.returncode:
+            raise CommandError("adb_error", f"ADB {args[0]} 失败", output)
+        return output
+
+
+def proxy_enabled(network):
+    old = network.get("http_proxy", "").strip()
+    host = network.get("global_http_proxy_host", "").strip()
+    pac = network.get("global_proxy_pac_url", "").strip()
+    return (old not in ("", "null", ":0") or host not in ("", "null") or pac not in ("", "null"))
+
+
+def instrument_result(text):
+    steps = re.findall(r"^INSTRUMENTATION_STATUS: acceptance_step=(.+)$", text, re.M)
+    result = {"last_step": steps[-1].strip() if steps else None}
+    if re.search(r"^OK \([1-9][0-9]* tests?\)", text, re.M) and not re.search(
+            r"FAILURES!!!|INSTRUMENTATION_FAILED", text):
+        return {**result, "status": "passed", "cause": None}
+    if "UiAutomationService already registered" in text:
+        return {**result, "status": "harness_error", "cause": "uiautomation_conflict"}
+    if re.search(r"INSTRUMENTATION_FAILED|Unable to find instrumentation|ClassNotFoundException", text):
+        return {**result, "status": "harness_error", "cause": "runner_unavailable"}
+    if "TestTimedOutException" in text:
+        return {**result, "status": "inconclusive", "cause": "instrumentation_timeout"}
+    if "SignIntoFixture" in text or "登录后主页未就绪" in text:
+        return {**result, "status": "environment_blocked", "cause": "login_connection"}
+    if "ComposeTimeoutException" in text or "Condition still not satisfied" in text:
+        return {**result, "status": "inconclusive", "cause": "ui_wait_timeout"}
+    if not re.search(r"FAILURES!!!|INSTRUMENTATION_STATUS: (?:stack=|failure=)", text):
+        return {**result, "status": "harness_error", "cause": "runner_result_incomplete"}
+    return {**result, "status": "failed", "cause": "automation_assertion"}
+
+
+def probe_fixture(origin):
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    try:
+        with opener.open(origin + "/api/app/v1/capabilities", timeout=5) as response:
+            payload = json.load(response)
+            if response.status != 200 or not isinstance(payload, dict):
+                raise ValueError("invalid capabilities")
+    except (OSError, ValueError, urllib.error.URLError):
+        raise CommandError("fixture_unavailable", "电脑隔离服务未就绪；先启动服务，不安装或重装手机 App") from None
+
+
+class PhoneSession:
+    def __init__(self, repo, directory, output, adb, commit):
+        self.repo, self.directory, self.output = Path(repo), Path(directory), Path(output)
+        self.adb, self.commit = adb, commit
+        self.path = self.directory / "session.json"
+        self.state = read_json(self.path) if self.path.exists() else None
+        self.output.mkdir(parents=True, exist_ok=True)
+
+    def save(self):
+        self.state["updated_at"] = now()
+        write_json(self.path, self.state)
+
+    def network(self):
+        return {key: self.adb.run("shell", "settings", "get", "global", key).strip()
+                for key in NETWORK_KEYS}
+
+    def restore_device_input(self):
+        try:
+            restore_input_method(self.adb, input_method_checkpoint(self.repo, self.adb.serial))
+        except RuntimeError as error:
+            raise CommandError("ime_restore_failed", str(error)) from error
+
+    def require_ready(self, preparing=False):
+        if not self.state or self.state.get("status") == "cleaned":
+            raise ValueError("先执行 prepare，或使用尚未清理的会话")
+        if not preparing and self.state.get("status") != "ready":
+            raise ValueError("会话准备尚未完成；对同一会话执行 prepare")
+        if self.state["serial"] != self.adb.serial:
+            raise ValueError("会话与手机不匹配")
+        if self.adb.run("get-state").strip() != "device":
+            raise CommandError("device_unavailable", "手机尚未连接")
+        self.restore_device_input()
+        network = self.network()
+        if proxy_enabled(network):
+            raise CommandError("proxy_present", "手机存在全局代理；USB 验收不会改写手机网络设置")
+        return network
+
+    def connection(self):
+        data = read_json(self.state["fixture"])
+        origin = urllib.parse.urlsplit(data["origin"])
+        if (origin.scheme != "http" or origin.hostname not in ("localhost", "127.0.0.1", "::1")
+                or origin.path not in ("", "/") or origin.query or origin.fragment or origin.username
+                or not origin.port
+                or data.get("username") != "android-owner" or not data.get("password")):
+            raise ValueError("使用 HTTP 回环隔离服务连接档案")
+        if origin.port != self.state["port"]:
+            raise ValueError("服务端口已改变")
+        return data
+
+    def connect(self):
+        self.connection()
+        mapping = f"tcp:{self.state['port']}"
+        for line in self.adb.run("reverse", "--list").splitlines():
+            parts = line.split()
+            if len(parts) >= 2 and parts[-2] == mapping and parts[-1] != mapping:
+                raise CommandError("reverse_conflict", "该手机端口已有其他 USB 映射；选择独立服务端口")
+        self.adb.run("reverse", mapping, mapping)
+
+    def package_paths(self, package):
+        text = self.adb.run("shell", "pm", "path", package, check=False)
+        matches = [re.fullmatch(r"package:(/[^\r\n]+\.apk)", line)
+                   for line in text.splitlines() if line.strip()]
+        if not all(matches):
+            raise CommandError("package_query_failed", "无法读取设备安装包路径", text)
+        paths = [match[1] for match in matches]
+        if not paths:
+            if self.adb.run("get-state").strip() != "device":
+                raise CommandError("device_unavailable", "手机尚未连接")
+        return paths
+
+    def package_hash(self, package):
+        paths = self.package_paths(package)
+        if not paths:
+            return None
+        if len(paths) != 1:
+            raise CommandError("split_apk", "设备包为拆分安装，不能自动认定与单 APK 相同")
+        with tempfile.TemporaryDirectory(prefix="moerise-installed-apk-") as folder:
+            path = Path(folder) / "base.apk"
+            self.adb.run("pull", paths[0], str(path), timeout=60)
+            return digest(path)
+
+    def prepare(self, manifest, fixture, specialists=False):
+        manifest = read_json(manifest)
+        if not isinstance(manifest.get("commit"), str) or not manifest["commit"].strip():
+            raise ValueError("构建清单缺少 APK 对应的源码提交")
+        data = read_json(fixture)
+        port = urllib.parse.urlsplit(data["origin"]).port
+        if self.state:
+            self.require_ready(preparing=True)
+            if Path(self.state["fixture"]).resolve() != Path(fixture).resolve():
+                raise ValueError("会话已绑定其他隔离服务")
+        else:
+            self.directory.mkdir(parents=True, exist_ok=True)
+            self.state = {"schema": 1, "commit": manifest["commit"], "serial": self.adb.serial,
+                          "fixture": str(Path(fixture).resolve()), "port": port,
+                          "created_at": now(), "status": "preparing",
+                          "artifacts": {}, "results": {}, "installs": {},
+                          "reverse_preexisting": False, "files": []}
+        self.require_ready(preparing=True)
+        self.connection()
+        probe_fixture(data["origin"])
+        entries = {entry["path"].replace("\\", "/"): entry for entry in manifest.get("artifacts", [])}
+        if not entries and "apks" in manifest:
+            entries = {path.replace("\\", "/"): {"sha256": sha256}
+                       for path, sha256 in manifest["apks"].items()}
+        artifacts = {}
+        requested = APK_PATHS if specialists else {APP: APK_PATHS[APP]}
+        for package, path in requested.items():
+            if path not in entries or entries[path]["sha256"] != digest(self.repo / path):
+                raise ValueError("APK 与构建清单摘要不一致：" + path)
+            artifacts[package] = {"path": path, "sha256": entries[path]["sha256"]}
+        if any(package in self.state["artifacts"] and self.state["artifacts"][package] != artifact
+               for package, artifact in artifacts.items()):
+            raise ValueError("会话的 APK 已改变；创建独立会话")
+        self.state["artifacts"].update(artifacts)
+        self.state["runner_commit"] = self.commit
+        mapping = f"tcp:{port}"
+        if "network_before" not in self.state:
+            self.state["network_before"] = self.network()
+            self.state["reverse_preexisting"] = any(
+                line.split()[-2:] == [mapping, mapping]
+                for line in self.adb.run("reverse", "--list").splitlines())
+        self.save()
+        self.connect()
+        for package, artifact in artifacts.items():
+            if self.package_hash(package) == artifact["sha256"]:
+                self.state["installs"][package] = "reused"
+                self.save()
+                continue
+            if package == APP:
+                self.state["status"] = "preparing"
+                self.state["results"] = {}
+                self.save()
+            log = self.output / (package + "-install.log")
+            try:
+                text = self.adb.run("install", "-r", "-t", str(self.repo / artifact["path"]),
+                                    timeout=120, log=log)
+            except CommandError as error:
+                self.state["installs"][package] = "confirmation_required" if (
+                    "INSTALL_FAILED_USER_RESTRICTED" in str(error.output)) else error.code
+                self.save()
+                raise CommandError("installation_blocked", "安装未完成；手机确认后对同一会话重试 prepare", error.output)
+            if not re.search(r"^Success\s*$", text, re.M):
+                raise CommandError("installation_blocked", "安装没有返回 Success", text)
+            if self.package_hash(package) != artifact["sha256"]:
+                raise CommandError("installed_hash_mismatch", "设备 APK 摘要核对失败")
+            self.state["installs"][package] = "installed"
+            self.save()
+        if self.state["status"] == "ready":
+            return {"status": "ready", "session": str(self.directory), "manual": "Moerise Fixture"}
+        self.state["status"] = "installed"
+        self.save()
+        result = self.ui("login", preparing=True)
+        if result["status"] not in ("passed", "reused_pass"):
+            raise CommandError("login_blocked", "登录准备未通过；先处理这一项，不运行后续业务组")
+        self.state["status"] = "ready"
+        self.save()
+        self.adb.run("shell", "am", "start", "-W", "-n", ACTIVITY)
+        return {"status": "ready", "session": str(self.directory), "manual": "Moerise Fixture"}
+
+    def verify_artifacts(self, specialists=False):
+        required = (APP, RUNNER_APP) if specialists else (APP,)
+        for package in required:
+            if package not in self.state["artifacts"]:
+                raise CommandError("prepare_required", "专项测试需要先执行 prepare -Specialists")
+            artifact = self.state["artifacts"][package]
+            if self.package_hash(package) != artifact["sha256"]:
+                raise CommandError("prepare_required", "设备 APK 发生变化；先执行 prepare，不自动安装")
+
+    def instrument(self, name, method, visual=False):
+        data = self.connection()
+        log = self.output / (name + "-instrumentation.log")
+        result = {"started_at": now(), "log": str(log), "kind": "automation"}
+        # Only the login fields enter the device; source API tokens stay on the host.
+        try:
+            # The last Maestro CLI can exit while its device-side instrumentation is still registered.
+            for package in reversed(DRIVERS):
+                if self.package_paths(package):
+                    self.adb.run("shell", "am", "force-stop", package)
+            with tempfile.TemporaryDirectory(prefix="moerise-device-login-") as folder:
+                credential = Path(folder) / "connection.json"
+                write_json(credential, {key: data[key] for key in ("origin", "username", "password")})
+                self.adb.run("push", str(credential), CREDENTIAL)
+                self.adb.run("shell", "am", "force-stop", APP)
+                args = ["shell", "am", "instrument", "-w", "-e", "class",
+                        "io.github.fermin214.moerise." + method,
+                        "-e", "timeout_msec", "360000"]
+                if visual:
+                    args += ["-e", "visualSetup", "true"]
+                args.append(RUNNER)
+                text = self.adb.run(*args, timeout=390, log=log)
+                result.update(instrument_result(text))
+        except CommandError as error:
+            result.update(instrument_result(str(error.output)))
+            if error.code == "timeout":
+                result.update(status="inconclusive", cause="host_timeout")
+            elif result["cause"] in (None, "runner_result_incomplete"):
+                result.update(status="harness_error", cause=error.code)
+        except OSError:
+            result.update(status="harness_error", cause="host_io_error")
+        finally:
+            result["cleanup_errors"] = []
+            if result.get("status") != "passed":
+                try:
+                    self.adb.run("shell", "am", "force-stop", APP, check=False)
+                except (CommandError, OSError):
+                    result["cleanup_errors"].append("force_stop")
+                self.collect_diagnostics(name)
+            try:
+                self.adb.run("shell", "rm", "-f", CREDENTIAL)
+            except (CommandError, OSError):
+                result["cleanup_errors"].append("credential_remove")
+            if result["cleanup_errors"] and result.get("status") == "passed":
+                result.update(status="harness_error", cause="cleanup_error")
+        result["finished_at"] = now()
+        result["runner_commit"] = self.commit
+        self.state["results"][name] = result
+        self.save()
+        return result
+
+    def collect_diagnostics(self, name):
+        try:
+            archive = self.adb.run("exec-out", "run-as", APP, "tar", "-C", "cache",
+                                   "-cf", "-", "acceptance-diagnostics", binary=True)
+            # A missing diagnostics directory is a collection issue, never a product failure.
+            with tarfile.open(fileobj=io.BytesIO(archive)):
+                (self.output / (name + "-diagnostics.tar")).write_bytes(archive)
+        except (CommandError, ValueError, OSError, tarfile.TarError) as error:
+            write_json(self.output / (name + "-diagnostics-error.json"),
+                       {"kind": "collection_error", "error_type": type(error).__name__})
+
+    def execution_digest(self, name):
+        identity = hashlib.sha256(name.encode())
+        scripts = ["phone-session.py"]
+        if name in UI_GROUPS or name in FLOWS:
+            identity.update(flow_digest(self.repo, name).encode())
+            scripts.append("maestro_runner.py")
+        if name == "recovery":
+            scripts.append("device-recovery.py")
+        for script in scripts:
+            path = self.repo / "scripts/android" / script
+            if path.is_file():
+                identity.update(script.encode() + b"\0" + path.read_bytes())
+        return identity.hexdigest()
+
+    def run(self, groups, retry=False):
+        self.require_ready()
+        self.verify_artifacts(specialists=any(group in (*CASES, "recovery") for group in groups))
+        self.connect()
+        outcome = {}
+        for group in groups:
+            previous = self.state["results"].get(group)
+            identity = self.execution_digest(group)
+            if (previous and previous["status"] == "passed" and not retry
+                    and previous.get("flow_sha256") == identity):
+                outcome[group] = {"status": "reused_pass", "log": previous["log"]}
+                continue
+            if group in UI_GROUPS:
+                runner = MaestroRunner(self.repo, self.adb, self.state["fixture"],
+                    self.output / ("ui-" + group), shutil.which("maestro") or shutil.which("maestro.bat") or "maestro")
+                results = runner.run_group(group)
+                for result in results.values():
+                    self.remember_maestro(result)
+                status = next((value["status"] for value in results.values()
+                               if value["status"] != "passed"), "passed")
+                outcome[group] = {"kind": "maestro", "status": status, "flows": results,
+                                  "runner_commit": self.commit,
+                                  "flow_sha256": identity, "log": str(runner.output / "results.json")}
+                self.state["results"][group] = outcome[group]
+                self.save()
+            elif group == "recovery":
+                outcome[group] = self.recovery()
+            else:
+                outcome[group] = self.instrument(group, CASES[group])
+            outcome[group]["flow_sha256"] = identity
+            self.state["results"][group] = outcome[group]
+            self.save()
+            if outcome[group]["status"] in ("environment_blocked", "harness_error"):
+                # Shared prerequisites stop the batch; an isolated UI wait does not.
+                break
+        return outcome
+
+    def recovery(self):
+        # Recovery needs an independent login, never a previous suite's side effects.
+        login = self.instrument("recovery-login", "QuickNoteTest#loginWriteRecreateSaveAndReadBack", visual=True)
+        if login["status"] != "passed":
+            self.state["results"]["recovery"] = login
+            self.save()
+            return login
+        report = self.output / "recovery.json"
+        command = [sys.executable, "-X", "utf8", str(self.repo / "scripts/android/device-recovery.py"),
+                   "--serial", self.adb.serial, "--adb", self.adb.executable,
+                   "--fixture", self.state["fixture"], "--source-root", str(self.repo),
+                   "--output", str(self.output)]
+        result = {"kind": "automation", "started_at": now(), "log": str(self.output / "recovery.log"),
+                  "runner_commit": self.commit, "cleanup_errors": []}
+        try:
+            report.unlink(missing_ok=True)
+            data = self.connection()
+            with tempfile.TemporaryDirectory(prefix="moerise-recovery-login-") as folder:
+                credential = Path(folder) / "connection.json"
+                write_json(credential, {key: data[key] for key in ("origin", "username", "password")})
+                try:
+                    self.adb.run("push", str(credential), CREDENTIAL)
+                    returncode = run_logged(command, result["log"], timeout=600)
+                finally:
+                    try:
+                        self.adb.run("shell", "rm", "-f", CREDENTIAL)
+                    except (CommandError, OSError):
+                        result["cleanup_errors"].append("credential_remove")
+            if report.exists():
+                raw = read_json(report)
+                failure_kind = raw.get("failure", {}).get("category")
+                status = ("passed" if raw["status"] == "succeeded" else
+                          "failed" if failure_kind == "assertion" else
+                          "harness_error" if failure_kind == "harness-error" or raw.get("cleanup_errors")
+                          else "inconclusive")
+                result.update(status="passed" if raw["status"] == "succeeded" else "inconclusive",
+                              cause=None if raw["status"] == "succeeded" else "recovery_evidence",
+                              stages=raw.get("stages", []))
+                result["status"] = status
+            else:
+                result.update(status="harness_error", cause="recovery_report_missing")
+            if returncode and result["status"] == "passed":
+                result.update(status="harness_error", cause="recovery_exit_code")
+        except subprocess.TimeoutExpired:
+            result.update(status="inconclusive", cause="recovery_host_timeout")
+        except (CommandError, OSError, ValueError, KeyError) as error:
+            result.update(status="harness_error", cause=getattr(error, "code", type(error).__name__))
+        if result["cleanup_errors"] and result["status"] == "passed":
+            result.update(status="harness_error", cause="cleanup_error")
+        result["finished_at"] = now()
+        self.state["results"]["recovery"] = result
+        self.save()
+        return result
+
+    def manual(self):
+        self.require_ready()
+        self.verify_artifacts()
+        self.connect()
+        self.adb.run("shell", "am", "start", "-W", "-n", ACTIVITY)
+        return {"status": "manual_ready", "app": "Moerise Fixture", "connection": "USB",
+                "session": str(self.directory), "cleanup": "显式 cleanup 才卸载"}
+
+    def record(self, group, outcome, note):
+        if not self.state or self.state.get("status") == "cleaned":
+            raise ValueError("会话不存在或已清理")
+        self.state.setdefault("manual_results", {})[group] = {
+            "kind": "manual", "status": outcome, "note": note, "recorded_at": now()}
+        self.save()
+        return self.state["manual_results"][group]
+
+    def remember_maestro(self, result):
+        original = self.state.setdefault("maestro_preexisting", {})
+        for package, existed in result.get("drivers_preexisting", {}).items():
+            original.setdefault(package, existed)
+        forwards = self.state.setdefault("maestro_forwards", [])
+        for line in result.get("added_forwards", []):
+            parts = line.split()
+            if len(parts) == 3 and parts[0] == self.adb.serial and parts[1].startswith("tcp:"):
+                if parts[1] not in forwards:
+                    forwards.append(parts[1])
+                self.state.setdefault("maestro_forward_bindings", {})[parts[1]] = parts[2]
+        remote = result.get("remote_test_file")
+        if remote and remote not in self.state["files"]:
+            self.state["files"].append(remote)
+
+    def ui(self, flow, executable=None, note_name=None, retry=False, preparing=False):
+        self.require_ready(preparing=preparing)
+        self.verify_artifacts()
+        key = "maestro:" + flow
+        directory = self.output / ("maestro-" + flow)
+        if flow not in FLOWS:
+            raise ValueError("未知 Maestro 场景")
+        identity = self.execution_digest(flow)
+        previous = self.state["results"].get(key)
+        if (previous and previous["status"] == "passed" and not retry
+                and previous.get("note_name") == note_name and previous.get("flow_sha256") == identity):
+            return {"status": "reused_pass", "log": previous["log"]}
+        self.connect()
+        runner = MaestroRunner(self.repo, self.adb, self.state["fixture"], directory,
+            executable or shutil.which("maestro") or shutil.which("maestro.bat") or "maestro")
+        result = runner.run_flow(flow, note_name)
+        result.update(note_name=note_name, flow_sha256=identity, runner_commit=self.commit)
+        self.remember_maestro(result)
+        self.state["results"][key] = result
+        self.save()
+        return result
+
+    def cleanup(self):
+        if not self.state:
+            raise ValueError("会话不存在")
+        if self.state["serial"] != self.adb.serial:
+            raise ValueError("会话与手机不匹配")
+        if self.state.get("status") == "cleaned":
+            return self.state["cleanup"]
+        if self.adb.run("get-state").strip() != "device":
+            raise CommandError("device_unavailable", "手机尚未连接")
+        self.restore_device_input()
+        results = {}
+        for package in self.state["artifacts"]:
+            if package not in APK_PATHS:
+                continue
+            if self.package_paths(package):
+                text = self.adb.run("uninstall", package, timeout=90)
+                if not re.search(r"^Success\s*$", text, re.M):
+                    raise CommandError("cleanup_failed", "卸载没有返回 Success")
+            results[package] = not bool(self.package_paths(package))
+        self.adb.run("shell", "rm", "-f", CREDENTIAL)
+        for package, preexisting in self.state.get("maestro_preexisting", {}).items():
+            if package in DRIVERS and not preexisting:
+                if self.package_paths(package):
+                    self.adb.run("uninstall", package, timeout=90)
+                results[package] = not bool(self.package_paths(package))
+        if self.state.get("maestro_forwards"):
+            existing = self.adb.run("forward", "--list").splitlines()
+            for mapping, target in self.state.get("maestro_forward_bindings", {}).items():
+                if f"{self.adb.serial} {mapping} {target}" in existing:
+                    self.adb.run("forward", "--remove", mapping)
+        for remote in self.state.get("files", []):
+            if re.fullmatch(r"/sdcard/Download/moerise-maestro-[a-f0-9]{32}\.txt", remote):
+                self.adb.run("shell", "rm", "-f", remote)
+        mapping = f"tcp:{self.state['port']}"
+        if not self.state["reverse_preexisting"]:
+            lines = self.adb.run("reverse", "--list").splitlines()
+            if any(line.split()[-2:] == [mapping, mapping] for line in lines):
+                self.adb.run("reverse", "--remove", mapping)
+        network = self.network()
+        baseline = self.state.get("network_before", network)
+        changed = [key for key in NETWORK_KEYS if network.get(key) != baseline.get(key)]
+        self.state["cleanup"] = {"packages_removed": results, "network_changed": changed,
+                                 "finished_at": now()}
+        self.state["status"] = "cleaned" if all(results.values()) and not changed else "cleanup_attention"
+        self.save()
+        return self.state["cleanup"]
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("action", choices=("prepare", "run", "ui", "manual", "status", "record", "cleanup"))
+    parser.add_argument("--repo", required=True)
+    parser.add_argument("--session", required=True)
+    parser.add_argument("--output", required=True)
+    parser.add_argument("--commit", required=True)
+    parser.add_argument("--adb", required=True)
+    parser.add_argument("--serial", required=True)
+    parser.add_argument("--manifest")
+    parser.add_argument("--fixture")
+    parser.add_argument("--specialists", action="store_true")
+    parser.add_argument("--group", action="append", choices=(*UI_GROUPS, *CASES, "recovery"))
+    parser.add_argument("--retry", action="store_true")
+    parser.add_argument("--outcome", choices=("passed", "failed", "inconclusive"))
+    parser.add_argument("--note", default="")
+    parser.add_argument("--flow", choices=FLOWS)
+    parser.add_argument("--note-name")
+    parser.add_argument("--maestro", default=shutil.which("maestro") or shutil.which("maestro.bat") or "maestro")
+    args = parser.parse_args()
+    session = PhoneSession(args.repo, args.session, args.output, Adb(args.adb, args.serial), args.commit)
+    try:
+        if args.action == "prepare":
+            if not args.manifest or not args.fixture:
+                parser.error("prepare 需要 --manifest 和 --fixture")
+            result = session.prepare(args.manifest, args.fixture, args.specialists)
+        elif args.action == "status":
+            result = session.state or {"status": "absent"}
+        elif args.action == "run":
+            groups = args.group or list(DEFAULT_UI_GROUPS)
+            result = session.run(groups, args.retry)
+        elif args.action == "record":
+            if not args.group or len(args.group) != 1 or not args.outcome:
+                parser.error("record 需要一个 --group 和 --outcome")
+            result = session.record(args.group[0], args.outcome, args.note)
+        elif args.action == "ui":
+            if not args.flow:
+                parser.error("ui 需要 --flow")
+            result = session.ui(args.flow, args.maestro, args.note_name, args.retry)
+        else:
+            result = getattr(session, args.action)()
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        if args.action == "run" and any(
+                value.get("status") not in ("passed", "reused_pass") for value in result.values()):
+            return 1
+        if args.action == "ui" and result["status"] not in ("passed", "reused_pass"):
+            return 1
+        if args.action == "cleanup" and session.state["status"] != "cleaned":
+            return 1
+        return 0
+    except (CommandError, ValueError, OSError) as error:
+        report = {"status": "environment_blocked" if isinstance(error, CommandError) else "harness_error",
+                  "cause": getattr(error, "code", type(error).__name__), "message": str(error)}
+        write_json(Path(args.output) / "session-error.json", report)
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -1,0 +1,89 @@
+appId: ${APP_ID}
+name: Language roundtrip from system
+onFlowComplete:
+- takeScreenshot:
+    path: ${SCREENSHOT_PREFIX}-language-from-system-final
+    label: Capture the isolated test UI
+---
+- assertVisible:
+    text: 跟随系统|Follow system
+    label: Check the expected UI state
+    childOf:
+      id: settings_language
+- tapOn:
+    id: settings_language
+    enabled: true
+    label: Activate the specified control
+- extendedWaitUntil:
+    visible:
+      text: English
+    timeout: 15000
+    label: Wait for the expected UI state
+- tapOn:
+    enabled: true
+    text: English
+    label: Activate the specified control
+- extendedWaitUntil:
+    visible:
+      text: English
+      childOf:
+        id: settings_language
+    timeout: 15000
+    label: Wait for the expected UI state
+- assertVisible:
+    text: 语言|Language
+    label: Check the expected UI state
+- tapOn:
+    id: settings_language
+    enabled: true
+    label: Activate the specified control
+- extendedWaitUntil:
+    visible:
+      text: 简体中文
+    timeout: 15000
+    label: Wait for the expected UI state
+- tapOn:
+    enabled: true
+    text: 简体中文
+    label: Activate the specified control
+- extendedWaitUntil:
+    visible:
+      text: 简体中文
+      childOf:
+        id: settings_language
+    timeout: 15000
+    label: Wait for the expected UI state
+- assertVisible:
+    text: 语言|Language
+    label: Check the expected UI state
+- tapOn:
+    id: settings_language
+    enabled: true
+    label: Activate the specified control
+- extendedWaitUntil:
+    visible:
+      text: 跟随系统|Follow system
+    timeout: 15000
+    label: Wait for the expected UI state
+- tapOn:
+    enabled: true
+    text: 跟随系统|Follow system
+    label: Activate the specified control
+- extendedWaitUntil:
+    visible:
+      text: 跟随系统|Follow system
+      childOf:
+        id: settings_language
+    timeout: 15000
+    label: Wait for the expected UI state
+- assertVisible:
+    text: 语言|Language
+    label: Check the expected UI state
+- takeScreenshot:
+    path: ${SCREENSHOT_PREFIX}-language-restored-system
+    label: Capture the isolated test UI
+- assertVisible:
+    text: 跟随系统|Follow system
+    label: Check the expected UI state
+    childOf:
+      id: settings_language

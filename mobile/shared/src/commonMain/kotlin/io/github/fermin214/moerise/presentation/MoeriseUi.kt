@@ -83,7 +83,10 @@ fun WebSearchPanel(query: SearchQuery, strings: Strings, onChange: (SearchQuery)
                         modifier = Modifier.weight(1f).heightIn(min = 44.dp).focusRequester(focus).testTag("search_query")
                             .semantics { contentDescription = strings.text("搜索笔记", "Search notes") }
                             .onPreviewKeyEvent { if (it.key == Key.Escape && it.type == KeyEventType.KeyDown) { onClose(); true } else false },
-                        decorationBox = { input -> Box(contentAlignment = androidx.compose.ui.Alignment.CenterStart) {
+                        decorationBox = { input -> Box(
+                            modifier = Modifier.testTag(if (query.text.isEmpty()) "search_query_empty" else "search_query_filled"),
+                            contentAlignment = androidx.compose.ui.Alignment.CenterStart,
+                        ) {
                             if (query.text.isEmpty()) Text(strings.text("搜索笔记", "Search notes"), color = MoeriseColors.Muted)
                             input()
                         } })
@@ -101,7 +104,8 @@ fun WebSearchPanel(query: SearchQuery, strings: Strings, onChange: (SearchQuery)
                     Text(when (query.mode) { "semantic" -> strings.text("语义", "Semantic"); "hybrid" -> strings.text("混合", "Hybrid"); else -> strings.text("关键词", "Keyword") })
                     WebIcon(WebIcon.ChevronRight, modifier = Modifier.size(14.dp))
                 }
-                DropdownMenu(modeMenu, onDismissRequest = { modeMenu = false }) {
+                DropdownMenu(modeMenu, onDismissRequest = { modeMenu = false },
+                    modifier = Modifier.platformTestTags()) {
                     listOf("keyword" to strings.text("关键词", "Keyword"), "semantic" to strings.text("语义", "Semantic"), "hybrid" to strings.text("混合", "Hybrid")).forEach { (value, label) ->
                         DropdownMenuItem(text = { Text(label) }, onClick = { modeMenu = false; onChange(query.copy(mode = value)) })
                     }

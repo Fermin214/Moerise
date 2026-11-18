@@ -257,7 +257,19 @@ try {
   await waitReady(coreOrigin, '/health/ready');
   await applyModelPolicy(coreOrigin, origin, username, password);
   web = createWebServer({ coreOrigin, publicOrigin: origin,
+    requestLogger: ({ time, event, method, status, elapsed_ms }) =>
+      console.info(JSON.stringify({ source: 'fixture_web', time, event, method, status, elapsed_ms })),
     dist: resolve(repo, process.env.MOERISE_ANDROID_WEB_DIST || 'web/src') });
+  web.on('request', (req, res) => {
+    const family = /^\/api\/app\/v1\/(search|notes)(?:[/?]|$)/.exec(req.url)?.[1];
+    if (!family) return;
+    const started = performance.now();
+    res.once('finish', () => console.info(JSON.stringify({
+      source: 'fixture_web', time: new Date().toISOString(), event: 'api_response',
+      family, method: req.method, status: res.statusCode,
+      elapsed_ms: Math.round(performance.now() - started),
+    })));
+  });
   web.listen(webPort, '127.0.0.1'); await once(web, 'listening');
   const fixture = { origin, webPort, username, password, sourceOrigin, memosProxyOrigin, sourceToken: pat, modelStats,
     ...(corpusMetadata ? { corpus: corpusMetadata } : {}),

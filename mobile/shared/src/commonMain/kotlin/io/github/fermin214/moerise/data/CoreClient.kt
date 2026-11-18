@@ -16,13 +16,18 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
+import kotlinx.io.EOFException
+import kotlinx.io.IOException
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import kotlin.time.TimeSource
 
 expect fun platformHttpEngine(): HttpClientEngine
+internal expect suspend fun discardIdleHttpConnections(engine: HttpClientEngine)
+internal expect fun logClientFailure(operation: String, error: Exception)
 
 val CoreJson = Json { ignoreUnknownKeys = true; encodeDefaults = true }
 const val CORE_REQUEST_TIMEOUT_MILLIS = 65_000L
@@ -31,7 +36,7 @@ data class RemoteLogout(val cookie: String?, val csrf: String?)
 class CoreClient(
     val origin: String,
     private val cookies: SessionCookies,
-    engine: HttpClientEngine = platformHttpEngine(),
+    private val engine: HttpClientEngine = platformHttpEngine(),
     private val onUnauthorized: () -> Unit = {},
     private val onRequest: () -> Unit = {},
 ) : AutoCloseable {
@@ -66,7 +71,9 @@ class CoreClient(
     suspend fun session(): SessionIdentity = sessionLock.withLock { refreshSession() }
 
     private suspend fun refreshSession(): SessionIdentity {
-        val next = CoreJson.decodeFromString<SessionIdentity>(send(HttpMethod.Get, "/session"))
+        val next = withTimeout(CORE_REQUEST_TIMEOUT_MILLIS) {
+            CoreJson.decodeFromString<SessionIdentity>(send(HttpMethod.Get, "/session"))
+        }
         val key = next.accountKey(origin)
         if (expectedAccount != null && expectedAccount != key) {
             identity = null
@@ -188,26 +195,50 @@ class CoreClient(
     }
 
     private suspend fun send(method: HttpMethod, path: String, body: String? = null, csrf: String? = null, idempotencyKey: String? = null, cookie: String? = null): String {
+        val started = TimeSource.Monotonic.markNow()
+        val readOnly = method == HttpMethod.Get ||
+            method == HttpMethod.Post && path in setOf("/search", "/chat-materials/resolve")
+        if (!readOnly) discardIdleHttpConnections(engine)
+        try {
+            return sendOnce(method, path, body, csrf, idempotencyKey, cookie)
+        } catch (error: IOException) {
+            currentCoroutineContext().ensureActive()
+            val remaining = CORE_REQUEST_TIMEOUT_MILLIS - started.elapsedNow().inWholeMilliseconds
+            // 只读请求遇到 EOF 时清除失效的空闲连接再重连；写操作不重放，两个请求共用时限。
+            if (!readOnly || remaining <= 0 ||
+                generateSequence<Throwable>(error) { it.cause }.take(5).none { it is EOFException }) throw error
+            discardIdleHttpConnections(engine)
+            return sendOnce(method, path, body, csrf, idempotencyKey, cookie, remaining)
+        }
+    }
+
+    private suspend fun sendOnce(method: HttpMethod, path: String, body: String?, csrf: String?, idempotencyKey: String?, cookie: String?, timeoutMillis: Long = CORE_REQUEST_TIMEOUT_MILLIS): String {
         require(path.startsWith("/") && !path.startsWith("//") && '#' !in path)
         onRequest()
-        val response = client.request("$origin/api/app/v1$path") {
-            this.method = method
-            if (method != HttpMethod.Get && method != HttpMethod.Head) {
-                header(HttpHeaders.Origin, origin)
-                csrf?.let { header("X-CSRF-Token", it) }
+        try {
+            val response = client.request("$origin/api/app/v1$path") {
+                this.method = method
+                timeout { requestTimeoutMillis = timeoutMillis; socketTimeoutMillis = timeoutMillis }
+                if (method != HttpMethod.Get && method != HttpMethod.Head) {
+                    header(HttpHeaders.Origin, origin)
+                    csrf?.let { header("X-CSRF-Token", it) }
+                }
+                idempotencyKey?.let { header("Idempotency-Key", it) }
+                cookie?.let { header(HttpHeaders.Cookie, it) }
+                if (body != null) { contentType(ContentType.Application.Json); setBody(body) }
             }
-            idempotencyKey?.let { header("Idempotency-Key", it) }
-            cookie?.let { header(HttpHeaders.Cookie, it) }
-            if (body != null) { contentType(ContentType.Application.Json); setBody(body) }
+            val text = response.bodyAsText()
+            if (response.status.value !in 200..299) {
+                val detail = runCatching { CoreJson.decodeFromString<ErrorEnvelope>(text).error }
+                    .getOrElse { ApiError("HTTP_${response.status.value}") }
+                if (response.status.value == 401) { identity = null; onUnauthorized() }
+                throw CoreException(response.status.value, detail)
+            }
+            return text
+        } catch (error: IOException) {
+            logClientFailure("${method.value} ${path.substringBefore('?').split('/')[1]}", error)
+            throw error
         }
-        val text = response.bodyAsText()
-        if (response.status.value !in 200..299) {
-            val detail = runCatching { CoreJson.decodeFromString<ErrorEnvelope>(text).error }
-                .getOrElse { ApiError("HTTP_${response.status.value}") }
-            if (response.status.value == 401) { identity = null; onUnauthorized() }
-            throw CoreException(response.status.value, detail)
-        }
-        return text
     }
 
     suspend fun clearLocalSession(): RemoteLogout {
