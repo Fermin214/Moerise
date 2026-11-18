@@ -351,17 +351,16 @@ scripts/android/release.sh --unsigned
 [Android 第三方许可](android/THIRD_PARTY_NOTICES.md)。更新依赖后重新导出清单并执行
 `python3 scripts/android/licenses.py`；CI 使用 `--check` 比较。
 
-Android 标签采用 `android-v*`。`android-release.yml` 在标签事件中读取
+Android 标签采用 `android-v*`。合并后 `Main CI` 从 GitHub Actions Secrets 读取
 `ANDROID_SIGNING_KEYSTORE`（Base64 keystore）、`ANDROID_KEY_ALIAS`、
-`ANDROID_STORE_PASSWORD`、`ANDROID_KEY_PASSWORD`，校验标签与 APK 版本后发布 Android Release。
-发行构建在 GitHub Actions 执行，并在 API 26 模拟器使用签名 APK 检查登录、笔记保存读回、
-应用重开、附件字节读回和洞察选材。隔离 HTTPS 的临时 CA 安装到模拟器系统信任库，
-应用使用发行版证书校验与 Secure Cookie；结果归档为 `android-release-checks`。
-合并前可推送 `android-rc-v<版本>-<提交号>` 标签，使用同一发行密钥生成候选包并执行
-API 26 发行检查；候选标签只上传构建产物，不创建 GitHub Release。
-Android 检查在 API 36 模拟器运行登录、记录、编辑、草稿恢复与离线队列流程。
-手动 workflow 默认构建 unsigned 包，可通过 `sign` 输入选择签名。APK、SHA-256、
-构建 JSON 和许可 ZIP 用作发行附件，mapping 保存在构建产物中。
+`ANDROID_STORE_PASSWORD` 和 `ANDROID_KEY_PASSWORD`。发行构建在 API 26 模拟器使用签名 APK
+检查登录、笔记保存读回、应用重开、附件字节读回和洞察选材。隔离 HTTPS 的临时 CA 安装到
+模拟器系统信任库，应用使用发行版证书校验与 Secure Cookie。结果归档为 `android-release-checks`。
+`Publish release` 校验该次构建的 APK 摘要与冒烟结果一致，使用原产物发布 APK、SHA-256、
+构建 JSON 和许可 ZIP。具体步骤见[发布](DEVELOPMENT.md#发布)。
+
+PR 的 Android 检查在 API 36 模拟器运行登录、记录、编辑、草稿恢复与离线队列流程。
+`Android release` 手动运行默认构建 unsigned 包，也可以在 `main` 上选择签名构建。
 
 ### Windows 发行入口
 

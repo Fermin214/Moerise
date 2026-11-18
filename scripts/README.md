@@ -77,8 +77,8 @@ node --test scripts/lib/*.test.mjs
 Android 工程文件与生成产物的归属见[Android 文件与产物](../docs/ANDROID.md#文件与产物)。
 
 GitHub Actions 的 Android 检查通过 `android/ci-device-check.sh` 启动隔离 Core/Memos，
-复用设备用例验证登录、编辑、草稿和离线恢复；`android-release.yml` 构建签名 APK，
-检查最低系统版本安装与启动，再发布发行附件。
+复用设备用例验证登录、编辑、草稿和离线恢复。`Main CI` 构建签名 APK，检查最低系统版本
+的安装和应用流程。`Publish release` 将通过检查的 APK 和校验文件发布到对应版本。
 
 设备与构建入口见[设备检查](../docs/android/DEVICE-CHECKS.md)，发行与升级见
 [安装说明](../docs/android/INSTALL.md)。Windows 使用 PowerShell 7.2 以上和 JDK 17。

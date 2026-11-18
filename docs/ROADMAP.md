@@ -308,7 +308,7 @@ Android 代码单独使用 `.github/workflows/android-checks.yml`；涉及 Andro
 
 #### 1.11 APK 发行与后续扩展
 
-- Android 发行标签使用 `android-v0.1.0`，专用 `.github/workflows/android-release.yml` 匹配 `android-v*`，与服务端 `v*` 标签分开。
+- Android 发行标签使用 `android-v0.1.0`，与服务端 `v*` 标签分开。发行流程见[开发指南](DEVELOPMENT.md#发布)。
 - APK 文件名为 `moerise-android-v0.1.0.apk`，至少覆盖 arm64-v8a；x86_64 用于设备自动化。M0 检查依赖 ABI，M8 固定发行 ABI 范围。
 - 签名密钥从 CI Secret 或仓库外的签名档案读取，并保留可恢复的备份；同一应用后续版本沿用签名身份并递增 `versionCode`。使用 `apksigner verify` 检查发行签名。
 - 发行包包含 APK、SHA-256、安装/升级说明与第三方许可。首版使用新安装数据和完整 schema 1；后续正式版本验证覆盖升级保留草稿、未确认请求、会话和语言偏好，结构变化时新增数据库迁移。

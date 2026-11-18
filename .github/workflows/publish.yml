@@ -1,0 +1,59 @@
+name: Publish release
+
+on:
+  workflow_dispatch:
+    inputs:
+      main_run:
+        description: Successful Main CI run ID
+        required: true
+        type: string
+      component:
+        description: Release to publish
+        required: true
+        type: choice
+        options: [core-web, android, both]
+
+permissions:
+  actions: read
+  contents: write
+  packages: write
+
+concurrency:
+  group: publish-release
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      MAIN_RUN: ${{ inputs.main_run }}
+      COMPONENT: ${{ inputs.component }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+      - name: Confirm source run and download its artifacts
+        run: |
+          [[ "$MAIN_RUN" =~ ^[0-9]+$ ]]
+          workflow=$(gh api "repos/$GH_REPO/actions/workflows/main-smoke.yml" --jq .id)
+          sha=$(gh api "repos/$GH_REPO/actions/runs/$MAIN_RUN" | jq -er --arg repo "$GH_REPO" --argjson workflow "$workflow" '
+            select(.conclusion == "success" and .event == "push" and .head_branch == "main"
+              and .head_repository.full_name == $repo and .workflow_id == $workflow) | .head_sha')
+          git merge-base --is-ancestor "$sha" HEAD
+          echo "RELEASE_SHA=$sha" >> "$GITHUB_ENV"
+          if [[ "$COMPONENT" != android ]]; then
+            gh run download "$MAIN_RUN" --dir "$RUNNER_TEMP/release" -p 'linux-*' -p 'image-*'
+          fi
+          if [[ "$COMPONENT" != core-web ]]; then
+            gh run download "$MAIN_RUN" --dir "$RUNNER_TEMP/release/android" -n android-release -n android-release-checks
+          fi
+      - name: Publish verified packages and image tags
+        run: |
+          if [[ "$COMPONENT" != android ]]; then
+            printf '%s' "$GH_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+          fi
+          python3 scripts/release/publish.py "$RUNNER_TEMP/release" "$RELEASE_SHA" "$COMPONENT"
