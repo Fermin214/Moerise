@@ -10,11 +10,17 @@ onFlowComplete:
     label: Enter the signed-in home without clearing data
 - scrollUntilVisible:
     element:
-      id: note_card_${NOTE_NAME}
+      id: note_more_${NOTE_NAME}
     direction: DOWN
     timeout: 65000
     centerElement: true
-    label: Locate the specified control without coordinates
+    label: Bring the note menu button clear of the viewport edge
+- extendedWaitUntil:
+    visible:
+      id: note_more_${NOTE_NAME}
+      enabled: true
+    timeout: 15000
+    label: Wait for the note menu button
 - tapOn:
     id: note_more_${NOTE_NAME}
     enabled: true
@@ -62,16 +68,17 @@ onFlowComplete:
     label: Wait for the expected UI state
 - scrollUntilVisible:
     element:
-      id: note_card_${NOTE_NAME}
+      id: note_more_${NOTE_NAME}
     direction: DOWN
     timeout: 65000
     centerElement: true
-    label: Locate the specified control without coordinates
+    label: Bring the archived note menu button clear of the viewport edge
 - extendedWaitUntil:
     visible:
-      id: note_card_${NOTE_NAME}
+      id: note_more_${NOTE_NAME}
+      enabled: true
     timeout: 15000
-    label: Wait for the expected UI state
+    label: Wait for the archived note menu button
 - takeScreenshot:
     path: ${SCREENSHOT_PREFIX}-archived
     label: Capture the isolated test UI

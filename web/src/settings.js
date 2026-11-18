@@ -1,3 +1,5 @@
+import { el, button } from './dom.js';
+import { formSignature } from './forms.js';
 import { l, setText, setAttr, resolveText, locale, languagePreference, setLanguage } from './i18n.js';
 const fields = {
   review: ['count', 'min_age_hours', 'recent_days', 'include_archived'],
@@ -14,8 +16,8 @@ const secretLabels = {
   encrypt_key: 'Encrypt Key', webhook_url: 'Webhook URL', webhook_secret: 'Webhook Secret',
   bot_token: 'Telegram Bot Token',
 };
-function invalid(message) {
-  return Object.assign(new Error(resolveText(message)), { code: 'SETTINGS_INPUT_INVALID', localizedMessage: message });
+function invalid(message, field) {
+  return Object.assign(new Error(resolveText(message)), { code: 'SETTINGS_INPUT_INVALID', localizedMessage: message, field });
 }
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 
@@ -51,26 +53,18 @@ export function buildSettingsPatch(snapshot, draft, operations = {}) {
   return { version: snapshot.version, settings, secrets };
 }
 
-function el(tag, className = '', text = '') {
-  const node = document.createElement(tag);
-  node.className = className;
-  if (text) setText(node, text);
-  return node;
-}
-function button(text, className, action) {
-  const node = el('button', className, text);
-  node.type = 'button';
-  node.addEventListener('click', action);
-  return node;
-}
-
-export function createSettingsPage({ sessionRequest, handleFailure, onSaved = () => {} }) {
+export function createSettingsPage({ sessionRequest, handleFailure, onSaved = () => {}, onDirtyChange = () => {},
+  confirmDiscard = () => Promise.resolve(true) }) {
   let root, snapshot, form, error, status, reload, save, controller, pendingBody;
+  let baseline = '';
   let sequence = 0, active = false, busy = false, conflict = false;
   let controls = new Map(), secretControls = new Map(), times = [];
   let modelViews = new Map(), modelController, modelTimer, indexText, indexProgress;
   let activeTab = 'general', tabs = new Map(), panels = new Map();
   const checks = new Map();
+  let lifecycle = null;
+  const hasChanges = () => !!form && !!baseline && formSignature(form) !== baseline;
+  const reloadSettings = async () => { if (await confirmDiscard(hasChanges())) return load(); };
 
   function abortModels() {
     clearTimeout(modelTimer); modelTimer = null;
@@ -86,9 +80,9 @@ export function createSettingsPage({ sessionRequest, handleFailure, onSaved = ()
     pendingBody = null;
   }
   function destroy() {
-    active = false; sequence++; controller?.abort(); abortModels(); clearSecrets();
+    active = false; sequence++; lifecycle?.abort(); controller?.abort(); abortModels(); clearSecrets();
     root?.remove(); root = snapshot = form = controller = null;
-    controls.clear(); secretControls.clear(); modelViews.clear(); times = [];
+    controls.clear(); secretControls.clear(); modelViews.clear(); times = []; baseline = ''; onDirtyChange();
   }
   function message(text = '') {
     setText(error, text); error.hidden = !text;
@@ -103,6 +97,19 @@ export function createSettingsPage({ sessionRequest, handleFailure, onSaved = ()
     };
     if (messages[err.code]) message(messages[err.code]);
     else handleFailure(error, err);
+    if (!active || !err.field) return;
+    const panel = err.field.closest('[role="tabpanel"]');
+    if (panel) selectTab([...panels].find(([, node]) => node === panel)[0]);
+    error.id = 'settings-error';
+    err.field.setAttribute('aria-invalid', 'true');
+    const described = err.field.getAttribute('aria-describedby') || '';
+    err.field.setAttribute('aria-describedby', `${described} ${error.id}`.trim());
+    err.field.focus();
+    err.field.addEventListener('input', () => {
+      err.field.removeAttribute('aria-invalid');
+      if (described) err.field.setAttribute('aria-describedby', described);
+      else err.field.removeAttribute('aria-describedby');
+    }, { once: true });
   }
   function selectTab(id, focus = false) {
     activeTab = id;
@@ -132,7 +139,10 @@ export function createSettingsPage({ sessionRequest, handleFailure, onSaved = ()
     const wrapper = el('div', 'row settings-row'), title = el('div', 'settings-label');
     const caption = el('label', '', label);
     caption.htmlFor = control.id; title.append(caption);
-    if (hint) title.append(el('span', 'sub', hint));
+    if (hint) {
+      const description = el('span', 'sub', hint); description.id = `${control.id}-hint`;
+      control.setAttribute('aria-describedby', description.id); title.append(description);
+    }
     wrapper.append(title, control); parent.append(wrapper);
   }
   function field(parent, path, label, { type = 'text', options, min, max, step, hint = '' } = {}) {
@@ -197,10 +207,10 @@ export function createSettingsPage({ sessionRequest, handleFailure, onSaved = ()
       else draft[group] = value;
     }
     try { new Intl.DateTimeFormat('zh-CN', { timeZone: draft.timezone }).format(); }
-    catch { throw invalid(l("请填写有效的 IANA 时区，例如 Asia/Hong_Kong。")); }
+    catch { throw invalid(l("请填写有效的 IANA 时区，例如 Asia/Hong_Kong。"), controls.get('timezone').input); }
     const clocks = times.map(input => input.value);
     if (!clocks.length || clocks.some(clock => !/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(clock)) ||
-        new Set(clocks).size !== clocks.length) throw invalid(l("请填写至少一个有效推送时段，时段不能重复。"));
+        new Set(clocks).size !== clocks.length) throw invalid(l("请填写至少一个有效推送时段，时段不能重复。"), times[0]);
     const previous = snapshot.settings.notifications;
     const previousClocks = previous.times;
     if (!same(clocks, previousClocks)) {
@@ -214,7 +224,7 @@ export function createSettingsPage({ sessionRequest, handleFailure, onSaved = ()
       const line = el('div', 'settings-time'), input = el('input');
       input.type = 'time'; input.required = true; input.value = value;
       const remove = button(l("移除"), 'ghost', () => {
-        times = times.filter(item => item !== input); line.remove(); update();
+        times = times.filter(item => item !== input); line.remove(); update(); onDirtyChange();
       });
       line.append(input, remove); list.append(line); times.push(input); update();
     }
@@ -225,7 +235,7 @@ export function createSettingsPage({ sessionRequest, handleFailure, onSaved = ()
       });
       append.disabled = times.length >= 24;
     }
-    const append = button(l("添加时段"), 'ghost', () => add());
+    const append = button(l("添加时段"), 'ghost', () => { add(); onDirtyChange(); });
     const clocks = snapshot.settings.notifications.times;
     for (const clock of clocks) add(clock);
     box.append(list, append, el('span', 'sub', l("时段数即每日推送次数；每个时段分配不同笔记。")));
@@ -276,7 +286,7 @@ export function createSettingsPage({ sessionRequest, handleFailure, onSaved = ()
     failure({ code: 'SETTINGS_CONFLICT' });
   }
   async function refreshModels() {
-    if (!active || busy || conflict || modelController) return;
+    if (!active || busy || conflict || modelController || document.hidden) return;
     clearTimeout(modelTimer); modelTimer = null;
     const ticket = sequence, requestController = new AbortController();
     modelController = requestController;
@@ -306,7 +316,7 @@ export function createSettingsPage({ sessionRequest, handleFailure, onSaved = ()
     } finally {
       if (modelController === requestController) {
         modelController = null;
-        if (active && sequence === ticket && !conflict) modelTimer = setTimeout(refreshModels, 5000);
+        if (active && sequence === ticket && !conflict && !document.hidden) modelTimer = setTimeout(refreshModels, 5000);
       }
     }
   }
@@ -423,6 +433,7 @@ export function createSettingsPage({ sessionRequest, handleFailure, onSaved = ()
     prompt.rows = 7;
     const restore = button(l("恢复默认"), 'ghost', () => {
       prompt.value = snapshot.default_insight_prompt; setText(status, l("已恢复默认 Prompt，保存后生效。"));
+      onDirtyChange();
     });
     restore.disabled = typeof snapshot.default_insight_prompt !== 'string'; insights.append(restore);
     const channel = section('channel', l("消息渠道"));
@@ -467,14 +478,15 @@ export function createSettingsPage({ sessionRequest, handleFailure, onSaved = ()
     error = el('p', 'error sub'); error.setAttribute('role', 'alert'); error.hidden = true;
     status = el('p', 'sub'); status.setAttribute('role', 'status');
     save = el('button', 'save', l("保存设置")); save.type = 'submit';
-    reload = button(l("重新加载设置"), 'ghost', load);
+    reload = button(l("重新加载设置"), 'ghost', reloadSettings);
     footer.append(error, status, reload, save); form.append(footer);
-    root.replaceChildren(form); busy = conflict = false;
+    root.replaceChildren(form); busy = conflict = false; baseline = formSignature(form); onDirtyChange();
     selectTab(activeTab);
     updateChecks();
   }
   async function load() {
     const ticket = ++sequence; controller?.abort(); abortModels(); clearSecrets(); controller = new AbortController();
+    form = null; baseline = ''; onDirtyChange();
     busy = true; conflict = false;
     root.replaceChildren(el('p', 'sub', l("正在加载设置…")));
     root.setAttribute('aria-busy', 'true');
@@ -490,7 +502,7 @@ export function createSettingsPage({ sessionRequest, handleFailure, onSaved = ()
     } catch (err) {
       if (!active || sequence !== ticket) return;
       error = el('p', 'error sub'); error.setAttribute('role', 'alert');
-      root.replaceChildren(error, button(l("重新加载设置"), 'ghost', load)); failure(err);
+      root.replaceChildren(error, button(l("重新加载设置"), 'ghost', reloadSettings)); failure(err);
     } finally {
       if (active && sequence === ticket) {
         busy = false; root.setAttribute('aria-busy', 'false');
@@ -539,6 +551,7 @@ export function createSettingsPage({ sessionRequest, handleFailure, onSaved = ()
         for (const input of locked) input.disabled = false;
         form.setAttribute('aria-busy', 'false'); save.disabled = conflict; reload.disabled = false;
         updateChecks();
+        onDirtyChange();
         if (!conflict) refreshModels();
       }
     }
@@ -546,9 +559,15 @@ export function createSettingsPage({ sessionRequest, handleFailure, onSaved = ()
   return {
     mount(container) {
       destroy(); active = true;
+      lifecycle = new AbortController();
+      document.addEventListener('visibilitychange', () => {
+        if (document.hidden) { clearTimeout(modelTimer); modelTimer = null; }
+        else refreshModels();
+      }, { signal: lifecycle.signal });
       root = el('div', 'settings-page'); root.id = 'settings-page'; container.append(root);
       return load();
     },
     destroy,
+    hasChanges,
   };
 }

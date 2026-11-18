@@ -1,35 +1,32 @@
-import { l, setText, setAttr, resolveText, locale, localize, monthLabel, weekdays } from './i18n.js';
+import { l, setText, setAttr, resolveText, locale, localize } from './i18n.js';
 import { errorMessage as errorText } from './errors.js';
-import { renderMarkdown } from './markdown.js';
+import { createStreamRenderer } from './stream-markdown.js';
 import { readChatStream } from './chat-stream.js';
+import { el, button } from './dom.js';
+import { createModal } from './modal.js';
+import { bindMenu } from './menus.js';
+import { createMaterialPicker } from './material-picker.js';
 
 const uuid = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
 const chars = value => [...(value || '')].length;
-const date = (year, month, day) => `${String(year).padStart(4, '0')}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
-const nextDate = value => new Date(Date.parse(`${value}T12:00:00Z`) + 86400000).toISOString().slice(0, 10);
-function el(tag, className = '', text = '') {
-  const node = document.createElement(tag); node.className = className; setText(node, text); return node;
-}
-function button(text, className, action) {
-  const node = el('button', className, text); node.type = 'button'; node.addEventListener('click', action); return node;
-}
-function arrow(node, path) {
-  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-  svg.setAttribute('class', 'i'); svg.setAttribute('viewBox', '0 0 24 24'); svg.setAttribute('aria-hidden', 'true');
-  const line = document.createElementNS(svg.namespaceURI, 'path'); line.setAttribute('d', path); svg.append(line); node.append(svg);
-  return node;
-}
 
-export function createInsightsPage({ sessionRequest, csrfToken, renewCSRF, handleFailure, openNote, navigate, closeMenus, replaceURL, today, formatTime, onSaved }) {
-  let root, active = false, chat = null, busy = false, materialOpen = true, picker = null;
+export function createInsightsPage({ sessionRequest, csrfToken, renewCSRF, handleFailure, openNote, navigate, closeMenus, replaceURL, today, formatTime, onSaved, onDirtyChange = () => {} }) {
+  let root, active = false, chat = null, busy = false, picker = null;
   let selected = new Map(), pendingCreate = null, pendingUpdate = null, pendingGenerate = null, controller = null, selectionController = null, pollTimer = null;
   let running = false, conflicted = false, sourceWarning = '', disposed = 0;
   let stopping = false, deleting = false, generationDone = null, historyDialog = null;
-  let renderFrame = null;
+  let renderTimer = null, lifecycle = null;
+  let characterLimit = 20000;
   const saving = new Map(), turnNodes = new Map();
   const find = name => root.querySelector(`[data-chat="${name}"]`);
   const current = ticket => active && ticket === disposed;
   const namesEqual = (a, b) => a.length === b.length && a.every((name, index) => name === b[index]);
+  function hasChanges() {
+    if (!root) return false;
+    const acknowledged = pendingGenerate && chat?.turns.some(turn => turn.request_id === pendingGenerate.request_id);
+    const questionSaved = acknowledged && pendingGenerate.kind === 'question' && find('ask').value === pendingGenerate.content;
+    return (!!find('ask').value.trim() && !questionSaved) || (!!pendingGenerate && !acknowledged) || !!picker?.hasChanges();
+  }
 
   function warning(text = '') {
     if (!active) return;
@@ -60,7 +57,7 @@ export function createInsightsPage({ sessionRequest, csrfToken, renewCSRF, handl
     if (!active) return;
     running = !!chat?.turns?.some(turn => turn.assistant.status === 'running');
     root.setAttribute('aria-busy', String(busy || running || stopping || deleting));
-    const over = [...selected.values()].reduce((sum, note) => sum + chars(note.content), 0) > 20000;
+    const over = [...selected.values()].reduce((sum, note) => sum + chars(note.content), 0) > characterLimit;
     const changed = chat?.materials.some(ref => selected.get(ref.name)?.source_hash !== ref.source_hash);
     for (const node of root.querySelectorAll('[data-generate]')) {
       node.disabled = busy || running || stopping || deleting || conflicted || !selected.size || over || changed || (!!pendingGenerate && node.dataset.generate !== pendingGenerate.kind);
@@ -77,9 +74,8 @@ export function createInsightsPage({ sessionRequest, csrfToken, renewCSRF, handl
   function renderMaterials() {
     if (!active) return;
     const count = [...selected.values()].reduce((sum, note) => sum + chars(note.content), 0);
-    setText(find('material-toggle'), l("材料 · {0} 条 · {1} / 20000 字 · {2}", { 0: selected.size, 1: count, 2: materialOpen ? l("收起") : l("展开") }));
-    find('materials').hidden = !materialOpen;
-    find('over').hidden = count <= 20000;
+    setText(find('material-toggle'), l("材料 · {0} 条 · {1} / {2} 字", { 0: selected.size, 1: count, 2: characterLimit }));
+    find('over').hidden = count <= characterLimit;
     const list = find('materials'); list.replaceChildren();
     for (const note of selected.values()) {
       const chip = el('span', 'tag insight-material');
@@ -103,7 +99,7 @@ export function createInsightsPage({ sessionRequest, csrfToken, renewCSRF, handl
   }
   function renderTurns() {
     if (!active) return;
-    if (renderFrame !== null) { cancelAnimationFrame(renderFrame); renderFrame = null; }
+    if (renderTimer !== null) { clearTimeout(renderTimer); renderTimer = null; }
     const list = find('messages');
     const turns = chat?.turns || [];
     if (!turns.length) {
@@ -143,15 +139,16 @@ export function createInsightsPage({ sessionRequest, csrfToken, renewCSRF, handl
           finally { if (saving.get(turn.id) === task) saving.delete(turn.id); }
         });
         const actions = el('div'); actions.append(action); group.append(content, actions);
-        entry = { user, group, content, action, turn, text: null };
+        entry = { user, group, content, action, turn, text: null, status: '', markdown: createStreamRenderer(content) };
         turnNodes.set(turn.id, entry);
       }
       entry.turn = turn;
       const question = turn.kind === 'insight' ? l("一键洞察") : turn.user.content;
       if (entry.user.textContent !== question) setText(entry.user, question);
       const content = turn.assistant.content || '';
-      if (entry.text !== content) {
-        entry.content.replaceChildren(renderMarkdown(content, { attachments: [] })); entry.text = content;
+      if (entry.text !== content || entry.status !== turn.assistant.status) {
+        entry.markdown.render(content, turn.assistant.status === 'running');
+        entry.text = content; entry.status = turn.assistant.status;
       }
       const label = turn.assistant.saved_name ? l("已保存为笔记") : l("保存为笔记");
       if (entry.action.textContent !== label) setText(entry.action, label);
@@ -168,7 +165,7 @@ export function createInsightsPage({ sessionRequest, csrfToken, renewCSRF, handl
     controls();
   }
   function scheduleTurns() {
-    if (renderFrame === null) renderFrame = requestAnimationFrame(() => { renderFrame = null; renderTurns(); });
+    if (renderTimer === null) renderTimer = setTimeout(() => { renderTimer = null; renderTurns(); }, 100);
   }
   function upsert(turn) {
     const index = chat.turns.findIndex(value => value.id === turn.id);
@@ -203,6 +200,7 @@ export function createInsightsPage({ sessionRequest, csrfToken, renewCSRF, handl
           method: 'POST', body: { names: [...selected.keys()] }, controller: resolving,
         });
         if (!current(ticket)) throw new DOMException('Stale chat', 'AbortError');
+        if (Number.isSafeInteger(materials.limit) && materials.limit > 0) characterLimit = materials.limit;
         selected = new Map(materials.notes.map(note => [note.name, note]));
       } finally { if (selectionController === resolving) selectionController = null; }
     }
@@ -250,7 +248,8 @@ export function createInsightsPage({ sessionRequest, csrfToken, renewCSRF, handl
     renderTurns();
   }
   function scheduleRefresh(delay = 1500) {
-    clearTimeout(pollTimer);
+    clearTimeout(pollTimer); pollTimer = null;
+    if (document.hidden) return;
     const ticket = disposed;
     pollTimer = setTimeout(() => refreshChat(true).catch(err => {
       if (!current(ticket) || stopping || deleting) return;
@@ -259,7 +258,7 @@ export function createInsightsPage({ sessionRequest, csrfToken, renewCSRF, handl
     }), delay);
   }
   async function refreshChat(polling = false) {
-    if (!chat || !active || stopping || deleting) return;
+    if (!chat || !active || stopping || deleting || (polling && document.hidden)) return;
     const ticket = disposed;
     clearTimeout(pollTimer); pollTimer = null;
     const value = await sessionRequest(`/chats/${chat.id}`);
@@ -362,20 +361,20 @@ export function createInsightsPage({ sessionRequest, csrfToken, renewCSRF, handl
     closeMenus();
     if (historyDialog || deleting) return;
     const ticket = disposed, abort = new AbortController();
-    const overlay = el('div', 'insight-overlay'), dialog = el('div', 'card insight-picker insight-history');
-    dialog.setAttribute('role', 'dialog'); dialog.setAttribute('aria-modal', 'true'); setAttr(dialog, 'aria-label', l("历史会话"));
-    const header = el('div', 'insight-between'), close = button('×', 'btn s', () => {
-      abort.abort(); overlay.remove(); historyDialog = null; find('menu').focus();
-    });
+    const modal = createModal({ parent: root, className: 'card insight-picker insight-history', label: l("历史会话"),
+      onClose: () => { abort.abort(); historyDialog = null; } });
+    const dialog = modal.dialog, overlay = dialog;
+    const header = el('div', 'insight-between'), close = button('×', 'btn s', () => modal.close());
+    close.autofocus = true;
     setAttr(close, 'aria-label', l("关闭"));
-    header.append(el('b', '', l("历史会话")), close);
+    header.append(el('h2', '', l("历史会话")), close);
     const list = el('div', 'insight-picker-area'), error = el('p', 'sub insight-warning');
     error.hidden = true;
     const seen = new Set();
     let next = '', loading = false;
     const more = button(l("加载更多"), 'pbtn insight-done', load);
-    dialog.append(header, list, error, more); overlay.append(dialog); root.append(overlay);
-    historyDialog = { overlay, abort };
+    dialog.append(header, list, error, more);
+    historyDialog = { overlay, abort, modal }; modal.show();
     async function load() {
       if (loading) return;
       loading = true; more.disabled = true; error.hidden = true;
@@ -403,15 +402,7 @@ export function createInsightsPage({ sessionRequest, csrfToken, renewCSRF, handl
         if (current(ticket) && historyDialog?.overlay === overlay) { loading = false; more.disabled = false; }
       }
     }
-    overlay.addEventListener('keydown', event => {
-      if (event.key === 'Escape') { event.preventDefault(); close.click(); }
-      if (event.key === 'Tab') {
-        const nodes = [...dialog.querySelectorAll('button:not(:disabled):not([hidden])')], first = nodes[0], last = nodes.at(-1);
-        if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
-        else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
-      }
-    });
-    close.focus(); await load();
+    await load();
   }
   async function generate(kind) {
     if (busy || running || stopping || deleting || conflicted || !selected.size) return;
@@ -452,7 +443,9 @@ export function createInsightsPage({ sessionRequest, csrfToken, renewCSRF, handl
           if (event.type === 'complete') {
             pendingGenerate = null;
             if (input.kind === 'question') find('ask').value = '';
+            onDirtyChange();
           }
+          if (event.type === 'message') onDirtyChange();
         });
       } finally { clearTimeout(timer); controller = null; }
     } catch (err) {
@@ -473,216 +466,46 @@ export function createInsightsPage({ sessionRequest, csrfToken, renewCSRF, handl
       }
     } finally {
       finish(); if (generationDone === done) generationDone = null;
-      if (active && generation === disposed) { busy = false; controls(); renderMaterials(); }
+      if (active && generation === disposed) { busy = false; controls(); renderMaterials(); onDirtyChange(); }
     }
   }
   async function persistSelectionIfNew() { if (!chat) await persistSelection(); }
 
-  async function openPicker() {
+  function openPicker() {
     if (busy || running || stopping || deleting || conflicted || pendingGenerate || picker) return;
-    const generation = disposed;
-    const overlay = el('div', 'insight-overlay');
-    const dialog = el('div', 'card insight-picker'); dialog.setAttribute('role', 'dialog');
-    dialog.setAttribute('aria-modal', 'true'); setAttr(dialog, 'aria-label', l("选择笔记"));
-    const header = el('div', 'insight-between'), summary = el('span', 'sub');
-    header.append(el('b', '', l("选择笔记")), summary);
-    const tabs = el('div', 'insight-tabs'), dateTab = button(l("按日期"), 'tab on', () => setTab('date'));
-    const tagTab = button(l("按标签 / 逐条"), 'tab', () => setTab('tag'));
-    tabs.append(dateTab, tagTab);
-    const area = el('div', 'insight-picker-area'), error = el('p', 'sub insight-warning');
-    error.hidden = true;
-    const done = button(l("完成"), 'save insight-done', async () => {
-      if (busy) return;
-      done.disabled = true; busy = true; controls();
-      const previous = selected;
-      selected = new Map(choices);
-      try {
-        await persistSelection();
-        if (current(generation)) { renderMaterials(); closePicker(true); }
-      } catch (err) {
-        if (current(generation)) {
-          selected = previous; failure(err); setText(error, errorText(err)); error.hidden = false; done.disabled = false;
-        }
-      } finally { if (current(generation)) { busy = false; renderMaterials(); } }
+    const ticket = disposed;
+    picker = createMaterialPicker({ parent: root, selected, today, formatTime, sessionRequest,
+      characterLimit, onLimit: value => { characterLimit = value; renderMaterials(); },
+      onFailure: failure, onClose: () => { picker = null; }, onDirtyChange,
+      onSubmit: async choices => {
+        const previous = selected; selected = choices; busy = true; controls();
+        try {
+          await persistSelection();
+          if (current(ticket)) renderMaterials();
+        } catch (err) { if (current(ticket)) selected = previous; throw err; }
+        finally { if (current(ticket)) { busy = false; renderMaterials(); onDirtyChange(); } }
+      },
     });
-    dialog.append(header, tabs, area, error, done); overlay.append(dialog); root.append(overlay);
-    let tab = 'date', choices = new Map(selected), from = '', through = '', chosenTags = new Set();
-    let year = Number(today().slice(0, 4)), month = Number(today().slice(5, 7)), years = false;
-    let candidates = [], tags = [], loadSequence = 0, loading = false;
-    const calendarDays = new Map();
-    const abort = new AbortController(), previousFocus = document.activeElement;
-    picker = { overlay, abort, previousFocus };
-    function summaryText() { setText(summary, l("已选 {0} 条 · {1} / 20000 字", { 0: choices.size, 1: [...choices.values()].reduce((sum, note) => sum + chars(note.content), 0) })); }
-    function closePicker(force = false) {
-      if (busy && !force) return;
-      abort.abort(); overlay.remove(); picker = null;
-      queueMicrotask(() => { if (current(generation) && !picker) previousFocus?.focus(); });
-    }
-    picker.close = closePicker;
-    function setTab(value) { tab = value; years = false; render(); load(); }
-    async function load() {
-      const seq = ++loadSequence;
-      error.hidden = true; candidates = []; loading = true; render();
-      if (tab === 'date' && !from) { loading = false; return; }
-      const query = new URLSearchParams({ page_size: '100' });
-      if (from) { query.set('from', from); query.set('until', nextDate(through || from)); }
-      for (const tag of chosenTags) query.append('tag', tag);
-      const all = [];
-      let token = '';
-      try {
-        do {
-          if (token) query.set('page_token', token);
-          const page = await sessionRequest(`/chat-materials?${query}`, { controller: abort });
-          if (!active || generation !== disposed || picker?.overlay !== overlay || seq !== loadSequence) return;
-          all.push(...page.notes);
-          if (all.length > 10000) throw Object.assign(new Error('Selection resources'), { code: 'CHAT_RESOURCE_LIMIT' });
-          token = page.next_page_token;
-        } while (token);
-        candidates = all; loading = false; render();
-      } catch (err) {
-        if (!active || picker?.overlay !== overlay || seq !== loadSequence || err.name === 'AbortError') return;
-        loading = false; setText(error, errorText(err)); error.hidden = false;
-        if (err.status === 401) handleFailure(error, err);
-      }
-    }
-    function list() {
-      const section = el('div', 'insight-picker-list'), count = candidates.length;
-      if (loading) return section;
-      const head = el('div', 'insight-between');
-      head.append(el('span', 'sub', tab === 'date' ? l("这段时间的笔记，勾选要用的") : l("共 {0} 条，勾选要用的", { 0: count })),
-        button(l("全选这 {0} 条", { 0: count }), 'pbtn insight-select-all', () => {
-          for (const note of candidates) choices.set(note.name, note);
-          summaryText(); render();
-        }));
-      section.append(head);
-      for (const note of candidates) {
-        const row = el('label', 'ent insight-choice'), input = el('input');
-        input.type = 'checkbox'; input.checked = choices.has(note.name);
-        input.addEventListener('change', () => {
-          if (input.checked) choices.set(note.name, note); else choices.delete(note.name);
-          summaryText();
-        });
-        row.append(input, el('span', '', [...note.content || note.name].slice(0, 24).join('')),
-          el('em', '', () => `${resolveText(formatTime(note.create_time))}${note.tags?.length ? ` · #${note.tags.join(' #')}` : ''}`));
-        section.append(row);
-      }
-      return section;
-    }
-    function calendar() {
-      const section = el('div', 'insight-picker-area'), header = el('div', 'insight-between');
-      const shift = delta => {
-        const value = new Date(Date.UTC(year, month - 1 + delta, 1));
-        if (value.getUTCFullYear() < 1000 || value.getUTCFullYear() > 9999) return;
-        year = value.getUTCFullYear(); month = value.getUTCMonth() + 1; render(); loadCalendar();
-      };
-      const prev = arrow(button('', 'btn s', () => shift(-1)), 'M14 6l-6 6 6 6');
-      const next = arrow(button('', 'btn s', () => shift(1)), 'M10 6l6 6-6 6');
-      setAttr(prev, 'aria-label', l("上个月")); setAttr(next, 'aria-label', l("下个月"));
-      const title = button(monthLabel(year, month), 'btn insight-month', () => { years = !years; render(); });
-      arrow(title, 'M6 9l6 6 6-6');
-      setAttr(title, 'aria-label', l("选择年月")); header.append(prev, title, next); section.append(header);
-      if (years) {
-        const row = el('div', 'insight-year');
-        const older = arrow(button('', 'btn s', () => { if (year > 1000) { year--; render(); } }), 'M14 6l-6 6 6 6');
-        const newer = arrow(button('', 'btn s', () => { if (year < 9999) { year++; render(); } }), 'M10 6l6 6-6 6');
-        setAttr(older, 'aria-label', l("上一年")); setAttr(newer, 'aria-label', l("下一年"));
-        row.append(older, el('b', '', l("{0} 年", { 0: year })), newer); section.append(row);
-        const grid = el('div', 'mg');
-        for (let value = 1; value <= 12; value++) grid.append(button(() => new Intl.DateTimeFormat(locale(), { month: 'short', timeZone: 'UTC' }).format(new Date(Date.UTC(year, value - 1, 1))), value === month ? 'ed' : '', () => {
-          month = value; years = false; render(); loadCalendar();
-        }));
-        section.append(grid);
-      } else {
-        const grid = el('div', 'pc');
-        for (const day of weekdays) grid.append(el('span', '', day));
-        const offset = (new Date(Date.UTC(year, month - 1, 1)).getUTCDay() + 6) % 7;
-        for (let i = 0; i < offset; i++) { const empty = button('', 'blank', () => {}); empty.disabled = true; grid.append(empty); }
-        const days = new Date(Date.UTC(year, month, 0)).getUTCDate();
-        for (let day = 1; day <= days; day++) {
-          const value = date(year, month, day);
-          const cls = [calendarDays.get(date(year, month, 1).slice(0, 7))?.has(value) ? 'has' : '',
-            value === from || value === through ? 'ed' : from && through && value > from && value < through ? 'rg' : ''].join(' ');
-          const cell = button(String(day), cls, () => {
-            if (!from || through) { from = value; through = ''; }
-            else { through = value < from ? from : value; from = value < from ? value : from; }
-            render(); load();
-          });
-          setAttr(cell, 'aria-label', value); grid.append(cell);
-        }
-        section.append(grid);
-      }
-      const range = el('div', 'insight-between insight-range');
-      range.append(el('span', 'sub', !from ? l("点选起止日期，筛出这段时间的笔记") : through ? l("{0} – {1} · {2} 条", { 0: from, 1: through, 2: candidates.length }) : l("{0} – 请选择结束日", { 0: from })));
-      if (from) range.append(button(l("清除"), 'pbtn insight-select-all', () => { from = through = ''; render(); load(); }));
-      section.append(range);
-      if (from && candidates.length) section.append(list());
-      else if (from && !loading) section.append(el('p', 'sub', l("这段时间没有笔记。")));
-      return section;
-    }
-    function render() {
-      summaryText(); dateTab.classList.toggle('on', tab === 'date'); tagTab.classList.toggle('on', tab === 'tag');
-      area.replaceChildren();
-      if (tab === 'date') area.append(calendar());
-      else {
-        const filters = el('div', 'insight-tag-filters');
-        filters.append(button(l("全部"), `pbtn${chosenTags.size ? '' : ' on'}`, () => { chosenTags.clear(); load(); }));
-        for (const tag of tags) filters.append(button(tag, `pbtn${chosenTags.has(tag) ? ' on' : ''}`, () => {
-          if (chosenTags.has(tag)) chosenTags.delete(tag); else chosenTags.add(tag);
-          load();
-        }));
-        area.append(filters, list());
-      }
-    }
-    async function loadCalendar() {
-      const key = date(year, month, 1).slice(0, 7);
-      if (calendarDays.has(key)) return;
-      try {
-        const pages = await Promise.all(['NORMAL', 'ARCHIVED'].map(state =>
-          sessionRequest(`/calendar?${new URLSearchParams({ month: key, state })}`, { controller: abort })));
-        if (!current(generation) || picker?.overlay !== overlay) return;
-        calendarDays.set(key, new Set(pages.flatMap(page => page.days.filter(day => day.count > 0).map(day => day.date))));
-        render();
-      } catch (err) {
-        if (current(generation) && picker?.overlay === overlay && err.name !== 'AbortError') {
-          setText(error, errorText(err)); error.hidden = false;
-          if (err.status === 401) handleFailure(error, err);
-        }
-      }
-    }
-    overlay.addEventListener('keydown', event => {
-      if (event.key === 'Escape') { event.preventDefault(); closePicker(); }
-      if (event.key === 'Tab') {
-        const nodes = [...dialog.querySelectorAll('button:not(:disabled),input')], first = nodes[0], last = nodes.at(-1);
-        if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
-        else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
-      }
-    });
-    render(); dateTab.focus(); loadCalendar();
-    try {
-      const pages = await Promise.all(['NORMAL', 'ARCHIVED'].map(state => sessionRequest(`/tags?state=${state}`, { controller: abort })));
-      if (!current(generation) || picker?.overlay !== overlay) return;
-      tags = [...new Set(pages.flatMap(page => page.tags.map(value => value.tag)))].sort();
-      render();
-    } catch (err) {
-      if (current(generation) && picker?.overlay === overlay && err.name !== 'AbortError') {
-        setText(error, errorText(err)); error.hidden = false;
-        if (err.status === 401) handleFailure(error, err);
-      }
-    }
   }
 
   function destroy() {
-    active = false; disposed++; controller?.abort(); controller = null;
-    if (renderFrame !== null) cancelAnimationFrame(renderFrame);
-    renderFrame = null; turnNodes.clear();
+    active = false; disposed++; lifecycle?.abort(); controller?.abort(); controller = null;
+    if (renderTimer !== null) clearTimeout(renderTimer);
+    renderTimer = null; turnNodes.clear();
     selectionController?.abort(); selectionController = null;
-    clearTimeout(pollTimer); picker?.abort.abort(); picker?.overlay.remove(); picker = null;
-    historyDialog?.abort.abort(); historyDialog?.overlay.remove(); historyDialog = null;
+    clearTimeout(pollTimer); picker?.destroy(); picker = null;
+    historyDialog?.abort.abort(); historyDialog?.modal.destroy(); historyDialog = null;
     root?.remove(); root = null; selected.clear(); chat = pendingCreate = pendingUpdate = pendingGenerate = null;
   }
   return {
     async mount(container) {
-      active = true;
+      active = true; lifecycle = new AbortController();
+      document.addEventListener('visibilitychange', () => {
+        if (document.hidden) { clearTimeout(pollTimer); pollTimer = null; }
+        else if (chat && running && !controller && !busy && !stopping && !deleting) {
+          refreshChat(true).catch(err => { failure(err); if (err.retryable && running) scheduleRefresh(); });
+        }
+      }, { signal: lifecycle.signal });
       root = el('div', 'stage insights-page');
       root.innerHTML = `<div class="insight-top" data-chat="top">
         <div class="insight-heading"><h1 class="vt" data-i18n="洞察">洞察</h1>
@@ -693,7 +516,7 @@ export function createInsightsPage({ sessionRequest, csrfToken, renewCSRF, handl
               <button class="mi dg" type="button" role="menuitem" data-chat="delete" data-i18n="删除当前会话">删除当前会话</button>
             </div></div></div>
         <div class="card insight-material-card"><div class="insight-material-header">
-          <button class="btn insight-material-toggle" type="button" data-chat="material-toggle"></button>
+          <span class="btn insight-material-toggle" data-chat="material-toggle"></span>
           <button class="pbtn" type="button" data-chat="add" data-i18n="添加笔记">添加笔记</button>
         </div><div class="insight-materials" data-chat="materials"></div>
         <p class="sub insight-warning insight-over" data-chat="over" hidden data-i18n="超过字数上限，请减少所选笔记。">超过字数上限，请减少所选笔记。</p></div>
@@ -706,21 +529,10 @@ export function createInsightsPage({ sessionRequest, csrfToken, renewCSRF, handl
         </form></div>`;
       localize(root);
       container.append(root);
-      find('material-toggle').addEventListener('click', () => { materialOpen = !materialOpen; renderMaterials(); });
       find('add').addEventListener('click', openPicker);
       find('one').addEventListener('click', () => generate('insight'));
       find('form').addEventListener('submit', event => { event.preventDefault(); if (running) stopGeneration(); else generate('question'); });
-      find('menu').addEventListener('click', () => {
-        const open = find('session-menu').hidden; closeMenus(); find('session-menu').hidden = !open;
-        find('menu').setAttribute('aria-expanded', String(open));
-        if (open) find('new').focus();
-      });
-      find('session-menu').addEventListener('keydown', event => {
-        const nodes = [...find('session-menu').querySelectorAll('button:not(:disabled)')], index = nodes.indexOf(document.activeElement);
-        if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
-          event.preventDefault(); nodes[(index + (event.key === 'ArrowDown' ? 1 : nodes.length - 1)) % nodes.length]?.focus();
-        }
-      });
+      bindMenu(find('menu'), find('session-menu'), { signal: lifecycle.signal });
       find('new').addEventListener('click', () => navigate('/insights?new=1'));
       find('history').addEventListener('click', openHistory);
       find('delete').addEventListener('click', confirmDelete);
@@ -731,6 +543,7 @@ export function createInsightsPage({ sessionRequest, csrfToken, renewCSRF, handl
         if (note && /^memos\/[A-Za-z0-9_-]+$/.test(note)) {
           const materials = await sessionRequest('/chat-materials/resolve', { method: 'POST', body: { names: [note] } });
           if (!active || generation !== disposed) return;
+          if (Number.isSafeInteger(materials.limit) && materials.limit > 0) characterLimit = materials.limit;
           selected = new Map(materials.notes.map(value => [value.name, value]));
           await persistSelection();
         } else {
@@ -739,6 +552,7 @@ export function createInsightsPage({ sessionRequest, csrfToken, renewCSRF, handl
           else if (query.get('new') !== '1') {
             const list = await sessionRequest('/chats?page_size=1');
             if (!current(generation)) return;
+            if (Number.isSafeInteger(list.character_limit) && list.character_limit > 0) characterLimit = list.character_limit;
             if (list.chats.length) restored = await sessionRequest(`/chats/${list.chats[0].id}`);
           }
           if (!active || generation !== disposed) return;
@@ -749,6 +563,7 @@ export function createInsightsPage({ sessionRequest, csrfToken, renewCSRF, handl
             if (selected.size) {
               const materials = await sessionRequest('/chat-materials/resolve', { method: 'POST', body: { names: [...selected.keys()] } });
               if (!active || generation !== disposed) return;
+              if (Number.isSafeInteger(materials.limit) && materials.limit > 0) characterLimit = materials.limit;
               selected = new Map(materials.notes.map(value => [value.name, value]));
               if (materials.materials.some(value => !chat.materials.some(ref => ref.name === value.name && ref.source_hash === value.source_hash))) {
                 failure({ code: 'SOURCE_CHANGED' });
@@ -769,5 +584,6 @@ export function createInsightsPage({ sessionRequest, csrfToken, renewCSRF, handl
       }
     },
     destroy,
+    hasChanges,
   };
 }

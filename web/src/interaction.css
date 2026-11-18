@@ -1,0 +1,47 @@
+:where(button,a,input,textarea,select,[tabindex]):focus-visible {
+  outline:2px solid var(--focus);
+  outline-offset:3px;
+}
+.composer:has(textarea:focus-visible),.insight-input:has(input:focus-visible) {
+  outline:2px solid var(--focus);
+  outline-offset:2px;
+}
+.composer textarea:focus-visible,.insight-input input:focus-visible { outline:0; }
+.skip-link {
+  position:fixed; top:12px; left:16px; z-index:50; padding:8px 16px;
+  border-radius:8px; background:var(--surface); color:var(--focus); transform:translateY(-200%);
+}
+.skip-link:focus { transform:none; }
+.hm span,.hm button:not(.h1,.h2,.sel,.today),.meta { color:var(--muted); }
+.menu { max-width:calc(100vw - 16px); max-height:calc(100dvh - 16px); overflow:auto; }
+.menu > [focusgroup] { display:flex; flex-direction:column; }
+.menu[popover] { margin:0; inset:auto; position:fixed; }
+@supports selector(:popover-open) {
+  .menu[popover]:not(:popover-open) { display:none; }
+}
+@supports (position-area:block-end) {
+  .menu[popover] { position-area:block-end span-inline-start; position-try-fallbacks:flip-block,flip-inline,flip-block flip-inline; }
+  #account-menu[popover] { position-area:block-start span-inline-start; }
+}
+dialog:modal { overscroll-behavior:contain; }
+dialog::backdrop { overflow:hidden; overscroll-behavior:contain; }
+.insight-between h2 { margin:0; font-size:1em; }
+.insight-material-header [data-chat="material-toggle"] { font-size:14px; color:var(--muted); }
+.leave-dialog { margin:auto; max-width:calc(100vw - 32px); color:var(--ink); font-family:var(--font-body); }
+.leave-dialog::backdrop { background:rgb(31 35 40 / .28); }
+.leave-dialog h2 { margin:0 0 20px; font-size:18px; }
+.leave-dialog .editor-actions { justify-content:flex-end; flex-wrap:wrap; }
+.stargazing { --focus:#c9def4; }
+.timeline-deferred:not(:focus-within) { content-visibility:auto; contain-intrinsic-block-size:auto 220px; }
+.insight-more { margin:10px 0; align-self:center; }
+@media (pointer:coarse) {
+  .stargazing .map-tools .btn,.review-positions .dt { width:44px; height:44px; }
+  .review-positions .dt::before { top:18px; left:18px; }
+  .review-positions .dt.on::before { left:12px; }
+  .mi { min-height:44px; height:auto; }
+}
+@media (forced-colors:active) {
+  :root,.stargazing { --focus:Highlight; }
+  .review-positions .dt::before { background:ButtonText; }
+  .review-positions .dt.on::before { background:Highlight; }
+}

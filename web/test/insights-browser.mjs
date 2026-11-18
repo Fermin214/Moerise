@@ -10,7 +10,7 @@ import { test } from 'node:test';
 import { createWebServer } from '../server.mjs';
 
 const runtime = process.env.MOERISE_PLAYWRIGHT_MODULE;
-const { chromium } = runtime ? await import(pathToFileURL(runtime).href) : await import('playwright');
+const { [process.env.MOERISE_PLAYWRIGHT_ENGINE || 'chromium']: browserType } = runtime ? await import(pathToFileURL(runtime).href) : await import('playwright');
 const chatID = '68f91ebc-bbed-4fc5-a82b-18e162e715d0';
 const reply = '## 新的解释\n\n**完整回复**，保留换行。 #联想\n\n<script>unsafe</script>\n';
 
@@ -165,7 +165,7 @@ async function fixture(t, language = 'zh-CN') {
     await browser?.close();
     await Promise.all([web, core].map(server => new Promise(resolve => { server.close(resolve); server.closeAllConnections(); })));
   });
-  browser = await chromium.launch({ headless: true, channel: process.env.MOERISE_PLAYWRIGHT_CHANNEL || undefined });
+  browser = await browserType.launch({ headless: true, channel: process.env.MOERISE_PLAYWRIGHT_CHANNEL || undefined });
   const page = await browser.newPage({ locale: language, viewport: { width: 1360, height: 960 } }), errors = [];
   await page.clock.setFixedTime('2026-10-31T00:00:00Z');
   page.on('pageerror', error => errors.push(error.message));
@@ -185,9 +185,18 @@ const waitFor = async condition => {
   }
   assert.ok(condition(), 'Expected chat activity');
 };
+async function loadMaterials(page, count) {
+  await page.locator('.insight-choice').first().waitFor();
+  while (await page.locator('.insight-choice').count() < count) {
+    const loaded = await page.locator('.insight-choice').count();
+    await page.getByRole('dialog').locator('.insight-more').click();
+    await page.waitForFunction(before => document.querySelectorAll('.insight-choice').length > before, loaded);
+  }
+}
 async function pickAll(page) {
   await page.getByRole('button', { name: '添加笔记', exact: true }).click();
   await page.getByRole('button', { name: '按标签 / 逐条', exact: true }).click();
+  await loadMaterials(page, 3);
   await page.getByRole('button', { name: '全选这 3 条', exact: true }).click();
   await page.getByRole('button', { name: '完成', exact: true }).click();
   await page.getByRole('dialog').waitFor({ state: 'detached' });
@@ -223,6 +232,44 @@ test('selects all pages including archive, streams Markdown, follows up and save
   await page.screenshot({ path: '.local/chat-browser/mobile.png', fullPage: true });
 });
 
+test('material pagination retains choices and cursor failures, and native dialogs isolate background focus', async t => {
+  const { page, state, url } = await fixture(t);
+  await login(page, url);
+  await page.getByRole('button', { name: '添加笔记', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: '选择笔记', exact: true });
+  await page.getByRole('button', { name: '按标签 / 逐条', exact: true }).click();
+  await page.locator('.insight-choice').waitFor();
+  assert.equal(await page.locator('.insight-choice').count(), 1);
+  await page.locator('.insight-choice input').check();
+  await page.locator('#user-menu').evaluate(node => node.focus());
+  assert.equal(await dialog.evaluate(node => node.contains(document.activeElement)), true);
+  let fail = true;
+  const tokens = [];
+  await page.route('**/api/app/v1/chat-materials?*', async route => {
+    const token = new URL(route.request().url()).searchParams.get('page_token');
+    if (token) {
+      tokens.push(token);
+      if (fail) { fail = false; await route.fulfill({ status: 503, json: { error: { code: 'INTERNAL', retryable: true } } }); return; }
+    }
+    await route.continue();
+  });
+  await dialog.locator('.insight-more').click();
+  await dialog.locator('.insight-warning:not([hidden])').waitFor();
+  assert.equal(await page.locator('.insight-choice input:checked').count(), 1);
+  await dialog.locator('.insight-more').click();
+  await page.waitForFunction(() => document.querySelectorAll('.insight-choice').length === 2);
+  assert.deepEqual(tokens, ['1', '1']);
+  assert.equal(await page.locator('.insight-choice input:checked').count(), 1);
+  await page.keyboard.press('Escape'); await dialog.waitFor({ state: 'detached' });
+  assert.equal(state.chat, null);
+  assert.ok(await page.locator('[data-chat="add"]').evaluate(node => node === document.activeElement));
+  await menuAction(page, '历史会话');
+  const history = page.getByRole('dialog', { name: '历史会话', exact: true });
+  await page.locator('#user-menu').evaluate(node => node.focus());
+  assert.ok(await history.evaluate(node => node.contains(document.activeElement)));
+  await page.keyboard.press('Escape'); await history.waitFor({ state: 'detached' });
+});
+
 test('combines date and exact tags, cancels temporary selection and preserves detail return', async t => {
   const { page, state, url } = await fixture(t);
   await login(page, url);
@@ -232,6 +279,7 @@ test('combines date and exact tags, cancels temporary selection and preserves de
   await page.getByRole('button', { name: '按标签 / 逐条', exact: true }).click();
   await page.getByRole('button', { name: '细分', exact: true }).click();
   await page.getByRole('button', { name: '共同', exact: true }).click();
+  await loadMaterials(page, 2);
   await page.getByRole('button', { name: '全选这 2 条', exact: true }).click();
   await page.getByRole('button', { name: '完成', exact: true }).click();
   await page.getByRole('dialog').waitFor({ state: 'detached' });
@@ -247,6 +295,7 @@ test('combines date and exact tags, cancels temporary selection and preserves de
   assert.ok(page.url().endsWith(`/insights?chat=${chatID}`));
   await page.getByRole('button', { name: '添加笔记', exact: true }).click();
   await page.getByRole('button', { name: '按标签 / 逐条', exact: true }).click();
+  await loadMaterials(page, 3);
   await page.getByRole('button', { name: '全选这 3 条', exact: true }).click();
   await page.keyboard.press('Escape');
   assert.equal(state.chat.materials.length, 2);
@@ -347,6 +396,7 @@ test('a lost create response replays the frozen selection before explicitly upda
   await page.getByRole('button', { name: '完成', exact: true }).click();
   await page.locator('.insight-picker > .insight-warning:not([hidden])').waitFor();
   assert.equal(state.chat.materials.length, 1);
+  await loadMaterials(page, 3);
   await page.getByRole('button', { name: '全选这 3 条', exact: true }).click();
   await page.getByRole('button', { name: '完成', exact: true }).click();
   await page.getByRole('dialog').waitFor({ state: 'detached' });
@@ -493,6 +543,7 @@ test('confirming existing choices refreshes all materials including those outsid
   await page.getByRole('button', { name: '添加笔记', exact: true }).click();
   await page.getByRole('button', { name: '按标签 / 逐条', exact: true }).click();
   await page.getByRole('dialog').getByRole('button', { name: '细分', exact: true }).click();
+  await loadMaterials(page, 2);
   await page.getByRole('button', { name: '全选这 2 条', exact: true }).waitFor();
   assert.equal(await page.locator('.insight-choice input:checked').count(), 0);
   await page.getByRole('button', { name: '完成', exact: true }).click();
@@ -581,6 +632,7 @@ test('a timed out material refresh keeps temporary choices and retries in the sa
   await login(page, url, '/insights?note=memos%2Fnormal');
   await page.getByRole('button', { name: '添加笔记', exact: true }).click();
   await page.getByRole('button', { name: '按标签 / 逐条', exact: true }).click();
+  await loadMaterials(page, 3);
   await page.getByRole('button', { name: '全选这 3 条', exact: true }).click();
   await page.clock.install({ time: new Date('2026-10-31T00:00:00Z') });
   let resolves = 0, release;
@@ -851,6 +903,7 @@ test('English chat keeps its running stream and material picker through language
   await page.getByRole('button', { name: 'Add notes', exact: true }).click();
   await page.getByRole('dialog', { name: 'Select notes', exact: true }).waitFor();
   await page.getByRole('button', { name: 'By tag / individually', exact: true }).click();
+  await loadMaterials(page, 3);
   await page.getByRole('button', { name: 'Select all 3 notes', exact: true }).click();
   await setUILanguage(page, 'zh-CN');
   await page.getByRole('dialog', { name: '选择笔记', exact: true }).waitFor();
@@ -890,4 +943,60 @@ test('English chat keeps its running stream and material picker through language
   await page.keyboard.press('Escape');
   assert.equal(await menu.getAttribute('aria-expanded'), 'false');
   assert.ok(await menu.evaluate(node => node === document.activeElement));
+});
+test('material filters ignore a late previous response and show the API character limit', async t => {
+  const { page, url, notes } = await fixture(t);
+  await login(page, url);
+  await page.getByRole('button', { name: '添加笔记', exact: true }).click();
+  await page.getByRole('button', { name: '按标签 / 逐条', exact: true }).click();
+  await page.locator('.insight-choice input').check();
+  let release, arrived;
+  const held = new Promise(resolve => { release = resolve; });
+  const started = new Promise(resolve => { arrived = resolve; });
+  await page.route('**/api/app/v1/chat-materials?*', async route => {
+    const tags = new URL(route.request().url()).searchParams.getAll('tag');
+    if (tags.includes('细分') && !tags.includes('共同')) {
+      arrived(); await held;
+      await route.fulfill({ json: { notes: [notes[1]], character_limit: 333, next_page_token: '' } }).catch(() => {});
+    } else if (tags.includes('共同')) {
+      await route.fulfill({ json: { notes: [notes[2]], character_limit: 777, next_page_token: '' } });
+    } else await route.continue();
+  });
+  await page.getByRole('button', { name: '细分', exact: true }).click();
+  await started;
+  await page.getByRole('button', { name: '共同', exact: true }).click();
+  await page.locator('.insight-choice').filter({ hasText: '其他材料' }).waitFor();
+  release();
+  await page.waitForTimeout(100);
+  assert.equal(await page.locator('.insight-choice').count(), 1);
+  assert.match(await page.locator('.insight-choice').textContent(), /其他材料/);
+  assert.match(await page.getByRole('status').textContent(), /已选 1 条.*777/);
+  await page.locator('.insight-choice input').check();
+  assert.match(await page.getByRole('status').textContent(), /已选 2 条.*777/);
+});
+
+test('stream rendering preserves completed blocks and safely finishes a long fenced tail', async t => {
+  const { page, url } = await fixture(t);
+  await login(page, url);
+  const result = await page.evaluate(async () => {
+    const script = document.querySelector('script[type="module"]').src;
+    const { createStreamRenderer } = await import(script.replace(/\/app(?=\.|$)/, '/stream-markdown'));
+    const container = document.createElement('div'), render = createStreamRenderer(container);
+    const prefix = '## 标题\n\n**已完成段落**\n\n';
+    render.render(prefix, true);
+    const first = container.querySelector('h2');
+    const source = prefix + '```html\n<img src=x onerror=alert(1)>\n' + '长'.repeat(5000);
+    render.render(source, true);
+    const stable = container.querySelector('h2') === first, rawTail = container.lastChild.textContent;
+    render.render(source + '\n```\n', false);
+    return { stable, rawTail, code: container.querySelector('pre code')?.textContent,
+      unsafe: container.querySelectorAll('img,script,[onerror]').length,
+      headings: container.querySelectorAll('h2').length, paragraph: container.querySelector('strong')?.textContent };
+  });
+  assert.equal(result.stable, true);
+  assert.ok(result.rawTail.startsWith('```html\n<img'));
+  assert.ok(result.code.startsWith('<img src=x onerror=alert(1)>'));
+  assert.equal(result.unsafe, 0);
+  assert.equal(result.headings, 1);
+  assert.equal(result.paragraph, '已完成段落');
 });

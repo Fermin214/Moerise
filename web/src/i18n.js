@@ -79,8 +79,12 @@ function translateNode(node) {
 }
 
 export function localize(root) {
+  if (root.nodeType === 1 && root.closest('[data-user-content]') ||
+      root.nodeType === 3 && root.parentElement?.closest('[data-user-content]')) return;
   translateNode(root);
-  const walker = root.ownerDocument.createTreeWalker(root, 5);
+  const walker = root.ownerDocument.createTreeWalker(root, 5, {
+    acceptNode: node => node.nodeType === 1 && node.hasAttribute('data-user-content') ? 2 : 1,
+  });
   while (walker.nextNode()) translateNode(walker.currentNode);
 }
 
