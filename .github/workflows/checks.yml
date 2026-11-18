@@ -23,6 +23,26 @@ permissions:
   actions: read
 
 jobs:
+  scope:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    outputs:
+      android: ${{ steps.scope.outputs.android }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 2
+      - name: Detect changes covered by Android checks
+        id: scope
+        run: |
+          files=$(git diff --name-only HEAD^1 HEAD -- \
+            mobile scripts/android docs/android internal main.go go.mod go.sum \
+            web/server.mjs .github/workflows/checks.yml .github/workflows/android-checks.yml)
+          if [[ -n "$files" ]]; then
+            echo 'android=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'android=false' >> "$GITHUB_OUTPUT"
+          fi
   go:
     if: inputs.mode != 'android-device'
     runs-on: ubuntu-latest
@@ -74,8 +94,39 @@ jobs:
           MOERISE_PLAYWRIGHT_MODULE: ${{ github.workspace }}/web/node_modules/playwright/index.mjs
           MOERISE_PLAYWRIGHT_CHANNEL: chrome
         run: npm --prefix web run test:browser
+  android-pr:
+    needs: scope
+    if: needs.scope.outputs.android == 'true'
+    permissions:
+      contents: read
+      actions: read
+    uses: ./.github/workflows/android-checks.yml
+    with:
+      mode: full
+  pr-gate:
+    name: PR gate
+    if: ${{ always() && github.event_name == 'pull_request' }}
+    needs: [scope, go, web, android-pr]
+    runs-on: ubuntu-24.04
+    env:
+      SCOPE_RESULT: ${{ needs.scope.result }}
+      GO_RESULT: ${{ needs.go.result }}
+      WEB_RESULT: ${{ needs.web.result }}
+      ANDROID_REQUIRED: ${{ needs.scope.outputs.android }}
+      ANDROID_RESULT: ${{ needs.android-pr.result }}
+    steps:
+      - name: Require all applicable checks
+        run: |
+          printf 'Scope: %s\nGo: %s\nWeb: %s\nAndroid required: %s\nAndroid: %s\n' \
+            "$SCOPE_RESULT" "$GO_RESULT" "$WEB_RESULT" "$ANDROID_REQUIRED" "$ANDROID_RESULT"
+          [[ "$SCOPE_RESULT" == success && "$GO_RESULT" == success && "$WEB_RESULT" == success ]]
+          [[ ( "$ANDROID_REQUIRED" == true && "$ANDROID_RESULT" == success ) ||
+             ( "$ANDROID_REQUIRED" == false && "$ANDROID_RESULT" == skipped ) ]]
   android-device:
     if: github.event_name == 'workflow_dispatch' && inputs.mode == 'android-device'
+    permissions:
+      contents: read
+      actions: read
     uses: ./.github/workflows/android-checks.yml
     with:
       mode: device
