@@ -1,15 +1,23 @@
 package io.github.fermin214.moerise.data
 
+import androidx.room.Room
 import androidx.room.immediateTransaction
 import androidx.room.useWriterConnection
+import androidx.sqlite.SQLiteConnection
+import androidx.sqlite.SQLiteDriver
+import androidx.sqlite.SQLiteStatement
+import androidx.sqlite.driver.bundled.BundledSQLiteDriver
 import io.github.fermin214.moerise.domain.Note
 import io.ktor.client.engine.mock.*
 import io.ktor.http.*
 import java.io.IOException
 import java.nio.file.Files
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 import kotlin.test.*
 import kotlinx.coroutines.*
+import kotlinx.coroutines.flow.first
 import kotlinx.serialization.json.*
 
 class EditorRecoveryTest {
@@ -24,11 +32,27 @@ class EditorRecoveryTest {
         val folder = Files.createTempDirectory("moerise-editor-").toFile()
         val dispatcher = Executors.newSingleThreadExecutor().asCoroutineDispatcher()
         val scope = CoroutineScope(SupervisorJob() + dispatcher)
-        val db = jvmDatabase(folder.resolve("data.sqlite3").absolutePath)
+        val path = folder.resolve("data.sqlite3").absolutePath
         val arrived = CompletableDeferred<Unit>()
         val respondNow = CompletableDeferred<Unit>()
-        val writerHeld = CompletableDeferred<Unit>()
-        val releaseWriter = CompletableDeferred<Unit>()
+        val confirming = CompletableDeferred<Unit>()
+        val resumeConfirmation = CountDownLatch(1)
+        val bundled = BundledSQLiteDriver()
+        val driver = object : SQLiteDriver by bundled {
+            override fun open(fileName: String): SQLiteConnection {
+                val connection = bundled.open(fileName)
+                return object : SQLiteConnection by connection {
+                    override fun prepare(sql: String): SQLiteStatement {
+                        if (sql.startsWith("DELETE FROM pending_writes WHERE id") && confirming.complete(Unit)) {
+                            check(resumeConfirmation.await(10, TimeUnit.SECONDS))
+                        }
+                        return connection.prepare(sql)
+                    }
+                }
+            }
+        }
+        var db = Room.databaseBuilder<LocalDatabase>(name = path).setDriver(driver)
+            .setQueryCoroutineContext(Dispatchers.IO).build()
         val requests = mutableListOf<Pair<HttpMethod, String>>()
         val engine = MockEngine { request ->
             if (request.url.encodedPath.endsWith("/session")) respond(session())
@@ -52,33 +76,35 @@ class EditorRecoveryTest {
             val sending = async(dispatcher) { fixture.queue.drain(account, core) }
             withTimeout(10_000) { arrived.await() }
             withContext(dispatcher) { editor.change("AB") }
-            val blocker = launch(Dispatchers.IO) {
-                db.useWriterConnection { it.immediateTransaction {
-                    writerHeld.complete(Unit)
-                    releaseWriter.await()
-                } }
-            }
-            withTimeout(10_000) { writerHeld.await() }
             respondNow.complete(Unit)
+            withTimeout(10_000) { confirming.await() }
             withContext(dispatcher) { editor.change("ABC") }
-            releaseWriter.complete(Unit)
-            blocker.join()
+            resumeConfirmation.countDown()
             assertTrue(withTimeout(10_000) { sending.await() })
-            withContext(dispatcher) { editor.flush() }
+            withTimeout(10_000) {
+                editor.state.first {
+                    val draft = it.draft
+                    draft != null && draft.content == "ABC" && draft.sourceHash == "hash-a" && draft.revision == it.savedRevision
+                }
+            }
+            db.close()
+            db = jvmDatabase(path)
             val persisted = db.dao().draft(id)!!
             assertEquals("ABC", persisted.content)
             assertEquals("memos/one", persisted.targetName)
             assertEquals("hash-a", persisted.sourceHash)
             assertNull(db.dao().pending(persisted.id))
-            assertTrue(editor.enqueue())
-            assertTrue(fixture.queue.drain(account, core))
+            val restored = DraftQueueFixture({ NoteRepository(db) }, core, scope)
+            restored.composer.openStored(account, id)
+            assertTrue(restored.composer.enqueue())
+            assertTrue(restored.queue.drain(account, core))
             assertEquals(HttpMethod.Patch, requests[1].first)
             val patch = CoreJson.parseToJsonElement(requests[1].second).jsonObject
             assertEquals("ABC", patch.getValue("content").jsonPrimitive.content)
             assertEquals("hash-a", patch.getValue("source_hash").jsonPrimitive.content)
-            assertEquals("", editor.state.value.draft?.content)
+            assertEquals("", restored.composer.state.value.draft?.content)
         } finally {
-            releaseWriter.complete(Unit)
+            resumeConfirmation.countDown()
             scope.cancel()
             core.close()
             dispatcher.close()

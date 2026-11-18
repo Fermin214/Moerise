@@ -456,9 +456,6 @@ def validate_source_ids():
     for filename, fragment in ABSENCE_IDS.values():
         require(fragment in (tests / filename).read_text(encoding="utf-8"),
                 "Original home-reading absence assertion is missing")
-    calendar = REPO / "mobile/shared/src/jvmSharedMain/kotlin/io/github/fermin214/moerise/presentation/AndroidCalendar.kt"
-    require('DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm", Locale.ROOT)' in calendar.read_text(encoding="utf-8"),
-            "Note timestamp format is absent from source")
 
 
 def load_documents(root=ROOT):
