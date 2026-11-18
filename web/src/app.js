@@ -2,45 +2,13 @@ import { l, setText, setAttr, resolveText, locale, monthLabel, weekdays, initI18
 import { Draft, readAttachments } from './draft.js';
 import { errorMessage as errorText } from './errors.js';
 import { pages, notePath, filters, timelineURL, listQuery, enhancedSearch, searchBody, safeFrom, detailURL, noteID, attachmentURL, rasterImage } from './routes.js';
-import { el, button } from './dom.js';
-import { validNote, compareNotes, renderNoteCard, renderReadingCard } from './notes.js';
-import { createClient, validIdentity } from './client.js';
-import { bindMenu, closeMenus } from './menus.js';
-import { bindSearchInput } from './search-input.js';
-import { createLeaveGuard } from './leave-guard.js';
-import { createRouter } from './router.js';
-import { clearMedia } from './media.js';
+import { renderMarkdown } from './markdown.js';
 import { initShell } from './shell.js';
 
 const $ = id => document.getElementById(id);
 const shell = initShell();
-const draft = new Draft(), snapshots = new Map();
+const draft = new Draft(), controllers = new Set(), snapshots = new Map();
 const editors = new Map(), pendingWrites = new Map(), failures = new Map();
-const noteSizes = new Map();
-const measuredCards = new Map();
-let cardMeasureFrame = null;
-const cardObserver = new ResizeObserver(entries => {
-  for (const entry of entries) {
-    const card = entry.target;
-    if (!card.isConnected || card.skipped) continue;
-    const height = entry.borderBoxSize?.[0]?.blockSize || card.getBoundingClientRect().height;
-    const width = entry.borderBoxSize?.[0]?.inlineSize || card.clientWidth;
-    const key = `${card.dataset.name}:${card.dataset.sourceHash}:${Math.round(width)}`;
-    noteSizes.delete(key); noteSizes.set(key, height);
-    measuredCards.set(card, height);
-  }
-  while (noteSizes.size > 512) noteSizes.delete(noteSizes.keys().next().value);
-  if (cardMeasureFrame === null) cardMeasureFrame = requestAnimationFrame(() => {
-    cardMeasureFrame = null;
-    for (const [card, height] of measuredCards) {
-      if (!card.isConnected) continue;
-      const size = `auto ${height}px`;
-      if (card.style.containIntrinsicBlockSize !== size) card.style.containIntrinsicBlockSize = size;
-      if ([...card.parentElement.children].indexOf(card) >= 6 && card.getBoundingClientRect().top >= innerHeight) card.classList.add('timeline-deferred');
-    }
-    measuredCards.clear();
-  });
-});
 const sidebarTags = new Map(), sidebarCalendars = new Map();
 let sidebarTagState = '', sidebarCalendarKey = '';
 let sidebarFocusTimer = null, sidebarFocusRefresh = null;
@@ -48,7 +16,9 @@ let epoch = 0, viewSequence = 0, listSequence = 0, sidebarSequence = 0;
 let identity = null, logoutCSRF = null, authBusy = false, saving = false, readingFiles = false, listing = false;
 let draftOwner = null;
 let items = [], nextToken = '', listController = null, retryReset = true;
-let retryTimer = null, retryDelay = 1000;
+let retryTimer = null, retryDelay = 1000, searchTimer = null;
+let currentURL = location.pathname + location.search;
+let currentKey = history.state?.webKey || crypto.randomUUID();
 let month = '', routeReturnKey = null;
 let pageCount = 0, reloading = false, moduleReload = false;
 let searchStatus = '';
@@ -56,23 +26,23 @@ let lastTimeline = { path: '/', values: filters('') };
 let settingsPage = null;
 let insightsPage = null;
 let mapPage = null, mapView = null, mapSnapshot = null;
-let discoveryPage = null, discovery = null;
-const client = createClient({
-  generation: () => epoch, session: () => identity, logoutToken: () => logoutCSRF,
-  onSession: value => { if (identity) { identity = value; updateStargazing(); } else logoutCSRF = value.csrf_token; },
-});
-const { request, sessionRequest } = client;
-const searchInput = bindSearchInput($('q'), query => sidebarFilter({ query }));
-const discoveryCard = (note, review = false, className) => renderReadingCard(note, { review, className, formatTime, openNote });
-const pageDirty = () => settingsPage?.hasChanges() || insightsPage?.hasChanges();
-const leaveGuard = createLeaveGuard(() => !!identity && (pageDirty() || draft.locked || readingFiles ||
-  !!draft.content.trim() || !!draft.attachments.length || [...editors.values()].some(editor => editor.hasChanges())));
-const router = createRouter({
-  isDirty: pageDirty, confirmLeave: () => leaveGuard.confirm(),
-  beforeNavigate: (writeHistory = true) => { shell.closeNavigation(); searchInput.cancel(); rememberView(writeHistory); },
-  onChange: kind => { if (identity) showRoute({ focus: kind !== 'filter', returning: kind === 'return' }); },
-});
+let discoveryPage = null, reviewView = null, walkView = null;
+let walkConfiguration = null, walkFloaters = null;
+history.replaceState({ ...history.state, webKey: currentKey }, '');
+history.scrollRestoration = 'manual';
 
+function el(tag, className = '', text = '') {
+  const node = document.createElement(tag);
+  node.className = className;
+  if (text) setText(node, text);
+  return node;
+}
+function button(text, className, action) {
+  const node = el('button', className, text);
+  node.type = 'button';
+  node.addEventListener('click', action);
+  return node;
+}
 function showError(element, err) {
   setText(element, err ? errorText(err) : '');
   element.hidden = !err;
@@ -86,17 +56,77 @@ function invalidate() {
   mapPage?.destroy(); mapPage = null;
   discoveryPage?.destroy(); discoveryPage = null;
   invalidateSidebar();
-  client.cancel();
+  for (const controller of controllers) controller.abort();
+  controllers.clear();
   clearTimeout(retryTimer);
-  searchInput.cancel();
+  clearTimeout(searchTimer);
   retryTimer = listController = null;
   listing = saving = readingFiles = false;
   return epoch;
+}
+async function request(path, { method = 'GET', body, headers = {}, controller = new AbortController() } = {}) {
+  const generation = epoch;
+  controllers.add(controller);
+  let timedOut = false;
+  const timer = setTimeout(() => { timedOut = true; controller.abort(); }, 65_000);
+  try {
+    const response = await fetch(`/api/app/v1${path}`, {
+      method, credentials: 'same-origin', cache: 'no-store', redirect: 'error',
+      headers: { Accept: 'application/json', ...(body === undefined ? {} : { 'Content-Type': 'application/json' }), ...headers },
+      body: body === undefined ? undefined : JSON.stringify(body), signal: controller.signal,
+    });
+    stale(generation);
+    const data = response.status === 204 ? null : await response.json();
+    stale(generation);
+    if (!response.ok) {
+      const failure = data?.error || {};
+      throw Object.assign(new Error(failure.message || l("请求失败，请重试。")), {
+        code: failure.code || 'HTTP_ERROR', status: response.status,
+        retryable: failure.retryable === true, requestId: failure.request_id,
+      });
+    }
+    return data;
+  } catch (err) {
+    stale(generation);
+    if (timedOut) throw Object.assign(new Error('Request timed out'), { code: 'REQUEST_TIMEOUT', retryable: true });
+    if (err.name === 'AbortError' || err.code) throw err;
+    throw Object.assign(new Error('Network request failed'), { code: 'NETWORK_ERROR', retryable: true });
+  } finally {
+    clearTimeout(timer);
+    controllers.delete(controller);
+  }
+}
+function validIdentity(value) {
+  if (!value?.user?.name || !value.csrf_token) throw Object.assign(new Error('Invalid session response'), { code: 'SESSION_RESPONSE_INVALID' });
+  if (value.stargazing_enabled !== undefined && typeof value.stargazing_enabled !== 'boolean') {
+    throw Object.assign(new Error('Invalid stargazing configuration'), { code: 'SESSION_RESPONSE_INVALID' });
+  }
+  return value;
 }
 function updateStargazing(enabled = identity?.stargazing_enabled !== false) {
   if (identity) identity.stargazing_enabled = enabled;
   document.querySelectorAll('a[data-route][href="/map"]').forEach(link => { link.hidden = !enabled; });
   if (!enabled) mapView = mapSnapshot = null;
+}
+async function sessionRequest(path, options = {}) {
+  const headers = { ...options.headers, 'X-CSRF-Token': identity?.csrf_token || logoutCSRF };
+  try { return await request(path, { ...options, headers }); }
+  catch (err) {
+    if (err.code !== 'CSRF_REJECTED') throw err;
+    let value;
+    try { value = validIdentity(await request('/session')); }
+    catch (refreshError) {
+      if (options.method === 'DELETE' && refreshError.status === 401) return request(path, { ...options, headers });
+      throw refreshError;
+    }
+    if (identity) { identity = value; updateStargazing(); }
+    else logoutCSRF = value.csrf_token;
+    return request(path, { ...options, headers: { ...headers, 'X-CSRF-Token': value.csrf_token } });
+  }
+}
+function closeMenus() {
+  document.querySelectorAll('.menu').forEach(menu => { menu.hidden = true; });
+  document.querySelectorAll('[aria-haspopup="menu"]').forEach(control => control.setAttribute('aria-expanded', 'false'));
 }
 function clearDrafts() {
   for (const editor of editors.values()) editor.draft.clear();
@@ -122,15 +152,15 @@ function hidePrivate({ resume = false } = {}) {
   $('empty').hidden = $('account').hidden = true;
   setText($('account-name'), setText($('calendar-title'), ''));
   pageObserver.disconnect();
-  cardObserver.disconnect(); noteSizes.clear(); measuredCards.clear(); clearMedia();
   items = []; nextToken = '';
   searchStatus = ''; $('search-mode').value = 'keyword';
   snapshots.clear();
-  discovery?.clear();
+  reviewView = walkView = null;
+  walkConfiguration = walkFloaters = null;
   mapView = mapSnapshot = null;
   month = ''; identity = null; routeReturnKey = null;
   pageCount = 0; reloading = false; lastTimeline = { path: '/', values: filters('') };
-  closeMenus(); leaveGuard.update();
+  closeMenus();
 }
 function authControls({ busy = false, login = true } = {}) {
   authBusy = busy;
@@ -139,7 +169,6 @@ function authControls({ busy = false, login = true } = {}) {
   for (const id of ['username', 'password', 'login']) $(id).disabled = busy;
 }
 function expire(err) {
-  leaveGuard.cancel(); router.cancel();
   invalidate(); hidePrivate({ resume: true }); logoutCSRF = null; authControls();
   showError($('auth-error'), err);
   $('username').focus();
@@ -171,7 +200,7 @@ function formatTime(value) {
 }
 const isTimeline = () => location.pathname === '/' || location.pathname === '/archived';
 function sourceTimeline() {
-  const source = notePath.test(location.pathname) ? safeFrom(new URLSearchParams(location.search).get('from')) : router.url;
+  const source = notePath.test(location.pathname) ? safeFrom(new URLSearchParams(location.search).get('from')) : currentURL;
   const url = new URL(source, location.origin);
   if (!['/', '/archived'].includes(url.pathname)) return lastTimeline;
   return { path: url.pathname === '/archived' ? '/archived' : '/', values: filters(url.search) };
@@ -181,33 +210,36 @@ function sidebarFilter(change) {
   navigate(timelineURL(source.path, { ...source.values, query: $('q').value, ...change }));
 }
 function rememberView(writeHistory = true, clean = false) {
-  if (writeHistory && identity && (mapPage || notePath.test(location.pathname))) {
-    const state = mapPage ? { mapView } : { returnKey: routeReturnKey };
-    history.replaceState({ ...history.state, ...state }, '');
-  }
-  if (!identity || !pageCount || !['/', '/archived'].includes(new URL(router.url, location.origin).pathname)) return;
-  const previous = snapshots.get(router.key);
-  snapshots.delete(router.key);
-  const focusedName = document.activeElement?.closest('article[data-name]')?.dataset.name || previous?.focusedName;
-  snapshots.set(router.key, { url: router.url, items: [...items], nextToken, searchStatus, scroll: window.scrollY,
-    pages: pageCount, focusedName, dirty: clean ? false : previous?.dirty });
+  if (!identity || !pageCount || !['/', '/archived'].includes(new URL(currentURL, location.origin).pathname)) return;
+  const previous = snapshots.get(currentKey);
+  snapshots.delete(currentKey);
+  snapshots.set(currentKey, { url: currentURL, items: [...items], nextToken, searchStatus, scroll: window.scrollY, pages: pageCount, dirty: clean ? false : previous?.dirty });
   if (writeHistory) history.replaceState({ ...history.state, scroll: window.scrollY, pages: pageCount }, '');
   if (snapshots.size > 12) snapshots.delete(snapshots.keys().next().value);
 }
 function timelineSnapshot() {
-  const saved = snapshots.get(router.key);
-  if (saved?.url === router.url) return saved;
-  return [...snapshots.values()].reverse().find(value => value.url === router.url && !value.dirty);
+  const saved = snapshots.get(currentKey);
+  if (saved?.url === currentURL) return saved;
+  return [...snapshots.values()].reverse().find(value => value.url === currentURL && !value.dirty);
 }
-function navigate(url, options) { return router.navigate(url, options); }
-function openNote(note) { navigate(detailURL(note.name, router.url), { returnKey: router.key }); }
+function navigate(url, { replace = false, returnKey = null } = {}) {
+  shell.closeNavigation();
+  if (url === currentURL) return;
+  clearTimeout(searchTimer);
+  rememberView();
+  currentKey = replace ? currentKey : crypto.randomUUID();
+  history[replace ? 'replaceState' : 'pushState']({ webKey: currentKey, ...(returnKey ? { returnKey } : {}) }, '', url);
+  currentURL = location.pathname + location.search;
+  showRoute();
+}
+function openNote(note) { navigate(detailURL(note.name, currentURL), { returnKey: currentKey }); }
 function restoreScroll(scroll) {
   const sequence = viewSequence;
   requestAnimationFrame(() => { if (sequence === viewSequence && identity) window.scrollTo(0, scroll); });
 }
 function dirtySnapshots() {
   for (const snapshot of snapshots.values()) snapshot.dirty = true;
-  discovery?.invalidate(); mapSnapshot = null;
+  reviewView = walkView = walkFloaters = mapSnapshot = null;
   discoveryPage?.refresh();
   mapPage?.refresh();
 }
@@ -272,7 +304,6 @@ $('login-form').addEventListener('submit', async event => {
 });
 async function logout() {
   if (authBusy) return;
-  if (identity && !(await leaveGuard.confirm())) return;
   logoutCSRF ||= identity?.csrf_token;
   if (!logoutCSRF) return;
   history.replaceState({ ...history.state, mapView: null }, '');
@@ -427,9 +458,69 @@ function changeMonth(delta) {
   month = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
   loadSidebar();
 }
+function validNote(note) {
+  return note && noteID(note.name) && typeof note.content === 'string' &&
+    ['NORMAL', 'ARCHIVED'].includes(note.state) && typeof note.source_hash === 'string' && !!note.source_hash;
+}
+function compareNotes(a, b) {
+  return Date.parse(b.create_time) - Date.parse(a.create_time) || (a.name < b.name ? 1 : a.name > b.name ? -1 : 0);
+}
+function renderAttachments(note) {
+  const box = el('div', 'attachment-list');
+  for (const item of note.attachments || []) {
+    const url = attachmentURL(note, item);
+    if (!url) { box.append(el('span', 'attachment sub', l("{0} · 暂时无法打开", { 0: item.filename || l("附件") }))); continue; }
+    const link = el('a', rasterImage(item.type) ? 'image-link' : 'attachment');
+    link.href = url;
+    if (rasterImage(item.type)) {
+      link.target = '_blank'; link.rel = 'noopener noreferrer';
+      const image = el('img');
+      image.src = url; setAttr(image, 'alt', item.filename || l("图片")); image.loading = 'lazy';
+      image.addEventListener('error', () => {
+        image.remove(); link.className = 'attachment'; setText(link, l("{0} · 打开原图", { 0: item.filename || l("图片") }));
+      }, { once: true });
+      link.append(image);
+    } else {
+      link.download = item.filename || 'attachment';
+      setText(link, item.filename || l("下载附件"));
+      if (Number.isFinite(item.size)) link.append(el('span', 'sub', item.size < 1024 ? `${item.size} B` : `${Math.ceil(item.size / 1024)} KiB`));
+    }
+    box.append(link);
+  }
+  return box;
+}
 function renderNote(note, detail = false) {
   const editor = editors.get(note.name);
   if (editor) return editor.form;
+  const card = el('article', `card${detail ? ' note' : ''}`);
+  card.dataset.name = note.name;
+  card.dataset.sourceHash = note.source_hash;
+  const header = el('div', 'hd'), time = el('time', '', formatTime(note.create_time));
+  if (Number.isFinite(Date.parse(note.create_time))) time.dateTime = note.create_time;
+  if (detail) header.append(time);
+  else {
+    const link = el('a', 'dlink');
+    link.href = detailURL(note.name, currentURL); link.dataset.route = ''; link.append(time); header.append(link);
+  }
+  const menuWrap = el('div', 'mw'), menu = el('div', 'menu');
+  menu.hidden = true; menu.setAttribute('role', 'menu');
+  const more = button('', 'btn s more', () => {
+    const open = menu.hidden; closeMenus(); menu.hidden = !open;
+    more.setAttribute('aria-expanded', String(open));
+    if (open) menu.querySelector('button')?.focus();
+  });
+  const dots = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  dots.setAttribute('class', 'i dots'); dots.setAttribute('viewBox', '0 0 24 24'); dots.setAttribute('aria-hidden', 'true');
+  const points = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+  points.setAttribute('d', 'M5 12h.01M12 12h.01M19 12h.01'); dots.append(points); more.append(dots);
+  setAttr(more, 'aria-label', l("更多操作"));
+  more.setAttribute('aria-haspopup', 'menu'); more.setAttribute('aria-expanded', 'false');
+  const content = el('div', 'note-content'); content.append(renderMarkdown(note.content, note));
+  const tags = el('div', 'note-tags');
+  for (const tag of new Set(note.tags || [])) tags.append(button(`#${tag}`, 'tag', () => {
+    const source = sourceTimeline();
+    sidebarFilter({ tags: [...new Set([...source.values.tags, tag])] });
+  }));
   const actions = [
     [l("编辑"), () => startEdit(note), ''],
     ...(!detail ? [[l("打开笔记"), () => openNote(note), '']] : []),
@@ -438,21 +529,26 @@ function renderNote(note, detail = false) {
     [l("洞察这条"), () => navigate(`/insights?${new URLSearchParams({ note: note.name })}`), ''],
     [l("删除"), () => confirmDelete(card, note), 'dg'],
   ];
-  const card = renderNoteCard(note, {
-    detail, formatTime, href: detailURL(note.name, router.url), actions,
-    pending: pendingWrites.has(note.name),
-    onTag: tag => {
-      const source = sourceTimeline();
-      sidebarFilter({ tags: [...new Set([...source.values.tags, tag])] });
-    },
-  });
+  for (const [label, action, cls] of actions) {
+    const control = button(label, `mi ${cls}`, () => { closeMenus(); action(); });
+    control.setAttribute('role', 'menuitem'); control.disabled = pendingWrites.has(note.name); menu.append(control);
+  }
+  if (!detail) { menuWrap.append(more, menu); header.append(menuWrap); }
+  card.append(header, content, renderAttachments(note), tags);
+  if (detail) {
+    const bar = el('div', 'note-actions');
+    for (const [label, action, cls] of actions) {
+      const control = button(label, `ghost ${cls}`, action);
+      control.disabled = pendingWrites.has(note.name); bar.append(control);
+    }
+    card.append(bar);
+  }
   const failure = failures.get(note.name);
   if (failure) appendNoteError(card, note, failure);
   return card;
 }
 function renderList() {
   const list = $('notes'), names = new Set(items.map(note => note.name));
-  cardObserver.disconnect();
   const focusedEditor = list.contains(document.activeElement) ? document.activeElement.closest('form.editor') : null;
   const existing = new Map([...list.children].map(node => [node.dataset.name, node]));
   for (const [name, node] of existing) if (!names.has(name)) node.remove();
@@ -473,21 +569,6 @@ function renderList() {
     }
     if (previous && previous !== node) previous.remove();
     cursor = node.nextElementSibling;
-  }
-  if (isTimeline()) {
-    const width = Math.round(list.getBoundingClientRect().width);
-    [...list.children].forEach((card, index) => {
-      if (card.matches('.editor')) return;
-      const height = noteSizes.get(`${card.dataset.name}:${card.dataset.sourceHash}:${width}`);
-      if (index >= 6 && height && card.getBoundingClientRect().top >= innerHeight) {
-        card.style.containIntrinsicBlockSize = `auto ${height}px`; card.classList.add('timeline-deferred');
-      }
-      if (!card.dataset.visibilityBound) {
-        card.dataset.visibilityBound = '';
-        card.addEventListener('contentvisibilityautostatechange', event => { card.skipped = event.skipped; });
-      }
-      cardObserver.observe(card);
-    });
   }
 }
 function replaceCard(note) {
@@ -606,7 +687,7 @@ function startEdit(note) {
     if (pendingWrites.get(note.name)?.busy) return;
     readSequence++; model.clear(); editors.delete(note.name);
     if (!pendingWrites.has(note.name)) failures.delete(note.name);
-    replaceCard(note); leaveGuard.update();
+    replaceCard(note);
   });
   const save = button(l("保存"), 'save', () => form.requestSubmit()); save.append(el('small', '', 'Ctrl ↵'));
   const message = el('p', 'error'); message.hidden = true; message.setAttribute('role', 'alert');
@@ -619,7 +700,6 @@ function startEdit(note) {
     refresh.disabled = busy;
     save.disabled = busy || reading || (!model.locked && !model.content.trim() && !model.attachments.length && !(note.attachments || []).some(item => !removed.has(item.name)));
     form.setAttribute('aria-busy', String(busy || reading));
-    leaveGuard.update();
     selectedFiles(added, model, () => model.locked || reading, update);
     retained.replaceChildren();
     for (const item of note.attachments || []) {
@@ -632,7 +712,6 @@ function startEdit(note) {
   }
   const context = {
     draft: model, form, text, update,
-    hasChanges: () => model.locked || reading || model.content !== note.content || !!model.attachments.length || !!removed.size,
     suspend() { readSequence++; reading = false; update(); },
     showFailure(err) { showError(message, err); refresh.hidden = false; },
   };
@@ -743,6 +822,359 @@ async function loadNotes(reset = false, retry = false, { pages = 1, scroll } = {
 function startFromNote(note) {
   navigate(`/walk?${new URLSearchParams({ name: note.name })}`);
 }
+function discoveryText(value) {
+  const code = typeof value === 'string' ? value : value?.code;
+  return {
+    EMBEDDING_DISABLED: l("请在设置中启用 Embedding。"),
+    EMBEDDING_UNAVAILABLE: l("Embedding 暂时无法连接，请重试或在设置中检查连接。"),
+    EMBEDDING_RATE_LIMITED: l("Embedding 调用受限，请稍后重试。"),
+    EMBEDDING_PROTOCOL: l("Embedding 返回格式或维度与配置不符，请在设置中检查连接。"),
+    INDEX_NOT_READY: l("语义索引尚未就绪，请在设置中查看构建进度后重试。"),
+    NO_SOURCE_VECTORS: l("这条笔记没有可用的正文向量，请从其他笔记开始。"),
+    SEMANTIC_UNAVAILABLE: l("语义索引暂时不可用，请稍后重试。"),
+    WALK_RESOURCE_LIMIT: l("漫步暂时达到技术资源限制，请重试。"),
+    WALK_ARCHIVED: l("归档笔记不参与漫步，请选择其他笔记。"),
+    RESOURCE_LIMIT: l("漫步暂时达到技术资源限制，请重试。"),
+    WALK_RESPONSE_INVALID: l("服务返回的漫步内容不完整，请重试。"),
+    REVIEW_RESPONSE_INVALID: l("服务返回的回顾内容不完整，请重试。"),
+    REQUEST_TIMEOUT: l("读取超时，请重试。"),
+  }[code] || (typeof value === 'string' ? l("服务提示：{0}", { 0: value }) : errorText(value));
+}
+function discoveryCard(note, review = false, className = 'card big discovery-note') {
+  const card = el('article', `${className}${review ? ' rv' : ''}`);
+  card.dataset.name = note.name;
+  const header = el('div', 'hd'), time = el('time', '', formatTime(note.create_time));
+  time.dateTime = note.create_time;
+  const open = button('', 'btn s', () => openNote(note));
+  setAttr(open, 'aria-label', l("打开笔记")); setAttr(open, 'title', l("打开笔记"));
+  const icon = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  icon.setAttribute('class', 'i'); icon.setAttribute('viewBox', '0 0 24 24'); icon.setAttribute('aria-hidden', 'true');
+  const arrow = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+  arrow.setAttribute('d', 'M9 6h9v9M18 6L7 17'); icon.append(arrow); open.append(icon);
+  const metadata = el('div', 'discovery-meta');
+  if (review && Number.isFinite(Date.parse(note.create_time))) {
+    const days = Math.max(0, Math.floor((Date.now() - Date.parse(note.create_time)) / 86_400_000));
+    header.append(el('span', 'pill', days ? l("{0} 天前", { 0: days }) : l("今天"))); metadata.append(time);
+  } else header.append(time);
+  for (const tag of new Set(note.tags || [])) metadata.append(el('span', 'tag', `#${tag}`));
+  metadata.append(open); header.append(metadata);
+  const content = el('div', 'note-content'); content.append(renderMarkdown(note.content, note));
+  card.append(header, content, renderAttachments(note));
+  return card;
+}
+function createDiscoveryPage(kind) {
+  let alive = true, sequence = 0, controller = null, busy = false, failure = null, retry = null;
+  let modelHint = '', configured = walkConfiguration?.enabled === true, modelController = null;
+  let floaters = walkFloaters || [], floaterController, floaterFailure, animatedNote, preparedNext = null;
+  const pageKey = currentKey, seedName = new URLSearchParams(location.search).get('name');
+  let seedPending = kind === 'walk' && !!seedName && walkView?.key !== pageKey;
+  const root = el('div', `stage discovery-page ${kind}-page`);
+  root.id = 'discovery-page';
+  const heading = el('header', 'discovery-heading');
+  heading.append(el('h1', 'vt', kind === 'review' ? l("回顾") : l("漫步")));
+  const content = el('div', 'discovery-content'), controls = el('div', 'discovery-controls');
+  root.append(heading, content, controls);
+  const active = ticket => alive && ticket === sequence;
+  function discardNext() {
+    preparedNext?.controller.abort(); preparedNext = null;
+  }
+  function cancel() {
+    sequence++; controller?.abort(); controller = null; busy = false; discardNext();
+  }
+  function message(text, error = false) {
+    const node = el('p', error ? 'error' : 'sub', text);
+    node.setAttribute('role', error ? 'alert' : 'status'); content.append(node);
+  }
+  function updateBusy() {
+    root.setAttribute('aria-busy', String(kind === 'review' ? busy && !reviewView :
+      busy || (!!modelController && !walkConfiguration)));
+  }
+  function render() {
+    if (!alive) return;
+    content.replaceChildren(); controls.replaceChildren();
+    updateBusy();
+    if (kind === 'review') renderReview();
+    else renderWalk();
+    if (failure) {
+      message(discoveryText(failure), true);
+      content.append(button(l("重试"), 'ghost discovery-retry', () => retry?.()));
+    }
+  }
+  function renderReview() {
+    const batch = reviewView?.batch;
+    if (!batch) {
+      if (busy) message(l("正在加载回顾…"));
+      return;
+    }
+    if (!batch.items.length) { message(l("今天没有可回顾的旧笔记。")); return; }
+    const selected = reviewView.position;
+    const stack = el('div', 'review-stack');
+    for (let i = 0; i < Math.min(2, batch.items.length - selected - 1); i++) {
+      const peek = el('div', `peek peek-${i + 1}`); peek.setAttribute('aria-hidden', 'true'); stack.append(peek);
+    }
+    batch.items.forEach((item, index) => {
+      let card;
+      if (item.unavailable) {
+        card = el('article', 'card big rv discovery-note');
+        card.append(el('p', 'sub', l("这条笔记已不存在或无法访问。")));
+      } else card = discoveryCard(item.note, true);
+      if (index === selected && animatedNote !== `${batch.id}:${selected}`) card.classList.add(selected % 2 ? 'wb' : 'wa');
+      card.hidden = index !== selected; card.dataset.reviewIndex = String(index); stack.append(card);
+    });
+    animatedNote = `${batch.id}:${selected}`;
+    content.append(stack);
+    const positions = el('div', 'pg review-positions');
+    positions.setAttribute('role', 'group'); setAttr(positions, 'aria-label', l("回顾条目"));
+    batch.items.forEach((_, index) => {
+      const dot = button('', `dt${index === selected ? ' on' : ''}`, () => {
+        reviewView.position = index; render();
+        root.querySelectorAll('.review-positions button')[index].focus({ preventScroll: true });
+      });
+      setAttr(dot, 'aria-label', l("第 {0} / {1} 条", { 0: index + 1, 1: batch.items.length }));
+      dot.setAttribute('aria-pressed', String(index === selected)); positions.append(dot);
+    });
+    const actions = el('div', 'discovery-actions'), current = batch.items[selected];
+    if (!current.unavailable) {
+      if (current.note.state === 'NORMAL') actions.append(button(l("从这条漫步"), 'ghost', () => startFromNote(current.note)));
+      actions.append(button(l("洞察这条"), 'ghost', () => navigate(`/insights?${new URLSearchParams({ note: current.note.name })}`)));
+    }
+    actions.append(button(selected + 1 < batch.items.length ? l("下一条") : l("再看一遍"), 'save', () => {
+      reviewView.position = (selected + 1) % batch.items.length; render();
+      root.querySelector('.discovery-actions .save').focus({ preventScroll: true });
+    }));
+    controls.append(positions, actions);
+  }
+  async function loadReview() {
+    cancel();
+    const ticket = sequence;
+    if (reviewView?.batch.date !== localToday() || reviewView?.batch.timezone !== identity?.timezone) reviewView = null;
+    controller = new AbortController(); busy = true; failure = null; retry = loadReview; render();
+    let changed = false;
+    try {
+      const batch = await request('/reviews/daily', { controller });
+      if (!active(ticket)) return;
+      if (!batch?.id || !/^\d{4}-\d{2}-\d{2}$/.test(batch.date) || !batch.timezone || !Array.isArray(batch.items) ||
+          batch.items.some(item => !item || !noteID(item.name) || typeof item.unavailable !== 'boolean' ||
+            (!item.unavailable && (!validNote(item.note) || item.note.name !== item.name)))) {
+        throw Object.assign(new Error('Invalid daily review'), { code: 'REVIEW_RESPONSE_INVALID' });
+      }
+      changed = JSON.stringify(batch) !== JSON.stringify(reviewView?.batch);
+      const position = reviewView?.batch.id === batch.id ? reviewView.position : 0;
+      reviewView = { batch, position: Math.min(position, Math.max(0, batch.items.length - 1)) };
+    } catch (err) {
+      if (!active(ticket) || err.name === 'AbortError') return;
+      if (err.status === 401) { expire(err); return; }
+      failure = err;
+    } finally {
+      if (active(ticket)) {
+        controller = null; busy = false;
+        if (changed || failure || !reviewView) render();
+        else root.setAttribute('aria-busy', 'false');
+      }
+    }
+  }
+  function stopWalk() {
+    cancel(); seedPending = false; walkView = { key: pageKey, result: null, previous: null };
+    animatedNote = null; failure = retry = null; render();
+  }
+  function renderWalk() {
+    if (modelHint) {
+      message(modelHint);
+      const settings = el('a', 'dlink', l("打开设置")); settings.href = '/settings'; settings.dataset.route = ''; content.append(settings);
+    }
+    const result = walkView?.result;
+    if (result?.item) {
+      const notes = el('div', 'walk-cards');
+      if (walkView.previous) {
+        const previous = el('div', 'card walk-trail');
+        previous.append(el('span', 'sub', formatTime(walkView.previous.create_time)),
+          el('div', 'walk-trail-text', walkView.previous.content));
+        previous.setAttribute('aria-hidden', 'true'); notes.append(previous);
+      }
+      const current = discoveryCard(result.item.note);
+      if (animatedNote !== result.item.note.name) current.classList.add(result.path.length % 2 ? 'wa' : 'wb');
+      animatedNote = result.item.note.name;
+      notes.append(current); content.append(notes);
+    } else if (!result?.exhausted) {
+      const start = el('div', 'walk-start');
+      floaters.forEach(note => {
+        const preview = [...note.content.replace(/\s+/gu, ' ').trim()].slice(0, 64).join('') || note.attachments?.[0]?.filename || l("笔记");
+        const floater = button('', 'flc fl walk-floater', () => walkRequest('/walks/start', { name: note.name }));
+        floater.append(el('span', '', preview));
+        floater.dataset.name = note.name;
+        setAttr(floater, 'aria-label', l("从这条笔记开始：{0}", { 0: preview }));
+        floater.disabled = busy || !configured;
+        start.append(floater);
+      });
+      const control = button(busy || (modelController && !walkConfiguration) ? l("翻找中…") : l("随机开始"), 'save', () => walkRequest('/walks/start', {}));
+      control.disabled = busy || !configured; start.append(control); content.append(start);
+      if (floaterFailure) {
+        message(errorText(floaterFailure), true);
+        content.append(button(l("重试加载笔记"), 'ghost discovery-retry', loadFloaters));
+      }
+    }
+    for (const warning of walkView?.warnings || []) message(discoveryText(warning));
+    if (result?.exhausted) message(result.item ? l("能走的路都走完了。") : l("没有可漫步的笔记。"));
+    if (result || ((busy || failure) && retry !== loadWalk)) {
+      const actions = el('div', 'discovery-actions');
+      actions.append(button(l("停止"), 'pbtn', stopWalk));
+      if (result?.item && !result.exhausted) {
+        const next = button(busy ? l("翻找中…") : l("继续漫步"), 'save', () => walkRequest('/walks/next', {
+          name: result.item.note.name, path: [...result.path],
+        }));
+        next.disabled = busy || !configured; actions.append(next);
+      }
+      controls.append(actions);
+    }
+  }
+  async function loadFloaters() {
+    floaterController?.abort();
+    const pending = new AbortController(); floaterController = pending; floaterFailure = null;
+    try {
+      const page = await request(`/notes?${listQuery('/', { tags: [] })}`, { controller: pending });
+      if (!alive || floaterController !== pending) return;
+      if (!Array.isArray(page?.notes) || page.notes.some(note => !validNote(note) || note.state !== 'NORMAL')) {
+        throw Object.assign(new Error('Invalid notes'), { code: 'NOTE_LIST_INVALID' });
+      }
+      walkFloaters = floaters = page.notes.slice(0, 6);
+    } catch (err) {
+      if (!alive || floaterController !== pending || err.name === 'AbortError') return;
+      if (err.status === 401) { expire(err); return; }
+      floaterFailure = err;
+    } finally {
+      if (alive && floaterController === pending) {
+        floaterController = null;
+        if (!walkView?.result) render();
+      }
+    }
+  }
+  async function fetchWalk(path, body, pending) {
+    const result = await sessionRequest(path, { method: 'POST', body, controller: pending });
+    const validPath = Array.isArray(result?.path) && result.path.every(name => typeof name === 'string' && noteID(name)) &&
+      new Set(result.path).size === result.path.length;
+    const prior = path === '/walks/next' ? body.path : [];
+    if (!validPath || typeof result.mode !== 'string' || typeof result.exhausted !== 'boolean' ||
+        !Array.isArray(result.warnings) || result.warnings.some(value => typeof value !== 'string') ||
+        prior.some((name, index) => result.path[index] !== name) ||
+        (result.item ? !validNote(result.item.note) || result.item.note.state !== 'NORMAL' || result.path.at(-1) !== result.item.note.name ||
+          result.path.length !== prior.length + 1 || (body.name && !prior.length && result.item.note.name !== body.name)
+          : result.path.length !== prior.length)) {
+      throw Object.assign(new Error('Invalid walk response'), { code: 'WALK_RESPONSE_INVALID' });
+    }
+    return result;
+  }
+  function prepareNext() {
+    const source = walkView?.result;
+    if (!alive || busy || !configured || !source?.item || source.exhausted || preparedNext?.source === source) return;
+    discardNext();
+    const body = { name: source.item.note.name, path: [...source.path] };
+    const pending = { source, key: JSON.stringify(body), controller: new AbortController(), outcome: null, loadedAt: 0 };
+    preparedNext = pending;
+    pending.promise = fetchWalk('/walks/next', body, pending.controller).then(result => {
+      pending.loadedAt = Date.now();
+      return pending.outcome = { result };
+    }, error => {
+      if (alive && preparedNext === pending && error.status === 401) expire(error);
+      return pending.outcome = { error };
+    });
+  }
+  async function walkRequest(path, body) {
+    if (busy || !configured) return;
+    let pending = path === '/walks/next' && preparedNext?.source === walkView?.result &&
+      preparedNext.key === JSON.stringify(body) ? preparedNext : null;
+    if (pending?.outcome?.error || (pending?.loadedAt && Date.now() - pending.loadedAt >= 60_000)) pending = null;
+    if (pending) preparedNext = null;
+    else discardNext();
+    const ticket = ++sequence;
+    controller = pending?.controller || new AbortController(); busy = true; failure = null;
+    retry = () => walkRequest(path, body); walkView.warnings = [];
+    if (!pending?.outcome?.result) render();
+    try {
+      const outcome = pending ? pending.outcome || await pending.promise : { result: await fetchWalk(path, body, controller) };
+      if (!active(ticket)) return;
+      if (outcome.error) throw outcome.error;
+      const result = outcome.result;
+      walkView.warnings = result.warnings;
+      if (!result.item && !result.exhausted) {
+        failure = { code: 'WALK_RESOURCE_LIMIT' };
+      } else {
+        if (result.item) {
+          walkView.previous = walkView.result?.item?.note || null; walkView.result = result;
+        } else walkView.result = { ...result, item: walkView.result?.item };
+      }
+    } catch (err) {
+      if (!active(ticket) || err.name === 'AbortError') return;
+      if (err.status === 401) { expire(err); return; }
+      failure = err;
+    } finally {
+      if (active(ticket)) {
+        controller = null; busy = false; render();
+        if (!failure) prepareNext();
+      }
+    }
+  }
+  function startSeed() {
+    if (!seedPending || !configured || busy) return;
+    seedPending = false;
+    if (!noteID(seedName)) { failure = { code: 'SOURCE_NOT_FOUND' }; render(); return; }
+    return walkRequest('/walks/start', { name: seedName });
+  }
+  async function loadWalk() {
+    const ticket = sequence, pending = new AbortController();
+    let redraw = !walkConfiguration;
+    modelController?.abort(); modelController = pending;
+    if (!walkConfiguration) { failure = null; retry = loadWalk; }
+    render();
+    try {
+      const models = await sessionRequest('/models', { controller: pending });
+      if (!alive || modelController !== pending) return;
+      if (typeof models?.embedding?.enabled !== 'boolean') {
+        throw Object.assign(new Error('Invalid models response'), { code: 'WALK_RESPONSE_INVALID' });
+      }
+      redraw ||= configured !== models.embedding.enabled;
+      walkConfiguration = { enabled: models.embedding.enabled };
+      configured = models.embedding?.enabled === true;
+      modelHint = configured ? '' : l("请在设置中启用 Embedding，再开始漫步。");
+      if (!configured) discardNext();
+      else { startSeed(); prepareNext(); }
+    } catch (err) {
+      if (!alive || modelController !== pending || err.name === 'AbortError') return;
+      if (err.status === 401) { expire(err); return; }
+      if (active(ticket)) { failure = err; retry = loadWalk; redraw = true; }
+    } finally {
+      if (alive && modelController === pending) {
+        modelController = null;
+        if (redraw || !walkView?.result) render();
+        else updateBusy();
+      }
+    }
+  }
+  return {
+    async mount(parent) {
+      parent.append(root);
+      if (kind === 'review') await loadReview();
+      else {
+        walkView ||= { key: null, result: null, previous: null };
+        if (seedPending) walkView = { key: pageKey, result: null, previous: null };
+        if (walkConfiguration) {
+          modelHint = configured ? '' : l("请在设置中启用 Embedding，再开始漫步。");
+          startSeed(); prepareNext();
+        }
+        await Promise.all([loadWalk(), loadFloaters()]);
+      }
+    },
+    refresh() {
+      cancel(); floaterController?.abort(); floaters = [];
+      if (kind === 'review') loadReview();
+      else {
+        walkView = { key: pageKey, result: null, previous: null };
+        animatedNote = null; failure = retry = null; render();
+        loadWalk(); loadFloaters();
+      }
+    },
+    destroy() { alive = false; cancel(); modelController?.abort(); floaterController?.abort(); root.remove(); },
+  };
+}
 async function routeModule(load, generation, sequence) {
   try {
     const module = await load();
@@ -756,14 +1188,13 @@ async function routeModule(load, generation, sequence) {
     return null;
   }
 }
-async function showRoute({ focus = false, returning = false } = {}) {
+async function showRoute() {
   if (!identity) return;
   shell.closeNavigation();
   settingsPage?.destroy(); settingsPage = null;
   insightsPage?.destroy(); insightsPage = null;
   mapPage?.destroy(); mapPage = null;
   discoveryPage?.destroy(); discoveryPage = null;
-  cardObserver.disconnect();
   const generation = epoch, sequence = ++viewSequence;
   $('main').dataset.page = location.pathname.slice(1) || 'home';
   listSequence++; listController?.abort(); clearTimeout(retryTimer); pageObserver.disconnect();
@@ -773,13 +1204,8 @@ async function showRoute({ focus = false, returning = false } = {}) {
   for (const id of ['back', 'view-title', 'capability', 'empty', 'list-retry', 'filters', 'load-more']) $(id).hidden = true;
   showError($('list-error'), null); $('composer').hidden = location.pathname !== '/';
   const detail = notePath.exec(location.pathname);
-  const title = detail ? l("笔记") : pages.get(location.pathname) || l("页面不存在");
-  setText(document.querySelector('title'), () => `${resolveText(title)} · Moerise`);
-  setAttr($('main'), 'aria-label', title);
-  $('view-title').classList.toggle('sr', location.pathname === '/' || !!detail);
-  if (location.pathname === '/' || detail) { setText($('view-title'), title); $('view-title').hidden = false; }
-  if (focus) $('main').focus({ preventScroll: true });
-  if ($('q').value !== sourceTimeline().values.query) $('q').value = sourceTimeline().values.query;
+  setText(document.querySelector('title'), () => `${resolveText(detail ? l("笔记") : pages.get(location.pathname) || l("页面不存在"))} · Moerise`);
+  $('q').value = sourceTimeline().values.query;
   $('search-mode').value = sourceTimeline().values.mode;
   lastTimeline = sourceTimeline();
   if (sourceTimeline().values.date) month = sourceTimeline().values.date.slice(0, 7);
@@ -792,7 +1218,7 @@ async function showRoute({ focus = false, returning = false } = {}) {
     if (location.pathname === '/archived') { $('view-title').hidden = false; setText($('view-title'), l("归档笔记")); }
     renderFilters();
     const snapshot = timelineSnapshot();
-    if (snapshot?.url === router.url && !snapshot.dirty) {
+    if (snapshot?.url === currentURL && !snapshot.dirty) {
       items = [...snapshot.items]; nextToken = snapshot.nextToken; pageCount = snapshot.pages; renderList(); $('empty').hidden = !!items.length || !!nextToken;
       searchStatus = snapshot.searchStatus || '';
       setText($('capability'), searchStatus); $('capability').hidden = !searchStatus;
@@ -804,10 +1230,6 @@ async function showRoute({ focus = false, returning = false } = {}) {
       const saved = snapshot || history.state;
       window.scrollTo(0, 0);
       await reloadTimeline(Math.max(1, saved?.pages || 1), saved?.scroll || 0);
-    }
-    if (returning && generation === epoch && sequence === viewSequence) {
-      const name = snapshot?.focusedName;
-      [...$('notes').children].find(card => card.dataset.name === name)?.querySelector('.dlink')?.focus({ preventScroll: true });
     }
   } else if (detail) {
     const from = safeFrom(new URLSearchParams(location.search).get('from'));
@@ -826,13 +1248,7 @@ async function showRoute({ focus = false, returning = false } = {}) {
     }
   } else if (location.pathname === '/review' || location.pathname === '/walk') {
     window.scrollTo(0, 0);
-    const module = await routeModule(() => import('./discovery.js'), generation, sequence);
-    if (!module) return;
-    discovery ||= module.createDiscovery({ request, sessionRequest, getIdentity: () => identity,
-      localToday, formatTime, discoveryCard, navigate, startFromNote, expire });
-    discoveryPage = discovery.createPage(location.pathname === '/review' ? 'review' : 'walk', {
-      key: router.key, seedName: new URLSearchParams(location.search).get('name'),
-    });
+    discoveryPage = createDiscoveryPage(location.pathname === '/review' ? 'review' : 'walk');
     await discoveryPage.mount($('workspace'));
   } else if (location.pathname === '/insights') {
     window.scrollTo(0, 0);
@@ -840,15 +1256,14 @@ async function showRoute({ focus = false, returning = false } = {}) {
     if (!module) return;
     insightsPage = module.createInsightsPage({
       sessionRequest, csrfToken: () => identity?.csrf_token, handleFailure, openNote,
-      navigate: async (url, options) => {
-        if (url === router.url) { if (await leaveGuard.confirm(pageDirty())) showRoute({ focus: true }); }
-        else navigate(url, options);
-      },
+      navigate: (url, options) => { if (url === currentURL) showRoute(); else navigate(url, options); },
       closeMenus,
       renewCSRF: async () => { identity = validIdentity(await request('/session')); updateStargazing(); },
-      replaceURL: url => router.replaceURL(url),
+      replaceURL: url => {
+        history.replaceState({ ...history.state }, '', url);
+        currentURL = location.pathname + location.search;
+      },
       today: localToday, formatTime,
-      onDirtyChange: () => leaveGuard.update(),
       onSaved: () => { dirtySnapshots(); invalidateSidebar(); loadSidebar(); },
     });
     await insightsPage.mount($('workspace'));
@@ -886,12 +1301,11 @@ async function showRoute({ focus = false, returning = false } = {}) {
     const module = await routeModule(() => import('./settings.js'), generation, sequence);
     if (!module) return;
     settingsPage = module.createSettingsPage({
-      sessionRequest, handleFailure, onDirtyChange: () => leaveGuard.update(),
-      confirmDiscard: dirty => leaveGuard.confirm(dirty),
+      sessionRequest, handleFailure,
       onSaved: data => {
         identity.timezone = data.settings.timezone;
         updateStargazing(data.settings.stargazing.enabled);
-        discovery?.invalidate({ settings: true });
+        walkConfiguration = null;
         month = sourceTimeline().values.date?.slice(0, 7) || localToday().slice(0, 7);
         dirtySnapshots(); invalidateSidebar(); loadSidebar();
       },
@@ -909,7 +1323,6 @@ function updateComposer() {
   $('add-attachment').disabled = $('attachment-input').disabled = saving || readingFiles || draft.locked;
   $('composer').setAttribute('aria-busy', String(saving || readingFiles));
   selectedFiles($('draft-attachments'), draft, () => saving || readingFiles || draft.locked, updateComposer);
-  leaveGuard.update();
 }
 $('content').addEventListener('input', () => { draft.content = $('content').value; updateComposer(); });
 $('content').addEventListener('keydown', event => {
@@ -947,8 +1360,12 @@ $('composer').addEventListener('submit', async event => {
     draft.reject(attempt, err.code); handleFailure($('save-error'), err);
   } finally { if (generation === epoch) { saving = false; updateComposer(); } }
 });
+$('q').addEventListener('input', () => { clearTimeout(searchTimer); searchTimer = setTimeout(() => sidebarFilter({ query: $('q').value }), 250); });
+$('q').addEventListener('keydown', event => {
+  if (event.key === 'Enter') { event.preventDefault(); clearTimeout(searchTimer); sidebarFilter({ query: $('q').value }); }
+});
 $('search-mode').addEventListener('change', () => {
-  searchInput.cancel();
+  clearTimeout(searchTimer);
   sidebarFilter({ mode: $('search-mode').value });
 });
 $('month-prev').addEventListener('click', () => changeMonth(-1));
@@ -968,28 +1385,35 @@ $('back').addEventListener('click', () => {
   else navigate(safeFrom(new URLSearchParams(location.search).get('from')));
 });
 $('logout').addEventListener('click', logout);
-bindMenu($('user-menu'), $('account-menu'));
+$('user-menu').addEventListener('click', () => {
+  const open = $('account-menu').hidden; closeMenus(); $('account-menu').hidden = !open;
+  $('user-menu').setAttribute('aria-expanded', String(open)); if (open) $('account-menu').querySelector('[role="menuitem"]')?.focus();
+});
 document.addEventListener('click', event => {
   const link = event.target.closest('a[data-route]');
   if (link && !event.ctrlKey && !event.metaKey && !event.shiftKey && !event.altKey && event.button === 0) {
     event.preventDefault();
     if (identity) {
       const url = new URL(link.href), isDetail = notePath.test(url.pathname);
-      navigate(url.pathname + url.search, { returnKey: isDetail ? router.key : null });
+      navigate(url.pathname + url.search, { returnKey: isDetail ? currentKey : null });
     }
   }
+  if (!event.target.closest('.mw, #account')) closeMenus();
+});
+document.addEventListener('keydown', event => {
+  if (event.key === 'Escape') {
+    const open = document.querySelector('[aria-haspopup="menu"][aria-expanded="true"]');
+    if (open) { event.preventDefault(); closeMenus(); open.focus(); }
+  }
+});
+window.addEventListener('popstate', () => {
+  rememberView(false); clearTimeout(searchTimer);
+  currentURL = location.pathname + location.search; currentKey = history.state?.webKey || crypto.randomUUID();
+  if (identity) showRoute();
 });
 $('navigation-dialog').addEventListener('close', closeMenus);
-let scrollTimer = null;
 window.addEventListener('scroll', () => {
-  if (scrollTimer !== null || !identity || !isTimeline()) return;
-  const key = router.key;
-  scrollTimer = setTimeout(() => {
-    scrollTimer = null;
-    if (identity && isTimeline() && key === router.key) {
-      history.replaceState({ ...history.state, scroll: window.scrollY, pages: pageCount }, '');
-    }
-  }, 150);
+  if (identity && isTimeline()) history.replaceState({ ...history.state, scroll: window.scrollY, pages: pageCount }, '');
 }, { passive: true });
 window.addEventListener('pagehide', () => { invalidate(); hidePrivate(); });
 window.addEventListener('pageshow', event => { if (event.persisted) restore(); });

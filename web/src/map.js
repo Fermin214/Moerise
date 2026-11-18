@@ -116,7 +116,6 @@ function node(tag, className = '', text = '') {
 }
 
 export function createMapPage({ request, handleFailure, validNote, renderNote, initialView, onViewChange, initialData, onData = () => {} }) {
-  const lifecycle = new AbortController();
   let alive = true, mapSequence = 0, noteSequence = 0, mapController = null, noteController = null, timer = null, animation = null;
   let result = null, view = null, overviewScale = 100, selected = initialView?.selected || '', readName = '', loading = false;
   let candidate = '', dragged = false, origin = null, nodeDrag = false, holdTimer = null;
@@ -280,14 +279,8 @@ export function createMapPage({ request, handleFailure, validNote, renderNote, i
   }
   function refreshLater(delay) {
     clearTimeout(timer);
-    if (alive && !document.hidden) timer = setTimeout(() => load(false), delay);
+    if (alive) timer = setTimeout(() => load(false), delay);
   }
-  let wasHidden = document.hidden;
-  document.addEventListener('visibilitychange', () => {
-    if (document.hidden) { clearTimeout(timer); timer = null; }
-    else if (alive && wasHidden) load(false);
-    wasHidden = document.hidden;
-  }, { signal: lifecycle.signal });
   const errorMessages = {
     MAP_RESPONSE_INVALID: l("服务返回的地图格式无效，请刷新页面。"),
     MAP_RESOURCE_LIMIT: l("地图读取超过技术资源预算，请稍后刷新。"),
@@ -492,7 +485,7 @@ export function createMapPage({ request, handleFailure, validNote, renderNote, i
     },
     refresh() { clearReader(); setHover(''); clearExcerpts(); return load(false); },
     destroy() {
-      alive = false; lifecycle.abort(); mapSequence++; clearTimeout(timer); mapController?.abort(); setHover(''); clearExcerpts(); clearReader(); resetPointers(); resize.disconnect(); scene?.destroy();
+      alive = false; mapSequence++; clearTimeout(timer); mapController?.abort(); setHover(''); clearExcerpts(); clearReader(); resetPointers(); resize.disconnect(); scene?.destroy();
       if (animation !== null) cancelAnimationFrame(animation);
       root.remove();
     },

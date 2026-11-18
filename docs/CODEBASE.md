@@ -94,19 +94,11 @@ Android 文件的版本管理规则见 [Android 开发](ANDROID.md#文件与产�
 | --- | --- |
 | `web/src/app.js` | 页面启动、会话、笔记列表、编辑与附件交互 |
 | `shell.js` | 桌面与手机布局切换、导航侧栏、搜索展开与触控手势 |
-| `client.js`、`router.js`、`routes.js` | 会话请求、超时与取消；URL、历史、路由焦点与筛选 |
-| `draft.js`、`leave-guard.js`、`search-input.js`、`errors.js` | 冻结写入、会话内草稿、输入离开确认、输入法保护与错误文案 |
-| `dom.js`、`notes.js`、`modal.js`、`menus.js`、`media.js` | DOM 与图标、笔记卡片、原生模态、菜单键盘与定位、图片尺寸缓存 |
-| `discovery.js` | 每日回顾、随机漫步、会话缓存与预取生命周期 |
-| `settings.js`、`forms.js` | 按需加载的设置页、字段签名、修改状态与保存 |
-| `insights.js`、`material-picker.js` | 按需加载的洞察页、持久会话、材料分页与选择 |
-| `chat-stream.js`、`stream-markdown.js`、`markdown.js` | SSE 消息解析、流式段落呈现与安全 Markdown 渲染 |
-| `map.js`、`map-stars-scene.js` | 按需加载的观星页、视口、语义点位、键盘与命中网格 |
-| `map-star-renderer.js`、`map-stars-worker.js`、`map-star-paint.js` | 正式星图后台绘制、ImageBitmap 合成、分批回退与原星体画法 |
-| `map-star-cloud.js`、`map-star-worker.js`、`map-star-density.js` | 密度任务生命周期、Worker 与共享密度算法 |
-| `map-scene.js`、`map-worker.js`、`map-paint.js`、`map-regions.js` | 旧地图快照兼容渲染、区域几何与后台绘制 |
+| `routes.js`、`draft.js`、`errors.js` | 导航状态、草稿恢复与错误文案 |
+| `settings.js`、`insights.js`、`map.js` | 按需加载的设置、洞察和观星页面；`map-stars-scene.js`、`map-star-paint.js` 绘制星图 |
+| `chat-stream.js`、`markdown.js` | SSE 消息解析与 Markdown 渲染 |
 | `i18n.js`、`en.js` | 语言选择、消息绑定与英语翻译 |
-| `styles.css`、`tokens.css`、`interaction.css`、`shell.css`、`memos.css` | CSS 分层入口、视觉变量、共享交互、主界面与登录样式 |
+| `styles.css`、`shell.css`、`memos.css` | 应用样式入口、主界面布局与 Memos 登录界面样式 |
 | `index.html`、`favicon.svg` | HTML 入口和站点图标 |
 | `web/build.mjs`、`web/server.mjs` | 带内容摘要的静态构建、压缩资源、同源代理与缓存策略 |
 | `web/MEMOS-LICENSE` | Memos 衍生登录界面代码与样式的许可证 |

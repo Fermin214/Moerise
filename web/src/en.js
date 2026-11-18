@@ -1,13 +1,6 @@
 const noun = (count, singular, plural = singular + 's') => count === '1' ? singular : plural;
 
 export const english = {
-  "跳到正文": "Skip to content",
-  "放弃未保存的修改？": "Discard unsaved changes?",
-  "继续编辑": "Keep editing",
-  "放弃修改": "Discard changes",
-  "材料 · {0} 条 · {1} / {2} 字": "Materials · {0} notes · {1} / {2} characters",
-  "已选 {0} 条 · {1} / {2} 字": "{0} notes selected · {1} / {2} characters",
-  "正在保存…": "Saving…",
   "拖动平移，滚轮或双指缩放。方向键平移，加减键缩放，Home 归位，R 刷新。Tab 选星，Enter 阅读。": "Drag to pan, scroll or pinch to zoom. Arrow keys pan; +/- zoom; Home resets; R refreshes. Tab selects stars; Enter opens a note.",
   "切换星图氛围": "Toggle star glow",
   "切换主体与全部取景": "Toggle subject and full framing",

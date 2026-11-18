@@ -10,7 +10,7 @@ import { test } from 'node:test';
 import { createWebServer } from '../server.mjs';
 
 const runtime = process.env.MOERISE_PLAYWRIGHT_MODULE;
-const { [process.env.MOERISE_PLAYWRIGHT_ENGINE || 'chromium']: browserType } = runtime ? await import(pathToFileURL(runtime).href) : await import('playwright');
+const { chromium } = runtime ? await import(pathToFileURL(runtime).href) : await import('playwright');
 function settings() {
   return {
     version: 1, default_insight_prompt: '内置默认洞察 Prompt',
@@ -137,9 +137,9 @@ async function fixture(t, language = 'zh-CN') {
     await Promise.all([web, core].map(server => new Promise(resolve => { server.close(resolve); server.closeAllConnections(); })));
     await rm(dist, { recursive: true, force: true });
   });
-  browser = await browserType.launch({
+  browser = await chromium.launch({
     headless: true, channel: process.env.MOERISE_PLAYWRIGHT_CHANNEL || undefined,
-    args: process.env.MOERISE_PLAYWRIGHT_ENGINE ? [] : [`--log-file=${join(dist, 'chromium.log')}`],
+    args: [`--log-file=${join(dist, 'chromium.log')}`],
     env: { ...process.env, CHROME_LOG_FILE: join(dist, 'chromium.log') },
   });
   const page = await browser.newPage({ locale: language, viewport: { width: 1360, height: 960 } }), errors = [];
@@ -483,8 +483,6 @@ test('model settings pair protocols, check saved versions and discard obsolete r
   assert.equal(await setting(page, 'embedding.provider').inputValue(), 'bailian');
   assert.equal(await setting(page, 'embedding.send_dimensions').isChecked(), false);
   await page.locator('a[data-route][href="/review"]').click();
-  await page.getByRole('button', { name: '放弃修改', exact: true }).click();
-  await page.locator('#settings-page').waitFor({ state: 'detached' });
   assert.equal(await page.locator('#settings-page').count(), 0);
   await page.locator('a[data-route][href="/map"]').click();
   await page.locator('.map-page [role="status"]').filter({ hasText: '正在生成观星布局' }).waitFor();
@@ -514,9 +512,7 @@ test('conflict requires reload, busy can retry, and leaving or expiring removes 
   assert.ok(await page.getByRole('button', { name: '保存设置', exact: true }).isDisabled());
   assert.equal(await setting(page, 'review.count').inputValue(), '4');
   assert.equal(await secret(page, 'LLM API Key').inputValue(), '');
-  await page.getByRole('button', { name: '重新加载设置' }).click();
-  await page.getByRole('button', { name: '放弃修改', exact: true }).click();
-  await pageReady(page);
+  await page.getByRole('button', { name: '重新加载设置' }).click(); await pageReady(page);
   assert.equal(await setting(page, 'review.count').inputValue(), '3');
   await setting(page, 'review.count').fill('4'); state.fail = 'SETTINGS_BUSY';
   await page.getByRole('button', { name: '保存设置', exact: true }).click();
@@ -527,8 +523,6 @@ test('conflict requires reload, busy can retry, and leaving or expiring removes 
   await tab(page, 'models');
   await operation(page, 'LLM API Key').selectOption('replace'); await secret(page, 'LLM API Key').fill('route-key');
   await page.locator('a[data-route][href="/review"]').click();
-  await page.getByRole('button', { name: '放弃修改', exact: true }).click();
-  await page.locator('#settings-page').waitFor({ state: 'detached' });
   assert.equal(await page.locator('#settings-page').count(), 0);
   assert.equal(await page.locator('input[type="password"]').count(), 1);
   state.hold = true;
@@ -546,7 +540,6 @@ test('conflict requires reload, busy can retry, and leaving or expiring removes 
   await page.getByRole('button', { name: '保存设置', exact: true }).click();
   await page.waitForFunction(() => document.querySelector('.settings-form')?.getAttribute('aria-busy') === 'true');
   await page.locator('#user-menu').click(); await page.locator('#logout').click();
-  await page.getByRole('button', { name: '放弃修改', exact: true }).click();
   await page.locator('#login-form').waitFor({ state: 'visible' });
   for (const release of state.pending.splice(0)) release();
   state.hold = false;
@@ -556,114 +549,8 @@ test('conflict requires reload, busy can retry, and leaving or expiring removes 
   await operation(page, 'LLM API Key').selectOption('replace'); await secret(page, 'LLM API Key').fill('expired-key');
   state.session = false;
   await page.getByRole('button', { name: '重新加载设置' }).click();
-  await page.getByRole('button', { name: '放弃修改', exact: true }).click();
   await page.locator('#login-form').waitFor({ state: 'visible' });
   assert.equal(await page.locator('#settings-page').count(), 0);
-  assert.deepEqual(errors, []);
-});
-
-test('settings leave confirmation covers navigation, browser history and reload without storing fields', async t => {
-  const { page, url, errors } = await fixture(t);
-  await page.goto(url); await login(page);
-  await page.locator('a[data-route][href="/settings"]').click(); await pageReady(page);
-  await tab(page, 'review');
-  await setting(page, 'review.count').fill('7');
-  const mounted = await setting(page, 'review.count').elementHandle();
-  await page.locator('.skip-link').focus(); await page.keyboard.press('Enter');
-  await page.waitForURL(value => value.hash === '#main');
-  assert.equal(await mounted.evaluate(node => node.isConnected), true);
-  assert.equal(await setting(page, 'review.count').inputValue(), '7');
-  assert.equal(await page.getByRole('dialog').count(), 0);
-  await page.goBack(); await page.waitForURL(value => !value.hash);
-  assert.equal(await mounted.evaluate(node => node.isConnected), true);
-  await page.goForward(); await page.waitForURL(value => value.hash === '#main');
-  assert.equal(await setting(page, 'review.count').inputValue(), '7');
-  await page.goBack(); await page.waitForURL(value => !value.hash);
-  await page.locator('a[data-route][href="/review"]').click();
-  await page.getByRole('button', { name: '继续编辑', exact: true }).click();
-  assert.equal(new URL(page.url()).pathname, '/settings');
-  assert.equal(await setting(page, 'review.count').inputValue(), '7');
-  await page.goBack();
-  await page.getByRole('button', { name: '继续编辑', exact: true }).click();
-  assert.equal(new URL(page.url()).pathname, '/settings');
-  await page.getByRole('button', { name: '重新加载设置', exact: true }).click();
-  await page.getByRole('button', { name: '继续编辑', exact: true }).click();
-  assert.equal(await setting(page, 'review.count').inputValue(), '7');
-  await page.goBack();
-  await page.getByRole('button', { name: '放弃修改', exact: true }).click();
-  await page.waitForURL(value => value.pathname === '/');
-  assert.equal(await page.locator('#settings-page').count(), 0);
-  assert.deepEqual(await page.evaluate(() => ({ local: localStorage.length, session: sessionStorage.length })), { local: 0, session: 0 });
-  assert.deepEqual(errors, []);
-});
-
-for (const noNavigation of [false, true]) for (const step of [-1, 1, -2]) test(`legacy settings history keeps the form and URL together: step ${step}, navigation fallback ${noNavigation}`, async t => {
-  const { page, url } = await fixture(t);
-  if (noNavigation) await page.addInitScript(() => Object.defineProperty(window, 'navigation', { value: undefined }));
-  await page.goto(url); await login(page);
-  await page.evaluate(step => {
-    history.replaceState({ webKey: 'legacy-home' }, '', '/');
-    if (step > 0) {
-      history.pushState({ webKey: 'legacy-settings' }, '', '/settings');
-      history.pushState({ webKey: 'legacy-map' }, '', '/map');
-      history.back();
-    } else {
-      history.pushState({ webKey: 'legacy-map' }, '', '/map');
-      history.pushState({ webKey: 'legacy-settings' }, '', '/settings');
-    }
-  }, step);
-  await page.waitForURL(url + '/settings'); await page.reload(); await pageReady(page);
-  const nativeKey = await page.evaluate(() => window.navigation?.currentEntry?.key);
-  await tab(page, 'review'); await setting(page, 'review.count').fill('7');
-  const mounted = await setting(page, 'review.count').elementHandle();
-  await page.evaluate(step => history.go(step), step);
-  await page.getByRole('button', { name: '继续编辑', exact: true }).click();
-  assert.equal(new URL(page.url()).pathname, '/settings');
-  assert.equal(await mounted.evaluate(node => node.isConnected), true);
-  assert.equal(await setting(page, 'review.count').inputValue(), '7');
-  assert.equal(await page.evaluate(() => history.state.webKey), 'legacy-settings');
-  if (nativeKey) assert.equal(await page.evaluate(() => navigation.currentEntry.key), nativeKey);
-  await page.evaluate(step => history.go(step), nativeKey ? step : -1);
-  await page.getByRole('button', { name: '放弃修改', exact: true }).click();
-  await page.waitForURL(url + (step === -2 ? '/' : '/map'));
-  await page.locator('#settings-page').waitFor({ state: 'detached' });
-  assert.equal(await page.evaluate(() => localStorage.length + sessionStorage.length), 0);
-});
-
-test('settings button changes enable refresh protection and returning to saved values clears it', async t => {
-  const { page, url, errors, state } = await fixture(t);
-  state.value.settings.notifications.times = ['09:00', '18:00'];
-  await page.goto(url + '/settings'); await login(page); await pageReady(page);
-  const rejectReload = async () => {
-    const shown = page.waitForEvent('dialog').then(dialog => {
-      assert.equal(dialog.type(), 'beforeunload'); return dialog.dismiss();
-    });
-    const reload = page.reload({ timeout: 1500 }).catch(() => {});
-    await shown; await reload;
-  };
-  await tab(page, 'insights');
-  await page.getByRole('button', { name: '恢复默认', exact: true }).click();
-  await rejectReload();
-  assert.equal(await setting(page, 'insights.default_prompt').inputValue(), '内置默认洞察 Prompt');
-  await setting(page, 'insights.default_prompt').fill('用户自定义 Prompt');
-  await tab(page, 'review');
-  await page.getByRole('button', { name: '移除', exact: true }).nth(1).click();
-  await rejectReload();
-  assert.equal(await page.locator('input[type="time"]').count(), 1);
-  await page.getByRole('button', { name: '添加时段', exact: true }).click();
-  await page.locator('input[type="time"]').nth(1).fill('18:00');
-  await page.getByRole('button', { name: '添加时段', exact: true }).click();
-  await rejectReload();
-  assert.equal(await page.locator('input[type="time"]').count(), 3);
-  await page.getByRole('button', { name: '移除', exact: true }).nth(2).click();
-  const dialogs = [];
-  const unexpected = dialog => { dialogs.push(dialog.type()); dialog.accept(); };
-  page.on('dialog', unexpected);
-  await page.reload(); await pageReady(page);
-  page.off('dialog', unexpected);
-  assert.deepEqual(dialogs, []);
-  assert.equal(await setting(page, 'insights.default_prompt').inputValue(), '用户自定义 Prompt');
-  assert.equal(await page.locator('input[type="time"]').count(), 2);
   assert.deepEqual(errors, []);
 });
 

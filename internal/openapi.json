@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Moerise API",
-    "version": "0.1.2"
+    "version": "0.1.1"
   },
   "paths": {
     "/api/ext/v1/search/index": {
