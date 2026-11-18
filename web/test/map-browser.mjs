@@ -532,17 +532,20 @@ test('star excerpts follow updates and snapshot replacement in both renderers', 
       const canvas = document.createElement('canvas');
       canvas.width = 800; canvas.height = 600;
       const renderer = createStarRenderer(canvas);
-      const snapshot = () => renderer.setData([[0, 0], [.3, 0]], [], [-1, -1], [], []);
+      const titles = new Map();
+      const snapshot = () => { titles.clear(); renderer.setData([[0, 0], [.3, 0]], [], [-1, -1], [], []); };
+      const setTitle = (index, text) => { titles.set(index, text); renderer.setTitle(index, text); };
       const frame = async () => {
         while (!(await renderer.draw({ x: 0, y: 0, scale: 600 }, {
           width: 800, height: 600, fitScale: 200, mode: 'atlas', selected: -1, hovered: -1, neighbors: [],
+          groupLabels: [-1, -1], getNote: index => ({ title: titles.get(index) }),
         }))) await new Promise(requestAnimationFrame);
         return renderer.excerpts.map(box => box.index);
       };
       try {
-        snapshot(); renderer.setTitle(1, 'First excerpt');
+        snapshot(); setTitle(1, 'First excerpt');
         const first = await frame();
-        renderer.setTitle(1, ''); renderer.setTitle(0, 'Replacement excerpt');
+        setTitle(1, ''); setTitle(0, 'Replacement excerpt');
         const next = await frame();
         snapshot();
         return { first, next, replaced: await frame(), mode: canvas.dataset.renderer };

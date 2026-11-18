@@ -3,15 +3,13 @@ import { StarScene } from './map-star-paint.js';
 export function createStarRenderer(canvas, onReady = () => {}) {
   const ctx = canvas.getContext('2d', { alpha: false });
   let worker = null, fallback = null, dead = false, id = 0, active = null, pending = null, timer = null;
-  let points = [], attributes = [], labels = [], topics = [], subtopics = [], generation = 0;
-  const titles = new Map();
+  let points = [], attributes = [], labels = [], generation = 0;
   const renderer = {
     ctx, order: [], visible: [], projected: [], excerpts: [], labelBoxes: [],
-    setData(next, stars, groups, nextTopics, nextSubtopics) {
+    setData(next, stars, groups, topics, subtopics) {
       generation++;
       active?.resolve(false); pending?.resolve(false); pending = null;
       points = next; attributes = stars; labels = groups;
-      topics = nextTopics; subtopics = nextSubtopics; titles.clear();
       renderer.order = points.map((_, i) => i).sort((a, b) => (attributes?.[b]?.luminosity || 0) - (attributes?.[a]?.luminosity || 0));
       if (worker) {
         const coordinates = new Float64Array(points.length * 2), stars = new Float64Array(points.length * 4);
@@ -25,16 +23,12 @@ export function createStarRenderer(canvas, onReady = () => {}) {
         }
         try { worker.postMessage({ type: 'data', coordinates, stars, groups, topics, subtopics },
           [coordinates.buffer, stars.buffer, groups.buffer]); } catch { fail(); }
-      } else fallback?.setData(points, attributes, labels, topics, subtopics);
+      } else fallback?.setData(points, attributes, labels);
     },
-    title(index) { return titles.get(index); },
     setTitle(index, title) {
-      if ((titles.get(index) || '') === title) return;
-      if (title) titles.set(index, title);
-      else titles.delete(index);
       if (worker) {
         try { worker.postMessage({ type: 'excerpt', index, title }); } catch { fail(); }
-      } else fallback?.setTitle(index, title);
+      }
     },
     draw(view, options) {
       if (dead) return Promise.resolve(false);
@@ -75,8 +69,10 @@ export function createStarRenderer(canvas, onReady = () => {}) {
     if (active || !pending || (!worker && !fallback)) return;
     active = pending; pending = null;
     if (fallback) { drawFallback(active); return; }
+    const { width, height, fitScale, mode, selected, hovered, neighbors } = active.options;
     timer = setTimeout(fail, 15000);
-    try { worker.postMessage({ type: 'draw', id: active.id, view: active.view, options: active.options,
+    try { worker.postMessage({ type: 'draw', id: active.id, view: active.view,
+      options: { width, height, fitScale, mode, selected, hovered, neighbors },
       width: canvas.width, height: canvas.height }); } catch { fail(); }
   }
   function fail() {
@@ -84,8 +80,7 @@ export function createStarRenderer(canvas, onReady = () => {}) {
     clearTimeout(timer); worker?.terminate(); worker = null;
     active?.resolve(false); pending?.resolve(false); active = pending = null;
     fallback = new StarScene(document.createElement('canvas'), () => onReady(fallback.stats));
-    fallback.setData(points, attributes, labels, topics, subtopics);
-    for (const [index, title] of titles) fallback.setTitle(index, title);
+    fallback.setData(points, attributes, labels);
     canvas.dataset.renderer = 'fallback'; queueMicrotask(onReady);
   }
   if (typeof Worker === 'function' && typeof OffscreenCanvas === 'function' &&

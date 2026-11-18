@@ -2,7 +2,6 @@ import { createDensityProcessor } from './map-star-cloud.js';
 
 const createCanvas = () => typeof document === 'undefined' ? new OffscreenCanvas(512, 512) : document.createElement('canvas');
 
-// Cached Canvas density fields and point sprites. Every light source is a note.
 export class StarScene {
   constructor(canvas, onReady = () => {}) {
     this.canvas = canvas;
@@ -17,22 +16,13 @@ export class StarScene {
     this.generation = 0;
   }
 
-  setData(points, attributes, labels, topics, subtopics) {
+  setData(points, attributes, labels) {
+    if (this.points === points) return;
     this.points = points;
     this.attributes = attributes;
     this.labels = labels || [];
-    this.topics = topics;
-    this.subtopics = subtopics;
-    this.titles = new Map();
-    this.titleOrder = [];
+    this.order = points.map((_, i) => i).sort((a, b) => (attributes?.[b]?.luminosity || 0) - (attributes?.[a]?.luminosity || 0));
     return this.ready = this.prepareCloud();
-  }
-
-  setTitle(index, title) {
-    if (title) this.titles.set(index, title);
-    else this.titles.delete(index);
-    this.titleOrder = [...this.titles.keys()].sort((left, right) =>
-      (this.attributes[right]?.luminosity || 0) - (this.attributes[left]?.luminosity || 0) || left - right);
   }
 
   async prepareCloud() {
@@ -80,7 +70,6 @@ export class StarScene {
         if (!canContinue()) return false;
         step = steps.next();
         if (!step.done) {
-          // Flush deferred Canvas commands per batch before the final composite.
           this.ctx.getImageData(0, 0, 1, 1);
           await (globalThis.scheduler?.yield ? scheduler.yield() : new Promise(resolve => setTimeout(resolve, 0)));
         }
@@ -91,8 +80,8 @@ export class StarScene {
 
   *drawSteps(view, options, segmented = false) {
     const started = performance.now();
-    const { width: w, height: h, fitScale, mode, selected, hovered } = options;
-    const { points, topics, subtopics, labels: groupLabels } = this;
+    const { width: w, height: h, fitScale, mode, labels, colors, selected, hovered, filter,
+      points = this.points, groups, subtopics = [], groupLabels, palette, getNote, base, movement } = options;
     const ctx = this.ctx, z = view.scale / fitScale, photo = mode === 'photo';
     const at = point => ({ x: w / 2 + (point[0] - view.x) * view.scale, y: h / 2 + (point[1] - view.y) * view.scale });
     const smooth = (a, b, value) => { const t = Math.max(0, Math.min(1, (value - a) / (b - a))); return t * t * (3 - 2 * t); };
@@ -116,9 +105,16 @@ export class StarScene {
       const fade = 1 / (1 + Math.max(0, z - 1) * .4);
       ctx.globalAlpha = .045 * fade;
       if (this.mist) yield* image(this.mist, origin.x, origin.y, extent);
-      ctx.globalAlpha = .54 * fade;
+      ctx.globalAlpha = .54 * fade * (filter != null ? .6 : 1);
       yield* image(this.cloud, origin.x, origin.y, extent);
       ctx.globalCompositeOperation = 'source-over'; ctx.globalAlpha = 1;
+    }
+    if (movement) {
+      ctx.strokeStyle = '#bca57870'; ctx.lineWidth = .6;
+      for (let i = 0; i < Math.min(base.length, points.length); i++) {
+        const a = at(base[i]), b = at(points[i]);
+        ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
+      }
     }
     const projected = points.map(at);
     this.projected = projected;
@@ -141,15 +137,17 @@ export class StarScene {
       visible++;
       this.visible.push(i);
       const a = this.attributes?.[i] || { seed: (i * .6180339) % 1, radius: .7, luminosity: .55, role: 'ordinary' };
+      const dim = filter == null || groupLabels[i] === filter ? 1 : .13;
       const active = i === selected || i === hovered;
       const special = a.role !== 'ordinary';
       let tint = groupLabels[i] >= 0 ? groupTints[groupLabels[i] % groupTints.length] : '#c3d0e0';
       if (a.seed < .09 && a.luminosity > .6) tint = '#e4d7ba';
+      if (colors && groupLabels[i] >= 0) tint = palette[groupLabels[i] % palette.length];
       if (a.role === 'core') tint = a.seed < .4 ? '#f0dfbd' : '#d9e8fc';
       if (a.role === 'isolated') tint = '#e2d0ad';
       const r = (.56 + a.radius * .55 + a.luminosity * .22 + (a.role === 'core' ? .3 : 0)) * zoomGrowth + (active ? .45 : 0);
-      const alpha = Math.min(1, special ? .97 : .58 + a.luminosity * .39);
-      stars.push({ x, y, a, r, alpha, tint, special, active });
+      const alpha = Math.min(1, (special ? .97 : .58 + a.luminosity * .39) * dim);
+      stars.push({ i, x, y, a, r, alpha, tint, dim, special, active });
       if (photo || special || active) {
         const halo = r * (special || active ? 9 : 5.8);
         ctx.globalAlpha = alpha * (active ? .85 : special ? .62 : .22);
@@ -158,11 +156,11 @@ export class StarScene {
     }
     ctx.globalCompositeOperation = 'source-over';
     let painted = 0;
-    for (const { x, y, a, r, alpha, tint, special, active } of stars) {
+    for (const { i, x, y, a, r, alpha, tint, dim, special, active } of stars) {
       if (painted++ && painted % 128 === 0) yield;
       ctx.globalAlpha = alpha; ctx.fillStyle = special ? '#fbf5e8' : a.luminosity > .80 ? '#edf3fc' : tint;
       ctx.beginPath(); ctx.arc(x, y, r * (photo ? .76 : .80), 0, Math.PI * 2); ctx.fill();
-      if (special && photo) {
+      if (special && photo && dim > .5) {
         const length = r * (a.role === 'core' ? 5 : 3), line = ctx.createLinearGradient(x - length, y, x + length, y);
         line.addColorStop(0, tint + '00'); line.addColorStop(.5, tint + '85'); line.addColorStop(1, tint + '00');
         ctx.strokeStyle = line; ctx.lineWidth = .45; ctx.beginPath(); ctx.moveTo(x - length, y); ctx.lineTo(x + length, y); ctx.stroke();
@@ -170,8 +168,8 @@ export class StarScene {
         vertical.addColorStop(0, tint + '00'); vertical.addColorStop(.5, tint + '65'); vertical.addColorStop(1, tint + '00');
         ctx.strokeStyle = vertical; ctx.beginPath(); ctx.moveTo(x, y - length); ctx.lineTo(x, y + length); ctx.stroke();
       }
-      if (active) {
-        ctx.globalAlpha = .8; ctx.strokeStyle = '#cfdfef'; ctx.lineWidth = .7;
+      if (active || (options.additions && i >= base.length)) {
+        ctx.globalAlpha = .8 * dim; ctx.strokeStyle = active ? '#cfdfef' : '#c9b48c'; ctx.lineWidth = .7;
         ctx.beginPath(); ctx.arc(x, y, r + 5, 0, Math.PI * 2); ctx.stroke();
       }
     }
@@ -198,18 +196,21 @@ export class StarScene {
       if (!visibleMembers.length) return null;
       return visibleMembers.reduce((sum, i) => [sum[0] + points[i][0] / visibleMembers.length, sum[1] + points[i][1] / visibleMembers.length], [0, 0]);
     };
-    if (topics.length) {
+    if (labels) {
       const maximum = w < 600 ? 3 : 6;
       let placed = 0;
-      for (const group of topics) {
+      for (const group of [...groups].sort((a, b) => b.count - a.count)) {
+        if (filter != null && filter !== group.id) continue;
         if (placed >= maximum && z < 1.6) break;
-        const c = center(group.members); if (!c) continue;
+        const members = group.members || points.map((_, i) => i).filter(i => groupLabels[i] === group.id);
+        const c = center(members); if (!c) continue;
         const before = boxes.length;
         place(group.label, c, .80 - .35 * smooth(1.5, 4, z), false, group.id);
         placed += Number(boxes.length > before);
       }
       if (z > 1.35) {
         for (const group of subtopics) {
+          if (filter != null && filter !== group.parent) continue;
           const c = center(group.members); if (!c) continue;
           place(group.label, c, .68 * smooth(1.35, 3.2, z), true, group.id);
         }
@@ -218,9 +219,12 @@ export class StarScene {
     this.excerpts = [];
     const excerptOpacity = smooth(2.7, 5, z);
     if (excerptOpacity > .01) {
-      for (const i of this.titleOrder) {
+      const ordered = options.excerptOrder || this.order;
+      for (const i of ordered) {
         if (this.excerpts.length >= (w < 600 ? 3 : 7)) break;
-        const p = projected[i], originalTitle = this.titles.get(i);
+        if (filter != null && groupLabels[i] !== filter) continue;
+        const p = projected[i], originalTitle = getNote(i).title;
+        if (!originalTitle) continue;
         const title = originalTitle.length > 23 ? originalTitle.slice(0, 23) + '…' : originalTitle;
         ctx.font = '12px "PingFang SC", "Microsoft YaHei", sans-serif';
         const tw = ctx.measureText(title).width;

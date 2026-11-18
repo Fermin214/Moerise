@@ -2,6 +2,8 @@ import { l, setAttr } from './i18n.js';
 import { createStarRenderer } from './map-star-renderer.js';
 import { createMapScene as legacyScene } from './map-scene.js';
 
+const palette = ['#b4d1e9', '#d4c7ad', '#b7bad9', '#a8c8c8', '#cbb7c4', '#bcc8b3', '#9cb9d6', '#c0b5d1', '#cdbfb6', '#a8c5c9', '#c4cbdc', '#c8c4a9'];
+
 export function createMapScene(field, options) {
   if (options.algorithm !== 'umap-balanced-v1') return legacyScene(field, options);
   return starScene(field, options);
@@ -14,10 +16,10 @@ function starScene(field, { onPick, onHover, onTopic, onExcerpts }) {
   const labelsLayer = document.createElement('div'); labelsLayer.className = 'map-topics';
   field.append(canvas, controls, labelsLayer);
   const scene = createStarRenderer(canvas, () => queue()), ctx = scene.ctx;
-  const markers = new Map(), labels = new Map(), byName = new Map(), neighbors = new Map();
+  const markers = new Map(), excerpts = new Map(), labels = new Map(), byName = new Map(), neighbors = new Map();
   const cells = new Map();
   let cellSize = 1;
-  let points = [], view = null;
+  let points = [], coordinates = [], groupLabels = [], groups = [], subtopics = [], view = null;
   let selected = '', hovered = '', fitScale = 1, mode = 'photo', raf = null, dead = false, excerptKey = '';
   let width = 0, height = 0, paintSequence = 0;
   const screen = point => ({ x: width / 2 + (point.x - view.x) * view.scale,
@@ -26,7 +28,7 @@ function starScene(field, { onPick, onHover, onTopic, onExcerpts }) {
   function marker(point) {
     const node = document.createElement('button');
     node.type = 'button'; node.className = 'map-dot'; node.dataset.name = point.name;
-    setAttr(node, 'aria-label', scene.title(byName.get(point.name)) || l("笔记 {0}", { 0: point.name.slice(6) }));
+    setAttr(node, 'aria-label', excerpts.get(point.name) || l("笔记 {0}", { 0: point.name.slice(6) }));
     node.addEventListener('click', event => { if (event.detail === 0) onPick(point.name); });
     node.addEventListener('focus', () => {
       onHover(point.name);
@@ -53,9 +55,11 @@ function starScene(field, { onPick, onHover, onTopic, onExcerpts }) {
     ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
     const selectedIndex = byName.get(selected) ?? -1;
     const rendered = await scene.draw(view, {
-      width, height, fitScale, mode, selected: selectedIndex,
-      hovered: byName.get(hovered) ?? -1,
+      width, height, fitScale, mode, labels: true, colors: false, selected: selectedIndex,
+      hovered: byName.get(hovered) ?? -1, filter: null, groups, subtopics, groupLabels, palette,
+      getNote: i => ({ title: excerpts.get(points[i].name) || '' }),
       neighbors: (neighbors.get(selected) || []).map(name => byName.get(name)).filter(i => i != null),
+      base: coordinates, movement: false, additions: false,
     });
     if (!rendered || dead || sequence !== paintSequence) return;
     const visible = scene.visible.filter(i => {
@@ -103,7 +107,7 @@ function starScene(field, { onPick, onHover, onTopic, onExcerpts }) {
     setData(result, scale) {
       fitScale = scale;
       points = result.points.filter(point => point.semantic);
-      const coordinates = points.map(point => [point.x, point.y]);
+      coordinates = points.map(point => [point.x, point.y]);
       cells.clear();
       let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
       for (const point of points) {
@@ -116,8 +120,8 @@ function starScene(field, { onPick, onHover, onTopic, onExcerpts }) {
         if (!cells.has(key)) cells.set(key, []);
         cells.get(key).push(point);
       }
-      const groupLabels = points.map(() => -1), groups = [], subtopics = [];
-      byName.clear(); neighbors.clear(); labels.clear();
+      groupLabels = points.map(() => -1); groups = []; subtopics = [];
+      byName.clear(); neighbors.clear(); excerpts.clear(); labels.clear();
       markers.clear(); controls.replaceChildren(); labelsLayer.replaceChildren(); excerptKey = '';
       points.forEach((point, i) => { byName.set(point.name, i); neighbors.set(point.name, []); });
       const register = (id, members, title) => {
@@ -143,8 +147,7 @@ function starScene(field, { onPick, onHover, onTopic, onExcerpts }) {
       for (const link of result.links || []) {
         neighbors.get(link.source)?.push(link.target); neighbors.get(link.target)?.push(link.source);
       }
-      scene.setData(coordinates, points.map(point => point.stellar), groupLabels,
-        groups.sort((left, right) => right.count - left.count), subtopics);
+      scene.setData(coordinates, points.map(point => point.stellar), groupLabels, groups, subtopics);
       queue();
     },
     draw(next, name, scale) { view = next; selected = name; fitScale = scale || fitScale; queue(); },
@@ -171,7 +174,9 @@ function starScene(field, { onPick, onHover, onTopic, onExcerpts }) {
     hover(name) { if (hovered !== name) { hovered = name; queue(); } },
     excerpt(name, text) {
       const index = byName.get(name);
-      if (index == null || (scene.title(index) || '') === text) return;
+      if (index == null || (excerpts.get(name) || '') === text) return;
+      if (text) excerpts.set(name, text);
+      else excerpts.delete(name);
       scene.setTitle(index, text);
       const node = markers.get(name);
       if (node) setAttr(node, 'aria-label', text || l("笔记 {0}", { 0: name.slice(6) }));
@@ -183,7 +188,7 @@ function starScene(field, { onPick, onHover, onTopic, onExcerpts }) {
       dead = true; if (raf !== null) cancelAnimationFrame(raf);
       scene.destroy(); cells.clear();
       canvas.remove(); controls.remove(); labelsLayer.remove();
-      markers.clear(); labels.clear();
+      markers.clear(); labels.clear(); excerpts.clear();
     },
   };
 }
