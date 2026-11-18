@@ -68,7 +68,7 @@ jobs:
       - name: Check release guards
         if: steps.scope.outputs.linux_release == 'true' || steps.scope.outputs.apk_release == 'true'
         run: python3 -B -m unittest discover -s scripts/release -p 'test_*.py'
-  go:
+  go-suites:
     needs: scope
     if: ${{ !cancelled() && (needs.scope.outputs.go == 'true' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'full')) }}
     runs-on: ubuntu-latest
@@ -111,6 +111,17 @@ jobs:
       - name: Run Memos acceptance scenarios
         if: matrix.suite == 'integration'
         run: go test -tags=integration ./tests -v -count=1
+  go:
+    needs: [scope, go-suites]
+    if: ${{ always() && github.event_name == 'pull_request' }}
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Require applicable Go suites
+        env:
+          REQUIRED: ${{ needs.scope.outputs.go }}
+          RESULT: ${{ needs.go-suites.result }}
+        run: |
+          [[ ( "$REQUIRED" == true && "$RESULT" == success ) || ( "$REQUIRED" == false && "$RESULT" == skipped ) ]]
   web:
     needs: scope
     if: ${{ !cancelled() && (needs.scope.outputs.web == 'true' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'full')) }}
@@ -161,7 +172,6 @@ jobs:
     runs-on: ubuntu-24.04
     env:
       SCOPE_RESULT: ${{ needs.scope.result }}
-      GO_REQUIRED: ${{ needs.scope.outputs.go }}
       GO_RESULT: ${{ needs.go.result }}
       WEB_REQUIRED: ${{ needs.scope.outputs.web }}
       WEB_RESULT: ${{ needs.web.result }}
@@ -179,8 +189,7 @@ jobs:
             printf '%s: required=%s result=%s\n' "$1" "$2" "$3"
             [[ ( "$2" == true && "$3" == success ) || ( "$2" == false && "$3" == skipped ) ]]
           }
-          [[ "$SCOPE_RESULT" == success ]]
-          require_applicable Go "$GO_REQUIRED" "$GO_RESULT"
+          [[ "$SCOPE_RESULT" == success && "$GO_RESULT" == success ]]
           require_applicable Web "$WEB_REQUIRED" "$WEB_RESULT"
           require_applicable Android "$ANDROID_REQUIRED" "$ANDROID_RESULT"
           require_applicable Linux "$LINUX_REQUIRED" "$LINUX_RESULT"
