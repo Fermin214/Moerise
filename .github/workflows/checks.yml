@@ -28,23 +28,38 @@ jobs:
     runs-on: ubuntu-24.04
     outputs:
       android: ${{ steps.scope.outputs.android }}
+      linux_release: ${{ steps.scope.outputs.linux_release }}
+      apk_release: ${{ steps.scope.outputs.apk_release }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           fetch-depth: 2
-      - name: Detect changes covered by Android checks
+      - name: Select device and release checks
         id: scope
         shell: bash
         run: |
-          files=$(git diff --name-only HEAD^1 HEAD -- \
-            mobile scripts/android docs/android internal main.go go.mod go.sum \
-            web/server.mjs .github/workflows/checks.yml \
-            .github/workflows/android-checks.yml .github/workflows/android-release.yml)
-          if [[ -n "$files" ]]; then
-            echo 'android=true' >> "$GITHUB_OUTPUT"
-          else
-            echo 'android=false' >> "$GITHUB_OUTPUT"
-          fi
+          select_check() {
+            local name=$1 files
+            shift
+            files=$(git diff --name-only HEAD^1 HEAD -- "$@")
+            if [[ -n "$files" ]]; then
+              echo "$name=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "$name=false" >> "$GITHUB_OUTPUT"
+            fi
+          }
+          core=(internal main.go go.mod go.sum)
+          release=(scripts/release .github/workflows/{checks,main-smoke,publish}.yml)
+          device=(mobile scripts/android web/server.mjs "${core[@]}")
+          select_check android "${device[@]}" docs/android .github/workflows/{checks,android-checks,android-release}.yml
+          select_check linux_release "${release[@]}" "${core[@]}" web services/layout \
+            Dockerfile .dockerignore .env.example config.example.json LICENSE \
+            docs/{OPERATIONS,STARGAZING}.md .github/workflows/release.yml
+          select_check apk_release "${release[@]}" "${device[@]}" docs/android/{INSTALL.md,THIRD_PARTY_NOTICES.md,licenses} \
+            LICENSE .github/workflows/android-release.yml
+      - name: Check release guards
+        if: steps.scope.outputs.linux_release == 'true' || steps.scope.outputs.apk_release == 'true'
+        run: python3 -B -m unittest discover -s scripts/release -p 'test_*.py'
   go:
     if: inputs.mode != 'android-device'
     runs-on: ubuntu-latest
@@ -105,10 +120,22 @@ jobs:
     uses: ./.github/workflows/android-checks.yml
     with:
       mode: full
+  linux-preview:
+    needs: scope
+    if: needs.scope.outputs.linux_release == 'true'
+    permissions:
+      contents: read
+    uses: ./.github/workflows/release.yml
+  apk-preview:
+    needs: scope
+    if: needs.scope.outputs.apk_release == 'true'
+    permissions:
+      contents: read
+    uses: ./.github/workflows/android-release.yml
   pr-gate:
     name: PR gate
     if: ${{ always() && github.event_name == 'pull_request' }}
-    needs: [scope, go, web, android-pr]
+    needs: [scope, go, web, android-pr, linux-preview, apk-preview]
     runs-on: ubuntu-24.04
     env:
       SCOPE_RESULT: ${{ needs.scope.result }}
@@ -116,15 +143,22 @@ jobs:
       WEB_RESULT: ${{ needs.web.result }}
       ANDROID_REQUIRED: ${{ needs.scope.outputs.android }}
       ANDROID_RESULT: ${{ needs.android-pr.result }}
+      LINUX_REQUIRED: ${{ needs.scope.outputs.linux_release }}
+      LINUX_RESULT: ${{ needs.linux-preview.result }}
+      APK_REQUIRED: ${{ needs.scope.outputs.apk_release }}
+      APK_RESULT: ${{ needs.apk-preview.result }}
     steps:
       - name: Require all applicable checks
         shell: bash
         run: |
-          printf 'Scope: %s\nGo: %s\nWeb: %s\nAndroid required: %s\nAndroid: %s\n' \
-            "$SCOPE_RESULT" "$GO_RESULT" "$WEB_RESULT" "$ANDROID_REQUIRED" "$ANDROID_RESULT"
+          require_applicable() {
+            printf '%s: required=%s result=%s\n' "$1" "$2" "$3"
+            [[ ( "$2" == true && "$3" == success ) || ( "$2" == false && "$3" == skipped ) ]]
+          }
           [[ "$SCOPE_RESULT" == success && "$GO_RESULT" == success && "$WEB_RESULT" == success ]]
-          [[ ( "$ANDROID_REQUIRED" == true && "$ANDROID_RESULT" == success ) ||
-             ( "$ANDROID_REQUIRED" == false && "$ANDROID_RESULT" == skipped ) ]]
+          require_applicable Android "$ANDROID_REQUIRED" "$ANDROID_RESULT"
+          require_applicable Linux "$LINUX_REQUIRED" "$LINUX_RESULT"
+          require_applicable APK "$APK_REQUIRED" "$APK_RESULT"
   android-device:
     if: github.event_name == 'workflow_dispatch' && inputs.mode == 'android-device'
     permissions:

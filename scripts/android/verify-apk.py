@@ -34,6 +34,12 @@ badging = subprocess.check_output([tool("aapt2"), "dump", "badging", args.apk],
 identity = re.search(r"package: name='([^']+)' versionCode='([^']*)' versionName='([^']*)'", badging)
 assert identity, "无法读取 APK 身份"
 package, code, version = identity.groups()
+properties = (Path(__file__).resolve().parents[2] / "mobile/gradle.properties").read_text(encoding="utf-8")
+expected_min_sdk = int(re.search(r"(?m)^moerise\.minSdk=(\d+)$", properties)[1])
+minimum = re.search(r"(?m)^minSdkVersion:'(\d+)'$", badging)
+assert minimum, "无法读取 APK 最低 API"
+min_sdk = int(minimum[1])
+assert min_sdk == expected_min_sdk, f"APK 最低 API 为 {min_sdk}，期望 {expected_min_sdk}"
 assert not args.package or package == args.package, f"包名不匹配：{package}"
 assert not args.version or version == args.version, f"版本不匹配：{version}"
 assert args.version_code is None or code == str(args.version_code), f"versionCode 不匹配：{code}"
@@ -91,6 +97,6 @@ with zipfile.ZipFile(args.apk) as archive:
         assert loads, f"{name}: 缺少 LOAD 段"
         native_count += 1
 assert not args.release or {"arm64-v8a", "x86_64"} <= abis, f"缺少发行 ABI：{abis}"
-print(json.dumps(dict(package=package, version_name=version, version_code=int(code) if code else None,
+print(json.dumps(dict(package=package, version_name=version, version_code=int(code) if code else None, min_sdk=min_sdk,
                      abis=sorted(abis), native_libraries=native_count, page_alignment=16384),
                  ensure_ascii=False))

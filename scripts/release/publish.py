@@ -45,22 +45,54 @@ def linux_release(root, repo):
     return f'v{value}', files, images, ['--generate-notes']
 
 
-def android_release(root, sha):
+def android_release(root, sha, run_id):
     metadata, = (root / 'android/android-release').glob('*/moerise-android-*.apk.json')
     info = json.loads(metadata.read_text())
     value = version(info['version_name'])
     base = f'moerise-android-v{value}'
     apk = metadata.with_name(base + '.apk')
     digest = checksum(apk)
-    smoke = json.loads((root / 'android/android-release-checks/result.json').read_text())
-    if (info['commit'] != sha or info['signed'] is not True or info['sha256'] != digest
-            or smoke['status'] != 'passed' or smoke['commit'] != sha
-            or smoke['apk_sha256'] != digest or str(smoke['api']) != '26'):
+    report = root / 'android/android-release-checks/result.json'
+    if not report.is_file():
+        raise SystemExit('Android device verification result is missing')
+    smoke = json.loads(report.read_text())
+    properties = output('git', 'show', f'{sha}:mobile/gradle.properties')
+    min_sdk, = re.findall(r'^moerise\.minSdk=(\d+)$', properties, re.M)
+    flow = smoke.get('flows', {}).get('release-smoke', {})
+    expected_info = dict(commit=sha, sha256=digest, apk=apk.name, min_sdk=int(min_sdk))
+    expected_report = dict(status='passed', commit=sha, run_id=run_id, apk_sha256=digest)
+    if (info.get('signed') is not True or any(info.get(key) != value for key, value in expected_info.items())
+            or any(smoke.get(key) != value for key, value in expected_report.items())
+            or str(smoke.get('api')) != min_sdk or smoke.get('secure_cookie') is not True
+            or smoke.get('session_restored_without_login') is not True or flow.get('status') != 'passed'
+            or flow.get('server_assertions', {}).get('created_note_count') != 1):
         raise SystemExit('Android APK does not match the successful signed smoke test')
     files = [metadata.with_name(base + suffix) for suffix in ('.apk', '.apk.sha256', '.apk.json', '-notices.zip')]
     if files[1].read_text().split() != [digest, apk.name]:
         raise SystemExit('Android APK checksum file does not match the package')
     return f'android-v{value}', files, {}, ['--notes-file', str(metadata.with_name('INSTALL.md'))]
+
+
+def asset_digests(repo, release):
+    digests = {}
+    for asset in release['assets']:
+        digest = asset.get('digest')
+        if not digest:
+            endpoint = f"repos/{repo}/releases/assets/{asset['id']}"
+            with subprocess.Popen(['gh', 'api', '-H', 'Accept: application/octet-stream', endpoint],
+                                  stdout=subprocess.PIPE) as download:
+                digest = 'sha256:' + hashlib.file_digest(download.stdout, 'sha256').hexdigest()
+                if download.wait():
+                    raise SystemExit(f"Could not verify {asset['name']}")
+        digests[asset['name']] = digest
+    return digests
+
+
+def tag_target(tag):
+    ref = f'refs/tags/{tag}'
+    ref_lines = output('git', 'ls-remote', '--tags', 'origin', ref, ref + '^{}').splitlines()
+    targets = {name: commit for commit, name in (line.split('\t') for line in ref_lines)}
+    return targets.get(ref + '^{}', targets.get(ref))
 
 
 def prepare(repo, sha, tag, files):
@@ -70,17 +102,21 @@ def prepare(repo, sha, tag, files):
     if len(records) > 1:
         raise SystemExit(f'Multiple releases use {tag}')
     release = json.loads(records[0]) if records else None
-    ref = f'refs/tags/{tag}'
-    ref_lines = output('git', 'ls-remote', '--tags', 'origin', ref, ref + '^{}').splitlines()
-    targets = {name: commit for commit, name in (line.split('\t') for line in ref_lines)}
-    target = targets.get(ref + '^{}', targets.get(ref))
+    target = tag_target(tag)
     if target and target != sha:
         raise SystemExit(f'{tag} already points to {target}')
+    if release and release['draft']:
+        draft_target = release['target_commitish']
+        if draft_target != sha:
+            resolved = output('gh', 'api', f'repos/{repo}/commits/{draft_target}', '--jq', '.sha')
+            if resolved != sha:
+                raise SystemExit(f'Draft {tag} targets {draft_target}, expected {sha}')
     digests = {file.name: 'sha256:' + checksum(file) for file in files}
     if release and not release['draft']:
-        assets = {asset['name']: asset['digest'] for asset in release['assets']}
-        if target != sha or any(assets.get(name) != digest for name, digest in digests.items()):
+        if target != sha or asset_digests(repo, release) != digests:
             raise SystemExit(f'{tag} is already published with different packages')
+    if release and {item['name'] for item in release['assets']} - digests.keys():
+        raise SystemExit(f'{tag} contains assets outside the verified release')
     return release, digests
 
 
@@ -93,13 +129,12 @@ def upload(repo, sha, tag, files, notes, release, digests):
         release = json.loads(output('gh', 'api', '--paginate', endpoint, '--jq',
                                     f'.[] | select(.tag_name == "{tag}" and .draft) | @json'))
     release_path = f"{endpoint}/{release['id']}"
-    current = {asset['name']: asset['digest'] for asset in release['assets']}
+    current = asset_digests(repo, release)
     changed = [str(file) for file in files if current.get(file.name) != digests[file.name]]
     if changed:
         subprocess.run(['gh', 'release', 'upload', tag, '--clobber', *changed], check=True)
     confirmed = json.loads(output('gh', 'api', release_path))
-    assets = {asset['name']: asset['digest'] for asset in confirmed['assets']}
-    if not confirmed['draft'] or any(assets.get(name) != digest for name, digest in digests.items()):
+    if not confirmed['draft'] or confirmed['tag_name'] != tag or asset_digests(repo, confirmed) != digests:
         raise SystemExit(f'Draft assets changed while preparing {tag}')
     return release_path, android
 
@@ -122,14 +157,25 @@ def main():
     parser.add_argument('root', type=Path)
     parser.add_argument('sha')
     parser.add_argument('component', choices=['core-web', 'android', 'both'])
-    parser.add_argument('--dry-run', action='store_true')
+    parser.add_argument('--run-id', required=True)
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument('--dry-run', action='store_true')
+    mode.add_argument('--verify-only', action='store_true')
     args = parser.parse_args()
-    repo = os.environ['GH_REPO']
+    repo = os.environ.get('GH_REPO') or os.environ.get('GITHUB_REPOSITORY')
+    if not repo and (not args.verify_only or args.component != 'android'):
+        parser.error('Set GH_REPO or GITHUB_REPOSITORY')
     releases = []
     if args.component != 'android':
         releases.append(linux_release(args.root, repo))
     if args.component != 'core-web':
-        releases.append(android_release(args.root, args.sha))
+        releases.append(android_release(args.root, args.sha, args.run_id))
+    for tag, files, images, notes in releases:
+        required = files + ([Path(notes[1])] if notes[0] == '--notes-file' else [])
+        if any(not path.is_file() or not path.stat().st_size for path in required):
+            raise SystemExit(f'Incomplete release files for {tag}')
+    if args.verify_only:
+        return
     prepared = [(tag, files, images, notes, *prepare(repo, args.sha, tag, files))
                 for tag, files, images, notes in releases]
     for tag, files, images, notes, release, digests in prepared:
@@ -139,6 +185,12 @@ def main():
         endpoint, android = upload(repo, args.sha, tag, files, notes, release, digests)
         for image, refs in images.items():
             promote_image(image, refs)
+        target = tag_target(tag)
+        if not target:
+            output('gh', 'api', '--method', 'POST', f'repos/{repo}/git/refs',
+                   '-f', f'ref=refs/tags/{tag}', '-f', f'sha={args.sha}')
+        elif target != args.sha:
+            raise SystemExit(f'{tag} already points to {target}')
         published = json.loads(output('gh', 'api', '--method', 'PATCH', endpoint, '-F', 'draft=false',
                                       '-f', f'target_commitish={args.sha}',
                                       '-f', f'make_latest={str(not android).lower()}'))

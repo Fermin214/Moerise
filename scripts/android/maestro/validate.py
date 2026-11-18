@@ -186,6 +186,8 @@ def source_ids():
         add("InsightScreen.kt", identifier, f'tag = "{identifier}"')
     add("InsightScreen.kt", "chat_history_dialog_close", 'testTag("${tag}_close")')
     add("InsightScreen.kt", "chat_picker_tab_1", 'tagPrefix = "chat_picker_tab"')
+    add("InsightScreen.kt", "chat_picker_candidates_ready")
+    add("InsightScreen.kt", "chat_picker_all_tags")
     add("InsightScreen.kt", "chat_picker_note_${NOTE_NAME}", 'testTag("chat_picker_note_${note.name}")')
     for page in ("review", "walk"):
         add("DiscoveryScreen.kt", page + "_page", 'testTag("${page}_page")')

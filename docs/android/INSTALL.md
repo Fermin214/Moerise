@@ -1,7 +1,8 @@
 # Android 安装与升级
 
-Moerise Android 0.1.0 支持 Android 8.0（API 26）及以上系统，发行 APK 包含
-`arm64-v8a` 和 `x86_64`。服务地址使用 Moerise 对外 Web 的 HTTPS 入口，只填写协议、
+从仓库构建的 Moerise Android 0.1.0 APK 支持 Android 10（API 29）及以上系统。
+GitHub 的 `android-v0.1.0` 附件来自提交 `b18b66d`，该 APK 的最低系统版本为 Android 8.0（API 26）。
+APK 包含 `arm64-v8a` 和 `x86_64`。服务地址使用 Moerise 对外 Web 的 HTTPS 入口，只填写协议、
 主机和可选端口。
 
 ## 安装

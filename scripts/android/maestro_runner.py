@@ -325,6 +325,11 @@ class MaestroRunner:
             matches = self.api.matching_notes(values["NEW_NOTE_TEXT"])
             assert len(matches) == 1, "created_note_count"
             observed.update(edited_note=True, cancelled_edit_not_uploaded=True, created_note_count=len(matches))
+        elif flow == "release-smoke":
+            matches = self.api.matching_notes(values["NEW_NOTE_TEXT"])
+            assert len(matches) == 1, "created_note_count"
+            assert self.api.note(matches[0]["name"])["content"] == values["NEW_NOTE_TEXT"], "created_note_content"
+            observed["created_note_count"] = len(matches)
         elif flow == "actions":
             for key in ("NOTE_NAME", "PEER_NOTE_NAME"):
                 try:
@@ -361,7 +366,8 @@ class MaestroRunner:
                     matches.append(chat)
             assert len(matches) == 1, "insight_material_count"
             assert not matches[0]["turns"], "unexpected_model_request"
-            observed.update(independent_chat_with_exact_material=True, model_request_count=0)
+            assert self.api.note(values["NOTE_NAME"])["content"] == values["NOTE_TEXT"], "insight_source_mismatch"
+            observed.update(independent_chat_with_exact_material=True, source_text_matches=True, model_request_count=0)
         return observed
 
     def wait_verify(self, flow, values, timeout=30):

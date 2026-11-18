@@ -4,7 +4,11 @@ source "$(dirname "$0")/environment.sh"
 cd "$android_repo_root"
 export ANDROID_SERIAL="${ANDROID_SERIAL:-emulator-5554}"
 [[ "$ANDROID_SERIAL" =~ ^emulator-[0-9]+$ ]]
-[[ "$(adb shell getprop ro.build.version.sdk | tr -d '\r')" == 26 ]]
+android_release_min_sdk="$(sed -n 's/^moerise\.minSdk=//p' mobile/gradle.properties)"
+[[ "$android_release_min_sdk" =~ ^[0-9]+$ ]]
+[[ "$(adb shell getprop ro.build.version.sdk | tr -d '\r')" == "$android_release_min_sdk" ]]
+android_release_apk="${1:?需要指定已签名的 APK}"
+test -s "$android_release_apk"
 mkdir -p .local/android
 android_release_fixture="$(mktemp -d "$android_repo_root/.local/android/release-fixture-XXXXXXXX")"
 chmod 700 "$android_release_fixture"
@@ -61,9 +65,15 @@ openssl x509 -req -sha256 -days 1 -in "$android_release_fixture/tls.csr" \
 android_release_ca_hash="$(openssl x509 -in "$android_release_fixture/ca.pem" -subject_hash_old -noout)"
 adb root
 adb wait-for-device
+adb disable-verity
+adb reboot
+adb wait-for-device
+adb root
+adb wait-for-device
 adb remount
 adb push "$android_release_fixture/ca.pem" "/system/etc/security/cacerts/$android_release_ca_hash.0"
 adb shell chmod 644 "/system/etc/security/cacerts/$android_release_ca_hash.0"
+adb shell restorecon "/system/etc/security/cacerts/$android_release_ca_hash.0"
 adb reboot
 adb wait-for-device
 python3 - <<'PY'
@@ -74,6 +84,7 @@ while subprocess.check_output(["adb", "shell", "getprop", "sys.boot_completed"])
         raise SystemExit("模拟器重启超时")
     time.sleep(1)
 PY
+adb exec-out cat "/system/etc/security/cacerts/$android_release_ca_hash.0" | cmp - "$android_release_fixture/ca.pem"
 adb shell input keyevent 82
 adb reverse tcp:28443 tcp:28443
 export MOERISE_ANDROID_FIXTURE_ROOT="$android_release_fixture"
@@ -110,8 +121,6 @@ while True:
             raise
         time.sleep(.5)
 PY
-android_release_apk="$(find .local/android/releases -name 'moerise-android-v*.apk' ! -name '*-unsigned.apk' -print -quit)"
-test -n "$android_release_apk"
 python3 scripts/android/release-smoke.py --serial "$ANDROID_SERIAL" \
     --fixture "$android_release_fixture/connection.json" --apk "$android_release_apk" \
     --output .local/android/release-smoke

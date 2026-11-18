@@ -30,6 +30,18 @@ onFlowComplete:
     id: chat_picker_tab_1
     enabled: true
     label: Activate the specified control
+- extendedWaitUntil:
+    visible:
+      id: chat_picker_candidates_ready
+    timeout: 65000
+    label: Wait for the first nonempty page of candidates
+- scrollUntilVisible:
+    element:
+      id: chat_picker_all_tags
+    direction: UP
+    timeout: 15000
+    centerElement: false
+    label: Start the search at the top of the loaded list
 - scrollUntilVisible:
     element:
       id: chat_picker_note_${NOTE_NAME}

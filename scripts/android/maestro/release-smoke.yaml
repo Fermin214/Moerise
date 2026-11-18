@@ -1,0 +1,42 @@
+appId: ${APP_ID}
+name: Sign in and save a note from a fresh installation
+onFlowComplete:
+- takeScreenshot:
+    path: ${SCREENSHOT_PREFIX}-save-final
+    label: Capture the signed application after the write
+---
+- extendedWaitUntil:
+    visible:
+      id: server_login
+    timeout: 15000
+    label: Require login on the fresh installation
+- runFlow:
+    file: subflows/ensure-login.yaml
+    label: Sign in to the HTTPS fixture
+- extendedWaitUntil:
+    visible:
+      id: note_editor_empty
+    timeout: 15000
+    label: Wait for the empty home editor
+- tapOn:
+    id: note_editor
+    enabled: true
+    label: Focus the new note editor
+- inputText:
+    text: ${NEW_NOTE_TEXT}${INPUT_SUFFIX}
+    label: Enter the unique release note
+- eraseText:
+    charactersToErase: 1
+    label: Remove the input suffix
+- runFlow:
+    file: subflows/hide-keyboard.yaml
+    label: Dismiss the input method
+- tapOn:
+    id: save_note
+    enabled: true
+    label: Save the note
+- extendedWaitUntil:
+    visible:
+      id: note_editor_empty
+    timeout: 15000
+    label: Wait for the editor to clear

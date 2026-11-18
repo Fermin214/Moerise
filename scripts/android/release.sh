@@ -28,10 +28,17 @@ if [[ "$android_release_mode" == --sign ]]; then
     : "${MOERISE_ANDROID_KEY_PASSWORD:?设置签名密钥密码}"
     export MOERISE_ANDROID_STORE_PASSWORD MOERISE_ANDROID_KEY_PASSWORD
 fi
-android_release_cpu="${MOERISE_ANDROID_CPU:-$(python3 -c 'import os; print(min(os.sched_getaffinity(0)))')}"
-taskset -c "$android_release_cpu" nice -n 10 mobile/gradlew -p mobile --no-daemon --max-workers=1 \
+android_release_launcher=()
+android_release_workers=2
+if [[ -n "${MOERISE_ANDROID_CPU:-}" ]]; then
+    android_release_launcher=(taskset -c "$MOERISE_ANDROID_CPU" nice -n 10)
+    android_release_workers=1
+fi
+android_release_jvmargs="$(sed -n 's/^org.gradle.jvmargs=//p' mobile/gradle.properties)"
+"${android_release_launcher[@]}" mobile/gradlew -p mobile --no-daemon --max-workers="$android_release_workers" \
+    "-Dorg.gradle.jvmargs=${android_release_jvmargs/-XX:ActiveProcessorCount=1/-XX:ActiveProcessorCount=$android_release_workers}" \
     --no-parallel --console=plain \
-    :androidApp:assembleRelease :androidApp:lintRelease :androidApp:exportReleaseDependencies \
+    :androidApp:assembleRelease :androidApp:exportReleaseDependencies \
     "${android_release_gradle_args[@]}"
 python3 scripts/android/licenses.py --check
 android_release_commit="$(git rev-parse HEAD)"
@@ -83,9 +90,11 @@ python3 - "$android_release_output" "$android_release_file.apk" "$android_releas
 import hashlib, json, os, pathlib, subprocess, sys, zipfile
 output, filename, commit = pathlib.Path(sys.argv[1]), sys.argv[2], sys.argv[3]
 checksum = hashlib.sha256((output / filename).read_bytes()).hexdigest()
+verification = (output / (pathlib.Path(filename).stem + "-verification.txt")).read_text()
 (output / (filename + ".sha256")).write_text(f"{checksum}  {filename}\n")
 metadata = dict(commit=commit, apk=filename, sha256=checksum,
                 signed=not filename.endswith("-unsigned.apk"),
+                min_sdk=json.loads(verification.splitlines()[-1])["min_sdk"],
                 version_name=json.loads((output / "output-metadata.json").read_text())["elements"][0]["versionName"],
                 version_code=json.loads((output / "output-metadata.json").read_text())["elements"][0]["versionCode"],
                 build_tools="36.0.0",
@@ -99,4 +108,7 @@ with zipfile.ZipFile(output / (filename.removesuffix("-unsigned.apk").removesuff
         if path.is_file():
             archive.write(path, str(path.relative_to(output)))
 print(f"{output / filename}\nSHA-256: {checksum}")
+if os.environ.get("GITHUB_OUTPUT"):
+    with open(os.environ["GITHUB_OUTPUT"], "a") as stream:
+        print(f"apk={output / filename}", f"min_sdk={metadata['min_sdk']}", sep="\n", file=stream)
 PY

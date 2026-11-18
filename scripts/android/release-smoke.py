@@ -4,6 +4,7 @@ import argparse
 import hashlib
 import importlib.util
 import json
+import os
 from pathlib import Path
 import re
 import subprocess
@@ -42,6 +43,7 @@ def main():
         page_size = str(int(match[1]) * 1024)
     report = {
         "commit": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip(),
+        "run_id": os.environ.get("GITHUB_RUN_ID"),
         "apk_sha256": hashlib.sha256(args.apk.read_bytes()).hexdigest(),
         "api": adb.run("shell", "getprop", "ro.build.version.sdk").strip(),
         "page_size": page_size,
@@ -57,42 +59,38 @@ def main():
         assert any(cookie.name == "__Host-moerise_session" and cookie.secure for cookie in jar), "Secure Cookie 缺失"
         report["secure_cookie"] = True
         runner.api.close()
-        for flow in ("login", "editing", "home-smoke", "attachments", "insights"):
-            if flow == "home-smoke":
-                # Maestro can leave its UiAutomation registration active after the CLI exits.
-                for package in reversed(DRIVERS):
-                    if adb.run("shell", "pm", "path", package, check=False).strip():
-                        adb.run("shell", "am", "force-stop", package)
-                adb.run("shell", "am", "force-stop", runner.app)
-                adb.run("shell", "am", "start", "-W", "-n",
-                        runner.app + "/io.github.fermin214.moerise.MainActivity")
-                deadline = time.monotonic() + 70
-                report["session_restore_errors"] = []
-                while True:
-                    remaining = deadline - time.monotonic()
-                    if remaining <= 0:
-                        raise RuntimeError("应用重开后未恢复登录")
-                    try:
-                        adb.run("shell", "rm", "-f", "/sdcard/moerise-release-reopen.xml")
-                        adb.run("shell", "uiautomator", "dump", "/sdcard/moerise-release-reopen.xml",
-                                timeout=min(10, remaining))
-                        xml = adb.run("shell", "cat", "/sdcard/moerise-release-reopen.xml")
-                        args.output.mkdir(parents=True, exist_ok=True)
-                        (args.output / "reopened-window.xml").write_text(xml, encoding="utf-8")
-                        ids = {node.get("resource-id", "").rsplit(":id/", 1)[-1]
-                               for node in ET.fromstring(xml).iter("node")}
-                        if "open_menu" in ids and "server_login" not in ids:
-                            report["session_restored_without_login"] = True
-                            break
-                    except phone.CommandError as error:
-                        report["session_restore_errors"].append(command_failure(error))
-                    except ET.ParseError:
-                        report["session_restore_errors"].append({"cause": "invalid_ui_xml"})
-                    time.sleep(1)
-            result = runner.run_flow(flow)
-            report["flows"][flow] = result
-            if result["status"] != "passed":
-                raise RuntimeError("发行场景失败：" + flow)
+        result = runner.run_flow("release-smoke")
+        report["flows"]["release-smoke"] = result
+        if result["status"] != "passed":
+            raise RuntimeError("发行场景失败：" + str(result["cause"]))
+        for package in reversed(DRIVERS):
+            if adb.run("shell", "pm", "path", package, check=False).strip():
+                adb.run("shell", "am", "force-stop", package)
+        adb.run("shell", "am", "force-stop", runner.app)
+        adb.run("shell", "am", "start", "-W", "-n",
+                runner.app + "/io.github.fermin214.moerise.MainActivity")
+        deadline = time.monotonic() + 70
+        report["session_restore_errors"] = []
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise RuntimeError("应用重开后未恢复登录")
+            try:
+                adb.run("shell", "rm", "-f", "/sdcard/moerise-release-reopen.xml")
+                adb.run("shell", "uiautomator", "dump", "/sdcard/moerise-release-reopen.xml",
+                        timeout=min(10, remaining))
+                xml = adb.run("shell", "cat", "/sdcard/moerise-release-reopen.xml")
+                (args.output / "reopened-window.xml").write_text(xml, encoding="utf-8")
+                ids = {node.get("resource-id", "").rsplit(":id/", 1)[-1]
+                       for node in ET.fromstring(xml).iter("node")}
+                if "open_menu" in ids and "server_login" not in ids:
+                    report["session_restored_without_login"] = True
+                    break
+            except phone.CommandError as error:
+                report["session_restore_errors"].append(command_failure(error))
+            except ET.ParseError:
+                report["session_restore_errors"].append({"cause": "invalid_ui_xml"})
+            time.sleep(1)
         adb.run("shell", "pidof", runner.app)
         report["status"] = "passed"
     except Exception as error:

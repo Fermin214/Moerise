@@ -392,7 +392,7 @@ Core 的 Memos 请求经过 fixture 回环代理，原文复查与同步共用�
 相同签名且更高 `versionCode` 的发行 APK 覆盖安装。核对上述数据和会话恢复；
 数据库结构变化时，新增并验证对应迁移。升级检查以正式发行版本为起点。
 
-至少覆盖 API 26、API 36 以及 16 KiB 页设备。页大小使用 `adb shell getconf PAGESIZE`
+至少覆盖 API 29、API 36 以及 16 KiB 页设备。页大小使用 `adb shell getconf PAGESIZE`
 记录。静态 APK 对齐检查与设备运行分别记录；16 KiB 设备启动后实际打开数据库、读写
 草稿、选择附件并进入观星。检查系统备份和设备迁移不包含凭据、数据库或附件。
 

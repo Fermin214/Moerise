@@ -1,6 +1,6 @@
 # Android 开发
 
-Android 工程位于 `mobile/`，应用模块为 `androidApp`，共享界面、协议与持久化模块为 `shared`。Android 包名为 `io.github.fermin214.moerise`，最低系统版本为 Android 8.0（API 26），目标和编译 SDK 为 36。
+Android 工程位于 `mobile/`，应用模块为 `androidApp`，共享界面、协议与持久化模块为 `shared`。Android 包名为 `io.github.fermin214.moerise`，最低系统版本为 Android 10（API 29），目标和编译 SDK 为 36。应用、共享库、benchmark 和发行检查共用 `mobile/gradle.properties` 的 `moerise.minSdk`。
 
 ## 文件与产物
 
@@ -282,7 +282,7 @@ $env:MOERISE_ANDROID_FIXTURE = (Resolve-Path -LiteralPath (
 `startup` 仅测启动，`stars` 仅测星图。每次调用只启动一次 Gradle，限制单 worker、
 单 JVM 处理器，关闭并行构建与常驻进程。所有 Windows 构建和设备操作通过
 `with-device-lock.ps1` 共用主仓库的公共锁，子入口要求有效的锁令牌。Profile 采集至少需要 API 33，测量至少需要
-API 28。带 Profile 的测量要求已有非空的 `baseline-prof.txt`；`startup-without-profile` 只执行两组不带 Profile 的启动与前台恢复场景，无需源规则。完整对比要求两组使用同一 APK、设备、缓存数据和工具版本。
+API 29。带 Profile 的测量要求已有非空的 `baseline-prof.txt`；`startup-without-profile` 只执行两组不带 Profile 的启动与前台恢复场景，无需源规则。完整对比要求两组使用同一 APK、设备、缓存数据和工具版本。
 
 设备和连接档案也可通过 `-Serial`、`-Fixture` 参数传入。档案必须来自
 `start-fixture.ps1` 或 `start-fixture.sh` 启动的隔离服务，包含 HTTP 回环来源、
@@ -353,14 +353,14 @@ scripts/android/release.sh --unsigned
 
 Android 标签采用 `android-v*`。合并后 `Main CI` 从 GitHub Actions Secrets 读取
 `ANDROID_SIGNING_KEYSTORE`（Base64 keystore）、`ANDROID_KEY_ALIAS`、
-`ANDROID_STORE_PASSWORD` 和 `ANDROID_KEY_PASSWORD`。发行构建在 API 26 模拟器使用签名 APK
-检查登录、笔记保存读回、应用重开、附件字节读回和洞察选材。隔离 HTTPS 的临时 CA 安装到
+`ANDROID_STORE_PASSWORD` 和 `ANDROID_KEY_PASSWORD`。发行构建在 API 29 模拟器全新安装签名 APK，
+检查登录、笔记保存与读回、应用重开后的会话。隔离 HTTPS 的临时 CA 安装到
 模拟器系统信任库，应用使用发行版证书校验与 Secure Cookie。结果归档为 `android-release-checks`。
 `Publish release` 校验该次构建的 APK 摘要与冒烟结果一致，使用原产物发布 APK、SHA-256、
 构建 JSON 和许可 ZIP。具体步骤见[发布](DEVELOPMENT.md#发布)。
 
-PR 的 Android 检查在 API 36 模拟器运行登录、记录、编辑、草稿恢复与离线队列流程。
-`Android release` 手动运行默认构建 unsigned 包，也可以在 `main` 上选择签名构建。
+PR 的 Android 检查在 API 36 模拟器运行登录、记录、编辑、附件、洞察选材、草稿恢复与离线队列流程。
+手动运行 `Android release` 使用临时密钥签名并执行相同的设备检查。
 
 ### Windows 发行入口
 
