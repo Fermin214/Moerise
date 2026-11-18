@@ -35,7 +35,7 @@ Linux 入口通过 `MOERISE_ANDROID_SUITE` 选择组；Maestro 场景时限由 `
 
 ## 集中检查与定向重跑
 
-Android CI 先构建一对 fixture APK，再并行运行八组 Maestro 界面流程和四组专项：
+发往 `main` 且涉及 Android 的 PR 先构建一对 fixture APK，再并行运行八组 Maestro 界面流程和四组专项：
 编辑、搜索、归档删除、洞察、导航、附件、语言、主页，以及 Activity 重建、输入法、离线恢复、星图渲染。
 界面组只下载和安装目标 APK，专项另需测试 APK。每组使用独立模拟器和 Core/Memos 数据集，
 单组失败不取消其他组。JVM、lint、发行构建和接口检查同时运行。

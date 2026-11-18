@@ -1,12 +1,20 @@
+import { createDensityProcessor } from './map-star-cloud.js';
+
+const createCanvas = () => typeof document === 'undefined' ? new OffscreenCanvas(512, 512) : document.createElement('canvas');
+
 // Cached Canvas density fields and point sprites. Every light source is a note.
 export class StarScene {
-  constructor(canvas) {
+  constructor(canvas, onReady = () => {}) {
     this.canvas = canvas;
+    this.stats = canvas.dataset || {};
     this.ctx = canvas.getContext('2d', { alpha: false });
     this.sprites = new Map();
     this.points = [];
     this.excerpts = [];
     this.timings = [];
+    this.density = createDensityProcessor();
+    this.onReady = onReady;
+    this.generation = 0;
   }
 
   setData(points, attributes, labels) {
@@ -15,55 +23,32 @@ export class StarScene {
     this.attributes = attributes;
     this.labels = labels || [];
     this.order = points.map((_, i) => i).sort((a, b) => (attributes?.[b]?.luminosity || 0) - (attributes?.[a]?.luminosity || 0));
-    this.prepareCloud();
+    return this.ready = this.prepareCloud();
   }
 
-  prepareCloud() {
-    const points = this.points, size = 512;
-    if (!points.length) { this.cloud = null; return; }
-    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
-    for (const [x, y] of points) { x0 = Math.min(x0, x); y0 = Math.min(y0, y); x1 = Math.max(x1, x); y1 = Math.max(y1, y); }
-    const extent = Math.max(.5, x1 - x0, y1 - y0) * 1.22;
-    this.bounds = { x: (x0 + x1 - extent) / 2, y: (y0 + y1 - extent) / 2, extent };
-    const raw = document.createElement('canvas'); raw.width = raw.height = size;
+  async prepareCloud() {
+    const generation = ++this.generation;
+    this.cloud = this.mist = null;
+    this.stats.cloud = 'loading';
+    const data = await this.density.prepare(this.points, this.labels);
+    if (!data || generation !== this.generation) return;
+    const { size, bounds, pixels } = data;
+    this.bounds = bounds;
+    const raw = createCanvas(); raw.width = raw.height = size;
     const density = raw.getContext('2d');
-    const mass = new Float32Array(size * size), channels = [0, 1, 2].map(() => new Float32Array(size * size));
-    const tints = [[107, 132, 171], [121, 117, 152], [88, 136, 146], [113, 130, 160]];
-    const radius = 15, sigma = 5, kernel = [];
-    for (let y = -radius; y <= radius; y++) {
-      for (let x = -radius; x <= radius; x++) {
-        if (x * x + y * y <= radius * radius) kernel.push([x, y, Math.exp(-(x * x + y * y) / (2 * sigma * sigma))]);
-      }
-    }
-    // Floating-point accumulation keeps dense regions from saturating.
-    points.forEach(([x, y], i) => {
-      const px = Math.round((x - this.bounds.x) / extent * size), py = Math.round((y - this.bounds.y) / extent * size);
-      const tint = this.labels[i] >= 0 ? tints[this.labels[i] % tints.length] : tints[0];
-      for (const [dx, dy, weight] of kernel) {
-        const xx = px + dx, yy = py + dy;
-        if (xx < 0 || yy < 0 || xx >= size || yy >= size) continue;
-        const j = yy * size + xx; mass[j] += weight;
-        for (let channel = 0; channel < 3; channel++) channels[channel][j] += tint[channel] * weight;
-      }
-    });
-    const pixels = density.createImageData(size, size), rgba = pixels.data;
-    for (let i = 0; i < rgba.length; i += 4) {
-      const j = i / 4, excess = Math.max(0, mass[j] - 1.7);
-      if (excess <= 0) continue;
-      const signal = Math.pow(excess / (excess + 3.5), 1.3);
-      for (let channel = 0; channel < 3; channel++) rgba[i + channel] = Math.round(channels[channel][j] / mass[j]);
-      rgba[i + 3] = Math.round(118 * signal);
-    }
-    density.putImageData(pixels, 0, 0);
+    density.putImageData(new ImageData(pixels, size, size), 0, 0);
     this.cloud = raw;
-    this.mist = document.createElement('canvas'); this.mist.width = this.mist.height = size;
+    this.mist = createCanvas(); this.mist.width = this.mist.height = size;
     const c = this.mist.getContext('2d');
     c.filter = 'blur(18px)'; c.drawImage(raw, 0, 0);
+    this.stats.cloud = data.mode;
+    this.stats.cloudMs = data.elapsed.toFixed(2);
+    this.onReady();
   }
 
   sprite(tint) {
     if (this.sprites.has(tint)) return this.sprites.get(tint);
-    const canvas = document.createElement('canvas'); canvas.width = canvas.height = 96;
+    const canvas = createCanvas(); canvas.width = canvas.height = 96;
     const ctx = canvas.getContext('2d'), g = ctx.createRadialGradient(48, 48, 0, 48, 48, 48);
     g.addColorStop(0, '#f8fbff'); g.addColorStop(.025, '#edf5ff');
     g.addColorStop(.065, tint + 'dc'); g.addColorStop(.16, tint + '42');
@@ -72,6 +57,30 @@ export class StarScene {
   }
 
   draw(view, options) {
+    const steps = this.drawSteps(view, options);
+    let step;
+    do { step = steps.next(); } while (!step.done);
+    return step.value;
+  }
+
+  async drawAsync(view, options, canContinue) {
+    const steps = this.drawSteps(view, options, true);
+    try {
+      let step;
+      do {
+        if (!canContinue()) return false;
+        step = steps.next();
+        if (!step.done) {
+          // Flush deferred Canvas commands per batch before the final composite.
+          this.ctx.getImageData(0, 0, 1, 1);
+          await (globalThis.scheduler?.yield ? scheduler.yield() : new Promise(resolve => setTimeout(resolve, 0)));
+        }
+      } while (!step.done);
+      return true;
+    } finally { steps.return(); }
+  }
+
+  *drawSteps(view, options, segmented = false) {
     const started = performance.now();
     const { width: w, height: h, fitScale, mode, labels, colors, selected, hovered, filter,
       points = this.points, groups, subtopics = [], groupLabels, palette, getNote, base, movement } = options;
@@ -81,15 +90,25 @@ export class StarScene {
     ctx.globalAlpha = 1; ctx.globalCompositeOperation = 'source-over';
     const night = ctx.createRadialGradient(w * .47, h * .46, 0, w * .5, h * .5, Math.max(w, h) * .72);
     night.addColorStop(0, '#040c18'); night.addColorStop(.58, '#030a14'); night.addColorStop(1, '#02060e');
-    ctx.fillStyle = night; ctx.fillRect(0, 0, w, h);
+    ctx.fillStyle = night;
+    if (segmented) {
+      for (let y = 0; y < h; y += 64) { ctx.fillRect(0, y, w, Math.min(64, h - y)); yield; }
+    } else ctx.fillRect(0, 0, w, h);
+    function* image(source, x, y, extent) {
+      if (!segmented) { ctx.drawImage(source, x, y, extent, extent); return; }
+      for (let top = 0; top < h; top += 64) {
+        ctx.save(); ctx.beginPath(); ctx.rect(0, top, w, Math.min(64, h - top)); ctx.clip();
+        ctx.drawImage(source, x, y, extent, extent); ctx.restore(); yield;
+      }
+    }
     if (this.cloud && photo) {
       const origin = at([this.bounds.x, this.bounds.y]), extent = this.bounds.extent * view.scale;
       ctx.globalCompositeOperation = 'screen';
       const fade = 1 / (1 + Math.max(0, z - 1) * .4);
       ctx.globalAlpha = .045 * fade;
-      if (this.mist) ctx.drawImage(this.mist, origin.x, origin.y, extent, extent);
+      if (this.mist) yield* image(this.mist, origin.x, origin.y, extent);
       ctx.globalAlpha = .54 * fade * (filter != null ? .6 : 1);
-      ctx.drawImage(this.cloud, origin.x, origin.y, extent, extent);
+      yield* image(this.cloud, origin.x, origin.y, extent);
       ctx.globalCompositeOperation = 'source-over'; ctx.globalAlpha = 1;
     }
     if (movement) {
@@ -100,6 +119,8 @@ export class StarScene {
       }
     }
     const projected = points.map(at);
+    this.projected = projected;
+    this.visible = [];
     if (selected >= 0 && selected < points.length) {
       const a = projected[selected]; ctx.strokeStyle = '#99bcd947'; ctx.lineWidth = .65;
       for (const i of options.neighbors) {
@@ -112,9 +133,11 @@ export class StarScene {
     let visible = 0;
     ctx.globalCompositeOperation = 'screen';
     for (let i = 0; i < points.length; i++) {
+      if (i && i % 128 === 0) yield;
       const { x, y } = projected[i];
       if (x < -30 || y < -30 || x > w + 30 || y > h + 30) continue;
       visible++;
+      this.visible.push(i);
       const a = this.attributes?.[i] || { seed: (i * .6180339) % 1, radius: .7, luminosity: .55, role: 'ordinary' };
       const dim = filter == null || groupLabels[i] === filter ? 1 : .13;
       const active = i === selected || i === hovered;
@@ -134,7 +157,9 @@ export class StarScene {
       }
     }
     ctx.globalCompositeOperation = 'source-over';
+    let painted = 0;
     for (const { i, x, y, a, r, alpha, tint, dim, special, active } of stars) {
+      if (painted++ && painted % 128 === 0) yield;
       ctx.globalAlpha = alpha; ctx.fillStyle = special ? '#fbf5e8' : a.luminosity > .80 ? '#edf3fc' : tint;
       ctx.beginPath(); ctx.arc(x, y, r * (photo ? .76 : .80), 0, Math.PI * 2); ctx.fill();
       if (special && photo && dim > .5) {
@@ -216,14 +241,19 @@ export class StarScene {
     ctx.globalAlpha = 1; ctx.globalCompositeOperation = 'source-over';
     this.timings.push(performance.now() - started);
     if (this.timings.length > 180) this.timings.shift();
-    this.canvas.dataset.stars = String(points.length);
-    this.canvas.dataset.visible = String(visible);
-    this.canvas.dataset.mode = mode;
-    this.canvas.dataset.drawMs = (performance.now() - started).toFixed(2);
+    this.stats.stars = String(points.length);
+    this.stats.visible = String(visible);
+    this.stats.mode = mode;
+    this.stats.drawMs = (performance.now() - started).toFixed(2);
     return visible;
   }
 
   pickExcerpt(x, y) {
     return this.excerpts.find(box => x >= box.x && x <= box.x + box.w && y >= box.y && y <= box.y + box.h)?.index ?? -1;
+  }
+
+  destroy() {
+    this.generation++; this.density.destroy(); this.sprites.clear();
+    this.cloud = this.mist = null; this.points = []; this.onReady = () => {};
   }
 }

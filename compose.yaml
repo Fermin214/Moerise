@@ -24,7 +24,7 @@ services:
         max-file: "2"
 
   moerise:
-    image: ghcr.io/fermin214/moerise:${MOERISE_IMAGE_TAG:-0.1.1}
+    image: ghcr.io/fermin214/moerise:${MOERISE_IMAGE_TAG:-0.1.2}
     build: .
     env_file:
       - path: ${MOERISE_ENV_FILE:-.env}
@@ -57,7 +57,7 @@ services:
         max-file: "2"
 
   web:
-    image: ghcr.io/fermin214/moerise-web:${MOERISE_IMAGE_TAG:-0.1.1}
+    image: ghcr.io/fermin214/moerise-web:${MOERISE_IMAGE_TAG:-0.1.2}
     build: ./web
     environment:
       CORE_ORIGIN: http://moerise:8787
@@ -83,7 +83,7 @@ services:
 
   layout:
     profiles: [stargazing]
-    image: ghcr.io/fermin214/moerise-layout:${MOERISE_IMAGE_TAG:-0.1.1}
+    image: ghcr.io/fermin214/moerise-layout:${MOERISE_IMAGE_TAG:-0.1.2}
     build: ./services/layout
     restart: unless-stopped
     init: true
