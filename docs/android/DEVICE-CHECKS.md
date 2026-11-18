@@ -39,7 +39,8 @@ Linux 入口通过 `MOERISE_ANDROID_SUITE` 选择组；Maestro 场景时限由 `
 编辑、搜索、归档删除、洞察、导航、附件、语言、主页，以及 Activity 重建、输入法、离线恢复、星图渲染。
 界面组只下载和安装目标 APK，专项另需测试 APK。每组使用独立模拟器和 Core/Memos 数据集，
 单组失败不取消其他组。JVM、lint、发行构建和接口检查同时运行。
-设备 APK 构建与完整检查使用独立缓存；完整检查优先恢复自身的编译产物，再回退到设备构建缓存。
+各组使用同一次运行编译的 Core。CI 的 Gradle 构建使用两个 worker，本地检查默认使用单核。
+设备 APK 按 Android 源码摘要、JDK 和 SDK 版本复用，命中缓存后仍核对源码和两份 APK 的 SHA-256。
 结果页按组显示成功、失败和耗时，`android-device-<组名>` 附件保存该组的日志和诊断。
 Maestro 驱动断连时，CI 等待 ADB 稳定后用新建的隔离数据重跑该组一次，附件同时保存首次失败的日志。
 修复依据整批结果整理，重跑时选择涉及的组。
@@ -58,8 +59,8 @@ gh workflow run checks.yml --ref debug/android-device -f mode=android-device -f 
 `stars` 覆盖 1000/5000 点的星点与光晕模式、选中、平移、双指缩放、近景摘要和快照刷新，
 保存总览与近景截图。该组检查渲染和交互，性能阈值由真机性能队列测量。
 `android-device` 模式只执行所选设备组；PR 的自动检查执行完整流程。
-`Android checks` 的 `build` 模式只运行 JVM、lint、发行构建及 Core／星图接口检查，
-可复用 fixture APK。完整构建任务的时限为 45 分钟，覆盖冷缓存编译和两组集成检查：
+`Android checks` 的 `build` 模式运行 JVM、lint、发行和性能变体构建及 Core／星图接口检查，
+跳过设备 APK 与模拟器。构建与接口检查分别生成报告。
 
 ```bash
 gh workflow run android-checks.yml --ref debug/android-device -f mode=build

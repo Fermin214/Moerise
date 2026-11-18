@@ -23,8 +23,13 @@ fi
 api="repos/$repo/actions"
 record=$(gh api "$api/runs/$run")
 jq -r '[.name, .head_sha, .status, .conclusion, .html_url] | @tsv' <<< "$record"
-gh api --paginate "$api/runs/$run/jobs?per_page=100" --jq '
+echo '任务 / 结果 / 耗时 / 最慢步骤 / 首个失败步骤 / 日志'
+gh api --paginate "$api/runs/$run/jobs?per_page=100" | jq -r '
+    def seconds: (.completed_at | fromdateiso8601) - (.started_at | fromdateiso8601);
     .jobs[] | [.name, (.conclusion // .status),
+      (if .completed_at then "\(seconds)s" else "-" end),
+      ([.steps[]? | select(.started_at and .completed_at and .conclusion != "skipped")]
+        | max_by(seconds) | if . then "\(.name) (\(seconds)s)" else "-" end),
       ([.steps[]? | select(.conclusion == "failure") | .name][0] // "-"), .html_url] | @tsv'
 
 echo '诊断产物'

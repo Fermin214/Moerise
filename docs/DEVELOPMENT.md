@@ -87,7 +87,7 @@ go test -race ./...
 
 ## 四、Playwright 浏览器自动化测试
 
-发往 `main` 的 PR 运行 Go 测试、Memos 集成和 Web 浏览器流程。Android 客户端、Core 或 Web 代理的改动还会运行 Android 检查。`PR gate` 要求该提交的所有适用检查和发布预演通过。失败时可按 PR 编号或运行 ID 查找失败步骤和产物，见 [CI 排查技能](../.agents/skills/moerise-ci/SKILL.md)。
+发往 `main` 的 PR 按变更路径运行检查。Go 或 Layout 改动并行运行构建与单元测试、竞态检测和 Memos 集成测试。Web 或共用脚本改动运行 Web 检查。Android 客户端、Core 或 Web 代理改动还会运行 Android 检查。同一 PR 推送新提交会取消旧检查，`PR gate` 要求新提交的全部适用检查和发布预演通过。可按 PR 编号或运行 ID 查询失败步骤、耗时和产物，见 [CI 排查技能](../.agents/skills/moerise-ci/SKILL.md)。
 
 Moerise Web 前端使用 Playwright 覆盖真实的端到端浏览器交互：
 

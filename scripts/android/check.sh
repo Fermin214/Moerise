@@ -2,8 +2,7 @@
 set -euo pipefail
 source "$(dirname "$0")/environment.sh"
 cd "$android_repo_root/mobile"
-android_build_cpu="${MOERISE_ANDROID_CPU:-$(python3 -c 'import os; print(min(os.sched_getaffinity(0)))')}"
-taskset -c "$android_build_cpu" nice -n 10 ./gradlew --no-daemon --max-workers=1 :shared:jvmTest :androidApp:lintDebug :androidApp:assembleDebug "$@"
+android_gradle :shared:jvmTest :androidApp:lintDebug :androidApp:assembleDebug "$@"
 python3 - <<'PY'
 from pathlib import Path
 import xml.etree.ElementTree as E

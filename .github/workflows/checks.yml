@@ -22,11 +22,17 @@ permissions:
   contents: read
   actions: read
 
+concurrency:
+  group: checks-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   scope:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-24.04
     outputs:
+      go: ${{ steps.scope.outputs.go }}
+      web: ${{ steps.scope.outputs.web }}
       android: ${{ steps.scope.outputs.android }}
       linux_release: ${{ steps.scope.outputs.linux_release }}
       apk_release: ${{ steps.scope.outputs.apk_release }}
@@ -34,7 +40,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           fetch-depth: 2
-      - name: Select device and release checks
+      - name: Select applicable checks
         id: scope
         shell: bash
         run: |
@@ -51,7 +57,9 @@ jobs:
           core=(internal main.go go.mod go.sum)
           release=(scripts/release .github/workflows/{checks,main-smoke,publish}.yml)
           device=(mobile scripts/android web/server.mjs "${core[@]}")
-          select_check android "${device[@]}" docs/android .github/workflows/{checks,android-checks,android-release}.yml
+          select_check go "${core[@]}" ':(top,glob)*.go' tests services/layout .github/workflows/checks.yml
+          select_check web web scripts/lib .github/workflows/checks.yml
+          select_check android "${device[@]}" docs/android/{THIRD_PARTY_NOTICES.md,licenses} .github/workflows/{checks,android-checks,android-release}.yml
           select_check linux_release "${release[@]}" "${core[@]}" web services/layout \
             Dockerfile .dockerignore .env.example config.example.json LICENSE \
             docs/{OPERATIONS,STARGAZING}.md .github/workflows/release.yml
@@ -61,37 +69,51 @@ jobs:
         if: steps.scope.outputs.linux_release == 'true' || steps.scope.outputs.apk_release == 'true'
         run: python3 -B -m unittest discover -s scripts/release -p 'test_*.py'
   go:
-    if: inputs.mode != 'android-device'
+    needs: scope
+    if: ${{ !cancelled() && (needs.scope.outputs.go == 'true' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'full')) }}
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        suite: [build, race, integration]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-go@4dc6199c7b1a012772edbd06daecab0f50c9053c # v6.1.0
         with:
           go-version: "1.27.x"
       - name: Verify modules and formatting
+        if: matrix.suite == 'build'
         shell: bash
         run: |
           go mod verify
           test -z "$(gofmt -l main.go internal tests)"
       - run: go vet ./...
+        if: matrix.suite == 'build'
       - run: go test ./... -count=1
+        if: matrix.suite == 'build'
       - name: Build without cgo
+        if: matrix.suite == 'build'
         env:
           CGO_ENABLED: "0"
         run: go build -trimpath -o build/moerise .
       - name: Check races
+        if: matrix.suite == 'race'
         run: go test -race ./... -count=1 -timeout=30m
       - name: Check vulnerabilities
+        if: matrix.suite == 'build'
         run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
       - name: Start private layout service
+        if: matrix.suite == 'integration'
         run: |
           docker build -t moerise-layout:checks services/layout
           docker run -d --name moerise-layout --cpus=1 --memory=1g \
             -p 127.0.0.1:8766:8766 moerise-layout:checks
       - name: Run Memos acceptance scenarios
+        if: matrix.suite == 'integration'
         run: go test -tags=integration ./tests -v -count=1
   web:
-    if: inputs.mode != 'android-device'
+    needs: scope
+    if: ${{ !cancelled() && (needs.scope.outputs.web == 'true' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'full')) }}
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -139,7 +161,9 @@ jobs:
     runs-on: ubuntu-24.04
     env:
       SCOPE_RESULT: ${{ needs.scope.result }}
+      GO_REQUIRED: ${{ needs.scope.outputs.go }}
       GO_RESULT: ${{ needs.go.result }}
+      WEB_REQUIRED: ${{ needs.scope.outputs.web }}
       WEB_RESULT: ${{ needs.web.result }}
       ANDROID_REQUIRED: ${{ needs.scope.outputs.android }}
       ANDROID_RESULT: ${{ needs.android-pr.result }}
@@ -155,7 +179,9 @@ jobs:
             printf '%s: required=%s result=%s\n' "$1" "$2" "$3"
             [[ ( "$2" == true && "$3" == success ) || ( "$2" == false && "$3" == skipped ) ]]
           }
-          [[ "$SCOPE_RESULT" == success && "$GO_RESULT" == success && "$WEB_RESULT" == success ]]
+          [[ "$SCOPE_RESULT" == success ]]
+          require_applicable Go "$GO_REQUIRED" "$GO_RESULT"
+          require_applicable Web "$WEB_REQUIRED" "$WEB_RESULT"
           require_applicable Android "$ANDROID_REQUIRED" "$ANDROID_RESULT"
           require_applicable Linux "$LINUX_REQUIRED" "$LINUX_RESULT"
           require_applicable APK "$APK_REQUIRED" "$APK_RESULT"
