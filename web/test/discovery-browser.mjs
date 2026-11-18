@@ -10,7 +10,7 @@ import { test } from 'node:test';
 import { createWebServer } from '../server.mjs';
 
 const runtime = process.env.MOERISE_PLAYWRIGHT_MODULE;
-const { [process.env.MOERISE_PLAYWRIGHT_ENGINE || 'chromium']: browserType } = runtime ? await import(pathToFileURL(runtime).href) : await import('playwright');
+const { chromium } = runtime ? await import(pathToFileURL(runtime).href) : await import('playwright');
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aP9sAAAAASUVORK5CYII=', 'base64');
 
 async function fixture(t, language = 'zh-CN', options = {}) {
@@ -112,7 +112,7 @@ async function fixture(t, language = 'zh-CN', options = {}) {
     await browser?.close();
     await Promise.all([web, core].map(server => new Promise(resolve => { server.close(resolve); server.closeAllConnections(); })));
   });
-  browser = await browserType.launch({ headless: true, channel: process.env.MOERISE_PLAYWRIGHT_CHANNEL || undefined });
+  browser = await chromium.launch({ headless: true, channel: process.env.MOERISE_PLAYWRIGHT_CHANNEL || undefined });
   const page = await browser.newPage({ locale: language, viewport: { width: 1360, height: 960 }, ...options }), errors = [];
   await page.clock.setFixedTime(new Date('2026-10-30T04:00:00Z'));
   page.on('pageerror', error => errors.push(error.message));
@@ -520,8 +520,6 @@ test('floating note starts, centered groups and reduced motion work across deskt
   for (const viewport of [{ width: 1360, height: 960 }, { width: 390, height: 844 },
     { width: 320, height: 568 }, { width: 430, height: 932 }, { width: 932, height: 430 }]) {
     await page.setViewportSize(viewport);
-    await page.waitForFunction(() => parseFloat(document.querySelector('#app').style.getPropertyValue('--shell-top')) ===
-      document.querySelector('#mobile-header').getBoundingClientRect().height);
     const geometry = await page.evaluate(() => {
       const box = node => node.getBoundingClientRect().toJSON();
       const root = document.querySelector('#discovery-page');

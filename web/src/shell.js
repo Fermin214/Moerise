@@ -9,18 +9,6 @@ export function initShell() {
   search.before(searchHome);
   const compact = matchMedia('(max-width:960px)');
   let searchOpen = false, gesture = null, sidebarScrollTop = 0;
-  const measurements = new Map();
-  let measurementFrame = null;
-  function measuredStyle(node, name, value) {
-    if (node.style.getPropertyValue(name) === value) return;
-    measurements.set(name, { node, value });
-    if (measurementFrame !== null) return;
-    measurementFrame = requestAnimationFrame(() => {
-      measurementFrame = null;
-      for (const [name, { node, value }] of measurements) node.style.setProperty(name, value);
-      measurements.clear();
-    });
-  }
 
   function revealAccount() {
     sidebarScrollTop = Math.max(0, sidebarBody.scrollTop);
@@ -35,7 +23,7 @@ export function initShell() {
   }, { passive: true });
   account.addEventListener('focusin', revealAccount);
   new ResizeObserver(() => {
-    measuredStyle(sidebar, '--account-space', account.hidden ? '0px' : `${account.offsetHeight + 16}px`);
+    sidebar.style.setProperty('--account-space', account.hidden ? '0px' : `${account.offsetHeight + 16}px`);
   }).observe(account);
   new ResizeObserver(revealAccount).observe(sidebarBody);
 
@@ -87,6 +75,15 @@ export function initShell() {
     menu.setAttribute('aria-expanded', String(dialog.open));
     document.documentElement.classList.toggle('navigation-open', dialog.open);
   });
+  dialog.addEventListener('keydown', event => {
+    if (event.key !== 'Tab') return;
+    const controls = [...dialog.querySelectorAll('a[href], button, input, select, textarea, [tabindex]')]
+      .filter(node => node.tabIndex >= 0 && !node.disabled && node.getClientRects().length);
+    const first = controls[0], last = controls.at(-1);
+    const target = event.shiftKey && document.activeElement === first ? last :
+      !event.shiftKey && document.activeElement === last ? first : null;
+    if (target) { event.preventDefault(); target.focus(); }
+  });
   searchToggle.addEventListener('click', () => {
     if (searchOpen) closeSearch({ focus: true });
     else {
@@ -132,7 +129,7 @@ export function initShell() {
   document.addEventListener('touchcancel', () => { gesture = null; }, { passive: true });
   compact.addEventListener('change', layout);
   new ResizeObserver(() => {
-    measuredStyle(app, '--shell-top', `${header.getBoundingClientRect().height}px`);
+    app.style.setProperty('--shell-top', `${header.getBoundingClientRect().height}px`);
   }).observe(header);
   layout();
   return {

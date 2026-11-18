@@ -5,7 +5,6 @@ import { renderMarkdown, safeLink } from '../src/markdown.js';
 
 class Node {
   constructor(tag, text = '') { this.tag = tag; this.children = []; this.text = text; }
-  addEventListener() {}
   append(...nodes) { this.children.push(...nodes); }
   set textContent(text) { this.children = []; this.text = text; }
   get textContent() { return this.text + this.children.map(node => node.textContent).join(''); }

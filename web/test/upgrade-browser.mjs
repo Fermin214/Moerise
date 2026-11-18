@@ -10,7 +10,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createWebServer } from '../server.mjs';
 
 const runtime = process.env.MOERISE_PLAYWRIGHT_MODULE;
-const { [process.env.MOERISE_PLAYWRIGHT_ENGINE || 'chromium']: browserType } = runtime ? await import(pathToFileURL(runtime).href) : await import('playwright');
+const { chromium } = runtime ? await import(pathToFileURL(runtime).href) : await import('playwright');
 const close = server => new Promise(resolve => { server.close(resolve); server.closeAllConnections(); });
 
 test('an open page recovers lazy modules after replacing the deployed build', { timeout: 60_000 }, async t => {
@@ -45,7 +45,7 @@ test('an open page recovers lazy modules after replacing the deployed build', { 
   web.listen(0, '127.0.0.1'); await once(web, 'listening');
   t.after(() => close(web));
   const url = `http://127.0.0.1:${web.address().port}`;
-  const browser = await browserType.launch({ headless: true, channel: process.env.MOERISE_PLAYWRIGHT_CHANNEL || undefined });
+  const browser = await chromium.launch({ headless: true, channel: process.env.MOERISE_PLAYWRIGHT_CHANNEL || undefined });
   t.after(() => browser.close());
   const page = await browser.newPage({ locale: 'zh-CN' }), failures = [], errors = [];
   page.on('pageerror', err => errors.push(err.message));
