@@ -146,7 +146,7 @@ jobs:
     if: inputs.mode != 'build'
     name: Device (${{ matrix.suite }})
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
@@ -196,6 +196,7 @@ jobs:
         env:
           MOERISE_ANDROID_SUITE: ${{ matrix.suite }}
           MOERISE_ANDROID_SKIP_BUILD: '1'
+          MOERISE_ANDROID_RETRY_TRANSPORT: '1'
         with:
           api-level: 36
           arch: x86_64
@@ -213,6 +214,8 @@ jobs:
           result = Path('.local/android/device-results.tsv')
           with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as output:
               output.write('### Device: ' + os.environ['SUITE'] + '\n\n')
+              if list(result.parent.glob('device-transport-*/device-results.tsv')):
+                  output.write('Retried once after a Maestro device disconnect.\n\n')
               output.write('```\n' + (result.read_text() if result.exists() else 'Device suite did not complete\n') + '```\n')
           PY
       - uses: actions/upload-artifact@v4
@@ -225,6 +228,7 @@ jobs:
             .local/android/device-acceptance.log
             .local/android/device-diagnostics.tar
             .local/android/device-fixture-*.log
+            .local/android/device-transport-*/
             .local/android/maestro/
             .local/android/device-instrumentation/
             .local/android/device-recovery/*.log
