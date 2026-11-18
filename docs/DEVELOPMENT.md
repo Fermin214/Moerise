@@ -87,6 +87,8 @@ go test -race ./...
 
 ## 四、Playwright 浏览器自动化测试
 
+发往 `main` 的 PR 运行 Go 测试、Memos 集成和 Web 浏览器流程，涉及 Android 的 PR 另跑各项设备检查。合并后，`main` 只执行一次冒烟检查，构建 Core 和 Web，运行 Core 版本命令，检查 Web 健康端点和首页。版本标签触发各自的发版流程。
+
 Moerise Web 前端使用 Playwright 覆盖真实的端到端浏览器交互：
 
 ```bash

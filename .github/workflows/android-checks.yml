@@ -1,9 +1,7 @@
 name: Android checks
 on:
-  push:
-    branches: [main]
-    paths: ['mobile/**', 'scripts/android/**', 'docs/android/**', 'internal/client_*.go', 'internal/*models.go', 'internal/openapi.json', '.github/workflows/android-checks.yml']
   pull_request:
+    branches: [main]
     paths: ['mobile/**', 'scripts/android/**', 'docs/android/**', 'internal/client_*.go', 'internal/*models.go', 'internal/openapi.json', '.github/workflows/android-checks.yml']
   workflow_dispatch:
     inputs:
