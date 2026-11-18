@@ -1,0 +1,54 @@
+appId: ${APP_ID}
+name: Open and cancel the system attachment picker
+onFlowComplete:
+- takeScreenshot:
+    path: ${SCREENSHOT_PREFIX}-attachment-cancel-final
+    label: Capture the isolated test UI
+---
+- runFlow:
+    file: subflows/home.yaml
+    label: Enter the signed-in home without clearing data
+- extendedWaitUntil:
+    visible:
+      id: add_attachment
+      enabled: true
+    timeout: 15000
+    label: Wait for the expected UI state
+- takeScreenshot:
+    path: ${SCREENSHOT_PREFIX}-attachment-before
+    label: Capture the isolated test UI
+- tapOn:
+    id: add_attachment
+    enabled: true
+    label: Activate the specified control
+- extendedWaitUntil:
+    visible:
+      id: (com\.android\.documentsui|com\.google\.android\.documentsui):id/toolbar|com\.android\.fileexplorer:id/pick_container
+    timeout: 15000
+    label: Confirm that Back will cancel the system picker
+- takeScreenshot:
+    path: ${SCREENSHOT_PREFIX}-attachment-picker
+    label: Capture the isolated test UI
+- runFlow:
+    commands:
+    - back
+    label: Cancel the system picker with Android Back
+- extendedWaitUntil:
+    visible:
+      id: note_editor
+    timeout: 15000
+    label: Wait for the expected UI state
+- extendedWaitUntil:
+    visible:
+      id: add_attachment
+      enabled: true
+    timeout: 15000
+    label: Wait for the expected UI state
+- extendedWaitUntil:
+    visible:
+      id: save_note
+    timeout: 15000
+    label: Wait for the expected UI state
+- takeScreenshot:
+    path: ${SCREENSHOT_PREFIX}-attachment-cancelled
+    label: Capture the isolated test UI

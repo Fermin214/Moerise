@@ -4,10 +4,28 @@ export function initShell() {
   const header = document.getElementById('mobile-header'), menu = document.getElementById('navigation-toggle');
   const close = document.getElementById('navigation-close'), search = document.getElementById('search-panel');
   const searchToggle = document.getElementById('search-toggle'), query = document.getElementById('q');
+  const sidebarBody = sidebar.querySelector('.sidebar-body'), account = document.getElementById('account');
   const searchHome = document.createComment('search');
   search.before(searchHome);
   const compact = matchMedia('(max-width:960px)');
-  let searchOpen = false, gesture = null;
+  let searchOpen = false, gesture = null, sidebarScrollTop = 0;
+
+  function revealAccount() {
+    sidebarScrollTop = Math.max(0, sidebarBody.scrollTop);
+    sidebar.classList.remove('account-hidden');
+  }
+  sidebarBody.addEventListener('scroll', () => {
+    const top = Math.max(0, Math.min(sidebarBody.scrollTop, sidebarBody.scrollHeight - sidebarBody.clientHeight));
+    const delta = top - sidebarScrollTop;
+    sidebarScrollTop = top;
+    if (top === 0 || account.contains(document.activeElement)) sidebar.classList.remove('account-hidden');
+    else if (delta) sidebar.classList.toggle('account-hidden', delta > 0);
+  }, { passive: true });
+  account.addEventListener('focusin', revealAccount);
+  new ResizeObserver(() => {
+    sidebar.style.setProperty('--account-space', account.hidden ? '0px' : `${account.offsetHeight + 16}px`);
+  }).observe(account);
+  new ResizeObserver(revealAccount).observe(sidebarBody);
 
   function closeNavigation() {
     if (dialog.open) dialog.close();
@@ -28,6 +46,7 @@ export function initShell() {
     if (!compact.matches || app.hidden || dialog.open) return;
     closeSearch();
     dialog.showModal();
+    revealAccount();
     menu.setAttribute('aria-expanded', 'true');
     document.documentElement.classList.add('navigation-open');
     close.focus({ preventScroll: true });
@@ -46,6 +65,7 @@ export function initShell() {
       search.hidden = false;
     }
     searchToggle.setAttribute('aria-expanded', String(!search.hidden));
+    revealAccount();
     if (editingSearch && !search.hidden) focused.focus({ preventScroll: true });
   }
   menu.addEventListener('click', openNavigation);
@@ -114,6 +134,6 @@ export function initShell() {
   layout();
   return {
     closeNavigation,
-    reset() { closeNavigation(); closeSearch(); },
+    reset() { closeNavigation(); closeSearch(); revealAccount(); },
   };
 }

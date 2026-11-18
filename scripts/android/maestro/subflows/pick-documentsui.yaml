@@ -1,0 +1,111 @@
+appId: ${APP_ID}
+name: Pick one exact Downloads file in Android DocumentsUI
+onFlowComplete:
+- takeScreenshot:
+    path: ${SCREENSHOT_PREFIX}-pick-documentsui-final
+    label: Capture the isolated test UI
+---
+- extendedWaitUntil:
+    visible:
+      id: (com\.android\.documentsui|com\.google\.android\.documentsui):id/toolbar
+    timeout: 15000
+    label: Wait for the expected UI state
+- takeScreenshot:
+    path: ${SCREENSHOT_PREFIX}-documentsui
+    label: Capture the isolated test UI
+- runFlow:
+    when:
+      notVisible:
+        id: (com\.android\.documentsui|com\.google\.android\.documentsui):id/roots_list
+    commands:
+    - assertNotVisible:
+        id: (com\.android\.documentsui|com\.google\.android\.documentsui):id/roots_list
+        label: Check the conditional branch precondition
+    - extendedWaitUntil:
+        visible:
+          text: Show roots|显示根目录
+        timeout: 15000
+        label: Wait for the expected UI state
+    - tapOn:
+        enabled: true
+        text: Show roots|显示根目录
+        label: Activate the specified control
+    - extendedWaitUntil:
+        visible:
+          id: (com\.android\.documentsui|com\.google\.android\.documentsui):id/roots_list
+        timeout: 15000
+        label: Wait for the expected UI state
+    label: Open the root drawer only when it is not already visible
+- extendedWaitUntil:
+    visible:
+      id: (com\.android\.documentsui|com\.google\.android\.documentsui):id/roots_list
+    timeout: 15000
+    label: Wait for the expected UI state
+- extendedWaitUntil:
+    visible:
+      text: Downloads|下载
+      childOf:
+        id: (com\.android\.documentsui|com\.google\.android\.documentsui):id/roots_list
+    timeout: 15000
+    label: Wait for the expected UI state
+- tapOn:
+    enabled: true
+    text: Downloads|下载
+    childOf:
+      id: (com\.android\.documentsui|com\.google\.android\.documentsui):id/roots_list
+    label: Activate the specified control
+- extendedWaitUntil:
+    visible:
+      id: (com\.android\.documentsui|com\.google\.android\.documentsui):id/dir_list
+    timeout: 15000
+    label: Wait for the expected UI state
+- scrollUntilVisible:
+    element:
+      text: \Q${ATTACHMENT_NAME}\E
+      childOf:
+        id: (com\.android\.documentsui|com\.google\.android\.documentsui):id/dir_list
+    direction: DOWN
+    timeout: 15000
+    centerElement: true
+    label: Locate the specified control without coordinates
+- tapOn:
+    enabled: true
+    text: \Q${ATTACHMENT_NAME}\E
+    childOf:
+      id: (com\.android\.documentsui|com\.google\.android\.documentsui):id/dir_list
+    label: Activate the specified control
+- extendedWaitUntil:
+    visible:
+      id: note_editor|(com\.android\.documentsui|com\.google\.android\.documentsui):id/action_menu_select
+    timeout: 15000
+    label: Wait for the expected UI state
+- runFlow:
+    when:
+      visible:
+        id: (com\.android\.documentsui|com\.google\.android\.documentsui):id/action_menu_select
+    commands:
+    - assertVisible:
+        id: (com\.android\.documentsui|com\.google\.android\.documentsui):id/action_menu_select
+        label: Check the conditional branch precondition
+    - assertVisible:
+        id: (com\.android\.documentsui|com\.google\.android\.documentsui):id/action_menu_select
+        enabled: true
+        label: Check the expected UI state
+    - tapOn:
+        id: (com\.android\.documentsui|com\.google\.android\.documentsui):id/action_menu_select
+        enabled: true
+        label: Activate the specified control
+    label: Confirm the selection only when DocumentsUI exposes its select action
+- extendedWaitUntil:
+    visible:
+      id: note_editor
+    timeout: 15000
+    label: Wait for the expected UI state
+- extendedWaitUntil:
+    visible:
+      text: \Q${ATTACHMENT_NAME}\E
+    timeout: 15000
+    label: Wait for the expected UI state
+- assertNotVisible:
+    id: (com\.android\.documentsui|com\.google\.android\.documentsui):id/toolbar
+    label: Check that DocumentsUI has returned to the app

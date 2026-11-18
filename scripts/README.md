@@ -69,3 +69,56 @@ node --test scripts/lib/*.test.mjs
 ```
 
 `tests/testdata/search-quality.json` 定义检索问题标注，材料取自仓库中的公开文档；`chat-quality.json` 提供虚构的聊天评测材料。需要真实供应商的可选评测入口见[开发指南](../docs/DEVELOPMENT.md)。
+
+---
+
+## 四、Android Windows 工具
+
+Android 工程文件与生成产物的归属见[Android 文件与产物](../docs/ANDROID.md#文件与产物)。
+
+GitHub Actions 的 Android 检查通过 `android/ci-device-check.sh` 启动隔离 Core/Memos，
+复用设备用例验证登录、编辑、草稿和离线恢复；`android-release.yml` 构建签名 APK，
+检查最低系统版本安装与启动，再发布发行附件。
+
+设备与构建入口见[设备检查](../docs/android/DEVICE-CHECKS.md)，发行与升级见
+[安装说明](../docs/android/INSTALL.md)。Windows 使用 PowerShell 7.2 以上和 JDK 17。
+所有 worktree 的 Gradle、安装、设备测试、Profile 和发行构建通过
+`android/with-device-lock.ps1` 串行执行，源码固定为 `C:\Projects\Moerise`。
+共享锁为 `C:\Projects\Moerise\.local\android\device-build.lock`，结果放在主仓库
+`.local/android/` 的独立任务目录。只读 `-Status` 显示持有者、源码提交和残留构建进程。
+
+| 入口 | 用途 |
+| --- | --- |
+| `environment.ps1` | 解析 JDK、共享 SDK/Gradle 缓存及 Go/Docker CLI；`-ResolveOnly` 只定义解析函数 |
+| `build.ps1` | 串行 Gradle 任务、统一 JVM 参数和构建日志；支持 `-Offline`、`-ValidateOnly` |
+| `phone.ps1` | 持久真机会话：目标 APK 复用、Maestro 默认回归、按需专项、人工接管与显式清理 |
+| `phone-session.py` | 会话身份、设备 APK 摘要、步骤日志、失败分类与结果持久化 |
+| `maestro_runner.py`、`maestro-run.py` | 共用 UI 执行、独立测试数据、服务端后验、JUnit 与脱敏产物 |
+| `maestro/` | 登录、编辑、搜索、归档删除、洞察、导航、附件和语言流程及静态校验 |
+| `acceptance.ps1` | 动态设备选择、隔离包安装、登录/笔记/输入法；`-Recovery` 增加离线和后台自动同步；`-SkipBuild` 复用 APK |
+| `ci-device-check.sh` | 隔离模拟器按 `MOERISE_ANDROID_SUITE` 执行 Maestro 界面组或 instrumentation 专项 |
+| `fixture-artifacts.py` | 记录 Android 源码和两个 fixture APK 的摘要；界面组用 `verify --target-only` 单独校验目标包 |
+| `device-recovery.py` | 分阶段 instrumentation、SQLite/WAL 落盘确认、杀进程重开及官方 API 无重复检查 |
+| `start-fixture.ps1` | 隐藏进程启动隔离 Core/Memos/模型；`-Resume` 复用语料、端口与索引 |
+| `fixture-control.ps1` | 单实例状态、保留数据停止、精确身份旧进程停止和显式销毁 |
+| `benchmark.ps1` | 同一真机的 Profile、启动与观星性能；发现模拟器即报错 |
+| `benchmark-device.py` | 显式安装性能 APK、运行 instrumentation 并拉取原始结果，供两平台入口共用 |
+| `trace-processor.py` | 为性能 runner 下载固定版本及摘要的官方 Perfetto 程序，输出到构建目录 |
+| `release.ps1` | 发行、签名、APK 对齐与许可归档；`-SigningFile` 读取仓库外签名档案 |
+| `usb-https.mjs` | 本机 TLS 与限定域名 CONNECT 代理，证书和私钥作为文件路径传入 |
+
+锁与模型限流的专项检查无需 Gradle、ADB、Docker 或设备：
+
+```powershell
+pwsh -NoProfile -File scripts/android/device-lock.test.ps1
+node --test scripts/android/fixture-policy.test.mjs
+python -B scripts/android/phone-session.test.py
+python -B scripts/android/maestro-runner.test.py
+python -B scripts/android/maestro/validate.py
+python -B scripts/android/maestro/validate_test.py
+python -B scripts/android/device-recovery.test.py
+```
+
+这些宿主检查覆盖跨进程互斥、残留文件、PID 重用、令牌继承、模型排队、
+会话复用、安装取消恢复、代理只读检查和 SQLite/WAL 失败分类，不连接手机。
+Android 行为使用上述设备流程集中验证。

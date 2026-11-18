@@ -45,16 +45,23 @@ flowchart TD
 | `web/test/` | Node 单元测试与 Playwright 浏览器流程 |
 | `tests/` | 带 `integration` 构建标签的真实 Memos 集成测试 |
 | `tests/testdata/` | 检索问题标注与虚构聊天质量评测数据 |
+| `mobile/androidApp/` | Android 入口、生命周期、平台资源和设备流程；`src/benchmark/` 仅进入性能包 |
+| `mobile/shared/` | 客户端界面、协议、同步与持久化；`jvmMain` 为 Linux 检查提供平台适配 |
+| `mobile/benchmark/` | 独立 Macrobenchmark runner 与 Profile 采集流程 |
+| `mobile/gradle/` | 工具链版本、Wrapper 和依赖完整性校验 |
+| `scripts/android/` | 构建、隔离服务、设备验收、性能与发行入口 |
+| `docs/android/` | 设备检查、安装和第三方许可；工程说明见 [Android 开发](ANDROID.md) |
 | `scripts/acceptance/` | Compose、浏览器、Core 与真实 Memos 的联合验收 |
 | `scripts/performance/` | CPU 配置基准与检索质量评测 |
 | `scripts/lib/` | 脚本共用的进程管理工具及测试 |
 | `deploy/resources/` | 按 CPU 核数和内存划分的 Compose 资源配置档位 |
-| `.github/workflows/` | Go、Web、浏览器和真实 Memos 的 CI 检查 |
+| `.github/workflows/` | Go、Web、Android、浏览器和真实 Memos 的 CI 检查及发行 |
 | `docs/` | 产品、开发、接口与运维文档 |
 
 根目录保留通用入口：`Dockerfile` 和 `compose.yaml` 定义部署，`.env.example` 与 `config.example.json` 提供配置模板，`go.mod`/`go.sum` 固定 Go 依赖。`.dockerignore`、`.gitignore`、`.gitattributes` 分别约束构建上下文、版本管理和文本格式。`LICENSE`、`CONTRIBUTING*` 与 `AGENTS.md` 说明许可证和贡献约定。
 
 `.local/` 用于本地配置、临时数据和报告，`web/dist/` 是构建产物；两者均不进入版本管理。
+Android 文件的版本管理规则见 [Android 开发](ANDROID.md#文件与产物)。
 
 ---
 

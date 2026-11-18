@@ -456,7 +456,7 @@ test('English map labels and dates update without refetching notes or losing the
   await page.getByRole('group', { name: '观星', exact: true }).waitFor();
   assert.deepEqual(await view(page), saved); assert.equal(readCount(), reads);
   await setUILanguage(page, 'en');
-  assert.match(await card(page).locator('time').textContent(), /Oct/);
+  assert.equal(await card(page).locator('time').textContent(), '2026-10-20 16:00');
   assert.match(await card(page).locator('.note-content').textContent(), /完整笔记/);
   await page.setViewportSize({ width: 390, height: 844 });
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);

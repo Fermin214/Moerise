@@ -393,6 +393,7 @@ test('follow-up questions do not count toward the material character limit', asy
   await page.locator('[data-chat="ask"]').fill(question);
   await page.getByRole('button', { name: '发送', exact: true }).click();
   await page.getByRole('button', { name: '保存为笔记', exact: true }).waitFor();
+  await page.locator('.insights-page[aria-busy="false"]').waitFor();
   assert.equal(state.chat.turns[0].user.content, question);
   assert.equal(state.calls, 1);
   assert.equal(await page.locator('[data-chat="ask"]').inputValue(), '');

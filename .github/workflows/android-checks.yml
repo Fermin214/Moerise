@@ -1,0 +1,313 @@
+name: Android checks
+on:
+  push:
+    branches: [main]
+    paths: ['mobile/**', 'scripts/android/**', 'docs/android/**', 'internal/client_*.go', 'internal/*models.go', 'internal/openapi.json', '.github/workflows/android-checks.yml']
+  pull_request:
+    paths: ['mobile/**', 'scripts/android/**', 'docs/android/**', 'internal/client_*.go', 'internal/*models.go', 'internal/openapi.json', '.github/workflows/android-checks.yml']
+  workflow_dispatch:
+    inputs:
+      mode:
+        type: choice
+        options: [full, device, build]
+        default: full
+      suite:
+        type: choice
+        options: [all, ui, editing, search, actions, insights, navigation, attachments, language, home, lifecycle, ime, recovery, stars]
+        default: all
+      fixture_run:
+        description: Reuse fixture APKs from this workflow run
+        type: string
+        default: ''
+  workflow_call:
+    inputs:
+      mode:
+        type: string
+        default: device
+      suite:
+        type: string
+        default: all
+      fixture_run:
+        type: string
+        default: ''
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: android-${{ github.workflow }}-${{ github.ref }}-${{ inputs.mode || 'full' }}-${{ inputs.suite || 'all' }}
+  cancel-in-progress: true
+jobs:
+  fixture:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    outputs:
+      suites: ${{ steps.suites.outputs.value }}
+      maestro_suites: ${{ steps.suites.outputs.maestro_suites }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Check shared Maestro harness
+        run: |
+          python3 -m pip install --disable-pip-version-check -r scripts/android/maestro/requirements.txt
+          python3 -B scripts/android/maestro/validate.py
+          python3 -B scripts/android/maestro/validate_test.py
+          python3 -B scripts/android/maestro-runner.test.py
+          python3 -B scripts/android/phone-session.test.py
+          python3 -B scripts/android/device-recovery.test.py
+      - id: suites
+        name: Select device suites
+        env:
+          SUITE: ${{ inputs.suite || 'all' }}
+        run: |
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          maestro_suites = list(json.loads(Path('scripts/android/maestro/catalog.json').read_text())['groups'])
+          native_suites = ['lifecycle', 'ime', 'recovery', 'stars']
+          if not maestro_suites or set(maestro_suites) & set(native_suites + ['all', 'ui', 'diagnostic']):
+              raise SystemExit('Invalid Maestro groups')
+          suites = maestro_suites + native_suites
+          suite = os.environ['SUITE']
+          if suite not in ['all', 'ui', *suites]:
+              raise SystemExit('Unknown device suite')
+          selected = suites if suite == 'all' else maestro_suites if suite == 'ui' else [suite]
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write('value=' + json.dumps(selected) + '\n')
+              output.write('maestro_suites=' + json.dumps(maestro_suites) + '\n')
+          PY
+      - uses: actions/download-artifact@v4
+        if: inputs.fixture_run != ''
+        with:
+          name: android-fixture-apks
+          path: .
+          run-id: ${{ inputs.fixture_run }}
+          github-token: ${{ github.token }}
+      - name: Verify reused fixture APKs
+        if: inputs.fixture_run != ''
+        run: python3 scripts/android/fixture-artifacts.py verify
+      - uses: actions/setup-java@v4
+        if: inputs.fixture_run == ''
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: actions/cache/restore@v4
+        id: android-cache
+        if: inputs.fixture_run == ''
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+            mobile/.gradle
+            mobile/shared/build
+            mobile/androidApp/build/intermediates
+            mobile/androidApp/build/kotlin
+            mobile/androidApp/build/tmp
+          key: android-checks-${{ runner.os }}-${{ hashFiles('mobile/**/*.gradle.kts', 'mobile/gradle/libs.versions.toml', 'mobile/gradle/verification-metadata.xml', 'mobile/gradle/wrapper/gradle-wrapper.properties') }}-${{ github.sha }}
+          restore-keys: android-checks-${{ runner.os }}-${{ hashFiles('mobile/**/*.gradle.kts', 'mobile/gradle/libs.versions.toml', 'mobile/gradle/verification-metadata.xml', 'mobile/gradle/wrapper/gradle-wrapper.properties') }}-
+      - uses: android-actions/setup-android@v3
+        if: inputs.fixture_run == ''
+        with:
+          packages: platform-tools
+      - run: sdkmanager 'platforms;android-36' 'build-tools;36.0.0'
+        if: inputs.fixture_run == ''
+      - name: Build fixture APKs once
+        if: inputs.fixture_run == ''
+        run: |
+          source scripts/android/environment.sh
+          mobile/gradlew -p mobile --no-daemon --max-workers=1 :androidApp:assembleFixture :androidApp:assembleFixtureAndroidTest
+          python3 scripts/android/fixture-artifacts.py write
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android-fixture-apks
+          include-hidden-files: true
+          path: |
+            .local/android/fixture-artifacts.json
+            mobile/androidApp/build/outputs/apk/fixture/androidApp-fixture.apk
+            mobile/androidApp/build/outputs/apk/androidTest/fixture/androidApp-fixture-androidTest.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android-fixture-target
+          include-hidden-files: true
+          path: |
+            .local/android/fixture-artifacts.json
+            mobile/androidApp/build/outputs/apk/fixture/androidApp-fixture.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android-fixture-tests
+          path: mobile/androidApp/build/outputs/apk/androidTest/fixture/androidApp-fixture-androidTest.apk
+      - uses: actions/cache/save@v4
+        if: always() && steps.android-cache.outcome == 'success' && steps.android-cache.outputs.cache-hit != 'true'
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+            mobile/.gradle
+            mobile/shared/build
+            mobile/androidApp/build/intermediates
+            mobile/androidApp/build/kotlin
+            mobile/androidApp/build/tmp
+          key: ${{ steps.android-cache.outputs.cache-primary-key }}
+  device:
+    needs: fixture
+    if: inputs.mode != 'build'
+    name: Device (${{ matrix.suite }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        suite: ${{ fromJSON(needs.fixture.outputs.suites) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/download-artifact@v4
+        with:
+          name: android-fixture-target
+          path: .
+      - uses: actions/download-artifact@v4
+        if: ${{ !contains(fromJSON(needs.fixture.outputs.maestro_suites), matrix.suite) }}
+        with:
+          name: android-fixture-tests
+          path: mobile/androidApp/build/outputs/apk/androidTest/fixture
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+      - run: sdkmanager 'platforms;android-36' 'build-tools;36.0.0'
+      - uses: actions/cache@v4
+        if: contains(fromJSON(needs.fixture.outputs.maestro_suites), matrix.suite)
+        with:
+          path: ~/.cache/moerise-maestro/2.12.1/maestro.zip
+          key: android-maestro-2.12.1-${{ runner.os }}-${{ runner.arch }}-54dbb071
+      - name: Install Maestro CLI 2.12.1
+        if: contains(fromJSON(needs.fixture.outputs.maestro_suites), matrix.suite)
+        run: |
+          bash scripts/android/install-maestro.sh
+          python3 -m pip install --disable-pip-version-check -r scripts/android/maestro/requirements.txt
+      - uses: actions/setup-go@4dc6199c7b1a012772edbd06daecab0f50c9053c
+        with:
+          go-version: "1.27.x"
+      - uses: actions/setup-node@v6.5.0
+        with:
+          node-version: "24"
+      - name: Enable emulator acceleration
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Check device suite
+        uses: reactivecircus/android-emulator-runner@4c44018e59b437e86cdfc41da381398f93ed8808
+        env:
+          MOERISE_ANDROID_SUITE: ${{ matrix.suite }}
+          MOERISE_ANDROID_SKIP_BUILD: '1'
+        with:
+          api-level: 36
+          arch: x86_64
+          target: google_apis
+          disable-animations: true
+          script: bash scripts/android/ci-device-check.sh
+      - name: Summarize device results
+        if: always()
+        env:
+          SUITE: ${{ matrix.suite }}
+        run: |
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          result = Path('.local/android/device-results.tsv')
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as output:
+              output.write('### Device: ' + os.environ['SUITE'] + '\n\n')
+              output.write('```\n' + (result.read_text() if result.exists() else 'Device suite did not complete\n') + '```\n')
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: android-device-${{ matrix.suite }}
+          include-hidden-files: true
+          path: |
+            .local/android/device-results.tsv
+            .local/android/device-acceptance.log
+            .local/android/device-diagnostics.tar
+            .local/android/device-fixture-*.log
+            .local/android/maestro/
+            .local/android/device-instrumentation/
+            .local/android/device-recovery/*.log
+            .local/android/device-recovery/recovery.json
+  android:
+    name: Build, JVM, lint and API
+    needs: fixture
+    if: inputs.mode != 'device'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: actions/cache/restore@v4
+        id: android-cache
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+            mobile/.gradle
+            mobile/shared/build
+            mobile/androidApp/build/intermediates
+            mobile/androidApp/build/kotlin
+            mobile/androidApp/build/tmp
+          key: android-full-${{ runner.os }}-${{ hashFiles('mobile/**/*.gradle.kts', 'mobile/gradle/libs.versions.toml', 'mobile/gradle/verification-metadata.xml', 'mobile/gradle/wrapper/gradle-wrapper.properties') }}-${{ github.sha }}
+          restore-keys: |
+            android-full-${{ runner.os }}-${{ hashFiles('mobile/**/*.gradle.kts', 'mobile/gradle/libs.versions.toml', 'mobile/gradle/verification-metadata.xml', 'mobile/gradle/wrapper/gradle-wrapper.properties') }}-
+            android-checks-${{ runner.os }}-${{ hashFiles('mobile/**/*.gradle.kts', 'mobile/gradle/libs.versions.toml', 'mobile/gradle/verification-metadata.xml', 'mobile/gradle/wrapper/gradle-wrapper.properties') }}-
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+      - run: sdkmanager 'platforms;android-36' 'build-tools;36.0.0'
+      - uses: actions/setup-go@4dc6199c7b1a012772edbd06daecab0f50c9053c
+        with:
+          go-version: "1.27.x"
+      - uses: actions/setup-node@v6.5.0
+        with:
+          node-version: "24"
+      - run: >-
+          scripts/android/check.sh --continue
+          :androidApp:assembleRelease :androidApp:lintRelease
+          :androidApp:assembleBenchmark :androidApp:assembleProfile
+          :benchmark:assembleBenchmark :benchmark:assembleProfile
+          :androidApp:exportReleaseDependencies
+      - run: |
+          python3 scripts/android/licenses.py --check
+          python3 scripts/android/verify-apk.py mobile/androidApp/build/outputs/apk/release/androidApp-release-unsigned.apk --unsigned --release --package io.github.fermin214.moerise
+          for variant in benchmark profile; do
+            python3 scripts/android/verify-apk.py "mobile/benchmark/build/outputs/apk/$variant/benchmark-$variant.apk" --package io.github.fermin214.moerise.benchmark.runner
+          done
+      - run: scripts/android/live-check.sh
+      - run: scripts/android/stars-check.sh
+        if: github.event_name == 'workflow_dispatch'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: moerise-android-debug
+          path: mobile/androidApp/build/outputs/apk/debug/*.apk
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: android-check-reports
+          include-hidden-files: true
+          path: |
+            mobile/shared/build/reports/tests/
+            mobile/androidApp/build/reports/lint-results-*.html
+            mobile/androidApp/build/outputs/mapping/release/
+      - uses: actions/cache/save@v4
+        if: always() && steps.android-cache.outcome == 'success'
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+            mobile/.gradle
+            mobile/shared/build
+            mobile/androidApp/build/intermediates
+            mobile/androidApp/build/kotlin
+            mobile/androidApp/build/tmp
+          key: ${{ steps.android-cache.outputs.cache-primary-key }}

@@ -60,6 +60,16 @@ function inlineIndex(text) {
 
 const emphasis = [['**', 'strong'], ['__', 'strong'], ['*', 'em'], ['~~', 'del']];
 
+function nativeTagText(tags = []) {
+  const names = [...new Set(tags)].filter(tag => typeof tag === 'string' && tag && !/\s/u.test(tag))
+    .sort((a, b) => b.length - a.length).map(tag => tag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+  if (!names.length) return text => text;
+  const marker = new RegExp(
+    `\\\\[^\\n]|(?:[A-Za-z][A-Za-z0-9+.-]*:\\/\\/|www\\.)[^\\s<>]+|<[^>\\n]+>|!?\\[[^\\]\\n]*\\](?:\\[[^\\]\\n]*\\])?|(^|[\\s.,!?;:()\\[\\]{}<>"'，。！？；：、（）【】《》「」『』“”‘’…-])#(?:${names.join('|')})(?=$|[\\s.,!?;:()\\[\\]{}<>"'，。！？；：、（）【】《》「」『』“”‘’…])`, 'gu');
+  return text => text.split('\n').map(line => /^(?: {4}|\t)/.test(line) ? line :
+    line.replace(marker, (value, before) => before === undefined ? value : before)).join('\n');
+}
+
 function inlineMatch(text, i, next) {
   if (text[i] === '`') {
     const start = next.ticks[i], stop = next['`'][start];
@@ -89,14 +99,14 @@ function inlineMatch(text, i, next) {
   return null;
 }
 
-function inline(parent, text, attachments, depth = 0) {
-  if (depth > 8 || !/[`*_~\[]/.test(text)) { parent.append(document.createTextNode(text)); return; }
+function inline(parent, text, attachments, cleanText, depth = 0) {
+  if (depth > 8 || !/[`*_~\[]/.test(text)) { parent.append(document.createTextNode(cleanText(text))); return; }
   const next = inlineIndex(text);
   let last = 0;
   for (let i = 0; i < text.length;) {
     const match = inlineMatch(text, i, next);
     if (!match) { i++; continue; }
-    parent.append(document.createTextNode(text.slice(last, i)));
+    parent.append(document.createTextNode(cleanText(text.slice(last, i))));
     const content = text.slice(match.start, match.stop);
     if (match.tag === 'code') {
       const code = document.createElement('code');
@@ -122,16 +132,17 @@ function inline(parent, text, attachments, depth = 0) {
       }
     } else {
       const node = document.createElement(match.tag);
-      inline(node, content, attachments, depth + 1);
+      inline(node, content, attachments, cleanText, depth + 1);
       parent.append(node);
     }
     i = last = match.end;
   }
-  parent.append(document.createTextNode(text.slice(last)));
+  parent.append(document.createTextNode(cleanText(text.slice(last))));
 }
 
 export function renderMarkdown(text, note) {
   const attachments = attachmentLinks(note);
+  const cleanText = nativeTagText(note?.tags);
   const fragment = document.createDocumentFragment();
   const lines = text.replace(/\r\n?/g, '\n').split('\n');
   for (let i = 0; i < lines.length;) {
@@ -160,11 +171,13 @@ export function renderMarkdown(text, note) {
         const next = /^\s*(?:([-+*])|\d+\.)\s+(.+)$/.exec(lines[i]);
         if (!next || !!next[1] !== !!item[1]) break;
         const li = document.createElement('li');
-        inline(li, next[2], attachments);
-        list.append(li);
+        if (cleanText(next[2]).trim()) {
+          inline(li, next[2], attachments, cleanText);
+          list.append(li);
+        }
         i++;
       }
-      fragment.append(list);
+      if (list.children.length) fragment.append(list);
       continue;
     }
     const block = document.createElement(heading ? `h${heading[1].length}` : quote ? 'blockquote' : 'p');
@@ -173,7 +186,9 @@ export function renderMarkdown(text, note) {
     if (!heading && !quote) {
       while (i < lines.length && lines[i].trim() && !/^(?:#{1,6}\s|>| {0,3}`{3}| {0,3}~{3}|\s*[-+*]\s|\s*\d+\.\s)/.test(lines[i])) content.push(lines[i++]);
     }
-    inline(block, content.join('\n'), attachments);
+    const value = content.join('\n');
+    if (!cleanText(value).trim()) continue;
+    inline(block, value, attachments, cleanText);
     fragment.append(block);
   }
   return fragment;

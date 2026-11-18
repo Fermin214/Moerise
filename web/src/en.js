@@ -318,6 +318,7 @@ export const english = {
   "‹ 返回主页": "‹ Back to Home",
   "新建笔记": "New note",
   "写点什么": "Write something",
+  "今天想到了什么……": "What came to mind today…",
   "没有匹配的笔记": "No matching notes",
   "会话": "Chat",
   "新建会话": "New chat",

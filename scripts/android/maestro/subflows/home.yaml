@@ -1,0 +1,56 @@
+appId: ${APP_ID}
+name: Return to the signed-in home
+onFlowComplete:
+- takeScreenshot:
+    path: ${SCREENSHOT_PREFIX}-home-final
+    label: Capture the isolated test UI
+---
+- runFlow:
+    file: ensure-login.yaml
+    label: Keep the existing session or sign into the fixture
+- runFlow:
+    file: open-menu.yaml
+    label: Open navigation
+- scrollUntilVisible:
+    element:
+      id: nav_home
+    direction: DOWN
+    timeout: 15000
+    centerElement: true
+    label: Locate the specified control without coordinates
+- tapOn:
+    id: nav_home
+    enabled: true
+    label: Activate the specified control
+- scrollUntilVisible:
+    element:
+      id: note_editor
+    direction: UP
+    timeout: 15000
+    centerElement: true
+    label: Locate the specified control without coordinates
+- extendedWaitUntil:
+    visible:
+      id: note_editor
+    timeout: 15000
+    label: Wait for the expected UI state
+- extendedWaitUntil:
+    visible:
+      id: save_note
+    timeout: 15000
+    label: Wait for the expected UI state
+- extendedWaitUntil:
+    visible:
+      id: sync_notes
+      enabled: true
+    timeout: 15000
+    label: Wait for the expected UI state
+- tapOn:
+    id: sync_notes
+    enabled: true
+    label: Activate the specified control
+- extendedWaitUntil:
+    visible:
+      id: note_editor
+    timeout: 15000
+    label: Wait for the expected UI state

@@ -169,7 +169,7 @@ async function login(page) {
   await page.locator('#workspace').waitFor({ state: 'visible' });
 }
 
-test('large tag lists prioritize selected tags and stay above fixed account controls without a second search', async t => {
+test('large tag lists share sidebar scrolling and reveal account controls on upward scrolling and keyboard focus', { timeout: 90_000 }, async t => {
   const { page, state, errors, url } = await fixture(t);
   const extra = Array.from({ length: 180 }, (_, index) => `分类-${String(index).padStart(3, '0')}`);
   state.notes.get('n00').tags.push(...extra);
@@ -181,24 +181,91 @@ test('large tag lists prioritize selected tags and stay above fixed account cont
   await page.waitForURL('**/?tag=*');
   await page.locator('#tags button[aria-pressed="true"]').waitFor({ state: 'attached' });
   assert.match(await page.locator('#tags button').first().innerText(), /#分类-179/);
-  for (const viewport of [{ width: 1360, height: 960 }, { width: 390, height: 844 }, { width: 932, height: 430 }]) {
-    await page.setViewportSize(viewport);
-    const mobile = viewport.width <= 960;
-    if (mobile) await page.locator('#navigation-toggle').click();
-    const geometry = await page.evaluate(() => ({
-      list: document.querySelector('#tags').getBoundingClientRect().toJSON(),
-      account: document.querySelector('#account').getBoundingClientRect().toJSON(),
-      sidebar: document.querySelector('#sidebar').getBoundingClientRect().toJSON(),
-      body: document.querySelector('.sidebar-body').getBoundingClientRect().toJSON(),
-      scroll: document.querySelector('#tags').scrollHeight > document.querySelector('#tags').clientHeight,
-    }));
-    assert.ok(Math.min(geometry.list.bottom, geometry.body.bottom) <= geometry.account.y, JSON.stringify({ viewport, geometry }));
-    assert.ok(geometry.account.bottom <= viewport.height);
-    assert.ok(geometry.account.bottom >= viewport.height - 24);
-    assert.ok(geometry.scroll);
-    await page.locator('#tags').evaluate(node => { node.scrollTop = node.scrollHeight; });
-    assert.equal((await page.locator('#account').boundingBox()).y, geometry.account.y);
-    if (mobile) await page.keyboard.press('Escape');
+  const body = page.locator('.sidebar-body');
+  const accountVisible = hidden => page.waitForFunction(hidden => {
+    const side = document.getElementById('sidebar'), account = document.getElementById('account');
+    const frame = document.querySelector('.sidebar-content').getBoundingClientRect();
+    return hidden ? side.classList.contains('account-hidden') && account.getBoundingClientRect().top >= frame.bottom - 1 :
+      !side.classList.contains('account-hidden') && getComputedStyle(account).transform === 'none';
+  }, hidden);
+  const metrics = () => body.evaluate(node => ({
+    top: node.scrollTop, height: node.clientHeight, extent: node.scrollHeight, page: window.scrollY,
+  }));
+  for (const language of ['zh-CN', 'en']) {
+    await setUILanguage(page, language);
+    await page.emulateMedia({ reducedMotion: language === 'en' ? 'reduce' : 'no-preference' });
+    for (const viewport of [{ width: 1360, height: 960 }, { width: 390, height: 844 }, { width: 932, height: 430 }]) {
+      await page.setViewportSize(viewport);
+      const mobile = viewport.width <= 960;
+      if (mobile) await page.locator('#navigation-toggle').click();
+      if (language === 'zh-CN' && !mobile) await body.evaluate(node => { node.scrollTop = 0; });
+      await accountVisible(false);
+      await body.evaluate(node => { node.scrollTop = 0; });
+      await page.waitForFunction(() => document.querySelector('.sidebar-body').scrollTop === 0);
+      assert.deepEqual(await page.locator('#sidebar *').evaluateAll(nodes => nodes
+        .filter(node => /^(auto|scroll)$/.test(getComputedStyle(node).overflowY) && node.scrollHeight > node.clientHeight)
+        .map(node => node.className)), ['sidebar-body']);
+      assert.equal(await page.locator('#tags').evaluate(node => node.scrollTop), 0);
+      assert.ok((await page.locator('#account').boundingBox()).y > viewport.height - 140);
+      if (language === 'en') {
+        assert.equal(await page.locator('#account a[href="/settings"]').innerText(), 'Settings');
+        assert.equal(await page.locator('#account').evaluate(node => getComputedStyle(node).transitionDuration), '0s');
+      }
+
+      await body.hover({ position: { x: 40, y: 60 } });
+      const before = await metrics();
+      await page.mouse.wheel(0, 720);
+      await accountVisible(true);
+      const down = await metrics();
+      assert.ok(down.top > before.top);
+      assert.equal(down.page, before.page);
+      await body.evaluate(() => new Promise(resolve => {
+        let frames = 12;
+        function next() { if (--frames) requestAnimationFrame(next); else resolve(); }
+        requestAnimationFrame(next);
+      }));
+      assert.deepEqual(await metrics(), down);
+      await page.mouse.wheel(0, -32);
+      await accountVisible(false);
+      const up = await metrics();
+      assert.ok(up.top > 0 && up.top < down.top);
+      assert.equal(up.height, down.height);
+      assert.equal(up.extent, down.extent);
+
+      await page.mouse.wheel(0, 256);
+      await accountVisible(true);
+      await page.locator('#tags button').last().focus();
+      await page.keyboard.press('Tab');
+      assert.equal(await page.locator('#account a[href="/settings"]').evaluate(node => node === document.activeElement), true);
+      await accountVisible(false);
+      assert.equal(await page.locator('.sidebar-content').evaluate(node => node.scrollTop), 0);
+      await page.keyboard.press('Shift+Tab');
+      assert.equal(await page.locator('#tags button').last().evaluate(node => node === document.activeElement), true);
+      const focusedTag = await page.locator('#tags button').last().boundingBox();
+      assert.ok(focusedTag.y + focusedTag.height <= (await page.locator('#account').boundingBox()).y);
+      await page.keyboard.press('Tab');
+      await page.keyboard.press('Tab');
+      assert.equal(await page.locator('#user-menu').evaluate(node => node === document.activeElement), true);
+      await page.keyboard.press('Enter');
+      await page.locator('#account-menu').waitFor({ state: 'visible' });
+      await page.keyboard.press('Escape');
+      assert.equal(await page.locator('#user-menu').evaluate(node => node === document.activeElement), true);
+
+      await page.locator('#tags button').last().focus();
+      await page.keyboard.press('Control+Home');
+      await page.waitForFunction(() => document.querySelector('.sidebar-body').scrollTop === 0);
+      await accountVisible(false);
+      await body.hover({ position: { x: 40, y: 60 } });
+      await page.mouse.wheel(0, 640);
+      await accountVisible(true);
+      if (mobile) {
+        await page.locator('#navigation-close').click();
+        await page.locator('#navigation-toggle').click();
+        await accountVisible(false);
+        assert.ok((await metrics()).top > 0);
+        await page.keyboard.press('Escape');
+      }
+    }
   }
   assert.deepEqual(errors, []);
 });
@@ -347,7 +414,13 @@ test('mobile navigation, touch gestures, search and rotation preserve drafts and
   const client = await context.newCDPSession(page);
   const swipe = async (from, to) => {
     await client.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: from[0], y: from[1], id: 1 }] });
-    await client.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x: to[0], y: to[1], id: 1 }] });
+    for (let step = 1; step <= 8; step++) {
+      const fraction = step / 8;
+      await client.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{
+        x: from[0] + (to[0] - from[0]) * fraction, y: from[1] + (to[1] - from[1]) * fraction, id: 1,
+      }] });
+      await page.waitForTimeout(16);
+    }
     await client.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
   };
   await swipe([8, 600], [10, 450]);
@@ -904,9 +977,10 @@ test('English fallback, live language switching and stored preference preserve o
   assert.equal(await page.locator('html').getAttribute('lang'), 'en');
   await login(page);
   const note = page.locator('[data-name="memos/n00"]'); await note.waitFor();
+  const renderedParagraphs = await note.locator('.note-content p').allTextContents();
   await page.getByRole('button', { name: 'Previous month' }).waitFor();
   assert.equal(await page.locator('#calendar-title').textContent(), 'October 2026');
-  assert.match(await note.locator('time').first().textContent(), /Oct/);
+  assert.equal(await note.locator('time').first().textContent(), '2026-10-29 12:59');
   await page.locator('#content').fill('未保存的想法 #标签');
   await page.locator('#attachment-input').setInputFiles({ name: '图片.png', mimeType: 'image/png', buffer: png });
   await note.getByRole('button', { name: 'More actions' }).click();
@@ -923,7 +997,7 @@ test('English fallback, live language switching and stored preference preserve o
   await setUILanguage(page, 'en');
   assert.match(await page.locator('#draft-attachments').getByRole('button').getAttribute('aria-label'), /Remove attachment 图片.png/);
   await editor.getByRole('button', { name: 'Cancel', exact: true }).click();
-  assert.deepEqual(await note.locator('.note-content p').allTextContents(), state.notes.get('n00').content.split('\n\n'));
+  assert.deepEqual(await note.locator('.note-content p').allTextContents(), renderedParagraphs);
   await page.route('**/api/app/v1/search', route => route.fulfill({ status: 503, json: {
     error: { code: 'EMBEDDING_DISABLED', message: '敏感诊断 must not appear' },
   } }));

@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+set -euo pipefail
+case "${OSTYPE:-}" in
+    msys*|cygwin*|win32*)
+        echo "Windows Android 操作使用 PowerShell with-device-lock.ps1 队列入口。" >&2
+        exit 1
+        ;;
+esac
+android_repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+android_tools_root="${MOERISE_ANDROID_TOOLS:-$HOME/.local/share/moerise-android}"
+export JAVA_HOME="${JAVA_HOME:-$android_tools_root/jdk-17.0.21+9}"
+export ANDROID_HOME="${ANDROID_HOME:-$android_tools_root/android-sdk}"
+export PATH="$JAVA_HOME/bin:$ANDROID_HOME/platform-tools:$ANDROID_HOME/cmdline-tools/latest/bin:$PATH"
+if ! command -v java >/dev/null || ! test -d "$ANDROID_HOME/platforms/android-36"; then
+    echo "需要 JDK 17 和 Android API 36；设置 JAVA_HOME、ANDROID_HOME。" >&2
+    exit 1
+fi

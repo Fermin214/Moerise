@@ -1,0 +1,278 @@
+appId: ${APP_ID}
+name: Keep or establish the fixture session
+onFlowComplete:
+- takeScreenshot:
+    path: ${SCREENSHOT_PREFIX}-ensure-login-final
+    label: Capture the isolated test UI
+---
+- launchApp:
+    clearState: false
+    stopApp: false
+    label: Foreground the installed app without clearing or stopping it
+- extendedWaitUntil:
+    visible:
+      id: open_menu|server_login
+    timeout: 15000
+    label: Wait for either login or the authenticated toolbar
+- runFlow:
+    when:
+      visible:
+        id: server_login
+    commands:
+    - assertVisible:
+        id: server_login
+        label: Check the conditional branch precondition
+    - runFlow:
+        when:
+          notVisible:
+            id: server_origin
+        commands:
+        - assertNotVisible:
+            id: server_origin
+            label: Check the conditional branch precondition
+        - extendedWaitUntil:
+            visible:
+              id: server_change
+              enabled: true
+            timeout: 15000
+            label: Wait for the expected UI state
+        - tapOn:
+            id: server_change
+            enabled: true
+            label: Activate the specified control
+        - extendedWaitUntil:
+            visible:
+              id: server_origin
+              enabled: true
+            timeout: 15000
+            label: Wait for the expected UI state
+        label: Expose the server field only when it is hidden
+    - extendedWaitUntil:
+        visible:
+          id: server_origin
+          enabled: true
+        timeout: 15000
+        label: Wait for the expected UI state
+    - runFlow:
+        when:
+          notVisible:
+            id: server_origin_empty
+        commands:
+        - assertNotVisible:
+            id: server_origin_empty
+            label: Require the known input to contain text
+        - longPressOn:
+            id: server_origin
+            enabled: true
+            label: Open text selection for the known input
+        - runFlow:
+            when:
+              notVisible:
+                text: Select all|Select All|全选
+            commands:
+            - assertNotVisible:
+                text: Select all|Select All|全选
+                label: Require the full-selection action to be outside the toolbar
+            - assertVisible:
+                id: android:id/overflow
+                enabled: true
+                label: Require the observed Android text toolbar overflow
+            - tapOn:
+                id: android:id/overflow
+                enabled: true
+                label: Reveal the remaining text selection actions
+            label: Open text toolbar overflow only when full selection is hidden
+        - extendedWaitUntil:
+            visible:
+              text: Select all|Select All|全选
+            timeout: 15000
+            label: Wait for the text selection action
+        - tapOn:
+            text: Select all|Select All|全选
+            enabled: true
+            label: Select the complete fixture input
+        - eraseText:
+            charactersToErase: 1
+            label: Delete the selected fixture text
+        label: Clear the known input regardless of caret position
+    - tapOn:
+        id: server_origin
+        enabled: true
+        label: Focus the empty fixture input
+    - extendedWaitUntil:
+        visible:
+          id: server_origin
+          focused: true
+        timeout: 15000
+        label: Verify the server field has input focus
+    - inputText:
+        text: ${MAESTRO_FIXTURE_ORIGIN}${INPUT_SUFFIX}
+        label: Enter the exact fixture value through the test input method
+    - eraseText:
+        charactersToErase: 1
+        label: Remove only the temporary input suffix
+    - pressKey:
+        key: Enter
+        label: Advance to username with the form IME action
+    - scrollUntilVisible:
+        element:
+          id: server_username
+        direction: DOWN
+        timeout: 15000
+        centerElement: true
+        label: Bring the complete username field above the input method
+    - extendedWaitUntil:
+        visible:
+          id: server_username
+          focused: true
+        timeout: 15000
+        label: Verify username has input focus above the keyboard
+    - runFlow:
+        when:
+          notVisible:
+            id: server_username_empty
+        commands:
+        - assertNotVisible:
+            id: server_username_empty
+            label: Require the known input to contain text
+        - longPressOn:
+            id: server_username
+            enabled: true
+            label: Open text selection for the known input
+        - runFlow:
+            when:
+              notVisible:
+                text: Select all|Select All|全选
+            commands:
+            - assertNotVisible:
+                text: Select all|Select All|全选
+                label: Require the full-selection action to be outside the toolbar
+            - assertVisible:
+                id: android:id/overflow
+                enabled: true
+                label: Require the observed Android text toolbar overflow
+            - tapOn:
+                id: android:id/overflow
+                enabled: true
+                label: Reveal the remaining text selection actions
+            label: Open text toolbar overflow only when full selection is hidden
+        - extendedWaitUntil:
+            visible:
+              text: Select all|Select All|全选
+            timeout: 15000
+            label: Wait for the text selection action
+        - tapOn:
+            text: Select all|Select All|全选
+            enabled: true
+            label: Select the complete fixture input
+        - eraseText:
+            charactersToErase: 1
+            label: Delete the selected fixture text
+        label: Clear the known input regardless of caret position
+    - tapOn:
+        id: server_username
+        enabled: true
+        label: Focus the empty fixture input
+    - extendedWaitUntil:
+        visible:
+          id: server_username
+          focused: true
+        timeout: 15000
+        label: Verify username has input focus
+    - inputText:
+        text: ${MAESTRO_FIXTURE_USERNAME}${INPUT_SUFFIX}
+        label: Enter the exact fixture value through the test input method
+    - eraseText:
+        charactersToErase: 1
+        label: Remove only the temporary input suffix
+    - pressKey:
+        key: Enter
+        label: Advance to password with the form IME action
+    - scrollUntilVisible:
+        element:
+          id: server_password
+        direction: DOWN
+        timeout: 15000
+        centerElement: true
+        label: Bring the complete secret field above the input method
+    - extendedWaitUntil:
+        visible:
+          id: server_password
+          focused: true
+        timeout: 15000
+        label: Verify password has input focus above the keyboard
+    - runFlow:
+        when:
+          notVisible:
+            id: server_password_empty
+        commands:
+        - assertNotVisible:
+            id: server_password_empty
+            label: Require the known input to contain text
+        - longPressOn:
+            id: server_password
+            enabled: true
+            label: Open text selection for the known input
+        - runFlow:
+            when:
+              notVisible:
+                text: Select all|Select All|全选
+            commands:
+            - assertNotVisible:
+                text: Select all|Select All|全选
+                label: Require the full-selection action to be outside the toolbar
+            - assertVisible:
+                id: android:id/overflow
+                enabled: true
+                label: Require the observed Android text toolbar overflow
+            - tapOn:
+                id: android:id/overflow
+                enabled: true
+                label: Reveal the remaining text selection actions
+            label: Open text toolbar overflow only when full selection is hidden
+        - extendedWaitUntil:
+            visible:
+              text: Select all|Select All|全选
+            timeout: 15000
+            label: Wait for the text selection action
+        - tapOn:
+            text: Select all|Select All|全选
+            enabled: true
+            label: Select the complete fixture input
+        - eraseText:
+            charactersToErase: 1
+            label: Delete the selected fixture text
+        label: Clear the known input regardless of caret position
+    - tapOn:
+        id: server_password
+        enabled: true
+        label: Focus the empty fixture input
+    - extendedWaitUntil:
+        visible:
+          id: server_password
+          focused: true
+        timeout: 15000
+        label: Verify password has input focus
+    - inputText:
+        text: ${MAESTRO_FIXTURE_PASSWORD}${INPUT_SUFFIX}
+        label: Enter the exact fixture value through the test input method
+    - eraseText:
+        charactersToErase: 1
+        label: Remove only the temporary input suffix
+    - pressKey:
+        key: Enter
+        label: Submit login with the form IME action
+    - extendedWaitUntil:
+        visible:
+          id: open_menu
+        timeout: 15000
+        label: Wait for the expected UI state
+    label: Sign in only when the login form is present
+- extendedWaitUntil:
+    visible:
+      id: open_menu
+    timeout: 15000
+    label: Wait for the expected UI state
+- assertNotVisible:
+    id: server_login
+    label: Check the expected UI state

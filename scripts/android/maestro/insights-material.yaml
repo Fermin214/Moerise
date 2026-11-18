@@ -1,0 +1,34 @@
+appId: ${APP_ID}
+name: Independent insight material smoke
+onFlowComplete:
+- takeScreenshot:
+    path: ${SCREENSHOT_PREFIX}-insights-material-final
+    label: Capture the isolated test UI
+---
+- runFlow:
+    file: subflows/home.yaml
+    label: Enter the signed-in home without clearing data
+- runFlow:
+    file: subflows/new-insight.yaml
+    label: Create a clean independent insight
+- runFlow:
+    file: subflows/add-material.yaml
+    label: Add the existing dedicated note
+- takeScreenshot:
+    path: ${SCREENSHOT_PREFIX}-insights-material-added
+    label: Capture the isolated test UI
+- tapOn:
+    id: chat_remove_${NOTE_NAME}
+    enabled: true
+    label: Activate the specified control
+- extendedWaitUntil:
+    notVisible:
+      id: chat_remove_${NOTE_NAME}
+    timeout: 15000
+    label: Wait for the expected UI state
+- assertNotVisible:
+    id: chat_error
+    label: Check the expected UI state
+- runFlow:
+    file: subflows/home.yaml
+    label: Enter the signed-in home without clearing data
