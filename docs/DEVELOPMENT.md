@@ -185,7 +185,7 @@ python3 scripts/performance/evaluate-search.py --config .local/config.json --cre
 
 ## 发布
 
-PR 运行单元、集成、浏览器和适用的 Android 检查。合并后，`Main CI` 从 `main` 的合并提交构建并冒烟验证 Linux AMD64 和 ARM64 安装包、三个多架构镜像的各架构版本，以及经过生产密钥签名的 Android APK。签名包在 Android 8.0 上验证登录、编辑、会话恢复、附件和洞察。
+PR 运行单元、集成、浏览器和适用的 Android 检查。合并后，`Main CI` 为 Linux AMD64 和 ARM64 各运行一个任务，分别构建并冒烟验证对应架构的安装包和 Core、Web、Layout 镜像。另一个任务负责构建并验证使用生产密钥签名的 Android APK。签名包在 Android 8.0 上验证登录、编辑、会话恢复、附件和洞察。
 
 准备发版时，通过 PR 更新对应版本号。Core 与 Web 的版本以 `internal/config.go` 和 `web/package.json` 为准，Android 在 `mobile/androidApp/build.gradle.kts` 中更新 `versionName` 并递增 `versionCode` 的默认值。
 

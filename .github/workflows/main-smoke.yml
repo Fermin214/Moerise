@@ -8,16 +8,11 @@ permissions: {}
 
 jobs:
   linux:
-    name: Core and Web packages
-    permissions:
-      contents: read
-    uses: ./.github/workflows/release.yml
-  images:
-    name: Container images
+    name: Linux packages and images
     permissions:
       contents: read
       packages: write
-    uses: ./.github/workflows/images.yml
+    uses: ./.github/workflows/release.yml
   android:
     name: Signed Android APK
     permissions:

@@ -1,13 +1,15 @@
-name: Core and Web packages
+name: Linux packages and images
 
 on:
   workflow_call:
 
 permissions:
   contents: read
+  packages: write
 
 jobs:
   build:
+    name: ${{ matrix.arch }}
     strategy:
       fail-fast: false
       matrix:
@@ -17,7 +19,7 @@ jobs:
           - arch: arm64
             runner: ubuntu-24.04-arm
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-go@4dc6199c7b1a012772edbd06daecab0f50c9053c # v6.1.0
@@ -58,12 +60,36 @@ jobs:
           curl -fsS --max-time 5 --output /dev/null http://127.0.0.1:3000/
           tar -czf "build/$name.tar.gz" -C build "$name"
           printf '%s\n' "$version" > "build/version-${RELEASE_ARCH}.txt"
+      - name: Build and smoke test container images
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: bash scripts/release/build-images.sh "$(cat "build/version-$ARCH.txt")"
+      - name: Store the verified images and record their digests
+        shell: bash
+        env:
+          ARCH: ${{ matrix.arch }}
+          GHCR_TOKEN: ${{ github.token }}
+        run: |
+          printf '%s' "$GHCR_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+          for component in core web layout; do
+            image="ghcr.io/${GITHUB_REPOSITORY,,}"
+            if [[ "$component" != core ]]; then image="$image-$component"; fi
+            candidate="$image:ci-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-$ARCH"
+            docker tag "moerise-ci-$component" "$candidate"
+            docker push "$candidate"
+            digest=$(docker buildx imagetools inspect "$candidate" --format '{{.Manifest.Digest}}')
+            [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+            printf '%s@%s\n' "$image" "$digest" > "build/$component-$ARCH.txt"
+          done
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: linux-${{ matrix.arch }}
           path: |
             build/*.tar.gz
             build/version-${{ matrix.arch }}.txt
+            build/core-${{ matrix.arch }}.txt
+            build/web-${{ matrix.arch }}.txt
+            build/layout-${{ matrix.arch }}.txt
           compression-level: 0
           if-no-files-found: error
           retention-days: 90

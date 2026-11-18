@@ -33,8 +33,12 @@ def linux_release(root, repo):
     images = {}
     for component, suffix in [('core', ''), ('web', '-web'), ('layout', '-layout')]:
         image = f'ghcr.io/{repo.lower()}{suffix}'
-        refs = [(root / f'image-{component}-{arch}/{component}-{arch}.txt').read_text().strip()
-                for arch in ARCHES]
+        refs = []
+        for arch in ARCHES:
+            path = root / f'linux-{arch}/{component}-{arch}.txt'
+            if not path.is_file():
+                path = root / f'image-{component}-{arch}/{component}-{arch}.txt'
+            refs.append(path.read_text().strip())
         if any(not re.fullmatch(re.escape(image) + r'@sha256:[0-9a-f]{64}', ref) for ref in refs):
             raise SystemExit(f'Invalid image digest for {image}')
         images[f'{image}:{value}'] = refs
