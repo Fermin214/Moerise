@@ -20,8 +20,10 @@ cleanup_android_release_smoke() {
 set -eu
 staging=$1
 ca_store=/system/etc/security/cacerts
+setenforce 0
+trap 'setenforce 1' EXIT
 for zygote in $(pidof zygote64 zygote); do
-    if nsenter -t "$zygote" -m -- test -f "$ca_store/${staging##*/}.0"; then
+    if nsenter -t "$zygote" -m -- sh -c 'test -f "$1"' sh "$ca_store/${staging##*/}.0"; then
         nsenter -t "$zygote" -m -- umount "$ca_store"
     fi
 done
@@ -91,21 +93,26 @@ ca_store=/system/etc/security/cacerts
 cert=${staging##*/}.0
 test ! -e "$ca_store/$cert"
 cp "$ca_store"/* "$staging/"
+setenforce 0
+trap 'setenforce 1' EXIT
+context=$(ls -Zd "$ca_store")
+chown -R root:root "$staging"
+chmod 755 "$staging"
+chmod 644 "$staging"/*
+chcon -R "${context%% *}" "$staging"
 zygotes=$(pidof zygote64 zygote)
 test -n "$zygotes"
 for zygote in $zygotes; do
     nsenter -t "$zygote" -m -- sh -c '
         set -ex
         if ! test -f "$2/$3"; then
-            context=$(ls -Zd "$2")
-            mount -t tmpfs -o "mode=0755,context=${context%% *}" tmpfs "$2"
-            cp "$1"/* "$2/"
-            chmod 644 "$2"/*
+            mount -o bind "$1" "$2"
         fi
         cmp "$1/$3" "$2/$3"
     ' sh "$staging" "$ca_store" "$cert"
 done
 DEVICE
+[[ "$(timeout 10 adb shell getenforce | tr -d '\r')" == Enforcing ]]
 timeout 10 adb shell input keyevent 82
 timeout 15 adb reverse tcp:28443 tcp:28443
 export MOERISE_ANDROID_FIXTURE_ROOT="$android_release_fixture"
