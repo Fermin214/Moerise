@@ -538,7 +538,7 @@ for (const mode of ['no-popover', 'no-anchor']) test(`menu fallback follows scro
   });
   await more.focus(); await page.keyboard.press('ArrowDown');
   const edit = page.getByRole('menuitem', { name: '编辑', exact: true });
-  await edit.waitFor();
+  await edit.and(page.locator(':focus')).waitFor();
   assert.equal(await edit.evaluate(node => node === document.activeElement), true);
   const anchor = await more.boundingBox(), menu = await page.locator('.menu').filter({ has: edit }).boundingBox();
   assert.ok(Math.abs(menu.y - anchor.y - anchor.height - 4) < 2);

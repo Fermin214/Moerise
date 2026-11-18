@@ -34,10 +34,12 @@ jobs:
           fetch-depth: 2
       - name: Detect changes covered by Android checks
         id: scope
+        shell: bash
         run: |
           files=$(git diff --name-only HEAD^1 HEAD -- \
             mobile scripts/android docs/android internal main.go go.mod go.sum \
-            web/server.mjs .github/workflows/checks.yml .github/workflows/android-checks.yml)
+            web/server.mjs .github/workflows/checks.yml \
+            .github/workflows/android-checks.yml .github/workflows/android-release.yml)
           if [[ -n "$files" ]]; then
             echo 'android=true' >> "$GITHUB_OUTPUT"
           else
@@ -116,6 +118,7 @@ jobs:
       ANDROID_RESULT: ${{ needs.android-pr.result }}
     steps:
       - name: Require all applicable checks
+        shell: bash
         run: |
           printf 'Scope: %s\nGo: %s\nWeb: %s\nAndroid required: %s\nAndroid: %s\n' \
             "$SCOPE_RESULT" "$GO_RESULT" "$WEB_RESULT" "$ANDROID_REQUIRED" "$ANDROID_RESULT"
