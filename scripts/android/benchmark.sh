@@ -26,8 +26,9 @@ if [[ "$ANDROID_SERIAL" == emulator-* ]] || adb devices | awk 'NR>1 {print $1}' 
     echo "性能测量只使用真机；先关闭所有模拟器。" >&2
     exit 1
 fi
-android_benchmark_min_api=28
-[[ "$android_benchmark_mode" != profile ]] || android_benchmark_min_api=33
+android_benchmark_min_api="$(sed -n 's/^moerise\.minSdk=//p' mobile/gradle.properties)"
+[[ "$android_benchmark_min_api" =~ ^[1-9][0-9]*$ ]]
+if [[ "$android_benchmark_mode" == profile && "$android_benchmark_min_api" -lt 33 ]]; then android_benchmark_min_api=33; fi
 [[ "$(adb -s "$ANDROID_SERIAL" shell getprop ro.build.version.sdk | tr -d '\r')" -ge "$android_benchmark_min_api" ]]
 android_benchmark_output=".local/android/benchmark-$(git rev-parse --short HEAD)-$(date -u +%Y%m%dT%H%M%SZ)"
 mkdir -p "$android_benchmark_output"

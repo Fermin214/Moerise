@@ -220,7 +220,8 @@ try {
         }.GetEnumerator()) {
             $metadata[$property.Key] = (Invoke-Adb @('shell', 'getprop', $property.Value)).Trim()
         }
-        $minimumApi = if ($Mode -eq 'profile') { 33 } else { 28 }
+        $minimumApi = [int]::Parse((Get-Content -Raw 'mobile/gradle.properties' | ConvertFrom-StringData).'moerise.minSdk')
+        if ($Mode -eq 'profile') { $minimumApi = [Math]::Max(33, $minimumApi) }
         if ([int] $metadata.api -lt $minimumApi) { throw "此模式要求 Android API $minimumApi 以上。" }
         $metadata.page_size = (Invoke-Adb @('shell', 'getconf', 'PAGESIZE')).Trim()
         $metadata.battery_before = Invoke-Adb @('shell', 'dumpsys', 'battery')

@@ -8,7 +8,7 @@ android {
     compileSdk = 36
     targetProjectPath = ":androidApp"
     defaultConfig {
-        minSdk = 28
+        minSdk = providers.gradleProperty("moerise.minSdk").get().toInt()
         targetSdk = 36
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }

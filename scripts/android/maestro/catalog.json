@@ -1,5 +1,10 @@
 {
   "flows": {
+    "release-smoke": {
+      "file": "release-smoke.yaml",
+      "timeout_seconds": 180,
+      "seed_notes": false
+    },
     "login": {
       "file": "login.yaml",
       "timeout_seconds": 180,

@@ -4,12 +4,32 @@ source "$(dirname "$0")/environment.sh"
 cd "$android_repo_root"
 export ANDROID_SERIAL="${ANDROID_SERIAL:-emulator-5554}"
 [[ "$ANDROID_SERIAL" =~ ^emulator-[0-9]+$ ]]
-[[ "$(adb shell getprop ro.build.version.sdk | tr -d '\r')" == 26 ]]
+android_release_min_sdk="$(sed -n 's/^moerise\.minSdk=//p' mobile/gradle.properties)"
+[[ "$android_release_min_sdk" =~ ^[0-9]+$ ]]
+[[ "$(timeout 15 adb shell getprop ro.build.version.sdk | tr -d '\r')" == "$android_release_min_sdk" ]]
+android_release_apk="${1:?需要指定已签名的 APK}"
+test -s "$android_release_apk"
 mkdir -p .local/android
 android_release_fixture="$(mktemp -d "$android_repo_root/.local/android/release-fixture-XXXXXXXX")"
 chmod 700 "$android_release_fixture"
 android_release_fixture_pid="" android_release_tls_pid=""
+android_release_device_ca=""
 cleanup_android_release_smoke() {
+    if [[ -n "$android_release_device_ca" ]]; then
+        timeout 20 adb shell sh -s -- "$android_release_device_ca" <<'DEVICE' || true
+set -eu
+staging=$1
+ca_store=/system/etc/security/cacerts
+setenforce 0
+trap 'setenforce 1' EXIT
+for zygote in $(pidof zygote64 zygote); do
+    if nsenter -t "$zygote" -m -- sh -c 'test -f "$1"' sh "$ca_store/${staging##*/}.0"; then
+        nsenter -t "$zygote" -m -- umount "$ca_store"
+    fi
+done
+rm -rf "$staging"
+DEVICE
+    fi
     if [[ -f "$android_release_fixture/lifecycle.json" ]]; then
         if python3 - "$android_release_fixture/lifecycle.json" <<'PY'
 import json, sys, urllib.request
@@ -30,7 +50,7 @@ PY
             wait "$android_release_pid" 2>/dev/null || true
         fi
     done
-    adb reverse --remove tcp:28443 >/dev/null 2>&1 || true
+    timeout 10 adb reverse --remove tcp:28443 >/dev/null 2>&1 || true
     mkdir -p .local/android/release-smoke
     for android_release_log in fixture core tls; do
         if [[ -f "$android_release_fixture/$android_release_log.log" ]]; then
@@ -59,23 +79,42 @@ openssl x509 -req -sha256 -days 1 -in "$android_release_fixture/tls.csr" \
     -CAcreateserial -extfile "$android_release_fixture/tls.ext" \
     -out "$android_release_fixture/tls.pem" >> "$android_release_fixture/openssl.log" 2>&1
 android_release_ca_hash="$(openssl x509 -in "$android_release_fixture/ca.pem" -subject_hash_old -noout)"
-adb root
-adb wait-for-device
-adb remount
-adb push "$android_release_fixture/ca.pem" "/system/etc/security/cacerts/$android_release_ca_hash.0"
-adb shell chmod 644 "/system/etc/security/cacerts/$android_release_ca_hash.0"
-adb reboot
-adb wait-for-device
-python3 - <<'PY'
-import subprocess, time
-deadline = time.monotonic() + 120
-while subprocess.check_output(["adb", "shell", "getprop", "sys.boot_completed"]).strip() != b"1":
-    if time.monotonic() >= deadline:
-        raise SystemExit("模拟器重启超时")
-    time.sleep(1)
-PY
-adb shell input keyevent 82
-adb reverse tcp:28443 tcp:28443
+echo '为新启动的应用加载隔离服务 CA'
+timeout 20 adb root
+timeout 30 adb wait-for-device
+[[ "$(timeout 10 adb shell id -u | tr -d '\r')" == 0 ]]
+android_release_device_ca="/data/local/tmp/$android_release_ca_hash"
+timeout 10 adb shell mkdir "$android_release_device_ca"
+timeout 15 adb push "$android_release_fixture/ca.pem" "$android_release_device_ca/$android_release_ca_hash.0"
+timeout 45 adb shell sh -s -- "$android_release_device_ca" <<'DEVICE'
+set -ex
+staging=$1
+ca_store=/system/etc/security/cacerts
+cert=${staging##*/}.0
+test ! -e "$ca_store/$cert"
+cp "$ca_store"/* "$staging/"
+setenforce 0
+trap 'setenforce 1' EXIT
+context=$(ls -Zd "$ca_store")
+chown -R root:root "$staging"
+chmod 755 "$staging"
+chmod 644 "$staging"/*
+chcon -R "${context%% *}" "$staging"
+zygotes=$(pidof zygote64 zygote)
+test -n "$zygotes"
+for zygote in $zygotes; do
+    nsenter -t "$zygote" -m -- sh -c '
+        set -ex
+        if ! test -f "$2/$3"; then
+            mount -o bind "$1" "$2"
+        fi
+        cmp "$1/$3" "$2/$3"
+    ' sh "$staging" "$ca_store" "$cert"
+done
+DEVICE
+[[ "$(timeout 10 adb shell getenforce | tr -d '\r')" == Enforcing ]]
+timeout 10 adb shell input keyevent 82
+timeout 15 adb reverse tcp:28443 tcp:28443
 export MOERISE_ANDROID_FIXTURE_ROOT="$android_release_fixture"
 export MOERISE_ANDROID_FIXTURE_ORIGIN=https://localhost:28443
 export MOERISE_ANDROID_FIXTURE_PORT=28442
@@ -102,7 +141,7 @@ import time, urllib.request
 deadline = time.monotonic() + 20
 while True:
     try:
-        with urllib.request.urlopen("https://localhost:28443/health/ready") as response:
+        with urllib.request.urlopen("https://localhost:28443/health/ready", timeout=5) as response:
             assert response.status == 200
         break
     except OSError:
@@ -110,8 +149,6 @@ while True:
             raise
         time.sleep(.5)
 PY
-android_release_apk="$(find .local/android/releases -name 'moerise-android-v*.apk' ! -name '*-unsigned.apk' -print -quit)"
-test -n "$android_release_apk"
 python3 scripts/android/release-smoke.py --serial "$ANDROID_SERIAL" \
     --fixture "$android_release_fixture/connection.json" --apk "$android_release_apk" \
     --output .local/android/release-smoke

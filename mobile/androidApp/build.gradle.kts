@@ -10,7 +10,7 @@ android {
     compileSdk = 36
     defaultConfig {
         applicationId = "io.github.fermin214.moerise"
-        minSdk = 26
+        minSdk = providers.gradleProperty("moerise.minSdk").get().toInt()
         targetSdk = 36
         versionCode = providers.gradleProperty("moeriseVersionCode").orElse("1").get().toInt()
             .also { require(it > 0) { "moeriseVersionCode 必须为正整数" } }

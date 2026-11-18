@@ -28,12 +28,15 @@ def source_digest():
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("operation", choices=("write", "verify"))
+    parser.add_argument("operation", choices=("write", "verify", "source-digest"))
     parser.add_argument("--target-only", action="store_true",
                         help="Verify Android sources and the target APK without requiring the test APK")
     args = parser.parse_args()
     if args.target_only and args.operation != "verify":
-        parser.error("--target-only 仅用于 verify；write 始终记录完整双包。")
+        parser.error("--target-only 仅用于 verify。")
+    if args.operation == "source-digest":
+        print(source_digest())
+        return
     apks = APKS[:1] if args.target_only else APKS
     actual = {
         "android_sources_sha256": source_digest(),

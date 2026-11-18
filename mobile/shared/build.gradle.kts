@@ -15,7 +15,7 @@ kotlin {
     androidLibrary {
         namespace = "io.github.fermin214.moerise.shared"
         compileSdk = 36
-        minSdk = 26
+        minSdk = providers.gradleProperty("moerise.minSdk").get().toInt()
         compilerOptions.jvmTarget.set(JvmTarget.JVM_17)
     }
     jvm {

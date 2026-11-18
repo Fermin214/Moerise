@@ -25,8 +25,6 @@ while not path.exists():
     time.sleep(1)
 PY
 if [[ "${MOERISE_ANDROID_SEED_BENCHMARK:-0}" == 1 ]]; then node scripts/android/seed-benchmark.mjs; fi
-cd mobile
-android_live_cpu="${MOERISE_ANDROID_CPU:-$(python3 -c 'import os; print(min(os.sched_getaffinity(0)))')}"
 android_live_task=coreIntegrationTest
 if [[ "${MOERISE_ANDROID_STARS:-0}" == 1 ]]; then android_live_task=starsIntegrationTest; fi
-taskset -c "$android_live_cpu" nice -n 10 ./gradlew --no-daemon --max-workers=1 ":shared:$android_live_task" "$@"
+android_gradle ":shared:$android_live_task" "$@"

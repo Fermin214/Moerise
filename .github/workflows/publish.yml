@@ -40,9 +40,8 @@ jobs:
         run: |
           [[ "$MAIN_RUN" =~ ^[0-9]+$ ]]
           workflow=$(gh api "repos/$GH_REPO/actions/workflows/main-smoke.yml" --jq .id)
-          sha=$(gh api "repos/$GH_REPO/actions/runs/$MAIN_RUN" | jq -er --arg repo "$GH_REPO" --argjson workflow "$workflow" '
-            select(.conclusion == "success" and .event == "push" and .head_branch == "main"
-              and .head_repository.full_name == $repo and .workflow_id == $workflow) | .head_sha')
+          sha=$(gh api "repos/$GH_REPO/actions/runs/$MAIN_RUN" |
+            python3 scripts/release/publish_source.py "$GH_REPO" "$workflow" "$MAIN_RUN")
           git merge-base --is-ancestor "$sha" HEAD
           echo "RELEASE_SHA=$sha" >> "$GITHUB_ENV"
           if [[ "$COMPONENT" != android ]]; then
@@ -56,4 +55,4 @@ jobs:
           if [[ "$COMPONENT" != android ]]; then
             printf '%s' "$GH_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
           fi
-          python3 scripts/release/publish.py "$RUNNER_TEMP/release" "$RELEASE_SHA" "$COMPONENT"
+          python3 scripts/release/publish.py "$RUNNER_TEMP/release" "$RELEASE_SHA" "$COMPONENT" --run-id "$MAIN_RUN"

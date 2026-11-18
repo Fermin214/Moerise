@@ -327,7 +327,9 @@ fun InsightScreen(mobile: MobileController, strings: Strings, scroll: List<Scrol
         WebTabs(listOf(strings.text("按日期", "By date"), strings.text("按标签 / 逐条", "By tag / individual")),
             if (picker.tab == "date") 0 else 1,
             { if (enabled) controller.pickerTab(if (it == 0) "date" else "tag") }, tagPrefix = "chat_picker_tab", enabled = enabled)
-        Column(Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState()),
+        val candidateList = if (picker.tab == "tag" && !picker.busy && picker.candidates.isNotEmpty())
+            Modifier.testTag("chat_picker_candidates_ready") else Modifier
+        Column(Modifier.weight(1f).fillMaxWidth().then(candidateList).verticalScroll(rememberScrollState()),
             verticalArrangement = Arrangement.spacedBy(8.dp)) {
             if (picker.tab == "date") InsightPickerCalendar(picker, controller, strings, enabled)
             else FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
