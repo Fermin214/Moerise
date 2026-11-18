@@ -1,15 +1,43 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ $# != 2 || ! "$2" =~ ^[0-9]+$ || ! "$1" =~ ^(pr|run)$ ]]; then
-    echo 'Usage: inspect.sh pr <number> | run <id>' >&2
+if [[ $# != 2 || ! ( $1 == workflow || ( $1 =~ ^(pr|run)$ && $2 =~ ^[0-9]+$ ) ) ]]; then
+    echo 'Usage: inspect.sh workflow <base-branch> | pr <number> | run <id>' >&2
     exit 2
 fi
 
 repo=$(gh repo view --json nameWithOwner --jq .nameWithOwner)
+actions_rules() {
+    local branch
+    branch=$(jq -rn --arg branch "$1" '$branch | @uri')
+    gh api --paginate "repos/$repo/rules/branches/$branch?per_page=100" |
+        jq -sc '[.[][] | select(.type == "required_status_checks")
+            | .parameters.required_status_checks[] | select(.integration_id == 15368)
+            | .context] | unique'
+}
+
+if [[ $1 == workflow ]]; then
+    rules=$(actions_rules "$2")
+    python3 "$(dirname "$0")/check-names.py" "$rules" < .github/workflows/checks.yml
+    exit
+fi
+
 if [[ $1 == pr ]]; then
-    sha=$(gh pr view "$2" --repo "$repo" --json headRefOid --jq .headRefOid)
-    echo "PR #$2  $sha"
+    pr=$(gh pr view "$2" --repo "$repo" --json headRefOid,baseRefName,state,mergeStateStatus)
+    sha=$(jq -r .headRefOid <<< "$pr")
+    base=$(jq -r .baseRefName <<< "$pr")
+    jq -r --arg number "$2" '["PR #\($number)", .headRefOid, .baseRefName, .state, .mergeStateStatus] | @tsv' <<< "$pr"
+    if rules=$(actions_rules "$base"); then
+        echo "$base 生效的 ruleset 要求 / 此提交上 GitHub Actions 上报的结果"
+        gh api --paginate "repos/$repo/commits/$sha/check-runs?per_page=100" |
+            jq -sr --argjson rules "$rules" '
+                [.[] | .check_runs[] | select(.app.id == 15368)] as $checks
+                | if $rules == [] then "无绑定 GitHub Actions 的必需检查" else
+                    $rules[] as $name | [$name, ([$checks[] | select(.name == $name)
+                      | .conclusion // .status] | unique | join(", ") | if . == "" then "缺失" else . end)] | @tsv end'
+    else
+        echo "无法读取 $base 的 ruleset，必需检查未知。" >&2
+    fi
     run=$(gh run list --repo "$repo" --workflow checks.yml --event pull_request --commit "$sha" \
         --limit 1 --json databaseId --jq '.[0].databaseId // empty')
     if [[ -z $run ]]; then
@@ -23,20 +51,24 @@ fi
 api="repos/$repo/actions"
 record=$(gh api "$api/runs/$run")
 jq -r '[.name, .head_sha, .status, .conclusion, .html_url] | @tsv' <<< "$record"
-echo '任务 / 结果 / 耗时 / 最慢步骤 / 首个失败步骤 / 日志'
-gh api --paginate "$api/runs/$run/jobs?per_page=100" | jq -r '
+latest=$(jq -r .run_attempt <<< "$record")
+for ((attempt=1; attempt<=latest; attempt++)); do
+    echo "Attempt $attempt/$latest  任务 / 结果 / 耗时 / 最慢步骤 / 首个异常步骤 / 日志"
+    gh api --paginate "$api/runs/$run/attempts/$attempt/jobs?per_page=100" | jq -r --argjson latest "$((attempt == latest))" '
     def seconds: (.completed_at | fromdateiso8601) - (.started_at | fromdateiso8601);
-    .jobs[] | [.name, (.conclusion // .status),
-      (if .completed_at then "\(seconds)s" else "-" end),
+    def abnormal: . != null and . != "success" and . != "skipped" and . != "neutral";
+    .jobs[] | select($latest == 1 or (.conclusion | abnormal)) | [.name, (.conclusion // .status),
+      (if .started_at and .completed_at then "\(seconds)s" else "-" end),
       ([.steps[]? | select(.started_at and .completed_at and .conclusion != "skipped")]
         | max_by(seconds) | if . then "\(.name) (\(seconds)s)" else "-" end),
-      ([.steps[]? | select(.conclusion == "failure") | .name][0] // "-"), .html_url] | @tsv'
+      ([.steps[]? | select(.conclusion | abnormal) | .name][0] // "-"), .html_url] | @tsv'
+    echo "日志 gh run view $run --repo $repo --attempt $attempt --log-failed"
+done
 
 echo '诊断产物'
 gh api --paginate "$api/runs/$run/artifacts?per_page=100" --jq \
-    '.artifacts[] | [.name, (if .expired then "expired" else "available" end)] | @tsv'
-echo "日志 gh run view $run --repo $repo --log-failed"
-echo "下载 gh run download $run --repo $repo -n <产物名> -D .local/ci/$run/<产物名>"
+    '.artifacts[] | [.id, .name, .created_at, (if .expired then "expired" else "available" end)] | @tsv'
+echo "按 ID 下载 gh api repos/$repo/actions/artifacts/<ID>/zip > <ID>.zip"
 
 workflow=$(jq -r .workflow_id <<< "$record")
 event=$(jq -r .event <<< "$record")
