@@ -21,8 +21,8 @@ set -eu
 staging=$1
 ca_store=/system/etc/security/cacerts
 for zygote in $(pidof zygote64 zygote); do
-    if nsenter -t "$zygote" -m test -f "$ca_store/${staging##*/}.0"; then
-        nsenter -t "$zygote" -m umount "$ca_store"
+    if nsenter -t "$zygote" -m -- test -f "$ca_store/${staging##*/}.0"; then
+        nsenter -t "$zygote" -m -- umount "$ca_store"
     fi
 done
 rm -rf "$staging"
@@ -94,7 +94,7 @@ cp "$ca_store"/* "$staging/"
 zygotes=$(pidof zygote64 zygote)
 test -n "$zygotes"
 for zygote in $zygotes; do
-    nsenter -t "$zygote" -m sh -c '
+    nsenter -t "$zygote" -m -- sh -c '
         set -ex
         if ! test -f "$2/$3"; then
             context=$(ls -Zd "$2")
