@@ -9,8 +9,14 @@ import (
 	"time"
 )
 
+type startupConfig struct {
+	Web          WebConfig
+	Memos        MemosConfig
+	AccessTokens []AccessToken
+}
+
 type App struct {
-	Settings      Settings
+	startup       startupConfig
 	Store         *Store
 	Source        Source
 	Worker        *SyncService
@@ -33,7 +39,8 @@ type App struct {
 // NewApp 装配共享服务；传入的 Store 和 Source 由调用方关闭。
 func NewApp(settings Settings, store *Store, source Source) *App {
 	settings = productSettings(store.Settings).apply(settings)
-	a := &App{Settings: settings, Store: store, Source: source, Worker: NewSyncService(store, source)}
+	a := &App{startup: startupConfig{Web: settings.Web, Memos: settings.Memos, AccessTokens: settings.AccessTokens},
+		Store: store, Source: source, Worker: NewSyncService(store, source)}
 	store.runtimeMu = &a.runtimeMu
 	a.Notes = NewNoteService(settings, store, source)
 	a.Records, a.Reviews = NewRecordService(store, source), NewReviewService(store, source)

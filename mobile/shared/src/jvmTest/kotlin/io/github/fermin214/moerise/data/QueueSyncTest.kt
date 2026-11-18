@@ -8,8 +8,6 @@ import java.io.IOException
 import java.nio.file.Files
 import kotlin.test.*
 import kotlinx.coroutines.*
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.sync.Mutex
 import kotlinx.serialization.json.*
 
 class QueueSyncTest {
@@ -51,10 +49,11 @@ class QueueSyncTest {
             db.close()
             db = jvmDatabase(path)
             repo = NoteRepository(db)
-            val reopened = EditorController({ repo }, { core }, scope)
+            val restored = DraftQueueFixture({ repo }, core, scope)
+            val reopened = restored.composer
             reopened.open(account)
             assertEquals("还没写完", reopened.state.value.draft?.content)
-            assertTrue(reopened.synchronize(account, core))
+            assertTrue(restored.queue.drain(account, core))
             assertEquals(listOf("离线一", "离线二"), requests)
             assertEquals("还没写完", reopened.state.value.draft?.content)
             assertTrue(repo.queuedNotes(account).isEmpty())
@@ -84,18 +83,19 @@ class QueueSyncTest {
         }
         val core = CoreClient(origin, SessionCookies(origin, MemorySecrets()), engine)
         try {
-            val editor = EditorController({ repo }, { core }, scope)
+            val fixture = DraftQueueFixture({ repo }, core, scope)
+            val editor = fixture.composer
             editor.open(account)
             editor.change("保留原文")
             assertTrue(editor.enqueue())
-            assertFailsWith<IOException> { editor.synchronize(account, core) }
+            assertFailsWith<IOException> { fixture.queue.drain(account, core) }
             val original = repo.queuedWrites(account).single()
             assertEquals("unknown", original.status)
             editor.open("$origin\u0000one\u0000users/other")
-            assertFalse(editor.synchronize(account, core))
+            assertFalse(fixture.queue.drain(account, core))
             assertEquals(1, requests.size)
             editor.open(account)
-            assertTrue(editor.synchronize(account, core))
+            assertTrue(fixture.queue.drain(account, core))
             assertEquals(requests[0], requests[1])
             assertTrue(repo.queuedNotes(account).isEmpty())
             // 迟到的取消记账不能重新插入已经完成的队列项。
@@ -120,14 +120,17 @@ class QueueSyncTest {
             else respond(CoreJson.encodeToString(note("外部修改")))
         })
         try {
-            val editor = EditorController({ repo }, { core }, scope)
+            val fixture = DraftQueueFixture({ repo }, core, scope)
+            val editor = fixture.composer
             editor.open(account)
             editor.change("保留原文")
             assertTrue(editor.enqueue())
-            assertTrue(editor.synchronize(account, core))
+            val original = repo.queuedWrites(account).single()
+            assertTrue(fixture.queue.drain(account, core))
             val conflict = repo.queuedNotes(account).single()
             assertEquals("保留原文", conflict.content)
             assertNotNull(conflict.conflictJson)
+            repo.status(original, "unknown")
             assertTrue(repo.queuedWrites(account).isEmpty())
         } finally {
             scope.coroutineContext[Job]!!.cancelAndJoin()
@@ -158,14 +161,15 @@ class QueueSyncTest {
             }
         })
         try {
-            val editor = EditorController({ repo }, { core }, scope)
+            val fixture = DraftQueueFixture({ repo }, core, scope)
+            val editor = fixture.composer
             editor.open(account)
             editor.change("点击保存的正文")
             assertTrue(editor.enqueue())
             val queued = repo.queuedNotes(account).single()
             assertTrue(queued.createdAt > 0)
             editor.openStored(account, queued.id)
-            val sending = async { editor.synchronize(account, core) }
+            val sending = async { fixture.queue.drain(account, core) }
             enteredRequest.await()
             editor.change("仍在编辑，未点击保存")
             editor.flush()
@@ -180,7 +184,7 @@ class QueueSyncTest {
             assertEquals("仍在编辑，未点击保存", preserved.content)
             assertEquals("memos/one", preserved.targetName)
             assertNull(preserved.queuedRevisionJson)
-            assertTrue(editor.synchronize(account, core))
+            assertTrue(fixture.queue.drain(account, core))
             assertEquals(1, requests.size)
         } finally {
             response.complete(Unit)
@@ -211,7 +215,8 @@ class QueueSyncTest {
             }
         })
         try {
-            val editor = EditorController({ repo }, { core }, scope)
+            val fixture = DraftQueueFixture({ repo }, core, scope)
+            val editor = fixture.composer
             editor.open(account)
             editor.change("第一次保存")
             assertTrue(editor.enqueue())
@@ -226,9 +231,10 @@ class QueueSyncTest {
             db.close()
             db = jvmDatabase(path)
             repo = NoteRepository(db)
-            val reopened = EditorController({ repo }, { core }, scope)
+            val restored = DraftQueueFixture({ repo }, core, scope)
+            val reopened = restored.composer
             reopened.open(account)
-            assertTrue(reopened.synchronize(account, core))
+            assertTrue(restored.queue.drain(account, core))
             assertEquals(listOf(HttpMethod.Post to "第一次保存", HttpMethod.Patch to "第二次保存"), requests)
             assertTrue(repo.queuedWrites(account).isEmpty())
             assertEquals("第三次输入没有保存", repo.queuedNotes(account).single().content)
@@ -247,8 +253,6 @@ class QueueSyncTest {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
         val db = jvmDatabase(folder.resolve("data.sqlite3").absolutePath)
         val repo = NoteRepository(db)
-        val lock = Mutex()
-        val editors = MutableStateFlow<List<EditorController>>(emptyList())
         val entered = CompletableDeferred<Unit>()
         val response = CompletableDeferred<Unit>()
         val requests = mutableListOf<String>()
@@ -264,17 +268,18 @@ class QueueSyncTest {
             }
         })
         try {
-            val composer = EditorController({ repo }, { core }, scope, localLock = lock)
+            val fixture = DraftQueueFixture({ repo }, core, scope)
+            val composer = fixture.composer
             composer.open(account)
             composer.change("已点击保存")
             assertTrue(composer.enqueue())
             composer.change("顶部新建仍在写")
             val id = repo.queuedNotes(account).single().id
-            val sending = async { composer.synchronize(account, core) { editors.value } }
+            val sending = async { fixture.queue.drain(account, core) }
             entered.await()
-            val editing = EditorController({ repo }, { core }, scope, localLock = lock)
+            val editing = fixture.newEditor()
             editing.openStored(account, id)
-            editors.value = listOf(editing)
+            fixture.otherEditors.value = listOf(editing)
             editing.change("卡片内未点击保存的续写")
             response.complete(Unit)
             assertTrue(sending.await())
@@ -282,7 +287,7 @@ class QueueSyncTest {
             assertEquals("memos/one", editing.state.value.draft?.targetName)
             assertEquals("顶部新建仍在写", composer.state.value.draft?.content)
             assertTrue(editing.close())
-            assertTrue(composer.synchronize(account, core) { editors.value })
+            assertTrue(fixture.queue.drain(account, core))
             assertEquals(listOf("已点击保存"), requests)
             assertFalse(repo.automaticWritesPending(account))
             assertEquals("卡片内未点击保存的续写", repo.queuedNotes(account).single().content)

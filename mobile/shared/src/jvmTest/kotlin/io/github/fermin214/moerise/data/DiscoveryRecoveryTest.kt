@@ -17,6 +17,15 @@ class DiscoveryRecoveryTest {
     private fun note(name: String) = """{"instance_id":"one","name":"memos/$name","content":"$name","state":"NORMAL","source_hash":"hash-$name"}"""
 
     @Test
+    fun noteTimestampUsesTheServiceTimeZone() {
+        val instant = "2026-11-14T20:00:00Z"
+        for (english in listOf(true, false)) {
+            assertEquals("2026-11-15 10:00", displayNoteDate(instant, "Pacific/Kiritimati", english))
+            assertEquals("2026-11-14 20:00", displayNoteDate(instant, "UTC", english))
+        }
+    }
+
+    @Test
     fun reviewUsesServiceDatePreservesPositionAndDiscardsAccountResponse() = runBlocking<Unit> {
         val dispatcher = Executors.newSingleThreadExecutor().asCoroutineDispatcher()
         val scope = CoroutineScope(SupervisorJob() + dispatcher)

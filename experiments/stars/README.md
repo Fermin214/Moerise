@@ -144,6 +144,6 @@ JSON 格式：
 
 ## 实现依据
 
-生产地图的 `internal/map_layout.go` 使用 `pca-topics-v3`：初次生成 PCA 基底，按高维向量识别主题，再通过锚点拉开主题并做局部避让。`internal/map_store.go` 读写 `map_layouts` 与 `map_points`；`internal/map.go` 由后台向量任务按 24 小时间隔发布快照，复用未变化笔记的位置。`web/src/map.js` 读取快照，提供平移、缩放和阅读交互，笔记详情通过正式 API 读取。实验的 PCA 是纯投影基线，不包含生产地图的主题拉开与避让步骤。
+生产观星由 `internal/map.go` 调度，`services/layout/` 计算坐标与主题，`internal/map_stars_store.go` 发布快照。升级时，`internal/map_store.go` 可从 `map_layouts` 与 `map_points` 读取旧 PCA 快照。实验的 PCA 仅用于比较投影效果。
 
 算法与增量投影依据：UMAP 官方参数、复现性和新数据投影文档；PaCMAP 官方实现中的 `fit_transform` / `transform`；scikit-learn 的 PCA、HDBSCAN 和 Trustworthiness 定义。

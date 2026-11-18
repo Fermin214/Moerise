@@ -1,9 +1,10 @@
 import { l, setText, setAttr, resolveText, locale, monthLabel, weekdays, initI18n } from './i18n.js';
 import { Draft, readAttachments } from './draft.js';
 import { errorMessage as errorText } from './errors.js';
-import { pages, notePath, filters, timelineURL, listQuery, enhancedSearch, searchBody, safeFrom, detailURL, noteID, attachmentURL, rasterImage } from './routes.js';
+import { pages, notePath, filters, timelineURL, safeFrom, detailURL, noteID, attachmentURL, rasterImage } from './routes.js';
 import { el, button } from './dom.js';
-import { validNote, compareNotes, renderNoteCard, renderReadingCard } from './notes.js';
+import { validNote, renderNoteCard, renderReadingCard } from './notes.js';
+import { createTimeline } from './timeline.js';
 import { createClient, validIdentity } from './client.js';
 import { bindMenu, closeMenus } from './menus.js';
 import { bindSearchInput } from './search-input.js';
@@ -44,14 +45,12 @@ const cardObserver = new ResizeObserver(entries => {
 const sidebarTags = new Map(), sidebarCalendars = new Map();
 let sidebarTagState = '', sidebarCalendarKey = '';
 let sidebarFocusTimer = null, sidebarFocusRefresh = null;
-let epoch = 0, viewSequence = 0, listSequence = 0, sidebarSequence = 0;
-let identity = null, logoutCSRF = null, authBusy = false, saving = false, readingFiles = false, listing = false;
+let epoch = 0, viewSequence = 0, sidebarSequence = 0;
+let identity = null, logoutCSRF = null, authBusy = false, saving = false, readingFiles = false;
 let draftOwner = null;
-let items = [], nextToken = '', listController = null, retryReset = true;
-let retryTimer = null, retryDelay = 1000;
+let timeline = null;
 let month = '', routeReturnKey = null;
-let pageCount = 0, reloading = false, moduleReload = false;
-let searchStatus = '';
+let moduleReload = false;
 let lastTimeline = { path: '/', values: filters('') };
 let settingsPage = null;
 let insightsPage = null;
@@ -80,17 +79,16 @@ function showError(element, err) {
 function aborted() { return new DOMException('Stale request', 'AbortError'); }
 function stale(generation) { if (generation !== epoch) throw aborted(); }
 function invalidate() {
-  epoch++; viewSequence++; listSequence++;
+  epoch++; viewSequence++;
+  timeline?.destroy(); timeline = null;
   settingsPage?.destroy(); settingsPage = null;
   insightsPage?.destroy(); insightsPage = null;
   mapPage?.destroy(); mapPage = null;
   discoveryPage?.destroy(); discoveryPage = null;
   invalidateSidebar();
   client.cancel();
-  clearTimeout(retryTimer);
   searchInput.cancel();
-  retryTimer = listController = null;
-  listing = saving = readingFiles = false;
+  saving = readingFiles = false;
   return epoch;
 }
 function updateStargazing(enabled = identity?.stargazing_enabled !== false) {
@@ -121,15 +119,13 @@ function hidePrivate({ resume = false } = {}) {
   for (const id of ['save-error', 'list-error', 'sidebar-error']) showError($(id), null);
   $('empty').hidden = $('account').hidden = true;
   setText($('account-name'), setText($('calendar-title'), ''));
-  pageObserver.disconnect();
   cardObserver.disconnect(); noteSizes.clear(); measuredCards.clear(); clearMedia();
-  items = []; nextToken = '';
-  searchStatus = ''; $('search-mode').value = 'keyword';
+  $('search-mode').value = 'keyword';
   snapshots.clear();
   discovery?.clear();
   mapView = mapSnapshot = null;
   month = ''; identity = null; routeReturnKey = null;
-  pageCount = 0; reloading = false; lastTimeline = { path: '/', values: filters('') };
+  lastTimeline = { path: '/', values: filters('') };
   closeMenus(); leaveGuard.update();
 }
 function authControls({ busy = false, login = true } = {}) {
@@ -180,48 +176,20 @@ function sidebarFilter(change) {
   const source = sourceTimeline();
   navigate(timelineURL(source.path, { ...source.values, query: $('q').value, ...change }));
 }
-function rememberView(writeHistory = true, clean = false) {
+function rememberView(writeHistory = true) {
   if (writeHistory && identity && (mapPage || notePath.test(location.pathname))) {
     const state = mapPage ? { mapView } : { returnKey: routeReturnKey };
     history.replaceState({ ...history.state, ...state }, '');
   }
-  if (!identity || !pageCount || !['/', '/archived'].includes(new URL(router.url, location.origin).pathname)) return;
-  const previous = snapshots.get(router.key);
-  snapshots.delete(router.key);
-  const focusedName = document.activeElement?.closest('article[data-name]')?.dataset.name || previous?.focusedName;
-  snapshots.set(router.key, { url: router.url, items: [...items], nextToken, searchStatus, scroll: window.scrollY,
-    pages: pageCount, focusedName, dirty: clean ? false : previous?.dirty });
-  if (writeHistory) history.replaceState({ ...history.state, scroll: window.scrollY, pages: pageCount }, '');
-  if (snapshots.size > 12) snapshots.delete(snapshots.keys().next().value);
-}
-function timelineSnapshot() {
-  const saved = snapshots.get(router.key);
-  if (saved?.url === router.url) return saved;
-  return [...snapshots.values()].reverse().find(value => value.url === router.url && !value.dirty);
+  timeline?.remember(writeHistory);
 }
 function navigate(url, options) { return router.navigate(url, options); }
 function openNote(note) { navigate(detailURL(note.name, router.url), { returnKey: router.key }); }
-function restoreScroll(scroll) {
-  const sequence = viewSequence;
-  requestAnimationFrame(() => { if (sequence === viewSequence && identity) window.scrollTo(0, scroll); });
-}
 function dirtySnapshots() {
   for (const snapshot of snapshots.values()) snapshot.dirty = true;
   discovery?.invalidate(); mapSnapshot = null;
   discoveryPage?.refresh();
   mapPage?.refresh();
-}
-async function reloadTimeline(pages = pageCount || 1, scroll = window.scrollY) {
-  const sequence = viewSequence;
-  reloading = true;
-  try {
-    await loadNotes(true, false, { pages, scroll });
-  } finally {
-    if (identity && sequence === viewSequence) {
-      reloading = false;
-      if (nextToken && $('list-retry').hidden) pageObserver.observe($('page-end'));
-    }
-  }
 }
 async function enter(value) {
   identity = validIdentity(value);
@@ -450,7 +418,7 @@ function renderNote(note, detail = false) {
   if (failure) appendNoteError(card, note, failure);
   return card;
 }
-function renderList() {
+function renderList(items) {
   const list = $('notes'), names = new Set(items.map(note => note.name));
   cardObserver.disconnect();
   const focusedEditor = list.contains(document.activeElement) ? document.activeElement.closest('form.editor') : null;
@@ -509,12 +477,10 @@ async function refreshNote(note) {
     if (!validNote(updated)) throw Object.assign(new Error('Invalid note'), { code: 'NOTE_LIST_INVALID' });
     editors.get(note.name)?.draft.clear(); editors.delete(note.name); pendingWrites.delete(note.name); failures.delete(note.name);
     replaceCard(updated);
-    items = items.map(item => item.name === note.name ? updated : item);
-    if (isTimeline() && updated.state !== (location.pathname === '/archived' ? 'ARCHIVED' : 'NORMAL')) items = items.filter(item => item.name !== note.name);
     dirtySnapshots();
-    if (isTimeline()) await reloadTimeline();
-    else renderList();
-    $('empty').hidden = !isTimeline() || !!items.length || !!nextToken; invalidateSidebar(); loadSidebar();
+    if (timeline) await timeline.update(note.name, updated);
+    else renderList([updated]);
+    invalidateSidebar(); loadSidebar();
   } catch (err) { if (generation === epoch && sequence === viewSequence) handleFailure($('list-error'), err); }
 }
 function confirmDelete(card, note) {
@@ -554,17 +520,11 @@ async function performWrite(note) {
     stale(generation);
     if (operation.method !== 'DELETE' && !validNote(updated)) throw Object.assign(new Error('Invalid save response'), { code: 'NOTE_SAVE_UNCONFIRMED' });
     editor?.draft.clear(); editors.delete(note.name); pendingWrites.delete(note.name); failures.delete(note.name); dirtySnapshots();
-    if (operation.method === 'DELETE') {
-      items = items.filter(item => item.name !== note.name);
-      if (location.pathname === `/notes/${noteID(note.name)}`) navigate(safeFrom(new URLSearchParams(location.search).get('from')));
-      else if (isTimeline()) await reloadTimeline();
-      else renderList();
-    } else {
-      items = items.map(item => item.name === note.name ? updated : item);
-      if (isTimeline()) await reloadTimeline();
-      else renderList();
+    if (timeline) await timeline.update(note.name, updated);
+    else if (location.pathname === `/notes/${noteID(note.name)}`) {
+      if (operation.method === 'DELETE') navigate(safeFrom(new URLSearchParams(location.search).get('from')));
+      else renderList([updated]);
     }
-    $('empty').hidden = !isTimeline() || !!items.length || !!nextToken;
     invalidateSidebar(); loadSidebar();
   } catch (err) {
     if (generation !== epoch || err.name === 'AbortError') return;
@@ -670,76 +630,6 @@ function startEdit(note) {
   form.append(text, retained, added, bar, message, refresh);
   update(); replaceCard(note); text.focus(); text.setSelectionRange(text.value.length, text.value.length);
 }
-const pageObserver = new IntersectionObserver(entries => {
-  if (entries.some(entry => entry.isIntersecting) && nextToken && !listing && !reloading && isTimeline()) loadNotes();
-}, { rootMargin: '200px' });
-function updateListControls() {
-  $('notes').setAttribute('aria-busy', String(listing));
-  $('load-more').hidden = !isTimeline() || !nextToken; $('load-more').disabled = listing;
-}
-async function loadNotes(reset = false, retry = false, { pages = 1, scroll } = {}) {
-  if (!identity || !isTimeline() || (!reset && (listing || !nextToken))) return;
-  const generation = epoch, view = viewSequence, sequence = ++listSequence;
-  listController?.abort(); listController = new AbortController(); listing = true; clearTimeout(retryTimer);
-  if (reset && !retry) retryDelay = 1000;
-  pageObserver.disconnect(); updateListControls(); showError($('list-error'), null);
-  $('list-retry').hidden = $('empty').hidden = true;
-  let succeeded = false;
-  try {
-    const values = filters(location.search), enhanced = enhancedSearch(values);
-    const state = location.pathname === '/archived' ? 'ARCHIVED' : 'NORMAL';
-    const merged = new Map((reset ? [] : items).map(note => [note.name, note]));
-    let token = reset ? '' : nextToken, loaded = 0, page;
-    const seenTokens = new Set(token ? [token] : []);
-    do {
-      page = enhanced
-        ? await sessionRequest('/search', { method: 'POST', body: searchBody(location.pathname, values, token), controller: listController })
-        : await request(`/notes?${listQuery(location.pathname, values, token)}`, { controller: listController });
-      if (generation !== epoch || view !== viewSequence || sequence !== listSequence) return;
-      if (!Array.isArray(page?.notes) || page.notes.some(note => !validNote(note) || note.state !== state) ||
-          (enhanced && (!['keyword', values.mode].includes(page.mode) ||
-            typeof page.semantic?.used !== 'boolean' || typeof page.semantic?.reason !== 'string' ||
-            (page.mode === 'keyword' && (values.mode !== 'hybrid' || page.semantic.used)) ||
-            (page.mode !== 'keyword' && !page.semantic.used)))) {
-        throw Object.assign(new Error('Invalid note list response'), { code: 'NOTE_LIST_INVALID' });
-      }
-      for (const note of page.notes) merged.set(note.name, note);
-      token = typeof page.next_page_token === 'string' ? page.next_page_token : '';
-      if (seenTokens.has(token)) token = '';
-      else if (token) seenTokens.add(token);
-      loaded++;
-    } while (reset && loaded < pages && token);
-    items = [...merged.values()];
-    if (!enhanced) items.sort(compareNotes);
-    renderList();
-    searchStatus = enhanced && page.mode === 'keyword'
-      ? l("语义检索暂不可用，当前显示按相关度排列的关键词结果。")
-      : enhanced ? l("搜索结果按相关度排列。") : '';
-    setText($('capability'), searchStatus); $('capability').hidden = !searchStatus;
-    pageCount = reset ? loaded : pageCount + loaded;
-    nextToken = token;
-    retryDelay = 1000; $('empty').hidden = !!items.length || !!nextToken; succeeded = true;
-    rememberView(false, true);
-    if (scroll != null) restoreScroll(scroll);
-  } catch (err) {
-    if (generation !== epoch || view !== viewSequence || sequence !== listSequence) return;
-    handleFailure($('list-error'), err.code === 'SOURCE_CHANGED' ? { ...err, code: 'SEARCH_SOURCE_CHANGED' } : err);
-    if (!identity) return;
-    retryReset = reset || ['INVALID_PAGE_TOKEN', 'SOURCE_CHANGED'].includes(err.code);
-    setText($('list-retry'), retryReset ? l("刷新主页") : l("重试加载")); $('list-retry').hidden = false;
-    if (err.retryable) {
-      retryTimer = setTimeout(() => {
-        if (generation === epoch && view === viewSequence && sequence === listSequence) loadNotes(retryReset, true, { pages, scroll });
-      }, retryDelay);
-      retryDelay = Math.min(retryDelay * 2, 30_000);
-    }
-  } finally {
-    if (generation === epoch && view === viewSequence && sequence === listSequence) {
-      listing = false; updateListControls();
-      if (succeeded && nextToken && !reloading) pageObserver.observe($('page-end'));
-    }
-  }
-}
 function startFromNote(note) {
   navigate(`/walk?${new URLSearchParams({ name: note.name })}`);
 }
@@ -759,6 +649,7 @@ async function routeModule(load, generation, sequence) {
 async function showRoute({ focus = false, returning = false } = {}) {
   if (!identity) return;
   shell.closeNavigation();
+  timeline?.destroy(); timeline = null;
   settingsPage?.destroy(); settingsPage = null;
   insightsPage?.destroy(); insightsPage = null;
   mapPage?.destroy(); mapPage = null;
@@ -766,8 +657,8 @@ async function showRoute({ focus = false, returning = false } = {}) {
   cardObserver.disconnect();
   const generation = epoch, sequence = ++viewSequence;
   $('main').dataset.page = location.pathname.slice(1) || 'home';
-  listSequence++; listController?.abort(); clearTimeout(retryTimer); pageObserver.disconnect();
-  listing = reloading = moduleReload = false; items = []; nextToken = ''; pageCount = 0; searchStatus = '';
+  moduleReload = false;
+  $('notes').setAttribute('aria-busy', 'false');
   $('notes').replaceChildren(); closeMenus();
   $('notes').hidden = $('page-end').hidden = ['/settings', '/review', '/walk', '/insights', '/map'].includes(location.pathname);
   for (const id of ['back', 'view-title', 'capability', 'empty', 'list-retry', 'filters', 'load-more']) $(id).hidden = true;
@@ -787,28 +678,13 @@ async function showRoute({ focus = false, returning = false } = {}) {
     const active = link.getAttribute('href') === location.pathname; link.classList.toggle('on', active);
     if (active) link.setAttribute('aria-current', 'page'); else link.removeAttribute('aria-current');
   });
-  loadSidebar(); updateListControls();
+  loadSidebar();
   if (isTimeline()) {
     if (location.pathname === '/archived') { $('view-title').hidden = false; setText($('view-title'), l("归档笔记")); }
     renderFilters();
-    const snapshot = timelineSnapshot();
-    if (snapshot?.url === router.url && !snapshot.dirty) {
-      items = [...snapshot.items]; nextToken = snapshot.nextToken; pageCount = snapshot.pages; renderList(); $('empty').hidden = !!items.length || !!nextToken;
-      searchStatus = snapshot.searchStatus || '';
-      setText($('capability'), searchStatus); $('capability').hidden = !searchStatus;
-      updateListControls();
-      rememberView(false, true);
-      restoreScroll(snapshot.scroll);
-      await reloadTimeline(Math.max(1, snapshot.pages), null);
-    } else {
-      const saved = snapshot || history.state;
-      window.scrollTo(0, 0);
-      await reloadTimeline(Math.max(1, saved?.pages || 1), saved?.scroll || 0);
-    }
-    if (returning && generation === epoch && sequence === viewSequence) {
-      const name = snapshot?.focusedName;
-      [...$('notes').children].find(card => card.dataset.name === name)?.querySelector('.dlink')?.focus({ preventScroll: true });
-    }
+    timeline = createTimeline({ key: router.key, url: router.url, snapshots, request, sessionRequest,
+      render: renderList, showError, handleFailure });
+    await timeline.open(returning);
   } else if (detail) {
     const from = safeFrom(new URLSearchParams(location.search).get('from'));
     const label = pages.get(new URL(from, location.origin).pathname) || l("主页");
@@ -818,7 +694,7 @@ async function showRoute({ focus = false, returning = false } = {}) {
       const note = await request(`/notes/${detail[1]}`);
       if (generation !== epoch || sequence !== viewSequence) return;
       if (!validNote(note)) throw Object.assign(new Error('Invalid note'), { code: 'NOTE_LIST_INVALID' });
-      items = [note]; renderList();
+      renderList([note]);
     } catch (err) {
       if (generation !== epoch || sequence !== viewSequence) return;
       handleFailure($('list-error'), err);
@@ -940,7 +816,7 @@ $('composer').addEventListener('submit', async event => {
     stale(generation);
     if (!validNote(note)) throw Object.assign(new Error('Invalid create response'), { code: 'NOTE_SAVE_UNCONFIRMED' });
     draft.confirm(attempt); $('content').value = draft.content; dirtySnapshots();
-    if (isTimeline()) await loadNotes(true);
+    await timeline?.refresh();
     invalidateSidebar(); loadSidebar();
   } catch (err) {
     if (generation !== epoch) return;
@@ -954,13 +830,10 @@ $('search-mode').addEventListener('change', () => {
 $('month-prev').addEventListener('click', () => changeMonth(-1));
 $('month-next').addEventListener('click', () => changeMonth(1));
 $('sidebar-retry').addEventListener('click', loadSidebar);
-$('load-more').addEventListener('click', () => loadNotes());
+$('load-more').addEventListener('click', () => timeline?.loadMore());
 $('list-retry').addEventListener('click', () => {
   if (moduleReload) location.reload();
-  else if (isTimeline()) {
-    if (retryReset) reloadTimeline();
-    else loadNotes();
-  }
+  else if (timeline) timeline.retry();
   else showRoute();
 });
 $('back').addEventListener('click', () => {
@@ -980,17 +853,6 @@ document.addEventListener('click', event => {
   }
 });
 $('navigation-dialog').addEventListener('close', closeMenus);
-let scrollTimer = null;
-window.addEventListener('scroll', () => {
-  if (scrollTimer !== null || !identity || !isTimeline()) return;
-  const key = router.key;
-  scrollTimer = setTimeout(() => {
-    scrollTimer = null;
-    if (identity && isTimeline() && key === router.key) {
-      history.replaceState({ ...history.state, scroll: window.scrollY, pages: pageCount }, '');
-    }
-  }, 150);
-}, { passive: true });
 window.addEventListener('pagehide', () => { invalidate(); hidePrivate(); });
 window.addEventListener('pageshow', event => { if (event.persisted) restore(); });
 window.addEventListener('focus', refreshSidebarOnFocus);

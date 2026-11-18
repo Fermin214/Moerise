@@ -1,13 +1,12 @@
 import { StarScene } from './map-star-paint.js';
 
-// The visible canvas stays on the page so a failed worker can reuse it.
 export function createStarRenderer(canvas, onReady = () => {}) {
   const ctx = canvas.getContext('2d', { alpha: false });
   let worker = null, fallback = null, dead = false, id = 0, active = null, pending = null, timer = null;
   let points = [], attributes = [], labels = [], generation = 0;
   const renderer = {
     ctx, order: [], visible: [], projected: [], excerpts: [], labelBoxes: [],
-    setData(next, stars, groups) {
+    setData(next, stars, groups, topics, subtopics) {
       generation++;
       active?.resolve(false); pending?.resolve(false); pending = null;
       points = next; attributes = stars; labels = groups;
@@ -22,9 +21,14 @@ export function createStarRenderer(canvas, onReady = () => {}) {
           stars[i * 4 + 3] = a.role === 'core' ? 1 : a.role === 'isolated' ? 2 : 0;
           groups[i] = labels[i] ?? -1;
         }
-        try { worker.postMessage({ type: 'data', coordinates, stars, groups },
+        try { worker.postMessage({ type: 'data', coordinates, stars, groups, topics, subtopics },
           [coordinates.buffer, stars.buffer, groups.buffer]); } catch { fail(); }
       } else fallback?.setData(points, attributes, labels);
+    },
+    setTitle(index, title) {
+      if (worker) {
+        try { worker.postMessage({ type: 'excerpt', index, title }); } catch { fail(); }
+      }
     },
     draw(view, options) {
       if (dead) return Promise.resolve(false);
@@ -65,14 +69,11 @@ export function createStarRenderer(canvas, onReady = () => {}) {
     if (active || !pending || (!worker && !fallback)) return;
     active = pending; pending = null;
     if (fallback) { drawFallback(active); return; }
-    const { getNote, ...options } = active.options;
-    const titles = {};
-    if (active.view.scale / options.fitScale > 2.7) {
-      points.forEach((_, i) => { const title = getNote(i).title; if (title) titles[i] = title; });
-    }
+    const { width, height, fitScale, mode, selected, hovered, neighbors } = active.options;
     timer = setTimeout(fail, 15000);
-    try { worker.postMessage({ type: 'draw', id: active.id, view: active.view, options,
-      titles, width: canvas.width, height: canvas.height }); } catch { fail(); }
+    try { worker.postMessage({ type: 'draw', id: active.id, view: active.view,
+      options: { width, height, fitScale, mode, selected, hovered, neighbors },
+      width: canvas.width, height: canvas.height }); } catch { fail(); }
   }
   function fail() {
     if (dead || fallback) return;
@@ -85,7 +86,7 @@ export function createStarRenderer(canvas, onReady = () => {}) {
   if (typeof Worker === 'function' && typeof OffscreenCanvas === 'function' &&
       typeof OffscreenCanvas.prototype.transferToImageBitmap === 'function') {
     try {
-      worker = new Worker(new URL('./map-stars-worker.js', import.meta.url), { type: 'module' });
+      worker = new Worker(new URL('./map-render-worker.js', import.meta.url), { type: 'module' });
       worker.addEventListener('error', event => { event.preventDefault(); fail(); });
       worker.addEventListener('messageerror', fail);
       worker.addEventListener('message', ({ data }) => {

@@ -34,7 +34,7 @@ export function createDensityProcessor() {
         if (!disabled && typeof Worker === 'function') {
           try {
             if (!worker) {
-              worker = new Worker(new URL('./map-star-worker.js', import.meta.url), { type: 'module' });
+              worker = new Worker(new URL('./map-density-worker.js', import.meta.url), { type: 'module' });
               worker.addEventListener('message', ({ data }) => {
                 if (job?.id === data.id && data.pixels instanceof Uint8ClampedArray) finish({ ...data, mode: 'worker' });
               });

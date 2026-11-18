@@ -11,6 +11,8 @@
 3. **业务服务**：沿路由找到笔记、检索、回顾、聊天或地图服务。路由负责协议和权限，业务规则放在共享服务中。
 4. **数据边界**：`internal/memos*.go` 访问 Memos 官方 API；`internal/store.go` 管理本地双库、事务和同步状态。
 
+从一次手机保存可以看清两种同步。`EditorController.enqueue` 将草稿和冻结请求写入 Room，`SyncController` 调用 `NoteWriteQueue` 发送请求。Core 的 `RecordService.Create` 通过 Memos 官方 API 写入原文。响应丢失时，手机用原幂等键重试。`internal/sync.go` 则从 Memos 拉取变化，完成正常与归档笔记的分页后才发布检索投影。
+
 ```mermaid
 flowchart TD
     Main["main.go"] --> App["App：装配与生命周期"]
@@ -75,7 +77,7 @@ Android 文件的版本管理规则见 [Android 开发](ANDROID.md#文件与产�
 | 接口与权限 | `api.go`、`external_policy.go` 管理外部只读白名单；`client_api.go` 管理本人会话路由；`mcp.go` 暴露只读工具 |
 | 数据契约 | `models.go`、`client_models.go`、`chat_models.go` 定义请求与响应；`openapi.go` 嵌入 `openapi.json` 和文档页 `docs.html` |
 | Memos 适配 | `memos.go` 处理官方 API 与数据规范化；`memos_live.go` 处理实时分页与筛选；`memos_stats.go` 聚合标签和日历；`memos_auth.go` 适配官方登录 |
-| 会话与设置 | `sessions.go` 管理加密会话与 CSRF；`settings.go` 保存加密产品设置；`settings_api.go` 提供设置接口；`settings_runtime.go` 热更新服务 |
+| 会话与设置 | `sessions.go` 管理加密会话与 CSRF。`App.startup` 保存启动时确定的 Web、Memos 和机器令牌配置。`settings_api.go` 接收产品设置，`settings.go` 加密持久化，`settings_runtime.go` 在写入成功后更新 `Store.Settings` 并替换受影响的服务 |
 | 笔记与附件 | `notes.go`、`notes_live.go` 读取原文和时间线；`records.go` 处理创建幂等；`notes_mutations.go` 处理编辑、归档和删除；`attachments.go` 管理附件写入 |
 | 客户端适配 | `client_notes.go`、`client_attachments.go`、`client_search.go`、`client_discovery.go`、`client_chat.go`、`client_map.go` 将共享服务接到本人会话接口 |
 | 同步与存储 | `sync.go` 完整分页并发布投影；`store.go` 管理双库、绑定、任务与同步水位；`maintenance.go` 负责备份、恢复和索引重建 |
@@ -92,7 +94,8 @@ Android 文件的版本管理规则见 [Android 开发](ANDROID.md#文件与产�
 
 | 路径 | 用途 |
 | --- | --- |
-| `web/src/app.js` | 页面启动、会话、笔记列表、编辑与附件交互 |
+| `web/src/app.js` | 页面启动、会话、笔记卡片、编辑与附件交互 |
+| `timeline.js` | 主页和归档的分页、请求取消、重试与返回列表时的阅读位置 |
 | `shell.js` | 桌面与手机布局切换、导航侧栏、搜索展开与触控手势 |
 | `client.js`、`router.js`、`routes.js` | 会话请求、超时与取消；URL、历史、路由焦点与筛选 |
 | `draft.js`、`leave-guard.js`、`search-input.js`、`errors.js` | 冻结写入、会话内草稿、输入离开确认、输入法保护与错误文案 |
@@ -102,8 +105,8 @@ Android 文件的版本管理规则见 [Android 开发](ANDROID.md#文件与产�
 | `insights.js`、`material-picker.js` | 按需加载的洞察页、持久会话、材料分页与选择 |
 | `chat-stream.js`、`stream-markdown.js`、`markdown.js` | SSE 消息解析、流式段落呈现与安全 Markdown 渲染 |
 | `map.js`、`map-stars-scene.js` | 按需加载的观星页、视口、语义点位、键盘与命中网格 |
-| `map-star-renderer.js`、`map-stars-worker.js`、`map-star-paint.js` | 正式星图后台绘制、ImageBitmap 合成、分批回退与原星体画法 |
-| `map-star-cloud.js`、`map-star-worker.js`、`map-star-density.js` | 密度任务生命周期、Worker 与共享密度算法 |
+| `map-star-renderer.js`、`map-render-worker.js`、`map-star-paint.js` | 星图后台绘制、摘要增量更新、ImageBitmap 合成与分批回退 |
+| `map-star-cloud.js`、`map-density-worker.js`、`map-star-density.js` | 密度任务生命周期、Worker 与共享密度算法 |
 | `map-scene.js`、`map-worker.js`、`map-paint.js`、`map-regions.js` | 旧地图快照兼容渲染、区域几何与后台绘制 |
 | `i18n.js`、`en.js` | 语言选择、消息绑定与英语翻译 |
 | `styles.css`、`tokens.css`、`interaction.css`、`shell.css`、`memos.css` | CSS 分层入口、视觉变量、共享交互、主界面与登录样式 |

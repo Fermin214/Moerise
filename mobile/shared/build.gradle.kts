@@ -22,6 +22,7 @@ kotlin {
         compilerOptions.jvmTarget.set(JvmTarget.JVM_17)
     }
     sourceSets {
+        listOf(androidMain, jvmMain).forEach { it.get().kotlin.srcDir("src/jvmSharedMain/kotlin") }
         commonMain.dependencies {
             implementation(compose.runtime)
             implementation(compose.foundation)

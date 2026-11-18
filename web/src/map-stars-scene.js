@@ -28,7 +28,7 @@ function starScene(field, { onPick, onHover, onTopic, onExcerpts }) {
   function marker(point) {
     const node = document.createElement('button');
     node.type = 'button'; node.className = 'map-dot'; node.dataset.name = point.name;
-    setAttr(node, 'aria-label', l("笔记 {0}", { 0: point.name.slice(6) }));
+    setAttr(node, 'aria-label', excerpts.get(point.name) || l("笔记 {0}", { 0: point.name.slice(6) }));
     node.addEventListener('click', event => { if (event.detail === 0) onPick(point.name); });
     node.addEventListener('focus', () => {
       onHover(point.name);
@@ -80,7 +80,6 @@ function starScene(field, { onPick, onHover, onTopic, onExcerpts }) {
       const pressed = String(point.name === selected);
       if (node.getAttribute('aria-pressed') !== pressed) node.setAttribute('aria-pressed', pressed);
       node.classList.toggle('on', point.name === selected);
-      if (excerpts.get(point.name) && node.getAttribute('aria-label') !== excerpts.get(point.name)) node.setAttribute('aria-label', excerpts.get(point.name));
     }
     const activeLabels = new Set();
     for (const box of scene.labelBoxes || []) {
@@ -148,7 +147,7 @@ function starScene(field, { onPick, onHover, onTopic, onExcerpts }) {
       for (const link of result.links || []) {
         neighbors.get(link.source)?.push(link.target); neighbors.get(link.target)?.push(link.source);
       }
-      scene.setData(coordinates, points.map(point => point.stellar), groupLabels);
+      scene.setData(coordinates, points.map(point => point.stellar), groupLabels, groups, subtopics);
       queue();
     },
     draw(next, name, scale) { view = next; selected = name; fitScale = scale || fitScale; queue(); },
@@ -173,7 +172,16 @@ function starScene(field, { onPick, onHover, onTopic, onExcerpts }) {
       return closest;
     },
     hover(name) { if (hovered !== name) { hovered = name; queue(); } },
-    excerpt(name, text) { excerpts.set(name, text); queue(); },
+    excerpt(name, text) {
+      const index = byName.get(name);
+      if (index == null || (excerpts.get(name) || '') === text) return;
+      if (text) excerpts.set(name, text);
+      else excerpts.delete(name);
+      scene.setTitle(index, text);
+      const node = markers.get(name);
+      if (node) setAttr(node, 'aria-label', text || l("笔记 {0}", { 0: name.slice(6) }));
+      queue();
+    },
     position(name) { const i = byName.get(name); return i != null && view ? screen(points[i]) : null; },
     activate() {}, drag() {}, release() {},
     destroy() {

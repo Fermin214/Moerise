@@ -2,7 +2,6 @@ import { createDensityProcessor } from './map-star-cloud.js';
 
 const createCanvas = () => typeof document === 'undefined' ? new OffscreenCanvas(512, 512) : document.createElement('canvas');
 
-// Cached Canvas density fields and point sprites. Every light source is a note.
 export class StarScene {
   constructor(canvas, onReady = () => {}) {
     this.canvas = canvas;
@@ -71,7 +70,6 @@ export class StarScene {
         if (!canContinue()) return false;
         step = steps.next();
         if (!step.done) {
-          // Flush deferred Canvas commands per batch before the final composite.
           this.ctx.getImageData(0, 0, 1, 1);
           await (globalThis.scheduler?.yield ? scheduler.yield() : new Promise(resolve => setTimeout(resolve, 0)));
         }
@@ -221,7 +219,7 @@ export class StarScene {
     this.excerpts = [];
     const excerptOpacity = smooth(2.7, 5, z);
     if (excerptOpacity > .01) {
-      const ordered = this.order;
+      const ordered = options.excerptOrder || this.order;
       for (const i of ordered) {
         if (this.excerpts.length >= (w < 600 ? 3 : 7)) break;
         if (filter != null && groupLabels[i] !== filter) continue;

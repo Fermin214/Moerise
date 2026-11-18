@@ -494,7 +494,7 @@ test('star density survives worker failure, matches worker pixels and cancels re
   });
   const worker = await prepare();
   assert.equal(worker.mode, 'worker');
-  await page.route('**/map-star-worker*.js', route => route.abort());
+  await page.route('**/map-density-worker*.js', route => route.abort());
   const fallback = await prepare();
   assert.equal(fallback.mode, 'fallback');
   assert.deepEqual(fallback.pixels, worker.pixels);
@@ -511,7 +511,7 @@ test('star drawing falls back after a worker download failure and keeps keyboard
     points: state.notes.slice(0, 5).map((note, i) => ({ name: note.name, source_hash: note.source_hash,
       x: i - 2, y: 0, semantic: true, tags: note.tags,
       stellar: { seed: .5, role: 'ordinary', radius: 1, luminosity: .6 } })) };
-  await page.route('**/map-stars-worker*.js', route => route.abort());
+  await page.route('**/map-render-worker*.js', route => route.abort());
   await login(page, url); await ready(page);
   await page.waitForFunction(() => document.querySelector('#map-field canvas')?.dataset.renderer === 'fallback');
   await marker(page, 2).focus(); await page.keyboard.press('Enter');
@@ -519,6 +519,40 @@ test('star drawing falls back after a worker download failure and keeps keyboard
   await page.locator('nav a[href="/"]').click();
   await page.locator('#notes .card').first().waitFor();
   assert.equal(await page.locator('#map-field').count(), 0);
+});
+
+test('star excerpts follow updates and snapshot replacement in both renderers', async t => {
+  const { page, url } = await fixture(t);
+  await page.goto(url);
+  for (const mode of ['worker', 'fallback']) {
+    if (mode === 'fallback') await page.route('**/map-render-worker*.js', route => route.abort());
+    const result = await page.evaluate(async () => {
+      const src = document.querySelector('script[type="module"]').src.replace(/\/app(?=\.|$)/, '/map-star-renderer');
+      const { createStarRenderer } = await import(src);
+      const canvas = document.createElement('canvas');
+      canvas.width = 800; canvas.height = 600;
+      const renderer = createStarRenderer(canvas);
+      const titles = new Map();
+      const snapshot = () => { titles.clear(); renderer.setData([[0, 0], [.3, 0]], [], [-1, -1], [], []); };
+      const setTitle = (index, text) => { titles.set(index, text); renderer.setTitle(index, text); };
+      const frame = async () => {
+        while (!(await renderer.draw({ x: 0, y: 0, scale: 600 }, {
+          width: 800, height: 600, fitScale: 200, mode: 'atlas', selected: -1, hovered: -1, neighbors: [],
+          groupLabels: [-1, -1], getNote: index => ({ title: titles.get(index) }),
+        }))) await new Promise(requestAnimationFrame);
+        return renderer.excerpts.map(box => box.index);
+      };
+      try {
+        snapshot(); setTitle(1, 'First excerpt');
+        const first = await frame();
+        setTitle(1, ''); setTitle(0, 'Replacement excerpt');
+        const next = await frame();
+        snapshot();
+        return { first, next, replaced: await frame(), mode: canvas.dataset.renderer };
+      } finally { renderer.destroy(); }
+    });
+    assert.deepEqual(result, { first: [1], next: [0], replaced: [], mode });
+  }
 });
 
 test('ten thousand stars keep grid picking equivalent to the nearest-point rule', async t => {

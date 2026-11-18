@@ -1,7 +1,6 @@
 package io.github.fermin214.moerise.presentation
 
 import io.github.fermin214.moerise.data.*
-import io.github.fermin214.moerise.domain.CoreException
 import io.github.fermin214.moerise.domain.Note
 import io.ktor.http.HttpMethod
 import kotlinx.coroutines.*
@@ -16,16 +15,11 @@ class EditorController(
     private val core: () -> CoreClient?,
     private val scope: CoroutineScope,
     private val localLock: Mutex = Mutex(),
-    private val onConfirmed: (String, Note) -> Unit = { _, _ -> },
-    private val onPersisted: suspend (DraftEntity) -> Unit = {},
 ) {
     private val mutable = MutableStateFlow(EditorUiState())
     val state = mutable.asStateFlow()
-    private val syncLock = Mutex()
     private var editJob: Job? = null
-    private var sendJob: Job? = null
     private var generation = 0L
-    private var accountGeneration = 0L
     private var lastEdit = TimeSource.Monotonic.markNow()
     private val importJob = SupervisorJob(scope.coroutineContext[Job])
     val attachmentScope = CoroutineScope(scope.coroutineContext + importJob)
@@ -46,11 +40,9 @@ class EditorController(
         onRestored: () -> Unit,
         restore: suspend (NoteRepository) -> RestoredDraft,
     ) {
-        if (key != state.value.accountKey) ++accountGeneration
         val stamp = ++generation
         stopImports()
         editJob?.cancelAndJoin()
-        sendJob?.cancelAndJoin()
         try {
             localLock.withLock {
                 if (generation != stamp) return@withLock
@@ -77,12 +69,11 @@ class EditorController(
 
     suspend fun close(persist: Boolean = true): Boolean {
         stopImports()
-        editJob?.cancelAndJoin(); sendJob?.cancelAndJoin()
+        editJob?.cancelAndJoin()
         return try {
             localLock.withLock {
                 if (persist) flushLatestLocked()
                 ++generation
-                ++accountGeneration
                 mutable.value = EditorUiState()
             }
             true
@@ -96,7 +87,7 @@ class EditorController(
     suspend fun adoptDraft(restored: RestoredDraft, preservePrevious: Boolean = false): Boolean {
         val stamp = ++generation
         stopImports()
-        editJob?.cancelAndJoin(); sendJob?.cancelAndJoin()
+        editJob?.cancelAndJoin()
         return try {
             localLock.withLock {
                 if (generation != stamp) return@withLock false
@@ -106,7 +97,7 @@ class EditorController(
                     if (preservePrevious) {
                         val keep = previous.content.isNotEmpty() || previous.attachmentEdits() != AttachmentEdits() ||
                             previous.conflictJson != null || previous.queuedRevisionJson != null ||
-                            before.pending != null || before.confirmation != null
+                            before.pending != null
                         if (keep) {
                             mutable.update { current ->
                                 if (current.draft?.id != previous.id) current else
@@ -120,7 +111,6 @@ class EditorController(
                     return@withLock true
                 }
                 if (generation != stamp) return@withLock false
-                if (state.value.accountKey != restored.draft.accountKey) ++accountGeneration
                 mutable.value = EditorUiState(restored.draft.accountKey, restored.draft, restored.pending,
                     savedRevision = restored.draft.revision)
                 true
@@ -154,7 +144,7 @@ class EditorController(
         mutable.update { before ->
             val draft = before.draft
             if (draft?.id != id) before else before.copy(
-                draft = draft.copy(content = content, revision = draft.revision + 1), error = null, serverSaved = false)
+                draft = draft.copy(content = content, revision = draft.revision + 1), error = null)
         }
         scheduleFlush()
     }
@@ -182,21 +172,14 @@ class EditorController(
 
     suspend fun flush() = localLock.withLock { flushLocked() }
 
-    private suspend fun flushLocked(notify: Boolean = true) {
+    private suspend fun flushLocked() {
         val before = mutable.value
         val draft = before.draft ?: return
-        val confirmation = before.confirmation
-        if (confirmation != null) repository().confirm(confirmation.write, draft, confirmation.remote, confirmation.conflict)
-        else repository().persist(draft)
-        onPersisted(draft)
+        repository().persist(draft)
         mutable.update { latest ->
             if (latest.draft?.id != draft.id || latest.accountKey != before.accountKey) latest
-            else latest.copy(savedRevision = draft.revision,
-                serverSaved = latest.serverSaved || confirmation != null && !confirmation.conflict &&
-                    latest.draft.revision == draft.revision,
-                confirmation = if (latest.confirmation == confirmation) null else latest.confirmation)
+            else latest.copy(savedRevision = draft.revision)
         }
-        if (notify && confirmation != null && !confirmation.conflict) confirmation.remote?.let { onConfirmed(draft.accountKey, it) }
     }
 
     private suspend fun flushLatestLocked() {
@@ -204,7 +187,7 @@ class EditorController(
             flushLocked()
             val latest = state.value
             val draft = latest.draft ?: return
-        } while (draft.revision != latest.savedRevision || latest.confirmation != null)
+        } while (draft.revision != latest.savedRevision)
     }
 
     private suspend fun flushWithFeedback(): Boolean = try {
@@ -235,7 +218,7 @@ class EditorController(
                 if (stamp != generation) return@withLock false
                 val current = requireNotNull(state.value.draft)
                 if (current.conflictJson != null) throw IllegalArgumentException("SOURCE_CHANGED")
-                val previousWrite = before.pending ?: before.confirmation?.write
+                val previousWrite = before.pending
                 val acknowledged = previousWrite?.takeIf { current.baselineJson != submitted.baselineJson }?.let {
                     current.baselineJson?.let { body -> CoreJson.decodeFromString<Note>(body) }
                 }
@@ -244,19 +227,18 @@ class EditorController(
                     return@withLock true
                 }
                 val frozen = if (acknowledged != null)
-                    completedDraft(submitted, requireNotNull(previousWrite), acknowledged, true, "")
+                    completedDraft(submitted, requireNotNull(previousWrite), acknowledged)
                         .copy(queuedRevisionJson = null)
                     else submitted
                 val write = repo.prepare(frozen, current)
                 val next = repo.enqueue(frozen, write)
                 val queued = repo.storedDraft(submitted.accountKey, submitted.id).draft
-                // 保存只冻结点按时的修订；挂起期间的输入仍属于同一份本机草稿。
                 mutable.update { latest ->
                     val draft = latest.draft
                     if (latest.accountKey != submitted.accountKey || draft?.id != submitted.id) latest
                     else latest.copy(draft = draft.copy(slot = queued.slot, createdAt = queued.createdAt,
                         queuedRevisionJson = queued.queuedRevisionJson), pending = write,
-                        savedRevision = if (draft == queued) queued.revision else -1, serverSaved = false)
+                        savedRevision = if (draft == queued) queued.revision else -1)
                 }
                 flushLatestLocked()
                 if (stamp != generation) return@withLock false
@@ -279,210 +261,17 @@ class EditorController(
         }
     }
 
-    private fun visibleHolder(
-        account: String,
-        draftId: String,
-        otherEditors: () -> List<EditorController>,
-    ): EditorController? = (listOf(this) + otherEditors()).firstOrNull {
-        it.state.value.accountKey == account && it.state.value.draft?.id == draftId
-    }
-
-    suspend fun synchronize(
-        account: String,
-        active: CoreClient,
-        otherEditors: () -> List<EditorController> = { emptyList() },
-    ): Boolean = syncLock.withLock {
-        val stamp = accountGeneration
-        fun ensureAccount() {
-            if (stamp != accountGeneration || state.value.accountKey != account)
-                throw CancellationException("Account changed")
+    internal fun acceptConfirmation(
+        original: DraftEntity, persisted: DraftEntity, error: String?, rebase: (DraftEntity) -> DraftEntity,
+    ) {
+        mutable.update { current ->
+            val draft = current.draft
+            if (draft == null || draft.id != original.id || draft.accountKey != original.accountKey) current
+            else if (draft.revision == original.revision) current.copy(
+                draft = persisted, pending = null, savedRevision = persisted.revision, error = error)
+            else current.copy(draft = rebase(draft), pending = null, savedRevision = -1, error = error)
         }
-        var processed = 0
-        while (processed++ < 100 && account == state.value.accountKey && stamp == accountGeneration) {
-            val repo = repository()
-            // A committed continuation survives a process exit between confirmation and preparation.
-            localLock.withLock {
-                ensureAccount()
-                for (holder in (listOf(this) + otherEditors()).distinct()) {
-                    val confirmation = holder.state.value.confirmation ?: continue
-                    if (holder.state.value.accountKey != account || confirmation.write.accountKey != account) continue
-                    holder.flushLocked(notify = false)
-                    ensureAccount()
-                    if (!confirmation.conflict) confirmation.remote?.let { onConfirmed(account, it) }
-                }
-                for (draft in repo.queuedNotes(account)) {
-                    ensureAccount()
-                    if (draft.conflictJson != null || draft.queuedRevisionJson == null ||
-                        repo.storedDraft(account, draft.id).pending != null) continue
-                    ensureAccount()
-                    repo.prepare(CoreJson.decodeFromString<DraftEntity>(draft.queuedRevisionJson), draft)
-                }
-            }
-            ensureAccount()
-            val writes = repo.queuedWrites(account)
-            ensureAccount()
-            val write = writes.firstOrNull() ?: return@withLock true
-            var networkStarted = false
-            var receivedResult = false
-            try {
-                val saved = write.submittedDraftJson?.let { CoreJson.decodeFromString<DraftEntity>(it) }
-                    ?: repo.storedDraft(account, write.draftId).draft
-                ensureAccount()
-                repo.status(write, "sending")
-                ensureAccount()
-                networkStarted = true
-                val result = active.api(HttpMethod.parse(write.method), write.path, write.body, write.idempotencyKey)
-                receivedResult = true
-                val remote = CoreJson.decodeFromString<Note>(result)
-                require(remote.instanceId == account.split('\u0000')[1]) { "ACCOUNT_CHANGED" }
-                val expected = expectedSubmittedResult(saved, write, remote, active)
-                val material = conflictBody(write, remote)
-                localLock.withLock {
-                    ensureAccount()
-                    val stored = repo.storedDraft(account, write.draftId).draft
-                    ensureAccount()
-                    val holder = visibleHolder(account, write.draftId, otherEditors)
-                    val before = holder?.state?.value
-                    val latest = before?.draft ?: stored
-                    val queued = latest.slot.startsWith("queued:")
-                    val requested = stored.queuedRevisionJson?.let { CoreJson.decodeFromString<DraftEntity>(it) }
-                    val continuation = if (expected && requested != null && requested.revision > write.draftRevision)
-                        completedDraft(requested, write, remote, true, material).copy(queuedRevisionJson = null)
-                        else null
-                    fun completed(draft: DraftEntity): DraftEntity {
-                        val result = if (expected) completedDraft(draft, write, remote, true, material)
-                            else draft.copy(conflictJson = material)
-                        return result.copy(
-                            slot = if (queued && result.conflictJson == null && continuation == null) "saved:${result.id}" else result.slot,
-                            queuedRevisionJson = continuation?.let { CoreJson.encodeToString(it) },
-                        )
-                    }
-                    if (holder != null && before != null) {
-                        // 先切换内存基线，再提交本机确认；挂起期间的输入沿用新基线和同一份记录。
-                        holder.mutable.update { current ->
-                            val draft = current.draft
-                            if (current.accountKey != account || draft?.id != write.draftId) current
-                            else {
-                                val next = completed(draft)
-                                current.copy(draft = next, pending = null,
-                                    confirmation = ConfirmedChange(write, remote, next.conflictJson != null),
-                                    savedRevision = -1, serverSaved = false, error = null)
-                            }
-                        }
-                        holder.flushLocked(notify = false)
-                        if (holder.state.value.draft?.revision != holder.state.value.savedRevision) holder.scheduleFlush()
-                    } else {
-                        val next = completed(latest)
-                        if (queued && next.conflictJson == null && continuation == null &&
-                            latest.revision == write.draftRevision) repo.finishQueued(write, remote)
-                        else repo.confirm(write, next, remote, next.conflictJson != null)
-                    }
-                }
-                onConfirmed(account, remote)
-            } catch (error: Exception) {
-                if (!receivedResult && error is CoreException && (error.detail.code in setOf(
-                        "SOURCE_CHANGED", "SOURCE_NOT_FOUND", "NOT_FOUND", "IDEMPOTENCY_CONFLICT",
-                        "ATTACHMENT_REFERENCED", "ATTACHMENT_DELETE_REJECTED", "WRITE_CONFLICT",
-                    ) || error.status in 400..499 && error.status !in setOf(401, 429) && !error.detail.retryable)
-                    && stamp == accountGeneration && state.value.accountKey == account) {
-                    val remote = if (write.method == "PATCH") runCatching {
-                        CoreJson.decodeFromString<Note>(active.api(HttpMethod.Get, write.path))
-                    }.getOrNull() else null
-                    localLock.withLock {
-                        ensureAccount()
-                        val stored = repo.storedDraft(account, write.draftId).draft
-                        ensureAccount()
-                        val holder = visibleHolder(account, write.draftId, otherEditors)
-                        val before = holder?.state?.value
-                        val draft = before?.draft ?: stored
-                        val next = draft.copy(conflictJson = conflictBody(write, remote))
-                        if (holder == null || before == null) repo.confirm(write, next, remote, true)
-                        else {
-                            holder.mutable.update { current ->
-                                if (current.accountKey != account || current.draft?.id != write.draftId) current
-                                else current.copy(draft = current.draft.copy(conflictJson = next.conflictJson),
-                                    pending = null, confirmation = ConfirmedChange(write, remote, true),
-                                    savedRevision = -1, serverSaved = false, error = error.detail.code)
-                            }
-                            holder.flushLocked(notify = false)
-                            if (holder.state.value.draft?.revision != holder.state.value.savedRevision) holder.scheduleFlush()
-                        }
-                    }
-                    continue
-                }
-                withContext(NonCancellable) {
-                    runCatching { repo.status(write, if (networkStarted) "unknown" else "prepared") }
-                }
-                if (error is CancellationException) throw error
-                throw error
-            }
-        }
-        false
-    }
-
-    fun save() {
-        if (state.value.busy || state.value.importing || state.value.draft == null) return
-        val active = core() ?: return
-        val stamp = generation
-        mutable.update { it.copy(busy = true, error = null) }
-        sendJob = scope.launch {
-            var attempt: PendingWriteEntity? = null
-            var networkStarted = false
-            try {
-                editJob?.cancel()
-                flush()
-                val write = localLock.withLock {
-                    val draft = requireNotNull(state.value.draft)
-                    repository().prepare(draft).also { pending ->
-                        mutable.update { it.copy(pending = pending) }
-                    }
-                }
-                attempt = write
-                repository().status(write, "sending")
-                networkStarted = true
-                val response = active.api(HttpMethod.parse(write.method), write.path, write.body, write.idempotencyKey)
-                val remote = withContext(Dispatchers.Default) { CoreJson.decodeFromString<Note>(response) }
-                val draftBeforeCheck = write.submittedDraftJson?.let { CoreJson.decodeFromString<DraftEntity>(it) }
-                    ?: requireNotNull(state.value.draft)
-                val expected = withContext(Dispatchers.Default) {
-                    try { expectedSubmittedResult(draftBeforeCheck, write, remote, active) }
-                    catch (failure: Exception) { if (failure is CancellationException) throw failure; false }
-                }
-                val conflictMaterial = withContext(Dispatchers.Default) { conflictBody(write, remote) }
-                if (stamp != generation) throw CancellationException("Account changed")
-                val before = state.value
-                val next = completedDraft(requireNotNull(before.draft), write, remote, expected, conflictMaterial)
-                mutable.value = before.copy(draft = next, pending = null,
-                    confirmation = ConfirmedChange(write, remote, next.conflictJson != null))
-                attempt = null
-                flush()
-            } catch (error: Exception) {
-                val write = attempt
-                if (write != null) {
-                    if (error is CoreException && error.detail.code in setOf("SOURCE_CHANGED", "SOURCE_NOT_FOUND", "NOT_FOUND", "IDEMPOTENCY_CONFLICT", "ATTACHMENT_REFERENCED", "ATTACHMENT_DELETE_REJECTED", "WRITE_CONFLICT") && stamp == generation) {
-                        val remote = if (write.method == "PATCH") runCatching {
-                            CoreJson.decodeFromString<Note>(active.api(HttpMethod.Get, write.path))
-                        }.getOrNull() else null
-                        val material = withContext(Dispatchers.Default) { conflictBody(write, remote) }
-                        val before = state.value
-                        val draft = before.draft
-                        if (draft != null && stamp == generation) {
-                            mutable.value = before.copy(draft = draft.copy(conflictJson = material),
-                                pending = null, confirmation = ConfirmedChange(write, remote, true), error = error.detail.code)
-                            flushWithFeedback()
-                        }
-                    } else {
-                        withContext(NonCancellable) { runCatching { repository().status(write, "unknown") } }
-                        if (stamp == generation) mutable.update { it.copy(pending = write.copy(status = "unknown")) }
-                    }
-                }
-                if (error is CancellationException) throw error
-                if (stamp == generation) mutable.update { it.copy(error =
-                    if (it.confirmation != null || !networkStarted && error !is IllegalArgumentException) "LOCAL_WRITE_FAILED" else errorCode(error)) }
-            } finally {
-                if (stamp == generation) mutable.update { it.copy(busy = false) }
-            }
-        }
+        if (state.value.draft?.revision != state.value.savedRevision) scheduleFlush(immediate = true)
     }
 
     fun merge(content: String, remote: Note, attachments: AttachmentEdits = AttachmentEdits()) {
@@ -541,7 +330,7 @@ class EditorController(
                 else {
                     updated = true
                     before.copy(draft = draft.copy(attachmentsJson = CoreJson.encodeToString(edits),
-                        revision = draft.revision + 1), error = null, serverSaved = false)
+                        revision = draft.revision + 1), error = null)
                 }
             }
         }

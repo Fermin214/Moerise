@@ -128,7 +128,7 @@ func (a *ClientAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *ClientAPI) cookieName() string {
-	if strings.HasPrefix(a.app.Settings.Web.PublicOrigin, "https://") {
+	if strings.HasPrefix(a.app.startup.Web.PublicOrigin, "https://") {
 		return "__Host-moerise_session"
 	}
 	return "moerise_local_session"
@@ -136,7 +136,7 @@ func (a *ClientAPI) cookieName() string {
 
 func (a *ClientAPI) cookie(w http.ResponseWriter, rawID string, expires time.Time) {
 	cookie := &http.Cookie{Name: a.cookieName(), Value: rawID, Path: "/", HttpOnly: true,
-		Secure: strings.HasPrefix(a.app.Settings.Web.PublicOrigin, "https://"), SameSite: http.SameSiteLaxMode,
+		Secure: strings.HasPrefix(a.app.startup.Web.PublicOrigin, "https://"), SameSite: http.SameSiteLaxMode,
 		Expires: expires}
 	if rawID == "" {
 		cookie.MaxAge = -1
@@ -170,7 +170,7 @@ func (a *ClientAPI) rawSession(r *http.Request) (string, error) {
 }
 
 func (a *ClientAPI) origin(r *http.Request) error {
-	if len(r.Header.Values("Origin")) != 1 || r.Header.Get("Origin") != a.app.Settings.Web.PublicOrigin {
+	if len(r.Header.Values("Origin")) != 1 || r.Header.Get("Origin") != a.app.startup.Web.PublicOrigin {
 		return failure("ORIGIN_REJECTED", "Request origin is not allowed", 403, false)
 	}
 	return nil
@@ -257,7 +257,7 @@ func (a *ClientAPI) allowLogin(r *http.Request, username string) bool {
 
 func (a *ClientAPI) route(w http.ResponseWriter, r *http.Request) (any, int, error) {
 	notFound := failure("NOT_FOUND", "Not Found", 404, false)
-	if !a.app.Settings.Web.Enabled || a.app.Sessions == nil {
+	if !a.app.startup.Web.Enabled || a.app.Sessions == nil {
 		return nil, 0, notFound
 	}
 	if len(r.Header.Values("Authorization")) != 0 {

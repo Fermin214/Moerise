@@ -243,6 +243,15 @@ export function createMapPage({ request, handleFailure, validNote, renderNote, i
     for (const controller of excerptControllers.values()) controller.abort();
     excerptControllers.clear();
   }
+  function cacheExcerpt(target, name, text) {
+    excerptCache.set(name, text);
+    target.excerpt(name, text);
+    if (excerptCache.size > 96) {
+      const oldest = excerptCache.keys().next().value;
+      excerptCache.delete(oldest);
+      target.excerpt(oldest, '');
+    }
+  }
   function pumpExcerpts() {
     if (!alive || !scene) return;
     for (const name of desiredExcerpts) {
@@ -256,11 +265,10 @@ export function createMapPage({ request, handleFailure, validNote, renderNote, i
         const text = [...note.content.replace(/!\[[^\]]*\]\([^)]*\)/gu, '')
           .replace(/\[([^\]]*)\]\([^)]*\)/gu, '$1').replace(/[#*`>]/gu, '').replace(/\s+/gu, ' ').trim()]
           .slice(0, 100).join('') || note.attachments?.[0]?.filename || '';
-        excerptCache.set(name, text); target.excerpt(name, text);
-        if (excerptCache.size > 96) excerptCache.delete(excerptCache.keys().next().value);
+        cacheExcerpt(target, name, text);
       }).catch(error => {
         if (!activeMap(ticket) || scene !== target || controller.signal.aborted) return;
-        excerptCache.set(name, ''); target.excerpt(name, '');
+        cacheExcerpt(target, name, '');
         if (error.status === 401) handleFailure(message, error);
       }).finally(() => {
         if (excerptControllers.get(name) === controller) {

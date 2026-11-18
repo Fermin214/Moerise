@@ -84,7 +84,7 @@ interface LocalDao {
     @Query("SELECT submittedDraftJson FROM pending_writes WHERE submittedDraftJson IS NOT NULL")
     suspend fun submittedRevisions(): List<String>
     @Upsert suspend fun putWrite(write: PendingWriteEntity)
-    @Query("UPDATE pending_writes SET status = :status WHERE id = :id AND accountKey = :key")
+    @Query("UPDATE pending_writes SET status = :status WHERE id = :id AND accountKey = :key AND status != 'conflict'")
     suspend fun writeStatus(id: String, key: String, status: String)
     @Query("SELECT * FROM pending_writes WHERE draftId = :draftId AND status != 'conflict' LIMIT 1")
     suspend fun pending(draftId: String): PendingWriteEntity?

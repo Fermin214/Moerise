@@ -29,6 +29,7 @@ Moerise 是基于 Memos 的单用户自托管笔记系统。`internal/` 是按�
 
 ## 实现与文档
 
+- 手写代码默认不加解释性注释，例外见[贡献指南的开发约定](CONTRIBUTING.md#开发约定)。
 - 接口变化一起检查对应路由、`internal/*models.go`、`internal/openapi.json`、接口文档和调用端。
 - 配置与设置变化一起检查 `internal/config*.go`、`internal/settings*.go`、前端设置页、配置模板和配置文档，覆盖热更新与版本冲突。
 - 前端修改落在 `web/src/`，`web/dist/` 由构建生成。界面文案同时维护中文源文案、`web/src/en.js` 和相关浏览器流程。

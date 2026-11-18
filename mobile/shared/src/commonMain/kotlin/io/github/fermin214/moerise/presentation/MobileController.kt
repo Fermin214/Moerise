@@ -43,25 +43,19 @@ class MobileController(
         timeline.refresh()
         archive.refresh()
     }
-    private fun newEditor(): EditorController {
-        lateinit var controller: EditorController
-        controller = EditorController(repository, { session.core }, scope, onConfirmed = { key, note ->
-            timeline.onSaved(key, note); homeNote.acceptSaved(key, note)
-            scope.launch { runCatching { repository().collectFiles() } }
-        }, localLock = editorLock, onPersisted = { draft ->
-            // 同步确认可能更换草稿 ID；编辑目标随本机正文一同更新。
-            mutableNoteEditors.value.entries.firstOrNull { it.value === controller }?.let { entry ->
-                rememberEditing(draft.accountKey, entry.key, draft.id)
-            }
-        })
-        return controller
-    }
+    private fun newEditor() = EditorController(repository, { session.core }, scope, editorLock)
     val editor = newEditor()
-    val sync = SyncController(session, repository, editor, scope, {
+    private val writes = NoteWriteQueue(repository, editorLock, { listOf(editor) + mutableNoteEditors.value.values },
+        { session.state.value.profile?.accountKey?.takeIf { key ->
+            editor.state.value.let { it.accountKey == key && it.draft != null }
+        } }) { key, note ->
+        timeline.onSaved(key, note); homeNote.acceptSaved(key, note)
+    }
+    val sync = SyncController(session, repository, writes, scope, {
         timeline.refresh()
         if (archive.state.value.fresh) archive.refresh()
         scope.launch { runCatching { repository().collectFiles() } }
-    }, initialForeground, { mutableNoteEditors.value.values.toList() })
+    }, initialForeground)
     private val mutableEditing = MutableStateFlow(false)
     val editing = mutableEditing.asStateFlow()
     private val editorFrameAccount = MutableStateFlow<String?>(null)
@@ -420,9 +414,8 @@ class MobileController(
             }
         }
     }
-    fun clearLocalData() {
-        if (clearing.value) return
-        val account = session.state.value.profile?.accountKey ?: return
+    fun clearLocalData(account: String) {
+        if (clearing.value || account != session.state.value.profile?.accountKey) return
         mutableClearing.value = true
         mutableLocalError.value = null
         visiblePage = null

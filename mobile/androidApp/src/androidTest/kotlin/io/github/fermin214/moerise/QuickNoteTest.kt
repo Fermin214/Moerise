@@ -215,32 +215,35 @@ class QuickNoteTest {
         compose.clickTag("chat_picker_tab_1")
         try {
             compose.waitUntil(60_000) {
-                compose.hasTag("chat_picker_note_$name") || compose.model().mobile.insights.state.value.picker.error != null
+                compose.hasTag("chat_picker_note_$name") || compose.model().mobile.insights.picker.state.value.error != null
             }
             check(compose.hasTag("chat_picker_note_$name"))
         } catch (failure: Throwable) {
-            val picker = compose.model().mobile.insights.state.value.picker
+            val picker = compose.model().mobile.insights.picker.state.value
             throw AssertionError("选材未出现：tab=${picker.tab}；busy=${picker.busy}；error=${picker.error}；" +
                 "候选=${picker.candidates.map { it.name }}；next=${picker.next}；${deviceDiagnostics()}", failure)
         }
         compose.clickTag("chat_picker_note_$name")
         compose.waitUntil(20_000) {
-            compose.model().mobile.insights.state.value.picker.selected.any { it.name == name }
+            compose.model().mobile.insights.picker.state.value.selected.any { it.name == name }
         }
         compose.clickTag("chat_apply_materials")
         try {
             compose.waitUntil(CORE_REQUEST_TIMEOUT_MILLIS + 5_000) {
                 val state = compose.model().mobile.insights.state.value
-                !state.busy && !state.picker.visible || state.error != null
+                val picker = compose.model().mobile.insights.picker.state.value
+                !state.busy && !picker.visible || state.error != null
             }
             val state = compose.model().mobile.insights.state.value
-            check(!state.picker.visible && state.error == null && state.recovery.creation == null &&
+            val picker = compose.model().mobile.insights.picker.state.value
+            check(!picker.visible && state.error == null && state.recovery.creation == null &&
                 state.recovery.selected.contains(name) && state.materials?.notes?.any { it.name == name } == true)
         } catch (failure: Throwable) {
             val state = compose.model().mobile.insights.state.value
+            val picker = compose.model().mobile.insights.picker.state.value
             throw AssertionError("选材完成失败：busy=${state.busy}；error=${state.error}；" +
-                "pickerBusy=${state.picker.busy}；pickerError=${state.picker.error}；" +
-                "selected=${state.picker.selected.map { it.name }}", failure)
+                "pickerBusy=${picker.busy}；pickerError=${picker.error}；" +
+                "selected=${picker.selected.map { it.name }}", failure)
         }
         compose.waitForTag("chat_remove_$name")
         compose.clickTag("chat_material_toggle")

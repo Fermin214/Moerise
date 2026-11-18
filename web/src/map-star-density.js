@@ -1,4 +1,3 @@
-// Shared by the worker and the yielding fallback. No DOM or Canvas dependency.
 export function* densitySteps(points, labels) {
   if (!points.length) return null;
   const size = 512;

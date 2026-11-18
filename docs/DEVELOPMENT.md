@@ -147,13 +147,10 @@ go test -tags=integration ./tests -run '^TestSearchQualityLiveAcceptance$' -v -c
 
 ## 六、基准测试与检索质量评测
 
-### 1. 向量扫描与布局计算性能基准
+### 1. 向量扫描与观星联合验收
 ```bash
 # 向量点积与内存扫描 Benchmark
 go test ./internal -run '^$' -bench 'Benchmark(VectorIndex|Semantic)' -benchmem
-
-# 旧 PCA 布局兼容路径 Benchmark
-go test ./internal -run '^$' -bench '^BenchmarkMapLayout$' -benchmem
 ```
 
 观星联合验收使用既有笔记和对应的 Float32 小端向量，不调用真实模型：

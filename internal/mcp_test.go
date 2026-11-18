@@ -155,7 +155,7 @@ func TestMCPFetchListAndRESTPagination(t *testing.T) {
 	reader := strings.Repeat("r", 40)
 	memos["memos/review-00"]["content"] = "fresh full note\nwith a second line"
 	note := mcpReadResult(t, api, reader, "get_memo", map[string]any{"name": "memos/review-00"})
-	if note["content"] != memos["memos/review-00"]["content"] || note["creator"] != api.Settings.Memos.User {
+	if note["content"] != memos["memos/review-00"]["content"] || note["creator"] != api.startup.Memos.User {
 		t.Fatalf("direct read returned stale or foreign content: %v", note)
 	}
 	rest := externalCall(api, "GET", "/api/ext/v1/notes/review-00", reader, "")
@@ -230,7 +230,7 @@ func TestMCPSourceIsolationAndFailures(t *testing.T) {
 				clear(memos)
 			case "offline", "identity":
 				code = "UPSTREAM_UNAVAILABLE"
-				api.Source = fakeClient(api.Settings, func(request *http.Request) (int, any, error) {
+				api.Source = fakeClient(api.Store.Settings, func(request *http.Request) (int, any, error) {
 					if change == "identity" && strings.HasSuffix(request.URL.Path, "/auth/me") {
 						return 200, map[string]any{"user": map[string]string{"name": "users/foreign"}}, nil
 					}

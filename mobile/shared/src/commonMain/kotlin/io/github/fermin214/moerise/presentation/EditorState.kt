@@ -4,44 +4,33 @@ import io.github.fermin214.moerise.data.*
 import io.github.fermin214.moerise.domain.Note
 import kotlinx.serialization.json.*
 
-data class ConfirmedChange(val write: PendingWriteEntity, val remote: Note?, val conflict: Boolean)
-
 data class EditorUiState(
     val accountKey: String? = null,
     val draft: DraftEntity? = null,
     val pending: PendingWriteEntity? = null,
-    val confirmation: ConfirmedChange? = null,
     val savedRevision: Long = -1,
     val busy: Boolean = false,
     val error: String? = null,
-    val serverSaved: Boolean = false,
     val importing: Boolean = false,
 )
 
-fun completedDraft(draft: DraftEntity, write: PendingWriteEntity, remote: Note, expected: Boolean, conflictMaterial: String): DraftEntity {
+internal fun completedDraft(draft: DraftEntity, write: PendingWriteEntity, remote: Note): DraftEntity {
     require(draft.id == write.draftId && draft.accountKey == write.accountKey)
     require(remote.instanceId == draft.accountKey.split('\u0000')[1])
     require(Regex("^memos/[A-Za-z0-9_-]+$").matches(remote.name) && remote.sourceHash.isNotBlank())
     require(write.method != "PATCH" || remote.name == draft.targetName)
-    return when {
-        draft.revision == write.draftRevision -> if (draft.slot == "home") DraftEntity(newLocalId(), draft.accountKey, "", 0, createdAt = epochMillis())
-            else DraftEntity(newLocalId(), draft.accountKey, remote.content, 0, remote.name, remote.sourceHash,
-                baselineJson = CoreJson.encodeToString(remote), slot = draft.slot, createdAt = draft.createdAt)
-        expected -> {
-            val submitted = write.submittedDraftJson?.let { CoreJson.decodeFromString<DraftEntity>(it) } ?: draft
-            val sentFiles = submitted.attachmentEdits().staged.map { it.id }.toSet()
-            val remoteNames = remote.attachments.mapNotNull { it["name"]?.jsonPrimitive?.content }.toSet()
-            val remaining = draft.attachmentEdits().let { edits ->
-                edits.copy(staged = edits.staged.filter { it.id !in sentFiles }, removed = edits.removed.filter { it in remoteNames })
-            }
-            draft.copy(targetName = remote.name, sourceHash = remote.sourceHash,
-                attachmentsJson = CoreJson.encodeToString(remaining), baselineJson = CoreJson.encodeToString(remote))
-        }
-        else -> draft.copy(targetName = remote.name, conflictJson = conflictMaterial)
+    if (draft.revision == write.draftRevision && draft.slot == "home")
+        return DraftEntity(draft.id, draft.accountKey, "", 0, createdAt = epochMillis())
+    val submitted = write.submittedDraftJson?.let { CoreJson.decodeFromString<DraftEntity>(it) } ?: draft
+    val sentFiles = submitted.attachmentEdits().staged.map { it.id }.toSet()
+    val remoteNames = remote.attachments.mapNotNull { it["name"]?.jsonPrimitive?.content }.toSet()
+    val remaining = draft.attachmentEdits().let { edits ->
+        edits.copy(staged = edits.staged.filter { it.id !in sentFiles }, removed = edits.removed.filter { it in remoteNames })
     }
+    return draft.copy(targetName = remote.name, sourceHash = remote.sourceHash,
+        attachmentsJson = CoreJson.encodeToString(remaining), baselineJson = CoreJson.encodeToString(remote))
 }
 
-// Attachments are identified by resource name and bytes, never by filename alone.
 suspend fun expectedSubmittedResult(draft: DraftEntity, write: PendingWriteEntity, remote: Note, core: CoreClient): Boolean {
     val submitted = CoreJson.parseToJsonElement(write.body).jsonObject
     val baseline = draft.baselineJson?.let { CoreJson.decodeFromString<Note>(it) }

@@ -17,6 +17,4 @@ actual fun displayServiceTime(instant: String, timezone: String): String = runCa
     Instant.parse(instant).atZone(ZoneId.of(timezone)).format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm", Locale.ROOT))
 }.getOrDefault(instant)
 
-actual fun displayNoteDate(instant: String, timezone: String, english: Boolean): String = runCatching {
-    Instant.parse(instant).atZone(ZoneId.of(timezone)).format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm", Locale.ROOT))
-}.getOrDefault(instant)
+actual fun displayNoteDate(instant: String, timezone: String, english: Boolean): String = displayServiceTime(instant, timezone)

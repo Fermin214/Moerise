@@ -29,7 +29,6 @@ class NoteDetailController(
     suspend fun stopForRemoval() {
         ++generation; operation?.cancelAndJoin(); pending = null; mutable.value = NoteDetailState()
     }
-    fun pauseRead() { ++generation; operation?.cancel(); mutable.update { it.copy(loading = false) } }
 
     fun open(name: String, cached: Note? = null, snapshotAt: Long = 0, online: Boolean = true) {
         require(Regex("^memos/[A-Za-z0-9_-]+$").matches(name))
