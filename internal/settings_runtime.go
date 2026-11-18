@@ -62,107 +62,118 @@ func (a *App) UpdateSettings(ctx context.Context, update SettingsUpdate) (Settin
 	if err != nil {
 		return SettingsView{}, err
 	}
-	old := a.Store.Settings
-	llmChanged := !reflect.DeepEqual(old.LLM, settings.LLM)
-	embeddingChanged := !reflect.DeepEqual(old.Embedding, settings.Embedding)
-	stargazingChanged := old.Stargazing != settings.Stargazing
-	channelChanged := !reflect.DeepEqual(old.Channel, settings.Channel)
-	llm, embedding := a.LLM, a.Search.Provider
-	events, transport := a.Feishu, a.Notifications.Transport
-	if llmChanged {
-		llm = nil
+	replacements, err := a.prepareRuntime(settings)
+	if err != nil {
+		return SettingsView{}, err
 	}
-	if embeddingChanged {
-		embedding = nil
+	settings.daily = a.Store.dailyTransition(settings, time.Now())
+	if err := a.Store.saveRuntimeSettings(ctx, &settings); err != nil {
+		replacements.close()
+		return SettingsView{}, err
 	}
-	if channelChanged {
-		events, transport = nil, nil
+	a.installRuntime(settings, replacements)
+	return a.Store.settingsView(), nil
+}
+
+func (s *Store) saveRuntimeSettings(ctx context.Context, settings *Settings) error {
+	if err := ctx.Err(); err != nil {
+		return err
 	}
-	committed := false
-	defer func() {
-		if !committed {
-			if llmChanged && llm != nil {
-				llm.Close()
-			}
-			if embeddingChanged && embedding != nil {
-				embedding.Close()
-			}
-			if channelChanged {
-				closeChannel(events, transport)
-			}
-		}
-	}()
-	if llmChanged {
-		llm = nil
-		if settings.LLM.Enabled {
-			llm, err = NewLLMProvider(settings.LLM)
-			if err != nil {
-				return SettingsView{}, err
-			}
-		}
+	if err := s.retainNotificationChannels(settings); err != nil {
+		return err
 	}
-	if embeddingChanged {
-		embedding = nil
-		if settings.Embedding.Enabled {
-			embedding, err = NewEmbeddingProvider(settings.Embedding)
-			if err != nil {
-				return SettingsView{}, err
-			}
-		}
-	}
-	if channelChanged {
-		events = newFeishuService(settings.Channel, a.Store, a.Source, a.Records, a.Notifications)
-		transport = newNotificationTransport(settings.Channel, a.Store, a.Reviews, events)
-	}
-	now := time.Now()
+	return s.persistSettings(*settings)
+}
+
+func (s *Store) dailyTransition(settings Settings, now time.Time) *dailySettings {
+	old := s.Settings
 	if old.daily != nil && now.Before(old.daily.Until) {
-		settings.daily = old.daily
-	} else if old.Timezone != settings.Timezone || !reflect.DeepEqual(old.Review, settings.Review) ||
+		return old.daily
+	}
+	if old.Timezone != settings.Timezone || !reflect.DeepEqual(old.Review, settings.Review) ||
 		!reflect.DeepEqual(old.Notifications.Clocks(), settings.Notifications.Clocks()) {
 		location, _ := time.LoadLocation(old.Timezone)
 		day := now.In(location)
 		until := time.Date(day.Year(), day.Month(), day.Day()+1, 0, 0, 0, 0, location)
-		settings.daily = &dailySettings{old.Timezone, old.Review, old.Notifications, until, a.Store.productVersion}
-	} else {
-		settings.daily = nil
+		return &dailySettings{old.Timezone, old.Review, old.Notifications, until, s.productVersion}
 	}
-	if err := ctx.Err(); err != nil {
-		return SettingsView{}, err
+	return nil
+}
+
+type runtimeReplacements struct {
+	llmChanged, embeddingChanged, channelChanged bool
+	llm                                          LLMProvider
+	embedding                                    EmbeddingProvider
+	events                                       *FeishuService
+	transport                                    NotificationTransport
+}
+
+func (a *App) prepareRuntime(settings Settings) (*runtimeReplacements, error) {
+	old := a.Store.Settings
+	replacements := &runtimeReplacements{
+		llmChanged:       !reflect.DeepEqual(old.LLM, settings.LLM),
+		embeddingChanged: !reflect.DeepEqual(old.Embedding, settings.Embedding),
+		channelChanged:   !reflect.DeepEqual(old.Channel, settings.Channel),
 	}
-	if err := a.Store.retainNotificationChannels(&settings); err != nil {
-		return SettingsView{}, err
+	var err error
+	if replacements.llmChanged && settings.LLM.Enabled {
+		replacements.llm, err = NewLLMProvider(settings.LLM)
+		if err != nil {
+			return nil, err
+		}
 	}
-	if err := a.Store.persistSettings(settings); err != nil {
-		return SettingsView{}, err
+	if replacements.embeddingChanged && settings.Embedding.Enabled {
+		replacements.embedding, err = NewEmbeddingProvider(settings.Embedding)
+		if err != nil {
+			replacements.close()
+			return nil, err
+		}
 	}
-	oldLLM, oldEmbedding, oldEvents, oldTransport := a.LLM, a.Search.Provider, a.Feishu, a.Notifications.Transport
-	a.Store.Settings, a.Notes.Settings = settings, settings
-	a.LLM, a.Search.Provider = llm, embedding
-	a.Chat.Provider = llm
-	a.Feishu, a.Notifications.Transport = events, transport
-	if (embeddingChanged || stargazingChanged) && a.Map != nil {
+	if replacements.channelChanged {
+		replacements.events = newFeishuService(settings.Channel, a.Store, a.Source, a.Records, a.Notifications)
+		replacements.transport = newNotificationTransport(settings.Channel, a.Store, a.Reviews, replacements.events)
+	}
+	return replacements, nil
+}
+
+func (a *App) installRuntime(settings Settings, replacements *runtimeReplacements) {
+	if (replacements.embeddingChanged || a.Store.Settings.Stargazing != settings.Stargazing) && a.Map != nil {
 		a.Map.Reset()
 	}
-	if embeddingChanged {
+	a.Store.Settings, a.Notes.Settings = settings, settings
+	if replacements.llmChanged {
+		if a.LLM != nil {
+			a.LLM.Close()
+		}
+		a.LLM, a.Chat.Provider = replacements.llm, replacements.llm
+	}
+	if replacements.embeddingChanged {
+		if a.Search.Provider != nil {
+			a.Search.Provider.Close()
+		}
+		a.Search.Provider = replacements.embedding
 		a.Search.mu.Lock()
 		a.Search.matrix = nil
 		a.Search.mu.Unlock()
 		a.Vector = nil
-		if embedding != nil {
-			a.Vector = NewVectorIndexService(a.Store, a.Source, embedding)
+		if a.Search.Provider != nil {
+			a.Vector = NewVectorIndexService(a.Store, a.Source, a.Search.Provider)
 		}
 	}
-	committed = true
-	if llmChanged && oldLLM != nil {
-		oldLLM.Close()
+	if replacements.channelChanged {
+		closeChannel(a.Feishu, a.Notifications.Transport)
+		a.Feishu, a.Notifications.Transport = replacements.events, replacements.transport
 	}
-	if embeddingChanged && oldEmbedding != nil {
-		oldEmbedding.Close()
+}
+
+func (r *runtimeReplacements) close() {
+	if r.llm != nil {
+		r.llm.Close()
 	}
-	if channelChanged {
-		closeChannel(oldEvents, oldTransport)
+	if r.embedding != nil {
+		r.embedding.Close()
 	}
-	return a.Store.settingsView(), nil
+	closeChannel(r.events, r.transport)
 }
 
 func runtimePause(ctx context.Context, delay time.Duration) error {

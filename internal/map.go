@@ -35,18 +35,14 @@ type MapService struct {
 	lastFailure atomic.Pointer[mapSchedule]
 	activity    atomic.Pointer[mapActivity]
 	epoch       atomic.Uint64
-	algorithm   string
 	workerURL   string
 	scope       string
-	generate    func(context.Context, mapSnapshot, *mapLayout) (*mapLayout, error)
 }
 
 func NewMapService(store *Store) *MapService {
-	service := &MapService{Store: store, gate: make(chan struct{}, 1),
-		algorithm: starsAlgorithm, workerURL: layoutWorkerURL(),
-		scope: hashBytes(canonicalJSON([]string{store.Settings.Memos.InstanceID, store.Settings.Memos.User}))}
-	service.generate = service.computeStars
-	return service
+	return &MapService{Store: store, gate: make(chan struct{}, 1),
+		workerURL: layoutWorkerURL(),
+		scope:     hashBytes(canonicalJSON([]string{store.Settings.Memos.InstanceID, store.Settings.Memos.User}))}
 }
 
 func (s *MapService) Reset() {
@@ -66,7 +62,7 @@ func (s *MapService) readState(response MapResponse, key string) MapResponse {
 
 func (s *MapService) cacheKey() string {
 	return hashBytes(canonicalJSON([]any{s.Store.Settings.Memos.InstanceID,
-		s.Store.Settings.Memos.User, embeddingSpace(s.Store.Settings.Embedding), s.algorithm, s.epoch.Load()}))
+		s.Store.Settings.Memos.User, embeddingSpace(s.Store.Settings.Embedding), starsAlgorithm, s.epoch.Load()}))
 }
 
 func mapRequestError(ctx context.Context, err error) error {
@@ -78,13 +74,12 @@ func mapRequestError(ctx context.Context, err error) error {
 
 func (s *MapService) response(layout *mapLayout, space string) MapResponse {
 	algorithm := layout.algorithm
-	if algorithm == "" {
-		algorithm = mapAlgorithm
-	}
-	frame := hashBytes(canonicalJSON([]any{s.Store.Settings.Memos.InstanceID,
-		s.Store.Settings.Memos.User, algorithm, space, layout.basis}))
+	var frame string
 	if algorithm == starsAlgorithm {
 		frame = hashBytes(canonicalJSON([]string{s.scope, space, algorithm, layout.frame}))
+	} else {
+		frame = hashBytes(canonicalJSON([]any{s.Store.Settings.Memos.InstanceID,
+			s.Store.Settings.Memos.User, algorithm, space, layout.basis}))
 	}
 	result := MapResponse{Status: "ready", Algorithm: algorithm, LayoutVersion: layout.version,
 		LayoutFrame:      frame,
@@ -103,7 +98,7 @@ func (s *MapService) Read(ctx context.Context) (_ MapResponse, result error) {
 	ctx, cancel := context.WithTimeout(ctx, mapRequestTimeout)
 	defer cancel()
 	defer func() { result = mapRequestError(ctx, result) }()
-	response := MapResponse{Status: "disabled", Algorithm: s.algorithm, Points: []MapPoint{}, Topics: []MapTopic{}, Links: []MapLink{}}
+	response := MapResponse{Status: "disabled", Algorithm: starsAlgorithm, Points: []MapPoint{}, Topics: []MapTopic{}, Links: []MapLink{}}
 	if err := ctx.Err(); err != nil {
 		return MapResponse{}, err
 	}
@@ -121,7 +116,7 @@ func (s *MapService) Read(ctx context.Context) (_ MapResponse, result error) {
 		return s.readState(cached.response, key), ctx.Err()
 	}
 	space := embeddingSpace(s.Store.Settings.Embedding)
-	layout, _, err := s.loadLayout(ctx, s.Store, space)
+	layout, _, err := s.Store.loadPublishedLayout(ctx, space)
 	if err != nil {
 		return MapResponse{}, err
 	}
@@ -176,7 +171,7 @@ func (s *MapService) update(ctx context.Context, now time.Time) error {
 	}
 	s.activity.Store(&mapActivity{job.key, "building"})
 	started := time.Now()
-	layout, err := s.generate(ctx, job.snapshot, previous)
+	layout, err := s.computeStars(ctx, job.snapshot, previous)
 	if err != nil {
 		if ctx.Err() != nil {
 			return ctx.Err()
@@ -197,16 +192,11 @@ func (s *MapService) update(ctx context.Context, now time.Time) error {
 	}
 	defer unlock()
 	layout.generatedAt = now
-	if layout.algorithm == starsAlgorithm {
-		if job.previous != nil && job.previous.algorithm == starsAlgorithm {
-			layout.parentVersion = job.previous.version
-		}
-		layout.rebuildToken = job.token
-		err = job.store.publishStars(ctx, job.snapshot, layout)
-	} else {
-		err = job.store.publishMapLayout(ctx, job.snapshot, layout)
+	if job.previous != nil && job.previous.algorithm == starsAlgorithm {
+		layout.parentVersion = job.previous.version
 	}
-	if err != nil {
+	layout.rebuildToken = job.token
+	if err := job.store.publishStars(ctx, job.snapshot, layout); err != nil {
 		return err
 	}
 	s.cache.Store(&mapCache{job.key, s.response(layout, job.snapshot.space)})
@@ -225,17 +215,12 @@ type mapJob struct {
 	token    string
 }
 
-func (s *MapService) loadLayout(ctx context.Context, store *Store, space string) (*mapLayout, string, error) {
-	if s.algorithm == starsAlgorithm {
-		layout, token, err := store.loadStars(ctx, space)
-		if err != nil || layout != nil {
-			return layout, token, err
-		}
-		legacy, err := store.loadMapLayout(ctx, mapSnapshot{space: space, dimensions: store.Settings.Embedding.Dimensions})
-		return legacy, token, err
+func (store *Store) loadPublishedLayout(ctx context.Context, space string) (*mapLayout, string, error) {
+	layout, token, err := store.loadStars(ctx, space)
+	if err == nil && layout == nil {
+		layout, err = store.loadLegacyLayout(ctx, space)
 	}
-	layout, err := store.loadMapLayout(ctx, mapSnapshot{space: space, dimensions: store.Settings.Embedding.Dimensions})
-	return layout, "", err
+	return layout, token, err
 }
 
 func (s *MapService) prepare(ctx context.Context, now time.Time) (*mapJob, error) {
@@ -258,11 +243,11 @@ func (s *MapService) prepare(ctx context.Context, now time.Time) (*mapJob, error
 	store := &Store{Settings: s.Store.Settings, state: s.Store.state, index: s.Store.index,
 		background: s.Store.background}
 	space := embeddingSpace(store.Settings.Embedding)
-	previous, token, err := s.loadLayout(ctx, store, space)
+	previous, token, err := store.loadPublishedLayout(ctx, space)
 	if err != nil {
 		return nil, err
 	}
-	sameAlgorithm := previous != nil && (previous.algorithm == s.algorithm || previous.algorithm == "" && s.algorithm == mapAlgorithm)
+	sameAlgorithm := previous != nil && previous.algorithm == starsAlgorithm
 	if previous != nil && !previous.generatedAt.IsZero() {
 		s.cache.Store(&mapCache{key, s.response(previous, space)})
 		if due := previous.generatedAt.Add(mapSnapshotInterval); sameAlgorithm && token == "" && now.Before(due) {

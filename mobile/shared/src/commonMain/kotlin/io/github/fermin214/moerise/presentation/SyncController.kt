@@ -15,14 +15,13 @@ data class SyncUiState(
     val notes: List<DraftEntity> = emptyList(),
 )
 
-class SyncController(
+class SyncController internal constructor(
     private val session: SessionController,
     private val repository: suspend () -> NoteRepository,
-    private val editor: EditorController,
+    private val writes: NoteWriteQueue,
     private val scope: CoroutineScope,
     private val onRefreshed: () -> Unit,
     initialForeground: Boolean = true,
-    private val otherEditors: () -> List<EditorController> = { emptyList() },
 ) {
     private val mutable = MutableStateFlow(SyncUiState())
     val state = mutable.asStateFlow()
@@ -39,6 +38,7 @@ class SyncController(
             session.state.map { it.profile?.accountKey }.distinctUntilChanged().collectLatest { key ->
                 worker?.cancelAndJoin()
                 activeCycle?.cancelAndJoin()
+                writes.reset()
                 account = key
                 mutable.value = SyncUiState()
                 if (key != null && foreground) start(key)
@@ -78,6 +78,7 @@ class SyncController(
     suspend fun stop() {
         worker?.cancelAndJoin()
         activeCycle?.cancelAndJoin()
+        writes.reset()
         worker = null
         mutable.value = SyncUiState()
     }
@@ -88,7 +89,6 @@ class SyncController(
             try {
                 val key = session.state.value.profile?.accountKey ?: return@withLock !session.state.value.loading
                 if (session.state.value.busy || account != key) return@withLock false
-                if (editor.state.value.accountKey != key || editor.state.value.draft == null) return@withLock false
                 val queued = repository().queuedNotes(key)
                 mutable.value = SyncUiState(SyncStatus.SYNCING, queued)
                 if (!session.checkConnection()) {
@@ -96,7 +96,7 @@ class SyncController(
                     return@withLock false
                 }
                 val active = session.core ?: return@withLock false
-                val drained = editor.synchronize(key, active, otherEditors)
+                val drained = writes.drain(key, active)
                 if (key != account) return@withLock false
                 val notes = repository().queuedNotes(key)
                 val pending = repository().automaticWritesPending(key)

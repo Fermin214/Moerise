@@ -274,9 +274,9 @@ class RecoveryEvidenceTest(unittest.TestCase):
                          ["inconclusive", "inconclusive"])
         self.assertEqual(report["stages"], [
             "prepare", "offlineRestart", "background_auto_upload", "onlineRestart",
-            "remote_exactly_once_and_unfinished_absent",
+            "removeAccount", "afterRemoval", "remote_exactly_once_and_unfinished_absent",
         ])
-        self.assertEqual(sum("force-stop" in call for call in calls), 2)
+        self.assertEqual(sum("force-stop" in call for call in calls), 3)
         self.assertIn("KEYCODE_HOME", [argument for call in calls for argument in call])
         self.assertNotIn("SQLite/WAL落盘", console)
 

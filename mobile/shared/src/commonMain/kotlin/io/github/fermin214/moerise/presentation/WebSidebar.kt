@@ -28,7 +28,7 @@ fun WebSidebar(
     page: String, strings: Strings, userName: String, filters: SearchState, month: String, open: Boolean,
     onClose: () -> Unit, onNavigate: (String) -> Unit,
     onMonth: (String) -> Unit, onDate: (String) -> Unit, onTag: (String) -> Unit,
-    onArchive: () -> Unit, onLogout: () -> Unit, selectedTags: Set<String> = emptySet(), selectedDate: String = "",
+    onArchive: () -> Unit, onLogout: () -> Unit, onRemoveAccount: () -> Unit, selectedTags: Set<String> = emptySet(), selectedDate: String = "",
     today: String = "", stargazingEnabled: Boolean = true,
 ) {
     val scroll = rememberScrollState()
@@ -98,6 +98,9 @@ fun WebSidebar(
                             onClick = { accountMenu = false; onArchive() }, modifier = Modifier.testTag("nav_archive"))
                         DropdownMenuItem(text = { Text(strings.text("退出登录", "Sign out")) },
                             onClick = { accountMenu = false; onLogout() }, modifier = Modifier.testTag("account_logout"))
+                        DropdownMenuItem(text = { Text(strings.text("删除本机账号数据", "Delete local account data"),
+                            color = MaterialTheme.colorScheme.error) }, onClick = { accountMenu = false; onRemoveAccount() },
+                            modifier = Modifier.testTag("account_remove"))
                     }
                     }
                 }

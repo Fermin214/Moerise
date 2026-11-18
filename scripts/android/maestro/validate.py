@@ -151,11 +151,11 @@ def source_ids():
         add("WebSidebar.kt", identifier)
     for target in ("home", "review", "walk", "insights", "map"):
         add("WebSidebar.kt", "nav_" + target, 'testTag("nav_$target")')
-    add("WebSettings.kt", "settings_page")
-    add("WebSettings.kt", "settings_language", 'tag = "settings_language"')
-    add("WebSettings.kt", "settings_stargazing_enabled", 'testTag("settings_${path.replace(\'.\', \'_\')}")')
+    add("SettingsScreen.kt", "settings_page")
+    add("SettingsScreen.kt", "settings_language", 'tag = "settings_language"')
+    add("SettingsScreen.kt", "settings_stargazing_enabled", 'testTag("settings_${path.replace(\'.\', \'_\')}")')
     for index in range(5):
-        add("WebSettings.kt", f"settings_tab_{index}", 'tagPrefix = "settings_tab"')
+        add("SettingsScreen.kt", f"settings_tab_{index}", 'tagPrefix = "settings_tab"')
     for identifier in ("server_origin", "server_username", "server_password"):
         add("ConnectionScreen.kt", identifier, f'"{identifier}", !state.busy')
         add("ConnectionScreen.kt", identifier + "_empty", '"${tag}_empty"')
@@ -456,7 +456,7 @@ def validate_source_ids():
     for filename, fragment in ABSENCE_IDS.values():
         require(fragment in (tests / filename).read_text(encoding="utf-8"),
                 "Original home-reading absence assertion is missing")
-    calendar = REPO / "mobile/shared/src/androidMain/kotlin/io/github/fermin214/moerise/presentation/AndroidCalendar.kt"
+    calendar = REPO / "mobile/shared/src/jvmSharedMain/kotlin/io/github/fermin214/moerise/presentation/AndroidCalendar.kt"
     require('DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm", Locale.ROOT)' in calendar.read_text(encoding="utf-8"),
             "Note timestamp format is absent from source")
 

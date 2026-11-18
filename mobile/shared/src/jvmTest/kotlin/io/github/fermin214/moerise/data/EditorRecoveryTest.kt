@@ -3,7 +3,6 @@ package io.github.fermin214.moerise.data
 import androidx.room.immediateTransaction
 import androidx.room.useWriterConnection
 import io.github.fermin214.moerise.domain.Note
-import io.github.fermin214.moerise.presentation.EditorController
 import io.ktor.client.engine.mock.*
 import io.ktor.http.*
 import java.io.IOException
@@ -11,7 +10,6 @@ import java.nio.file.Files
 import java.util.concurrent.Executors
 import kotlin.test.*
 import kotlinx.coroutines.*
-import kotlinx.coroutines.flow.first
 import kotlinx.serialization.json.*
 
 class EditorRecoveryTest {
@@ -46,8 +44,12 @@ class EditorRecoveryTest {
         }
         val core = CoreClient("https://notes.example", SessionCookies("https://notes.example", MemorySecrets()), engine)
         try {
-            val editor = EditorController({ NoteRepository(db) }, { core }, scope)
-            withContext(dispatcher) { editor.open(account); editor.change("A"); editor.save() }
+            val fixture = DraftQueueFixture({ NoteRepository(db) }, core, scope)
+            val editor = fixture.composer
+            editor.open(account); editor.change("A"); assertTrue(editor.enqueue())
+            val id = db.dao().queuedWrites(account).single().draftId
+            editor.openStored(account, id)
+            val sending = async(dispatcher) { fixture.queue.drain(account, core) }
             withTimeout(10_000) { arrived.await() }
             withContext(dispatcher) { editor.change("AB") }
             val blocker = launch(Dispatchers.IO) {
@@ -58,19 +60,18 @@ class EditorRecoveryTest {
             }
             withTimeout(10_000) { writerHeld.await() }
             respondNow.complete(Unit)
-            withTimeout(10_000) { editor.state.first { it.confirmation != null } }
             withContext(dispatcher) { editor.change("ABC") }
             releaseWriter.complete(Unit)
             blocker.join()
-            withTimeout(10_000) { editor.state.first { !it.busy } }
+            assertTrue(withTimeout(10_000) { sending.await() })
             withContext(dispatcher) { editor.flush() }
-            val persisted = db.dao().homeDraft(account)!!
+            val persisted = db.dao().draft(id)!!
             assertEquals("ABC", persisted.content)
             assertEquals("memos/one", persisted.targetName)
             assertEquals("hash-a", persisted.sourceHash)
             assertNull(db.dao().pending(persisted.id))
-            withContext(dispatcher) { editor.save() }
-            withTimeout(10_000) { editor.state.first { !it.busy } }
+            assertTrue(editor.enqueue())
+            assertTrue(fixture.queue.drain(account, core))
             assertEquals(HttpMethod.Patch, requests[1].first)
             val patch = CoreJson.parseToJsonElement(requests[1].second).jsonObject
             assertEquals("ABC", patch.getValue("content").jsonPrimitive.content)
@@ -113,27 +114,32 @@ class EditorRecoveryTest {
             try {
                 if (editing) db.dao().putDraft(DraftEntity("edit", account, "", 0, "memos/one", "hash-original",
                     baselineJson = CoreJson.encodeToString(note("", "hash-original"))))
-                val first = EditorController({ NoteRepository(db) }, { core }, scope)
-                withContext(dispatcher) { first.open(account); first.change("A"); first.save() }
+                val initial = DraftQueueFixture({ NoteRepository(db) }, core, scope)
+                val first = initial.composer
+                first.open(account); first.change("A"); assertTrue(first.enqueue())
+                val id = db.dao().queuedWrites(account).single().draftId
+                first.openStored(account, id)
+                val sending = async(dispatcher) { assertFailsWith<IOException> { initial.queue.drain(account, core) } }
                 withTimeout(10_000) { arrived.await() }
                 withContext(dispatcher) { first.change("AB"); first.flush() }
                 loseResponse.complete(Unit)
-                withTimeout(10_000) { first.state.first { !it.busy } }
+                withTimeout(10_000) { sending.await() }
                 val frozen = db.dao().pending(first.state.value.draft!!.id)!!
                 assertEquals("unknown", frozen.status)
                 db.close()
                 db = jvmDatabase(path)
-                val reopened = EditorController({ NoteRepository(db) }, { core }, scope)
-                withContext(dispatcher) { reopened.open(account); reopened.save() }
-                withTimeout(10_000) { reopened.state.first { !it.busy } }
+                val restored = DraftQueueFixture({ NoteRepository(db) }, core, scope)
+                val reopened = restored.composer
+                reopened.openStored(account, id)
+                assertTrue(restored.queue.drain(account, core))
                 assertEquals(requests[0], requests[1])
-                val result = db.dao().homeDraft(account)!!
+                val result = db.dao().draft(id)!!
                 assertEquals("AB", result.content)
                 assertNotNull(result.conflictJson)
                 assertNotEquals("hash-ac", result.sourceHash)
                 assertNull(db.dao().pending(result.id))
                 withContext(dispatcher) { reopened.merge("ABC", note("AC", "hash-ac")); reopened.flush() }
-                val merged = db.dao().homeDraft(account)!!
+                val merged = db.dao().draft(id)!!
                 assertNull(merged.conflictJson)
                 assertEquals("hash-ac", merged.sourceHash)
                 assertEquals("ABC", merged.content)
@@ -168,27 +174,29 @@ class EditorRecoveryTest {
         }
         val core = CoreClient("https://notes.example", SessionCookies("https://notes.example", MemorySecrets()), engine)
         try {
-            val editor = EditorController({ NoteRepository(db) }, { core }, scope)
-            withContext(dispatcher) { editor.open(account); editor.change("A"); editor.save() }
+            val fixture = DraftQueueFixture({ NoteRepository(db) }, core, scope)
+            val editor = fixture.composer
+            editor.open(account); editor.change("A"); assertTrue(editor.enqueue())
+            val id = db.dao().queuedWrites(account).single().draftId
+            editor.openStored(account, id)
+            val sending = async(dispatcher) { assertFails { fixture.queue.drain(account, core) } }
             withTimeout(10_000) { arrived.await() }
             withContext(dispatcher) { editor.change("AB"); editor.flush() }
             db.useWriterConnection { it.immediateTransaction {
                 it.usePrepared("CREATE TRIGGER fail_confirmation BEFORE DELETE ON pending_writes BEGIN SELECT RAISE(FAIL, 'write failed'); END") { statement -> statement.step() }
             } }
             respondNow.complete(Unit)
-            withTimeout(10_000) { editor.state.first { !it.busy } }
-            assertEquals("LOCAL_WRITE_FAILED", editor.state.value.error)
-            assertNotNull(editor.state.value.confirmation)
-            assertFalse(editor.state.value.serverSaved)
-            withContext(dispatcher) { editor.save() }
-            withTimeout(10_000) { editor.state.first { !it.busy } }
+            withTimeout(10_000) { sending.await() }
+            assertNotNull(db.dao().pending(id))
+            assertNotNull(editor.state.value.pending)
+            assertFails { fixture.queue.drain(account, core) }
             assertEquals(1, writes)
-            assertEquals("AB", db.dao().homeDraft(account)?.content)
+            assertEquals("AB", db.dao().draft(id)?.content)
             db.useWriterConnection { it.immediateTransaction { it.usePrepared("DROP TRIGGER fail_confirmation") { statement -> statement.step() } } }
-            withContext(dispatcher) { editor.flush() }
-            assertNull(editor.state.value.confirmation)
-            assertTrue(editor.state.value.serverSaved)
-            val saved = db.dao().homeDraft(account)!!
+            assertTrue(fixture.queue.drain(account, core))
+            assertEquals(1, writes)
+            assertNull(editor.state.value.pending)
+            val saved = db.dao().draft(id)!!
             assertEquals("AB", saved.content)
             assertEquals("hash-a", saved.sourceHash)
             assertNull(db.dao().pending(saved.id))
@@ -203,7 +211,7 @@ class EditorRecoveryTest {
     }
 
     @Test
-    fun reopeningWaitsForCanceledWriteJournalBeforeAllowingRetry() = runBlocking {
+    fun cancellationFinishesWriteJournalBeforeQueueCanRetry() = runBlocking {
         val folder = Files.createTempDirectory("moerise-retired-write-").toFile()
         val dispatcher = Executors.newSingleThreadExecutor().asCoroutineDispatcher()
         val scope = CoroutineScope(SupervisorJob() + dispatcher)
@@ -222,24 +230,27 @@ class EditorRecoveryTest {
         }
         val core = CoreClient("https://notes.example", SessionCookies("https://notes.example", MemorySecrets()), engine)
         try {
-            val editor = EditorController({ NoteRepository(db) }, { core }, scope)
-            withContext(dispatcher) { editor.open(account); editor.change("A"); editor.save() }
+            val fixture = DraftQueueFixture({ NoteRepository(db) }, core, scope)
+            val editor = fixture.composer
+            editor.open(account); editor.change("A"); assertTrue(editor.enqueue())
+            val id = db.dao().queuedWrites(account).single().draftId
+            editor.openStored(account, id)
+            val sending = async(dispatcher) { fixture.queue.drain(account, core) }
             withTimeout(10_000) { arrived.await() }
             val blocker = launch(Dispatchers.IO) {
                 db.useWriterConnection { it.immediateTransaction { writerHeld.complete(Unit); releaseWriter.await() } }
             }
             withTimeout(10_000) { writerHeld.await() }
-            val reopening = scope.async { editor.open(account) }
+            sending.cancel()
+            val retry = async(dispatcher) { fixture.queue.drain(account, core) }
             delay(30)
-            assertFalse(reopening.isCompleted)
+            assertFalse(retry.isCompleted)
             releaseWriter.complete(Unit)
             blocker.join()
-            withTimeout(10_000) { reopening.await() }
-            assertEquals("unknown", editor.state.value.pending?.status)
-            withContext(dispatcher) { editor.save() }
-            withTimeout(10_000) { editor.state.first { !it.busy } }
+            assertTrue(withTimeout(10_000) { retry.await() })
             assertEquals(writes[0], writes[1])
-            assertNull(db.dao().pending(editor.state.value.draft!!.id))
+            assertNull(db.dao().pending(id))
+            assertEquals("memos/one", editor.state.value.draft?.targetName)
             assertEquals("", db.dao().homeDraft(account)?.content)
         } finally {
             releaseWriter.complete(Unit)

@@ -11,27 +11,16 @@ import (
 	"testing"
 )
 
-func indexedMapLayout(t *testing.T, store *Store) (mapSnapshot, *mapLayout) {
+func publishedStars(t *testing.T, service *MapService) *mapLayout {
 	t.Helper()
-	snapshot, err := store.mapSnapshot(t.Context())
-	if err != nil {
-		t.Fatal(err)
+	layout, _, err := service.Store.loadStars(t.Context(), embeddingSpace(service.Store.Settings.Embedding))
+	if err != nil || layout == nil {
+		t.Fatalf("read published stars: %v", err)
 	}
-	previous, err := store.loadMapLayout(t.Context(), snapshot)
-	if err != nil {
-		t.Fatal(err)
-	}
-	layout, err := buildMapLayout(t.Context(), snapshot, previous)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := store.publishMapLayout(t.Context(), snapshot, layout); err != nil {
-		t.Fatal(err)
-	}
-	return snapshot, layout
+	return layout
 }
 
-func TestMapStorageSnapshotRestartIncrementalAndSpaceIsolation(t *testing.T) {
+func TestMapSnapshotIncludesArchivedAndUnlocatedNotes(t *testing.T) {
 	store, index, memos, provider := indexFixture(t)
 	file := rawMemo("file", "")
 	file["attachments"] = []any{map[string]any{"name": "attachments/file", "type": "application/pdf"}}
@@ -42,9 +31,13 @@ func TestMapStorageSnapshotRestartIncrementalAndSpaceIsolation(t *testing.T) {
 	}
 	finishIndex(t, index)
 	calls := len(provider.texts)
-	snapshot, initial := indexedMapLayout(t, store)
-	if len(initial.points) != 6 || len(snapshot.documents) != 6 || mapPointByName(t, initial, "file").Semantic ||
-		!mapPointByName(t, initial, "e").Semantic || len(provider.texts) != calls {
+	service, _ := testStarsService(t, store, nil)
+	if err := service.Update(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	initial := publishedStars(t, service)
+	if len(initial.points) != 6 || initial.points[4].Name != "memos/e" || !initial.points[4].Semantic ||
+		initial.points[5].Name != "memos/file" || initial.points[5].Semantic || len(provider.texts) != calls {
 		t.Fatalf("snapshot lost archive/file or called model: %+v", initial.points)
 	}
 	data, err := json.Marshal(initial.points)
@@ -56,7 +49,7 @@ func TestMapStorageSnapshotRestartIncrementalAndSpaceIsolation(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = reopened.Close() })
-	_, restarted := indexedMapLayout(t, reopened)
+	restarted := publishedStars(t, NewMapService(reopened))
 	if !reflect.DeepEqual(initial, restarted) {
 		t.Fatal("restart changed layout")
 	}
@@ -70,53 +63,6 @@ func TestMapStorageSnapshotRestartIncrementalAndSpaceIsolation(t *testing.T) {
 	}
 	if _, err := store.mapSnapshot(t.Context()); err != sql.ErrNoRows {
 		t.Fatalf("snapshot mixed stale generation and new projection: %v", err)
-	}
-	finishIndex(t, index)
-	newSnapshot, incremental := indexedMapLayout(t, store)
-	if newSnapshot.generation == snapshot.generation || initial.version == incremental.version || len(incremental.points) != 7 {
-		t.Fatal("incremental version or point set did not advance")
-	}
-	for _, point := range initial.points {
-		after := mapPointByName(t, incremental, strings.TrimPrefix(point.Name, "memos/"))
-		if !reflect.DeepEqual(after, point) {
-			t.Fatalf("generation replacement moved old point: %+v %+v", point, after)
-		}
-	}
-	model := "another-space"
-	store.Settings.Embedding.Model = &model
-	finishIndex(t, index)
-	changed, err := store.mapSnapshot(t.Context())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if previous, err := store.loadMapLayout(t.Context(), changed); err != nil || previous != nil {
-		t.Fatalf("new space reused old basis: %+v %v", previous, err)
-	}
-	_, switched := indexedMapLayout(t, store)
-	var count int
-	if err := store.index.QueryRow("SELECT COUNT(*) FROM map_layouts").Scan(&count); err != nil || count != 1 || switched.version == incremental.version {
-		t.Fatalf("old-space layout not replaced: count=%d error=%v", count, err)
-	}
-}
-
-func TestMapAlgorithmUpgradeRebuildsOnlyDerivedLayout(t *testing.T) {
-	store, index, _, _ := indexFixture(t)
-	finishIndex(t, index)
-	snapshot, initial := indexedMapLayout(t, store)
-	if _, err := store.index.Exec("UPDATE map_layouts SET algorithm = 'pca-fixed-v1'"); err != nil {
-		t.Fatal(err)
-	}
-	previous, err := store.loadMapLayout(t.Context(), snapshot)
-	if err != nil || previous != nil {
-		t.Fatalf("algorithm upgrade reused old density layout: %v", err)
-	}
-	_, rebuilt := indexedMapLayout(t, store)
-	if !reflect.DeepEqual(initial.points, rebuilt.points) {
-		t.Fatal("deterministic derived rebuild changed the source point set")
-	}
-	var algorithm string
-	if err := store.index.QueryRow("SELECT algorithm FROM map_layouts").Scan(&algorithm); err != nil || algorithm != mapAlgorithm {
-		t.Fatalf("algorithm metadata not replaced: %q %v", algorithm, err)
 	}
 }
 
@@ -158,12 +104,18 @@ func TestMapSnapshotAveragesDistinctNormalizedChunks(t *testing.T) {
 }
 
 func TestMapPublicationIsAtomicAndRejectsStaleOrCanceledSnapshots(t *testing.T) {
-	store, index, memos, _ := indexFixture(t)
-	finishIndex(t, index)
-	snapshot, initial := indexedMapLayout(t, store)
+	service, index, memos, _, _ := readyMapService(t)
+	store := service.Store
+	snapshot, err := store.mapSnapshot(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	initial := publishedStars(t, service)
+	layout := *initial
+	layout.parentVersion = initial.version
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
-	if err := store.publishMapLayout(ctx, snapshot, initial); err != context.Canceled {
+	if err := store.publishStars(ctx, snapshot, &layout); err != context.Canceled {
 		t.Fatalf("canceled publication: %v", err)
 	}
 	changed, _ := normalizeMemo(rawMemo("a", "changed body"))
@@ -171,23 +123,26 @@ func TestMapPublicationIsAtomicAndRejectsStaleOrCanceledSnapshots(t *testing.T) 
 	if err := store.Refresh(changed.Name, &changed); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.publishMapLayout(t.Context(), snapshot, initial); errorCode(err) != "MAP_INDEX_CHANGED" {
+	if err := store.publishStars(t.Context(), snapshot, &layout); errorCode(err) != "MAP_INDEX_CHANGED" {
 		t.Fatalf("stale publication: %v", err)
 	}
-	previous, err := store.loadMapLayout(t.Context(), snapshot)
-	if err != nil || !reflect.DeepEqual(previous, initial) {
-		t.Fatalf("failed publication damaged old layout: %v", err)
-	}
 	finishIndex(t, index)
-	next, _ := store.mapSnapshot(t.Context())
-	layout, _ := buildMapLayout(t.Context(), next, initial)
-	layout.points = append(layout.points, layout.points[0])
-	if err := store.publishMapLayout(t.Context(), next, layout); err == nil {
-		t.Fatal("duplicate point publication unexpectedly succeeded")
+	next, err := store.mapSnapshot(t.Context())
+	if err != nil {
+		t.Fatal(err)
 	}
-	previous, err = store.loadMapLayout(t.Context(), snapshot)
-	if err != nil || !reflect.DeepEqual(previous, initial) {
-		t.Fatalf("partial publication replaced old layout: %v", err)
+	layout.frame = strings.Repeat("a", 32)
+	if _, err := store.index.Exec(`CREATE TRIGGER reject_head BEFORE UPDATE ON star_heads
+		BEGIN SELECT RAISE(ABORT, 'test failure'); END`); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.publishStars(t.Context(), next, &layout); err == nil || !strings.Contains(err.Error(), "test failure") {
+		t.Fatalf("expected publication to fail before updating the head: %v", err)
+	}
+	var count int
+	if err := store.index.QueryRow("SELECT COUNT(*) FROM star_snapshots").Scan(&count); err != nil || count != 1 ||
+		!reflect.DeepEqual(initial, publishedStars(t, service)) {
+		t.Fatalf("partial publication changed snapshots: count=%d %v", count, err)
 	}
 }
 
@@ -214,7 +169,7 @@ func TestIndexRebuildKeepsProductSettings(t *testing.T) {
 		t.Fatalf("index rebuild changed product settings: %d %v", version, err)
 	}
 	var count int
-	if err := reopened.index.QueryRow("SELECT COUNT(*) FROM map_points").Scan(&count); err != nil || count != 0 {
+	if err := reopened.index.QueryRow("SELECT COUNT(*) FROM star_snapshots").Scan(&count); err != nil || count != 0 {
 		t.Fatalf("index rebuild retained derived coordinates: %d %v", count, err)
 	}
 }

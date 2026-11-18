@@ -97,15 +97,15 @@ func (s *Store) mapSnapshot(ctx context.Context) (mapSnapshot, error) {
 	return snapshot, ctx.Err()
 }
 
-func (s *Store) loadMapLayout(ctx context.Context, snapshot mapSnapshot) (*mapLayout, error) {
+func (s *Store) loadLegacyLayout(ctx context.Context, space string) (*mapLayout, error) {
 	layout := &mapLayout{points: []MapPoint{}}
 	err := transactionContext(ctx, s.index, func(tx *sql.Tx) error {
 		var basis, topics, links []byte
 		var generatedAt string
 		err := tx.QueryRowContext(ctx, `SELECT algorithm, version, basis_json, generation_id, projection_revision, generated_at,
 			topics_json, links_json FROM map_layouts
-			WHERE instance_id = ? AND user_name = ? AND space_hash = ? AND algorithm IN (?, ?)`,
-			s.Settings.Memos.InstanceID, s.Settings.Memos.User, snapshot.space, mapAlgorithm, mapLegacyAlgorithm).
+			WHERE instance_id = ? AND user_name = ? AND space_hash = ? AND algorithm IN ('pca-topics-v3', 'pca-fixed-v2')`,
+			s.Settings.Memos.InstanceID, s.Settings.Memos.User, space).
 			Scan(&layout.algorithm, &layout.version, &basis, &layout.generation, &layout.revision, &generatedAt, &topics, &links)
 		if err != nil {
 			return err
@@ -114,7 +114,7 @@ func (s *Store) loadMapLayout(ctx context.Context, snapshot mapSnapshot) (*mapLa
 		if err != nil {
 			return failure("MAP_LAYOUT_INVALID", "Stored map timestamp is invalid; rebuild the index", 503, false)
 		}
-		if json.Unmarshal(basis, &layout.basis) != nil || !validMapBasis(layout.basis, snapshot.dimensions) {
+		if json.Unmarshal(basis, &layout.basis) != nil || !validMapBasis(layout.basis, s.Settings.Embedding.Dimensions) {
 			return failure("MAP_LAYOUT_INVALID", "Stored map layout is invalid; rebuild the index", 503, false)
 		}
 		if json.Unmarshal(topics, &layout.topics) != nil || json.Unmarshal(links, &layout.links) != nil ||
@@ -147,83 +147,4 @@ func (s *Store) loadMapLayout(ctx context.Context, snapshot mapSnapshot) (*mapLa
 		return nil, nil
 	}
 	return layout, err
-}
-
-func (s *Store) publishMapLayout(ctx context.Context, snapshot mapSnapshot, layout *mapLayout) error {
-	generatedAt := layout.generatedAt
-	if generatedAt.IsZero() {
-		generatedAt = time.Now().UTC()
-	}
-	err := transactionContext(ctx, s.index, func(tx *sql.Tx) error {
-		var generation string
-		err := tx.QueryRowContext(ctx, `SELECT g.id FROM vector_generations g JOIN projection_meta p USING (instance_id)
-			WHERE g.instance_id = ? AND g.user_name = ? AND g.status = 'active'
-			AND g.space_hash = ? AND g.projection_revision = ? AND p.revision = g.projection_revision`,
-			s.Settings.Memos.InstanceID, s.Settings.Memos.User, snapshot.space, snapshot.revision).Scan(&generation)
-		if errors.Is(err, sql.ErrNoRows) || err == nil && generation != snapshot.generation {
-			return mapIndexChanged()
-		}
-		if err != nil {
-			return err
-		}
-		var version, publishedAt string
-		err = tx.QueryRowContext(ctx, `SELECT version, generated_at FROM map_layouts
-			WHERE instance_id = ? AND user_name = ? AND space_hash = ? AND algorithm = ?`,
-			s.Settings.Memos.InstanceID, s.Settings.Memos.User, snapshot.space, mapAlgorithm).Scan(&version, &publishedAt)
-		if err != nil && !errors.Is(err, sql.ErrNoRows) {
-			return err
-		}
-		if err == nil && version == layout.version {
-			if generatedAt, err = time.Parse(time.RFC3339Nano, publishedAt); err != nil {
-				return err
-			}
-			_, err = tx.ExecContext(ctx, `UPDATE map_layouts SET generation_id = ?, projection_revision = ?, generated_at = ?
-				WHERE instance_id = ? AND user_name = ?`, snapshot.generation, snapshot.revision, generatedAt.Format(time.RFC3339Nano),
-				s.Settings.Memos.InstanceID, s.Settings.Memos.User)
-			return err
-		}
-		basis, err := json.Marshal(layout.basis)
-		if err != nil {
-			return err
-		}
-		topics, err := json.Marshal(layout.topics)
-		if err != nil {
-			return err
-		}
-		links, err := json.Marshal(layout.links)
-		if err != nil {
-			return err
-		}
-		// Replace metadata and the complete point set together, retaining no old-space points.
-		if _, err := tx.ExecContext(ctx, "DELETE FROM map_layouts WHERE instance_id = ? AND user_name = ?",
-			s.Settings.Memos.InstanceID, s.Settings.Memos.User); err != nil {
-			return err
-		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO map_layouts
-			(instance_id, user_name, space_hash, algorithm, generation_id, projection_revision, version, basis_json, generated_at,
-				topics_json, links_json)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			s.Settings.Memos.InstanceID, s.Settings.Memos.User, snapshot.space, mapAlgorithm, snapshot.generation,
-			snapshot.revision, layout.version, string(basis), generatedAt.Format(time.RFC3339Nano), string(topics), string(links)); err != nil {
-			return err
-		}
-		for _, point := range layout.points {
-			tags, err := json.Marshal(append([]string{}, point.Tags...))
-			if err != nil {
-				return err
-			}
-			if _, err := tx.ExecContext(ctx, `INSERT INTO map_points
-				(instance_id, user_name, name, source_hash, vector_hash, x, y, semantic, tags_json)
-				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-				s.Settings.Memos.InstanceID, s.Settings.Memos.User, point.Name, point.SourceHash,
-				point.vectorHash, point.X, point.Y, point.Semantic, string(tags)); err != nil {
-				return err
-			}
-		}
-		return nil
-	})
-	if err == nil {
-		layout.generation, layout.revision, layout.generatedAt = snapshot.generation, snapshot.revision, generatedAt
-	}
-	return err
 }

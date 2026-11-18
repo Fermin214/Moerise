@@ -11,15 +11,19 @@ onmessage = ({ data }) => {
       attributes.push({ seed: data.stars[i * 4], radius: data.stars[i * 4 + 1], luminosity: data.stars[i * 4 + 2],
         role: ['ordinary', 'core', 'isolated'][data.stars[i * 4 + 3]] });
     }
-    scene.setData(points, attributes, data.groups);
+    scene.setData(points, attributes, data.groups, data.topics, data.subtopics);
+    return;
+  }
+  if (data.type === 'excerpt') {
+    scene.setTitle(data.index, data.title);
     return;
   }
   if (data.type !== 'draw') return;
-  const { id, view, options, width, height, titles } = data;
+  const { id, view, options, width, height } = data;
   if (canvas.width !== width || canvas.height !== height) { canvas.width = width; canvas.height = height; }
   scene.ctx.setTransform(width / options.width, 0, 0, height / options.height, 0, 0);
   const started = performance.now();
-  scene.draw(view, { ...options, getNote: i => ({ title: titles[i] || '' }) });
+  scene.draw(view, options);
   const bitmap = canvas.transferToImageBitmap();
   const projected = new Float64Array(scene.projected.length * 2);
   for (let i = 0; i < scene.projected.length; i++) {

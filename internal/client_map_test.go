@@ -16,7 +16,7 @@ import (
 func TestClientStargazingTogglePreservesIndexAndSnapshot(t *testing.T) {
 	api, fixture := clientFixture(t)
 	cookie, identity := settingsSession(t, api)
-	clientMapIndex(t, api)
+	calls := clientMapIndex(t, api)
 	store := api.app.Store
 	before, err := api.app.Map.Read(t.Context())
 	if err != nil {
@@ -47,12 +47,8 @@ func TestClientStargazingTogglePreservesIndexAndSnapshot(t *testing.T) {
 	validateAPISchema(t, clientChatSchema(t, "MapResponse"), reply.Body.Bytes())
 	assertSettingsError(t, clientCall(api, "POST", "/api/app/v1/map/rebuild", "", cookie,
 		fixture.settings.Web.PublicOrigin, identity.CSRFToken), 409, "STARGAZING_DISABLED")
-	api.app.Map.generate = func(context.Context, mapSnapshot, *mapLayout) (*mapLayout, error) {
-		t.Error("disabled stars scheduled a layout")
-		return nil, fmt.Errorf("unexpected layout")
-	}
-	if err := api.app.Map.Update(t.Context()); err != nil {
-		t.Fatal(err)
+	if err := api.app.Map.Update(t.Context()); err != nil || calls.Load() != 1 {
+		t.Fatalf("disabled stars scheduled a layout: %d %v", calls.Load(), err)
 	}
 	reply = clientCall(api, "GET", "/api/app/v1/session", "", cookie, "", "")
 	var session SessionIdentity
@@ -114,7 +110,7 @@ func TestClientMapContractAndMachineIsolation(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, scope := range []string{"notes:read", "sync:read"} {
-		machine.Settings.AccessTokens[0].Scopes = []string{scope}
+		machine.startup.AccessTokens[0].Scopes = []string{scope}
 		request := httptest.NewRequest("GET", "/api/ext/v1/map", nil)
 		request.Header.Set("Authorization", "Bearer "+fixture.settings.AccessTokens[0].Token)
 		response := httptest.NewRecorder()

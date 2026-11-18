@@ -50,7 +50,7 @@ fun InsightScreen(mobile: MobileController, strings: Strings, scroll: List<Scrol
     var sessionMenu by remember { mutableStateOf(false) }
     var deleting by remember { mutableStateOf(false) }
     var historyOpen by remember { mutableStateOf(false) }
-    val picker = state.picker
+    val picker by controller.picker.state.collectAsState()
     val pickerOpen = picker.visible
     var pickerWasOpen by remember { mutableStateOf(false) }
     val timezone = connection.profile?.timezone ?: "UTC"
@@ -326,17 +326,17 @@ fun InsightScreen(mobile: MobileController, strings: Strings, scroll: List<Scrol
             modifier = Modifier.testTag("chat_picker_budget"))
         WebTabs(listOf(strings.text("按日期", "By date"), strings.text("按标签 / 逐条", "By tag / individual")),
             if (picker.tab == "date") 0 else 1,
-            { if (enabled) controller.pickerTab(if (it == 0) "date" else "tag") }, tagPrefix = "chat_picker_tab", enabled = enabled)
+            { if (enabled) controller.picker.tab(if (it == 0) "date" else "tag") }, tagPrefix = "chat_picker_tab", enabled = enabled)
         val candidateList = if (picker.tab == "tag" && !picker.busy && picker.candidates.isNotEmpty())
             Modifier.testTag("chat_picker_candidates_ready") else Modifier
         Column(Modifier.weight(1f).fillMaxWidth().then(candidateList).verticalScroll(rememberScrollState()),
             verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            if (picker.tab == "date") InsightPickerCalendar(picker, controller, strings, enabled)
+            if (picker.tab == "date") InsightPickerCalendar(picker, controller.picker, strings, enabled)
             else FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                FilterChip(selected = picker.chosenTags.isEmpty(), onClick = { controller.pickerTag("") }, enabled = enabled,
+                FilterChip(selected = picker.chosenTags.isEmpty(), onClick = { controller.picker.tag("") }, enabled = enabled,
                     label = { Text(strings.text("全部", "All")) }, modifier = Modifier.testTag("chat_picker_all_tags"))
                 picker.tags.forEach { tag ->
-                    FilterChip(selected = tag.tag in picker.chosenTags, onClick = { controller.pickerTag(tag.tag) }, enabled = enabled,
+                    FilterChip(selected = tag.tag in picker.chosenTags, onClick = { controller.picker.tag(tag.tag) }, enabled = enabled,
                         label = { Text(tag.tag) }, modifier = Modifier.testTag("chat_picker_tag_${tag.tag}"))
                 }
             }
@@ -346,7 +346,7 @@ fun InsightScreen(mobile: MobileController, strings: Strings, scroll: List<Scrol
                     Text(if (picker.tab == "date") strings.text("这段时间的笔记，勾选要用的", "Notes in this period, select to use")
                         else strings.text("共 ${picker.candidates.size} 条，勾选要用的", "${picker.candidates.size} notes, select to use"),
                         color = MoeriseColors.Muted, fontSize = 13.sp)
-                    TextButton(onClick = controller::pickerSelectAll, enabled = enabled && picker.candidates.isNotEmpty(),
+                    TextButton(onClick = controller.picker::selectAll, enabled = enabled && picker.candidates.isNotEmpty(),
                         modifier = Modifier.testTag("chat_picker_select_all")) {
                         Text(strings.text("全选这 ${picker.candidates.size} 条", "Select all ${picker.candidates.size}"))
                     }
@@ -354,7 +354,7 @@ fun InsightScreen(mobile: MobileController, strings: Strings, scroll: List<Scrol
                 picker.candidates.forEach { note ->
                     val chosen = picker.selected.any { it.name == note.name }
                     Row(Modifier.fillMaxWidth().testTag("chat_picker_note_${note.name}")
-                        .clickable(enabled = enabled) { controller.pickerToggle(note) }.padding(vertical = 6.dp),
+                        .clickable(enabled = enabled) { controller.picker.toggle(note) }.padding(vertical = 6.dp),
                         verticalAlignment = Alignment.CenterVertically) {
                         Checkbox(chosen, onCheckedChange = null, enabled = enabled)
                         Column(Modifier.weight(1f).padding(start = 8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -368,7 +368,7 @@ fun InsightScreen(mobile: MobileController, strings: Strings, scroll: List<Scrol
             }
             if (picker.tab == "date" && picker.from.isNotBlank() && picker.candidates.isEmpty() && !picker.busy && picker.error == null)
                 Text(strings.text("这段时间没有笔记。", "No notes in this period."), fontSize = 13.sp, color = MoeriseColors.Muted)
-            if (picker.next.isNotBlank()) TextButton(onClick = controller::pickerLoadMore,
+            if (picker.next.isNotBlank()) TextButton(onClick = controller.picker::loadMore,
                 enabled = enabled && !picker.busy, modifier = Modifier.align(Alignment.End).testTag("chat_picker_more")) {
                 Text(strings.text("加载更多", "Load more"))
             }
@@ -383,13 +383,13 @@ fun InsightScreen(mobile: MobileController, strings: Strings, scroll: List<Scrol
 }
 
 @Composable
-private fun InsightPickerCalendar(picker: InsightPickerState, controller: InsightController, strings: Strings, enabled: Boolean) {
+private fun InsightPickerCalendar(picker: InsightPickerState, controller: InsightMaterialPicker, strings: Strings, enabled: Boolean) {
     if (picker.month.isBlank()) return
     val grid = monthGrid(picker.month)
     var choosingMonth by remember { mutableStateOf(false) }
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            IconButton(onClick = { controller.pickerMonth(shiftMonth(picker.month, -1)) },
+            IconButton(onClick = { controller.month(shiftMonth(picker.month, -1)) },
                 enabled = enabled && picker.month > "1000-01", modifier = Modifier.testTag("chat_picker_previous_month")) {
                 WebIcon(WebIcon.ChevronLeft, strings.text("上个月", "Previous month"))
             }
@@ -397,19 +397,19 @@ private fun InsightPickerCalendar(picker: InsightPickerState, controller: Insigh
                 modifier = Modifier.weight(1f).testTag("chat_picker_month")) {
                 Text(strings.text("${grid.year}年${grid.month}月", "${grid.year}-${grid.month.toString().padStart(2, '0')}"))
             }
-            IconButton(onClick = { controller.pickerMonth(shiftMonth(picker.month, 1)) },
+            IconButton(onClick = { controller.month(shiftMonth(picker.month, 1)) },
                 enabled = enabled && picker.month < "9999-12", modifier = Modifier.testTag("chat_picker_next_month")) {
                 WebIcon(WebIcon.ChevronRight, strings.text("下个月", "Next month"))
             }
         }
         if (choosingMonth) {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                IconButton(onClick = { controller.pickerYear(grid.year - 1) }, enabled = enabled && grid.year > 1000,
+                IconButton(onClick = { controller.year(grid.year - 1) }, enabled = enabled && grid.year > 1000,
                     modifier = Modifier.testTag("chat_picker_previous_year")) {
                     WebIcon(WebIcon.ChevronLeft, strings.text("上一年", "Previous year"))
                 }
                 Text(strings.text("${grid.year} 年", grid.year.toString()), modifier = Modifier.weight(1f).wrapContentWidth())
-                IconButton(onClick = { controller.pickerYear(grid.year + 1) }, enabled = enabled && grid.year < 9999,
+                IconButton(onClick = { controller.year(grid.year + 1) }, enabled = enabled && grid.year < 9999,
                     modifier = Modifier.testTag("chat_picker_next_year")) {
                     WebIcon(WebIcon.ChevronRight, strings.text("下一年", "Next year"))
                 }
@@ -424,7 +424,7 @@ private fun InsightPickerCalendar(picker: InsightPickerState, controller: Insigh
                             color = if (grid.month == month) MoeriseColors.BlueSurface else Color.Transparent,
                             shape = RoundedCornerShape(6.dp)) {
                             TextButton(onClick = {
-                                controller.pickerMonth("${grid.year}-${month.toString().padStart(2, '0')}")
+                                controller.month("${grid.year}-${month.toString().padStart(2, '0')}")
                                 choosingMonth = false
                             }, enabled = enabled) { Text(months[month - 1]) }
                         }
@@ -448,8 +448,8 @@ private fun InsightPickerCalendar(picker: InsightPickerState, controller: Insigh
                         Surface(Modifier.weight(1f).heightIn(min = 44.dp), shape = RoundedCornerShape(6.dp),
                             color = if (edge) MoeriseColors.Blue else if (range) MoeriseColors.BlueSurface else Color.Transparent) {
                             if (day in 1..grid.days) TextButton(onClick = {
-                                if (picker.from.isBlank() || picker.through.isNotBlank()) controller.pickerDate(date, "")
-                                else controller.pickerDate(picker.from, date)
+                                if (picker.from.isBlank() || picker.through.isNotBlank()) controller.date(date, "")
+                                else controller.date(picker.from, date)
                             }, enabled = enabled, contentPadding = PaddingValues(0.dp),
                                 modifier = Modifier.testTag("chat_picker_date_$date").semantics { contentDescription = date }) {
                                 Text(day.toString(), fontSize = 13.sp,
@@ -468,7 +468,7 @@ private fun InsightPickerCalendar(picker: InsightPickerState, controller: Insigh
                 else -> strings.text("${picker.from} – ${picker.through} · ${picker.candidates.size} 条",
                     "${picker.from} – ${picker.through} · ${picker.candidates.size} notes")
             }, fontSize = 13.sp, color = MoeriseColors.Muted, modifier = Modifier.weight(1f))
-            if (picker.from.isNotBlank()) TextButton(onClick = controller::pickerClearRange, enabled = enabled,
+            if (picker.from.isNotBlank()) TextButton(onClick = controller::clearRange, enabled = enabled,
                 modifier = Modifier.testTag("chat_picker_clear_range")) { Text(strings.text("清除", "Clear")) }
         }
     }

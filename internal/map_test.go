@@ -4,25 +4,20 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
 
-// Legacy fixtures keep authentication and snapshot tests independent of Python.
-func legacyMapService(store *Store) *MapService {
-	service := NewMapService(store)
-	service.algorithm = mapAlgorithm
-	service.generate = buildMapLayout
-	return service
-}
-
 func mapServiceFixture(t *testing.T) (*MapService, *VectorIndexService, map[string]map[string]any, *indexEmbedding) {
 	t.Helper()
 	store, index, memos, provider := indexFixture(t)
-	return legacyMapService(store), index, memos, provider
+	service, _ := testStarsService(t, store, nil)
+	return service, index, memos, provider
 }
 
 func readyMapService(t *testing.T) (*MapService, *VectorIndexService, map[string]map[string]any, *indexEmbedding, MapResponse) {
@@ -95,7 +90,7 @@ func TestMapReadsAndUnchangedDailyChecksNeverScanVectorsOrCallModels(t *testing.
 	if _, err := service.Store.index.Exec("UPDATE vector_chunks SET vector = ?", []byte{1}); err != nil {
 		t.Fatal(err)
 	}
-	for _, reader := range []*MapService{service, legacyMapService(service.Store)} {
+	for _, reader := range []*MapService{service, NewMapService(service.Store)} {
 		result, err := reader.Read(t.Context())
 		if err != nil || !reflect.DeepEqual(first, result) {
 			t.Fatalf("snapshot read rescanned vectors: %v", err)
@@ -111,25 +106,59 @@ func TestMapReadsAndUnchangedDailyChecksNeverScanVectorsOrCallModels(t *testing.
 }
 
 func TestMapReadsFixedPCASnapshotDuringStarsUpgrade(t *testing.T) {
-	service, _, _, _, first := readyMapService(t)
-	if _, err := service.Store.index.Exec("UPDATE map_layouts SET algorithm = ?, topics_json = '[]', links_json = '[]'", mapLegacyAlgorithm); err != nil {
-		t.Fatal(err)
-	}
-	upgraded := NewMapService(service.Store)
-	upgraded.generate = func(context.Context, mapSnapshot, *mapLayout) (*mapLayout, error) {
-		return nil, failure("MAP_LAYOUT_UNAVAILABLE", "Worker unavailable", 503, true)
-	}
-	before, err := upgraded.Read(t.Context())
-	if err != nil || before.Status != "ready" || before.Algorithm != mapLegacyAlgorithm || !reflect.DeepEqual(before.Points, first.Points) {
-		t.Fatalf("upgrade lost published PCA: %+v %v", before, err)
-	}
-	if err := upgraded.Update(t.Context()); errorCode(err) != "MAP_LAYOUT_UNAVAILABLE" {
-		t.Fatalf("unexpected worker result: %v", err)
-	}
-	after, err := upgraded.Read(t.Context())
-	if err != nil || after.Algorithm != mapLegacyAlgorithm || after.LayoutFrame != before.LayoutFrame ||
-		after.UpdateState != "unavailable" || !reflect.DeepEqual(after.Points, first.Points) {
-		t.Fatalf("worker failure hid PCA snapshot: %+v %v", after, err)
+	for _, algorithm := range []string{"pca-fixed-v2", "pca-topics-v3"} {
+		t.Run(algorithm, func(t *testing.T) {
+			store, index, _, provider := indexFixture(t)
+			store.Settings.Embedding.Dimensions, provider.dimensions = 2, 2
+			finishIndex(t, index)
+			settings := store.Settings
+			topics := `[]`
+			wantTopics := []MapTopic{}
+			if algorithm == "pca-topics-v3" {
+				topics = `[{"id":"topic-aaaaaaaaaaaaaaaa","label":"笔记","members":["memos/a"],"x":1.5,"y":-0.75}]`
+				wantTopics = []MapTopic{{ID: "topic-aaaaaaaaaaaaaaaa", Label: "笔记", X: 1.5, Y: -0.75, Members: []string{"memos/a"}}}
+			}
+			if _, err := store.index.Exec(`INSERT INTO map_layouts
+				(instance_id, user_name, space_hash, algorithm, generation_id, projection_revision, version, basis_json, generated_at, topics_json)
+				VALUES (?, ?, ?, ?, 'generation-pca', 7, 'version-pca', '{"mean":[0,0],"axes":[[1,0],[0,1]],"scale":0.5}',
+				'2026-05-01T12:00:00Z', ?)`, settings.Memos.InstanceID, settings.Memos.User, embeddingSpace(settings.Embedding), algorithm, topics); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := store.index.Exec(`INSERT INTO map_points
+				(instance_id, user_name, name, source_hash, vector_hash, x, y, semantic, tags_json)
+				VALUES (?, ?, 'memos/a', 'source-a', 'vector-a', 1.5, -0.75, 1, '["旧图"]')`, settings.Memos.InstanceID, settings.Memos.User); err != nil {
+				t.Fatal(err)
+			}
+			service, _ := testStarsService(t, store, nil)
+			before, err := service.Read(t.Context())
+			if err != nil || before.Status != "ready" || before.Algorithm != algorithm || before.LayoutVersion != "version-pca" ||
+				before.LayoutFrame == "" || len(before.Points) != 1 || before.Points[0].X != 1.5 || before.Points[0].Y != -0.75 ||
+				before.Points[0].Name != "memos/a" || !reflect.DeepEqual(before.Points[0].Tags, []string{"旧图"}) ||
+				!reflect.DeepEqual(before.Topics, wantTopics) {
+				t.Fatalf("upgrade lost published PCA: %+v %v", before, err)
+			}
+			workerURL := service.workerURL
+			unavailable := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(503) }))
+			t.Cleanup(unavailable.Close)
+			service.workerURL = unavailable.URL
+			now := time.Now().UTC()
+			if err := service.update(t.Context(), now); errorCode(err) != "MAP_LAYOUT_UNAVAILABLE" {
+				t.Fatalf("unexpected worker result: %v", err)
+			}
+			after, err := service.Read(t.Context())
+			before.UpdateState = "unavailable"
+			if err != nil || !reflect.DeepEqual(before, after) {
+				t.Fatalf("worker failure hid PCA snapshot: %+v %v", after, err)
+			}
+			service.workerURL = workerURL
+			if err := service.update(t.Context(), now.Add(mapSnapshotInterval)); err != nil {
+				t.Fatal(err)
+			}
+			restarted, err := NewMapService(store).Read(t.Context())
+			if err != nil || restarted.Algorithm != starsAlgorithm || restarted.Status != "ready" || len(restarted.Points) != 5 {
+				t.Fatalf("published UMAP did not supersede PCA: %+v %v", restarted, err)
+			}
+		})
 	}
 }
 
@@ -152,7 +181,7 @@ func TestMapDailySnapshotCombinesChangesAndPersistsSchedule(t *testing.T) {
 		t.Fatal(err)
 	}
 	finishIndex(t, index)
-	restarted := legacyMapService(service.Store)
+	restarted := NewMapService(service.Store)
 	for _, worker := range []*MapService{service, restarted} {
 		if err := worker.update(t.Context(), stamp.Add(mapSnapshotInterval/2)); err != nil {
 			t.Fatal(err)
@@ -269,10 +298,11 @@ func TestMapColdDatabaseReadRespectsBudget(t *testing.T) {
 	}
 }
 
-func clientMapIndex(t *testing.T, api *ClientAPI) *VectorIndexService {
+func clientMapIndex(t *testing.T, api *ClientAPI) *atomic.Int32 {
 	t.Helper()
 	store := api.app.Store
-	api.app.Map = legacyMapService(store)
+	service, calls := testStarsService(t, store, nil)
+	api.app.Map = service
 	store.Settings.Embedding = embeddingTestConfig("http://embedding.test")
 	for _, name := range []string{"a", "b", "archived"} {
 		raw := rawMemo(name, "private body "+name)
@@ -318,5 +348,5 @@ func clientMapIndex(t *testing.T, api *ClientAPI) *VectorIndexService {
 	if err := api.app.Map.Update(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	return index
+	return calls
 }

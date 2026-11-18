@@ -16,8 +16,6 @@ data class InsightPickerState(
     val chosenTags: Set<String> = emptySet(),
     val candidates: List<Note> = emptyList(),
     val next: String = "",
-    val query: String = "",
-    val filter: String = "ALL",
     val busy: Boolean = false,
     val error: String? = null,
 )

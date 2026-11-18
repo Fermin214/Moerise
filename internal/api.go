@@ -31,10 +31,10 @@ func (a *API) authenticate(request *http.Request, scope string) (*AccessToken, e
 	}
 	provided := sha256.Sum256([]byte(parts[1]))
 	var matched *AccessToken
-	for i := range a.Settings.AccessTokens {
-		expected := sha256.Sum256([]byte(a.Settings.AccessTokens[i].Token))
+	for i := range a.startup.AccessTokens {
+		expected := sha256.Sum256([]byte(a.startup.AccessTokens[i].Token))
 		if hmac.Equal(provided[:], expected[:]) {
-			matched = &a.Settings.AccessTokens[i]
+			matched = &a.startup.AccessTokens[i]
 		}
 	}
 	if matched == nil {
@@ -221,7 +221,7 @@ func (a *API) route(writer http.ResponseWriter, request *http.Request) (any, int
 		if err := a.verifySource(request.Context()); err != nil {
 			return nil, 0, err
 		}
-		return map[string]any{"instance_id": a.Settings.Memos.InstanceID, "user": a.Settings.Memos.User,
+		return map[string]any{"instance_id": a.startup.Memos.InstanceID, "user": a.startup.Memos.User,
 			"credential": access.Name, "scopes": access.Scopes, "timezone": a.Store.Settings.Timezone, "api_version": "v1"}, 200, nil
 	case "/api/ext/v1/notes":
 		return a.notes(request)

@@ -41,7 +41,7 @@ import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.contentOrNull
 
 @Composable
-fun WebSettings(
+fun SettingsScreen(
     mobile: MobileController,
     strings: Strings,
     onMenu: () -> Unit,

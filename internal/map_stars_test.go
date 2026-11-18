@@ -17,6 +17,12 @@ func starsFixture(t *testing.T, wait func()) (*MapService, *VectorIndexService, 
 	t.Helper()
 	store, index, memos, _ := indexFixture(t)
 	finishIndex(t, index)
+	service, calls := testStarsService(t, store, wait)
+	return service, index, memos, calls
+}
+
+func testStarsService(t *testing.T, store *Store, wait func()) (*MapService, *atomic.Int32) {
+	t.Helper()
 	calls := &atomic.Int32{}
 	worker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var input starRequest
@@ -51,7 +57,7 @@ func starsFixture(t *testing.T, wait func()) (*MapService, *VectorIndexService, 
 	t.Cleanup(worker.Close)
 	service := NewMapService(store)
 	service.workerURL = worker.URL
-	return service, index, memos, calls
+	return service, calls
 }
 
 func TestStarsSnapshotRestartIncrementalAndRebuild(t *testing.T) {

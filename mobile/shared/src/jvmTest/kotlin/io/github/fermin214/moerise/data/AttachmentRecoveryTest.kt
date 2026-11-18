@@ -2,7 +2,6 @@ package io.github.fermin214.moerise.data
 
 import io.github.fermin214.moerise.domain.Note
 import io.github.fermin214.moerise.presentation.expectedSubmittedResult
-import io.github.fermin214.moerise.presentation.EditorController
 import io.ktor.client.engine.mock.*
 import io.ktor.http.*
 import java.nio.file.Files
@@ -43,22 +42,24 @@ class AttachmentRecoveryTest {
         }
         val core = CoreClient("https://notes.example", SessionCookies("https://notes.example", MemorySecrets()), engine)
         try {
-            var editor = EditorController({ repo }, { core }, scope)
+            var fixture = DraftQueueFixture({ repo }, core, scope)
+            var editor = fixture.composer
             editor.open(key)
             editor.change("Saved video")
             val id = requireNotNull(editor.state.value.draft).id
             assertTrue(editor.attach(key, id, listOf(files.stage("video.mp4", "video/mp4", bytes))))
             assertTrue(editor.enqueue())
             editor.change("Unfinished input"); editor.flush()
-            assertFailsWith<java.io.IOException> { editor.synchronize(key, core) }
+            assertFailsWith<java.io.IOException> { fixture.queue.drain(key, core) }
             assertEquals(1, repo.queuedNotes(key).size)
             scope.coroutineContext[Job]!!.cancelAndJoin()
             db.close(); db = jvmDatabase(path); repo = NoteRepository(db, files)
             scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
-            editor = EditorController({ repo }, { core }, scope)
+            fixture = DraftQueueFixture({ repo }, core, scope)
+            editor = fixture.composer
             editor.open(key)
             failDownload = false
-            assertTrue(editor.synchronize(key, core))
+            assertTrue(fixture.queue.drain(key, core))
             assertEquals(2, requests.size)
             assertEquals(requests[0], requests[1])
             assertTrue(repo.queuedNotes(key).isEmpty())

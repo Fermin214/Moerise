@@ -52,6 +52,15 @@ func TestSettingsRuntimeDrainAndResourceReplacement(t *testing.T) {
 		store.productVersion != 4 || app.LLM != provider {
 		t.Fatalf("invalid provider update changed runtime: %v", err)
 	}
+	if _, err := store.state.Exec(`CREATE TRIGGER reject_settings BEFORE UPDATE ON product_settings
+		BEGIN SELECT RAISE(ABORT, 'settings write rejected'); END`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := app.UpdateSettings(t.Context(), settingsChange(4, `{"llm":{"model":"unsaved-model"}}`)); err == nil ||
+		store.productVersion != 4 || app.LLM != provider || app.Chat.Provider != provider ||
+		configured(store.Settings.LLM.Model) != "replacement-model" {
+		t.Fatalf("failed settings write changed runtime: %v", err)
+	}
 }
 
 func TestSettingsRuntimeKeepsTodaysReviewAndTransitionsAfterMidnight(t *testing.T) {
@@ -61,7 +70,8 @@ func TestSettingsRuntimeKeepsTodaysReviewAndTransitionsAfterMidnight(t *testing.
 	if err := store.initializeProductSettings(); err != nil {
 		t.Fatal(err)
 	}
-	app := NewApp(store.Settings, store, reviews.Source)
+	startup := store.Settings
+	app := NewApp(startup, store, reviews.Source)
 	defer app.Close()
 	now := time.Now()
 	first, err := app.Reviews.Daily(t.Context(), now)
@@ -80,7 +90,7 @@ func TestSettingsRuntimeKeepsTodaysReviewAndTransitionsAfterMidnight(t *testing.
 		strings.Join(frozen.Notifications.Clocks(), ",") != "09:00" {
 		t.Fatal("same-day settings were not frozen")
 	}
-	loaded, err := loadPersistedProduct(app.Settings)
+	loaded, err := loadPersistedProduct(startup)
 	if err != nil || loaded.daily == nil || loaded.daily.Timezone != first.Timezone {
 		t.Fatalf("restart lost the day transition: %v", err)
 	}

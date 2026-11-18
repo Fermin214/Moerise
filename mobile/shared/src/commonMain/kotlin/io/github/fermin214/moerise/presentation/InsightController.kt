@@ -13,11 +13,10 @@ import kotlin.time.TimeSource
 
 data class InsightState(
     val recovery: InsightRecovery = InsightRecovery(), val chat: ChatSession? = null,
-    val materials: ChatMaterials? = null, val candidates: List<Note> = emptyList(), val pickerNext: String = "",
+    val materials: ChatMaterials? = null,
     val history: List<ChatSummary> = emptyList(), val historyNext: String = "", val tab: Int = 0,
-    val query: String = "", val filter: String = "ALL", val busy: Boolean = false, val streaming: Boolean = false,
+    val busy: Boolean = false, val streaming: Boolean = false,
     val error: String? = null,
-    val picker: InsightPickerState = InsightPickerState(),
     val conflicted: Boolean = false, val stopping: Boolean = false, val deleting: Boolean = false,
 ) {
     val running get() = chat?.turns?.any { it.assistant.status == "running" } == true
@@ -45,33 +44,13 @@ class InsightController(
     private var polling: Job? = null
     private var questionWrite: Job? = null
     private var control: Job? = null
-    private var pickerRequest: Job? = null
-    private var pickerFilters: Job? = null
-    private var pickerGeneration = 0L
-    private var pickerFilterGeneration = 0L
-    private var pickerSession = 0L
+    val picker = InsightMaterialPicker(core, account, scope) { !state.value.locked }
     private val disk = Mutex()
     private var diskRevision = 0L
     private val writtenRevisions = mutableMapOf<String, Long>()
     private val seeds = mutableSetOf<String>()
 
     fun tab(value: Int) { mutable.update { it.copy(tab = value) }; if (value == 2) history() }
-    fun query(value: String) {
-        if (state.value.busy) return
-        if (state.value.picker.visible) {
-            if (!pickerEditable()) return
-            mutable.update { it.copy(picker = it.picker.copy(query = value)) }
-            loadPicker()
-        } else mutable.update { it.copy(query = value, pickerNext = "", candidates = emptyList()) }
-    }
-    fun filter(value: String) {
-        if (state.value.busy || value !in setOf("ALL", "NORMAL", "ARCHIVED")) return
-        if (state.value.picker.visible) {
-            if (!pickerEditable()) return
-            mutable.update { it.copy(picker = it.picker.copy(filter = value)) }
-            loadPickerFilters(); loadPicker()
-        } else mutable.update { it.copy(filter = value, pickerNext = "", candidates = emptyList()) }
-    }
     fun question(value: String) {
         if (state.value.locked) return
         mutable.update { it.copy(recovery = it.recovery.copy(question = value)) }
@@ -124,7 +103,7 @@ class InsightController(
         val account = key
         val recovery = state.value.recovery
         ++generation; operation?.cancel(); control?.cancel(); polling?.cancel(); questionWrite?.cancel()
-        discardPicker()
+        picker.discard()
         mutable.update { it.copy(busy = false, streaming = false, stopping = false, deleting = false) }
         val revision = ++diskRevision
         val previous = lifecycleWrite
@@ -141,7 +120,7 @@ class InsightController(
         visible = false
         leave()
         operation?.join(); control?.join(); lifecycleWrite?.join(); polling?.cancelAndJoin(); questionWrite?.cancelAndJoin()
-        pickerRequest?.join(); pickerFilters?.join()
+        picker.awaitRequests()
         disk.withLock { key = null }
         seeds.clear(); mutable.value = InsightState()
     }
@@ -180,10 +159,11 @@ class InsightController(
                 block(active, account, stamp)
             } catch (error: Exception) {
                 if (error is CancellationException) throw error
-                if (stamp == generation && account == this@InsightController.account())
-                    mutable.update { it.copy(error = errorCode(error),
-                        conflicted = it.conflicted || errorCode(error) == "CHAT_CONFLICT",
-                        picker = if (it.picker.visible) it.picker.copy(error = errorCode(error)) else it.picker) }
+                if (stamp == generation && account == this@InsightController.account()) {
+                    val code = errorCode(error)
+                    mutable.update { it.copy(error = code, conflicted = it.conflicted || code == "CHAT_CONFLICT") }
+                    picker.fail(code)
+                }
             } finally {
                 if (stamp == generation) {
                     mutable.update { it.copy(busy = false, streaming = false) }
@@ -267,7 +247,7 @@ class InsightController(
     fun open(id: String) = execute { active, account, stamp ->
         require(!state.value.running && state.value.recovery.generation == null &&
             state.value.recovery.mutation == null && state.value.recovery.creation == null) { "CHAT_BUSY" }
-        discardPicker()
+        picker.discard()
         record(account, InsightRecovery(chatId = chatId(id)), stamp)
         mutable.update { it.copy(chat = null, materials = null, tab = 0, conflicted = false) }
         readChat(active, account, stamp)
@@ -275,255 +255,49 @@ class InsightController(
     fun newChat() = execute { _, account, stamp ->
         require(!state.value.running && state.value.recovery.generation == null &&
             state.value.recovery.mutation == null && state.value.recovery.creation == null) { "CHAT_BUSY" }
-        discardPicker()
+        picker.discard()
         record(account, InsightRecovery(), stamp)
         mutable.update { it.copy(chat = null, materials = null, tab = 0, conflicted = false) }
     }
 
     fun openPicker() {
-        if (state.value.locked || state.value.picker.visible) return
+        if (state.value.locked || picker.state.value.visible) return
         execute { active, account, stamp ->
-            val month = serviceMonth(timezone())
-            val year = month.take(4).toInt()
-            ++pickerSession
-            mutable.update { it.copy(picker = InsightPickerState(
-                visible = true, month = month, years = nearbyYears(year), busy = true)) }
-            try {
-                val materials = resolve(active, account, stamp, enforceBudget = false)
-                mutable.update { it.copy(picker = it.picker.copy(selected = materials.notes,
-                    characters = materialCharacters(materials.notes), busy = false)) }
-                loadPickerFilters()
-            } finally {
-                if (stamp == generation) mutable.update { it.copy(picker = it.picker.copy(busy = false)) }
-            }
+            picker.open(account, serviceMonth(timezone()))
+            picker.ready(resolve(active, account, stamp, enforceBudget = false).notes)
         }
-    }
-
-    private fun discardPicker() {
-        ++pickerSession; ++pickerGeneration; ++pickerFilterGeneration
-        pickerRequest?.cancel(); pickerFilters?.cancel()
-        mutable.update { it.copy(picker = InsightPickerState()) }
     }
 
     fun closePicker() {
-        if (!state.value.busy) { discardPicker(); drainSeeds() }
+        if (!state.value.busy) { picker.discard(); drainSeeds() }
     }
 
     fun completePicker() {
-        val picker = state.value.picker
-        if (!picker.visible || picker.busy || state.value.locked) return
-        val names = picker.selected.map { it.name }
+        val names = picker.selectedNames() ?: return
         execute { active, account, stamp ->
             persistSelection(active, account, stamp, names)
-            discardPicker()
+            picker.discard()
         }
     }
 
-    fun pickerTab(value: String) {
-        if (!pickerEditable() || value !in setOf("date", "tag")) return
-        mutable.update { it.copy(picker = it.picker.copy(tab = value)) }
-        loadPicker()
-    }
-
-    fun pickerDate(from: String, through: String) {
-        if (!pickerEditable()) return
-        if (!validDate(from) || !validDate(through) || from.isEmpty() && through.isNotEmpty()) {
-            pickerError("INVALID_ARGUMENT"); return
-        }
-        val start = if (through.isNotEmpty() && through < from) through else from
-        val end = if (through.isNotEmpty() && through < from) from else through
-        mutable.update { it.copy(picker = it.picker.copy(from = start, through = end)) }
-        loadPicker()
-    }
-
-    fun pickerClearRange() = pickerDate("", "")
-
-    fun pickerMonth(value: String) {
-        if (!pickerEditable()) return
-        if (!validMonth(value)) { pickerError("INVALID_ARGUMENT"); return }
-        mutable.update { it.copy(picker = it.picker.copy(month = value,
-            years = nearbyYears(value.take(4).toInt()), calendarDays = emptySet())) }
-        loadPickerFilters()
-    }
-
-    fun pickerYear(value: Int) {
-        if (!pickerEditable()) return
-        if (value !in 1000..9999) { pickerError("INVALID_ARGUMENT"); return }
-        pickerMonth("$value-${state.value.picker.month.takeLast(2)}")
-    }
-
-    fun pickerTag(value: String) {
-        if (!pickerEditable()) return
-        val chosen = state.value.picker.chosenTags
-        val tags = if (value.isBlank()) emptySet() else if (value in chosen) chosen - value else chosen + value
-        if (tags.size > 20) { pickerError("CHAT_RESOURCE_LIMIT"); return }
-        mutable.update { it.copy(picker = it.picker.copy(chosenTags = tags)) }
-        loadPicker()
-    }
-
-    fun pickerToggle(note: Note) {
-        if (!pickerEditable() || state.value.picker.busy) return
-        if (note.instanceId != account()?.split('\u0000')?.getOrNull(1)) { pickerError("ACCOUNT_CHANGED"); return }
-        val selected = state.value.picker.selected
-        updatePickerSelection(if (selected.any { it.name == note.name }) selected.filterNot { it.name == note.name } else selected + note)
-    }
-
-    fun pickerSelectAll() {
-        if (!pickerEditable() || state.value.picker.busy) return
-        if (state.value.picker.next.isNotBlank()) loadPicker(append = true, all = true, select = true)
-        else selectPickerNotes(state.value.picker.candidates)
-    }
-
-    fun pickerLoadMore() { if (pickerEditable()) loadPicker(append = true) }
-
-    private fun updatePickerSelection(notes: List<Note>) {
-        mutable.update { it.copy(picker = it.picker.copy(selected = notes, characters = materialCharacters(notes), error = null)) }
-    }
-    private fun selectPickerNotes(notes: List<Note>) {
-        val choices = state.value.picker.selected.associateBy { it.name }.toMutableMap()
-        notes.forEach { choices[it.name] = it }
-        updatePickerSelection(choices.values.toList())
-    }
-    private fun pickerEditable() = state.value.picker.visible && !state.value.locked
-    private fun pickerError(code: String) { mutable.update { it.copy(picker = it.picker.copy(error = code)) } }
-    private fun nearbyYears(year: Int) = (maxOf(1000, year - 5)..minOf(9999, year + 5)).toList()
-    private fun validMonth(value: String): Boolean = Regex("^[1-9][0-9]{3}-(0[1-9]|1[0-2])$").matches(value)
-    private fun validDate(value: String): Boolean {
-        if (value.isEmpty()) return true
-        if (!Regex("^[1-9][0-9]{3}-(0[1-9]|1[0-2])-[0-9]{2}$").matches(value)) return false
-        return value.takeLast(2).toInt() in 1..monthGrid(value.take(7)).days
-    }
-    private fun nextDate(value: String): String {
-        require(validDate(value) && value.isNotEmpty()) { "INVALID_ARGUMENT" }
-        val day = value.takeLast(2).toInt()
-        if (day < monthGrid(value.take(7)).days) return "${value.take(7)}-${(day + 1).toString().padStart(2, '0')}"
-        require(value.take(7) != "9999-12") { "INVALID_ARGUMENT" }
-        return "${shiftMonth(value.take(7), 1)}-01"
-    }
-    private fun pickerCurrent(session: Long, account: String) =
-        visible && state.value.picker.visible && session == pickerSession && account == this.account() && account == key
-
-    private fun loadPicker(append: Boolean = false, all: Boolean = false, select: Boolean = false) {
-        val active = core() ?: return
-        val account = account() ?: return
-        val snapshot = state.value.picker
-        if (!snapshot.visible || append && snapshot.busy) return
-        val cursor = if (append) snapshot.next.takeIf { it.isNotBlank() } ?: return else ""
-        val session = pickerSession
-        val stamp = ++pickerGeneration
-        pickerRequest?.cancel()
-        val base = if (append) snapshot.candidates else emptyList()
-        mutable.update { it.copy(picker = it.picker.copy(candidates = base, next = "", busy = true, error = null)) }
-        if (snapshot.tab == "date" && snapshot.from.isEmpty()) {
-            mutable.update { it.copy(picker = it.picker.copy(busy = false)) }; return
-        }
-        pickerRequest = scope.launch {
-            try {
-                val query = buildString {
-                    append("state=${snapshot.filter}&page_size=20&query=${snapshot.query.encodeURLQueryComponent(encodeFull = true)}")
-                    if (snapshot.tab == "date" && snapshot.from.isNotEmpty()) {
-                        append("&from=${snapshot.from}&until=${nextDate(snapshot.through.ifEmpty { snapshot.from })}")
-                    }
-                    if (snapshot.tab == "tag") snapshot.chosenTags.sorted().forEach { append("&tag=${it.encodeURLQueryComponent(encodeFull = true)}") }
-                }
-                var next = cursor
-                var notes = base
-                val cursors = mutableSetOf<String>()
-                do {
-                    require(cursors.add(next)) { "CHAT_PROTOCOL" }
-                    val page = CoreJson.decodeFromString<ChatMaterialPage>(active.api(HttpMethod.Get,
-                        "/chat-materials?$query" + if (next.isNotEmpty()) "&page_token=${next.encodeURLQueryComponent(encodeFull = true)}" else ""))
-                    if (!pickerCurrent(session, account) || stamp != pickerGeneration) return@launch
-                    require(page.notes.all { it.instanceId == account.split('\u0000')[1] }) { "ACCOUNT_CHANGED" }
-                    notes = (notes + page.notes).distinctBy { it.name }
-                    require(notes.size <= 10_000) { "CHAT_RESOURCE_LIMIT" }
-                    next = page.nextPageToken
-                    require(next.isEmpty() || next !in cursors) { "CHAT_PROTOCOL" }
-                } while (all && next.isNotEmpty())
-                mutable.update { it.copy(picker = it.picker.copy(candidates = notes, next = next, busy = false)) }
-                if (select) selectPickerNotes(notes)
-            } catch (error: Exception) {
-                if (error is CancellationException) throw error
-                if (pickerCurrent(session, account) && stamp == pickerGeneration)
-                    mutable.update { it.copy(picker = it.picker.copy(busy = false, next = cursor, error = errorCode(error))) }
-            }
-        }
-    }
-
-    private fun loadPickerFilters() {
-        val active = core() ?: return
-        val account = account() ?: return
-        val picker = state.value.picker
-        val session = pickerSession
-        val stamp = ++pickerFilterGeneration
-        pickerFilters?.cancel()
-        pickerFilters = scope.launch {
-            try {
-                val states = if (picker.filter == "ALL") listOf("NORMAL", "ARCHIVED") else listOf(picker.filter)
-                val pages = coroutineScope {
-                    val tags = states.map { source -> async {
-                        CoreJson.decodeFromString<TagPage>(active.api(HttpMethod.Get, "/tags?state=$source"))
-                    } }
-                    val calendars = states.map { source -> async {
-                        CoreJson.decodeFromString<CalendarPage>(active.api(HttpMethod.Get, "/calendar?state=$source&month=${picker.month}"))
-                    } }
-                    tags.awaitAll() to calendars.awaitAll()
-                }
-                if (!pickerCurrent(session, account) || stamp != pickerFilterGeneration) return@launch
-                require(pages.second.all { it.month == picker.month }) { "CHAT_PROTOCOL" }
-                val tags = pages.first.flatMap { it.tags }.groupBy { it.tag }.map { (tag, counts) ->
-                    TagCount(tag, counts.sumOf { it.count })
-                }.sortedBy { it.tag }
-                val days = pages.second.flatMap { it.days }.filter { it.count > 0 }.map { it.date }.toSet()
-                mutable.update { it.copy(picker = it.picker.copy(tags = tags, calendarDays = days)) }
-            } catch (error: Exception) {
-                if (error is CancellationException) throw error
-                if (pickerCurrent(session, account) && stamp == pickerFilterGeneration) pickerError(errorCode(error))
-            }
-        }
-    }
-
-    fun pick(append: Boolean = false) = execute { active, account, stamp ->
-        val cursor = if (append) state.value.pickerNext.takeIf { it.isNotBlank() } ?: return@execute else ""
-        val response = active.api(HttpMethod.Get, "/chat-materials?state=${state.value.filter}&page_size=20" +
-            "&query=${state.value.query.encodeURLQueryComponent(encodeFull = true)}" + if (cursor.isNotEmpty()) "&page_token=${cursor.encodeURLQueryComponent(encodeFull = true)}" else "")
-        val page = CoreJson.decodeFromString<ChatMaterialPage>(response)
-        checkActive(stamp, account)
-        require(page.notes.all { it.instanceId == account.split('\u0000')[1] }) { "ACCOUNT_CHANGED" }
-        mutable.update { it.copy(candidates = (if (append) it.candidates + page.notes else page.notes).distinctBy { n -> n.name },
-            pickerNext = page.nextPageToken) }
-    }
-    fun toggle(note: Note) {
-        if (state.value.picker.visible || state.value.locked) return
-        if (note.instanceId != account()?.split('\u0000')?.getOrNull(1)) {
-            mutable.update { it.copy(error = "ACCOUNT_CHANGED") }; return
-        }
-        toggle(note.name)
-    }
-    fun toggle(name: String) {
-        if (state.value.locked || state.value.picker.visible) return
-        if (!validName(name)) { mutable.update { it.copy(error = "INVALID_ARGUMENT") }; return }
-        val names = state.value.recovery.selected
-        changeSelection(if (name in names) names - name else names + name)
-    }
     fun removeMaterial(name: String) {
-        if (state.value.locked || state.value.picker.visible || name !in state.value.recovery.selected) return
+        if (state.value.locked || picker.state.value.visible || name !in state.value.recovery.selected) return
         changeSelection(state.value.recovery.selected - name)
     }
     private fun changeSelection(names: List<String>) = execute { active, account, stamp ->
-        require(!state.value.picker.visible) { "CHAT_BUSY" }
+        require(!picker.state.value.visible) { "CHAT_BUSY" }
         record(account, state.value.recovery.copy(selected = names, selectionInitialized = true), stamp)
         mutable.update { it.copy(materials = it.materials?.takeIf { materials -> materials.notes.map { note -> note.name } == names }) }
         persistSelection(active, account, stamp, names)
     }
     fun seed(name: String) {
         if (!validName(name)) { mutable.update { it.copy(error = "INVALID_ARGUMENT") }; return }
-        if (state.value.busy || state.value.picker.visible || key != account()) { seeds += name; return }
+        if (state.value.busy || picker.state.value.visible || key != account()) { seeds += name; return }
         if (state.value.locked) return
         changeSelection((state.value.recovery.selected + name).distinct())
     }
     private fun drainSeeds() {
-        if (state.value.locked || state.value.picker.visible || seeds.isEmpty()) return
+        if (state.value.locked || picker.state.value.visible || seeds.isEmpty()) return
         val names = seeds.toList(); seeds.clear()
         names.forEach(::seed)
     }
@@ -551,7 +325,7 @@ class InsightController(
     fun resolve() = execute { active, account, stamp -> resolve(active, account, stamp) }
 
     fun applyMaterials() = execute { active, account, stamp ->
-        require(!state.value.picker.visible) { "CHAT_BUSY" }
+        require(!picker.state.value.visible) { "CHAT_BUSY" }
         val recovery = state.value.recovery
         persistSelection(active, account, stamp, if (!recovery.selectionInitialized && recovery.selected.isEmpty())
             recovery.creation?.names ?: recovery.selected else recovery.selected)
@@ -612,7 +386,7 @@ class InsightController(
     }
 
     fun generate(kind: String) = execute { active, account, stamp ->
-        require(!state.value.picker.visible) { "CHAT_BUSY" }
+        require(!picker.state.value.visible) { "CHAT_BUSY" }
         require(state.value.recovery.generation == null && !state.value.running) { "CHAT_BUSY" }
         require(kind == "insight" || kind == "question" && state.value.recovery.question.isNotBlank()) { "INVALID_ARGUMENT" }
         require(state.value.recovery.selected.isNotEmpty()) { "CHAT_MATERIAL_REQUIRED" }
@@ -810,7 +584,7 @@ class InsightController(
         val chat = state.value.chat ?: return@execute
         record(account, state.value.recovery.copy(mutation = null, generation = null,
             selected = chat.materials.map { it.name }, selectionInitialized = true), stamp)
-        discardPicker()
+        picker.discard()
         mutable.update { it.copy(materials = null, conflicted = false, error = null) }
         resolve(active, account, stamp, enforceBudget = false)
     }
@@ -845,10 +619,10 @@ class InsightController(
 
     private suspend fun resetChat(account: String, stamp: Long) {
         val id = state.value.recovery.chatId
-        discardPicker()
+        picker.discard()
         record(account, InsightRecovery(), stamp)
         mutable.update { it.copy(chat = null, materials = null, conflicted = false, tab = 0, error = null,
-            history = it.history.filterNot { summary -> summary.id == id }, candidates = emptyList(), pickerNext = "") }
+            history = it.history.filterNot { summary -> summary.id == id }) }
     }
     private suspend fun performMutation(active: CoreClient, account: String, stamp: Long, input: ChatMutation) {
         val response = try { active.api(HttpMethod.parse(input.method), input.path, input.body) }

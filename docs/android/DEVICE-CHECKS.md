@@ -28,6 +28,7 @@ Activity 重建、输入连接、离线恢复与星图绘制使用 instrumentati
 流程覆盖登录、记录、搜索、单条笔记原位编辑、切换落盘、顶部草稿恢复、归档恢复、删除和探索导航。
 恢复脚本通过设备测试输入唯一标记，
 读取隔离包的 SQLite 与 WAL 副本，证明离线队列和未完成输入落盘后再终止进程。
+账号清理检查在设备上准备两个账号的草稿，离线取消一次，再确认删除。重启应用后检查另一个账号的草稿，并通过 Memos 核对已发送的原文。
 Linux 入口通过 `MOERISE_ANDROID_SUITE` 选择组；Maestro 场景时限由 `catalog.json` 定义，
 一组 instrumentation 限制为 10 分钟。手动类筛选使用 `MOERISE_ANDROID_TEST_CLASS` 的
 逗号分隔列表，并设置 `MOERISE_ANDROID_SUITE=diagnostic`。超时后仍提取设备诊断并关闭隔离包。

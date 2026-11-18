@@ -10,9 +10,5 @@ expect fun displayServiceTime(instant: String, timezone: String): String
 expect fun displayNoteDate(instant: String, timezone: String, english: Boolean): String
 
 @OptIn(kotlin.time.ExperimentalTime::class)
-fun displaySnapshotTime(epochMillis: Long, timezone: String): String =
-    if (epochMillis > 0) displayServiceTime(kotlin.time.Instant.fromEpochMilliseconds(epochMillis).toString(), timezone) else ""
-
-@OptIn(kotlin.time.ExperimentalTime::class)
 fun displayLocalNoteDate(epochMillis: Long, timezone: String, english: Boolean): String =
     if (epochMillis > 0) displayNoteDate(kotlin.time.Instant.fromEpochMilliseconds(epochMillis).toString(), timezone, english) else ""

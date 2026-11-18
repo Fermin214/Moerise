@@ -71,6 +71,7 @@ fun MoeriseApp(mobile: MobileController, onEditorReady: () -> Unit = {}) {
     var searchOpen by rememberSaveable(account) { mutableStateOf(false) }
     var sourceTimeline by rememberSaveable(account) { mutableStateOf("home") }
     var conflictKey by remember(account) { mutableStateOf<String?>(null) }
+    var confirmRemoval by remember(account) { mutableStateOf(false) }
     val drawer = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
     val sidebar = remember(mobile) { SearchController({ session.core }, { session.state.value.profile?.accountKey }, scope) }
@@ -233,7 +234,8 @@ fun MoeriseApp(mobile: MobileController, onEditorReady: () -> Unit = {}) {
                         onMonth = { month = it }, onDate = { showFilter(query.copy(date = if (query.date == it) "" else it)) },
                         onTag = { tag -> showFilter(query.copy(tags = if (tag in query.tags) query.tags - tag else query.tags + tag)) },
                         onArchive = { scope.launch { drawer.close() }; navigate("archive"); mobile.archive.refresh() },
-                        onLogout = { scope.launch { drawer.close() }; mobile.logout() }, selectedTags = query.tags,
+                        onLogout = { scope.launch { drawer.close() }; mobile.logout() },
+                        onRemoveAccount = { scope.launch { drawer.close() }; confirmRemoval = true }, selectedTags = query.tags,
                         selectedDate = query.date, today = serviceToday(connection.profile?.timezone ?: "UTC"),
                         stargazingEnabled = connection.profile?.stargazingEnabled != false)
                 }
@@ -247,7 +249,7 @@ fun MoeriseApp(mobile: MobileController, onEditorReady: () -> Unit = {}) {
                         account == null || page == "connect" -> Box(Modifier.safeDrawingPadding().imePadding()) {
                             ConnectionScreen(session, strings) { page = "home" }
                         }
-                        page == "settings" -> WebSettings(mobile, strings, onMenu = ::openDrawer, onSearch = { searchOpen = !searchOpen })
+                        page == "settings" -> SettingsScreen(mobile, strings, onMenu = ::openDrawer, onSearch = { searchOpen = !searchOpen })
                         page in setOf("review", "walk") -> DiscoveryScreen(page, mobile, strings,
                             if (page == "review") reviewScroll else walkScroll, onMenu = ::openDrawer,
                             onSearch = { searchOpen = !searchOpen }, onInsight = ::startInsight, onWalk = ::startWalk,
@@ -345,6 +347,24 @@ fun MoeriseApp(mobile: MobileController, onEditorReady: () -> Unit = {}) {
                     }
                 }
             }
+            if (confirmRemoval && account != null) AlertDialog(
+                onDismissRequest = { confirmRemoval = false },
+                title = { Text(strings.text("删除本机账号数据？", "Delete account data on this device?")) },
+                text = { Text(strings.text("此账号的草稿、待发请求和缓存将被删除，并退出登录。服务端笔记不受影响。",
+                    "This deletes this account’s drafts, queued changes and cache, then signs you out. Notes on the server are kept.")) },
+                confirmButton = {
+                    TextButton(modifier = Modifier.testTag("account_remove_confirm"), onClick = {
+                        confirmRemoval = false
+                        page = "home"
+                        mobile.clearLocalData(account)
+                    }) { Text(strings.text("删除并退出", "Delete and sign out"), color = MaterialTheme.colorScheme.error) }
+                },
+                dismissButton = {
+                    TextButton(modifier = Modifier.testTag("account_remove_cancel"), onClick = { confirmRemoval = false }) {
+                        Text(strings.text("取消", "Cancel"))
+                    }
+                },
+            )
             conflictKey?.let { id -> editorsByKey[id]?.let { controller ->
                 val state by controller.state.collectAsState()
                 ConflictDialog(state, controller, strings, onFork = { content, attachments ->

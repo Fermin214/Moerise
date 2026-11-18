@@ -202,6 +202,7 @@ def main():
     marker = uuid.uuid4().hex
     saved = [f"Saved offline {marker}_one", f"Saved offline {marker}_two"]
     unfinished = f"Unsent input {marker}"
+    discarded = f"Discard local {marker}"
     output = Path(args.output)
     output.mkdir(parents=True, exist_ok=True)
     report = {"marker": marker, "serial": args.serial, "started_at": time.time(), "stages": [],
@@ -248,7 +249,7 @@ def main():
             pass
 
     def remote_counts():
-        counts = {text: 0 for text in (*saved, unfinished)}
+        counts = {text: 0 for text in (*saved, unfinished, discarded)}
         page_token = ""
         seen_tokens = set()
         for _ in range(100):
@@ -275,7 +276,7 @@ def main():
         raise AssertionError("Memos 分页超过上限")
 
     def check_counts(counts):
-        if counts[unfinished] != 0 or any(counts[text] > 1 for text in saved):
+        if counts[unfinished] != 0 or counts[discarded] != 0 or any(counts[text] > 1 for text in saved):
             raise AssertionError("未保存输入被上传或保存笔记重复创建")
         return all(counts[text] == 1 for text in saved)
 
@@ -317,7 +318,13 @@ def main():
         report["stages"].append("background_auto_upload")
         command("shell", "am", "force-stop", PACKAGE)
         instrument("onlineRestart")
-        time.sleep(3)
+        command("reverse", "--remove", mapping)
+        disconnected = True
+        instrument("removeAccount")
+        command("shell", "am", "force-stop", PACKAGE)
+        command("reverse", mapping, mapping)
+        disconnected = False
+        instrument("afterRemoval")
         if not check_counts(remote_counts()):
             raise AssertionError("重开后服务器笔记数量不一致")
         report["stages"].append("remote_exactly_once_and_unfinished_absent")

@@ -208,7 +208,7 @@ internal fun deviceDiagnostics(): String {
     val session = mobile.session.state.value
     val action = mobile.noteActions.state.value
     val home = mobile.homeNote.state.value
-    val picker = mobile.insights.state.value.picker
+    val picker = mobile.insights.picker.state.value
     val search = mobile.search.state.value
     val composer = mobile.editor.state.value
     val editors = mobile.noteEditors.value.entries.joinToString { (name, controller) ->
