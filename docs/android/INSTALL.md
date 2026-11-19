@@ -1,21 +1,18 @@
 # Android 安装与升级
 
-从仓库构建的 Moerise Android 0.1.0 APK 支持 Android 10（API 29）及以上系统。
+Moerise `v0.2.0` 的 APK 支持 Android 10（API 29）及以上系统。
 GitHub 的 `android-v0.1.0` 附件来自提交 `b18b66d`，该 APK 的最低系统版本为 Android 8.0（API 26）。
 APK 包含 `arm64-v8a` 和 `x86_64`。服务地址使用 Moerise 对外 Web 的 HTTPS 入口，只填写协议、
 主机和可选端口。
 
 ## 安装
 
-0.1.0 是首次发行，以新安装数据和完整的 Room schema 1 建库。
-开发期 APK 与数据库不提供兼容迁移，首次安装不需要执行旧开发版升级流程。
-
-从发行附件下载 `moerise-android-v0.1.0.apk` 及同名 `.sha256` 文件。
+从 `v0.2.0` 的发行附件下载 `moerise-android-v0.2.0.apk` 及同名 `.sha256` 文件。
 核对 SHA-256 后，通过文件管理器安装；系统提示时为文件管理器开启安装应用权限。
 ADB 安装命令：
 
 ```bash
-adb install moerise-android-v0.1.0.apk
+adb install moerise-android-v0.2.0.apk
 ```
 
 首次启动填写服务地址和 Moerise 用户名、密码。登录后可直接在主页写作。
@@ -35,16 +32,16 @@ adb install moerise-android-v0.1.0.apk
 开发包名为 `io.github.fermin214.moerise.dev`，桌面名称为 Moerise Dev。开发包与
 发行包各自保存登录状态和本机草稿；切换到发行包前，将需要保留的草稿提交到 Core。
 
-## 后续正式版本升级
+## 升级
 
 已有正式发行版本时，使用相同包名、相同签名且更高 `versionCode` 的发行 APK 覆盖安装。
-以下参数替换为后续发行附件的实际路径：
+从 `android-v0.1.0` 升级到 `v0.2.0` 时，在下载目录执行以下命令。
 
 ```bash
-adb install -r "/绝对路径/后续版本发行包.apk"
+adb install -r moerise-android-v0.2.0.apk
 ```
 
-覆盖安装保留应用数据；不要先卸载。首次发行的 `versionCode` 为 1，后续发行必须递增。
+直接覆盖安装可以保留应用数据。`android-v0.1.0` 的 `versionCode` 为 1，`v0.2.0` 为 2。
 签名身份发生变化时，Android 会拒绝覆盖安装。调试签名安装也应通过独立包进行测试，
 避免与正式发行身份混用。
 
@@ -65,6 +62,5 @@ Windows 发行构建通过仓库公共设备锁执行，源码仓库入口见 `d
 “Windows 发行入口”和 `docs/android/DEVICE-CHECKS.md` 的“Windows 集中入口”。
 `release.ps1 sign -SigningFile <绝对路径>` 读取 `keystore`、`alias`、
 `store_password`、`key_password`，密码只通过子进程环境传给签名工具。
-首次发行使用默认 `-VersionCode 1`；后续正式版本设置比已发行版本更高的值，
-例如 `-VersionCode 2`。签名材料与 TLS 私钥放在仓库外。
+脚本默认使用 Gradle 中的 `versionCode`，也可以用 `-VersionCode` 显式指定。签名材料与 TLS 私钥放在仓库外。
 构建日志与校验结果一并保存在发行归档中。

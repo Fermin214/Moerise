@@ -11,7 +11,8 @@ on:
         description: Release to publish
         required: true
         type: choice
-        options: [core-web, android, both]
+        default: both
+        options: [both, core-web, android]
 
 permissions:
   actions: read

@@ -69,3 +69,32 @@ class PublishTests(unittest.TestCase):
                     publish.prepare(REPO, SHA, tag, [])
         with patch.object(publish, 'output', side_effect=['', f'{old}\trefs/tags/{tag}']), self.assertRaises(SystemExit):
             publish.prepare(REPO, SHA, tag, [])
+
+    def test_joint_release_prepares_one_tag_with_both_platforms(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            for arch in publish.ARCHES:
+                linux = root / f'linux-{arch}'
+                linux.mkdir()
+                (linux / f'version-{arch}.txt').write_text('0.2.0')
+                (linux / f'moerise_0.2.0_linux_{arch}.tar.gz').write_bytes(arch.encode())
+                for component, suffix in [('core', ''), ('web', '-web'), ('layout', '-layout')]:
+                    (linux / f'{component}-{arch}.txt').write_text(f'ghcr.io/{REPO}{suffix}@sha256:' + 'a' * 64)
+            android_files = [root / f'moerise-android-v0.2.0{suffix}'
+                             for suffix in ('.apk', '.apk.sha256', '.apk.json', '-notices.zip')]
+            guide = root / 'INSTALL.md'
+            for asset in [*android_files, guide]:
+                asset.write_bytes(asset.name.encode())
+            with patch.dict('os.environ', GH_REPO=REPO), \
+                    patch('sys.argv', ['publish.py', directory, SHA, 'both', '--run-id', RUN, '--dry-run']), \
+                    patch.object(publish, 'prepare', return_value=(None, {})) as prepare, \
+                    patch.object(publish, 'android_release') as android:
+                android.return_value = 'android-v0.1.0', android_files, {}, ['--notes-file', str(guide)]
+                with self.assertRaisesRegex(SystemExit, 'versions differ'):
+                    publish.main()
+                prepare.assert_not_called()
+                android.return_value = 'android-v0.2.0', android_files, {}, ['--notes-file', str(guide)]
+                publish.main()
+                prepare.assert_called_once_with(REPO, SHA, 'v0.2.0', [
+                    root / 'linux-amd64/moerise_0.2.0_linux_amd64.tar.gz',
+                    root / 'linux-arm64/moerise_0.2.0_linux_arm64.tar.gz', *android_files, guide])
