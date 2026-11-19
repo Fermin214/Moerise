@@ -2,6 +2,26 @@ import assert from 'node:assert/strict';
 import { setTimeout as delay } from 'node:timers/promises';
 
 export const fixtureInsightReply = 'Android 洞察 🌌\n\n来自隔离模型的回复。';
+let chatRequestNumber = 0;
+
+export function observeFixtureApi(req, res, log = console.info) {
+  const chatMessage = req.method === 'POST' && /^\/api\/app\/v1\/chats\/[^/?]+\/messages(?:\?|$)/.test(req.url);
+  const family = chatMessage ? 'chat_message' : /^\/api\/app\/v1\/(search|notes)(?:[/?]|$)/.exec(req.url)?.[1];
+  if (!family) return;
+  const started = performance.now();
+  const details = {};
+  if (chatMessage) details.request_no = ++chatRequestNumber;
+  if (family === 'notes' && req.method === 'GET') details.paginated = new URL(req.url, 'http://localhost').searchParams.has('page_token');
+  const record = event => log(JSON.stringify({
+    source: 'fixture_web', time: new Date().toISOString(), event, family, method: req.method,
+    status: res.headersSent ? res.statusCode : null, ...details, elapsed_ms: Math.round(performance.now() - started),
+  }));
+  if (chatMessage) {
+    record('api_request');
+    res.once('close', () => { if (!res.writableFinished) record('api_interrupted'); });
+  }
+  res.once('finish', () => record('api_response'));
+}
 
 // 合并导入、分页、增量检查的压力，给 Memos 原文复查留出请求余量。
 export function tuneFixtureConfig(config) {

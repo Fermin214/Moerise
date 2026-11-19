@@ -265,6 +265,9 @@ ActivityScenario 管理重建与销毁，兼容限制后台 Activity 启动的�
 系统键盘的候选选择与切换操作见交互检查表。
 失败用例的截图、连接和操作状态、异常和全部 Java 线程栈、应用日志写入 `.local/android/device-diagnostics.tar`；
 CI 同时保存 `device-fixture-core.log` 和 `device-fixture-fixture.log`，用于区分界面状态与来源服务错误。
+后者用 `chat_message` 标出到达隔离代理的生成请求。同一个 `request_no` 的 `api_request` 和
+`api_response` 或 `api_interrupted` 分别记录开始和结束。中断时 `status` 为空表示代理尚未发出响应头。
+即使状态码为 200，也要从 Core 读回回答的完成状态。序号由隔离服务分配，日志省略会话 ID、请求正文和查询参数。
 
 恢复入口由 `acceptance.ps1 -Recovery` 调用，分阶段运行 `OfflineQueueTest`：
 

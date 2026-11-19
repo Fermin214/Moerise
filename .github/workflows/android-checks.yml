@@ -341,6 +341,7 @@ jobs:
         env:
           MOERISE_ANDROID_FIXTURE_BINARY: ${{ runner.temp }}/fixture/moerise
         run: |
+          node --test scripts/android/fixture-policy.test.mjs
           scripts/android/live-check.sh
           if [[ "$GITHUB_EVENT_NAME" == workflow_dispatch ]]; then scripts/android/stars-check.sh; fi
       - uses: actions/upload-artifact@v4

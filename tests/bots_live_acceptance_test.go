@@ -20,6 +20,29 @@ import (
 	moerise "moerise/internal"
 )
 
+const liveReceiptWindow = 2 * time.Minute
+
+func privateReceiptDeadline(lastSlot, started time.Time) time.Time {
+	if started.After(lastSlot) {
+		return started.Add(liveReceiptWindow)
+	}
+	return lastSlot.Add(liveReceiptWindow)
+}
+
+func TestPrivateReceiptDeadline(t *testing.T) {
+	lastSlot := time.Date(2026, 11, 19, 12, 0, 0, 0, time.UTC)
+	for _, offsets := range []struct{ start, deadline time.Duration }{
+		{-time.Hour, 2 * time.Minute},
+		{2 * time.Minute, 4 * time.Minute},
+		{4 * time.Minute, 6 * time.Minute},
+	} {
+		got := privateReceiptDeadline(lastSlot, lastSlot.Add(offsets.start))
+		if want := lastSlot.Add(offsets.deadline); !got.Equal(want) {
+			t.Fatalf("start offset %v: deadline %v, want %v", offsets.start, got, want)
+		}
+	}
+}
+
 func TestFourLiveBotDestinations(t *testing.T) {
 	path := os.Getenv("MOERISE_BOTS_LIVE_CONFIG")
 	if path == "" {
@@ -92,7 +115,12 @@ func TestFourLiveBotDestinations(t *testing.T) {
 	if first.Format(time.DateOnly) != slots[3].Format(time.DateOnly) {
 		t.Fatal("choose four consecutive slots on the same local day, outside a clock change")
 	}
-	ctx, cancel := context.WithDeadline(t.Context(), slots[len(slots)-1].Add(3*time.Minute))
+	privateKinds := []string{"qq", "telegram", "feishu-app"}
+	lastCheck := slots[3].Add(time.Duration(len(privateKinds)) * liveReceiptWindow)
+	if lastSlot := slots[len(slots)-1]; lastSlot.After(lastCheck) {
+		lastCheck = lastSlot
+	}
+	ctx, cancel := context.WithDeadline(t.Context(), lastCheck.Add(liveReceiptWindow+time.Minute))
 	defer cancel()
 	h := newHarness(t)
 	h.stop()
@@ -157,7 +185,7 @@ func TestFourLiveBotDestinations(t *testing.T) {
 	}
 	await(t, first, "three connected bots", func() bool {
 		view := client.call("GET", "/api/app/v1/settings", nil, 200)["channel_status"].(map[string]any)
-		for _, kind := range []string{"qq", "telegram", "feishu-app"} {
+		for _, kind := range privateKinds {
 			if view[kind].(map[string]any)["state"] != "connected" {
 				return false
 			}
@@ -187,7 +215,7 @@ func TestFourLiveBotDestinations(t *testing.T) {
 	}
 	t.Log("请在三个私聊各发一句带 #验收 的笔记，再发 /回顾 或 /review。")
 	checkPrivate := func(t *testing.T, kind string) {
-		await(t, slots[3].Add(2*time.Minute), kind+" private note and review", func() bool {
+		await(t, privateReceiptDeadline(slots[3], time.Now()), kind+" private note and review", func() bool {
 			var noteName, batchID string
 			var stamp time.Time
 			var err error
@@ -220,14 +248,18 @@ func TestFourLiveBotDestinations(t *testing.T) {
 				t.Fatalf("%s source note missing: %v", kind, err)
 			}
 			if note.Visibility != "PRIVATE" || note.Creator != settings.Memos.User {
-				t.Fatalf("%s source note has unexpected visibility or author", kind)
+				t.Fatalf("%s source note: private=%t expected_author=%t", kind, note.Visibility == "PRIVATE", note.Creator == settings.Memos.User)
 			}
 			if !strings.Contains(note.Content, "#验收") || !slices.Contains(note.Tags, "验收") {
 				t.Fatalf("%s source note: marker=%t indexed_tag=%t", kind, strings.Contains(note.Content, "#验收"), slices.Contains(note.Tags, "验收"))
 			}
 			plan, err := app.Reviews.Daily(ctx, stamp)
-			if err != nil || plan.ID != batchID || plan.Date != stamp.In(location).Format(time.DateOnly) || len(plan.Items) == 0 {
-				t.Fatalf("%s request-day plan differs: %v", kind, err)
+			if err != nil {
+				t.Fatalf("%s request-day plan: %v", kind, err)
+			}
+			expectedDay := stamp.In(location).Format(time.DateOnly)
+			if plan.ID != batchID || plan.Date != expectedDay || len(plan.Items) == 0 {
+				t.Fatalf("%s request-day plan: expected_batch=%t expected_day=%t items=%d", kind, plan.ID == batchID, plan.Date == expectedDay, len(plan.Items))
 			}
 			return true
 		})
@@ -240,7 +272,7 @@ func TestFourLiveBotDestinations(t *testing.T) {
 			client.call("PATCH", "/api/app/v1/settings", map[string]any{"version": view["version"],
 				"settings": map[string]any{"channel": map[string]string{"kind": kind}, "notifications": map[string]bool{"enabled": true}}}, 200)
 			t.Logf("%s 定时目的地 %s", slot.Format(time.RFC3339), kind)
-			await(t, slot.Add(2*time.Minute), kind+" scheduled review", func() bool {
+			await(t, slot.Add(liveReceiptWindow), kind+" scheduled review", func() bool {
 				if time.Now().Before(slot) {
 					return false
 				}
@@ -272,7 +304,7 @@ func TestFourLiveBotDestinations(t *testing.T) {
 			}
 		})
 		if index == 3 {
-			for _, privateKind := range kinds[:3] {
+			for _, privateKind := range privateKinds {
 				t.Run("private/"+privateKind, func(t *testing.T) { checkPrivate(t, privateKind) })
 			}
 		}

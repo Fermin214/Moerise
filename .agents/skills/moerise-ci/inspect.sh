@@ -1,8 +1,36 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+if [[ ${1:-} == scope && ( $# == 3 || $# == 4 ) ]]; then
+    base=$(git rev-parse --verify --end-of-options "$2^{commit}")
+    first=$(git rev-parse --verify --end-of-options "$3^{commit}")
+    candidate=$(git rev-parse --verify --end-of-options "${4:-HEAD}^{commit}")
+    printf '目标 %s (%s)\n功能首提交 %s\n候选提交 %s\n' "$2" "$base" "$first" "$candidate"
+    if ! git merge-base --is-ancestor "$first" "$candidate" || git merge-base --is-ancestor "$first" "$base"; then
+        echo '功能首提交必须在候选提交历史中，且尚未进入目标分支。' >&2
+        exit 1
+    fi
+    commits=$(git rev-list --reverse --topo-order "$base..$candidate")
+    echo '目标分支以外的提交'
+    git log --reverse --topo-order --oneline "$base..$candidate"
+    echo 'PR 文件差异'
+    git diff --name-status "$base...$candidate"
+    foreign=()
+    while IFS= read -r commit; do
+        if ! git merge-base --is-ancestor "$first" "$commit"; then
+            foreign+=("$commit")
+        fi
+    done <<< "$commits"
+    if (( ${#foreign[@]} )); then
+        echo '以下提交既未进入目标分支，也不源于功能首提交：' >&2
+        git show -s --format='%h %s' "${foreign[@]}" >&2
+        exit 1
+    fi
+    exit 0
+fi
+
 if [[ $# != 2 || ! ( $1 == workflow || ( $1 =~ ^(pr|run)$ && $2 =~ ^[0-9]+$ ) ) ]]; then
-    echo 'Usage: inspect.sh workflow <base-branch> | pr <number> | run <id>' >&2
+    echo 'Usage: inspect.sh scope <base-ref> <first-feature-commit> [candidate] | workflow <base-branch> | pr <number> | run <id>' >&2
     exit 2
 fi
 
