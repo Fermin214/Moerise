@@ -1,5 +1,6 @@
 import { setUILanguage } from './browser-helpers.mjs';
 import assert from 'node:assert/strict';
+import { returningBrowser } from './browser-helpers.mjs';
 import http from 'node:http';
 import { once } from 'node:events';
 import { text as readRequestText } from 'node:stream/consumers';
@@ -87,6 +88,7 @@ async function fixture(t, mobile = false, language = 'zh-CN') {
   browser = await browserType.launch({ headless: true, channel: process.env.MOERISE_PLAYWRIGHT_CHANNEL || undefined });
   const context = await browser.newContext({ locale: language, viewport: mobile ? { width: 390, height: 844 } : { width: 1360, height: 960 }, hasTouch: mobile, isMobile: mobile });
   const page = await context.newPage(), errors = [];
+  await returningBrowser(page);
   page.on('pageerror', error => errors.push(error.message)); t.after(() => assert.deepEqual(errors, []));
   return { state, page, url, context };
 }
@@ -129,19 +131,16 @@ test('stars pick the closest visible note and bring offscreen keyboard focus int
   await point.press('Enter'); await page.locator('.map-note[data-name="memos/n1"]').waitFor();
 });
 
-test('star regeneration recovers from worker failure with and without a published snapshot', async t => {
+test('retry reads the published snapshot without starting a rebuild', async t => {
   const { page, state, url } = await fixture(t);
   state.malformed = { status: 'unavailable', algorithm: 'umap-balanced-v1', layout_version: '',
     layout_frame: '', vector_generation: '', projection_revision: 3, points: [], topics: [], links: [] };
   await login(page, url);
   const rebuild = page.getByRole('button', { name: '重新生成星图', exact: true });
-  const refresh = page.getByRole('button', { name: '刷新地图', exact: true });
+  const refresh = page.getByRole('button', { name: '重试', exact: true });
   const queued = () => state.requests.filter(request => request.path === '/map/rebuild').length;
-  await rebuild.click(); await wait(() => queued() === 1);
-  assert.equal(await rebuild.isDisabled(), true);
-  await refresh.click();
-  await page.getByRole('alert').filter({ hasText: '星图生成失败，请重试。' }).waitFor();
-  assert.equal(await rebuild.isEnabled(), true);
+  assert.equal(await rebuild.count(), 0);
+  await refresh.waitFor();
 
   state.malformed = { status: 'ready', algorithm: 'umap-balanced-v1', layout_version: state.version,
     layout_frame: state.frame, vector_generation: 'published', projection_revision: 3, topics: [], links: [],
@@ -149,19 +148,16 @@ test('star regeneration recovers from worker failure with and without a publishe
       x: i, y: 0, semantic: true, tags: note.tags,
       stellar: { seed: .5, role: 'ordinary', radius: 1, luminosity: .6 } })) };
   await refresh.click(); await ready(page);
-  await rebuild.click(); await wait(() => queued() === 2);
   state.malformed.update_state = 'unavailable';
-  await refresh.click();
-  await page.getByRole('alert').filter({ hasText: '星图生成失败，请重试。' }).waitFor();
-  assert.equal(await rebuild.isEnabled(), true);
+  await page.locator('#map-field').press('r');
+  await page.getByRole('alert').filter({ hasText: '观星暂时不可用' }).waitFor();
   assert.equal(await page.locator('.map-dot').count(), 2);
 
   delete state.malformed.update_state;
-  await rebuild.click(); await wait(() => queued() === 3);
   state.malformed.layout_frame = 'c'.repeat(64);
   state.malformed.layout_version = 'd'.repeat(64);
   await refresh.click(); await ready(page);
-  assert.equal(await rebuild.isEnabled(), true);
+  assert.equal(queued(), 0);
 });
 
 test('full workspace map, protected complete reading, archive, pure file and independent detail return', async t => {
@@ -189,7 +185,7 @@ test('full workspace map, protected complete reading, archive, pure file and ind
   assert.equal(await card(page).locator('a.attachment').getAttribute('href'), '/api/app/v1/notes/n5/attachments/file/content');
   assert.equal(state.requests.filter(req => !['GET', 'HEAD'].includes(req.method) && req.path !== '/session').length, 0);
   assert.equal(state.requests.filter(req => req.path === '/models').length, 0);
-  assert.equal(await page.evaluate(() => localStorage.length + sessionStorage.length), 0);
+  assert.deepEqual(await page.evaluate(() => [...Object.keys(localStorage), ...Object.keys(sessionStorage)]), ['moerise.privacy.v1']);
   assert.equal(await page.evaluate(() => JSON.stringify(history.state).includes('\u957f\u6b63\u6587')), false);
 });
 
@@ -238,7 +234,7 @@ test('worker failure preserves map rendering and reading with reduced motion', a
   assert.equal(attempts, 1);
   await marker(page, 0).click(); await card(page).waitFor();
   assert.equal(await card(page).getAttribute('data-name'), 'memos/n0');
-  await page.getByRole('button', { name: '放大', exact: true }).click();
+  await page.locator('#map-field').press('+');
   await page.getByRole('button', { name: '显示全图', exact: true }).click();
   await marker(page, 0).waitFor({ state: 'visible' });
 });
@@ -279,7 +275,7 @@ test('a thousand notes retain regions through zoom and reveal bounded live excer
     for (let i = 0; i < 14; i++) {
       await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
       if (await page.locator('.map-excerpt').count()) return;
-      await page.getByRole('button', { name: '放大', exact: true }).click();
+      await page.locator('#map-field').press('+');
     }
   }
   for (const viewport of [{ width: 1360, height: 960 }, { width: 390, height: 844 }]) {
@@ -367,7 +363,13 @@ test('temporary failures retain published points; index states clear them and so
   assert.equal(await page.locator('.map-dot').count(), 6); assert.equal(await card(page).count(), 1);
   state.error = null; state.notes[0].content = '\u66f4\u65b0\u540e\u7684\u5b8c\u6574\u6b63\u6587'; state.notes[0].source_hash = 'changed'; state.version = 'c'.repeat(64);
   await page.waitForFunction(() => document.querySelector('.map-note .note-content')?.textContent.includes('\u66f4\u65b0\u540e\u7684\u5b8c\u6574\u6b63\u6587'));
-  for (const status of ['waiting', 'building', 'unavailable', 'disabled', 'empty']) {
+  for (const status of ['waiting', 'building', 'unavailable']) {
+    state.status = status;
+    await Promise.all([page.waitForResponse(response => new URL(response.url()).pathname.endsWith('/map')), page.locator('#map-field').press('r')]);
+    assert.equal(await page.locator('.map-dot').count(), 6);
+    assert.equal(await card(page).count(), 1);
+  }
+  for (const status of ['disabled', 'empty']) {
     state.status = status; await page.locator('#map-field').press('r');
     await page.waitForFunction(() => document.querySelectorAll('.map-dot').length === 0 && document.querySelector('.map-page').getAttribute('aria-busy') === 'false');
     assert.equal(await card(page).count(), 0); assert.ok(await page.locator('.map-page > p[role="status"]').isVisible());
@@ -420,14 +422,15 @@ test('each map history entry restores its own viewport and reader on back, reloa
   await marker(page, 1).click(); await page.waitForFunction(() => document.querySelector('.map-note')?.dataset.name === 'memos/n1');
   await page.locator('#map-field').press('+'); await page.locator('#map-field').press('ArrowDown'); const second = await view(page);
   assert.notDeepEqual(first, second);
-  await page.evaluate(() => history.go(-2)); await page.locator('.map-note[data-name="memos/n0"]').waitFor();
-  await ready(page); assert.deepEqual(await view(page), first);
-  await page.evaluate(() => history.go(2)); await page.locator('.map-note[data-name="memos/n1"]').waitFor();
-  await ready(page); assert.deepEqual(await view(page), second);
-  await page.goBack(); await page.waitForURL(url + '/'); await page.goBack(); await ready(page);
+  await page.goBack(); await card(page).waitFor({ state: 'hidden' });
+  assert.deepEqual(await view(page), { ...second, selected: '' });
+  await page.goBack(); await page.waitForURL(url + '/');
+  await page.goBack(); await ready(page);
   await page.locator('.map-note[data-name="memos/n0"]').waitFor(); assert.deepEqual(await view(page), first);
   await page.reload(); await ready(page); await page.locator('.map-note[data-name="memos/n0"]').waitFor(); assert.deepEqual(await view(page), first);
   await page.goForward(); await page.waitForURL(url + '/'); await page.goForward(); await ready(page);
+  assert.equal(await card(page).count(), 0);
+  await page.goForward();
   await page.locator('.map-note[data-name="memos/n1"]').waitFor(); assert.deepEqual(await view(page), second);
 
   await page.locator('.skip-link').focus(); await page.keyboard.press('Enter'); await page.waitForURL(url + '/map#main');
@@ -436,11 +439,30 @@ test('each map history entry restores its own viewport and reader on back, reloa
   await page.locator('nav a[href="/map"]').click(); await ready(page);
   await page.locator('#map-field').press('Home');
   await marker(page, 0).click(); await page.locator('.map-note[data-name="memos/n0"]').waitFor();
-  await page.evaluate(() => history.go(-2)); await page.waitForURL(url + '/map#main');
+  await page.evaluate(() => history.go(-3)); await page.waitForURL(url + '/map#main');
   await page.locator('.map-note[data-name="memos/n1"]').waitFor(); await ready(page);
   assert.deepEqual(await view(page), second);
 });
 
+test('fullscreen browser back closes the reader first and keyboard activation replaces the open note', async t => {
+  const { page, state, url } = await fixture(t); await login(page, url); await ready(page);
+  const full = page.getByRole('button', { name: '全屏预览' });
+  await full.click(); await page.waitForFunction(() => !!document.fullscreenElement);
+  await marker(page, 0).dblclick(); await page.locator('.map-note[data-name="memos/n0"]').waitFor();
+  await marker(page, 1).press('Enter'); await page.locator('.map-note[data-name="memos/n1"]').waitFor();
+  const size = await page.evaluate(() => history.length);
+  const before = state.requests.filter(row => row.path === '/notes/n0').length;
+  await marker(page, 0).dblclick();
+  await page.locator('.map-note[data-name="memos/n0"]').waitFor();
+  assert.equal(await page.evaluate(() => history.length), size);
+  assert.equal(state.requests.filter(row => row.path === '/notes/n0').length, before + 1);
+  await page.goBack(); await card(page).waitFor({ state: 'hidden' });
+  assert.equal(await full.getAttribute('aria-pressed'), 'true');
+  await page.goBack(); await page.waitForFunction(() => !document.fullscreenElement);
+  assert.equal(await full.getAttribute('aria-pressed'), 'false');
+  await page.goForward(); await page.goForward(); await page.locator('.map-note[data-name="memos/n0"]').waitFor();
+  assert.equal(await full.getAttribute('aria-pressed'), 'true');
+});
 
 test('focus and live note changes keep the daily snapshot without automatic refresh', async t => {
   const { page, state, url } = await fixture(t); await login(page, url); await ready(page);

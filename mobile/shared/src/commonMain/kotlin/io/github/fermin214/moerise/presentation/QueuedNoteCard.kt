@@ -11,6 +11,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import io.github.fermin214.moerise.data.CoreJson
@@ -37,13 +39,11 @@ fun QueuedNoteCard(
             Row(Modifier.fillMaxWidth().heightIn(min = 32.dp), verticalAlignment = Alignment.CenterVertically) {
                 Text(date, fontSize = 13.sp, color = MoeriseColors.Muted, modifier = Modifier.weight(1f)
                     .heightIn(min = 44.dp).wrapContentHeight())
-                WebIcon(
-                    if (draft.conflictJson != null) WebIcon.Alert else WebIcon.Upload,
-                    if (draft.conflictJson != null) strings.text("同步冲突", "Sync conflict")
-                        else strings.text("等待同步", "Pending sync"),
-                    modifier = Modifier.size(16.dp),
-                    tint = if (draft.conflictJson != null) Color(0xFFB42318) else Color(0xFFB47724),
-                )
+                SyncGlyph(if (draft.conflictJson != null) SyncStatus.ATTENTION else SyncStatus.PENDING,
+                    Modifier.size(16.dp).semantics {
+                        contentDescription = if (draft.conflictJson != null) strings.text("同步冲突", "Sync conflict")
+                            else strings.text("等待同步", "Pending sync")
+                    })
                 Spacer(Modifier.width(8.dp))
                 WebNoteMenu(strings, listOf(NoteMenuAction(
                     if (draft.conflictJson != null) strings.text("处理冲突", "Resolve conflict") else strings.text("编辑", "Edit"),

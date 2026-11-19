@@ -11,6 +11,8 @@ import (
 	"net/http"
 	"slices"
 	"strings"
+
+	"moerise/internal/telemetry"
 )
 
 type API struct {
@@ -137,6 +139,11 @@ func (a *API) route(writer http.ResponseWriter, request *http.Request) (any, int
 			return badMethod()
 		}
 		return openAPISpec(), 200, nil
+	case "/telemetry/schema-v1.json":
+		if method != http.MethodGet {
+			return badMethod()
+		}
+		return json.RawMessage(telemetry.Schema), 200, nil
 	case "/health/live":
 		if method != "GET" {
 			return badMethod()

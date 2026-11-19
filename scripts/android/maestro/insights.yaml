@@ -18,21 +18,16 @@ onFlowComplete:
     file: subflows/add-material.yaml
     label: Add the exact dedicated source note
 - tapOn:
-    id: chat_material_toggle
+    id: chat_add_materials
     enabled: true
     label: Activate the specified control
-- extendedWaitUntil:
-    notVisible:
-      id: chat_remove_${NOTE_NAME}
-    timeout: 15000
-    label: Wait for the expected UI state
 - tapOn:
-    id: chat_material_toggle
+    id: chat_picker_selected
     enabled: true
     label: Activate the specified control
 - extendedWaitUntil:
     visible:
-      id: chat_remove_${NOTE_NAME}
+      id: chat_picker_read_${NOTE_NAME}
       enabled: true
     timeout: 15000
     label: Wait for the expected UI state
@@ -41,7 +36,7 @@ onFlowComplete:
     label: Capture the isolated test UI
 - tapOn:
     enabled: true
-    text: 在主页查看|View on home
+    id: chat_picker_read_${NOTE_NAME}
     label: Activate the specified control
 - extendedWaitUntil:
     visible:
@@ -71,7 +66,7 @@ onFlowComplete:
     label: Return to the independent insight
 - extendedWaitUntil:
     visible:
-      id: chat_remove_${NOTE_NAME}
+      id: chat_material_summary
     timeout: 15000
     label: Wait for the expected UI state
 - tapOn:
@@ -104,6 +99,41 @@ onFlowComplete:
 - assertNotVisible:
     id: chat_error
     label: Check the expected UI state
+- tapOn:
+    id: chat_insight
+    enabled: true
+    label: Generate the first reply with the fixture model
+- extendedWaitUntil:
+    visible:
+      id: chat_reply_completed
+    timeout: 65000
+    label: Wait for the completed reply in the conversation
+- assertNotVisible:
+    id: chat_add_materials
+    label: Check that selection has given way to the conversation
+- tapOn:
+    id: chat_session_menu
+    enabled: true
+    label: Open the conversation actions
+- tapOn:
+    id: chat_save_selection
+    enabled: true
+    label: Open the message selection
+- extendedWaitUntil:
+    visible:
+      id: chat_save_confirm
+      enabled: true
+    timeout: 15000
+    label: Require the completed reply to be selected by default
+- tapOn:
+    id: chat_save_confirm
+    enabled: true
+    label: Save the selected reply as a note
+- extendedWaitUntil:
+    notVisible:
+      id: chat_save_dialog
+    timeout: 65000
+    label: Require acknowledgement of the saved note
 - runFlow:
     file: subflows/home.yaml
     label: Enter the signed-in home without clearing data

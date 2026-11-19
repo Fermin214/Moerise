@@ -2,6 +2,8 @@ package io.github.fermin214.moerise
 
 import android.os.Bundle
 import android.app.Application
+import android.os.Process
+import android.os.SystemClock
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -37,6 +39,10 @@ class MainActivity : ComponentActivity() {
             MoeriseApp(model.mobile) {
                 if (!editorReady) {
                     editorReady = true
+                    val started = if (firstActivity) System.currentTimeMillis() -
+                        (SystemClock.elapsedRealtime() - Process.getStartElapsedRealtime()) else null
+                    firstActivity = false
+                    model.mobile.privacy.editorDisplayed(started)
                     Trace.endAsyncSection("note_editor_ready", hashCode())
                     reportFullyDrawn()
                 }
@@ -79,4 +85,6 @@ class MainActivity : ComponentActivity() {
         if (!editorReady) Trace.endAsyncSection("note_editor_ready", hashCode())
         super.onDestroy()
     }
+
+    private companion object { var firstActivity = true }
 }

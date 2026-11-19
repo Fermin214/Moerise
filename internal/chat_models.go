@@ -28,18 +28,20 @@ type ChatTurn struct {
 	Prompt          string         `json:"prompt"`
 	Model           string         `json:"model"`
 	Materials       []ChatMaterial `json:"materials"`
+	MaterialVersion int64          `json:"material_version"`
 	Usage           LLMUsage       `json:"usage"`
 }
 
 type ChatSummary struct {
-	ID            string `json:"id"`
-	Title         string `json:"title"`
-	Preview       string `json:"preview"`
-	PreviewKind   string `json:"preview_kind"`
-	Version       int64  `json:"version"`
-	MaterialCount int    `json:"material_count"`
-	CreatedAt     string `json:"created_at"`
-	UpdatedAt     string `json:"updated_at"`
+	ID              string `json:"id"`
+	Title           string `json:"title"`
+	Preview         string `json:"preview"`
+	PreviewKind     string `json:"preview_kind"`
+	Version         int64  `json:"version"`
+	MaterialCount   int    `json:"material_count"`
+	MaterialVersion int64  `json:"material_version"`
+	CreatedAt       string `json:"created_at"`
+	UpdatedAt       string `json:"updated_at"`
 }
 
 type ChatSession struct {
@@ -49,15 +51,17 @@ type ChatSession struct {
 }
 
 type ChatCreate struct {
-	RequestID string   `json:"request_id"`
-	Title     string   `json:"title"`
-	Names     []string `json:"names"`
+	RequestID string         `json:"request_id"`
+	Title     string         `json:"title"`
+	Names     []string       `json:"names,omitempty"`
+	Materials []ChatMaterial `json:"materials,omitempty"`
 }
 
 type ChatUpdate struct {
-	Version int64    `json:"version"`
-	Title   string   `json:"title"`
-	Names   []string `json:"names"`
+	Version   int64          `json:"version"`
+	Title     string         `json:"title"`
+	Names     []string       `json:"names,omitzero"`
+	Materials []ChatMaterial `json:"materials,omitzero"`
 }
 
 type ChatGenerate struct {
@@ -74,6 +78,33 @@ type chatSave struct {
 }
 
 const ChatCharacterLimit = 20000
+const ChatSourceLimit = 1000
+
+type ChatCandidate struct {
+	ChatMaterial
+	Characters int    `json:"characters"`
+	Preview    string `json:"preview"`
+	CreateTime string `json:"create_time"`
+	State      string `json:"state"`
+}
+
+type ChatMessageRef struct {
+	RequestID string `json:"request_id"`
+	Role      string `json:"role"`
+	Version   int64  `json:"version"`
+}
+
+type ChatSaveSelection struct {
+	OperationKey      string           `json:"operation_key"`
+	Language          string           `json:"language"`
+	Messages          []ChatMessageRef `json:"messages"`
+	ConfirmIncomplete bool             `json:"confirm_incomplete"`
+}
+
+type ChatSaveReceipt struct {
+	Name   string `json:"name"`
+	Status string `json:"status"`
+}
 
 type ChatMaterials struct {
 	Notes      []Note         `json:"notes"`

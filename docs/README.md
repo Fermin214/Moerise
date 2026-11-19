@@ -15,6 +15,7 @@
 | 向量模型 | [指南](EMBEDDING.md) |
 | 检索与漫步 | [指南](SEARCH.md) |
 | 系统设置 | [指南](SETTINGS.md) |
+| 使用与故障统计 | [隐私说明与字段清单](PRIVACY.md) |
 | 产品架构 | [指南](PRODUCT-ARCHITECTURE.md) |
 | 系统设计 | [指南](DESIGN.md) |
 | API v1 | [规范](API-V1.md) |

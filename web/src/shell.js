@@ -1,4 +1,4 @@
-export function initShell() {
+export function initShell(onOpenNavigation) {
   const app = document.getElementById('app'), main = document.getElementById('main');
   const sidebar = document.getElementById('sidebar'), dialog = document.getElementById('navigation-dialog');
   const header = document.getElementById('mobile-header'), menu = document.getElementById('navigation-toggle');
@@ -62,6 +62,7 @@ export function initShell() {
     menu.setAttribute('aria-expanded', 'true');
     document.documentElement.classList.add('navigation-open');
     close.focus({ preventScroll: true });
+    onOpenNavigation();
   }
   function layout() {
     const focused = document.activeElement, editingSearch = search.contains(focused);

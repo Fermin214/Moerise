@@ -1,4 +1,4 @@
-import { setUILanguage } from './browser-helpers.mjs';
+import { setUILanguage, returningBrowser } from './browser-helpers.mjs';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import { once } from 'node:events';
@@ -114,6 +114,7 @@ async function fixture(t, language = 'zh-CN', options = {}) {
   });
   browser = await browserType.launch({ headless: true, channel: process.env.MOERISE_PLAYWRIGHT_CHANNEL || undefined });
   const page = await browser.newPage({ locale: language, viewport: { width: 1360, height: 960 }, ...options }), errors = [];
+  await returningBrowser(page);
   await page.clock.setFixedTime(new Date('2026-10-30T04:00:00Z'));
   page.on('pageerror', error => errors.push(error.message));
   t.after(() => assert.deepEqual(errors, []));

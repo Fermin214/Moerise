@@ -110,9 +110,10 @@ jobs:
         with:
           path: |
             .local/android/fixture-artifacts.json
+            .local/android/fixture-upgrade.apk
             mobile/androidApp/build/outputs/apk/fixture/androidApp-fixture.apk
             mobile/androidApp/build/outputs/apk/androidTest/fixture/androidApp-fixture-androidTest.apk
-          key: fixture-apks-${{ runner.os }}-${{ runner.arch }}-api36-tools36.0.0-temurin${{ steps.java.outputs.version }}-${{ steps.sources.outputs.sha }}
+          key: fixture-apks-upgrade-${{ runner.os }}-${{ runner.arch }}-api36-tools36.0.0-temurin${{ steps.java.outputs.version }}-${{ steps.sources.outputs.sha }}
       - uses: actions/cache/restore@v4
         if: inputs.fixture_run == '' && steps.apks.outputs.cache-hit != 'true'
         with:
@@ -133,6 +134,10 @@ jobs:
           source scripts/android/environment.sh
           android_gradle :androidApp:assembleFixture :androidApp:assembleFixtureAndroidTest
           python3 scripts/android/fixture-artifacts.py write
+          cp mobile/androidApp/build/outputs/apk/fixture/androidApp-fixture.apk "$RUNNER_TEMP/fixture-base.apk"
+          android_gradle -PmoeriseVersionCode=2 :androidApp:assembleFixture
+          mv mobile/androidApp/build/outputs/apk/fixture/androidApp-fixture.apk .local/android/fixture-upgrade.apk
+          mv "$RUNNER_TEMP/fixture-base.apk" mobile/androidApp/build/outputs/apk/fixture/androidApp-fixture.apk
       - run: python3 scripts/android/fixture-artifacts.py verify
       - uses: actions/upload-artifact@v4
         with:
@@ -140,6 +145,7 @@ jobs:
           include-hidden-files: true
           path: |
             .local/android/fixture-artifacts.json
+            .local/android/fixture-upgrade.apk
             mobile/androidApp/build/outputs/apk/fixture/androidApp-fixture.apk
             mobile/androidApp/build/outputs/apk/androidTest/fixture/androidApp-fixture-androidTest.apk
       - uses: actions/upload-artifact@v4
@@ -149,6 +155,11 @@ jobs:
           path: |
             .local/android/fixture-artifacts.json
             mobile/androidApp/build/outputs/apk/fixture/androidApp-fixture.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android-fixture-upgrade
+          include-hidden-files: true
+          path: .local/android/fixture-upgrade.apk
       - uses: actions/upload-artifact@v4
         with:
           name: android-fixture-tests
@@ -169,6 +180,11 @@ jobs:
         with:
           name: android-fixture-target
           path: .
+      - uses: actions/download-artifact@v4
+        if: matrix.suite == 'recovery'
+        with:
+          name: android-fixture-upgrade
+          path: .local/android
       - uses: actions/download-artifact@v4
         if: ${{ !contains(fromJSON(needs.fixture.outputs.maestro_suites), matrix.suite) }}
         with:
@@ -208,6 +224,7 @@ jobs:
         uses: reactivecircus/android-emulator-runner@4c44018e59b437e86cdfc41da381398f93ed8808
         env:
           MOERISE_ANDROID_SUITE: ${{ matrix.suite }}
+          MOERISE_ANDROID_UPGRADE_APK: ${{ matrix.suite == 'recovery' && '.local/android/fixture-upgrade.apk' || '' }}
           MOERISE_ANDROID_SKIP_BUILD: '1'
           MOERISE_ANDROID_RETRY_TRANSPORT: '1'
           MOERISE_ANDROID_FIXTURE_BINARY: ${{ runner.temp }}/fixture/moerise

@@ -74,6 +74,8 @@ interface LocalDao {
     suspend fun drafts(key: String): List<DraftEntity>
     @Query("SELECT draftId FROM pending_writes WHERE accountKey = :key AND status != 'conflict'")
     suspend fun pendingDraftIds(key: String): List<String>
+    @Query("SELECT EXISTS(SELECT 1 FROM pending_writes WHERE accountKey = :key AND method = 'POST' AND path = '/notes' AND status != 'conflict')")
+    suspend fun hasPendingCreation(key: String): Boolean
     @Query("SELECT pending_writes.* FROM pending_writes INNER JOIN drafts ON drafts.id = pending_writes.draftId WHERE pending_writes.accountKey = :key AND pending_writes.status IN ('prepared', 'unknown') ORDER BY pending_writes.rowid")
     suspend fun queuedWrites(key: String): List<PendingWriteEntity>
     @Query("SELECT * FROM drafts WHERE id = :id") suspend fun draft(id: String): DraftEntity?
@@ -95,6 +97,8 @@ interface LocalDao {
     @Query("SELECT * FROM snapshots WHERE accountKey = :key AND filterKey = :filter")
     suspend fun snapshot(key: String, filter: String): SnapshotEntity?
     @Query("DELETE FROM snapshots WHERE accountKey = :key") suspend fun deleteSnapshots(key: String)
+    @Query("DELETE FROM snapshots WHERE accountKey = :key AND filterKey = :filter")
+    suspend fun deleteSnapshot(key: String, filter: String)
     @Upsert suspend fun putFeature(state: FeatureStateEntity)
     @Query("SELECT body FROM feature_states WHERE accountKey = :key AND feature = :feature")
     suspend fun feature(key: String, feature: String): String?

@@ -1,5 +1,6 @@
 import { l, setText, setAttr } from './i18n.js';
 import { createMapScene } from './map-stars-scene.js';
+import { usage, resultOf } from './privacy.js';
 const statuses = new Set(['disabled', 'waiting', 'building', 'unavailable', 'ready', 'empty']);
 const resource = /^memos\/[A-Za-z0-9_-]+$/;
 const digest = /^[a-f0-9]{64}$/;
@@ -115,33 +116,35 @@ function node(tag, className = '', text = '') {
   return element;
 }
 
-export function createMapPage({ request, handleFailure, validNote, renderNote, initialView, onViewChange, initialData, onData = () => {} }) {
+export function createMapPage({ request, handleFailure, validNote, renderNote, initialView, onViewChange, pushLayer, initialData, onData = () => {} }) {
   const lifecycle = new AbortController();
   let alive = true, mapSequence = 0, noteSequence = 0, mapController = null, noteController = null, timer = null, animation = null;
   let result = null, view = null, overviewScale = 100, selected = initialView?.selected || '', readName = '', loading = false;
   let candidate = '', dragged = false, origin = null, nodeDrag = false, holdTimer = null;
   let scene = null, hovered = '', hoverTimer = null, hoverController = null, hoverSequence = 0;
-  let allFraming = false, photoMode = true, rebuilding = false, rebuildFrame = '';
   let excerptTimer = null, desiredExcerpts = [];
   const excerptCache = new Map(), excerptControllers = new Map();
   const points = new Map(), pointers = new Map();
   const root = node('div', 'map-page');
+  const pageKey = history.state?.webKey;
   const field = node('div', 'card map-field'), message = node('p', 'sub'), reader = node('aside', 'map-reader');
   const preview = node('div', 'map-preview'), tools = node('div', 'map-tools');
   const unplaced = node('button', 'btn map-unplaced');
   unplaced.type = 'button'; unplaced.hidden = true;
-  unplaced.addEventListener('click', () => {
-    clearReader(); selected = '';
+  function openUnplaced() {
+    openReader('unplaced');
+    saveView();
     const heading = node('h2', '', l("未定位笔记"));
     const close = node('button', 'btn', l("关闭"));
-    close.type = 'button'; close.addEventListener('click', clearReader);
+    close.type = 'button'; close.addEventListener('click', dismissReader);
     const items = node('div', 'map-unplaced-list');
     for (const point of result.points.filter(point => !point.semantic)) {
       const item = node('button', 'btn', l("笔记 {0}", { 0: point.name.slice(6) }));
       item.type = 'button'; item.addEventListener('click', () => readPoint(point.name)); items.append(item);
     }
     reader.replaceChildren(close, heading, items); reader.hidden = false; root.classList.add('reading');
-  });
+  }
+  unplaced.addEventListener('click', openUnplaced);
   preview.hidden = true; preview.setAttribute('role', 'tooltip');
   field.id = 'map-field'; field.tabIndex = 0; field.setAttribute('role', 'group'); setAttr(field, 'aria-label', l("观星"));
   setAttr(field, 'aria-description', l("拖动平移，滚轮或双指缩放。方向键平移，加减键缩放，Home 归位，R 刷新。Tab 选星，Enter 阅读。"));
@@ -149,6 +152,7 @@ export function createMapPage({ request, handleFailure, validNote, renderNote, i
   message.hidden = true; reader.hidden = true; root.append(field, message, reader);
   const activeMap = ticket => alive && mapSequence === ticket;
   const activeNote = ticket => alive && noteSequence === ticket;
+  let openedAt;
 
   function saveView() {
     if (alive && result && view) onViewChange({ frame: result.layout_frame, ...view, selected });
@@ -162,6 +166,41 @@ export function createMapPage({ request, handleFailure, validNote, renderNote, i
     noteSequence++; noteController?.abort(); noteController = null; readName = '';
     reader.replaceChildren(); reader.hidden = true; root.classList.remove('reading'); busy();
   }
+  function openReader(kind) {
+    if (!history.state?.mapReader) {
+      selected = ''; saveView(); pushLayer({ mapReader: kind });
+    } else if (history.state.mapReader !== kind) {
+      history.replaceState({ ...history.state, mapReader: kind }, '');
+    }
+    clearReader(); selected = '';
+    reader.hidden = false; root.classList.add('reading');
+  }
+  function dismissReader() {
+    if (history.state?.mapReader) history.back();
+  }
+  let reopenAfterFullscreen = null;
+  window.addEventListener('popstate', () => {
+    if (location.pathname !== '/map' || history.state?.webKey !== pageKey) return;
+    applyFullscreen();
+    const saved = history.state.mapView;
+    if (history.state.mapReader === 'unplaced') openUnplaced();
+    else if (history.state.mapReader && points.has(saved?.selected)) {
+      if (saved.frame === result.layout_frame && validView(saved)) view = { x: saved.x, y: saved.y, scale: saved.scale };
+      if (selected !== saved.selected || reader.hidden) readPoint(saved.selected);
+      else positionMarkers();
+    } else {
+      clearReader(); selected = ''; positionMarkers(); field.focus({ preventScroll: true });
+    }
+    if (reopenAfterFullscreen) {
+      const target = reopenAfterFullscreen; reopenAfterFullscreen = null;
+      if (target === 'unplaced') openUnplaced(); else readPoint(target);
+    }
+  }, { signal: lifecycle.signal });
+  root.addEventListener('keydown', event => {
+    if (event.key === 'Escape' && (history.state?.mapReader || history.state?.mapFullscreen)) {
+      event.preventDefault(); history.back();
+    }
+  });
   function positionMarkers() {
     animation = null;
     if (!alive || !view || !result) return;
@@ -178,7 +217,7 @@ export function createMapPage({ request, handleFailure, validNote, renderNote, i
     return { x: clientX - rect.left - rect.width / 2, y: clientY - rect.top - rect.height / 2 };
   }
   const fitResult = () => result?.algorithm === 'umap-balanced-v1'
-    ? fitStarView(result.points, field.clientWidth, field.clientHeight, allFraming, result.topics)
+    ? fitStarView(result.points, field.clientWidth, field.clientHeight, true, result.topics)
     : fitMapView(result?.points || [], field.clientWidth, field.clientHeight);
   function fit() { if (result) { setHover(''); move(fitResult()); } }
   function tool(label, path, action, parent = tools) {
@@ -190,30 +229,35 @@ export function createMapPage({ request, handleFailure, validNote, renderNote, i
     button.addEventListener('click', action); parent.append(button);
     return button;
   }
-  tool(l("放大"), 'M5 12h14M12 5v14', () => { if (view) move(transformMapView(view, 1.35, { x: 0, y: 0 })); });
-  tool(l("缩小"), 'M5 12h14', () => { if (view) move(transformMapView(view, 1 / 1.35, { x: 0, y: 0 })); });
-  tool(l("显示全图"), 'M8 3H3v5M16 3h5v5M21 16v5h-5M8 21H3v-5', fit);
-  tool(l("刷新地图"), 'M20 7v5h-5M4 17v-5h5M6 7a7 7 0 0 1 12-1l2 3M4 15l2 3a7 7 0 0 0 12-1', () => load(false));
-  const atmosphere = tool(l("切换星图氛围"), 'M12 3a9 9 0 1 0 9 9 7 7 0 0 1-9-9', () => {
-    photoMode = !photoMode; atmosphere.setAttribute('aria-pressed', String(photoMode)); scene?.mode?.(photoMode ? 'photo' : 'atlas');
+  tool(l("放大"), 'M5 12h14M12 5v14', () => { if (view) move(transformMapView(view, 1.35, { x: 0, y: 0 })); }).classList.add('focus-tool');
+  tool(l("缩小"), 'M5 12h14', () => { if (view) move(transformMapView(view, 1 / 1.35, { x: 0, y: 0 })); }).classList.add('focus-tool');
+  tool(l("显示全图"), 'M3 12h4m10 0h4M12 3v4m0 10v4M18 12a6 6 0 1 1-12 0 6 6 0 0 1 12 0', fit);
+  const fullscreen = tool(l("全屏预览"), 'M8 3H3v5M16 3h5v5M21 16v5h-5M8 21H3v-5', () => {
+    const kind = history.state?.mapReader;
+    if (history.state?.mapFullscreen) {
+      reopenAfterFullscreen = kind === 'unplaced' ? kind : selected || null;
+      history.go(kind ? -2 : -1);
+      return;
+    }
+    if (kind) {
+      const saved = history.state.mapView;
+      history.replaceState({ ...history.state, mapReader: false, mapFullscreen: true, mapView: { ...saved, selected: '' } }, '');
+      pushLayer({ mapReader: kind, mapView: saved });
+    } else pushLayer({ mapFullscreen: true });
+    applyFullscreen();
+    root.requestFullscreen?.().catch(() => {});
   });
-  atmosphere.setAttribute('aria-pressed', 'true');
-  const framing = tool(l("切换主体与全部取景"), 'M3 8V3h5M16 3h5v5M21 16v5h-5M8 21H3v-5', () => {
-    allFraming = !allFraming; framing.setAttribute('aria-pressed', String(allFraming)); fit();
-  });
-  framing.setAttribute('aria-pressed', 'false');
-  tool(l("全屏预览"), 'M8 3H3v5M16 3h5v5M21 16v5h-5M8 21H3v-5', async () => {
-    if (document.fullscreenElement) await document.exitFullscreen?.();
-    else await root.requestFullscreen?.().catch(() => {});
-  });
-  const rebuild = tool(l("重新生成星图"), 'M12 3v4m0 10v4M3 12h4m10 0h4M6 6l3 3m6 6 3 3M6 18l3-3m6-6 3-3', async () => {
-    if (rebuilding || !result) return;
-    rebuilding = true; rebuildFrame = result.layout_frame; rebuild.disabled = true;
-    try {
-      await request('/map/rebuild', { method: 'POST', body: {} });
-      say(l("正在重新生成星图…")); refreshLater(3000);
-    } catch (error) { rebuilding = false; rebuild.disabled = false; fail(error); }
-  });
+  function applyFullscreen() {
+    const active = !!history.state?.mapFullscreen;
+    root.classList.toggle('map-fullscreen', active);
+    fullscreen.setAttribute('aria-pressed', String(active));
+    if (!active && document.fullscreenElement === root) document.exitFullscreen().catch(() => {});
+  }
+  document.addEventListener('fullscreenchange', () => {
+    if (alive && !document.fullscreenElement && history.state?.mapFullscreen) history.back();
+  }, { signal: lifecycle.signal });
+  const retry = node('button', 'btn map-retry', l("重试"));
+  retry.hidden = true; retry.addEventListener('click', () => load(false)); root.append(retry);
   function setHover(name) {
     if (hovered === name) return;
     hovered = name; hoverSequence++; clearTimeout(hoverTimer); hoverController?.abort(); hoverController = null;
@@ -311,22 +355,22 @@ export function createMapPage({ request, handleFailure, validNote, renderNote, i
   async function readPoint(name) {
     const point = points.get(name);
     if (!alive || !point) return;
+    if (selected === name && !reader.hidden && (noteController || readName === name)) return;
     setHover('');
-    clearReader(); const ticket = noteSequence;
+    openReader(true); const ticket = noteSequence;
     selected = name; saveView(); positionMarkers(); noteController = new AbortController(); busy();
-    say(l("正在读取笔记…"));
+    const header = node('div', 'map-reader-tools'), content = node('p', 'sub', l("正在读取笔记…"));
+    content.setAttribute('role', 'status');
+    tool(l("关闭笔记详情"), 'M6 6l12 12M18 6L6 18', dismissReader, header);
+    reader.replaceChildren(header, content);
     try {
       const note = await request(`/notes/${name.slice(6)}`, { controller: noteController });
       if (!activeNote(ticket)) return;
       if (!validNote(note) || note.name !== name) throw Object.assign(new Error('Invalid map note'), { code: 'MAP_RESPONSE_INVALID' });
-      const header = node('div', 'map-reader-tools');
-      tool(l("关闭笔记详情"), 'M6 6l12 12M18 6L6 18', () => {
-        clearReader(); selected = ''; positionMarkers(); field.focus({ preventScroll: true });
-      }, header);
-      reader.replaceChildren(header, renderNote(note)); reader.hidden = false; root.classList.add('reading'); readName = name; say();
+      content.replaceWith(renderNote(note)); readName = name;
     } catch (error) {
       if (!activeNote(ticket) || error.name === 'AbortError') return;
-      fail(error);
+      handleFailure(content, error);
     } finally { if (activeNote(ticket)) { noteController = null; busy(); } }
   }
   function resetPointers() {
@@ -335,11 +379,13 @@ export function createMapPage({ request, handleFailure, validNote, renderNote, i
     pointers.clear(); candidate = ''; dragged = false; origin = null; nodeDrag = false; field.classList.remove('dragging');
   }
   function display(next) {
+    if (openedAt != null && ['ready', 'empty'].includes(next.status)) {
+      usage('stars', 'success', performance.now() - openedAt); openedAt = null;
+    }
     setHover(''); clearExcerpts(); resetPointers(); scene?.destroy(); scene = null;
     result = next; field.replaceChildren(); points.clear(); field.dataset.rendered = 'false';
     tools.hidden = next.disabled_reason === 'stargazing';
     root.classList.toggle('stargazing', next.algorithm === 'umap-balanced-v1');
-    atmosphere.hidden = framing.hidden = rebuild.hidden = next.algorithm !== 'umap-balanced-v1';
     for (const point of next.points) points.set(point.name, point);
     field.append(tools, preview, unplaced);
     const missing = next.points.filter(point => !point.semantic).length;
@@ -367,11 +413,12 @@ export function createMapPage({ request, handleFailure, validNote, renderNote, i
       } });
     overviewScale = fitResult().scale;
     scene.setData(next, overviewScale); positionMarkers();
-    scene.mode?.(photoMode ? 'photo' : 'atlas');
+    scene.mode?.('photo');
     say(next.status === 'empty' ? l("还没有可显示的笔记。") : '');
     if (selected && points.has(selected)) {
       if (readName !== selected && !noteController) readPoint(selected);
-    } else { selected = ''; clearReader(); saveView(); }
+    } else if (history.state?.mapReader === 'unplaced' && !unplaced.hidden) openUnplaced();
+    else { selected = ''; clearReader(); saveView(); }
   }
   async function load(initial = true) {
     clearTimeout(timer); timer = null; mapSequence++; const ticket = mapSequence;
@@ -381,19 +428,17 @@ export function createMapPage({ request, handleFailure, validNote, renderNote, i
       const next = await request('/map', { controller: mapController });
       if (!activeMap(ticket)) return;
       if (!validMap(next)) throw Object.assign(new Error('Invalid map response'), { code: 'MAP_RESPONSE_INVALID' });
-      if (rebuilding && (next.status === 'unavailable' || next.update_state === 'unavailable')) {
-        rebuilding = false; rebuild.disabled = false;
-        say(l("星图生成失败，请重试。"), true); refreshLater(60000); return;
+      retry.hidden = next.status !== 'unavailable' && next.update_state !== 'unavailable';
+      refreshLater(['waiting', 'building'].includes(next.status) ? 3000 : 60000);
+      if (['ready', 'empty'].includes(result?.status) && ['building', 'waiting', 'unavailable'].includes(next.status)) {
+        say(next.status === 'unavailable' ? l("观星暂时不可用，稍后重试。") : '', next.status === 'unavailable');
+        return;
       }
-      if (rebuilding && next.layout_frame !== rebuildFrame && ['ready', 'empty'].includes(next.status)) {
-        rebuilding = false; rebuild.disabled = false;
-      }
-      refreshLater(rebuilding || !['ready', 'empty', 'disabled'].includes(next.status) ? 3000 : 60000);
       onData(next);
       if (result && ['ready', 'empty'].includes(next.status) && result.status === next.status &&
           result.layout_version === next.layout_version && result.layout_frame === next.layout_frame &&
           result.vector_generation === next.vector_generation && result.projection_revision === next.projection_revision) {
-        say(rebuilding ? l("正在重新生成星图…") : next.status === 'empty' ? l("还没有可显示的笔记。") : '');
+        say(!retry.hidden ? l("观星暂时不可用，稍后重试。") : next.status === 'empty' ? l("还没有可显示的笔记。") : '', !retry.hidden);
         return;
       }
       // A changed selected source must never retain its old reading card.
@@ -407,6 +452,8 @@ export function createMapPage({ request, handleFailure, validNote, renderNote, i
         field.replaceChildren(tools, preview); points.clear(); clearReader();
       }
       fail(error);
+      if (openedAt != null) { usage('stars', resultOf(error), performance.now() - openedAt); openedAt = null; }
+      retry.hidden = false;
       if (alive && error.retryable) refreshLater(3000);
     } finally { if (activeMap(ticket)) { mapController = null; loading = false; busy(); } }
   }
@@ -461,7 +508,7 @@ export function createMapPage({ request, handleFailure, validNote, renderNote, i
     if (field.hasPointerCapture(event.pointerId)) field.releasePointerCapture(event.pointerId);
     if (!pointers.size) resetPointers();
     if (pick) readPoint(pick);
-    else if (activate) scene?.activate(event.clientX, event.clientY);
+    else if (activate && !scene?.activate(event.clientX, event.clientY) && !reader.hidden) dismissReader();
   }
   for (const event of ['pointerup', 'pointercancel', 'lostpointercapture']) field.addEventListener(event, endPointer);
   field.addEventListener('pointerleave', () => { if (!pointers.size) setHover(''); });
@@ -494,7 +541,9 @@ export function createMapPage({ request, handleFailure, validNote, renderNote, i
   });
   return {
     async mount(parent) {
+      openedAt = performance.now();
       parent.append(root); resize.observe(field);
+      applyFullscreen();
       if (validMap(initialData)) display(initialData);
       await load(!result);
     },

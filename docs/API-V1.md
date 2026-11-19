@@ -18,12 +18,15 @@ Moerise 服务端提供两组 RESTful API 以及一个 Model Context Protocol (M
 
 | 方法 | 路径 | 功能说明 |
 | --- | --- | --- |
-| `GET` | `/api/app/v1/capabilities` | 获取支持的登录方式与笔记能力描述。 |
+| `GET` | `/api/app/v1/capabilities` | 获取登录方式、笔记能力、Core `version` 与统计转发状态 `telemetry: {"schema":1,"allowed":false}`。 |
+| `POST` | `/api/app/v1/telemetry` | 用本人会话、同源和 CSRF 提交设备已同意分享的统计批次。 |
 | `POST` | `/api/app/v1/session` | 提交 `username` 与 `password` 登录，返回用户信息与 `csrf_token` 并签发 Cookie。 |
 | `GET` | `/api/app/v1/session` | 校验登录状态，返回用户身份、时区与会话过期时间。 |
 | `DELETE` | `/api/app/v1/session` | 登出并销毁会话，清除浏览器 Cookie。 |
 
 登录与会话读取均返回 `stargazing_enabled` 布尔值，供客户端控制观星入口；该字段与 Embedding 开关独立。
+
+统计请求采用 `application/json`，上限 48 KiB、1–256 行，每行计数 1–65,535。Core 按平台每 24 小时最多尝试转发一次。返回 `204` 后客户端丢弃该批次。实例禁止时返回 `403 TELEMETRY_DISABLED`，超限或字段不符时返回 `422 INVALID_ARGUMENT`。字段表与计数口径见[统计说明](PRIVACY.md)和[版本 1 协议](../internal/telemetry/schema-v1.json)。
 
 ### 2. 笔记管理与时间线
 
@@ -65,13 +68,35 @@ Moerise 服务端提供两组 RESTful API 以及一个 Model Context Protocol (M
 | `GET` | `/api/app/v1/chats` | 分页获取历史 AI 对话列表。 |
 | `POST` | `/api/app/v1/chats` | 创建新对话会话，指定对话标题与绑定的笔记上下文材料。 |
 | `GET` | `/api/app/v1/chats/{chat_id}` | 读取指定对话详情与完整消息记录。 |
-| `PATCH` | `/api/app/v1/chats/{chat_id}` | 携带 `version` 更新标题或材料资源名 `names`。 |
+| `PATCH` | `/api/app/v1/chats/{chat_id}` | 携带 `version`、标题及完整材料集合，替换会话选材。空数组可清空材料。 |
 | `DELETE` | `/api/app/v1/chats/{chat_id}` | 携带 `version` 删除指定对话。 |
 | `GET` | `/api/app/v1/chat-materials` | 从 Memos 分页筛选材料，支持正常与归档笔记。 |
 | `POST` | `/api/app/v1/chat-materials/resolve` | 提交材料资源名 `names`，复查原文并返回材料规模与来源摘要。 |
 | `POST` | `/api/app/v1/chats/{chat_id}/messages` | 向大模型发送消息，返回 Server-Sent Events (SSE) 流式回复。 |
 | `POST` | `/api/app/v1/chats/{chat_id}/messages/{request_id}/cancel` | 主动停止正在生成的回复。 |
 | `POST` | `/api/app/v1/chats/{chat_id}/messages/{request_id}/save` | 将选定的助手回复原样保存为 Memos 笔记。 |
+| `POST` | `/api/app/v1/chats/{chat_id}/save-selection` | 提交消息引用、版本及操作键，按对话顺序合成一篇笔记。 |
+| `GET` | `/api/app/v1/chats/{chat_id}/save-selection/{operation_key}` | 查询保存结果。`saved` 返回笔记资源名，`pending` 可按原请求重试。 |
+
+`capabilities.chat.material_selection` 和 `capabilities.chat.save_selection` 分别表示支持轻量选材和消息选存。创建及更新会话时，旧客户端仍可提交 `names`。支持来源校验的客户端提交 `materials`，例如 `[{"name":"memos/example","source_hash":"…"}]`，摘要取自候选清单。来源变化或消失时返回 `409 SOURCE_CHANGED`，`error.changed_names` 列出需要重选的笔记。`material_version` 随材料变化递增，每轮消息记录生成时的版本与来源摘要。
+
+`GET /api/app/v1/chat-materials?format=compact&tag_match=any&tag=阅读&tag=灵感` 返回 `candidates`，每项含资源名、来源摘要、Unicode 码点数、最多 160 个码点的预览、创建时间及状态。`from` 含起始日，`until` 不含结束日，日期按服务时区解释。正常和归档笔记依次分页，空页也要检查 `next_page_token`。整组选择最多枚举 1,000 条，材料正文合计上限为 20,000 个码点。
+
+消息选存请求示例
+
+```json
+{
+  "operation_key": "save-2026-01",
+  "language": "zh-CN",
+  "messages": [
+    { "request_id": "first-question", "role": "user", "version": 1 },
+    { "request_id": "later-answer", "role": "assistant", "version": 4 }
+  ],
+  "confirm_incomplete": false
+}
+```
+
+提问取自 `kind=question` 的用户原文。回复可选 `completed`，或在 `confirm_incomplete=true` 时选已持久化的 `canceled` 版本。选一条时原样写入，多条按轮次排序，同轮先提问后回答，以本地化的 Markdown 角色标签分段。合成结果最多 65,536 个 UTF-8 字节。保存响应为笔记对象。超时可查询后用同一操作键重试，同键更换选集返回 `409 IDEMPOTENCY_CONFLICT`。
 
 ### 6. 系统设置与诊断
 

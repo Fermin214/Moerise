@@ -18,12 +18,16 @@ data class InsightState(
     val busy: Boolean = false, val streaming: Boolean = false,
     val error: String? = null,
     val conflicted: Boolean = false, val stopping: Boolean = false, val deleting: Boolean = false,
+    val capabilities: ChatCapabilities = ChatCapabilities(), val starting: String = "",
+    val confirmed: List<ChatTurn> = emptyList(), val failedGeneration: Boolean = false,
+    val saving: Boolean = false, val pendingSave: ChatSaveIntent? = null, val saveError: String? = null,
+    val savedOperation: String = "",
 ) {
     val running get() = chat?.turns?.any { it.assistant.status == "running" } == true
     val canStop get() = streaming || running || recovery.partial?.assistant?.status == "running"
     val locked get() = busy || running || conflicted || stopping || deleting ||
         recovery.generation != null || recovery.mutation != null || recovery.creation != null
-    val canDelete get() = chat != null && !stopping && !deleting &&
+    val canDelete get() = chat != null && pendingSave == null && !saving && !stopping && !deleting &&
         (recovery.mutation == null || recovery.mutation.method == "DELETE") &&
         recovery.creation == null && (!busy || streaming || running)
 }
@@ -32,6 +36,8 @@ class InsightController(
     private val repository: suspend () -> NoteRepository, private val core: () -> CoreClient?,
     private val account: () -> String?, private val scope: CoroutineScope, private val language: () -> String,
     private val timezone: () -> String = { "UTC" },
+    filters: FilterReads? = null,
+    private val privacy: PrivacyController? = null,
     private val onSaved: (String, Note) -> Unit,
 ) {
     private val mutable = MutableStateFlow(InsightState())
@@ -44,7 +50,12 @@ class InsightController(
     private var polling: Job? = null
     private var questionWrite: Job? = null
     private var control: Job? = null
-    val picker = InsightMaterialPicker(core, account, scope) { !state.value.locked }
+    val picker = InsightMaterialPicker(core, account, scope, filters, privacy) { !state.value.locked }
+    private var saving: Job? = null
+    private val historyRead = Mutex()
+    private var historyOwner: String? = null
+    private var historyLoaded = 0L
+    private val historyCursors = mutableSetOf<String>()
     private val disk = Mutex()
     private var diskRevision = 0L
     private val writtenRevisions = mutableMapOf<String, Long>()
@@ -94,6 +105,11 @@ class InsightController(
                 key = account
                 mutable.update { it.copy(recovery = recovery) }
             }
+            val capabilities = active.lastCapabilities ?: active.capabilities()
+            val pendingSave = repository().feature(account, "insight-save")?.takeIf { it.isNotBlank() }
+                ?.let { CoreJson.decodeFromString<ChatSaveIntent>(it) }
+            checkActive(stamp, account)
+            mutable.update { it.copy(capabilities = capabilities.chat, pendingSave = pendingSave) }
             if (state.value.recovery.chatId != null) readChat(active, account, stamp)
             else loadHistory(active, account, stamp, append = false)
         }
@@ -102,9 +118,9 @@ class InsightController(
     private fun leave() {
         val account = key
         val recovery = state.value.recovery
-        ++generation; operation?.cancel(); control?.cancel(); polling?.cancel(); questionWrite?.cancel()
+        ++generation; operation?.cancel(); control?.cancel(); polling?.cancel(); questionWrite?.cancel(); saving?.cancel()
         picker.discard()
-        mutable.update { it.copy(busy = false, streaming = false, stopping = false, deleting = false) }
+        mutable.update { it.copy(busy = false, streaming = false, stopping = false, deleting = false, starting = "", saving = false) }
         val revision = ++diskRevision
         val previous = lifecycleWrite
         if (account != null) lifecycleWrite = scope.launch {
@@ -115,12 +131,16 @@ class InsightController(
             }
         }
     }
-    fun clear() { visible = false; leave(); key = null; seeds.clear(); mutable.value = InsightState() }
+    fun clear() {
+        visible = false; leave(); key = null; seeds.clear()
+        historyOwner = null; historyLoaded = 0; historyCursors.clear()
+        mutable.value = InsightState()
+    }
     suspend fun stopForRemoval() {
         visible = false
         leave()
         operation?.join(); control?.join(); lifecycleWrite?.join(); polling?.cancelAndJoin(); questionWrite?.cancelAndJoin()
-        picker.awaitRequests()
+        picker.awaitRequests(); saving?.join()
         disk.withLock { key = null }
         seeds.clear(); mutable.value = InsightState()
     }
@@ -162,11 +182,11 @@ class InsightController(
                 if (stamp == generation && account == this@InsightController.account()) {
                     val code = errorCode(error)
                     mutable.update { it.copy(error = code, conflicted = it.conflicted || code == "CHAT_CONFLICT") }
-                    picker.fail(code)
+                    picker.fail(code, (error as? CoreException)?.detail?.changedNames.orEmpty())
                 }
             } finally {
                 if (stamp == generation) {
-                    mutable.update { it.copy(busy = false, streaming = false) }
+                    mutable.update { it.copy(busy = false, streaming = false, starting = "") }
                     drainSeeds()
                     schedulePoll()
                 }
@@ -196,19 +216,21 @@ class InsightController(
         val resolved = pending?.let { input -> chat.turns.firstOrNull { it.requestId == input.input.requestId } }
         val previous = state.value.chat
         val applied = saved.mutation?.takeIf { it.method == "PATCH" }?.let { patchApplied(chat, it) } == true
-        val conflict = previous?.id == chat.id && previous.version != chat.version && !applied
-        val selected = if (!saved.selectionInitialized && saved.selected.isEmpty() &&
-            saved.creation == null && saved.mutation == null) chat.materials.map { it.name } else saved.selected
+        val conflict = previous?.id == chat.id && previous.version != chat.version && !applied &&
+            (saved.question.isNotBlank() && pending == null || saved.mutation != null)
+        val selected = if (!conflict && saved.creation == null && saved.mutation == null)
+            chat.materials.map { it.name } else saved.selected
         val partial = mergePartial(saved.partial, resolved ?: saved.partial?.let { local ->
             chat.turns.firstOrNull { it.requestId == local.requestId }
         })
-        mutable.update { it.copy(chat = chat.copy(turns = chat.turns.map { turn ->
+        mutable.update { it.copy(confirmed = chat.turns, failedGeneration = pending != null &&
+            (resolved == null || resolved.assistant.status in setOf("failed", "interrupted")), chat = chat.copy(turns = chat.turns.map { turn ->
             partial?.takeIf { it.requestId == turn.requestId } ?: turn
         }), conflicted = it.conflicted || conflict, error = if (conflict) "CHAT_CONFLICT" else it.error) }
         // Durable server results replace local stream previews; reading never starts model generation.
         record(account, saved.copy(
             selected = selected, selectionInitialized = true,
-            generation = if (resolved?.assistant?.status == "completed") null else pending,
+            generation = if (resolved?.assistant?.status in setOf("completed", "canceled")) null else pending,
             partial = partial,
             question = if (resolved?.assistant?.status == "completed" && pending?.input?.let {
                 it.kind == "question" && saved.question == it.content
@@ -216,13 +238,19 @@ class InsightController(
         ), stamp)
         if (resolved?.assistant?.status in setOf("failed", "canceled", "interrupted"))
             mutable.update { it.copy(error = resolved!!.assistant.errorCode.ifBlank { "CHAT_INTERRUPTED" }) }
-        if (loadMaterials) resolve(active, account, stamp, selected, enforceBudget = false)
+        if (loadMaterials && saved.candidates.map { it.reference() } != chat.materials) {
+            val materials = resolve(active, account, stamp, selected, enforceBudget = false)
+            val original = chat.materials.associateBy { it.name }
+            record(account, state.value.recovery.copy(candidates = materials.notes.map { note ->
+                note.candidate().copy(sourceHash = original[note.name]?.sourceHash ?: note.sourceHash)
+            }), stamp)
+        }
     }
 
     private fun mergePartial(local: ChatTurn?, remote: ChatTurn?): ChatTurn? {
         if (remote == null) return local
         if (local == null || local.requestId != remote.requestId) return remote
-        val content = if (remote.assistant.status != "completed" &&
+        val content = if (remote.assistant.status !in setOf("completed", "canceled") &&
             local.assistant.content.startsWith(remote.assistant.content) &&
             local.assistant.content.length > remote.assistant.content.length) local.assistant.content
         else remote.assistant.content
@@ -233,49 +261,69 @@ class InsightController(
     }
 
     fun history(append: Boolean = false) = execute { active, account, stamp -> loadHistory(active, account, stamp, append) }
+    suspend fun prefetchHistory() {
+        val active = core() ?: return
+        val account = account() ?: return
+        loadHistory(active, account, generation, append = false)
+    }
     private suspend fun loadHistory(active: CoreClient, account: String, stamp: Long, append: Boolean) {
+        historyRead.withLock {
+        if (!append && historyOwner == account && epochMillis() - historyLoaded in 0..60_000) return
         val cursor = if (append) state.value.historyNext.takeIf { it.isNotBlank() } ?: return else ""
         val page = CoreJson.decodeFromString<ChatPage>(active.api(HttpMethod.Get,
             "/chats?page_size=20" + if (cursor.isNotEmpty()) "&page_token=${cursor.encodeURLQueryComponent(encodeFull = true)}" else ""))
         checkActive(stamp, account)
+        if (!append) historyCursors.clear()
+        historyCursors += cursor
         require(page.chats.all { chatId(it.id).isNotBlank() } &&
-            (page.nextPageToken.isEmpty() || page.nextPageToken != cursor)) { "CHAT_PROTOCOL" }
+            (page.nextPageToken.isEmpty() || page.nextPageToken !in historyCursors)) { "CHAT_PROTOCOL" }
+        historyOwner = account; historyLoaded = epochMillis()
         mutable.update { it.copy(history = (if (append) it.history + page.chats else page.chats).distinctBy { c -> c.id },
             historyNext = page.nextPageToken) }
+        }
     }
 
     fun open(id: String) = execute { active, account, stamp ->
+        require(state.value.pendingSave == null && !state.value.saving) { "CHAT_OUTCOME_UNKNOWN" }
         require(!state.value.running && state.value.recovery.generation == null &&
             state.value.recovery.mutation == null && state.value.recovery.creation == null) { "CHAT_BUSY" }
         picker.discard()
         record(account, InsightRecovery(chatId = chatId(id)), stamp)
-        mutable.update { it.copy(chat = null, materials = null, tab = 0, conflicted = false) }
+        mutable.update { it.copy(chat = null, materials = null, tab = 0, conflicted = false, confirmed = emptyList()) }
         readChat(active, account, stamp)
     }
     fun newChat() = execute { _, account, stamp ->
+        require(state.value.pendingSave == null && !state.value.saving) { "CHAT_OUTCOME_UNKNOWN" }
         require(!state.value.running && state.value.recovery.generation == null &&
             state.value.recovery.mutation == null && state.value.recovery.creation == null) { "CHAT_BUSY" }
         picker.discard()
         record(account, InsightRecovery(), stamp)
-        mutable.update { it.copy(chat = null, materials = null, tab = 0, conflicted = false) }
+        mutable.update { it.copy(chat = null, materials = null, tab = 0, conflicted = false, confirmed = emptyList()) }
     }
 
     fun openPicker() {
         if (state.value.locked || picker.state.value.visible) return
         execute { active, account, stamp ->
-            picker.open(account, serviceMonth(timezone()))
-            picker.ready(resolve(active, account, stamp, enforceBudget = false).notes)
+            val recovery = state.value.recovery
+            picker.open(account, serviceMonth(timezone()), recovery.dateGroup, state.value.capabilities.materialSelection)
+            picker.ready(if (recovery.candidates.map { it.name } == recovery.selected) recovery.candidates
+                else resolve(active, account, stamp, enforceBudget = false).notes.map { it.candidate() })
         }
     }
 
     fun closePicker() {
-        if (!state.value.busy) { picker.discard(); drainSeeds() }
+        if (!state.value.busy) { picker.outcome("canceled"); picker.discard(); drainSeeds() }
     }
 
     fun completePicker() {
         val names = picker.selectedNames() ?: return
+        val selection = picker.state.value
+        if (names.isEmpty() && state.value.chat?.materials.isNullOrEmpty()) return
         execute { active, account, stamp ->
-            persistSelection(active, account, stamp, names)
+            try { persistSelection(active, account, stamp, names, selection.selected) }
+            catch (failure: Exception) { picker.outcome(usageResult(failure)); throw failure }
+            record(account, state.value.recovery.copy(dateGroup = selection.dateGroup, candidates = selection.selected), stamp)
+            picker.outcome("success")
             picker.discard()
         }
     }
@@ -332,7 +380,7 @@ class InsightController(
     }
 
     private suspend fun persistSelection(active: CoreClient, account: String, stamp: Long,
-        names: List<String> = state.value.recovery.selected): ChatMaterials {
+        names: List<String> = state.value.recovery.selected, selected: List<MaterialCandidate>? = null): ChatMaterials {
         require(!state.value.conflicted) { "CHAT_CONFLICT" }
         require(state.value.recovery.generation == null && !state.value.running) { "CHAT_BUSY" }
         if (state.value.recovery.mutation != null) {
@@ -341,14 +389,22 @@ class InsightController(
         }
         require(!state.value.conflicted) { "CHAT_CONFLICT" }
         require(!state.value.running) { "CHAT_BUSY" }
-        val checked = if (state.value.recovery.creation == null)
+        val expected = selected?.takeIf { state.value.capabilities.materialSelection }?.map { it.reference() }
+        val checked = if (expected != null)
+            ChatMaterials(emptyList(), expected, selected.orEmpty().sumOf { it.characters }, 20_000)
+        else if (state.value.recovery.creation == null)
             resolve(active, account, stamp, names, enforceBudget = false, publish = false) else null
+        require(checked == null || checked.characters <= checked.limit) { "CHAT_MATERIAL_LIMIT" }
         // Creation is replayed with its original names before applying a later selection.
         var current = state.value.chat
         if (current == null && (names.isNotEmpty() || state.value.recovery.creation != null)) {
-            val input = state.value.recovery.creation ?: ChatCreate(newLocalId(), if (language() == "en") "Insights" else "洞察", names)
+            val input = state.value.recovery.creation ?: ChatCreate(newLocalId(), if (language() == "en") "Insights" else "洞察", names,
+                expected ?: checked?.materials?.takeIf { state.value.capabilities.materialSelection })
             record(account, state.value.recovery.copy(creation = input), stamp)
-            val response = try { active.api(HttpMethod.Post, "/chats", CoreJson.encodeToString(input)) }
+            val response = try { active.api(HttpMethod.Post, "/chats", buildJsonObject {
+                put("request_id", input.requestId); put("title", input.title)
+                putSelection(input.names, input.materials)
+            }.toString()) }
             catch (error: Exception) {
                 clearRejectedCreation(error, account, stamp)
                 throw error
@@ -366,14 +422,16 @@ class InsightController(
         if (current != null && current.materials != materials.materials) {
             val mutation = ChatMutation("PATCH", "/chats/${chatId(current.id)}", buildJsonObject {
                 put("version", current.version); put("title", current.title)
-                put("names", JsonArray(names.map(::JsonPrimitive)))
+                putSelection(names, expected ?: materials.materials.takeIf { state.value.capabilities.materialSelection })
             }.toString())
             require(state.value.recovery.mutation == null) { "CHAT_OUTCOME_UNKNOWN" }
             record(account, state.value.recovery.copy(mutation = mutation), stamp)
             performMutation(active, account, stamp, mutation)
         }
         require(state.value.chat == null || state.value.chat!!.materials == materials.materials) { "SOURCE_CHANGED" }
-        record(account, state.value.recovery.copy(selected = names, selectionInitialized = true), stamp)
+        record(account, state.value.recovery.copy(selected = names, selectionInitialized = true,
+            candidates = selected ?: materials.notes.map { it.candidate() }), stamp)
+        historyLoaded = 0
         mutable.update { it.copy(materials = materials, tab = 0) }
         return materials
     }
@@ -385,23 +443,27 @@ class InsightController(
             record(account, state.value.recovery.copy(creation = null), stamp)
     }
 
-    fun generate(kind: String) = execute { active, account, stamp ->
-        require(!picker.state.value.visible) { "CHAT_BUSY" }
-        require(state.value.recovery.generation == null && !state.value.running) { "CHAT_BUSY" }
-        require(kind == "insight" || kind == "question" && state.value.recovery.question.isNotBlank()) { "INVALID_ARGUMENT" }
-        require(state.value.recovery.selected.isNotEmpty()) { "CHAT_MATERIAL_REQUIRED" }
-        val materials = persistSelection(active, account, stamp)
-        require(materials.characters <= materials.limit) { "CHAT_MATERIAL_LIMIT" }
-        val chat = state.value.chat ?: throw IllegalArgumentException("CHAT_MATERIAL_REQUIRED")
-        val input = ChatGenerate(newLocalId(), chat.version, kind, if (kind == "question") state.value.recovery.question else "", language())
-        stream(active, account, stamp, ChatGeneration(chat.id, input))
+    fun generate(kind: String) {
+        if (state.value.locked || !visible) return
+        val started = epochMillis()
+        mutable.update { it.copy(starting = kind, failedGeneration = false) }
+        execute { active, account, stamp ->
+            require(!picker.state.value.visible) { "CHAT_BUSY" }
+            require(state.value.recovery.generation == null && !state.value.running) { "CHAT_BUSY" }
+            require(kind == "insight" || kind == "question" && state.value.recovery.question.isNotBlank()) { "INVALID_ARGUMENT" }
+            require(state.value.recovery.selected.isNotEmpty()) { "CHAT_MATERIAL_REQUIRED" }
+            if (state.value.chat == null) persistSelection(active, account, stamp)
+            val chat = state.value.chat ?: throw IllegalArgumentException("CHAT_MATERIAL_REQUIRED")
+            val input = ChatGenerate(newLocalId(), chat.version, kind, if (kind == "question") state.value.recovery.question else "", language())
+            stream(active, account, stamp, ChatGeneration(chat.id, input), started)
+        }
     }
 
     fun retryGeneration() = execute { active, account, stamp ->
         val pending = state.value.recovery.generation ?: return@execute
         readChat(active, account, stamp)
         val turn = state.value.chat?.turns?.firstOrNull { it.requestId == pending.input.requestId }
-        if (turn?.assistant?.status in setOf("completed", "running")) return@execute
+        if (!state.value.failedGeneration) return@execute
         require(!state.value.conflicted) { "CHAT_CONFLICT" }
         require(state.value.recovery.mutation == null) { "CHAT_OUTCOME_UNKNOWN" }
         val retry = if (turn == null) pending else pending.copy(input = pending.input.copy(
@@ -409,27 +471,37 @@ class InsightController(
         stream(active, account, stamp, retry)
     }
 
-    private suspend fun stream(active: CoreClient, account: String, stamp: Long, input: ChatGeneration) {
+    private suspend fun stream(active: CoreClient, account: String, stamp: Long, input: ChatGeneration, started: Long = epochMillis()) {
         record(account, state.value.recovery.copy(generation = input), stamp)
-        mutable.update { it.copy(streaming = true, tab = 0) }
+        mutable.update { it.copy(streaming = true, failedGeneration = false, tab = 0) }
         var partial: ChatTurn? = null
         var latest = state.value.recovery
         var lastPublish = 0L
         var lastDisk = epochMillis()
+        var firstText = false
         try {
             active.chatStream(input.chatId, input.input) { event ->
                 checkActive(stamp, account)
                 if (event.type == "delta") {
                     val previous = partial ?: throw IllegalArgumentException("CHAT_PROTOCOL")
                     partial = previous.copy(assistant = previous.assistant.copy(content = previous.assistant.content + event.text))
-                } else partial = event.turn
+                } else {
+                    partial = event.turn
+                    event.turn?.let { persisted ->
+                        mutable.update { it.copy(confirmed = it.confirmed.filterNot { turn -> turn.requestId == persisted.requestId } + persisted) }
+                    }
+                }
+                if (!firstText && partial?.assistant?.content?.isNotEmpty() == true) {
+                    privacy?.record("insight", started = started)
+                    firstText = true
+                }
                 val preview = mergePartial(latest.partial, partial)
                 latest = latest.copy(partial = preview)
                 val now = epochMillis()
                 if (event.type != "delta" || now - lastPublish >= 60) {
                     val next = preview ?: throw IllegalArgumentException("CHAT_PROTOCOL")
                     mutable.update { it.copy(chat = it.chat?.copy(turns = it.chat.turns.filter { t -> t.id != next.id } + next),
-                        recovery = it.recovery.copy(partial = next)) }
+                        starting = "", recovery = it.recovery.copy(partial = next)) }
                     lastPublish = now
                 }
                 if (event.type == "complete" || now - lastDisk >= 1000) {
@@ -443,6 +515,9 @@ class InsightController(
             record(account, latest, stamp)
             readChat(active, account, stamp)
             latest = state.value.recovery
+        } catch (failure: Exception) {
+            if (!firstText && account == this.account()) privacy?.record("insight", usageResult(failure), started, error = failure)
+            throw failure
         } finally {
             if (partial != null) {
                 val recovery = latest.copy(partial = mergePartial(latest.partial, partial))
@@ -509,11 +584,7 @@ class InsightController(
                 } while (true)
                 val local = state.value.recovery.partial
                 val remote = local?.let { partial -> latest.turns.firstOrNull { it.requestId == partial.requestId } }
-                val partial = mergePartial(local, remote)?.let { turn ->
-                    if (remote == null && turn.assistant.status == "running")
-                        turn.copy(assistant = turn.assistant.copy(status = "canceled", errorCode = "CHAT_CANCELED"))
-                    else turn
-                }
+                val partial = mergePartial(local, remote)
                 mutable.update { it.copy(chat = latest.copy(turns = latest.turns.map { turn ->
                     partial?.takeIf { it.requestId == turn.requestId } ?: turn
                 })) }
@@ -554,6 +625,64 @@ class InsightController(
         record(account, state.value.recovery.copy(mutation = input), stamp)
         performMutation(active, account, stamp, input)
     }
+    fun saveSelection(messages: List<ChatMessageRef>, incomplete: Boolean) {
+        val snapshot = state.value
+        val chat = snapshot.chat ?: return
+        if (snapshot.pendingSave != null || snapshot.saving || snapshot.deleting) return
+        val choices = selectableMessages(snapshot.confirmed).filter { it.eligible && it.ref in messages }
+        if (choices.isEmpty() || choices.size != messages.size || choices.any { it.status == "canceled" } && !incomplete) return
+        if (selectionBody(choices, language() == "en").encodeToByteArray().size > 65_536) return
+        if (!snapshot.capabilities.saveSelection) {
+            val choice = choices.singleOrNull()?.takeIf { it.ref.role == "assistant" && it.status == "completed" } ?: return
+            snapshot.confirmed.firstOrNull { it.requestId == choice.ref.requestId }?.let(::save)
+            return
+        }
+        submitSave(ChatSaveIntent(chat.id, ChatSaveSelection(newLocalId(), language(), messages, incomplete)))
+    }
+
+    fun retrySave() { state.value.pendingSave?.let(::submitSave) }
+
+    private fun submitSave(intent: ChatSaveIntent) {
+        val active = core() ?: return
+        val owner = account() ?: return
+        if (!visible || state.value.saving) return
+        val started = epochMillis()
+        val operations = buildList {
+            if (intent.input.messages.size > 1) add("save_multiple")
+            else if (intent.input.messages.single().role == "assistant") add("save_answer")
+            if (intent.input.messages.any { it.role == "user" }) add("save_question")
+        }
+        mutable.update { it.copy(saving = true, saveError = null, pendingSave = intent) }
+        saving = scope.launch {
+            try {
+                repository().putFeature(owner, "insight-save", CoreJson.encodeToString(intent))
+                val body = active.api(HttpMethod.Post, "/chats/${chatId(intent.chatId)}/save-selection",
+                    CoreJson.encodeToString(intent.input))
+                val note = CoreJson.decodeFromString<Note>(body)
+                require(validName(note.name) && note.instanceId == owner.split('\u0000')[1]) { "ACCOUNT_CHANGED" }
+                repository().putFeature(owner, "insight-save", "")
+                if (account() == owner) {
+                    onSaved(owner, note)
+                    operations.forEach { privacy?.record(it, started = started) }
+                    mutable.update { it.copy(savedOperation = intent.input.operationKey, pendingSave = null) }
+                }
+            } catch (error: Exception) {
+                if (account() == owner) operations.forEach {
+                    privacy?.record(it, if (error is CancellationException) "unknown" else usageResult(error), started, error = error)
+                }
+                if (error is CancellationException) throw error
+                if (account() == owner) {
+                    if (error is CoreException && error.status in 400..499 && !error.detail.retryable) {
+                        repository().putFeature(owner, "insight-save", "")
+                        mutable.update { it.copy(pendingSave = null) }
+                    }
+                    mutable.update { it.copy(saveError = errorCode(error)) }
+                }
+            } finally {
+                if (account() == owner) mutable.update { it.copy(saving = false) }
+            }
+        }
+    }
     fun delete() = stopOrDelete(deleting = true)
     fun retryMutation() = execute { active, account, stamp ->
         val input = state.value.recovery.mutation ?: return@execute
@@ -582,11 +711,12 @@ class InsightController(
         readChat(active, account, stamp, loadMaterials = false)
         require(!state.value.running) { "CHAT_BUSY" }
         val chat = state.value.chat ?: return@execute
-        record(account, state.value.recovery.copy(mutation = null, generation = null,
+        record(account, state.value.recovery.copy(mutation = null, generation = null, partial = null,
+            candidates = emptyList(), dateGroup = MaterialDateGroup(), question = "",
             selected = chat.materials.map { it.name }, selectionInitialized = true), stamp)
         picker.discard()
         mutable.update { it.copy(materials = null, conflicted = false, error = null) }
-        resolve(active, account, stamp, enforceBudget = false)
+        readChat(active, account, stamp)
     }
     fun confirmDeleteAgain() {
         if (state.value.recovery.mutation?.method == "DELETE") stopOrDelete(deleting = true)
@@ -596,7 +726,8 @@ class InsightController(
         val expected = CoreJson.parseToJsonElement(input.body).jsonObject
         return chat.version == expected.getValue("version").jsonPrimitive.long + 1 &&
             chat.title == expected.getValue("title").jsonPrimitive.content &&
-            chat.materials.map { it.name } == expected.getValue("names").jsonArray.map { it.jsonPrimitive.content }
+            (expected["materials"]?.let { CoreJson.decodeFromJsonElement<List<ChatMaterial>>(it) == chat.materials }
+                ?: (chat.materials.map { it.name } == expected.getValue("names").jsonArray.map { it.jsonPrimitive.content }))
     }
 
     private suspend fun reconcileMutation(active: CoreClient, account: String, stamp: Long) {
@@ -621,7 +752,8 @@ class InsightController(
         val id = state.value.recovery.chatId
         picker.discard()
         record(account, InsightRecovery(), stamp)
-        mutable.update { it.copy(chat = null, materials = null, conflicted = false, tab = 0, error = null,
+        historyLoaded = 0
+        mutable.update { it.copy(chat = null, materials = null, conflicted = false, tab = 0, error = null, confirmed = emptyList(),
             history = it.history.filterNot { summary -> summary.id == id }) }
     }
     private suspend fun performMutation(active: CoreClient, account: String, stamp: Long, input: ChatMutation) {
@@ -686,4 +818,8 @@ class InsightController(
         return id
     }
     private fun namesBody(names: List<String>) = buildJsonObject { put("names", JsonArray(names.map(::JsonPrimitive))) }.toString()
+    private fun JsonObjectBuilder.putSelection(names: List<String>, materials: List<ChatMaterial>?) {
+        if (materials != null) put("materials", CoreJson.encodeToJsonElement(materials))
+        else put("names", JsonArray(names.map(::JsonPrimitive)))
+    }
 }

@@ -2,6 +2,7 @@ package io.github.fermin214.moerise
 
 import android.graphics.Bitmap
 import androidx.activity.compose.setContent
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.geometry.Offset
@@ -9,11 +10,13 @@ import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.ui.test.*
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
-import io.github.fermin214.moerise.data.sha256
+import io.github.fermin214.moerise.data.*
 import io.github.fermin214.moerise.domain.*
 import io.github.fermin214.moerise.presentation.*
 import java.io.File
 import java.util.concurrent.atomic.AtomicLong
+import io.ktor.client.engine.mock.*
+import kotlinx.coroutines.*
 import kotlin.math.*
 import org.junit.Rule
 import org.junit.Test
@@ -26,6 +29,66 @@ class StarRenderingTest {
     private class Scene(val map: StarMap, photo: Boolean) {
         val state = mutableStateOf(StarMapState(snapshot = map, photo = photo))
         val drawn = AtomicLong()
+    }
+
+    @Test
+    fun mapReaderKeepsTheLastStarAndRestoresTheView() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val db = androidDatabase(context)
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+        val map = snapshot(16).let { source ->
+            source.copy(points = source.points + StarPoint("memos/unplaced", "unplaced", 0.0, 0.0, false, emptyList()))
+        }.validate()
+        val origin = "https://stars.example"
+        val slow = CompletableDeferred<Unit>()
+        val release = CompletableDeferred<Unit>()
+        val unexpected = mutableListOf<String>()
+        val core = CoreClient(origin, SessionCookies(origin, AndroidSecretStore(context)), MockEngine { request ->
+            when (val path = request.url.encodedPath.removePrefix("/api/app/v1")) {
+                "/session" -> respond("""{"instance_id":"one","user":{"name":"users/owner"},"timezone":"UTC","expires_at":"2099-01-01T00:00:00Z","csrf_token":"token"}""")
+                "/map" -> respond(CoreJson.encodeToString(StarMap.serializer(), map))
+                "/notes/fixture0", "/notes/fixture1", "/notes/unplaced" -> {
+                    val id = path.substringAfterLast('/')
+                    if (id == "fixture0") { slow.complete(Unit); release.await() }
+                    respond(CoreJson.encodeToString(Note.serializer(), Note("one", "memos/$id", "Original $id", "NORMAL", id)))
+                }
+                else -> { synchronized(unexpected) { unexpected += path }; error(path) }
+            }
+        })
+        val repository = NoteRepository(db)
+        val controller = StarMapController({ repository }, { core }, { "$origin\u0000one\u0000users/owner" }, scope)
+        try {
+            compose.activityRule.scenario.onActivity { activity ->
+                activity.setContent { StarMapScreen(controller, core, true, Strings(UiLanguage.ENGLISH), rememberLazyListState(), {}, {}) }
+                controller.visible(true)
+            }
+            compose.waitForTag("map_point_memos/fixture0")
+            compose.clickTag("map_fullscreen")
+            compose.runOnIdle { controller.transform(1.1, panX = 5.0) }
+            val previousView = controller.state.value.view
+            compose.onNodeWithTag("map_point_memos/fixture0").performClick()
+            compose.waitUntil(10_000) { slow.isCompleted }
+            compose.onNodeWithTag("map_point_memos/fixture1").performClick()
+            release.complete(Unit)
+            compose.waitForTag("map_reader")
+            compose.waitUntil(10_000) { compose.onNode(readingText("Original fixture1")).isDisplayed() }
+            compose.onNode(readingText("Original fixture0")).assertDoesNotExist()
+            compose.activityRule.scenario.onActivity { it.onBackPressedDispatcher.onBackPressed() }
+            compose.onNodeWithTag("map_reader").assertDoesNotExist()
+            check(controller.state.value.fullScreen && controller.state.value.view == previousView)
+            compose.clickTag("map_unplaced")
+            compose.clickTag("map_unplaced_memos/unplaced")
+            compose.waitUntil(10_000) { compose.onNode(readingText("Original unplaced")).isDisplayed() }
+            compose.clickTag("map_close_reader")
+            check(controller.state.value.view == previousView)
+            check(synchronized(unexpected) { "/map/rebuild" !in unexpected })
+        } finally {
+            release.complete(Unit)
+            compose.runOnIdle { controller.clear() }
+            scope.cancel()
+            core.close()
+            db.close()
+        }
     }
 
     @Test

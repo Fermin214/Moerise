@@ -295,6 +295,17 @@ def main():
             raise AssertionError("落盘确认前应用进程没有运行")
         wait_persisted(command, report, "after_prepare", saved, unfinished)
         command("shell", "am", "force-stop", PACKAGE)
+        upgrade = os.environ.get("MOERISE_ANDROID_UPGRADE_APK")
+        if upgrade:
+            def version_code():
+                info = command("shell", "dumpsys", "package", PACKAGE)
+                return int(re.search(r"\bversionCode=(\d+)", info).group(1))
+
+            previous_version = version_code()
+            command("install", "-r", "-t", upgrade)
+            if version_code() <= previous_version:
+                raise AssertionError("覆盖安装后的版本号没有增长")
+            instrument("privacyUpgrade")
         instrument("offlineRestart")
         wait_persisted(command, report, "after_offline_restart", saved, unfinished)
         command("shell", "am", "start", "-W", "-n", PACKAGE + "/io.github.fermin214.moerise.MainActivity")

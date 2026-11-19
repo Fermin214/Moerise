@@ -74,7 +74,7 @@ fun MoeriseApp(mobile: MobileController, onEditorReady: () -> Unit = {}) {
     var confirmRemoval by remember(account) { mutableStateOf(false) }
     val drawer = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
-    val sidebar = remember(mobile) { SearchController({ session.core }, { session.state.value.profile?.accountKey }, scope) }
+    val sidebar = mobile.sidebar
     val sidebarFilters by sidebar.state.collectAsState()
     var month by rememberSaveable(account) { mutableStateOf(serviceMonth(connection.profile?.timezone ?: "UTC")) }
     val homeScroll = key(account) { rememberLazyListState() }
@@ -107,7 +107,7 @@ fun MoeriseApp(mobile: MobileController, onEditorReady: () -> Unit = {}) {
     val activeBaseline = activeDraft?.baselineJson?.let {
         runCatching { CoreJson.decodeFromString<Note>(it) }.getOrNull()
     }
-    val entries = remember(timeline.notes, timeline.snapshotAt, sync.notes, search.notes, filtered, page, homeNote.note, homeNote.snapshotAt, activeBaseline) {
+    val entries = remember(timeline.notes, timeline.displayKeys, timeline.snapshotAt, sync.notes, search.notes, filtered, page, homeNote.note, homeNote.snapshotAt, activeBaseline) {
         val notes = if (filtered) search.notes else timeline.notes
         val pinned = if (page == "home" && !filtered) listOfNotNull(homeNote.note, activeBaseline)
             .distinctBy { it.name }.filter { candidate -> notes.none { it.name == candidate.name } } else emptyList()
@@ -115,13 +115,14 @@ fun MoeriseApp(mobile: MobileController, onEditorReady: () -> Unit = {}) {
             homeNote.note?.takeIf { it.name == note.name && homeNote.snapshotAt >= timeline.snapshotAt } ?: note
         }
         if (filtered) selected.map { TimelineEntry.Remote(it) }
-        else timelineEntries(pinned + selected, if (page == "archive") emptyList() else sync.notes)
+        else timelineEntries(pinned + selected, if (page == "archive") emptyList() else sync.notes, timeline.displayKeys)
     }
     val entryEditorKeys = entries.map { when (it) { is TimelineEntry.Remote -> it.note.name; is TimelineEntry.Local -> it.draft.id } }.toSet()
     val displayedEditors = entryEditorKeys.mapNotNull(editorsByKey::get).toSet()
     val orphanEditors = if (page == "home") noteEditors.filterValues { it !in displayedEditors }.keys.toList() else emptyList()
     val homeStatusVisible = homeNote.loading || homeNote.error != null || localError != null
     val focusTarget = homeNote.name ?: activeDraft?.targetName ?: activeDraft?.id
+    var targetPositioned by remember(focusTarget, account, page) { mutableStateOf(false) }
     val composerReady = !connection.loading && account != null && composer.accountKey == account && composer.draft != null
     LaunchedEffect(composerReady, page, clearing, account) {
         if (composerReady && page == "home" && !clearing) {
@@ -167,7 +168,7 @@ fun MoeriseApp(mobile: MobileController, onEditorReady: () -> Unit = {}) {
         }
     }
     LaunchedEffect(focusTarget, entries.map { it.key }, noteEditors.keys, page, homeStatusVisible) {
-        if (page != "home") return@LaunchedEffect
+        if (page != "home" || targetPositioned) return@LaunchedEffect
         val target = focusTarget ?: return@LaunchedEffect
         val entryIndex = entries.indexOfFirst { entry ->
             when (entry) {
@@ -183,11 +184,13 @@ fun MoeriseApp(mobile: MobileController, onEditorReady: () -> Unit = {}) {
         } else if (orphanEditors.isNotEmpty()) {
             entries.size + prefix
         } else return@LaunchedEffect
-        homeScroll.scrollToItem(index)
+        val targetKey = entries.getOrNull(entryIndex)?.key ?: "editor:$target"
+        if (homeScroll.layoutInfo.visibleItemsInfo.none { it.key == targetKey }) homeScroll.scrollToItem(index)
+        targetPositioned = true
     }
     LaunchedEffect(query.text, query.mode) { if (searchOpen) { delay(250); showFilter(query) } }
     LaunchedEffect(drawer.isOpen, month, account, connection.connected, sourceTimeline, connection.profile?.timezone) {
-        if (drawer.isOpen && connection.connected) {
+        if (drawer.isOpen && account != null && !connection.needsLogin) {
             sidebar.change(query.copy(state = if (sourceTimeline == "archive") "ARCHIVED" else "NORMAL"))
             sidebar.filters(month)
         } else sidebar.leave()
@@ -216,6 +219,7 @@ fun MoeriseApp(mobile: MobileController, onEditorReady: () -> Unit = {}) {
     }
     PlatformLanguage(language) {
     MoeriseTheme {
+        WelcomeDialog(mobile.privacy, strings)
         CompositionLocalProvider(
             LocalWebSyncStatus provides sync.status,
             LocalWebSyncAction provides { if (sync.status == SyncStatus.SIGN_IN) navigate("connect") else mobile.synchronize() },
@@ -265,8 +269,7 @@ fun MoeriseApp(mobile: MobileController, onEditorReady: () -> Unit = {}) {
                                 onRefresh = {
                                     if (filtered) { searchRefreshing = true; mobile.search.search() }
                                     else {
-                                        timelineController.refresh(userInitiated = true)
-                                        if (page == "home") mobile.synchronize()
+                                        if (page == "home") mobile.synchronize() else timelineController.refresh(userInitiated = true)
                                     }
                                 },
                                 modifier = Modifier.weight(1f).fillMaxWidth(), contentAlignment = androidx.compose.ui.Alignment.TopCenter) {
@@ -330,13 +333,23 @@ fun MoeriseApp(mobile: MobileController, onEditorReady: () -> Unit = {}) {
                                         val error = if (filtered) search.error else timeline.error
                                         if (error != null) {
                                             Text(searchError(error, strings), color = MaterialTheme.colorScheme.error)
-                                            TextButton(onClick = { if (filtered) mobile.search.search() else timelineController.refresh() }) { Text(strings.text("重试", "Retry")) }
+                                            TextButton(onClick = {
+                                                if (filtered) mobile.search.search(search.next.isNotEmpty())
+                                                else if (timeline.nextPageToken.isNotBlank()) timelineController.more() else timelineController.refresh()
+                                            }) { Text(strings.text("重试", "Retry")) }
                                         }
                                         val loading = if (filtered) search.loading else timeline.loading
                                         val next = if (filtered) search.next else timeline.nextPageToken
                                         if (loading && (filtered || entries.isEmpty() || timeline.loadingMore)) LinearProgressIndicator(Modifier.fillMaxWidth())
-                                        else if (next.isNotBlank()) TextButton(onClick = { if (filtered) mobile.search.search(true) else timelineController.more() }, enabled = connection.connected) {
+                                        else if (next.isNotBlank() && error == null) {
+                                            LaunchedEffect(next, connection.connected, loading) {
+                                                if (connection.connected && !loading) {
+                                                    if (filtered) mobile.search.search(true) else timelineController.more()
+                                                }
+                                            }
+                                            TextButton(onClick = { if (filtered) mobile.search.search(true) else timelineController.more() }, enabled = connection.connected) {
                                             Text(strings.text("加载更多", "Load more"))
+                                            }
                                         } else if (entries.isEmpty() && (if (filtered) search.responseMode != null else timeline.fresh)) {
                                             Text(strings.text("没有匹配的笔记", "No matching notes"), color = MoeriseColors.Muted)
                                         }

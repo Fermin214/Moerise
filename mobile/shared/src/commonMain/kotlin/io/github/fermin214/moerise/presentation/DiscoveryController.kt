@@ -26,6 +26,7 @@ private fun Note.belongsTo(account: String) = instanceId == account.split('\u000
 
 class ReviewController(
     private val core: () -> CoreClient?, private val account: () -> String?, private val scope: CoroutineScope,
+    private val privacy: PrivacyController? = null,
 ) {
     private val mutable = MutableStateFlow(ReviewState())
     val state = mutable.asStateFlow()
@@ -56,6 +57,7 @@ class ReviewController(
         val active = core() ?: return
         val key = account() ?: return
         val stamp = ++generation
+        val started = epochMillis()
         mutable.update { it.copy(loading = true, error = null) }
         request = scope.launch {
             try {
@@ -69,7 +71,9 @@ class ReviewController(
                 mutable.update { it.copy(batch = batch, position =
                     if (it.batch?.id == batch.id) it.position.coerceAtMost((batch.items.size - 1).coerceAtLeast(0)) else 0,
                     loading = false) }
+                privacy?.record("review", started = started)
             } catch (error: Exception) {
+                if (key == account()) privacy?.record("review", usageResult(error), started, error = error)
                 if (error is CancellationException) throw error
                 if (stamp == generation && key == account() && active === core())
                     mutable.update { it.copy(loading = false, error = errorCode(error)) }
@@ -98,6 +102,7 @@ data class WalkState(
 
 class WalkController(
     private val core: () -> CoreClient?, private val account: () -> String?, private val scope: CoroutineScope,
+    private val privacy: PrivacyController? = null,
 ) {
     private val mutable = MutableStateFlow(WalkState())
     val state = mutable.asStateFlow()
@@ -197,6 +202,7 @@ class WalkController(
         val active = core() ?: return
         val key = account() ?: return
         val stamp = ++generation
+        val started = epochMillis()
         mutable.update { it.copy(loading = true, error = null, retry = input) }
         request = scope.launch {
             try {
@@ -214,9 +220,11 @@ class WalkController(
                 ) { "WALK_RESPONSE_INVALID" }
                 if (stamp != generation || key != account() || active !== core()) return@launch
                 if (result.item == null && !result.exhausted) {
+                    privacy?.record("walk", "over_limit", started)
                     mutable.update { it.copy(loading = false, error = "WALK_RESOURCE_LIMIT",
                         result = it.result?.copy(warnings = result.warnings), retry = input) }
                 } else {
+                    privacy?.record("walk", started = started)
                     mutable.update { previous ->
                         val displayed = if (result.item == null && !input.start) result.copy(item = previous.result?.item) else result
                         previous.copy(result = displayed, previous = if (result.item == null) previous.previous
@@ -224,6 +232,7 @@ class WalkController(
                     }
                 }
             } catch (error: Exception) {
+                if (key == account()) privacy?.record("walk", usageResult(error), started, error = error)
                 if (error is CancellationException) throw error
                 if (stamp == generation && key == account() && active === core())
                     mutable.update { it.copy(loading = false, error = errorCode(error)) }

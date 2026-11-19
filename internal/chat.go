@@ -24,7 +24,15 @@ const chatSystemPrompt = `你是帮助用户思考和头脑风暴的笔记对话
 type chatRunning struct {
 	requestID string
 	cancel    context.CancelCauseFunc
+	done      chan struct{}
 }
+
+type chatSourceChanges struct {
+	error
+	names []string
+}
+
+func (err *chatSourceChanges) Unwrap() error { return err.error }
 
 type ChatService struct {
 	Store    *Store
@@ -77,7 +85,7 @@ func (s *ChatService) Materials(ctx context.Context, names []string, expected []
 	if len(names) == 0 {
 		return result, failure("INVALID_ARGUMENT", "Select at least one memo", 422, false)
 	}
-	if len(names) > 1000 {
+	if len(names) > ChatSourceLimit {
 		return result, failure("CHAT_RESOURCE_LIMIT", "Too many source requests; reduce the selection", 422, false)
 	}
 	if expected != nil && len(expected) != len(names) {
@@ -93,16 +101,19 @@ func (s *ChatService) Materials(ctx context.Context, names []string, expected []
 	if err := s.Notes.Verify(ctx); err != nil {
 		return result, err
 	}
+	var changed, missing []string
 	for i, name := range names {
 		memo, err := s.Notes.fresh(ctx, name)
 		if err != nil {
 			return result, err
 		}
 		if memo == nil {
-			return result, failure("SOURCE_NOT_FOUND", "Selected memo is unavailable: "+name, 404, false)
+			missing = append(missing, name)
+			continue
 		}
 		if expected != nil && (expected[i].Name != name || expected[i].SourceHash != memo.SourceHash) {
-			return result, failure("SOURCE_CHANGED", "Selected memo changed; explicitly select it again: "+name, 409, false)
+			changed = append(changed, name)
+			continue
 		}
 		result.Notes = append(result.Notes, memo.Note(s.Notes.Settings))
 		result.Materials = append(result.Materials, ChatMaterial{name, memo.SourceHash})
@@ -110,6 +121,12 @@ func (s *ChatService) Materials(ctx context.Context, names []string, expected []
 	}
 	if err := s.Notes.Verify(ctx); err != nil {
 		return result, err
+	}
+	if len(missing) != 0 {
+		return ChatMaterials{}, &chatSourceChanges{failure("SOURCE_NOT_FOUND", "Selected memo is unavailable: "+missing[0], 404, false), append(changed, missing...)}
+	}
+	if len(changed) != 0 {
+		return ChatMaterials{}, &chatSourceChanges{failure("SOURCE_CHANGED", "Selected memo changed; select it again: "+changed[0], 409, false), changed}
 	}
 	return result, nil
 }
@@ -122,6 +139,34 @@ func materialNames(materials []ChatMaterial) []string {
 	return names
 }
 
+func chatInputNames(names []string, materials []ChatMaterial) ([]string, error) {
+	if materials == nil {
+		return names, nil
+	}
+	if names != nil {
+		return nil, failure("INVALID_ARGUMENT", "Choose either names or materials", 422, false)
+	}
+	if err := validateChat("", materials); err != nil {
+		return nil, err
+	}
+	return materialNames(materials), nil
+}
+
+func (s *ChatService) resolveChatInput(ctx context.Context, names []string, expected []ChatMaterial) (ChatMaterials, error) {
+	resolved, err := s.Materials(ctx, names, expected)
+	if err != nil {
+		var changed *chatSourceChanges
+		if expected != nil && errors.As(err, &changed) {
+			return ChatMaterials{}, &chatSourceChanges{failure("SOURCE_CHANGED", "Selected sources changed; select them again", 409, false), changed.names}
+		}
+		return ChatMaterials{}, err
+	}
+	if expected != nil && resolved.Characters > ChatCharacterLimit {
+		return ChatMaterials{}, failure("CHAT_MATERIAL_LIMIT", "Selected material exceeds 20000 characters", 422, false)
+	}
+	return resolved, nil
+}
+
 func (s *ChatService) Create(ctx context.Context, input ChatCreate) (ChatSession, bool, error) {
 	unlock, err := s.lock(ctx)
 	if err != nil {
@@ -131,12 +176,20 @@ func (s *ChatService) Create(ctx context.Context, input ChatCreate) (ChatSession
 	if !idempotencyPattern.MatchString(input.RequestID) {
 		return ChatSession{}, false, failure("INVALID_ARGUMENT", "Chat requires a stable request_id", 422, false)
 	}
+	names, err := chatInputNames(input.Names, input.Materials)
+	if err != nil {
+		return ChatSession{}, false, err
+	}
+	fingerprint := hashBytes(canonicalJSON([]any{input.Title, names}))
+	if input.Materials != nil {
+		fingerprint = hashBytes(canonicalJSON([]any{input.Title, input.Materials}))
+	}
 	var id, hash string
 	err = s.Store.state.QueryRow(`SELECT id, request_hash FROM chat_sessions
 		WHERE instance_id = ? AND user_name = ? AND creation_key = ?`,
 		s.Store.Settings.Memos.InstanceID, s.Store.Settings.Memos.User, input.RequestID).Scan(&id, &hash)
 	if err == nil {
-		if hash != hashBytes(canonicalJSON([]any{input.Title, input.Names})) {
+		if hash != fingerprint {
 			return ChatSession{}, false, failure("IDEMPOTENCY_CONFLICT", "This request_id belongs to a different chat request", 409, false)
 		}
 		chat, err := s.Store.chat(id)
@@ -145,14 +198,14 @@ func (s *ChatService) Create(ctx context.Context, input ChatCreate) (ChatSession
 	if !errors.Is(err, sql.ErrNoRows) {
 		return ChatSession{}, false, err
 	}
-	materials, err := s.Materials(ctx, input.Names, nil)
+	materials, err := s.resolveChatInput(ctx, names, input.Materials)
 	if err != nil {
 		return ChatSession{}, false, err
 	}
 	if err := ctx.Err(); err != nil {
 		return ChatSession{}, false, err
 	}
-	return s.Store.createChat(input.RequestID, input.Title, materials.Materials)
+	return s.Store.createChat(input.RequestID, input.Title, materials.Materials, fingerprint)
 }
 
 func (s *ChatService) Update(ctx context.Context, id string, input ChatUpdate) (ChatSession, error) {
@@ -171,12 +224,16 @@ func (s *ChatService) Update(ctx context.Context, id string, input ChatUpdate) (
 	if s.active(id) {
 		return ChatSession{}, chatBusy()
 	}
-	if input.Names == nil {
+	names, err := chatInputNames(input.Names, input.Materials)
+	if err != nil {
+		return ChatSession{}, err
+	}
+	if names == nil {
 		return ChatSession{}, failure("INVALID_ARGUMENT", "Chat names must be an array", 422, false)
 	}
 	materials := ChatMaterials{Materials: []ChatMaterial{}}
-	if len(input.Names) > 0 {
-		materials, err = s.Materials(ctx, input.Names, nil)
+	if len(names) > 0 {
+		materials, err = s.resolveChatInput(ctx, names, input.Materials)
 		if err != nil {
 			return ChatSession{}, err
 		}
@@ -199,17 +256,32 @@ func (s *ChatService) Delete(ctx context.Context, id string, version int64) erro
 	return s.Store.deleteChat(id, version)
 }
 
-func (s *ChatService) Cancel(chatID, requestID string) (ChatTurn, error) {
+func (s *ChatService) Cancel(ctx context.Context, chatID, requestID string) (ChatTurn, error) {
+	unlock, err := s.lock(ctx)
+	if err != nil {
+		return ChatTurn{}, err
+	}
 	turn, err := s.Store.chatTurn(chatID, requestID)
 	if err != nil {
+		unlock()
 		return turn, err
 	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	if running, ok := s.running[chatID]; ok && running.requestID == requestID {
+	running, active := s.running[chatID]
+	if active && running.requestID == requestID {
 		running.cancel(failure("CHAT_CANCELED", "Chat generation was stopped", 409, false))
 	}
-	return turn, nil
+	s.mu.Unlock()
+	unlock()
+	if !active || running.requestID != requestID {
+		return turn, nil
+	}
+	select {
+	case <-ctx.Done():
+		return ChatTurn{}, ctx.Err()
+	case <-running.done:
+		return s.Store.chatTurn(chatID, requestID)
+	}
 }
 
 func (s *ChatService) Save(ctx context.Context, chatID, requestID string, version int64) (Note, int, error) {
@@ -364,7 +436,8 @@ func (s *ChatService) Generate(ctx context.Context, chatID string, input ChatGen
 		}
 		return turn, err
 	}
-	s.running[chatID] = chatRunning{input.RequestID, cancel}
+	done := make(chan struct{})
+	s.running[chatID] = chatRunning{input.RequestID, cancel, done}
 	s.pending.Add(1)
 	s.mu.Unlock()
 	unlock()
@@ -372,6 +445,7 @@ func (s *ChatService) Generate(ctx context.Context, chatID string, input ChatGen
 	defer func() {
 		s.mu.Lock()
 		delete(s.running, chatID)
+		close(done)
 		s.mu.Unlock()
 		s.pending.Done()
 	}()

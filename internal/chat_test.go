@@ -28,7 +28,7 @@ func chatFixture(t *testing.T, memos map[string]map[string]any, provider LLMProv
 
 func createTestChat(t *testing.T, service *ChatService, names ...string) ChatSession {
 	t.Helper()
-	chat, created, err := service.Create(context.Background(), ChatCreate{newID(), "材料讨论", names})
+	chat, created, err := service.Create(context.Background(), ChatCreate{RequestID: newID(), Title: "材料讨论", Names: names})
 	if err != nil || !created {
 		t.Fatalf("create: %+v %v %v", chat, created, err)
 	}
@@ -322,12 +322,12 @@ func TestChatCancelDisconnectAndConcurrentReplay(t *testing.T) {
 			if err := service.Delete(context.Background(), chat.ID, 1); errorCode(err) != "CHAT_BUSY" {
 				t.Fatalf("deleted running chat: %v", err)
 			}
-			if _, err := service.Update(context.Background(), chat.ID, ChatUpdate{1, "changed", []string{"memos/one"}}); errorCode(err) != "CHAT_BUSY" {
+			if _, err := service.Update(context.Background(), chat.ID, ChatUpdate{Version: 1, Title: "changed", Names: []string{"memos/one"}}); errorCode(err) != "CHAT_BUSY" {
 				t.Fatalf("updated running chat: %v", err)
 			}
 			switch mode {
 			case "cancel":
-				if _, err := service.Cancel(chat.ID, "first"); err != nil {
+				if _, err := service.Cancel(t.Context(), chat.ID, "first"); err != nil {
 					t.Fatal(err)
 				}
 			case "disconnect":
@@ -423,7 +423,7 @@ func TestChatSaveIsVerbatimIdempotentAndDeletionDrainsIt(t *testing.T) {
 func TestChatCreationReplayAndExplicitMaterialRefresh(t *testing.T) {
 	memos := map[string]map[string]any{"memos/one": rawMemo("one", "原文")}
 	service := chatFixture(t, memos, textChatProvider("回复"))
-	input := ChatCreate{"same", "title", []string{"memos/one"}}
+	input := ChatCreate{RequestID: "same", Title: "title", Names: []string{"memos/one"}}
 	chat, _, err := service.Create(context.Background(), input)
 	if err != nil {
 		t.Fatal(err)
@@ -437,7 +437,7 @@ func TestChatCreationReplayAndExplicitMaterialRefresh(t *testing.T) {
 	if err != nil || material.Characters != utf8.RuneCountInString("更新正文 😀") {
 		t.Fatalf("Unicode material count: %+v %v", material, err)
 	}
-	updated, err := service.Update(context.Background(), chat.ID, ChatUpdate{1, chat.Title, input.Names})
+	updated, err := service.Update(context.Background(), chat.ID, ChatUpdate{Version: 1, Title: chat.Title, Names: input.Names})
 	if err != nil || updated.Version != 2 || reflect.DeepEqual(updated.Materials, chat.Materials) {
 		t.Fatalf("explicit refresh failed: %+v %v", updated, err)
 	}

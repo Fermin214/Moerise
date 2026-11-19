@@ -35,6 +35,8 @@ data class SearchState(
 
 class SearchController(
     private val core: () -> CoreClient?, private val account: () -> String?, private val scope: CoroutineScope,
+    private val reads: FilterReads? = null,
+    private val privacy: PrivacyController? = null,
 ) {
     private val mutable = MutableStateFlow(SearchState())
     val state = mutable.asStateFlow()
@@ -42,8 +44,10 @@ class SearchController(
     private var filterGeneration = 0L
     private var request: Job? = null
     private var filters: Job? = null
+    private val cursors = mutableSetOf<String>()
 
     fun clear() {
+        cursors.clear()
         ++generation; ++filterGeneration; request?.cancel(); filters?.cancel()
         mutable.value = SearchState()
     }
@@ -71,6 +75,8 @@ class SearchController(
         val stamp = ++generation
         request?.cancel()
         mutable.update { it.copy(loading = true, error = null) }
+        val operation = "search_${if (query.text.isBlank()) "keyword" else query.mode}"
+        val started = epochMillis()
         request = scope.launch {
             try {
                 require(query.mode in setOf("keyword", "semantic", "hybrid")) { "SEARCH_MODE_INVALID" }
@@ -101,9 +107,13 @@ class SearchController(
                     it.state in setOf("NORMAL", "ARCHIVED") && (query.state == "ALL" || it.state == query.state)
                 }) { "ACCOUNT_CHANGED" }
                 if (stamp != generation || key != account()) return@launch
+                if (!append) cursors.clear()
+                val next = page.nextPageToken.takeIf { it.isNotBlank() && cursors.add(it) }.orEmpty()
                 mutable.update { it.copy(notes = (if (append) it.notes + page.notes else page.notes).distinctBy { note -> note.name },
-                    next = page.nextPageToken, responseMode = page.mode, semantic = page.semantic, loading = false) }
+                    next = next, responseMode = page.mode, semantic = page.semantic, loading = false) }
+                if (!append) privacy?.record(operation, started = started)
             } catch (error: Exception) {
+                if (!append && key == account()) privacy?.record(operation, usageResult(error), started, error = error)
                 if (error is CancellationException) throw error
                 if (stamp == generation) mutable.update { it.copy(loading = false, error = errorCode(error)) }
             }
@@ -111,20 +121,19 @@ class SearchController(
     }
 
     fun filters(month: String) {
-        val active = core() ?: return
+        val active = core()
+        if (reads == null && active == null) return
         val key = account() ?: return
         val sourceState = state.value.query.state
         val stamp = ++filterGeneration
         filters?.cancel()
-        mutable.update { it.copy(filtersLoading = true, filtersError = null, tags = emptyList(), calendar = null) }
+        mutable.update { it.copy(filtersLoading = true, filtersError = null, calendar = it.calendar?.takeIf { page -> page.month == month }) }
         filters = scope.launch {
             try {
                 coroutineScope {
-                    val tags = async { CoreJson.decodeFromString<TagPage>(active.api(HttpMethod.Get, "/tags?state=$sourceState")) }
-                    val calendar = async { CoreJson.decodeFromString<CalendarPage>(active.api(HttpMethod.Get,
-                        "/calendar?state=$sourceState&month=${month.encodeURLQueryComponent(encodeFull = true)}")) }
-                    val tagPage = tags.await()
-                    val calendarPage = calendar.await()
+                    val tagPage = reads?.tags(sourceState) ?: CoreJson.decodeFromString<TagPage>(requireNotNull(active).api(HttpMethod.Get, "/tags?state=$sourceState"))
+                    val calendarPage = reads?.calendar(sourceState, month) ?: CoreJson.decodeFromString<CalendarPage>(requireNotNull(active).api(HttpMethod.Get,
+                        "/calendar?state=$sourceState&month=${month.encodeURLQueryComponent(encodeFull = true)}"))
                     require(calendarPage.month == month)
                     if (stamp == filterGeneration && key == account() && sourceState == state.value.query.state) mutable.update { it.copy(
                         tags = tagPage.tags, calendar = calendarPage, filtersLoading = false) }

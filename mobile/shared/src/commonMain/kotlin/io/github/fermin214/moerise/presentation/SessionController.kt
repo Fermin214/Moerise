@@ -38,6 +38,7 @@ class SessionController(
     private var generation = 0L
     private var settingsRevision = 0L
     private var operation: Job? = null
+    internal var onRequestFailure: (Long, Exception) -> Unit = { _, _ -> }
     var core: CoreClient? = null
         private set
 
@@ -74,6 +75,8 @@ class SessionController(
     private fun client(origin: String, stamp: Long): CoreClient =
         CoreClient(origin, SessionCookies(origin, secrets), onUnauthorized = {
             scope.launch { if (generation == stamp) mutableState.update { it.copy(connected = false, needsLogin = true) } }
+        }, onRequestFailure = { started, error ->
+            scope.launch { if (generation == stamp) onRequestFailure(started, error) }
         }, onRequest = onNetworkRequest)
 
     private suspend fun restore() {

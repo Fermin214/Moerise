@@ -64,6 +64,7 @@ func TestClientChatLifecycleStrictRequestsAndSSE(t *testing.T) {
 		status                   int
 	}{
 		{"POST", "/api/app/v1/chats", `{"request_id":"other","names":["memos/one"],"extra":true}`, "INVALID_ARGUMENT", 422},
+		{"POST", "/api/app/v1/chats", `{"request_id":"other","title":"Android fixture chat","names":["memos/one"],"materials":null}`, "INVALID_ARGUMENT", 422},
 		{"POST", base + "/messages", `{"request_id":"bad","version":1,"kind":"question","content":"a","content":"b"}`, "INVALID_ARGUMENT", 422},
 		{"POST", base + "/messages", `{"request_id":"bad","version":1,"kind":null}`, "INVALID_ARGUMENT", 422},
 		{"POST", base + "/messages?x=1", `{}`, "INVALID_ARGUMENT", 422},
@@ -136,6 +137,8 @@ func TestClientChatRequiresSessionOriginCSRFAndMachineIsolation(t *testing.T) {
 		{"POST", "/chats/" + chat.ID + "/messages", `{"request_id":"first","version":1,"kind":"question","content":"问题"}`},
 		{"POST", "/chats/" + chat.ID + "/messages/first/cancel", `{}`},
 		{"POST", "/chats/" + chat.ID + "/messages/first/save", `{"version":1}`},
+		{"POST", "/chats/" + chat.ID + "/save-selection", `{"operation_key":"keep","language":"en","messages":[{"request_id":"first","role":"assistant","version":1}]}`},
+		{"GET", "/chats/" + chat.ID + "/save-selection/keep", ""},
 	} {
 		path := "/api/app/v1" + route.path
 		if response := clientCall(api, route.method, path, route.body, nil, fixture.settings.Web.PublicOrigin, ""); response.Code != 401 {

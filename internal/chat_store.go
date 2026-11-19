@@ -47,7 +47,7 @@ func putChatMaterials(tx *sql.Tx, id string, materials []ChatMaterial) error {
 	return nil
 }
 
-func (s *Store) createChat(key, title string, materials []ChatMaterial) (ChatSession, bool, error) {
+func (s *Store) createChat(key, title string, materials []ChatMaterial, hash string) (ChatSession, bool, error) {
 	if len(materials) == 0 {
 		return ChatSession{}, false, failure("INVALID_ARGUMENT", "Select at least one memo", 422, false)
 	}
@@ -57,11 +57,6 @@ func (s *Store) createChat(key, title string, materials []ChatMaterial) (ChatSes
 	if err := validateChat(title, materials); err != nil {
 		return ChatSession{}, false, err
 	}
-	names := make([]string, len(materials))
-	for i, material := range materials {
-		names[i] = material.Name
-	}
-	hash := hashBytes(canonicalJSON([]any{title, names}))
 	id, created := newID(), false
 	err := transaction(s.state, func(tx *sql.Tx) error {
 		var savedHash string
@@ -138,13 +133,13 @@ const chatSummaryQuery = `SELECT id, title,
 		COALESCE((SELECT CASE WHEN kind = 'insight' THEN '一键洞察' ELSE substr(user_content, 1, 80) END
 			FROM chat_turns WHERE chat_id = c.id ORDER BY position LIMIT 1), title),
 		COALESCE((SELECT kind FROM chat_turns WHERE chat_id = c.id ORDER BY position LIMIT 1), ''), version,
-		(SELECT COUNT(*) FROM chat_materials WHERE chat_id = c.id), created_at, updated_at
+		(SELECT COUNT(*) FROM chat_materials WHERE chat_id = c.id), material_version, created_at, updated_at
 		FROM chat_sessions c`
 
 func (s *Store) readChatSummary(tx *sql.Tx, id string, result *ChatSummary) error {
 	err := tx.QueryRow(chatSummaryQuery+` WHERE id = ? AND instance_id = ? AND user_name = ?`,
 		id, s.Settings.Memos.InstanceID, s.Settings.Memos.User).Scan(&result.ID, &result.Title, &result.Preview, &result.PreviewKind, &result.Version,
-		&result.MaterialCount, &result.CreatedAt, &result.UpdatedAt)
+		&result.MaterialCount, &result.MaterialVersion, &result.CreatedAt, &result.UpdatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return chatNotFound()
 	}
@@ -166,7 +161,7 @@ func (s *Store) listChats(beforeTime, beforeID string, limit int) ([]ChatSummary
 	defer rows.Close()
 	for rows.Next() {
 		var chat ChatSummary
-		if err := rows.Scan(&chat.ID, &chat.Title, &chat.Preview, &chat.PreviewKind, &chat.Version, &chat.MaterialCount, &chat.CreatedAt, &chat.UpdatedAt); err != nil {
+		if err := rows.Scan(&chat.ID, &chat.Title, &chat.Preview, &chat.PreviewKind, &chat.Version, &chat.MaterialCount, &chat.MaterialVersion, &chat.CreatedAt, &chat.UpdatedAt); err != nil {
 			return result, err
 		}
 		result = append(result, chat)
@@ -193,7 +188,11 @@ func (s *Store) updateChat(id string, version int64, title string, materials []C
 		if running != 0 {
 			return chatBusy()
 		}
-		if _, err := tx.Exec("UPDATE chat_sessions SET title = ?, version = version + 1, updated_at = ? WHERE id = ?", title, nowText(), id); err != nil {
+		if _, err := tx.Exec(`UPDATE chat_sessions SET title = ?, version = version + 1,
+			material_version = material_version + (json(?) != (SELECT json_group_array(
+				json_object('name', memo_name, 'source_hash', source_hash) ORDER BY position)
+				FROM chat_materials WHERE chat_id = ?)), updated_at = ? WHERE id = ?`,
+			title, string(canonicalJSON(materials)), id, nowText(), id); err != nil {
 			return err
 		}
 		return putChatMaterials(tx, id, materials)
@@ -227,7 +226,7 @@ func (s *Store) deleteChat(id string, version int64) error {
 
 const chatTurnQuery = `SELECT t.id, t.request_id, t.kind, t.user_content, t.assistant_content,
 	t.message_version, t.status, t.error_code, t.settings_version, t.prompt, t.model, t.materials_json,
-	t.usage_json, t.created_at, t.updated_at, COALESCE(s.memo_name, '')
+	t.usage_json, t.created_at, t.updated_at, COALESCE(s.memo_name, ''), t.material_version
 	FROM chat_turns t LEFT JOIN chat_saves s ON s.turn_id = t.id`
 
 func scanChatTurn(row interface{ Scan(...any) error }) (ChatTurn, error) {
@@ -235,7 +234,7 @@ func scanChatTurn(row interface{ Scan(...any) error }) (ChatTurn, error) {
 	var materials, usage string
 	err := row.Scan(&turn.ID, &turn.RequestID, &turn.Kind, &turn.User.Content, &turn.Assistant.Content,
 		&turn.Assistant.Version, &turn.Assistant.Status, &turn.Assistant.ErrorCode, &turn.SettingsVersion,
-		&turn.Prompt, &turn.Model, &materials, &usage, &turn.User.CreatedAt, &turn.Assistant.UpdatedAt, &turn.Assistant.SavedName)
+		&turn.Prompt, &turn.Model, &materials, &usage, &turn.User.CreatedAt, &turn.Assistant.UpdatedAt, &turn.Assistant.SavedName, &turn.MaterialVersion)
 	if err != nil {
 		return turn, err
 	}
@@ -349,9 +348,9 @@ func (s *Store) reserveChatTurn(chatID string, input ChatGenerate, settingsVersi
 		}
 		stamp := nowText()
 		if _, err := tx.Exec(`INSERT INTO chat_turns (id, chat_id, position, request_id, request_hash, kind,
-			user_content, status, settings_version, prompt, model, materials_json, created_at, updated_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, 'running', ?, ?, ?, ?, ?, ?)`, newID(), chatID, position, input.RequestID,
-			hash, input.Kind, content, settingsVersion, prompt, model, string(canonicalJSON(refs)), stamp, stamp); err != nil {
+			user_content, status, settings_version, prompt, model, materials_json, created_at, updated_at, material_version)
+			VALUES (?, ?, ?, ?, ?, ?, ?, 'running', ?, ?, ?, ?, ?, ?, ?)`, newID(), chatID, position, input.RequestID,
+			hash, input.Kind, content, settingsVersion, prompt, model, string(canonicalJSON(refs)), stamp, stamp, chat.MaterialVersion); err != nil {
 			return err
 		}
 		created = true
@@ -460,17 +459,23 @@ func (s *Store) reserveChatSave(chatID, requestID string, version int64) (chatSa
 			return failure("CHAT_MESSAGE_INCOMPLETE", "Only a completed assistant message can be saved", 409, false)
 		}
 		content = turn.Assistant.Content
-		save.Key = "chat:" + turn.ID + ":" + hashBytes([]byte(content))[:16]
-		save.Version = version
-		stamp := nowText()
-		if _, err := tx.Exec(`INSERT OR IGNORE INTO chat_saves VALUES (?, ?, ?, ?, '', ?, ?)`,
-			turn.ID, version, hashBytes([]byte(content)), save.Key, stamp, stamp); err != nil {
-			return err
-		}
-		return tx.QueryRow("SELECT idempotency_key, memo_name, message_version FROM chat_saves WHERE turn_id = ?", turn.ID).
-			Scan(&save.Key, &save.Name, &save.Version)
+		save, err = reserveSingleAnswer(tx, turn.ID, version, content)
+		return err
 	})
 	return save, content, err
+}
+
+func reserveSingleAnswer(tx *sql.Tx, turnID string, version int64, content string) (chatSave, error) {
+	var save chatSave
+	digest, stamp := hashBytes([]byte(content)), nowText()
+	key := "chat:" + turnID + ":" + digest[:16]
+	if _, err := tx.Exec(`INSERT OR IGNORE INTO chat_saves VALUES (?, ?, ?, ?, '', ?, ?)`,
+		turnID, version, digest, key, stamp, stamp); err != nil {
+		return save, err
+	}
+	err := tx.QueryRow("SELECT idempotency_key, memo_name, message_version FROM chat_saves WHERE turn_id = ?", turnID).
+		Scan(&save.Key, &save.Name, &save.Version)
+	return save, err
 }
 
 func (s *Store) completeChatSave(chatID, requestID, key, name string) error {

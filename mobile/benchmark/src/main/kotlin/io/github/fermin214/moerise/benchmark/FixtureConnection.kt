@@ -22,6 +22,11 @@ fun MacrobenchmarkScope.home() {
 
 fun MacrobenchmarkScope.configure() {
     startActivityAndWait(homeIntent())
+    check(device.wait(Until.hasObject(By.res(Pattern.compile("welcome_enter|server_login|note_editor"))), 20_000))
+    if (device.hasObject(By.res("welcome_enter"))) {
+        check(!device.findObject(By.res("privacy_share")).isChecked)
+        device.findObject(By.res("welcome_enter")).click()
+    }
     check(device.wait(Until.hasObject(By.res(Pattern.compile("server_login|note_editor"))), 20_000)) {
         "登录表单或顶部新建输入器未就绪"
     }

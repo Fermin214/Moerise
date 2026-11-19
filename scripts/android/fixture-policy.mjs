@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import { setTimeout as delay } from 'node:timers/promises';
 
+export const fixtureInsightReply = 'Android 洞察 🌌\n\n来自隔离模型的回复。';
+
 // 合并导入、分页、增量检查的压力，给 Memos 原文复查留出请求余量。
 export function tuneFixtureConfig(config) {
   config.memos = { ...config.memos, page_size: 100 };

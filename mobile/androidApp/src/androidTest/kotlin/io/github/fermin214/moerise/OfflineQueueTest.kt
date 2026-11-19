@@ -41,6 +41,11 @@ class OfflineQueueTest {
         val unfinished = "Unsent input $marker"
         if (phase != "afterRemoval") compose.waitForHome()
         when (phase) {
+            "privacyUpgrade" -> {
+                check(compose.model().mobile.privacy.state.value.enabled)
+                compose.onNodeWithTag("welcome_enter").assertDoesNotExist()
+                waitEditor(unfinished)
+            }
             "prepare" -> {
                 for (text in listOf(first, second)) {
                     compose.homeNode("note_editor").performTextReplacement(text)
@@ -70,8 +75,11 @@ class OfflineQueueTest {
             }
             "onlineRestart" -> {
                 waitEditor(unfinished)
-                compose.waitForCard(first)
-                compose.waitForCard(second)
+                for (text in listOf(first, second)) {
+                    compose.waitForCard(text)
+                    compose.onAllNodes(readingText(text)).assertCountEquals(1)
+                    check(compose.model().mobile.sync.state.value.notes.none { it.content == text })
+                }
                 waitEditor(unfinished)
             }
             "removeAccount" -> {

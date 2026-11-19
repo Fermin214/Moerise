@@ -77,7 +77,10 @@ dependencies {
     androidTestImplementation(libs.androidx.test.runner)
     androidTestImplementation(libs.androidx.test.junit)
     androidTestImplementation(libs.androidx.compose.test)
+    androidTestImplementation(libs.androidx.compose.foundation)
     androidTestImplementation(libs.ktor.client.core)
+    androidTestImplementation(libs.ktor.client.mock)
+    androidTestImplementation(libs.serialization.json)
     listOf("benchmarkImplementation", "profileImplementation").forEach { configuration ->
         add(configuration, libs.androidx.compose.foundation)
         add(configuration, libs.androidx.compose.material3)

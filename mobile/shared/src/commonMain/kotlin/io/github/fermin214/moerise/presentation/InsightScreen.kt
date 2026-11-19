@@ -4,11 +4,11 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
-import androidx.compose.foundation.text.KeyboardActions
-import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -18,24 +18,19 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
-import androidx.compose.ui.input.key.Key
-import androidx.compose.ui.input.key.KeyEventType
-import androidx.compose.ui.input.key.key
-import androidx.compose.ui.input.key.onPreviewKeyEvent
-import androidx.compose.ui.input.key.type
+import androidx.compose.ui.input.key.*
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.semantics.LiveRegionMode
-import androidx.compose.ui.semantics.contentDescription
-import androidx.compose.ui.semantics.liveRegion
-import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.semantics.stateDescription
+import androidx.compose.ui.semantics.*
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
-import io.github.fermin214.moerise.domain.ChatTurn
+import io.github.fermin214.moerise.domain.*
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -43,532 +38,314 @@ fun InsightScreen(mobile: MobileController, strings: Strings, scroll: List<Scrol
     onMenu: () -> Unit, onSearch: () -> Unit, onSettings: () -> Unit) {
     val controller = mobile.insights
     val state by controller.state.collectAsState()
+    val picker by controller.picker.state.collectAsState()
     val connection by mobile.session.state.collectAsState()
     val sessionFocus = remember { FocusRequester() }
-    val addFocus = remember { FocusRequester() }
-    var materialOpen by remember { mutableStateOf(true) }
-    var sessionMenu by remember { mutableStateOf(false) }
-    var deleting by remember { mutableStateOf(false) }
-    var historyOpen by remember { mutableStateOf(false) }
-    val picker by controller.picker.state.collectAsState()
-    val pickerOpen = picker.visible
-    var pickerWasOpen by remember { mutableStateOf(false) }
+    var menu by remember { mutableStateOf(false) }
+    var dialog by remember { mutableStateOf("") }
+    val chat = state.chat
+    val recovery = state.recovery
+    val turns = chat?.turns.orEmpty() + listOfNotNull(recovery.partial?.takeIf { local -> chat?.turns.orEmpty().none { it.id == local.id } })
+    val pending = recovery.generation
+    val waiting = state.starting.isNotBlank() || pending != null && turns.none { it.requestId == pending.input.requestId }
+    val first = turns.isEmpty() && !waiting
+    val online = connection.connected
+    val edit = online && !state.locked
+    val canSend = edit && recovery.selected.isNotEmpty()
     val timezone = connection.profile?.timezone ?: "UTC"
-    val selected = state.recovery.selected
-    val notes = state.materials?.notes.orEmpty().associateBy { it.name }
-    val characters = state.materials?.characters ?: if (selected.all { it in notes })
-        selected.sumOf { name -> insightCharacters(notes.getValue(name).content) } else null
-    val limit = state.materials?.limit ?: 20_000
-    val over = characters != null && characters > limit
-    val canGenerate = !state.locked && connection.connected && selected.isNotEmpty() && !over && !pickerOpen
-    val canChangeMaterials = !state.locked && connection.connected && !deleting && !pickerOpen
-
-    LaunchedEffect(state.chat?.id) { deleting = false }
-    LaunchedEffect(pickerOpen, state.busy) {
-        if (pickerOpen) pickerWasOpen = true
-        else if (pickerWasOpen && !state.busy) { addFocus.requestFocus(); pickerWasOpen = false }
-    }
-
-    Column(Modifier.fillMaxSize().safeDrawingPadding().imePadding().testTag("insights_page")) {
+    val closeDialog = { dialog = ""; sessionFocus.requestFocus(); Unit }
+    Column(Modifier.fillMaxSize().safeDrawingPadding().testTag("insights_page")) {
         WebToolbar(strings, onMenu, onSearch)
-        Column(Modifier.weight(1f).widthIn(max = 928.dp).fillMaxWidth()
-            .align(Alignment.CenterHorizontally).padding(horizontal = 16.dp)) {
-            Column(Modifier.fillMaxWidth().padding(top = 4.dp, bottom = 10.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween) {
-                    Text(strings.text("洞察", "Insights"), fontSize = 22.sp, fontWeight = FontWeight.SemiBold)
-                    Box {
-                        IconButton(onClick = { sessionMenu = !sessionMenu },
-                            modifier = Modifier.focusRequester(sessionFocus).testTag("chat_session_menu")) {
-                            WebIcon(WebIcon.Menu, strings.text("会话", "Conversation"))
-                        }
-                        DropdownMenu(expanded = sessionMenu, onDismissRequest = { sessionMenu = false },
-                            modifier = Modifier.platformTestTags()) {
-                            DropdownMenuItem(text = { Text(strings.text("新建会话", "New conversation")) },
-                                enabled = !state.locked && connection.connected,
-                                onClick = { sessionMenu = false; controller.newChat() },
-                                modifier = Modifier.testTag("chat_new"))
-                            DropdownMenuItem(text = { Text(strings.text("历史会话", "Conversation history")) },
-                                onClick = { sessionMenu = false; historyOpen = true; controller.history() },
-                                modifier = Modifier.testTag("chat_history"))
-                            DropdownMenuItem(text = {
-                                Text(strings.text("删除当前会话", "Delete current conversation"), color = MaterialTheme.colorScheme.error)
-                            }, enabled = state.canDelete && connection.connected,
-                                onClick = { sessionMenu = false; deleting = true },
-                                modifier = Modifier.testTag("chat_delete"))
-                        }
-                    }
-                }
-                Surface(color = Color.White, shape = RoundedCornerShape(14.dp),
-                    border = BorderStroke(1.dp, MoeriseColors.Line)) {
-                    Column(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 8.dp)) {
-                        FlowRow(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                            TextButton(onClick = { materialOpen = !materialOpen },
-                                contentPadding = PaddingValues(horizontal = 6.dp),
-                                modifier = Modifier.testTag("chat_material_toggle").semantics {
-                                    stateDescription = if (materialOpen) strings.text("展开", "Expanded") else strings.text("收起", "Collapsed")
-                                }) {
-                                Text(strings.text(
-                                    "材料 · ${selected.size} 条 · ${characters ?: "—"} / $limit 字 · ${if (materialOpen) "收起" else "展开"}",
-                                    "Materials · ${selected.size} notes · ${characters ?: "—"} / $limit chars · ${if (materialOpen) "Collapse" else "Expand"}"),
-                                    color = Color(0xFF3A4049), fontSize = 14.sp)
-                            }
-                            InsightPlainAction(strings.text("添加笔记", "Add notes"), onClick = controller::openPicker, enabled = canChangeMaterials,
-                                modifier = Modifier.focusRequester(addFocus).testTag("chat_add_materials"))
-                        }
-                        if (materialOpen && selected.isNotEmpty()) {
-                            FlowRow(Modifier.fillMaxWidth().heightIn(max = 176.dp).verticalScroll(scroll[1]).padding(top = 6.dp),
-                                horizontalArrangement = Arrangement.spacedBy(6.dp),
-                                verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                                selected.forEach { name ->
-                                    key(name) {
-                                        Surface(color = MoeriseColors.TagSurface, shape = RoundedCornerShape(50),
-                                            border = BorderStroke(1.dp, MoeriseColors.TagLine)) {
-                                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                                TextButton(onClick = { mobile.openNote(name) },
-                                                    contentPadding = PaddingValues(start = 9.dp, end = 2.dp),
-                                                    modifier = Modifier.widthIn(max = 240.dp).semantics {
-                                                        contentDescription = strings.text("在主页查看", "View on home")
-                                                    }) {
-                                                    Text(insightPreview(notes[name]?.content?.ifBlank { name } ?: name, 12) + "…",
-                                                        color = Color(0xFF2A5BB5), fontSize = 13.sp, maxLines = 2)
-                                                }
-                                                IconButton(onClick = { controller.removeMaterial(name) }, enabled = canChangeMaterials,
-                                                    modifier = Modifier.size(44.dp).testTag("chat_remove_$name")) {
-                                                    WebIcon(WebIcon.Close, strings.text("移除这条笔记", "Remove this note"), Modifier.size(14.dp))
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        if (over) Text(strings.text("超过字数上限，请减少所选笔记。", "Over the character limit. Select fewer notes."),
-                            color = MaterialTheme.colorScheme.error, fontSize = 13.sp,
-                            modifier = Modifier.padding(top = 4.dp).testTag("chat_budget"))
-                    }
-                }
-                if (deleting) {
-                    Surface(color = Color.White, shape = RoundedCornerShape(10.dp),
-                        border = BorderStroke(1.dp, MoeriseColors.Line),
-                        modifier = Modifier.onPreviewKeyEvent {
-                            if (it.type == KeyEventType.KeyDown && it.key == Key.Escape && !state.deleting && !state.stopping) {
-                                deleting = false
-                                sessionFocus.requestFocus()
-                                true
-                            } else false
-                        }) {
-                        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                            Text(strings.text("删除这个会话？已保存的笔记会保留。", "Delete this conversation? Saved notes will remain."),
-                                style = MaterialTheme.typography.bodyMedium)
-                            Row(Modifier.align(Alignment.End), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                TextButton(onClick = { deleting = false; sessionFocus.requestFocus() }, enabled = !state.deleting && !state.stopping) {
-                                    Text(strings.text("取消", "Cancel"))
-                                }
-                                TextButton(onClick = {
-                                    deleting = false
-                                    if (state.recovery.mutation?.method == "DELETE") controller.confirmDeleteAgain() else controller.delete()
-                                }, enabled = state.canDelete && connection.connected,
-                                    modifier = Modifier.testTag("chat_delete_confirm")) {
-                                    Text(strings.text("删除", "Delete"), color = MaterialTheme.colorScheme.error)
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            BoxWithConstraints(Modifier.weight(1f).fillMaxWidth()) {
-                val contentHeight = maxHeight
-                Column(Modifier.fillMaxWidth().heightIn(min = contentHeight).verticalScroll(scroll[0]),
-                    verticalArrangement = Arrangement.spacedBy(14.dp)) {
-                    val turns = state.chat?.turns.orEmpty()
-                    val partial = state.recovery.partial?.takeIf { pending -> turns.none { it.id == pending.id } }
-                    if (turns.isEmpty() && partial == null) {
-                        Box(Modifier.fillMaxWidth().heightIn(min = contentHeight).padding(vertical = 40.dp),
-                            contentAlignment = Alignment.Center) {
-                            WebAction(strings.text("一键洞察", "Generate insights"), onClick = { controller.generate("insight") },
-                                enabled = canGenerate && !deleting, modifier = Modifier.testTag("chat_insight"))
-                        }
-                    } else {
-                        turns.forEach { turn ->
-                            key(turn.id) { InsightTurn(turn, mobile, strings, !state.busy && !deleting && connection.connected) }
-                        }
-                        partial?.let { InsightTurn(it, mobile, strings, !state.busy && !deleting && connection.connected) }
-                    }
-                }
-            }
-            Column(Modifier.fillMaxWidth().padding(top = 10.dp, bottom = 16.dp),
-                verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                if (state.error != null && !pickerOpen && !historyOpen) {
-                    Text(insightError(state.error!!, strings), color = MaterialTheme.colorScheme.error,
-                        fontSize = 13.sp, modifier = Modifier.testTag("chat_error").semantics { liveRegion = LiveRegionMode.Polite })
-                    if (state.error == "LLM_DISABLED") {
-                        TextButton(onClick = onSettings) {
-                            Text(strings.text("打开设置", "Open Settings"))
-                        }
-                    }
-                }
-                if (state.recovery.creation != null || state.recovery.mutation != null || state.recovery.generation != null ||
-                    state.conflicted || state.error in setOf("CHAT_CONFLICT", "CHAT_PROTOCOL", "CHAT_INTERRUPTED", "LLM_PROTOCOL", "CHAT_DELETE_REQUIRES_CONFIRMATION")) {
-                    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        if (state.recovery.creation != null) InsightPlainAction(
-                            strings.text("恢复新建会话", "Recover conversation"), controller::applyMaterials,
-                            enabled = !state.busy && connection.connected, modifier = Modifier.testTag("chat_retry_create"))
-                        if (state.recovery.mutation != null) InsightPlainAction(
-                            strings.text("检查操作结果", "Check operation result"), controller::retryMutation,
-                            enabled = !state.busy && connection.connected, modifier = Modifier.testTag("chat_retry_write"))
-                        if (state.error == "CHAT_DELETE_REQUIRES_CONFIRMATION") InsightPlainAction(
-                            strings.text("删除当前会话", "Delete current conversation"), { deleting = true }, enabled = !state.busy)
-                        if (state.conflicted || state.recovery.generation != null ||
-                            state.error in setOf("CHAT_CONFLICT", "CHAT_PROTOCOL", "CHAT_INTERRUPTED", "LLM_PROTOCOL")) {
-                            InsightPlainAction(strings.text("重新读取会话", "Reload conversation"), controller::refresh,
-                                enabled = !state.busy && connection.connected, modifier = Modifier.testTag("chat_refresh"))
-                        }
-                        if (state.recovery.generation != null && !state.running) InsightPlainAction(
-                            strings.text("恢复或重新生成", "Recover or generate again"), controller::retryGeneration,
-                            enabled = !state.busy && connection.connected, modifier = Modifier.testTag("chat_retry_generation"))
-                        if (state.recovery.mutation != null || state.recovery.generation != null) TextButton(
-                            onClick = controller::adoptServer, enabled = !state.busy && !state.running && connection.connected) {
-                            Text(strings.text("读取并采用服务器会话", "Read and use server conversation"))
-                        }
-                    }
-                }
-                Surface(color = Color.White, shape = RoundedCornerShape(14.dp), border = BorderStroke(1.dp, MoeriseColors.Line)) {
-                    BoxWithConstraints {
-                        val wrapped = strings.text("zh", "en") == "en" && maxWidth <= 640.dp
-                        val question: @Composable (Modifier) -> Unit = { modifier ->
-                            BasicTextField(state.recovery.question, controller::question,
-                                enabled = !state.locked && !deleting && !pickerOpen,
-                                readOnly = state.recovery.generation != null,
-                                singleLine = true, cursorBrush = SolidColor(MoeriseColors.Blue),
-                                textStyle = MaterialTheme.typography.bodyMedium.copy(color = MoeriseColors.Ink, fontSize = 16.sp),
-                                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
-                                keyboardActions = KeyboardActions(onSend = {
-                                    if (canGenerate && !deleting && state.recovery.question.isNotBlank()) controller.generate("question")
-                                }),
-                                modifier = modifier.heightIn(min = 44.dp).padding(start = 8.dp)
-                                    .testTag("chat_question").semantics { contentDescription = strings.text("向 AI 提问", "Ask AI") },
-                                decorationBox = { input ->
-                                    Box(contentAlignment = Alignment.CenterStart) {
-                                        if (state.recovery.question.isEmpty()) Text(
-                                            strings.text("围绕所选笔记提问或追问…", "Ask about the selected notes…"),
-                                            color = MoeriseColors.Muted, fontSize = 15.sp, maxLines = 1)
-                                        input()
-                                    }
-                                })
-                        }
-                        val actions: @Composable () -> Unit = {
-                            InsightPlainAction(strings.text("一键洞察", "Generate insights"), { controller.generate("insight") },
-                                enabled = canGenerate && !deleting, modifier = Modifier.testTag("chat_insight_bottom"))
-                            if (state.canStop) WebAction(strings.text("停止", "Stop"), controller::stop,
-                                enabled = connection.connected && !state.stopping && !state.deleting && !deleting, modifier = Modifier.testTag("chat_stop"))
-                            else WebAction(strings.text("发送", "Send"), { controller.generate("question") },
-                                enabled = canGenerate && !deleting && state.recovery.question.isNotBlank(),
-                                modifier = Modifier.testTag("chat_send"))
-                        }
-                        if (wrapped) Column(Modifier.padding(6.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                            question(Modifier.fillMaxWidth())
-                            Row(Modifier.align(Alignment.End), horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                verticalAlignment = Alignment.CenterVertically) { actions() }
-                        } else Row(Modifier.padding(6.dp), horizontalArrangement = Arrangement.spacedBy(8.dp),
-                            verticalAlignment = Alignment.CenterVertically) {
-                            question(Modifier.weight(1f))
-                            actions()
-                        }
-                    }
-                }
-            }
-        }
-    }
-    if (historyOpen) InsightOverlay(strings.text("历史会话", "Conversation history"), strings,
-        onDismiss = { historyOpen = false; sessionFocus.requestFocus() }, tag = "chat_history_dialog") {
-        Column(Modifier.weight(1f).fillMaxWidth().verticalScroll(scroll[2])) {
-            if (state.history.isEmpty() && !state.busy && state.error == null)
-                Text(strings.text("还没有会话", "No conversations yet"), color = MoeriseColors.Muted,
-                    modifier = Modifier.padding(vertical = 12.dp))
-            state.history.forEach { chat ->
-                Surface(color = if (chat.id == state.chat?.id) MoeriseColors.BlueSurface else Color.Transparent,
-                    shape = RoundedCornerShape(8.dp),
-                    modifier = Modifier.fillMaxWidth().clickable(enabled = !state.locked && connection.connected) {
-                        historyOpen = false
-                        controller.open(chat.id)
-                        sessionFocus.requestFocus()
-                    }.testTag("chat_history_${chat.id}")) {
-                    Column(Modifier.padding(horizontal = 8.dp, vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        Text(if (chat.previewKind == "insight") strings.text("一键洞察", "Generate insights")
-                            else chat.preview.ifBlank { chat.title.ifBlank { strings.text("洞察", "Insights") } },
-                            fontSize = 14.sp, color = MoeriseColors.Ink)
-                        Text(strings.text("${displayServiceTime(chat.updatedAt, timezone)} · ${chat.materialCount} 条材料",
-                            "${displayServiceTime(chat.updatedAt, timezone)} · ${chat.materialCount} materials"),
-                            fontSize = 12.sp, color = MoeriseColors.Muted)
-                    }
-                }
-            }
-        }
-        if (state.busy) LinearProgressIndicator(Modifier.fillMaxWidth())
-        state.error?.let { Text(insightError(it, strings), color = MaterialTheme.colorScheme.error,
-            fontSize = 13.sp, modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite }) }
-        if (state.historyNext.isNotBlank() || state.error != null) InsightPlainAction(
-            if (state.historyNext.isNotBlank()) strings.text("加载更多", "Load more") else strings.text("重试", "Retry"),
-            { controller.history(state.historyNext.isNotBlank()) }, enabled = !state.busy && connection.connected,
-            modifier = Modifier.align(Alignment.End))
-    }
-    if (pickerOpen) InsightOverlay(strings.text("选择笔记", "Select notes"), strings,
-        onDismiss = controller::closePicker,
-        canDismiss = !state.busy, tag = "chat_material_dialog") {
-        val pickerOver = picker.characters > limit
-        val enabled = !state.locked && connection.connected
-        Text(strings.text("已选 ${picker.selected.size} 条 · ${picker.characters} / $limit 字",
-            "${picker.selected.size} selected · ${picker.characters} / $limit chars"), fontSize = 13.sp,
-            color = if (pickerOver) MaterialTheme.colorScheme.error else MoeriseColors.Muted,
-            modifier = Modifier.testTag("chat_picker_budget"))
-        WebTabs(listOf(strings.text("按日期", "By date"), strings.text("按标签 / 逐条", "By tag / individual")),
-            if (picker.tab == "date") 0 else 1,
-            { if (enabled) controller.picker.tab(if (it == 0) "date" else "tag") }, tagPrefix = "chat_picker_tab", enabled = enabled)
-        val candidateList = if (picker.tab == "tag" && !picker.busy && picker.candidates.isNotEmpty())
-            Modifier.testTag("chat_picker_candidates_ready") else Modifier
-        Column(Modifier.weight(1f).fillMaxWidth().then(candidateList).verticalScroll(rememberScrollState()),
-            verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            if (picker.tab == "date") InsightPickerCalendar(picker, controller.picker, strings, enabled)
-            else FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                FilterChip(selected = picker.chosenTags.isEmpty(), onClick = { controller.picker.tag("") }, enabled = enabled,
-                    label = { Text(strings.text("全部", "All")) }, modifier = Modifier.testTag("chat_picker_all_tags"))
-                picker.tags.forEach { tag ->
-                    FilterChip(selected = tag.tag in picker.chosenTags, onClick = { controller.picker.tag(tag.tag) }, enabled = enabled,
-                        label = { Text(tag.tag) }, modifier = Modifier.testTag("chat_picker_tag_${tag.tag}"))
-                }
-            }
-            if (!picker.busy && (picker.tab == "tag" || picker.from.isNotBlank() && picker.candidates.isNotEmpty())) {
-                FlowRow(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Text(if (picker.tab == "date") strings.text("这段时间的笔记，勾选要用的", "Notes in this period, select to use")
-                        else strings.text("共 ${picker.candidates.size} 条，勾选要用的", "${picker.candidates.size} notes, select to use"),
-                        color = MoeriseColors.Muted, fontSize = 13.sp)
-                    TextButton(onClick = controller.picker::selectAll, enabled = enabled && picker.candidates.isNotEmpty(),
-                        modifier = Modifier.testTag("chat_picker_select_all")) {
-                        Text(strings.text("全选这 ${picker.candidates.size} 条", "Select all ${picker.candidates.size}"))
-                    }
-                }
-                picker.candidates.forEach { note ->
-                    val chosen = picker.selected.any { it.name == note.name }
-                    Row(Modifier.fillMaxWidth().testTag("chat_picker_note_${note.name}")
-                        .clickable(enabled = enabled) { controller.picker.toggle(note) }.padding(vertical = 6.dp),
-                        verticalAlignment = Alignment.CenterVertically) {
-                        Checkbox(chosen, onCheckedChange = null, enabled = enabled)
-                        Column(Modifier.weight(1f).padding(start = 8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                            Text(insightPreview(note.content.ifBlank { note.name }, 24), fontSize = 14.sp)
-                            Text(listOf(displayNoteDate(note.createTime, timezone, strings.text("zh", "en") == "en"),
-                                note.tags.joinToString(" ") { "#$it" }).filter { it.isNotBlank() }.joinToString(" · "),
-                                fontSize = 12.sp, color = MoeriseColors.Muted)
-                        }
-                    }
-                }
-            }
-            if (picker.tab == "date" && picker.from.isNotBlank() && picker.candidates.isEmpty() && !picker.busy && picker.error == null)
-                Text(strings.text("这段时间没有笔记。", "No notes in this period."), fontSize = 13.sp, color = MoeriseColors.Muted)
-            if (picker.next.isNotBlank()) TextButton(onClick = controller.picker::loadMore,
-                enabled = enabled && !picker.busy, modifier = Modifier.align(Alignment.End).testTag("chat_picker_more")) {
-                Text(strings.text("加载更多", "Load more"))
-            }
-        }
-        if (picker.busy || state.busy) LinearProgressIndicator(Modifier.fillMaxWidth())
-        picker.error?.let { Text(insightError(it, strings), color = MaterialTheme.colorScheme.error,
-            fontSize = 13.sp, modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite }) }
-        WebAction(strings.text("完成", "Done"), onClick = controller::completePicker,
-            enabled = enabled && !picker.busy && !pickerOver,
-            modifier = Modifier.align(Alignment.End).testTag("chat_apply_materials"))
-    }
-}
-
-@Composable
-private fun InsightPickerCalendar(picker: InsightPickerState, controller: InsightMaterialPicker, strings: Strings, enabled: Boolean) {
-    if (picker.month.isBlank()) return
-    val grid = monthGrid(picker.month)
-    var choosingMonth by remember { mutableStateOf(false) }
-    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            IconButton(onClick = { controller.month(shiftMonth(picker.month, -1)) },
-                enabled = enabled && picker.month > "1000-01", modifier = Modifier.testTag("chat_picker_previous_month")) {
-                WebIcon(WebIcon.ChevronLeft, strings.text("上个月", "Previous month"))
-            }
-            TextButton(onClick = { choosingMonth = !choosingMonth }, enabled = enabled,
-                modifier = Modifier.weight(1f).testTag("chat_picker_month")) {
-                Text(strings.text("${grid.year}年${grid.month}月", "${grid.year}-${grid.month.toString().padStart(2, '0')}"))
-            }
-            IconButton(onClick = { controller.month(shiftMonth(picker.month, 1)) },
-                enabled = enabled && picker.month < "9999-12", modifier = Modifier.testTag("chat_picker_next_month")) {
-                WebIcon(WebIcon.ChevronRight, strings.text("下个月", "Next month"))
-            }
-        }
-        if (choosingMonth) {
+        Column(Modifier.weight(1f).widthIn(max = 928.dp).fillMaxWidth().align(Alignment.CenterHorizontally)
+            .padding(horizontal = 16.dp)) {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                IconButton(onClick = { controller.year(grid.year - 1) }, enabled = enabled && grid.year > 1000,
-                    modifier = Modifier.testTag("chat_picker_previous_year")) {
-                    WebIcon(WebIcon.ChevronLeft, strings.text("上一年", "Previous year"))
-                }
-                Text(strings.text("${grid.year} 年", grid.year.toString()), modifier = Modifier.weight(1f).wrapContentWidth())
-                IconButton(onClick = { controller.year(grid.year + 1) }, enabled = enabled && grid.year < 9999,
-                    modifier = Modifier.testTag("chat_picker_next_year")) {
-                    WebIcon(WebIcon.ChevronRight, strings.text("下一年", "Next year"))
-                }
-            }
-            val months = strings.text("1月,2月,3月,4月,5月,6月,7月,8月,9月,10月,11月,12月",
-                "Jan,Feb,Mar,Apr,May,Jun,Jul,Aug,Sep,Oct,Nov,Dec").split(',')
-            repeat(4) { row ->
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                    repeat(3) { column ->
-                        val month = row * 3 + column + 1
-                        Surface(Modifier.weight(1f).testTag("chat_picker_month_$month"),
-                            color = if (grid.month == month) MoeriseColors.BlueSurface else Color.Transparent,
-                            shape = RoundedCornerShape(6.dp)) {
-                            TextButton(onClick = {
-                                controller.month("${grid.year}-${month.toString().padStart(2, '0')}")
-                                choosingMonth = false
-                            }, enabled = enabled) { Text(months[month - 1]) }
-                        }
+                Text(strings.text("洞察", "Insights"), modifier = Modifier.weight(1f), fontSize = 22.sp, fontWeight = FontWeight.SemiBold)
+                Box {
+                    IconButton(onClick = { menu = true }, modifier = Modifier.focusRequester(sessionFocus).testTag("chat_session_menu")) {
+                        WebIcon(WebIcon.More, strings.text("更多", "More"))
+                    }
+                    DropdownMenu(menu, onDismissRequest = { menu = false }, modifier = Modifier.platformTestTags()) {
+                        DropdownMenuItem(text = { Text(strings.text("新建会话", "New conversation")) }, enabled = edit,
+                            onClick = { menu = false; controller.newChat() }, modifier = Modifier.testTag("chat_new"))
+                        DropdownMenuItem(text = { Text(strings.text("历史会话", "Conversation history")) },
+                            onClick = { menu = false; dialog = "history"; controller.history() }, modifier = Modifier.testTag("chat_history"))
+                        if (!first) DropdownMenuItem(text = { Text(strings.text("修改材料", "Change materials")) },
+                            enabled = edit, onClick = { menu = false; controller.openPicker() })
+                        DropdownMenuItem(text = { Text(strings.text("保存为笔记", "Save as note")) },
+                            enabled = online && (turns.isNotEmpty() || state.pendingSave != null),
+                            onClick = { menu = false; dialog = "save" }, modifier = Modifier.testTag("chat_save_selection"))
+                        DropdownMenuItem(text = { Text(strings.text("删除对话", "Delete conversation"), color = MaterialTheme.colorScheme.error) },
+                            enabled = online && state.canDelete && !state.saving, onClick = { menu = false; dialog = "delete" },
+                            modifier = Modifier.testTag("chat_delete"))
                     }
                 }
             }
-        } else {
-            Row(Modifier.fillMaxWidth()) {
-                strings.text("一,二,三,四,五,六,日", "M,T,W,T,F,S,S").split(',').forEach { day ->
-                    Text(day, fontSize = 12.sp, color = MoeriseColors.Muted, modifier = Modifier.weight(1f).wrapContentWidth())
+            if (first) FlowRow(verticalArrangement = Arrangement.Center, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (recovery.selected.isNotEmpty()) Text(strings.text(
+                    "已选 ${recovery.selected.size} 条 · ${recovery.candidates.sumOf { it.characters }} 字",
+                    "${recovery.selected.size} selected · ${recovery.candidates.sumOf { it.characters }} chars"),
+                    modifier = Modifier.padding(vertical = 12.dp).testTag("chat_material_summary"), color = MoeriseColors.Muted)
+                TextButton(onClick = controller::openPicker, enabled = edit, modifier = Modifier.testTag("chat_add_materials")) {
+                    Text(strings.text("添加笔记", "Add notes"))
                 }
             }
-            val rows = (grid.offset + grid.days + 6) / 7
-            repeat(rows) { row ->
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-                    repeat(7) { column ->
-                        val day = row * 7 + column - grid.offset + 1
-                        val date = "${picker.month}-${day.toString().padStart(2, '0')}"
-                        val edge = date == picker.from || date == picker.through
-                        val range = picker.from.isNotBlank() && picker.through.isNotBlank() && date > picker.from && date < picker.through
-                        Surface(Modifier.weight(1f).heightIn(min = 44.dp), shape = RoundedCornerShape(6.dp),
-                            color = if (edge) MoeriseColors.Blue else if (range) MoeriseColors.BlueSurface else Color.Transparent) {
-                            if (day in 1..grid.days) TextButton(onClick = {
-                                if (picker.from.isBlank() || picker.through.isNotBlank()) controller.date(date, "")
-                                else controller.date(picker.from, date)
-                            }, enabled = enabled, contentPadding = PaddingValues(0.dp),
-                                modifier = Modifier.testTag("chat_picker_date_$date").semantics { contentDescription = date }) {
-                                Text(day.toString(), fontSize = 13.sp,
-                                    fontWeight = if (date in picker.calendarDays) FontWeight.Bold else FontWeight.Normal,
-                                    color = if (edge) Color.White else MoeriseColors.Ink)
+            var following by remember(chat?.id) { mutableStateOf(true) }
+            val scope = rememberCoroutineScope()
+            val messages = scroll[0]
+            LaunchedEffect(messages, chat?.id) {
+                snapshotFlow { messages.isScrollInProgress to messages.canScrollForward }.distinctUntilChanged()
+                    .collect { (moving, canScroll) -> if (moving) following = !canScroll }
+            }
+            LaunchedEffect(following, chat?.id) {
+                if (following) snapshotFlow { messages.maxValue }.collect { end ->
+                    if (following && !messages.isScrollInProgress && end != Int.MAX_VALUE) messages.scrollTo(end)
+                }
+            }
+            Box(Modifier.weight(1f).fillMaxWidth()) {
+                Column(Modifier.fillMaxWidth().verticalScroll(messages).padding(vertical = 8.dp),
+                    verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                    turns.forEachIndexed { index, turn -> key(turn.id) {
+                        if (index > 0 && turn.materialVersion != turns[index - 1].materialVersion) MaterialUpdate(strings)
+                        InsightTurn(turn, strings)
+                    } }
+                    if (turns.isNotEmpty() && chat != null && turns.last().materialVersion < chat.materialVersion)
+                        MaterialUpdate(strings)
+                    if (waiting) {
+                        val question = pending?.input?.content ?: recovery.question
+                        if ((pending?.input?.kind ?: state.starting) == "question") UserMessage(question)
+                        ReplyWaiting(strings)
+                    }
+                }
+                if (!following && messages.canScrollForward) TextButton(onClick = {
+                    scope.launch { messages.scrollTo(messages.maxValue); following = true }
+                }, modifier = Modifier.align(Alignment.BottomEnd)) { Text(strings.text("回到最新", "Jump to latest")) }
+            }
+            if (!picker.visible && dialog.isEmpty()) {
+                state.error?.let { InsightError(it, strings) }
+                if (state.error == "LLM_DISABLED") TextButton(onSettings) { Text(strings.text("打开设置", "Open settings")) }
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    if (recovery.creation != null) TextButton(controller::applyMaterials, enabled = online && !state.busy) {
+                        Text(strings.text("恢复新建会话", "Recover conversation"))
+                    }
+                    if (recovery.mutation != null) TextButton({ if (recovery.mutation.method == "DELETE") dialog = "delete" else controller.retryMutation() },
+                        enabled = online && !state.busy) { Text(strings.text("检查操作结果", "Check operation result")) }
+                    if (pending != null && !state.streaming) TextButton(controller::refresh, enabled = online && !state.busy) {
+                        Text(strings.text("检查回复", "Check reply"))
+                    }
+                    if (state.failedGeneration && pending != null && !state.conflicted) TextButton(controller::retryGeneration, enabled = online && !state.busy) {
+                        Text(strings.text("重新生成", "Generate again"))
+                    }
+                    if (state.conflicted) TextButton({ dialog = "adopt" }, enabled = online && !state.busy) {
+                        Text(strings.text("使用服务器版本", "Use server version"))
+                    }
+                }
+            }
+            Surface(Modifier.fillMaxWidth().padding(vertical = 8.dp), color = Color.White, shape = RoundedCornerShape(14.dp),
+                border = BorderStroke(1.dp, MoeriseColors.Line)) {
+                Column(Modifier.padding(8.dp)) {
+                    BasicTextField(recovery.question, controller::question, readOnly = state.locked,
+                        minLines = 1, maxLines = 4, cursorBrush = SolidColor(MoeriseColors.Blue),
+                        textStyle = MaterialTheme.typography.bodyMedium.copy(color = MoeriseColors.Ink, fontSize = 16.sp),
+                        modifier = Modifier.fillMaxWidth().heightIn(min = 44.dp).testTag("chat_question").semantics {
+                            contentDescription = strings.text("向 AI 提问", "Ask AI")
+                        }.onPreviewKeyEvent {
+                            if (it.type == KeyEventType.KeyDown && it.key == Key.Enter && it.isCtrlPressed && canSend && recovery.question.isNotBlank()) {
+                                controller.generate("question"); true
+                            } else false
+                        }, decorationBox = { input ->
+                            Box(contentAlignment = Alignment.CenterStart) {
+                                if (recovery.question.isEmpty()) Text(strings.text("围绕所选笔记提问或追问…", "Ask about the selected notes…"),
+                                    color = MoeriseColors.Muted, fontSize = 15.sp)
+                                input()
                             }
+                        })
+                    FlowRow(Modifier.align(Alignment.End), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        if (first) TextButton({ controller.generate("insight") }, enabled = canSend, modifier = Modifier.testTag("chat_insight")) {
+                            Text(strings.text("一键洞察", "Generate insights"))
                         }
+                        if (state.canStop) WebAction(strings.text("停止", "Stop"), controller::stop,
+                            enabled = online && !state.stopping && !state.deleting, modifier = Modifier.testTag("chat_stop"))
+                        else WebAction(strings.text("发送", "Send"), { controller.generate("question") },
+                            enabled = canSend && recovery.question.isNotBlank(), modifier = Modifier.testTag("chat_send"))
                     }
                 }
             }
         }
-        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            Text(when {
-                picker.from.isBlank() -> strings.text("点选起止日期，筛出这段时间的笔记", "Select start and end dates to filter notes")
-                picker.through.isBlank() -> strings.text("${picker.from} – 请选择结束日", "${picker.from} – Select an end date")
-                else -> strings.text("${picker.from} – ${picker.through} · ${picker.candidates.size} 条",
-                    "${picker.from} – ${picker.through} · ${picker.candidates.size} notes")
-            }, fontSize = 13.sp, color = MoeriseColors.Muted, modifier = Modifier.weight(1f))
-            if (picker.from.isNotBlank()) TextButton(onClick = controller::clearRange, enabled = enabled,
-                modifier = Modifier.testTag("chat_picker_clear_range")) { Text(strings.text("清除", "Clear")) }
+    }
+    if (picker.visible) InsightPickerDialog(controller, state, picker, timezone, strings, online) { name ->
+        controller.closePicker()
+        mobile.openNote(name)
+    }
+    when (dialog) {
+        "history" -> InsightOverlay(strings.text("历史会话", "Conversation history"), strings, closeDialog, "chat_history_dialog") {
+            val list = rememberLazyListState()
+            LazyColumn(Modifier.weight(1f), state = list) {
+                if (state.history.isEmpty()) item { Text(if (state.busy) strings.text("正在读取…", "Loading…")
+                    else strings.text("还没有会话", "No conversations yet")) }
+                items(state.history, key = { it.id }) { summary ->
+                    Column(Modifier.fillMaxWidth().clickable(enabled = edit) { controller.open(summary.id); closeDialog() }
+                        .padding(vertical = 10.dp).testTag("chat_history_${summary.id}")) {
+                        Text(if (summary.previewKind == "insight") strings.text("一键洞察", "Generate insights") else summary.preview.ifBlank { summary.title })
+                        Text(displayServiceTime(summary.updatedAt, timezone), fontSize = 12.sp, color = MoeriseColors.Muted)
+                    }
+                }
+                if (state.error != null) item {
+                    InsightError(state.error!!, strings)
+                    TextButton({ controller.history(state.historyNext.isNotBlank()) }) { Text(strings.text("重试", "Retry")) }
+                }
+                if (state.historyNext.isNotBlank() && state.error == null) item {
+                    LaunchedEffect(state.historyNext, state.busy) { if (!state.busy) controller.history(true) }
+                    Text(strings.text("正在读取…", "Loading…"))
+                }
+            }
+        }
+        "save" -> InsightSaveDialog(controller, state, strings, closeDialog)
+        "delete" -> ConfirmInsight(strings.text("删除对话", "Delete conversation"), strings.text("已保存的笔记会保留。", "Saved notes will remain."),
+            strings, closeDialog) { closeDialog(); controller.delete() }
+        "adopt" -> ConfirmInsight(strings.text("使用服务器版本", "Use server version"),
+            strings.text("将舍弃本机未发送的提问和未提交的材料修改。", "Your unsent question and pending material changes will be discarded."),
+            strings, closeDialog) { closeDialog(); controller.adoptServer() }
+    }
+}
+
+@Composable
+private fun UserMessage(text: String) {
+    BoxWithConstraints(Modifier.fillMaxWidth()) {
+        Surface(Modifier.align(Alignment.CenterEnd).widthIn(max = maxWidth * .83f), shape = RoundedCornerShape(14.dp),
+            color = Color(0xFFE3ECFA)) { SelectionContainer { Text(text, Modifier.padding(horizontal = 14.dp, vertical = 9.dp)) } }
+    }
+}
+
+@Composable
+private fun MaterialUpdate(strings: Strings) = Text(strings.text("材料已更新", "Materials updated"),
+    modifier = Modifier.fillMaxWidth().wrapContentWidth(), fontSize = 12.sp, color = MoeriseColors.Muted)
+
+@Composable
+private fun ReplyWaiting(strings: Strings) = Text(strings.text("正在洞察……", "Generating insights…"),
+    modifier = Modifier.testTag("chat_reply_waiting").semantics { liveRegion = LiveRegionMode.Polite }, color = MoeriseColors.Muted)
+
+@Composable
+private fun InsightTurn(turn: ChatTurn, strings: Strings) {
+    UserMessage(if (turn.kind == "question") turn.user.content else strings.text("一键洞察", "Generate insights"))
+    if (turn.assistant.content.isEmpty() && turn.assistant.status == "running") ReplyWaiting(strings)
+    else SelectionContainer { MarkdownBody(turn.assistant.content, Modifier.testTag("chat_reply_${turn.assistant.status}")) }
+    if (turn.assistant.status in setOf("failed", "canceled", "interrupted") && turn.assistant.content.isNotEmpty()) {
+        val clipboard = LocalClipboardManager.current
+        TextButton({ clipboard.setText(AnnotatedString(turn.assistant.content)) }) {
+            Text(strings.text("复制已收到的内容", "Copy received text"))
         }
     }
 }
 
 @Composable
-private fun InsightOverlay(
-    title: String, strings: Strings, onDismiss: () -> Unit, tag: String,
-    canDismiss: Boolean = true, content: @Composable ColumnScope.() -> Unit,
-) {
-    val closeFocus = remember { FocusRequester() }
-    Dialog(onDismissRequest = { if (canDismiss) onDismiss() },
-        properties = DialogProperties(usePlatformDefaultWidth = false, dismissOnClickOutside = false, dismissOnBackPress = canDismiss)) {
-        BoxWithConstraints(Modifier.fillMaxSize().safeDrawingPadding().imePadding().padding(16.dp),
-            contentAlignment = Alignment.Center) {
-            Surface(Modifier.widthIn(max = 520.dp).fillMaxWidth().height(minOf(640.dp, maxHeight * .86f))
-                .platformTestTags().testTag(tag),
-                shape = RoundedCornerShape(14.dp), color = Color.White, border = BorderStroke(1.dp, MoeriseColors.Line)) {
-                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween) {
-                        Text(title, modifier = Modifier.weight(1f), fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
-                        IconButton(onClick = onDismiss, enabled = canDismiss, modifier = Modifier.focusRequester(closeFocus).testTag("${tag}_close")) {
-                            WebIcon(WebIcon.Close, strings.text("关闭", "Close"))
-                        }
+internal fun InsightOverlay(title: String, strings: Strings, onDismiss: () -> Unit, tag: String,
+    content: @Composable ColumnScope.() -> Unit) {
+    Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+        BoxWithConstraints(Modifier.fillMaxSize().safeDrawingPadding().padding(8.dp), contentAlignment = Alignment.Center) {
+            Surface(Modifier.widthIn(max = 560.dp).fillMaxWidth().height(minOf(700.dp, maxHeight)).platformTestTags().testTag(tag),
+                shape = RoundedCornerShape(14.dp), color = Color.White) {
+                Column(Modifier.padding(horizontal = 12.dp, vertical = 6.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(title, Modifier.weight(1f), fontSize = 18.sp, fontWeight = FontWeight.SemiBold)
+                        IconButton(onDismiss, modifier = Modifier.testTag("${tag}_close")) { WebIcon(WebIcon.Close, strings.text("关闭", "Close")) }
                     }
                     content()
                 }
             }
         }
-        LaunchedEffect(Unit) { closeFocus.requestFocus() }
     }
 }
 
 @Composable
-private fun InsightPlainAction(text: String, onClick: () -> Unit, modifier: Modifier = Modifier, enabled: Boolean = true) {
-    OutlinedButton(onClick = onClick, modifier = modifier.heightIn(min = 44.dp),
-        enabled = enabled, shape = RoundedCornerShape(10.dp), border = BorderStroke(1.dp, MoeriseColors.Line),
-        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
-        colors = ButtonDefaults.outlinedButtonColors(contentColor = MoeriseColors.Ink)) {
-        Text(text, fontSize = 13.sp)
-    }
+private fun ConfirmInsight(action: String, message: String, strings: Strings, close: () -> Unit, confirm: () -> Unit) {
+    val cancel = remember { FocusRequester() }
+    AlertDialog(onDismissRequest = close, title = { Text(action) }, text = { Text(message) },
+        dismissButton = { TextButton(close, modifier = Modifier.focusRequester(cancel)) { Text(strings.text("取消", "Cancel")) } },
+        confirmButton = { TextButton(confirm, modifier = Modifier.testTag("chat_confirm")) { Text(action) } })
+    LaunchedEffect(Unit) { cancel.requestFocus() }
 }
 
 @Composable
-private fun InsightTurn(turn: ChatTurn, mobile: MobileController, strings: Strings, enabled: Boolean) {
-    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-        BoxWithConstraints(Modifier.fillMaxWidth()) {
-            Surface(modifier = Modifier.align(Alignment.CenterEnd).widthIn(max = maxWidth * .8f),
-                shape = RoundedCornerShape(14.dp), color = Color(0xFFE3ECFA)) {
-                Text(if (turn.kind == "insight") strings.text("一键洞察", "Generate insights") else turn.user.content,
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp), fontSize = 15.sp,
-                    color = Color(0xFF1E4A9A))
-            }
-        }
-        BoxWithConstraints(Modifier.fillMaxWidth()) {
-            Column(Modifier.widthIn(max = maxWidth * .92f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                Surface(shape = RoundedCornerShape(14.dp), color = Color.White, border = BorderStroke(1.dp, MoeriseColors.Line)) {
-                    Box(Modifier.padding(horizontal = 18.dp, vertical = 14.dp)) { MarkdownBody(turn.assistant.content) }
-                }
-                TextButton(onClick = { mobile.insights.save(turn) },
-                    enabled = enabled && turn.assistant.status == "completed" && turn.assistant.savedName.isBlank(),
-                    contentPadding = PaddingValues(horizontal = 8.dp),
-                    modifier = Modifier.testTag("chat_save_${turn.requestId}")) {
-                    Text(if (turn.assistant.savedName.isNotBlank()) strings.text("已保存为笔记", "Saved as note")
-                        else strings.text("保存为笔记", "Save as note"), fontSize = 12.sp, color = MoeriseColors.Muted)
-                }
-            }
-        }
+private fun InsightSaveDialog(controller: InsightController, state: InsightState, strings: Strings, close: () -> Unit) {
+    val chat = state.chat ?: return
+    val durable = selectableMessages(state.confirmed).associateBy { it.ref }
+    val choices = selectableMessages(chat.turns).map { preview ->
+        val item = durable[preview.ref] ?: return@map preview.copy(eligible = false)
+        item.copy(eligible = item.eligible && (state.capabilities.saveSelection ||
+            item.ref.role == "assistant" && item.status == "completed" && !state.locked))
     }
+    val savedBefore = remember { state.savedOperation }
+    val chosen = remember(chat.id) { mutableStateListOf<ChatMessageRef>().apply {
+        val request = state.pendingSave
+        if (request != null) addAll(request.input.messages)
+        else choices.lastOrNull { it.eligible && it.ref.role == "assistant" && it.status == "completed" }?.let { add(it.ref) }
+    } }
+    val selected = choices.filter { it.ref in chosen && it.eligible }
+    val incomplete = selected.any { it.status == "canceled" }
+    val bytes = selectionBody(selected, strings.text("zh", "en") == "en").encodeToByteArray().size
+    var confirming by remember { mutableStateOf(false) }
+    LaunchedEffect(state.savedOperation) { if (savedBefore != state.savedOperation) close() }
+    InsightOverlay(strings.text("保存为笔记", "Save as note"), strings, close, "chat_save_dialog") {
+        if (!state.capabilities.saveSelection) Text(strings.text("升级 Core 后可选择提问和多条消息。", "Upgrade Core to save questions or multiple messages."))
+        LazyColumn(Modifier.weight(1f)) {
+            items(choices, key = { "${it.ref.requestId}/${it.ref.role}" }) { item ->
+                Row(Modifier.fillMaxWidth().clickable(enabled = item.eligible && !state.saving && state.pendingSave == null) {
+                    if (!chosen.remove(item.ref)) {
+                        if (!state.capabilities.saveSelection) chosen.clear()
+                        chosen.add(item.ref)
+                    }
+                }.padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Checkbox(checked = item.ref in chosen, onCheckedChange = null, enabled = item.eligible)
+                    Column(Modifier.padding(start = 8.dp)) {
+                        val role = if (item.ref.role == "assistant") "Moerise" else strings.text("我", "Me")
+                        val status = when (item.status) {
+                            "completed" -> strings.text("已完成", "Complete")
+                            "canceled" -> strings.text("已停止（内容不完整）", "Stopped (incomplete)")
+                            "running" -> strings.text("正在生成", "Generating")
+                            else -> strings.text("未完成", "Incomplete")
+                        }
+                        Text("$role · $status", fontSize = 13.sp, color = MoeriseColors.Muted)
+                        Text(item.content.take(180), maxLines = 3)
+                    }
+                }
+            }
+        }
+        Text(strings.text("已选 ${selected.size} 条 · $bytes / 65,536 字节", "${selected.size} selected · $bytes / 65,536 bytes"))
+        if (bytes > 65_536) Text(strings.text("请减少所选消息。", "Select fewer messages."), color = MaterialTheme.colorScheme.error)
+        state.saveError?.let { InsightError(it, strings) }
+        WebAction(if (state.pendingSave != null) strings.text("重试保存", "Retry save") else strings.text("保存为笔记", "Save as note"), {
+            if (state.pendingSave != null) controller.retrySave()
+            else if (incomplete) confirming = true
+            else { controller.saveSelection(selected.map { it.ref }, false); if (!state.capabilities.saveSelection) close() }
+        }, enabled = !state.saving && (state.pendingSave != null || selected.isNotEmpty() && bytes <= 65_536),
+            modifier = Modifier.align(Alignment.End).testTag("chat_save_confirm"))
+    }
+    if (confirming) ConfirmInsight(strings.text("保存为笔记", "Save as note"),
+        strings.text("所选回答含已停止的内容，保存的笔记将包含不完整的回答。", "The saved note will include an incomplete, stopped reply."),
+        strings, { confirming = false }) { confirming = false; controller.saveSelection(selected.map { it.ref }, true) }
 }
 
-private fun insightCharacters(text: String): Int =
-    text.indices.count { index -> !text[index].isLowSurrogate() || index == 0 || !text[index - 1].isHighSurrogate() }
-
-private fun insightPreview(text: String, count: Int): String {
-    var index = 0
-    var characters = 0
-    while (index < text.length && characters < count) {
-        index += if (text[index].isHighSurrogate() && index + 1 < text.length && text[index + 1].isLowSurrogate()) 2 else 1
-        characters++
-    }
-    return text.substring(0, index)
+@Composable
+internal fun InsightError(code: String, strings: Strings) {
+    Text(insightError(code, strings), color = MaterialTheme.colorScheme.error, fontSize = 13.sp,
+        modifier = Modifier.testTag("chat_error").semantics { liveRegion = LiveRegionMode.Polite })
 }
 
 fun insightError(code: String, strings: Strings): String = when (code) {
     "CHAT_MATERIAL_REQUIRED" -> strings.text("请先选择笔记材料。", "Select note materials first.")
-    "CHAT_MATERIAL_LIMIT" -> strings.text("超过字数上限，请减少所选笔记。", "Over the character limit. Select fewer notes.")
-    "CHAT_RESOURCE_LIMIT" -> strings.text("材料请求超过资源限制，请减少选择范围。", "The material request exceeds resource limits. Select a smaller range.")
-    "SOURCE_CHANGED" -> strings.text("所选材料已修改，请重新选择这些笔记。", "The selected notes changed. Select them again.")
-    "SOURCE_NOT_FOUND" -> strings.text("所选材料已删除或无法访问，请调整材料。", "Selected notes were deleted or are unavailable. Adjust the materials.")
-    "CHAT_CONFLICT" -> strings.text("会话已在其他页面更改，请重新读取。", "This conversation changed elsewhere. Reload it.")
-    "CHAT_BUSY" -> strings.text("该会话正在生成，请等待或停止后继续。", "This conversation is generating. Wait or stop it to continue.")
-    "CHAT_NOT_FOUND" -> strings.text("该会话已删除或无法访问。", "This conversation was deleted or is unavailable.")
-    "CHAT_PROTOCOL", "CHAT_INTERRUPTED", "LLM_PROTOCOL" -> strings.text("回复已中断，已保留收到的内容。请重新读取会话后继续。", "The reply was interrupted. Received content is saved. Reload the conversation to continue.")
-    "CHAT_CANCELED" -> strings.text("已停止生成，已保留收到的内容。", "Generation stopped. Received content is saved.")
+    "CHAT_MATERIAL_LIMIT" -> strings.text("超过字数上限，请减少所选笔记。", "Select fewer notes to fit the character limit.")
+    "CHAT_RESOURCE_LIMIT" -> strings.text("来源超过上限，请缩小范围或逐条选择。", "Narrow the filter or select notes individually.")
+    "SOURCE_CHANGED" -> strings.text("所选材料有修改，请重新选择变化的笔记。", "Reselect the notes that changed.")
+    "SOURCE_NOT_FOUND" -> strings.text("所选材料已删除或无法访问。", "Selected notes were deleted or are unavailable.")
+    "CHAT_CONFLICT" -> strings.text("会话已在其他设备更改。", "The conversation changed on another device.")
+    "CHAT_BUSY" -> strings.text("会话正在生成。", "This conversation is generating.")
+    "CHAT_NOT_FOUND" -> strings.text("会话已删除或无法访问。", "This conversation was deleted or is unavailable.")
+    "CHAT_PROTOCOL", "CHAT_INTERRUPTED", "LLM_PROTOCOL" -> strings.text("回复已中断。", "The reply was interrupted.")
+    "CHAT_CANCELED" -> strings.text("已停止生成。", "Generation stopped.")
     "LLM_DISABLED" -> strings.text("请在设置中启用 LLM。", "Enable the LLM in settings.")
     "CHAT_OUTCOME_UNKNOWN" -> strings.text("请先检查操作结果。", "Check the operation result first.")
-    "CHAT_DELETE_REQUIRES_CONFIRMATION" -> strings.text("会话仍然存在，可以再次确认删除。", "This conversation still exists. You can confirm deletion again.")
-    "CONTENT_TOO_LARGE" -> strings.text("回复超过笔记正文上限，无法完整保存。请让 AI 总结后保存总结。", "The reply exceeds the note limit. Ask AI for a summary and save it.")
-    "LOCAL_SAVE_FAILED" -> strings.text("本机保存失败，请释放存储空间后重试。", "Could not save on this device. Free up storage and retry.")
+    "CHAT_DELETE_REQUIRES_CONFIRMATION" -> strings.text("会话仍然存在，可以再次确认删除。", "The conversation still exists. Confirm deletion again.")
+    "CONTENT_TOO_LARGE" -> strings.text("请减少所选消息。", "Select fewer messages.")
+    "LOCAL_SAVE_FAILED" -> strings.text("本机保存失败，请释放存储空间后重试。", "Free up device storage and try again.")
     else -> connectionError(code, strings)
 }

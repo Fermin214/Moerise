@@ -17,7 +17,7 @@ data class NoteDetailState(
 class NoteDetailController(
     private val repository: suspend () -> NoteRepository, private val account: () -> String?,
     private val core: () -> CoreClient?, private val scope: CoroutineScope,
-    private val onChanged: (Note?) -> Unit,
+    private val onChanged: (String, Note?, Note?) -> Unit,
 ) {
     private val mutable = MutableStateFlow(NoteDetailState())
     val state = mutable.asStateFlow()
@@ -59,7 +59,7 @@ class NoteDetailController(
                 if (stamp == generation) {
                     if (pending?.method == "DELETE" && missing(error)) {
                         repository().finishAction(pending!!, null, name)
-                        mutable.value = NoteDetailState(); onChanged(null)
+                        mutable.value = NoteDetailState(); onChanged(name, fallback, null)
                     } else mutable.update { it.copy(loading = false, error = errorCode(error)) }
                 }
             }
@@ -126,7 +126,7 @@ class NoteDetailController(
                 if (stamp == generation) {
                     pending = null
                     mutable.value = if (updated == null) NoteDetailState() else NoteDetailState(name = updated.name, note = updated)
-                    onChanged(updated)
+                    onChanged(note.name, note, updated)
                 }
             } catch (error: Exception) {
                 val conflict = error is CoreException && error.detail.code == "SOURCE_CHANGED"
@@ -145,6 +145,7 @@ class NoteDetailController(
 
     fun checkDeletion() {
         val name = state.value.name ?: return
+        val previous = state.value.note
         val active = core() ?: return
         if (state.value.busy) return
         val stamp = generation
@@ -163,7 +164,7 @@ class NoteDetailController(
                     if (missing(error)) {
                         pending?.let { repository().finishAction(it, null, name) }
                         pending = null
-                        mutable.value = NoteDetailState(); onChanged(null)
+                        mutable.value = NoteDetailState(); onChanged(name, previous, null)
                     } else mutable.update { it.copy(busy = false, error = errorCode(error)) }
                 }
             }

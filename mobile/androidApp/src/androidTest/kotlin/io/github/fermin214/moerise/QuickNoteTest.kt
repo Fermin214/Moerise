@@ -6,6 +6,8 @@ import androidx.compose.ui.test.*
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import io.github.fermin214.moerise.data.CORE_REQUEST_TIMEOUT_MILLIS
+import io.github.fermin214.moerise.presentation.SyncStatus
+import io.github.fermin214.moerise.presentation.TimelineUiState
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -143,7 +145,56 @@ class QuickNoteTest {
         compose.assertSingleEditor(firstName, saved)
         compose.homeNode("cancel_note_$firstName").performClick()
         compose.waitForEditor("note_editor", unfinished)
+    }
 
+    @Test
+    fun editThirtiethNoteInPlace() {
+        compose.signIntoFixture()
+        val marker = System.currentTimeMillis()
+        val mobile = compose.model().mobile
+        fun waitTimeline(label: String, timeout: Long, ready: (TimelineUiState) -> Boolean) {
+            acceptanceStep(label)
+            try {
+                compose.waitUntil(timeout) { ready(mobile.timeline.state.value) }
+            } catch (failure: Throwable) {
+                val state = mobile.timeline.state.value
+                throw AssertionError("$label：notes=${state.notes.size} next=${state.nextPageToken.isNotEmpty()} " +
+                    "fresh=${state.fresh} loading=${state.loading} more=${state.loadingMore} error=${state.error} " +
+                    "sync=${mobile.sync.state.value.status}", failure)
+            }
+        }
+        waitTimeline("首页首批笔记", CORE_REQUEST_TIMEOUT_MILLIS + 5_000) { it.fresh && it.notes.size >= 20 }
+        val first = mobile.timeline.state.value
+        check(first.notes.size >= 30 || first.nextPageToken.isNotEmpty()) { "首页只有 ${first.notes.size} 条且无下一页" }
+        compose.homeList().performScrollToKey(first.notes.last().name)
+        waitTimeline("滚动加载第 30 篇", 2 * CORE_REQUEST_TIMEOUT_MILLIS + 5_000) { it.notes.size >= 30 }
+        val notes = mobile.timeline.state.value.notes
+        val anchor = "note_card_${notes[28].name}"
+        val target = notes[29].name
+        compose.homeList().performScrollToKey(notes[28].name)
+        val position = compose.onNodeWithTag(anchor).assertIsDisplayed().fetchSemanticsNode().boundsInRoot.top
+        compose.onNodeWithTag("note_more_$target").performClick()
+        compose.clickTag("edit_note_$target")
+        val content = "Timeline edited $marker"
+        compose.waitForTag("note_editor_$target")
+        compose.onNodeWithTag("note_editor_$target").performTextReplacement(content)
+        compose.dismissKeyboard()
+        compose.onNodeWithTag("save_note_$target").performClick()
+        waitTimeline("保存第 30 篇", CORE_REQUEST_TIMEOUT_MILLIS + 5_000) { state ->
+            state.notes.any { it.name == target && it.content == content }
+        }
+        compose.onNodeWithTag("note_card_$target").assertIsDisplayed()
+        compose.clickTag("sync_notes")
+        waitTimeline("手动同步开始", CORE_REQUEST_TIMEOUT_MILLIS + 5_000) { mobile.sync.state.value.status == SyncStatus.SYNCING }
+        waitTimeline("同步后的列表刷新", CORE_REQUEST_TIMEOUT_MILLIS + 5_000) {
+            mobile.sync.state.value.status == SyncStatus.CONNECTED && it.loading && !it.loadingMore
+        }
+        waitTimeline("同步后的两页笔记", 2 * CORE_REQUEST_TIMEOUT_MILLIS + 5_000) { state ->
+            state.fresh && !state.loading && state.notes.getOrNull(29)?.let { it.name == target && it.content == content } == true
+        }
+        compose.onNodeWithTag("note_card_$target").assertIsDisplayed()
+        val restored = compose.onNodeWithTag(anchor).assertIsDisplayed().fetchSemanticsNode().boundsInRoot.top
+        check(kotlin.math.abs(restored - position) <= 2f) { "主页编辑导致卡片移动 $position → $restored" }
     }
 
     @Test
@@ -237,7 +288,7 @@ class QuickNoteTest {
             val state = compose.model().mobile.insights.state.value
             val picker = compose.model().mobile.insights.picker.state.value
             check(!picker.visible && state.error == null && state.recovery.creation == null &&
-                state.recovery.selected.contains(name) && state.materials?.notes?.any { it.name == name } == true)
+                state.recovery.selected.contains(name) && state.recovery.candidates.any { it.name == name && it.sourceHash.isNotBlank() })
         } catch (failure: Throwable) {
             val state = compose.model().mobile.insights.state.value
             val picker = compose.model().mobile.insights.picker.state.value
@@ -245,11 +296,14 @@ class QuickNoteTest {
                 "pickerBusy=${picker.busy}；pickerError=${picker.error}；" +
                 "selected=${picker.selected.map { it.name }}", failure)
         }
-        compose.waitForTag("chat_remove_$name")
-        compose.clickTag("chat_material_toggle")
-        compose.onNodeWithTag("chat_remove_$name").assertDoesNotExist()
-        compose.clickTag("chat_material_toggle")
-        compose.waitForTag("chat_remove_$name")
+        compose.waitForTag("chat_material_summary")
+        compose.clickTag("chat_add_materials")
+        compose.clickTag("chat_picker_selected")
+        compose.clickTag("chat_picker_note_$name")
+        compose.clickTag("chat_picker_selected")
+        compose.clickTag("chat_material_dialog_close")
+        compose.waitUntil(20_000) { !compose.hasTag("chat_material_dialog") }
+        check(name in compose.model().mobile.insights.state.value.recovery.selected)
         compose.clickTag("chat_session_menu")
         compose.clickTag("chat_history")
         compose.waitForTag("chat_history_dialog")
@@ -257,7 +311,9 @@ class QuickNoteTest {
         compose.waitUntil(20_000) { !compose.hasTag("chat_history_dialog") }
 
         // 材料中的阅读动作应回到主页并定位该笔记，不借助测试滚动掩盖定位失败。
-        compose.onNode(hasClickAction() and hasAnySibling(hasTestTag("chat_remove_$name"))).performClick()
+        compose.clickTag("chat_add_materials")
+        compose.clickTag("chat_picker_selected")
+        compose.clickTag("chat_picker_read_$name")
         compose.waitForHome()
         compose.waitUntil(20_000) {
             runCatching { compose.onNodeWithTag("note_card_$name").assertIsDisplayed() }.isSuccess
@@ -292,6 +348,10 @@ class QuickNoteTest {
         compose.clickTag("map_fullscreen")
         compose.navigate("settings")
         for (index in 0..4) compose.clickTag("settings_tab_$index")
+        compose.onNode(hasText("隐私") or hasText("Privacy")).performScrollTo().performClick()
+        compose.onNodeWithTag("privacy_share").assertIsOff()
+        compose.waitUntil(20_000) { compose.model().mobile.privacy.state.value.allowed == false }
+        compose.onNodeWithTag("privacy_share").assertIsNotEnabled()
         compose.navigate("home")
         compose.waitForEditor("note_editor", unfinished)
     }

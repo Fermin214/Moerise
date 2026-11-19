@@ -2,6 +2,7 @@ package io.github.fermin214.moerise.presentation
 
 import io.github.fermin214.moerise.data.DraftEntity
 import io.github.fermin214.moerise.data.NoteRepository
+import io.github.fermin214.moerise.data.epochMillis
 import kotlinx.coroutines.*
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.*
@@ -22,6 +23,7 @@ class SyncController internal constructor(
     private val scope: CoroutineScope,
     private val onRefreshed: () -> Unit,
     initialForeground: Boolean = true,
+    private val privacy: PrivacyController? = null,
 ) {
     private val mutable = MutableStateFlow(SyncUiState())
     val state = mutable.asStateFlow()
@@ -32,6 +34,7 @@ class SyncController internal constructor(
     private var visibilityRevision = 0L
     private val cycleLock = Mutex()
     private var activeCycle: Job? = null
+    private var requested = false
 
     init {
         scope.launch {
@@ -63,6 +66,7 @@ class SyncController internal constructor(
     }
 
     fun request() { triggers.trySend(Unit) }
+    fun userRequest() { requested = true; request() }
 
     suspend fun changed() {
         val key = account ?: return
@@ -86,12 +90,16 @@ class SyncController internal constructor(
     suspend fun synchronizeOnce(): Boolean = coroutineScope {
         cycleLock.withLock {
             activeCycle = coroutineContext[Job]
+            val source = if (requested) "user" else "background"
+            val started = epochMillis()
             try {
                 val key = session.state.value.profile?.accountKey ?: return@withLock !session.state.value.loading
                 if (session.state.value.busy || account != key) return@withLock false
+                requested = false
                 val queued = repository().queuedNotes(key)
                 mutable.value = SyncUiState(SyncStatus.SYNCING, queued)
                 if (!session.checkConnection()) {
+                    privacy?.record("sync", "failure", started, source)
                     mutable.update { it.copy(status = if (session.state.value.needsLogin) SyncStatus.SIGN_IN else SyncStatus.OFFLINE) }
                     return@withLock false
                 }
@@ -107,8 +115,14 @@ class SyncController internal constructor(
                         else -> SyncStatus.CONNECTED
                     }, notes)
                 if (foreground) onRefreshed()
+                privacy?.record("sync", when {
+                    notes.any { it.conflictJson != null } -> "conflict"
+                    drained && !pending -> "success"
+                    else -> "unknown"
+                }, started, source)
                 drained && !pending
             } catch (error: Exception) {
+                privacy?.record("sync", usageResult(error), started, source, error)
                 if (error is CancellationException) throw error
                 account?.let { session.connectionFailed(it) }
                 mutable.update { it.copy(status = if (session.state.value.needsLogin) SyncStatus.SIGN_IN else SyncStatus.OFFLINE) }

@@ -35,7 +35,9 @@ export function createRouter({ beforeNavigate, onChange, isDirty, confirmLeave }
     };
     // Native fragment entries belong to the mounted page, including back/forward.
     if (target.url === url && target.key === key) {
-      beforeNavigate(true);
+      const fragment = !history.state?.webKey;
+      if (fragment) history.replaceState({ ...entry.state }, '');
+      beforeNavigate(fragment);
       if (target.index === null) { chain = crypto.randomUUID(); target.index = 0; }
       key = target.key; index = target.index;
       stamp();
@@ -74,6 +76,11 @@ export function createRouter({ beforeNavigate, onChange, isDirty, confirmLeave }
     get url() { return url; },
     get key() { return key; },
     cancel() { sequence++; },
+    pushLayer(state) {
+      history.pushState({ ...history.state, ...state, webIndex: index + 1 }, '');
+      index = nativeIndex() ?? index + 1;
+      remember();
+    },
     replaceURL(next) {
       history.replaceState({ ...history.state }, '', next);
       url = location.pathname + location.search;

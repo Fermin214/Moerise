@@ -53,10 +53,13 @@ export function buildSettingsPatch(snapshot, draft, operations = {}) {
   return { version: snapshot.version, settings, secrets };
 }
 
+import { privacySettings } from './privacy.js';
+
 export function createSettingsPage({ sessionRequest, handleFailure, onSaved = () => {}, onDirtyChange = () => {},
   confirmDiscard = () => Promise.resolve(true) }) {
   let root, snapshot, form, error, status, reload, save, controller, pendingBody;
   let baseline = '';
+  let unbindPrivacy;
   let sequence = 0, active = false, busy = false, conflict = false;
   let controls = new Map(), secretControls = new Map(), times = [];
   let modelViews = new Map(), modelController, modelTimer, indexText, indexProgress;
@@ -80,6 +83,7 @@ export function createSettingsPage({ sessionRequest, handleFailure, onSaved = ()
     pendingBody = null;
   }
   function destroy() {
+    unbindPrivacy?.();
     active = false; sequence++; lifecycle?.abort(); controller?.abort(); abortModels(); clearSecrets();
     root?.remove(); root = snapshot = form = controller = null;
     controls.clear(); secretControls.clear(); modelViews.clear(); times = []; baseline = ''; onDirtyChange();
@@ -122,6 +126,7 @@ export function createSettingsPage({ sessionRequest, handleFailure, onSaved = ()
       tabs.get(id).focus({ preventScroll: true });
       tabs.get(id).scrollIntoView({ block: 'nearest', inline: 'nearest' });
     }
+    if (form.querySelector('.settings-footer')) form.querySelector('.settings-footer').hidden = id === 'privacy';
   }
   function section(id, title, caption = title) {
     const card = el('section', 'card settings-card');
@@ -474,6 +479,8 @@ export function createSettingsPage({ sessionRequest, handleFailure, onSaved = ()
       if (channelKind.value === 'none') controls.get('notifications.enabled').input.checked = false;
     }
     channelKind.addEventListener('change', updateChannel); updateChannel();
+    unbindPrivacy?.();
+    unbindPrivacy = privacySettings(section('privacy', l("隐私")));
     const footer = el('div', 'settings-footer');
     error = el('p', 'error sub'); error.setAttribute('role', 'alert'); error.hidden = true;
     status = el('p', 'sub'); status.setAttribute('role', 'status');

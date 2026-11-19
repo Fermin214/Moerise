@@ -17,6 +17,7 @@ data class TimelineUiState(
     val snapshotAt: Long = 0,
     val refreshing: Boolean = false,
     val loadingMore: Boolean = false,
+    val displayKeys: Map<String, String> = emptyMap(),
 )
 
 class TimelineController(
@@ -31,12 +32,16 @@ class TimelineController(
     private var generation = 0L
     private var accountGeneration = 0L
     private var request: Job? = null
+    private var pageCount = 1
+    private val cursors = mutableSetOf<String>()
 
     fun reset(accountKey: String?) {
         ++generation
         ++accountGeneration
         request?.cancel()
         key = accountKey
+        pageCount = 1
+        cursors.clear()
         mutable.value = TimelineUiState()
     }
 
@@ -68,29 +73,48 @@ class TimelineController(
         val account = key ?: return
         val active = core() ?: return
         val token = if (append) state.value.nextPageToken.takeIf { it.isNotBlank() } ?: return else ""
-        if (append && state.value.loading) return
+        if (state.value.loading && (!userInitiated || !state.value.loadingMore)) return
         val stamp = ++generation
         request?.cancel()
         mutable.update { it.copy(loading = true, error = null, loadingMore = append,
             refreshing = !append && (userInitiated || it.refreshing)) }
         request = scope.launch {
             try {
-                val body = active.api(HttpMethod.Get,
-                    "/notes?state=$filter&order=created_desc&page_size=20" +
-                        if (token.isEmpty()) "" else "&page_token=${token.encodeURLQueryComponent(encodeFull = true)}")
-                val page = withContext(Dispatchers.Default) { CoreJson.decodeFromString<NotePage>(body) }
-                require(page.notes.all { it.instanceId == account.split('\u0000')[1] }) { "ACCOUNT_CHANGED" }
-                if (stamp != generation) return@launch
+                val repo = repository()
+                if (filter == "NORMAL" && repo.hasPendingCreation(account)) return@launch
+                val rows = mutableListOf<Note>()
+                val seen = if (append) cursors.toMutableSet() else mutableSetOf()
+                var next = token
+                var loaded = 0
+                val tail = state.value.notes.lastOrNull()?.name.takeIf { !append && pageCount > 1 }
+                val oldNames = state.value.notes.mapTo(mutableSetOf()) { it.name }
+                var added = 0
+                do {
+                    val body = active.api(HttpMethod.Get,
+                        "/notes?state=$filter&order=created_desc&page_size=20" +
+                            if (next.isEmpty()) "" else "&page_token=${next.encodeURLQueryComponent(encodeFull = true)}")
+                    val page = withContext(Dispatchers.Default) { CoreJson.decodeFromString<NotePage>(body) }
+                    require(page.notes.all { it.instanceId == account.split('\u0000')[1] && it.state == filter }) { "ACCOUNT_CHANGED" }
+                    rows.addAll(page.notes)
+                    added += page.notes.count { it.name !in oldNames }
+                    next = page.nextPageToken.takeIf { it.isNotBlank() && seen.add(it) }.orEmpty()
+                    loaded++
+                } while (!append && next.isNotBlank() && (loaded < pageCount ||
+                        tail != null && rows.none { it.name == tail } && rows.size < state.value.notes.size + added && loaded < pageCount + 2))
+                if (filter == "NORMAL" && repo.hasPendingCreation(account) || stamp != generation) return@launch
                 val previous = state.value
                 val byName = previous.notes.associateBy { it.name }
-                val notes = (if (append) previous.notes + page.notes else page.notes).distinctBy { it.name }
+                val notes = (if (append) previous.notes + rows else rows).distinctBy { it.name }
                     .map { note -> byName[note.name]?.takeIf { it == note } ?: note }
-                val unchanged = notes == previous.notes && page.nextPageToken == previous.nextPageToken
+                val unchanged = notes == previous.notes && next == previous.nextPageToken
                 if (filter == "NORMAL" && (!unchanged || !previous.fresh))
-                    repository().cache(account, NotePage(notes, page.nextPageToken))
-                if (stamp == generation) mutable.value = TimelineUiState(
-                    if (unchanged) previous.notes else notes, page.nextPageToken, fresh = true,
-                    snapshotAt = if (unchanged && previous.snapshotAt != 0L) previous.snapshotAt else epochMillis())
+                    repo.cache(account, NotePage(notes, next))
+                if (stamp == generation) {
+                    pageCount = if (append) pageCount + 1 else loaded
+                    cursors.clear(); cursors.addAll(seen)
+                    mutable.value = previous.copy(notes = if (unchanged) previous.notes else notes, nextPageToken = next, fresh = true,
+                        snapshotAt = if (unchanged && previous.snapshotAt != 0L) previous.snapshotAt else epochMillis())
+                }
             } catch (error: Exception) {
                 if (error is CancellationException) throw error
                 if (stamp == generation) mutable.update { it.copy(fresh = false, error = errorCode(error)) }
@@ -100,9 +124,19 @@ class TimelineController(
         }
     }
 
-    fun onSaved(accountKey: String, note: Note) {
+    fun remove(name: String) {
+        ++generation
+        request?.cancel()
+        mutable.update { it.copy(notes = it.notes.filterNot { note -> note.name == name }, displayKeys = it.displayKeys - name,
+            loading = false, refreshing = false, loadingMore = false) }
+    }
+
+    fun onSaved(accountKey: String, note: Note, draftId: String? = null) {
         if (key != accountKey || key?.split('\u0000')?.getOrNull(1) != note.instanceId) return
-        mutable.update { it.copy(notes = orderedNotes((listOf(note) + it.notes.filter { old -> old.name != note.name }).filter { it.state == "NORMAL" })) }
-        refresh()
+        ++generation
+        request?.cancel()
+        mutable.update { it.copy(notes = orderedNotes((listOf(note) + it.notes.filter { old -> old.name != note.name }).filter { it.state == filter }),
+            loading = false, refreshing = false, loadingMore = false,
+            displayKeys = if (draftId == null) it.displayKeys else it.displayKeys + (note.name to "queued:$draftId")) }
     }
 }

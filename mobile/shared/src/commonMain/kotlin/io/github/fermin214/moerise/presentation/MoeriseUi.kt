@@ -34,7 +34,9 @@ import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.text.input.ImeAction
-import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.tween
 import androidx.compose.ui.Modifier
@@ -46,6 +48,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.Role
@@ -240,41 +243,38 @@ fun WebToolbar(
 
 @Composable
 fun SyncButton(status: SyncStatus, strings: Strings, onClick: () -> Unit) {
-    val displayed = when (status) {
-        SyncStatus.SYNCING, SyncStatus.PENDING -> SyncStatus.SYNCING
-        SyncStatus.CONNECTED, SyncStatus.ATTENTION -> SyncStatus.CONNECTED
-        SyncStatus.OFFLINE, SyncStatus.SIGN_IN -> SyncStatus.OFFLINE
-    }
-    val rotation = remember { Animatable(0f) }
-    LaunchedEffect(status) {
-        rotation.snapTo(0f)
-        if (status == SyncStatus.SYNCING) {
-            rotation.animateTo(360f, tween(800, easing = LinearEasing))
-        }
-    }
-    val state = when (displayed) {
+    val state = when (status) {
         SyncStatus.SYNCING -> strings.text("同步中", "Syncing")
         SyncStatus.CONNECTED -> strings.text("连接成功", "Connected")
-        else -> strings.text("断开连接", "Disconnected")
+        SyncStatus.PENDING -> strings.text("等待同步", "Pending sync")
+        SyncStatus.ATTENTION -> strings.text("同步冲突", "Sync conflict")
+        SyncStatus.SIGN_IN -> strings.text("重新登录", "Sign in again")
+        SyncStatus.OFFLINE -> strings.text("离线", "Offline")
     }
     IconButton(onClick = onClick, modifier = Modifier.size(44.dp).testTag("sync_notes").semantics {
         contentDescription = if (status == SyncStatus.SIGN_IN) strings.text("重新登录", "Sign in again")
             else strings.text("同步笔记", "Sync notes")
         stateDescription = state
     }) {
-        WebIcon(
-            when (displayed) {
-                SyncStatus.CONNECTED -> WebIcon.CloudCheck
-                SyncStatus.OFFLINE -> WebIcon.CloudOff
-                else -> WebIcon.Refresh
-            },
-            modifier = Modifier.size(20.dp).graphicsLayer { rotationZ = rotation.value },
-            tint = when (displayed) {
-                SyncStatus.CONNECTED -> Color(0xFF51816A)
-                SyncStatus.SYNCING -> MoeriseColors.Blue
-                else -> MoeriseColors.Muted
-            },
-        )
+        SyncGlyph(status)
+    }
+}
+
+@Composable
+fun SyncGlyph(status: SyncStatus, modifier: Modifier = Modifier) {
+    val rotation = if (status == SyncStatus.SYNCING)
+        rememberInfiniteTransition(label = "sync").animateFloat(0f, 360f,
+            animationSpec = infiniteRepeatable(tween(950, easing = LinearEasing)), label = "turn") else null
+    val (mark, tint) = when (status) {
+        SyncStatus.SYNCING -> "↑" to MoeriseColors.Blue
+        SyncStatus.CONNECTED -> "✓" to Color(0xFF51816A)
+        SyncStatus.PENDING -> "·" to Color(0xFFB47724)
+        SyncStatus.ATTENTION -> "!" to Color(0xFFB42318)
+        else -> "−" to MoeriseColors.Muted
+    }
+    Box(modifier.size(20.dp), contentAlignment = androidx.compose.ui.Alignment.Center) {
+        WebIcon(WebIcon.Sync, modifier = Modifier.fillMaxSize().graphicsLayer { rotationZ = rotation?.value ?: 0f }, tint = tint)
+        Text(mark, fontSize = 9.sp, lineHeight = 10.sp, color = tint, modifier = Modifier.clearAndSetSemantics {})
     }
 }
 

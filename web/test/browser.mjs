@@ -1,4 +1,4 @@
-import { setUILanguage } from './browser-helpers.mjs';
+import { setUILanguage, returningBrowser } from './browser-helpers.mjs';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import { once } from 'node:events';
@@ -30,7 +30,7 @@ async function fixture(t, language = 'zh-CN', options = {}) {
   notes.get('n02').content += '\n\n[资料](/file/attachments/doc/document.pdf) ![原图](/file/attachments/pic/image.png)';
   notes.set('old', { ...notes.get('n00'), name: 'memos/old', state: 'ARCHIVED', content: '归档原文 #想法', source_hash: 'v-old' });
   const state = { notes, requests: [], unknownCreate: false, unknownPatch: false, conflict: false, csrfRejected: false,
-    created: 0, session: false, embedding: true, searchChanged: false, searchDelay: 0 };
+    created: 0, session: false, instance: 'first', user: 'users/1', embedding: true, searchChanged: false, searchDelay: 0 };
   const idempotency = new Map();
   const core = http.createServer(async (req, res) => {
     const url = new URL(req.url, 'http://localhost');
@@ -50,7 +50,7 @@ async function fixture(t, language = 'zh-CN', options = {}) {
       if (req.method === 'POST') {
         state.session = true; res.setHeader('Set-Cookie', 'session=webtest; HttpOnly; SameSite=Strict; Path=/');
       } else if (!state.session || !req.headers.cookie?.includes('session=webtest')) { error('SESSION_UNAUTHORIZED', 401); return; }
-      json({ user: { name: 'users/1', display_name: '测试作者' }, csrf_token: 'csrf', timezone: 'Asia/Hong_Kong' }); return;
+      json({ instance_id: state.instance, user: { name: state.user, display_name: '测试作者' }, csrf_token: 'csrf', timezone: 'Asia/Hong_Kong' }); return;
     }
     if (!state.session || !req.headers.cookie?.includes('session=webtest')) { error('SESSION_UNAUTHORIZED', 401); return; }
     if (['POST', 'PATCH', 'DELETE'].includes(req.method)) {
@@ -156,6 +156,7 @@ async function fixture(t, language = 'zh-CN', options = {}) {
   browser = await browserType.launch({ headless: true, channel: process.env.MOERISE_PLAYWRIGHT_CHANNEL || undefined });
   const context = await browser.newContext({ locale: language, viewport: { width: 1360, height: 960 }, ...options });
   const page = await context.newPage(), errors = [];
+  await returningBrowser(page);
   await page.clock.setFixedTime(new Date('2026-10-30T04:00:00Z'));
   page.on('pageerror', err => errors.push(err.message));
   return { page, context, state, errors, url: `http://127.0.0.1:${port}` };
@@ -168,6 +169,24 @@ async function login(page) {
   await page.locator('#login').click();
   await page.locator('#workspace').waitFor({ state: 'visible' });
 }
+
+test('CSRF renewal discards drafts and never replays a note after an instance or author change', async t => {
+  const { page, state, url } = await fixture(t);
+  await page.goto(url);
+  for (const [field, value] of [['instance', 'second'], ['user', 'users/2']]) {
+    await login(page);
+    await page.locator('[data-name="memos/n00"]').waitFor();
+    await page.locator('#content').fill(`private-${field}`);
+    state.csrfRejected = true;
+    state[field] = value;
+    await page.locator('#save').click();
+    await page.locator('#login-form').waitFor({ state: 'visible' });
+    assert.equal(await page.locator('#notes article').count(), 0);
+    assert.equal(await page.locator('#content').inputValue(), '');
+    assert.equal(state.created, 0);
+  }
+  assert.equal(state.requests.filter(item => item.path === '/notes' && item.method === 'POST').length, 2);
+});
 
 test('large tag lists share sidebar scrolling and reveal account controls on upward scrolling and keyboard focus', { timeout: 90_000 }, async t => {
   const { page, state, errors, url } = await fixture(t);
@@ -516,7 +535,8 @@ test('search composition, menu keyboard, route focus and refresh protection pres
   await page.getByRole('button', { name: '继续编辑', exact: true }).click();
   assert.equal(state.session, true);
   assert.equal(await page.locator('#content').inputValue(), '刷新保护正文');
-  assert.deepEqual(await page.evaluate(() => ({ local: localStorage.length, session: sessionStorage.length })), { local: 0, session: 0 });
+  assert.deepEqual(await page.evaluate(() => Object.keys(localStorage)), ['moerise.privacy.v1']);
+  assert.equal(await page.evaluate(() => sessionStorage.length), 0);
   assert.deepEqual(errors, []);
 });
 
@@ -711,7 +731,7 @@ test('browser timeline management, attachment retries, history, conflicts and pr
   await login(page);
   await page.locator('[data-name="memos/n00"]').waitFor();
   assert.equal(await page.locator('#draft-attachments').textContent(), '');
-  assert.equal(await page.evaluate(() => localStorage.length + sessionStorage.length), 0);
+  assert.deepEqual(await page.evaluate(() => [...Object.keys(localStorage), ...Object.keys(sessionStorage)]), ['moerise.privacy.v1']);
   assert.deepEqual(errors, []);
   await context.close();
 });
@@ -772,7 +792,8 @@ test('session renewal restores unsaved drafts and replays ambiguous creates and 
   await text.fill('编辑草稿原文');
   await editor.locator('input[type="file"]').setInputFiles({ name: 'edit.txt', mimeType: 'text/plain', buffer: Buffer.from('edit bytes') });
   async function expireViaList(query) {
-    state.session = false;
+    const list = request => request.pathname === '/api/app/v1/notes' && (request.searchParams.get('query') || '') === query;
+    await page.route(list, route => { state.session = false; return route.continue(); }, { times: 1 });
     await page.locator('#q').fill(query); await page.locator('#q').press('Enter');
     await page.locator('#login-form').waitFor({ state: 'visible' });
     assert.equal(await page.locator('#notes').textContent(), '');
@@ -885,19 +906,16 @@ test('automatic pagination preserves the connected editor, focus and selection a
   assert.deepEqual(errors, []);
 });
 
-test('sidebar aggregates reuse loaded and in-flight data, cancel replaced months and refresh after writes', { timeout: 60_000 }, async t => {
+test('sidebar reuses aggregates, cancels obsolete months and refreshes only affected counts', { timeout: 60_000 }, async t => {
   const { page, state, errors, url } = await fixture(t);
   let release;
   const delayed = new Promise(resolve => { release = resolve; });
   await page.route(/\/api\/app\/v1\/(?:tags|calendar)\?/, async route => { await delayed; await route.continue().catch(() => {}); });
   await page.goto(url); await login(page); await page.locator('[data-name="memos/n00"]').waitFor();
-  const requests = [];
-  page.on('request', request => { if (/\/api\/app\/v1\/(?:tags|calendar)\?/.test(request.url())) requests.push(request.url()); });
   for (const query of ['笔记', '笔记 1', '笔记 2']) {
     await page.locator('#q').fill(query); await page.locator('#q').press('Enter');
     await page.waitForFunction(query => new URL(location.href).searchParams.get('query') === query, query);
   }
-  assert.equal(requests.length, 0);
   release(); await page.locator('#tags button').first().waitFor();
   await page.unroute(/\/api\/app\/v1\/(?:tags|calendar)\?/);
   const count = path => state.requests.filter(item => item.path === path).length;
@@ -925,18 +943,22 @@ test('sidebar aggregates reuse loaded and in-flight data, cancel replaced months
   await page.waitForFunction(() => document.querySelector('#calendar button:not([disabled])') && document.getElementById('calendar-title').textContent === '2026年8月');
   const before = { tags: count('/tags'), calendar: count('/calendar') };
   await page.locator('#content').fill('写入后刷新聚合');
-  await aggregatesAfter(() => page.locator('#save').click());
+  await page.locator('#save').click();
   await page.waitForFunction(() => document.getElementById('content').value === '');
   await page.locator('#tags button').first().waitFor();
-  assert.equal(count('/tags'), before.tags + 1); assert.equal(count('/calendar'), before.calendar + 1);
+  assert.equal(count('/tags'), before.tags); assert.equal(count('/calendar'), before.calendar);
+  await page.locator('#month-next').click();
+  await page.waitForFunction(() => document.getElementById('calendar-title').textContent === '2026年9月');
+  const october = page.waitForResponse(response => response.url().includes('month=2026-10') && response.ok());
+  await page.locator('#month-next').click(); await october;
   const refreshed = { tags: count('/tags'), calendar: count('/calendar') };
   await page.clock.setFixedTime(new Date('2026-10-30T04:01:01Z'));
   await page.locator('#q').fill('写入后'); await aggregatesAfter(() => page.locator('#q').press('Enter'));
   await page.locator('#tags button').first().waitFor();
   assert.equal(count('/tags'), refreshed.tags + 1); assert.equal(count('/calendar'), refreshed.calendar + 1);
-  await aggregatesAfter(() => page.evaluate(() => window.dispatchEvent(new Event('focus'))));
+  await page.evaluate(() => window.dispatchEvent(new Event('focus')));
   await page.locator('#tags button').first().waitFor();
-  assert.equal(count('/tags'), refreshed.tags + 2); assert.equal(count('/calendar'), refreshed.calendar + 2);
+  assert.equal(count('/tags'), refreshed.tags + 1); assert.equal(count('/calendar'), refreshed.calendar + 1);
   assert.deepEqual(errors, []);
 });
 
@@ -971,6 +993,7 @@ test('sidebar background refresh preserves tags and calendar through slow reques
       page.waitForResponse(response => new URL(response.url()).pathname === `/api/app/v1/${name}`)));
     release(); await responded;
   }
+  await page.clock.setFixedTime(new Date('2026-10-30T04:01:01Z'));
   await start(focus);
   await focus();
   assert.deepEqual(await snapshot(), displayed);
@@ -983,6 +1006,7 @@ test('sidebar background refresh preserves tags and calendar through slow reques
   assert.equal(await page.locator('#calendar .h2').getAttribute('aria-label'), `2026-10-29 · ${normalCount} 条笔记`);
   displayed = await snapshot();
   delayed = new Promise(resolve => { release = resolve; }); fail = true;
+  await page.clock.setFixedTime(new Date('2026-10-30T04:02:02Z'));
   await start(focus);
   assert.deepEqual(await snapshot(), displayed);
   await finish();
@@ -1042,7 +1066,7 @@ test('refreshing an unchanged note clears failed mutation controls', { timeout: 
   assert.deepEqual(errors, []);
 });
 
-test('reordering multiple editors keeps the focused editor connected', { timeout: 60_000 }, async t => {
+test('inserting a saved note keeps both editors connected and preserves keyboard focus', { timeout: 60_000 }, async t => {
   const { page, state, errors, url } = await fixture(t);
   await page.goto(url); await login(page);
   await page.locator('[data-name="memos/n00"]').waitFor();
@@ -1050,7 +1074,7 @@ test('reordering multiple editors keeps the focused editor connected', { timeout
   await menu(page, 'n00', '编辑'); await menu(page, 'n01', '编辑');
   const text = page.locator('[data-name="memos/n00"].editor textarea');
   await text.fill('连续输入中的草稿');
-  state.notes.get('n01').create_time = '2027-01-01T00:00:00Z';
+  const listReads = state.requests.filter(item => item.path === '/notes' && item.method === 'GET').length;
   await page.evaluate(() => {
     globalThis.focusedForm = document.activeElement.closest('form.editor');
     globalThis.focusedRemoved = false;
@@ -1059,7 +1083,8 @@ test('reordering multiple editors keeps the focused editor connected', { timeout
     }).observe(document.getElementById('notes'), { childList: true });
     document.getElementById('composer').requestSubmit();
   });
-  await page.waitForFunction(() => document.querySelector('#notes > :first-child')?.dataset.name === 'memos/n01');
+  await page.waitForFunction(() => document.querySelector('#notes > :first-child')?.dataset.name === 'memos/created-1');
+  assert.equal(state.requests.filter(item => item.path === '/notes' && item.method === 'GET').length, listReads);
   assert.deepEqual(await page.evaluate(() => ({
     removed: globalThis.focusedRemoved,
     focused: document.activeElement.closest('form.editor') === globalThis.focusedForm,
@@ -1106,7 +1131,7 @@ test('English fallback, live language switching and stored preference preserve o
   assert.match(await page.locator('#list-error').textContent(), /请在设置中启用/);
   await page.reload(); await page.locator('#workspace').waitFor({ state: 'visible' });
   assert.equal(await page.locator('html').getAttribute('lang'), 'zh-CN');
-  assert.deepEqual(await page.evaluate(() => Object.entries(localStorage)), [['moerise.language', 'zh-CN']]);
+  assert.deepEqual(await page.evaluate(() => ({ ...localStorage })), { 'moerise.language': 'zh-CN', 'moerise.privacy.v1': 'off' });
   await page.addInitScript(() => Object.defineProperty(window, 'localStorage', { get() { throw new Error('Storage blocked'); } }));
   await page.reload(); await page.locator('#workspace').waitFor({ state: 'visible' });
   assert.equal(await page.locator('html').getAttribute('lang'), 'en');

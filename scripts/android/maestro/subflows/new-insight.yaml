@@ -35,10 +35,7 @@ onFlowComplete:
     timeout: 15000
     label: Wait for the expected UI state
 - assertNotVisible:
-    id: chat_remove_${NOTE_NAME}
-    label: Check the expected UI state
-- assertNotVisible:
-    id: chat_remove_${PEER_NOTE_NAME}
+    id: chat_material_summary
     label: Check the expected UI state
 - assertNotVisible:
     id: chat_delete

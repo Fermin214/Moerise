@@ -314,13 +314,28 @@ async function runScenario(kind) {
   let cookie = '';
   let csrf = '';
   const api = async (method, path, body, status = 200, extra = {}) => {
-    const result = expectStatus(await request(url, path, {
+    const options = {
       method, body, headers: {
         Cookie: cookie, Origin: url, 'X-CSRF-Token': csrf,
         ...(['POST', 'PATCH', 'DELETE'].includes(method) ? { 'Idempotency-Key': randomUUID() } : {}),
         ...extra,
       },
-    }), status, `${method} ${path}`);
+    };
+    const deadline = Date.now() + 75_000;
+    let backoff = 2000;
+    let result = await request(url, path, options);
+    while (method === 'GET' && status === 200 && (result.status === 429 ||
+      (result.status === 503 && result.value?.error?.code === 'UPSTREAM_RATE_LIMITED'))) {
+      const retryAfter = result.headers.get('retry-after');
+      const wait = !retryAfter ? backoff : /^\d+$/.test(retryAfter)
+        ? Number(retryAfter) * 1000 : Date.parse(retryAfter) - Date.now();
+      const duration = Math.max(backoff, Number.isFinite(wait) ? wait : backoff);
+      if (Date.now() + duration >= deadline) break;
+      await delay(duration, undefined, { signal: cancellation.signal });
+      result = await request(url, path, options);
+      backoff = Math.min(backoff * 2, 16_000);
+    }
+    expectStatus(result, status, `${method} ${path}`);
     assert.equal(result.headers.get('cache-control'), 'no-store');
     assert.ok(!result.text.includes(pat) && !result.text.includes('accessToken'), 'Web 泄露来源凭据');
     if (result.value?.csrf_token) csrf = result.value.csrf_token;
@@ -423,6 +438,11 @@ async function runScenario(kind) {
       await page.goto(url);
       await page.locator('#username').fill(username); await page.locator('#password').fill(password);
       await page.locator('#login').click();
+      const welcome = page.getByRole('dialog', { name: '欢迎使用 Moerise' });
+      await welcome.waitFor();
+      assert.equal(await welcome.getByRole('switch').isChecked(), false);
+      assert.equal(await welcome.locator('.save').count(), 1);
+      await welcome.getByRole('button', { name: '进入 Moerise' }).click();
       const card = page.locator(`#notes article[data-name="${note.name}"]`);
       await card.waitFor();
       assert.match(await card.innerText(), /Edited text/);

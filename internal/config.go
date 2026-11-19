@@ -117,21 +117,22 @@ func configured(value *string) string {
 }
 
 type Settings struct {
-	Memos         MemosConfig        `json:"memos"`
-	Web           WebConfig          `json:"web"`
-	AccessTokens  []AccessToken      `json:"access_tokens"`
-	CursorSecret  string             `json:"cursor_secret"`
-	Timezone      string             `json:"timezone"`
-	StateDir      string             `json:"state_dir"`
-	IndexDir      string             `json:"index_dir"`
-	Sync          SyncConfig         `json:"sync"`
-	Review        ReviewConfig       `json:"review"`
-	Notifications NotificationConfig `json:"notifications"`
-	Embedding     EmbeddingConfig    `json:"embedding"`
-	Stargazing    StargazingConfig   `json:"stargazing"`
-	LLM           LLMConfig          `json:"llm"`
-	Channel       ChannelConfig      `json:"channel"`
-	Insights      InsightsConfig     `json:"insights"`
+	Memos               MemosConfig        `json:"memos"`
+	Web                 WebConfig          `json:"web"`
+	TelemetryForwarding bool               `json:"telemetry_forwarding"`
+	AccessTokens        []AccessToken      `json:"access_tokens"`
+	CursorSecret        string             `json:"cursor_secret"`
+	Timezone            string             `json:"timezone"`
+	StateDir            string             `json:"state_dir"`
+	IndexDir            string             `json:"index_dir"`
+	Sync                SyncConfig         `json:"sync"`
+	Review              ReviewConfig       `json:"review"`
+	Notifications       NotificationConfig `json:"notifications"`
+	Embedding           EmbeddingConfig    `json:"embedding"`
+	Stargazing          StargazingConfig   `json:"stargazing"`
+	LLM                 LLMConfig          `json:"llm"`
+	Channel             ChannelConfig      `json:"channel"`
+	Insights            InsightsConfig     `json:"insights"`
 
 	daily                *dailySettings
 	notificationChannels map[string]ChannelConfig

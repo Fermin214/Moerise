@@ -3,6 +3,8 @@ package io.github.fermin214.moerise.presentation
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.focusable
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
@@ -31,17 +33,23 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.toggleableState
 import androidx.compose.ui.state.ToggleableState
 import androidx.compose.ui.unit.dp
-import io.github.fermin214.moerise.data.epochMillis
+import io.github.fermin214.moerise.data.CoreClient
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun StarMapScreen(mobile: MobileController, strings: Strings, noteScroll: LazyListState,
     onMenu: () -> Unit, onSearch: () -> Unit) {
-    val controller = mobile.stars
-    val state by controller.state.collectAsState()
     val connection by mobile.session.state.collectAsState()
+    StarMapScreen(mobile.stars, mobile.session.core, connection.profile?.stargazingEnabled != false, strings, noteScroll, onMenu, onSearch)
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+fun StarMapScreen(controller: StarMapController, core: CoreClient?, enabled: Boolean, strings: Strings,
+    noteScroll: LazyListState, onMenu: () -> Unit, onSearch: () -> Unit) {
+    val state by controller.state.collectAsState()
     val map = state.snapshot
-    if (connection.profile?.stargazingEnabled == false || state.disabledReason == "stargazing") {
+    if (!enabled || state.disabledReason == "stargazing") {
         PlatformMapFullscreen(false)
         Column(Modifier.fillMaxSize().safeDrawingPadding().testTag("map_page")) {
             WebToolbar(strings, onMenu, onSearch)
@@ -56,14 +64,13 @@ fun StarMapScreen(mobile: MobileController, strings: Strings, noteScroll: LazyLi
     val mapFocus = remember { FocusRequester() }
     val density = LocalDensity.current.density
     var fieldFocused by remember { mutableStateOf(false) }
-    val readerVisible = state.unplacedOnly && map?.readable == true
+    val readerVisible = state.selected != null || state.unplacedOnly && map?.readable == true
     val closeReader: () -> Unit = {
-        controller.closeReader()
-        if (state.unplacedOnly) controller.unplaced()
+        controller.dismissReader()
         mapFocus.requestFocus()
     }
     PlatformMapFullscreen(state.fullScreen)
-    PlatformBackHandler(state.unplacedOnly && !state.fullScreen) { closeReader() }
+    PlatformBackHandler(readerVisible) { closeReader() }
     LaunchedEffect(state.unplacedOnly) {
         if (state.unplacedOnly) noteScroll.scrollToItem(0)
     }
@@ -74,13 +81,11 @@ fun StarMapScreen(mobile: MobileController, strings: Strings, noteScroll: LazyLi
         else -> null
     }
     val message = when {
-        state.readerError != null -> editorError(state.readerError!!, strings)
-        state.reading -> strings.text("正在读取笔记…", "Loading note…")
         code != null -> mapError(code, strings)
         state.loading && map == null -> strings.text("正在加载观星…", "Loading stargazing…")
         else -> null
     }
-    val messageError = state.readerError != null || state.error != null ||
+    val messageError = state.error != null ||
         code in setOf("MAP_UNAVAILABLE", "MAP_UPDATE_UNAVAILABLE", "MAP_INCOMPATIBLE", "MAP_PROTOCOL")
 
     Column(Modifier.fillMaxSize().safeDrawingPadding().testTag("map_page")) {
@@ -107,7 +112,7 @@ fun StarMapScreen(mobile: MobileController, strings: Strings, noteScroll: LazyLi
                                         val distance = (if (event.isShiftPressed) 100.0 else 40.0) * density
                                         when (event.key) {
                                             Key.R -> { controller.refresh(); true }
-                                            Key.Home, Key.MoveHome -> { controller.fit(); true }
+                                            Key.Home, Key.MoveHome -> { controller.fit(true); true }
                                             Key.Plus, Key.Equals -> { controller.transform(1.25); true }
                                             Key.Minus -> { controller.transform(.8); true }
                                             Key.DirectionLeft -> { controller.transform(1.0, panX = distance); true }
@@ -118,7 +123,7 @@ fun StarMapScreen(mobile: MobileController, strings: Strings, noteScroll: LazyLi
                                         }
                                     }
                                 }.focusable()) {
-                                if (map != null) StarCanvas(state, controller, strings, onSelect = { mobile.openNote(it) })
+                                if (map != null) StarCanvas(state, controller, strings)
                             }
                             Surface(
                                 Modifier.align(Alignment.TopEnd).padding(12.dp)
@@ -128,31 +133,11 @@ fun StarMapScreen(mobile: MobileController, strings: Strings, noteScroll: LazyLi
                                 border = BorderStroke(1.dp, if (stellar) Color(0xFF263749) else MoeriseColors.Line),
                             ) {
                                 FlowRow(Modifier.padding(3.dp)) {
-                                    MapTool(MapToolIcon.Plus, strings.text("放大", "Zoom in"), stellar, enabled = state.view != null,
-                                        tag = "map_zoom_in", onClick = { controller.transform(1.35) })
-                                    MapTool(MapToolIcon.Minus, strings.text("缩小", "Zoom out"), stellar, enabled = state.view != null,
-                                        tag = "map_zoom_out", onClick = { controller.transform(1 / 1.35) })
-                                    MapTool(MapToolIcon.Frame, strings.text("显示全图", "Fit map"), stellar, enabled = map != null,
-                                        tag = "map_fit", onClick = { controller.fit() })
-                                    MapTool(MapToolIcon.Refresh, strings.text("刷新地图", "Refresh map"), stellar,
-                                        enabled = connection.connected && !state.loading && !state.posting,
-                                        tag = "map_refresh", onClick = controller::refresh)
-                                    if (stellar) {
-                                        MapTool(MapToolIcon.Moon, strings.text("切换星图氛围", "Toggle star glow"), stellar,
-                                            pressed = state.photo, tag = "map_atmosphere", onClick = controller::atmosphere)
-                                        MapTool(MapToolIcon.Frame, strings.text("切换主体与全部取景", "Toggle subject and full framing"), stellar,
-                                            enabled = map != null, pressed = state.allFraming, tag = "map_framing",
-                                            onClick = { controller.fit(!state.allFraming) })
-                                    }
+                                    MapTool(MapToolIcon.Fit, strings.text("显示全图", "Fit map"), stellar, enabled = map != null,
+                                        tag = "map_fit", onClick = { controller.fit(true) })
                                     MapTool(MapToolIcon.Frame, strings.text(if (state.fullScreen) "退出全屏" else "全屏预览",
                                         if (state.fullScreen) "Exit full screen" else "Fullscreen"), stellar,
                                         pressed = state.fullScreen, tag = "map_fullscreen", onClick = controller::fullScreen)
-                                    if (stellar) MapTool(MapToolIcon.Rebuild, strings.text("重新生成星图", "Rebuild star map"), stellar,
-                                        enabled = connection.connected && !state.loading && !state.posting && state.compatible &&
-                                            state.status.isNotEmpty() && state.status != "disabled" &&
-                                            state.rebuild?.state !in setOf("unknown", "observing") &&
-                                            (state.rebuild?.retryAfter ?: 0) <= epochMillis(),
-                                        tag = "map_rebuild", onClick = { controller.rebuild() })
                                 }
                             }
                             val missing = map?.points?.count { !it.semantic } ?: 0
@@ -166,19 +151,22 @@ fun StarMapScreen(mobile: MobileController, strings: Strings, noteScroll: LazyLi
                                 Modifier.align(Alignment.BottomStart).padding(start = 16.dp, end = 16.dp, bottom = if (stellar && missing > 0) 72.dp else 12.dp),
                                 color = if (stellar) Color(0xEE0B192A) else Color(0xFFFBFCFE), shape = RoundedCornerShape(6.dp),
                             ) {
+                                Column {
                                 Text(message, style = MaterialTheme.typography.bodySmall,
                                     color = if (messageError) {
                                         if (stellar) Color(0xFFFFB4AB) else MaterialTheme.colorScheme.error
                                     } else if (stellar) Color(0xFFB8C8D9) else MoeriseColors.Muted,
                                     modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp).testTag("map_status")
                                         .semantics { liveRegion = if (messageError) LiveRegionMode.Assertive else LiveRegionMode.Polite })
+                                if (messageError) TextButton(onClick = controller::refresh) { Text(strings.text("重试", "Retry")) }
+                                }
                             }
                         }
                     }
-                    if (wideReader) MapUnplacedNotes(mobile, state, strings, noteScroll, closeReader,
+                    if (wideReader) MapUnplacedNotes(controller, core, state, strings, noteScroll, closeReader,
                         Modifier.width(readerWidth).fillMaxHeight())
                 }
-                if (readerVisible && !wideReader) MapUnplacedNotes(mobile, state, strings, noteScroll, closeReader,
+                if (readerVisible && !wideReader) MapUnplacedNotes(controller, core, state, strings, noteScroll, closeReader,
                     Modifier.align(Alignment.BottomCenter).fillMaxWidth().heightIn(max = readerHeight), bottomSheet = true)
             }
         }
@@ -186,7 +174,7 @@ fun StarMapScreen(mobile: MobileController, strings: Strings, noteScroll: LazyLi
 }
 
 @Composable
-private fun MapUnplacedNotes(mobile: MobileController, state: StarMapState, strings: Strings,
+private fun MapUnplacedNotes(controller: StarMapController, core: CoreClient?, state: StarMapState, strings: Strings,
     noteScroll: LazyListState, onClose: () -> Unit,
     modifier: Modifier, bottomSheet: Boolean = false) {
     Surface(modifier, color = Color.White,
@@ -195,16 +183,25 @@ private fun MapUnplacedNotes(mobile: MobileController, state: StarMapState, stri
         Column {
             Row(Modifier.fillMaxWidth().padding(horizontal = 6.dp, vertical = 4.dp), horizontalArrangement = Arrangement.End) {
                 IconButton(onClick = onClose, modifier = Modifier.size(44.dp).testTag("map_close_reader")) {
-                    WebIcon(WebIcon.Close, strings.text("关闭笔记列表", "Close notes list"))
+                    WebIcon(WebIcon.Close, strings.text("关闭阅读卡", "Close reader"))
                 }
             }
-            if (state.unplacedOnly) {
+            if (state.selected != null) {
+                key(state.selected) {
+                    Column(Modifier.verticalScroll(rememberScrollState()).padding(16.dp).testTag("map_reader")) {
+                        state.reader?.let { note -> MarkdownBody(note.content, note = note, core = core)
+                            NoteAttachments(note, core, strings) }
+                        if (state.reading) Text(strings.text("正在读取笔记…", "Loading note…"))
+                        state.readerError?.let { Text(editorError(it, strings), color = MaterialTheme.colorScheme.error) }
+                    }
+                }
+            } else if (state.unplacedOnly) {
                 Text(strings.text("未定位笔记", "Notes without positions"), style = MaterialTheme.typography.titleMedium,
                     modifier = Modifier.padding(horizontal = 16.dp))
                 LazyColumn(Modifier.weight(1f, fill = false).fillMaxWidth(), state = noteScroll,
                     contentPadding = PaddingValues(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     items(state.snapshot?.points.orEmpty().filter { !it.semantic }, key = { it.name }) { point ->
-                        OutlinedButton(onClick = { mobile.stars.unplaced(); mobile.openNote(point.name) },
+                        OutlinedButton(onClick = { controller.unplaced(); controller.select(point.name) },
                             modifier = Modifier.fillMaxWidth().heightIn(min = 44.dp).testTag("map_unplaced_${point.name}"), shape = RoundedCornerShape(8.dp),
                             contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp)) {
                             Text(strings.text("笔记 ${point.name.removePrefix("memos/")}", "Note ${point.name.removePrefix("memos/")}"))
@@ -217,12 +214,8 @@ private fun MapUnplacedNotes(mobile: MobileController, state: StarMapState, stri
 }
 
 private enum class MapToolIcon(val path: String) {
-    Plus("M5 12h14M12 5v14"),
-    Minus("M5 12h14"),
+    Fit("M3 12h4m10 0h4M12 3v4m0 10v4M18 12a6 6 0 1 1-12 0 6 6 0 0 1 12 0"),
     Frame("M8 3H3v5M16 3h5v5M21 16v5h-5M8 21H3v-5"),
-    Refresh("M20 7v5h-5M4 17v-5h5M6 7a7 7 0 0 1 12-1l2 3M4 15l2 3a7 7 0 0 0 12-1"),
-    Moon("M12 3a9 9 0 1 0 9 9 7 7 0 0 1-9-9"),
-    Rebuild("M12 3v4m0 10v4M3 12h4m10 0h4M6 6l3 3m6 6 3 3M6 18l3-3m6-6 3-3"),
 }
 
 @Composable

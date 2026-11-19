@@ -17,13 +17,21 @@ internal suspend fun checkLiveChat(core: CoreClient, material: Note, stats: File
     val names = listOf(material.name, archived.name)
     val picker = CoreJson.decodeFromString<ChatMaterialPage>(core.api(HttpMethod.Get, "/chat-materials?state=ARCHIVED&page_size=100"))
     assertTrue(picker.notes.any { it.name == archived.name })
+    val compact = CoreJson.decodeFromString<CompactMaterialPage>(core.api(HttpMethod.Get,
+        "/chat-materials?state=ARCHIVED&page_size=100&format=compact&tag_match=any"))
+    val candidate = compact.candidates.single { it.name == archived.name }
+    assertEquals(archived.sourceHash, candidate.sourceHash)
+    assertEquals(unicode.codePointCount(0, unicode.length), candidate.characters)
     val resolved = CoreJson.decodeFromString<ChatMaterials>(core.api(HttpMethod.Post, "/chat-materials/resolve",
         buildJsonObject { put("names", JsonArray(names.map(::JsonPrimitive))) }.toString()))
     assertEquals(material.content.codePointCount(0, material.content.length) + unicode.codePointCount(0, unicode.length), resolved.characters)
     assertEquals(20_000, resolved.limit)
     assertEquals(material.sourceHash, resolved.materials.first().sourceHash)
-    val input = ChatCreate(UUID.randomUUID().toString(), "Android fixture chat", names)
-    val creation = CoreJson.encodeToString(input)
+    val creation = buildJsonObject {
+        put("request_id", UUID.randomUUID().toString())
+        put("title", "Android fixture chat")
+        put("names", CoreJson.encodeToJsonElement(names))
+    }.toString()
     var chat = CoreJson.decodeFromString<ChatSession>(core.api(HttpMethod.Post, "/chats", creation))
     val id = chat.id
     assertEquals(chat, CoreJson.decodeFromString<ChatSession>(core.api(HttpMethod.Post, "/chats", creation)))
@@ -37,7 +45,9 @@ internal suspend fun checkLiveChat(core: CoreClient, material: Note, stats: File
         chat = read()
         return request to events
     }
-    var saved: Note? = null
+    val saved = mutableListOf<Note>()
+    suspend fun save(input: ChatSaveSelection) = CoreJson.decodeFromString<Note>(
+        core.api(HttpMethod.Post, "/chats/$id/save-selection", CoreJson.encodeToString(input)))
     var primaryFailure: Throwable? = null
     try {
         val (generation, events) = send("insight", "")
@@ -52,12 +62,31 @@ internal suspend fun checkLiveChat(core: CoreClient, material: Note, stats: File
         val saveBody = buildJsonObject { put("version", turn.assistant.version) }.toString()
         val path = "/chats/$id/messages/${turn.requestId}/save"
         val savedNote = CoreJson.decodeFromString<Note>(core.api(HttpMethod.Post, path, saveBody))
-        saved = savedNote
+        saved += savedNote
         assertEquals(turn.assistant.content, savedNote.content)
         assertEquals(savedNote.name, CoreJson.decodeFromString<Note>(core.api(HttpMethod.Post, path, saveBody)).name)
         assertEquals(savedNote.content, CoreJson.decodeFromString<Note>(core.api(HttpMethod.Get, "/notes/${savedNote.name.removePrefix("memos/")}")).content)
+        val answer = ChatMessageRef(turn.requestId, "assistant", turn.assistant.version)
+        assertEquals(savedNote.name, save(ChatSaveSelection(UUID.randomUUID().toString(), "en", listOf(answer), false)).name)
+        chat = read()
+        core.api(HttpMethod.Patch, "/chats/$id", buildJsonObject {
+            put("version", chat.version); put("title", chat.title)
+            put("materials", CoreJson.encodeToJsonElement(listOf(resolved.materials.first())))
+        }.toString())
         val (_, followUp) = send("question", "联系两条笔记")
         assertEquals("complete", followUp.last().type)
+        val second = chat.turns.last()
+        assertTrue(second.materialVersion > turn.materialVersion)
+        assertEquals(resolved.materials, chat.turns.first().materials)
+        assertEquals(listOf(resolved.materials.first()), second.materials)
+        val choice = ChatSaveSelection(UUID.randomUUID().toString(), "zh-CN",
+            listOf(ChatMessageRef(second.requestId, "user", second.user.version), answer), false)
+        val combined = save(choice)
+        saved += combined
+        assertEquals("**Moerise**\n\n${turn.assistant.content}\n\n**我**\n\n${second.user.content}", combined.content)
+        val receipt = CoreJson.parseToJsonElement(core.api(HttpMethod.Get, "/chats/$id/save-selection/${choice.operationKey}")).jsonObject
+        assertEquals(combined.name, receipt["name"]?.jsonPrimitive?.content)
+        assertEquals(combined.name, save(choice).name)
         val silentStart = System.nanoTime()
         val (_, silent) = send("question", "ANDROID_SILENT")
         assertEquals("complete", silent.last().type)
@@ -80,6 +109,13 @@ internal suspend fun checkLiveChat(core: CoreClient, material: Note, stats: File
         assertNotNull(cancellation)
         chat = read()
         assertEquals("canceled", chat.turns.last().assistant.status)
+        val stopped = chat.turns.last()
+        val partial = ChatSaveSelection(UUID.randomUUID().toString(), "zh-CN",
+            listOf(ChatMessageRef(stopped.requestId, "assistant", stopped.assistant.version)), false)
+        assertEquals("CHAT_MESSAGE_INCOMPLETE", assertFailsWith<CoreException> { save(partial) }.detail.code)
+        val incomplete = save(partial.copy(confirmIncomplete = true))
+        saved += incomplete
+        assertEquals(stopped.assistant.content, incomplete.content)
         val afterStop = calls()
         repeat(2) { read() }
         assertEquals(afterStop, calls())
@@ -91,11 +127,14 @@ internal suspend fun checkLiveChat(core: CoreClient, material: Note, stats: File
         try {
             core.api(HttpMethod.Delete, "/notes/${archived.name.removePrefix("memos/")}",
                 buildJsonObject { put("source_hash", archived.sourceHash) }.toString())
-            saved?.let { core.api(HttpMethod.Delete, "/notes/${it.name.removePrefix("memos/")}",
-                buildJsonObject { put("source_hash", it.sourceHash) }.toString()) }
             chat = read()
             core.api(HttpMethod.Delete, "/chats/$id", buildJsonObject { put("version", chat.version) }.toString())
             assertEquals("CHAT_NOT_FOUND", assertFailsWith<CoreException> { read() }.detail.code)
+            saved.forEach {
+                val path = "/notes/${it.name.removePrefix("memos/")}"
+                assertEquals(it.content, CoreJson.decodeFromString<Note>(core.api(HttpMethod.Get, path)).content)
+                core.api(HttpMethod.Delete, path, buildJsonObject { put("source_hash", it.sourceHash) }.toString())
+            }
         } catch (cleanup: Throwable) {
             if (primaryFailure != null) primaryFailure.addSuppressed(cleanup) else throw cleanup
         }

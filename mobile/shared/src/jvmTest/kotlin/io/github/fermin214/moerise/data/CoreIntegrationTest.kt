@@ -122,8 +122,8 @@ class CoreIntegrationTest {
                     var deletionConfirmed = false
                     val repository = NoteRepository(db)
                     repository.cache(accountKey, NotePage(listOf(live)))
-                    val actions = NoteDetailController({ repository }, { accountKey }, { reopened }, this) {
-                        assertNull(it)
+                    val actions = NoteDetailController({ repository }, { accountKey }, { reopened }, this) { _, _, updated ->
+                        assertNull(updated)
                         deletionConfirmed = true
                     }
                     actions.delete(live)

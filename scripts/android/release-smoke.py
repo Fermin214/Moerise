@@ -83,7 +83,7 @@ def main():
                 (args.output / "reopened-window.xml").write_text(xml, encoding="utf-8")
                 ids = {node.get("resource-id", "").rsplit(":id/", 1)[-1]
                        for node in ET.fromstring(xml).iter("node")}
-                if "open_menu" in ids and "server_login" not in ids:
+                if "open_menu" in ids and ids.isdisjoint({"server_login", "welcome_enter"}):
                     report["session_restored_without_login"] = True
                     break
             except phone.CommandError as error:

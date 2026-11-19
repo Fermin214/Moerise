@@ -64,6 +64,7 @@ class NoteRepository(private val db: LocalDatabase, private val files: Attachmen
         }
     }
     suspend fun pendingDraftIds(key: String): List<String> = db.dao().pendingDraftIds(key)
+    suspend fun hasPendingCreation(key: String): Boolean = db.dao().hasPendingCreation(key)
 
     suspend fun queuedNotes(key: String): List<DraftEntity> {
         val pending = db.dao().pendingDraftIds(key).toSet()
@@ -191,6 +192,9 @@ class NoteRepository(private val db: LocalDatabase, private val files: Attachmen
     }
 
     suspend fun clearCache(key: String) { db.dao().deleteSnapshots(key) }
+    suspend fun readSnapshot(key: String, filter: String) = db.dao().snapshot(key, filter)
+    suspend fun putSnapshot(snapshot: SnapshotEntity) = db.dao().putSnapshot(snapshot)
+    suspend fun dropSnapshot(key: String, filter: String) = db.dao().deleteSnapshot(key, filter)
     suspend fun feature(key: String, feature: String): String? = db.dao().feature(key, feature)
     suspend fun putFeature(key: String, feature: String, body: String) { db.dao().putFeature(FeatureStateEntity(key, feature, body)) }
 
