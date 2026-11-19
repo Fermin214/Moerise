@@ -851,7 +851,10 @@ test('a sidebar 401 interrupts an in-flight edit without losing its retry or lea
   const editor = page.locator('form.editor');
   await editor.locator('textarea').fill('来源已保存但响应尚未到达');
   await editor.locator('textarea').press('Control+Enter'); await submitted;
-  state.session = false;
+  await page.route('**/api/app/v1/calendar?*month=2026-11', async route => {
+    state.session = false;
+    await route.continue();
+  }, { times: 1 });
   await page.locator('#month-next').click();
   await page.locator('#login-form').waitFor({ state: 'visible' });
   release(); await page.unroute('**/api/app/v1/notes/n00');
@@ -1102,7 +1105,7 @@ test('English fallback, live language switching and stored preference preserve o
   const note = page.locator('[data-name="memos/n00"]'); await note.waitFor();
   const renderedParagraphs = await note.locator('.note-content p').allTextContents();
   await page.getByRole('button', { name: 'Previous month' }).waitFor();
-  assert.equal(await page.locator('#calendar-title').textContent(), 'October 2026');
+  await page.locator('#calendar-title').filter({ hasText: /^October 2026$/ }).waitFor();
   assert.equal(await note.locator('time').first().textContent(), '2026-10-29 12:59');
   await page.locator('#content').fill('未保存的想法 #标签');
   await page.locator('#attachment-input').setInputFiles({ name: '图片.png', mimeType: 'image/png', buffer: png });
