@@ -10,7 +10,7 @@ import { resolve, relative, isAbsolute } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { runProcess } from '../lib/process.mjs';
 import { createWebServer } from '../../web/server.mjs';
-import { tuneFixtureConfig, createModelGate, applyModelPolicy, fixtureInsightReply } from './fixture-policy.mjs';
+import { tuneFixtureConfig, createModelGate, applyModelPolicy, fixtureInsightReply, observeFixtureApi } from './fixture-policy.mjs';
 import { createMemosThrottle } from './memos-throttle.mjs';
 
 const repo = fileURLToPath(new URL('../../', import.meta.url));
@@ -277,17 +277,7 @@ try {
     requestLogger: ({ time, event, method, status, elapsed_ms }) =>
       console.info(JSON.stringify({ source: 'fixture_web', time, event, method, status, elapsed_ms })),
     dist: resolve(repo, process.env.MOERISE_ANDROID_WEB_DIST || 'web/src') });
-  web.on('request', (req, res) => {
-    const family = /^\/api\/app\/v1\/(search|notes)(?:[/?]|$)/.exec(req.url)?.[1];
-    if (!family) return;
-    const started = performance.now();
-    res.once('finish', () => console.info(JSON.stringify({
-      source: 'fixture_web', time: new Date().toISOString(), event: 'api_response',
-      family, method: req.method, status: res.statusCode,
-      ...(family === 'notes' && req.method === 'GET' ? { paginated: new URL(req.url, origin).searchParams.has('page_token') } : {}),
-      elapsed_ms: Math.round(performance.now() - started),
-    })));
-  });
+  web.prependListener('request', observeFixtureApi);
   web.listen(webPort, '127.0.0.1'); await once(web, 'listening');
   const fixture = { origin, webPort, username, password, sourceOrigin, memosProxyOrigin, sourceToken: pat, modelStats,
     ...(corpusMetadata ? { corpus: corpusMetadata } : {}),
