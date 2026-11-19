@@ -28,7 +28,7 @@ flowchart TD
     Services --> Index[("index.sqlite3")]
     Schedule["通知调度"] --> Delivery["review_delivery.go：分片与顺序"]
     Services --> Schedule
-    Delivery --> Channels["飞书 / Telegram"]
+    Delivery --> Channels["QQ / 飞书 / Telegram"]
 ```
 
 `internal/` 是一个 Go 包，按业务前缀组织文件，共享服务由 `App` 显式装配。增加文件时沿用所属业务的前缀；提取独立包时，先明确其职责、依赖方向和对外接口。
@@ -87,6 +87,7 @@ Android 文件的版本管理规则见 [Android 开发](ANDROID.md#文件与产�
 | AI 聊天 | `chat_selection.go` 解析所选材料；`chat.go` 编排生成；`chat_store.go` 保存会话和消息；`llm*.go` 适配模型协议与错误；`models_api.go` 提供模型诊断 |
 | 通知与渠道 | `notifications.go` 管理调度、发送尝试和结果确认；`notification_channels.go` 绑定任务接收方；`review_delivery.go` 生成有序回顾分片；`feishu_delivery.go`、`feishu_review_parts.go`、`telegram_delivery.go` 适配平台 |
 | 飞书记录 | `feishu.go` 接收私聊并原样记录；`feishu_crypto.go` 验证回调和加密队列；`feishu_client.go` 处理平台凭据、资源与消息 |
+| 机器人私聊 | `bot_qq_gateway.go` 与 `bot_telegram.go` 接收事件，`bot_inbox.go` 在同一事务绑定地址、去重和提交进度，`bot_runtime.go` 写入私密笔记、查询回顾并确认回执 |
 
 ---
 

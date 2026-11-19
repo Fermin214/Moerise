@@ -6,7 +6,7 @@
 
 ---
 
-Moerise 以 [Memos](https://usememos.com/) 为笔记数据底座，提供双语 Web 界面、全文与向量混合检索，以及“回顾”“漫步”“洞察”“观星”四个栏目。观星将笔记呈现为语义星群；回顾支持 Telegram 与飞书定时推送。
+Moerise 使用 [Memos](https://usememos.com/) 保存笔记，提供双语 Web 界面、全文与向量混合检索，以及“回顾”“漫步”“洞察”“观星”四个栏目。QQ、Telegram 和飞书机器人支持私聊速记、查询当天回顾和定时推送。
 
 笔记原文、标签与附件始终保存在 Memos 原生数据库中，Moerise 通过官方 API 读写，按用户输入保存正文与附件。
 
@@ -33,7 +33,7 @@ Moerise 以 [Memos](https://usememos.com/) 为笔记数据底座，提供双语 
 - 📬 **回顾 (Review)**
   - 每日从符合条件的历史笔记中等概率随机抽取条目（支持成熟等待期与近期去重过滤）。
   - 采用全天固定计划与分时段分配策略；不设未读红点、不搞打卡激励，拒绝任务焦虑。
-  - 支持定时推送到 **Telegram 机器人**或**飞书应用机器人 / Webhook**。
+  - 定时回顾可发往 **QQ 私聊**、**Telegram**、**飞书应用私聊**或**飞书群 Webhook**。
   - 新安装默认不启用消息渠道，可在设置中按需选择。
 - 🔌 **开放生态与外部 Agent 接入**
   - 提供遵循 Model Context Protocol (MCP) 标准的只读 MCP Server 以及机器 REST API。
@@ -55,6 +55,7 @@ flowchart LR
     Agent["外部 Agent / MCP 客户端"] -->|"只读 Bearer Token"| Core
     Feishu["飞书平台"] <-->|"事件回调 / 消息推送"| Core
     Core -->|"消息推送"| Telegram["Telegram 平台"]
+    QQ["私人 QQ 机器人"] <-->|"私聊记录与回顾"| Core
 
     Core -->|"官方 API / 同步与读写"| Memos["官方 Memos (0.31.x)"]
     Core --> State["state.sqlite3 (业务状态)"]
@@ -140,6 +141,7 @@ docker compose up -d
 | | [观星](docs/STARGAZING.md) | 均衡 UMAP、语义主题、增量坐标和星图渲染 |
 | | [每日回顾](docs/DAILY-REVIEW.md) | 回顾抽取算法、全天计划分时分配与无压力交互 |
 | | [飞书接入](docs/FEISHU.md) | 飞书应用机器人私聊速记与群 Webhook 定时推送 |
+| | [QQ 接入](docs/QQ.md) | 私人机器人连接与记笔记 |
 | | [Telegram 接入](docs/TELEGRAM.md) | Telegram 机器人定时回顾推送配置 |
 | | [AI 对话与洞察](docs/AI.md) | LLM 接入协议、上下文规模控制、Prompt 配置与连接诊断 |
 | | [向量与语义检索](docs/EMBEDDING.md) | Embedding 模型适配（OpenAI / 百炼）、分块与向量构建 |

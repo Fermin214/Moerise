@@ -8,6 +8,8 @@ Moerise 服务端提供两组 RESTful API 以及一个 Model Context Protocol (M
 
 完整接口契约以服务内置的 `/openapi.json` 及交互式文档页面 `/docs` 为准。
 
+`GET /api/app/v1/settings` 返回独立的 `channel_status`。`PATCH` 用 `settings.channel.kind` 选择定时回顾目的地，用 `secrets.qq_app_secret`、`secrets.app_secret`、`secrets.webhook_app_secret` 分别更换 QQ、飞书应用和 Webhook 图片上传密钥。读写都返回密钥配置状态。字段和增量更新示例见[系统设置](SETTINGS.md)。
+
 ---
 
 ## 一、客户端应用接口 (`/api/app/v1`)
@@ -125,5 +127,6 @@ Moerise 实现了 Anthropic 提出的 Model Context Protocol (MCP) 标准，使�
 - 创建笔记接收 `content` 和可选 `attachments`，正文最多 65,536 UTF-8 字节；标签写在正文中，由 Memos 原生解析。编辑需提交最新 `source_hash`，可更新 `content`、`state`、`attachments` 和 `remove_attachments`。
 - 创建或编辑结果不明时，保留相同 `Idempotency-Key` 和完整请求体重试；同键不同内容返回冲突。删除要求来源摘要匹配。
 - 聊天创建需 `request_id`；生成需 `request_id`、`version`、`kind`，以及适用的 `content` 和 `language`。同一请求 ID 的重试复用原 turn；保存回复需携带助手消息的 `version`。
-- 模型连接检查需提交设置 `version`；设置修改后先重新读取版本。通知管理接口与确认请求见[通知调度](NOTIFICATIONS.md)。
+- 模型连接检查需提交设置 `version`；设置修改后先重新读取版本。
+- `GET /api/app/v1/admin/notifications` 可按 `kind`（`review` 或 `reply`）和 `status` 组合筛选。筛选后最多返回 100 条，送达结果不明的记录排在前面。人工确认请求见[通知调度](NOTIFICATIONS.md)。
 - 错误响应统一为 `{"error":{"code":"...","message":"...","retryable":false,"request_id":"..."}}`。来源不可用时不返回缓存正文；当日回顾尚未生成时，机器 REST/MCP 返回 `REVIEW_NOT_FOUND`。

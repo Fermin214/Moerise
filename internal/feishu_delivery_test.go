@@ -27,7 +27,7 @@ func TestFeishuWebhookAcknowledgementAndSignature(t *testing.T) {
 		{"bad-response", `{"message":"ok"}`, "SEND_OUTCOME_UNKNOWN", 200},
 		{"interrupted-response", `{"code":`, "SEND_OUTCOME_UNKNOWN", 200},
 		{"server-error", `{"code":0}`, "SEND_OUTCOME_UNKNOWN", 503},
-		{"http-rejected", `{}`, "CHANNEL_REJECTED", 429},
+		{"http-rate-limited", `{}`, "CHANNEL_RATE_LIMITED", 429},
 		{"redirect", `{}`, "CHANNEL_REJECTED", 307},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -197,6 +197,7 @@ func TestFeishuReviewFullTextQueueResumeAndUnknown(t *testing.T) {
 	store.Settings.Channel = feishuSettings(t).Channel
 	store.Settings.Notifications.Enabled = true
 	store.Settings.Timezone = "America/Los_Angeles"
+	store.Settings.Review.RecentDays = 0
 	content := strings.Repeat("长文🙂 <&> \"原文\"\\\n", 4000) + "最终正文\nhttps://example.com/user-link"
 	for _, raw := range memos {
 		raw["content"] = content
@@ -236,7 +237,29 @@ func TestFeishuReviewFullTextQueueResumeAndUnknown(t *testing.T) {
 	if sent, err := queue.Deliver(ctx); err != nil || sent || len(platform.texts) != 2 {
 		t.Fatalf("unknown predecessor released later parts: %v", err)
 	}
-	if _, err := queue.Resolve(ctx, unknown[0].ID, "sent", "om_"+unknown[0].PlatformUUID, "test"); err != nil {
+	held, err := queue.List("skipped")
+	if err != nil || len(held) == 0 || configured(held[0].LastError) != "PART_INTERRUPTED" {
+		t.Fatalf("remaining fragments not marked interrupted: %+v %v", held, err)
+	}
+	later := &reviewDeliveryPlatform{}
+	events.Client = later
+	if count, err := queue.Schedule(ctx, time.Date(2026, 10, 27, 2, 0, 0, 0, time.UTC)); err != nil || count != 1 {
+		t.Fatalf("new slot after interrupted delivery: %d %v", count, err)
+	}
+	for range 100 {
+		worked, err := queue.Deliver(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !worked {
+			break
+		}
+	}
+	if len(later.texts) < 3 || later.texts[0] != "「今日回顾」" || strings.Join(later.texts[1:len(later.texts)-1], "") != content {
+		t.Fatal("interrupted slot blocked the next complete review")
+	}
+	events.Client = platform
+	if _, err := queue.Resolve(ctx, unknown[0].ID, "not_sent", "", "test"); err != nil {
 		t.Fatal(err)
 	}
 	for range 100 {
@@ -257,7 +280,8 @@ func TestFeishuReviewFullTextQueueResumeAndUnknown(t *testing.T) {
 		platform.texts[len(platform.texts)-1] != "#topic-0/child  创建于2019-12-31" {
 		t.Fatal("missing standalone header or source creation date in configured timezone")
 	}
-	if strings.Join(platform.texts[1:len(platform.texts)-1], "") != content {
+	if len(platform.texts) < 4 || platform.texts[1] != platform.texts[2] ||
+		strings.Join(platform.texts[2:len(platform.texts)-1], "") != content {
 		t.Fatal("long note was truncated, repeated or reordered")
 	}
 	seen := map[string]bool{}

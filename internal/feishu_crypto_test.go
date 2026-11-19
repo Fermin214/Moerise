@@ -12,12 +12,13 @@ func TestFeishuQueueEncryptionBindsIdentityAndSurvivesAppSecretRotation(t *testi
 	service := &FeishuService{Store: &Store{Settings: settings}}
 	const message = "om_queue"
 	body := []byte("原样保存的正文 #标签")
-	sealed, err := service.seal(message, body)
+	peer := configured(settings.Channel.UserOpenID)
+	sealed, err := service.seal(message, peer, body)
 	if err != nil {
 		t.Fatal(err)
 	}
 	service.Store.Settings.Channel.AppSecret = stringPointer("rotated-application-secret")
-	plain, err := service.unseal(message, sealed)
+	plain, err := service.unseal(message, peer, sealed)
 	if err != nil || !bytes.Equal(plain, body) {
 		t.Fatalf("application secret rotation changed the queue: %v", err)
 	}
@@ -43,13 +44,13 @@ func TestFeishuQueueEncryptionBindsIdentityAndSurvivesAppSecretRotation(t *testi
 			case "truncated":
 				ciphertext = ciphertext[:3]
 			}
-			if _, err := other.unseal(id, ciphertext); errorCode(err) != "CHANNEL_QUEUE_KEY" {
+			if _, err := other.unseal(id, configured(other.Store.Settings.Channel.UserOpenID), ciphertext); errorCode(err) != "CHANNEL_QUEUE_KEY" {
 				t.Fatalf("queue accepted a different %s: %v", binding, err)
 			}
 		})
 	}
 	service.Store.Settings.Web.StateEncryptionKey = ""
-	if _, err := service.seal(message, body); err == nil {
+	if _, err := service.seal(message, peer, body); err == nil {
 		t.Fatal("queue accepted a missing state encryption key")
 	}
 }

@@ -33,6 +33,7 @@ func closeChannel(events *FeishuService, transport NotificationTransport) {
 }
 
 func (a *App) closeRuntime() {
+	a.Notifications.closeResolvedTransports()
 	if a.LLM != nil {
 		a.LLM.Close()
 	}
@@ -131,7 +132,7 @@ func (a *App) prepareRuntime(settings Settings) (*runtimeReplacements, error) {
 	}
 	if replacements.channelChanged {
 		replacements.events = newFeishuService(settings.Channel, a.Store, a.Source, a.Records, a.Notifications)
-		replacements.transport = newNotificationTransport(settings.Channel, a.Store, a.Reviews, replacements.events)
+		replacements.transport = newNotificationTransport(a.Store.channelForDelivery(settings.Channel), a.Store, a.Reviews, replacements.events)
 	}
 	return replacements, nil
 }
@@ -139,6 +140,11 @@ func (a *App) prepareRuntime(settings Settings) (*runtimeReplacements, error) {
 func (a *App) installRuntime(settings Settings, replacements *runtimeReplacements) {
 	if (replacements.embeddingChanged || a.Store.Settings.Stargazing != settings.Stargazing) && a.Map != nil {
 		a.Map.Reset()
+	}
+	oldChannel := a.Store.Settings.Channel
+	if feishuReceiverConfig(oldChannel) != feishuReceiverConfig(settings.Channel) {
+		a.Store.botStates.Delete([2]string{"feishu-app", configured(oldChannel.AppID)})
+		a.Store.feishuGeneration++
 	}
 	a.Store.Settings, a.Notes.Settings = settings, settings
 	if replacements.llmChanged {
@@ -161,9 +167,16 @@ func (a *App) installRuntime(settings Settings, replacements *runtimeReplacement
 		}
 	}
 	if replacements.channelChanged {
+		a.Notifications.closeResolvedTransports()
 		closeChannel(a.Feishu, a.Notifications.Transport)
 		a.Feishu, a.Notifications.Transport = replacements.events, replacements.transport
+		a.Notifications.transportKey = a.Notifications.channelKey()
 	}
+}
+
+func feishuReceiverConfig(channel ChannelConfig) [6]string {
+	return [6]string{channel.feishuMode(), configured(channel.AppID), configured(channel.AppSecret),
+		configured(channel.VerificationToken), configured(channel.EncryptKey), configured(channel.UserOpenID)}
 }
 
 func (r *runtimeReplacements) close() {
@@ -217,6 +230,13 @@ func (a *App) runVector(ctx context.Context) error {
 
 // RunFeishu processes channel work with the same runtime replacement lock as serving.
 func (a *App) RunFeishu(ctx context.Context) error {
+	workerCtx, cancel := context.WithCancel(ctx)
+	socketDone := make(chan struct{})
+	go func() {
+		defer close(socketDone)
+		a.runFeishuSocket(workerCtx)
+	}()
+	defer func() { cancel(); <-socketDone }()
 	var initialized *FeishuService
 	for {
 		unlock := a.Store.lockRuntime()

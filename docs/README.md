@@ -10,6 +10,7 @@
 | 每日回顾 | [指南](DAILY-REVIEW.md) |
 | 通知调度 | [指南](NOTIFICATIONS.md) |
 | 飞书接入 | [指南](FEISHU.md) |
+| 私人 QQ 机器人 | [指南](QQ.md) |
 | Telegram | [指南](TELEGRAM.md) |
 | AI 洞察 | [指南](AI.md) |
 | 向量模型 | [指南](EMBEDDING.md) |

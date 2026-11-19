@@ -49,6 +49,44 @@ onFlowComplete:
 - assertVisible:
     id: settings_page
     label: Check the expected UI state
+- scrollUntilVisible:
+    element:
+      id: settings_channel_kind
+    direction: DOWN
+    timeout: 15000
+    centerElement: true
+    label: Find the scheduled review destination
+- tapOn:
+    id: settings_channel_kind
+    enabled: true
+    label: Choose the scheduled review destination
+- tapOn:
+    text: QQ 私聊|QQ private chat
+    enabled: true
+    label: Select QQ private chat
+- scrollUntilVisible:
+    element:
+      id: settings_save
+    direction: DOWN
+    timeout: 15000
+    centerElement: true
+    label: Find the settings save button
+- tapOn:
+    id: settings_save
+    enabled: true
+    label: Save the QQ review destination
+- extendedWaitUntil:
+    visible:
+      text: 设置已保存。|Settings saved\.
+    timeout: 15000
+    label: Wait for Core to confirm the versioned change
+- scrollUntilVisible:
+    element:
+      id: settings_tab_2
+    direction: UP
+    timeout: 15000
+    centerElement: true
+    label: Return to the settings tabs
 - extendedWaitUntil:
     visible:
       id: settings_tab_2
@@ -92,8 +130,11 @@ onFlowComplete:
     enabled: true
     label: Activate the specified control
 - assertVisible:
-    id: settings_page
-    label: Check the expected UI state
+    id: settings_channel_qq_app_id
+    label: Read the QQ AppID saved by the fixture
+- assertVisible:
+    id: settings_secret_qq_app_secret_action
+    label: Confirm the saved QQ secret has replacement controls
 - runFlow:
     file: subflows/home.yaml
     label: Enter the signed-in home without clearing data

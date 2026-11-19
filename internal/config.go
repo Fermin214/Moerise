@@ -98,6 +98,12 @@ type StargazingConfig struct {
 
 type ChannelConfig struct {
 	Kind              string  `json:"kind"`
+	QQAppID           *string `json:"qq_app_id"`
+	QQAppSecret       *string `json:"qq_app_secret"`
+	FeishuMode        string  `json:"feishu_mode"`
+	WebhookImages     bool    `json:"webhook_images"`
+	WebhookAppID      *string `json:"webhook_app_id"`
+	WebhookAppSecret  *string `json:"webhook_app_secret"`
 	AppID             *string `json:"app_id"`
 	AppSecret         *string `json:"app_secret"`
 	VerificationToken *string `json:"verification_token"`
@@ -266,10 +272,13 @@ func validOrigin(value string) bool {
 
 func (s *Settings) Validate() error {
 	bad := func(field string) error { return fmt.Errorf("invalid configuration at %s", field) }
+	if s.Channel.FeishuMode == "" {
+		s.Channel.FeishuMode = "websocket"
+	}
 	if err := s.Web.validate(); err != nil {
 		return err
 	}
-	if s.Channel.Kind == "feishu-app" || s.Web.StateEncryptionKey != "" {
+	if s.Channel.Kind == "feishu-app" || configured(s.Channel.AppSecret) != "" || configured(s.Channel.QQAppSecret) != "" || s.Web.StateEncryptionKey != "" {
 		if _, err := stateEncryptionKey(s.Web.StateEncryptionKey); err != nil {
 			return err
 		}
@@ -335,35 +344,37 @@ func (s *Settings) Validate() error {
 		s.Sync.LeaseSeconds < 10 || s.Sync.LeaseSeconds > 3600 {
 		return bad("sync")
 	}
-	if !slices.Contains([]string{"none", "feishu-app", "feishu-webhook", "telegram"}, s.Channel.Kind) {
+	if !slices.Contains([]string{"none", "feishu-app", "feishu-webhook", "telegram", "qq"}, s.Channel.Kind) {
 		return bad("channel.kind")
 	}
 	channel := s.Channel
 	if channel.Kind == "none" && s.Notifications.Enabled {
 		return bad("notifications require a messaging channel")
 	}
-	if channel.Kind == "telegram" {
-		token, chat := configured(channel.BotToken), configured(channel.Destination)
-		if token != "" && !validTelegramToken(token) || chat != "" && !validTelegramChat(chat) ||
-			s.Notifications.Enabled && (token == "" || chat == "") {
-			return bad("channel Telegram bot token or chat ID")
-		}
+	token, chat := configured(channel.BotToken), configured(channel.Destination)
+	if token != "" && !validTelegramToken(token) || chat != "" && !validTelegramChat(chat) ||
+		s.Notifications.Enabled && channel.Kind == "telegram" && (token == "" || chat == "" && s.Web.StateEncryptionKey == "") {
+		return bad("channel Telegram bot token or chat ID")
 	}
-	appFields := []string{configured(channel.AppID), configured(channel.AppSecret),
-		configured(channel.VerificationToken), configured(channel.UserOpenID)}
-	appEnabled := slices.ContainsFunc(appFields, func(value string) bool { return value != "" }) || configured(channel.EncryptKey) != ""
-	if appEnabled && channel.Kind == "feishu-app" {
-		if slices.Contains(appFields, "") ||
-			len(configured(channel.AppSecret)) < 16 || len(configured(channel.VerificationToken)) < 16 ||
-			!strings.HasPrefix(configured(channel.UserOpenID), "ou_") ||
-			(configured(channel.Destination) != "" && configured(channel.Destination) != configured(channel.UserOpenID)) {
-			return bad("channel application credentials or identity")
-		}
+	if channel.FeishuMode != "websocket" && channel.FeishuMode != "callback" {
+		return bad("channel.feishu_mode")
 	}
-	if channel.Kind == "feishu-webhook" && (configured(channel.AppID) != "" || configured(channel.AppSecret) != "") {
-		if configured(channel.AppID) == "" || len(configured(channel.AppSecret)) < 16 {
-			return bad("channel Webhook image upload credentials")
-		}
+	appEnabled := configured(channel.AppID) != "" && configured(channel.AppSecret) != ""
+	if secret := configured(channel.AppSecret); secret != "" && (configured(channel.AppID) == "" || len(secret) < 16) {
+		return bad("channel application credentials")
+	}
+	if owner := configured(channel.UserOpenID); owner != "" && !strings.HasPrefix(owner, "ou_") {
+		return bad("channel.user_open_id")
+	}
+	if appEnabled && channel.FeishuMode == "callback" && len(configured(channel.VerificationToken)) < 16 {
+		return bad("channel.verification_token")
+	}
+	if configured(channel.QQAppSecret) != "" && configured(channel.QQAppID) == "" ||
+		s.Notifications.Enabled && channel.Kind == "qq" && !channel.botEnabled("qq") {
+		return bad("channel QQ credentials")
+	}
+	if channel.WebhookImages && (configured(channel.WebhookAppID) == "" || len(configured(channel.WebhookAppSecret)) < 16) {
+		return bad("channel Webhook image upload credentials")
 	}
 	if s.Review.Count < 1 || s.Review.Count > 20 || s.Review.MinAgeHours < 0 ||
 		s.Review.MinAgeHours > 87600 || s.Review.RecentDays < 0 || s.Review.RecentDays > 3650 {

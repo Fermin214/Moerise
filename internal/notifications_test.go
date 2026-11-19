@@ -272,6 +272,114 @@ func TestRestoredNotificationsRequireOutcomeReview(t *testing.T) {
 	}
 }
 
+func TestNotificationUpgradePreservesUncertainFragmentsAndAudit(t *testing.T) {
+	db, err := openDB(filepath.Join(t.TempDir(), "state.sqlite3"), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	body, err := migrationSQL("state", "001")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(string(body)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`CREATE TABLE schema_migrations (version TEXT PRIMARY KEY,checksum TEXT,applied_at TEXT);
+		INSERT INTO bindings VALUES ('instance','base','user','stamp');
+		INSERT INTO notifications (id, instance_id, user_name, channel_key, logical_key, kind, local_date, status,
+			platform_uuid, available_at, created_at, updated_at)
+		VALUES ('first','instance','user','destination','part-0','review','date','unknown','uuid',0,'stamp','stamp'),
+			('next','instance','user','destination','part-1','review','date','pending','second',1e30,'stamp','stamp');
+		INSERT INTO review_delivery_parts(notification_id,root_id,position,kind,memo_name,source_version)
+		VALUES ('first','first',0,'header','',''),('next','first',1,'text','memos/note','v1');
+		INSERT INTO notification_attempts VALUES ('attempt','first',1,'uuid','start','end','unknown',NULL,'lost');
+		INSERT INTO notification_resolutions VALUES ('resolve','first','not_sent',NULL,'owner','time');`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec("INSERT INTO schema_migrations VALUES ('001',?,'stamp')", hashBytes(body)); err != nil {
+		t.Fatal(err)
+	}
+	if err := migrate(db, "state"); err != nil {
+		t.Fatal(err)
+	}
+	var intact bool
+	if err := db.QueryRow(`SELECT EXISTS(SELECT 1 FROM notifications held
+		JOIN review_delivery_parts part ON part.notification_id=held.id
+		JOIN notification_attempts attempt ON attempt.notification_id=part.root_id
+		JOIN notification_resolutions audit ON audit.notification_id=part.root_id
+		WHERE held.status='skipped' AND held.last_error='PART_INTERRUPTED' AND part.memo_name='memos/note'
+			AND attempt.error_code='lost' AND audit.resolved_by='owner')
+		AND NOT EXISTS(SELECT 1 FROM pragma_foreign_key_check)`).Scan(&intact); err != nil || !intact {
+		t.Fatalf("migration damaged delivery history: %v", err)
+	}
+}
+
+func TestRestoreHoldsReviewFragmentsUntilResolution(t *testing.T) {
+	for _, test := range []struct{ before, decision string }{{"running", "sent"}, {"unknown", "not_sent"}, {"pending", "not_sent"}} {
+		t.Run(test.before, func(t *testing.T) {
+			queue, platform := notificationFixture(t)
+			store := queue.Store
+			var ids []string
+			for position := range 3 {
+				id, err := queue.enqueue("review", fmt.Sprint(position), "2026-11-18", nil, nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				ids = append(ids, id)
+				if _, err := store.state.Exec(`INSERT INTO review_delivery_parts
+					(notification_id,root_id,position,kind,memo_name,source_version) VALUES(?,?,?,'text','','')`,
+					id, ids[0], position); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, err := store.state.Exec("UPDATE notifications SET status=? WHERE id=?", test.before, ids[0]); err != nil {
+				t.Fatal(err)
+			}
+			if test.before == "unknown" {
+				if _, err := store.state.Exec("UPDATE notifications SET status='skipped', last_error='PART_INTERRUPTED' WHERE id=?", ids[1]); err != nil {
+					t.Fatal(err)
+				}
+			}
+			settings := store.Settings
+			snapshot := filepath.Join(t.TempDir(), "snapshot")
+			if _, err := Backup(settings, snapshot); err != nil {
+				t.Fatal(err)
+			}
+			store.Close()
+			if err := Restore(settings, snapshot, filepath.Join(t.TempDir(), "safety")); err != nil {
+				t.Fatal(err)
+			}
+			restored := testStore(t, settings)
+			queue = NewNotificationService(restored, nil, platform)
+			unknown, err := queue.List("unknown")
+			if err != nil || len(unknown) != 1 || unknown[0].ID != ids[0] {
+				t.Fatalf("restore exposed fragments out of order: %v %v", unknown, err)
+			}
+			if worked, err := queue.Deliver(t.Context()); err != nil || worked {
+				t.Fatalf("restored queue sent before confirmation: %v", err)
+			}
+			if _, err := queue.Resolve(t.Context(), ids[0], test.decision, "", "owner"); err != nil {
+				t.Fatal(err)
+			}
+			first := 0
+			if test.decision == "sent" {
+				first = 1
+			}
+			for _, id := range ids[first:] {
+				worked, err := queue.Deliver(t.Context())
+				detail, detailErr := queue.Detail(id)
+				if !worked || err != nil || detailErr != nil || detail.Notification.Status != "sent" {
+					t.Fatalf("fragment %s did not resume in order: %v %v", id, err, detailErr)
+				}
+			}
+			if platform.calls != 3-first {
+				t.Fatalf("unexpected number of resumed fragments: %d", platform.calls)
+			}
+		})
+	}
+}
+
 func TestNotificationReceiptResolutionAndAudit(t *testing.T) {
 	service, platform := notificationFixture(t)
 	ctx := context.Background()

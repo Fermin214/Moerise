@@ -59,13 +59,13 @@ func (s *FeishuService) eventJSON(request *http.Request) ([]byte, error) {
 	return plain, nil
 }
 
-func (s *FeishuService) queueIdentity(message string) []byte {
+func (s *FeishuService) queueIdentity(message, peer string) []byte {
 	settings := s.Store.Settings
 	return canonicalJSON([]string{settings.Memos.InstanceID, settings.Memos.User,
-		configured(settings.Channel.AppID), configured(settings.Channel.UserOpenID), message})
+		configured(settings.Channel.AppID), peer, message})
 }
 
-func (s *FeishuService) seal(message string, body []byte) ([]byte, error) {
+func (s *FeishuService) seal(message, peer string, body []byte) ([]byte, error) {
 	aead, err := newStateCipher(s.Store.Settings, "feishu-queue")
 	if err != nil {
 		return nil, err
@@ -74,10 +74,10 @@ func (s *FeishuService) seal(message string, body []byte) ([]byte, error) {
 	if _, err := rand.Read(nonce); err != nil {
 		return nil, err
 	}
-	return aead.Seal(nonce, nonce, body, s.queueIdentity(message)), nil
+	return aead.Seal(nonce, nonce, body, s.queueIdentity(message, peer)), nil
 }
 
-func (s *FeishuService) unseal(message string, body []byte) ([]byte, error) {
+func (s *FeishuService) unseal(message, peer string, body []byte) ([]byte, error) {
 	aead, err := newStateCipher(s.Store.Settings, "feishu-queue")
 	if err != nil {
 		return nil, err
@@ -85,7 +85,7 @@ func (s *FeishuService) unseal(message string, body []byte) ([]byte, error) {
 	if len(body) < aead.NonceSize()+aead.Overhead() {
 		return nil, upstreamError("CHANNEL_QUEUE_KEY", "Cannot decrypt queued Feishu event")
 	}
-	data, err := aead.Open(nil, body[:aead.NonceSize()], body[aead.NonceSize():], s.queueIdentity(message))
+	data, err := aead.Open(nil, body[:aead.NonceSize()], body[aead.NonceSize():], s.queueIdentity(message, peer))
 	if err != nil {
 		return nil, upstreamError("CHANNEL_QUEUE_KEY", "Cannot decrypt queued Feishu event")
 	}

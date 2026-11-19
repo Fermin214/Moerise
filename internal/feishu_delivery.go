@@ -16,6 +16,7 @@ import (
 )
 
 type FeishuDelivery struct {
+	config  ChannelConfig
 	Store   *Store
 	Reviews *ReviewService
 	Events  *FeishuService
@@ -24,10 +25,15 @@ type FeishuDelivery struct {
 }
 
 func newFeishuDelivery(config ChannelConfig, store *Store, reviews *ReviewService, events *FeishuService) NotificationTransport {
-	if events == nil && (config.Kind != "feishu-webhook" || configured(config.WebhookURL) == "") {
+	if config.Kind == "feishu-webhook" {
+		events = nil
+		if configured(config.WebhookURL) == "" {
+			return nil
+		}
+	} else if config.Kind != "feishu-app" || events == nil {
 		return nil
 	}
-	return &FeishuDelivery{Store: store, Reviews: reviews, Events: events, images: NewFeishuClient(config),
+	return &FeishuDelivery{config: config, Store: store, Reviews: reviews, Events: events, images: NewFeishuClient(config),
 		http: &http.Client{Timeout: 15 * time.Second, Transport: http.DefaultTransport.(*http.Transport).Clone(),
 			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}
 }
@@ -37,11 +43,17 @@ func (s *FeishuDelivery) Send(ctx context.Context, item Notification) (string, e
 		if s.Events == nil || item.SourceEvent == nil {
 			return "", upstreamError("CHANNEL_UNAVAILABLE", "Feishu application replies are unavailable")
 		}
-		settings := s.Store.Settings
+		owner, err := s.Store.feishuOwner()
+		if err != nil {
+			return "", err
+		}
+		if owner == "" || owner != configured(s.config.UserOpenID) || configured(s.config.AppID) != configured(s.Store.Settings.Channel.AppID) {
+			return "", failure("CHANNEL_BINDING_CHANGED", "Feishu private chat changed", 409, false)
+		}
 		var kind, resource string
 		if err := s.Store.state.QueryRow(`SELECT result_kind, resource_name FROM channel_events
 			WHERE message_id = ? AND app_id = ? AND sender_open_id = ?`, *item.SourceEvent,
-			configured(settings.Channel.AppID), configured(settings.Channel.UserOpenID)).Scan(&kind, &resource); err != nil {
+			configured(s.config.AppID), owner).Scan(&kind, &resource); err != nil {
 			return "", err
 		}
 		text, err := s.Events.render(ctx, kind, resource)
@@ -57,7 +69,7 @@ func (s *FeishuDelivery) Send(ctx context.Context, item Notification) (string, e
 }
 
 func (s *FeishuDelivery) Check(ctx context.Context, item Notification, receipt string) (bool, error) {
-	if s.Store.Settings.Channel.Kind == "feishu-webhook" || s.Events == nil {
+	if s.config.Kind == "feishu-webhook" || s.Events == nil {
 		return false, failure("CHANNEL_RECEIPT_UNSUPPORTED", "Webhook outcomes require operator confirmation without a receipt", 422, false)
 	}
 	var used bool
@@ -75,7 +87,7 @@ func (s *FeishuDelivery) Check(ctx context.Context, item Notification, receipt s
 		return false, err
 	}
 	if message.ID != receipt || message.Deleted || message.SenderType != "app" ||
-		message.SenderIDType != "app_id" || message.SenderID != configured(s.Store.Settings.Channel.AppID) {
+		message.SenderIDType != "app_id" || message.SenderID != configured(s.config.AppID) {
 		return false, nil
 	}
 	// Platform timestamps have millisecond precision; compare with the first send attempt.
@@ -139,7 +151,7 @@ func (s *FeishuDelivery) receiptChatMatches(ctx context.Context, item Notificati
 	var reference string
 	err := s.Store.state.QueryRow(`SELECT message_id FROM channel_events
 		WHERE app_id = ? AND sender_open_id = ? LIMIT 1`,
-		configured(settings.Channel.AppID), configured(settings.Channel.UserOpenID)).Scan(&reference)
+		configured(s.config.AppID), configured(s.config.UserOpenID)).Scan(&reference)
 	if errors.Is(err, sql.ErrNoRows) {
 		err = s.Store.state.QueryRow(`SELECT a.receipt FROM notification_attempts a
 			JOIN notifications n ON n.id = a.notification_id
@@ -147,7 +159,7 @@ func (s *FeishuDelivery) receiptChatMatches(ctx context.Context, item Notificati
 			AND n.id <> ? AND a.outcome = 'sent' AND a.receipt IS NOT NULL
 			AND a.receipt NOT LIKE 'empty:%' ORDER BY a.started_at DESC LIMIT 1`,
 			settings.Memos.InstanceID, settings.Memos.User,
-			NewNotificationService(s.Store, s.Reviews, nil).channelKey(), item.ID).Scan(&reference)
+			notificationChannelKey(s.config), item.ID).Scan(&reference)
 	}
 	if errors.Is(err, sql.ErrNoRows) {
 		return true, nil
@@ -167,7 +179,7 @@ func (s *FeishuDelivery) webhook(ctx context.Context, id, text string) (string, 
 }
 
 func (s *FeishuDelivery) webhookMessage(ctx context.Context, id, kind string, content map[string]string) (string, error) {
-	config := s.Store.Settings.Channel
+	config := s.config
 	body := map[string]any{"msg_type": kind, "content": content}
 	if secret := configured(config.WebhookSecret); secret != "" {
 		stamp := strconv.FormatInt(time.Now().Unix(), 10)
@@ -188,6 +200,9 @@ func (s *FeishuDelivery) webhookMessage(ctx context.Context, id, kind string, co
 		return "", upstreamError("SEND_OUTCOME_UNKNOWN", "Webhook send outcome is unknown")
 	}
 	defer response.Body.Close()
+	if response.StatusCode == http.StatusTooManyRequests {
+		return "", feishuRateLimit(response.Header)
+	}
 	if response.StatusCode >= 500 {
 		return "", upstreamError("SEND_OUTCOME_UNKNOWN", "Webhook send outcome is unknown")
 	}
@@ -203,8 +218,22 @@ func (s *FeishuDelivery) webhookMessage(ctx context.Context, id, kind string, co
 		return "", upstreamError("SEND_OUTCOME_UNKNOWN", "Webhook returned an untrusted response")
 	}
 	if result.Code != nil && *result.Code != 0 || result.StatusCode != nil && *result.StatusCode != 0 {
+		if result.Code != nil && *result.Code == 9499 {
+			return "", feishuRateLimit(response.Header)
+		}
 		return "", upstreamError("CHANNEL_REJECTED", "Webhook rejected the notification")
 	}
 	// Custom robots acknowledge delivery but do not return a queryable message resource.
 	return "webhook:" + id, nil
+}
+
+func feishuRateLimit(header http.Header) error {
+	delay := time.Minute
+	for _, field := range []string{"Retry-After", "X-Ogw-Ratelimit-Reset"} {
+		if seconds, err := strconv.ParseInt(header.Get(field), 10, 32); err == nil && seconds > 0 {
+			delay = time.Duration(seconds) * time.Second
+			break
+		}
+	}
+	return &notificationRetryError{error: upstreamError("CHANNEL_RATE_LIMITED", "Feishu rate limit reached"), after: delay}
 }

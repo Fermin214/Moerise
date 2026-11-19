@@ -1,20 +1,35 @@
 import { el, button } from './dom.js';
 import { formSignature } from './forms.js';
-import { l, setText, setAttr, resolveText, locale, languagePreference, setLanguage } from './i18n.js';
+import { l, setText, setAttr, resolveText, languagePreference, setLanguage } from './i18n.js';
 const fields = {
   review: ['count', 'min_age_hours', 'recent_days', 'include_archived'],
   notifications: ['enabled', 'times'],
   llm: ['enabled', 'protocol', 'base_url', 'model', 'timeout_seconds', 'max_concurrency', 'max_retries', 'max_output_tokens'],
   embedding: ['enabled', 'provider', 'protocol', 'base_url', 'model', 'dimensions', 'send_dimensions', 'batch_size', 'timeout_seconds', 'max_concurrency', 'max_retries', 'query_instruction'],
   stargazing: ['enabled'],
-  channel: ['kind', 'app_id', 'user_open_id', 'destination'],
+  channel: ['kind', 'qq_app_id', 'app_id', 'user_open_id', 'destination', 'feishu_mode', 'webhook_images', 'webhook_app_id'],
   insights: ['default_prompt'],
 };
 const secretLabels = {
   llm_api_key: 'LLM API Key', embedding_api_key: 'Embedding API Key',
   app_secret: 'App Secret', verification_token: 'Verification Token',
   encrypt_key: 'Encrypt Key', webhook_url: 'Webhook URL', webhook_secret: 'Webhook Secret',
-  bot_token: 'Telegram Bot Token',
+  bot_token: 'Telegram Bot Token', qq_app_secret: 'QQ AppSecret', webhook_app_secret: 'Webhook App Secret',
+};
+const destinations = [
+  ['none', l("不推送")], ['qq', l("QQ 私聊")], ['telegram', 'Telegram'],
+  ['feishu-app', l("飞书应用机器人")], ['feishu-webhook', l("飞书群 Webhook")],
+];
+const connectionLabels = {
+  disabled: l("未配置"), connecting: l("连接中"), connected: l("已连接"), disconnected: l("连接已断开"), error: l("连接失败"),
+  awaiting_verification: l("等待回调验证"),
+  BOT_CREDENTIALS: l("请检查机器人凭据。"), BOT_CONNECTION: l("网络连接中断。"), QQ_SESSION_LOST: l("离线期间可能有消息未收到。"),
+  BOT_RATE_LIMITED: l("平台限制了请求频率。"), BOT_PROTOCOL: l("平台响应异常。"), TELEGRAM_WEBHOOK: l("外部 Webhook 已占用收件。"),
+  BOT_STORAGE: l("收件记录写入失败。"),
+  STATE_KEY_REQUIRED: l("请配置状态加密密钥。"), FEISHU_CONNECTION_ERROR: l("连接飞书失败。"),
+};
+const deliveryLabels = {
+  pending: l("等待发送"), running: l("发送中"), sent: l("已发送"), unknown: l("送达结果不明"), failed: l("发送失败"), skipped: l("已跳过"),
 };
 function invalid(message, field) {
   return Object.assign(new Error(resolveText(message)), { code: 'SETTINGS_INPUT_INVALID', localizedMessage: message, field });
@@ -61,6 +76,8 @@ export function createSettingsPage({ sessionRequest, handleFailure, onSaved = ()
   let controls = new Map(), secretControls = new Map(), times = [];
   let modelViews = new Map(), modelController, modelTimer, indexText, indexProgress;
   let activeTab = 'general', tabs = new Map(), panels = new Map();
+  let channelViews = new Map(), destinationHint, telegramLink, channelTimer, channelController, history, historySignature;
+  let deliveryRequests = new Set();
   const checks = new Map();
   let lifecycle = null;
   const hasChanges = () => !!form && !!baseline && formSignature(form) !== baseline;
@@ -73,14 +90,15 @@ export function createSettingsPage({ sessionRequest, handleFailure, onSaved = ()
     checks.clear();
   }
   function clearSecrets() {
-    for (const { action, input } of secretControls.values()) {
-      input.value = ''; input.required = false; input.hidden = true; action.value = 'keep';
+    for (const { action, input, direct } of secretControls.values()) {
+      input.value = ''; input.required = false; input.hidden = !direct; action.value = 'keep';
     }
     if (pendingBody) for (const operation of Object.values(pendingBody.secrets)) delete operation.value;
     pendingBody = null;
   }
   function destroy() {
-    active = false; sequence++; lifecycle?.abort(); controller?.abort(); abortModels(); clearSecrets();
+    active = false; sequence++; lifecycle?.abort(); controller?.abort(); abortModels(); stopChannelPoll(); clearSecrets();
+    deliveryRequests = new Set();
     root?.remove(); root = snapshot = form = controller = null;
     controls.clear(); secretControls.clear(); modelViews.clear(); times = []; baseline = ''; onDirtyChange();
   }
@@ -122,6 +140,8 @@ export function createSettingsPage({ sessionRequest, handleFailure, onSaved = ()
       tabs.get(id).focus({ preventScroll: true });
       tabs.get(id).scrollIntoView({ block: 'nearest', inline: 'nearest' });
     }
+    stopChannelPoll();
+    if (active && !busy && !conflict) refreshChannel();
   }
   function section(id, title, caption = title) {
     const card = el('section', 'card settings-card');
@@ -169,7 +189,7 @@ export function createSettingsPage({ sessionRequest, handleFailure, onSaved = ()
     if (max !== undefined) input.max = max;
     if (step !== undefined) input.step = step;
     if (type === 'number') input.required = true;
-    if (type === 'text') { input.autocomplete = 'off'; input.spellcheck = false; }
+    if (type === 'text') { input.autocomplete = 'off'; input.spellcheck = false; input.autocapitalize = 'none'; }
     controls.set(path, { input, type, original: value });
     row(parent, label, input, hint);
     return input;
@@ -177,12 +197,15 @@ export function createSettingsPage({ sessionRequest, handleFailure, onSaved = ()
   function secret(parent, name) {
     const label = secretLabels[name], box = el('div', 'settings-secret');
     const configured = snapshot.secrets?.[name]?.configured === true;
-    box.append(el('span', 'sub', configured ? l("已配置") : l("未配置")));
+    const direct = !configured && !name.endsWith('_api_key');
+    if (!direct) box.append(el('span', 'sub', configured ? l("已配置") : l("未配置")));
     const action = el('select'); action.id = `settings-secret-${name}`; setAttr(action, 'aria-label', l("{0}操作", { 0: label }));
     for (const [value, text] of [['keep', l("保持")], ['replace', l("替换")], ['clear', l("清空")]]) {
       const option = el('option', '', text); option.value = value; action.append(option);
     }
-    const input = el('input'); input.type = 'password'; input.hidden = true;
+    action.hidden = direct;
+    const input = el('input'); input.type = 'password'; input.hidden = !direct;
+    input.id = `settings-secret-${name}-value`; input.name = name;
     input.autocomplete = 'new-password'; input.spellcheck = false; setAttr(input, 'aria-label', l("{0}新值", { 0: label }));
     setAttr(input, 'placeholder', l("填写真实的新值"));
     action.addEventListener('change', () => {
@@ -190,10 +213,9 @@ export function createSettingsPage({ sessionRequest, handleFailure, onSaved = ()
       if (!input.hidden) input.focus();
     });
     box.id = `settings-${name}-controls`; box.append(action, input);
-    secretControls.set(name, { action, input });
+    secretControls.set(name, { action, input, direct });
     row(parent, label, box);
-    // 可见标签关联密钥操作选择框。
-    box.parentElement.querySelector('label').htmlFor = action.id;
+    box.parentElement.querySelector('label').htmlFor = direct ? input.id : action.id;
   }
   function readDraft() {
     const draft = {};
@@ -249,6 +271,120 @@ export function createSettingsPage({ sessionRequest, handleFailure, onSaved = ()
     }
     return secretControls.get(`${group}_api_key`).action.value !== 'keep';
   }
+  function stopChannelPoll() {
+    clearTimeout(channelTimer);
+    channelController?.abort(); channelController = null;
+  }
+  function showChannelStatus(statuses = {}) {
+    for (const [kind, view] of channelViews) {
+      const { state, detail, peer } = statuses[kind] || {};
+      setText(view, () => [resolveText(connectionLabels[state] || connectionLabels.disabled),
+        resolveText(connectionLabels[detail] || detail), peer].filter(Boolean).join(' · '));
+    }
+    const link = statuses.telegram?.link || '';
+    telegramLink.hidden = !/^https:\/\/t\.me\/[a-z\d_]+(?:\?start=[a-z\d_-]{1,64})?$/i.test(link);
+    if (telegramLink.hidden) telegramLink.removeAttribute('href');
+    else telegramLink.href = link;
+    const kind = controls.get('channel.kind').input.value;
+    const configuredTarget = kind === 'telegram' && controls.get('channel.destination').input.value.trim() ||
+      kind === 'feishu-app' && controls.get('channel.user_open_id').input.value.trim();
+    const target = configuredTarget || statuses[kind]?.peer;
+    setText(destinationHint, target ? l("接收会话：{0}", { 0: target }) :
+      kind !== 'none' && kind !== 'feishu-webhook' ? l("等待建立私聊") : '');
+  }
+  async function refreshChannel() {
+    if (!['review', 'channel', 'history'].includes(activeTab) || !active || !form || busy || conflict || document.hidden || channelController) return;
+    const request = new AbortController();
+    channelController = request;
+    try {
+      if (activeTab === 'history') {
+        const data = await sessionRequest('/admin/notifications?kind=review', { controller: request });
+        if (channelController === request) showHistory(data.notifications);
+      } else {
+        const data = await sessionRequest('/settings', { controller: request });
+        if (channelController !== request) return;
+        if (data.version !== snapshot.version) { versionConflict(); return; }
+        snapshot.channel_status = data.channel_status;
+        showChannelStatus(snapshot.channel_status);
+      }
+    } catch (err) {
+      if (channelController !== request || err.name === 'AbortError') return;
+      if (activeTab === 'history') { historySignature = ''; handleFailure(history, err); }
+      else for (const view of channelViews.values()) setText(view, l("连接状态不可用"));
+    } finally {
+      if (channelController === request) {
+        channelController = null;
+        if (active && !conflict && !document.hidden) channelTimer = setTimeout(refreshChannel, 5000);
+      }
+    }
+  }
+  function showHistory(items) {
+    const reviews = items || [];
+    const signature = JSON.stringify(reviews);
+    if (historySignature === signature) return;
+    historySignature = signature;
+    const receipts = new Map([...history.querySelectorAll('[data-delivery-receipt]')].map(input => [input.dataset.deliveryReceipt, input.value]));
+    history.replaceChildren();
+    if (!reviews.length) history.append(el('p', 'sub', l("暂无发送记录")));
+    for (const item of reviews) {
+      const line = el('div', 'row settings-row');
+      const kind = destinations.find(([key]) => key === item.channel_kind)?.[1];
+      const status = deliveryLabels[item.status] || item.status;
+      line.append(el('span', '', () => [item.date, item.clock, resolveText(kind), resolveText(status), item.last_error].filter(Boolean).join(' · ')));
+      if (item.status === 'unknown') {
+        const actions = el('div', 'settings-delivery-actions');
+        let receipt;
+        if (item.channel_kind === 'feishu-app') {
+          receipt = el('input'); receipt.type = 'text'; receipt.maxLength = 256;
+          receipt.autocomplete = 'off'; receipt.dataset.deliveryReceipt = item.id;
+          receipt.value = receipts.get(item.id) || '';
+          setAttr(receipt, 'placeholder', l("飞书消息 ID（可选）"));
+          setAttr(receipt, 'aria-label', l("飞书消息 ID（可选）"));
+          receipt.addEventListener('keydown', event => { if (event.key === 'Enter') event.preventDefault(); });
+          actions.append(receipt);
+        }
+        async function resolveDelivery(decision) {
+          const requests = deliveryRequests;
+          if (requests.has(item.id)) return;
+          requests.add(item.id);
+          const body = { decision };
+          if (decision === 'sent' && receipt?.value.trim()) body.receipt = receipt.value.trim();
+          confirm.disabled = retry.disabled = true;
+          try {
+            await sessionRequest(`/admin/notifications/${encodeURIComponent(item.id)}/resolve`, {
+              method: 'POST', body,
+            });
+          } catch (err) {
+            if (requests === deliveryRequests && form?.isConnected) failure(err);
+          } finally {
+            requests.delete(item.id);
+            if (requests === deliveryRequests && active) {
+              historySignature = '';
+              if (activeTab === 'history') { stopChannelPoll(); refreshChannel(); }
+            }
+          }
+        }
+        const confirm = button(l("确认已送达"), 'ghost', () => resolveDelivery('sent'));
+        const retry = button(l("补发"), 'ghost', () => resolveDelivery('not_sent'));
+        confirm.disabled = retry.disabled = deliveryRequests.has(item.id);
+        actions.append(confirm, retry); line.append(actions);
+      }
+      history.append(line);
+    }
+  }
+  function channelFields(parent, title) {
+    const block = el('fieldset', 'settings-channel');
+    block.append(el('legend', '', title)); parent.append(block);
+    return block;
+  }
+  function showWhen(block, input, visible) {
+    block.dataset.channelFields = '';
+    const sync = () => {
+      block.hidden = !visible();
+      for (const control of block.querySelectorAll('input, select')) control.disabled = block.hidden;
+    };
+    input.addEventListener('change', sync); sync();
+  }
   function updateChecks() {
     for (const [group, view] of modelViews) {
       view.check.disabled = busy || conflict || checks.has(group) || modelDirty(group) || !snapshot.settings[group].enabled;
@@ -276,7 +412,7 @@ export function createSettingsPage({ sessionRequest, handleFailure, onSaved = ()
     else handleFailure(node, err);
   }
   function versionConflict() {
-    abortModels(); conflict = true; save.disabled = true; updateChecks();
+    abortModels(); stopChannelPoll(); conflict = true; save.disabled = true; updateChecks();
     for (const view of modelViews.values()) {
       setText(view.config, l("设置已变更，请重新加载。"));
       setText(view.result, '');
@@ -391,7 +527,7 @@ export function createSettingsPage({ sessionRequest, handleFailure, onSaved = ()
     }
   }
   function render() {
-    abortModels(); controls.clear(); secretControls.clear(); modelViews.clear(); times = [];
+    abortModels(); stopChannelPoll(); controls.clear(); secretControls.clear(); modelViews.clear(); channelViews.clear(); times = [];
     tabs.clear(); panels.clear();
     form = el('form', 'settings-form'); setAttr(form, 'aria-label', l("产品设置")); form.autocomplete = 'off';
     form.noValidate = true;
@@ -421,7 +557,13 @@ export function createSettingsPage({ sessionRequest, handleFailure, onSaved = ()
     field(review, 'review.min_age_hours', l("等待期（小时）"), { type: 'number', min: 0, max: 87600 });
     field(review, 'review.recent_days', l("重复排除期（天）"), { type: 'number', min: 0, max: 3650 });
     field(review, 'review.include_archived', l("包含归档笔记"), { type: 'checkbox' });
-    field(review, 'notifications.enabled', l("开启回顾推送"), { type: 'checkbox' });
+    const enable = field(review, 'notifications.enabled', l("开启回顾推送"), { type: 'checkbox' });
+    const channelKind = field(review, 'channel.kind', l("定时回顾发往"), { options: destinations });
+    destinationHint = el('p', 'sub settings-hint'); review.append(destinationHint);
+    channelKind.addEventListener('change', () => {
+      if (channelKind.value === 'none') enable.checked = false;
+      showChannelStatus(snapshot.channel_status);
+    });
     const clocks = el('div', 'settings-clocks'); clocks.append(el('h3', '', l("推送时段"))); review.append(clocks); renderTimes(clocks);
     review.append(el('p', 'sub settings-hint', l("回顾参数、时段和时区从后续日期生效，已固定的当天计划保持不变。")));
     const models = section('models', l("模型")); model(models, 'llm', 'LLM'); model(models, 'embedding', 'Embedding');
@@ -436,44 +578,49 @@ export function createSettingsPage({ sessionRequest, handleFailure, onSaved = ()
       onDirtyChange();
     });
     restore.disabled = typeof snapshot.default_insight_prompt !== 'string'; insights.append(restore);
+    historySignature = ''; history = el('div'); section('history', l("发送记录")).append(history);
     const channel = section('channel', l("消息渠道"));
-    const channelKind = field(channel, 'channel.kind', l("发送方式"), { options: [
-      ['none', l("不启用消息渠道")], ['feishu-app', l("飞书应用机器人")],
-      ['feishu-webhook', l("飞书 Webhook")], ['telegram', 'Telegram'],
-    ] });
-    const capabilities = el('div', 'settings-capabilities');
-    for (const [key, text] of [['text', l("文字推送")], ['images', l("图文推送")], ['record', l("双向记录")]]) {
-      const enabled = snapshot.channel_capabilities?.[key] === true;
-      capabilities.append(el('span', enabled ? 'tag' : 'sub', () => `${resolveText(text)}${locale() === 'en' ? ': ' : '：'}${resolveText(enabled ? l("可用") : l("不可用"))}`));
-    }
-    channel.append(capabilities);
-    const noChannel = el('p', 'sub settings-hint', l("选择消息渠道后可开启回顾推送，也可以只在 Web 阅读。"));
-    const feishu = el('div'), telegram = el('div'), destination = el('div');
-    for (const block of [feishu, telegram, destination]) block.dataset.channelFields = '';
-    feishu.append(el('p', 'sub settings-hint', l("仅配置 Webhook URL 可发送文字。图文还需 App ID 和 App Secret；双向记录还需 Verification Token 和用户 Open ID。能力在保存后更新。")));
-    field(feishu, 'channel.app_id', 'App ID');
-    secret(feishu, 'app_secret'); secret(feishu, 'verification_token'); secret(feishu, 'encrypt_key');
-    field(feishu, 'channel.user_open_id', l("用户 Open ID"));
-    secret(feishu, 'webhook_url'); secret(feishu, 'webhook_secret');
-    telegram.append(el('p', 'sub settings-hint', l("通过 @BotFather 创建机器人，向它发送 /start，再从 getUpdates 获取自己的数字 Chat ID。支持英文回顾和图片原文件；无需公开回调地址。")));
+    const qq = channelFields(channel, l("QQ 私聊"));
+    field(qq, 'channel.qq_app_id', 'QQ AppID').inputMode = 'numeric'; secret(qq, 'qq_app_secret');
+    const telegram = channelFields(channel, 'Telegram');
     secret(telegram, 'bot_token');
-    field(destination, 'channel.destination', l("推送目标"), {
-      hint: l("Telegram 填写数字 Chat ID；飞书应用可留空，使用绑定用户的 Open ID。"),
-    });
-    channel.append(noChannel, feishu, telegram, destination);
-    function updateChannel() {
-      noChannel.hidden = channelKind.value !== 'none';
-      for (const [block, visible] of [
-        [feishu, channelKind.value.startsWith('feishu-')],
-        [telegram, channelKind.value === 'telegram'],
-        [destination, ['feishu-app', 'telegram'].includes(channelKind.value)],
-      ]) {
-        block.hidden = !visible;
-        for (const input of block.querySelectorAll('input, select')) input.disabled = !visible;
-      }
-      if (channelKind.value === 'none') controls.get('notifications.enabled').input.checked = false;
+    field(telegram, 'channel.destination', l("Telegram 接收会话"), { hint: l("留空使用本人私聊，也可填写群或频道的 Chat ID。") })
+      .addEventListener('input', () => showChannelStatus(snapshot.channel_status));
+    telegramLink = el('a', '', l("打开机器人")); telegramLink.target = '_blank'; telegramLink.rel = 'noreferrer';
+    telegram.append(telegramLink);
+    const feishu = channelFields(channel, l("飞书应用机器人"));
+    const mode = field(feishu, 'channel.feishu_mode', l("接收方式"), { options: [['websocket', l("长连接")], ['callback', l("公网回调")]] });
+    field(feishu, 'channel.app_id', 'App ID');
+    secret(feishu, 'app_secret');
+    field(feishu, 'channel.user_open_id', l("用户 Open ID"), { hint: l("私人应用可留空以绑定首个私聊。多人应用请指定用户。") })
+      .addEventListener('input', () => showChannelStatus(snapshot.channel_status));
+    const callback = el('div'); feishu.append(callback);
+    secret(callback, 'verification_token'); secret(callback, 'encrypt_key');
+    showWhen(callback, mode, () => mode.value === 'callback');
+    for (const [key, block] of [['qq', qq], ['telegram', telegram], ['feishu-app', feishu]]) {
+      const status = el('p', 'sub'); status.setAttribute('role', 'status'); block.append(status); channelViews.set(key, status);
     }
-    channelKind.addEventListener('change', updateChannel); updateChannel();
+    const webhook = channelFields(channel, l("飞书群 Webhook"));
+    secret(webhook, 'webhook_url'); secret(webhook, 'webhook_secret');
+    const images = field(webhook, 'channel.webhook_images', l("推送图片"), { type: 'checkbox' });
+    const upload = el('div'); webhook.append(upload);
+    field(upload, 'channel.webhook_app_id', 'Webhook App ID');
+    showWhen(upload, images, () => images.checked);
+    const uploadSecret = el('div'); webhook.append(uploadSecret); secret(uploadSecret, 'webhook_app_secret');
+    showWhen(uploadSecret, images, () => images.checked || snapshot.secrets?.webhook_app_secret?.configured === true);
+    const uploadEdit = secretControls.get('webhook_app_secret');
+    const replaceOption = uploadEdit.action.querySelector('[value="replace"]');
+    const updateUpload = () => {
+      replaceOption.hidden = replaceOption.disabled = !images.checked;
+      if (!images.checked) {
+        uploadEdit.input.value = '';
+        if (uploadEdit.action.value === 'replace') {
+          uploadEdit.action.value = 'keep'; uploadEdit.input.hidden = true; uploadEdit.input.required = false;
+        }
+      }
+    };
+    images.addEventListener('change', updateUpload); updateUpload();
+    showChannelStatus(snapshot.channel_status);
     const footer = el('div', 'settings-footer');
     error = el('p', 'error sub'); error.setAttribute('role', 'alert'); error.hidden = true;
     status = el('p', 'sub'); status.setAttribute('role', 'status');
@@ -485,7 +632,7 @@ export function createSettingsPage({ sessionRequest, handleFailure, onSaved = ()
     updateChecks();
   }
   async function load() {
-    const ticket = ++sequence; controller?.abort(); abortModels(); clearSecrets(); controller = new AbortController();
+    const ticket = ++sequence; controller?.abort(); abortModels(); stopChannelPoll(); clearSecrets(); controller = new AbortController();
     form = null; baseline = ''; onDirtyChange();
     busy = true; conflict = false;
     root.replaceChildren(el('p', 'sub', l("正在加载设置…")));
@@ -521,14 +668,18 @@ export function createSettingsPage({ sessionRequest, handleFailure, onSaved = ()
     }
     message(); setText(status, '');
     try {
-      const operations = Object.fromEntries([...secretControls].filter(([, { action }]) => !action.disabled).map(([name, { action, input }]) =>
-        [name, { action: action.value, ...(action.value === 'replace' ? { value: input.value } : {}) }]));
+      const operations = {};
+      for (const [name, { action, input, direct }] of secretControls) {
+        if (action.disabled) continue;
+        const edit = direct && input.value ? 'replace' : action.value;
+        if (edit !== 'keep') operations[name] = { action: edit, ...(edit === 'replace' ? { value: input.value } : {}) };
+      }
       pendingBody = buildSettingsPatch(snapshot, readDraft(), operations);
       if (!Object.keys(pendingBody.settings).length && !Object.values(pendingBody.secrets).some(op => op.action !== 'keep')) {
         setText(status, l("没有需要保存的修改。")); pendingBody = null; return;
       }
     } catch (err) { failure(err); return; }
-    const ticket = ++sequence; abortModels(); controller = new AbortController();
+    const ticket = ++sequence; abortModels(); stopChannelPoll(); controller = new AbortController();
     const replaced = Object.values(pendingBody.secrets).some(op => op.action === 'replace');
     busy = true; save.disabled = reload.disabled = true; form.setAttribute('aria-busy', 'true');
     // 应用设置时锁定表单，避免提交期间修改内容。
@@ -552,7 +703,7 @@ export function createSettingsPage({ sessionRequest, handleFailure, onSaved = ()
         form.setAttribute('aria-busy', 'false'); save.disabled = conflict; reload.disabled = false;
         updateChecks();
         onDirtyChange();
-        if (!conflict) refreshModels();
+        if (!conflict) { refreshModels(); refreshChannel(); }
       }
     }
   }
@@ -561,8 +712,8 @@ export function createSettingsPage({ sessionRequest, handleFailure, onSaved = ()
       destroy(); active = true;
       lifecycle = new AbortController();
       document.addEventListener('visibilitychange', () => {
-        if (document.hidden) { clearTimeout(modelTimer); modelTimer = null; }
-        else refreshModels();
+        if (document.hidden) { clearTimeout(modelTimer); modelTimer = null; stopChannelPoll(); }
+        else { refreshModels(); refreshChannel(); }
       }, { signal: lifecycle.signal });
       root = el('div', 'settings-page'); root.id = 'settings-page'; container.append(root);
       return load();

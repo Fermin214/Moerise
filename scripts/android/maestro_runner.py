@@ -330,6 +330,13 @@ class MaestroRunner:
             assert len(matches) == 1, "created_note_count"
             assert self.api.note(matches[0]["name"])["content"] == values["NEW_NOTE_TEXT"], "created_note_content"
             observed["created_note_count"] = len(matches)
+        elif flow == "navigation":
+            response = self.api.request("GET", "/api/app/v1/settings")
+            channel = response["settings"]["channel"]
+            assert channel["kind"] == "qq", "android_review_destination"
+            assert channel["qq_app_id"] == "100000019", "android_qq_app_id"
+            assert response["secrets"]["qq_app_secret"]["configured"], "android_qq_secret_cleared"
+            observed.update(qq_destination_saved=True, qq_credentials_retained=True)
         elif flow == "actions":
             for key in ("NOTE_NAME", "PEER_NOTE_NAME"):
                 try:
@@ -395,7 +402,7 @@ class MaestroRunner:
                   "log": str(directory / "console.log"), "report": str(directory / "report.xml"),
                   "flow_sha256": flow_digest(self.root, flow),
                   "started_at": datetime.now(timezone.utc).isoformat()}
-        before, remote = None, None
+        before, remote, channel_fixture = None, None, None
         self.remote_file = None
         try:
             validation = subprocess.run(
@@ -405,6 +412,20 @@ class MaestroRunner:
             if validation.returncode:
                 raise ValueError("Maestro 流程静态校验失败")
             self.api.login()
+            if flow == "navigation":
+                configuration = self.api.request("GET", "/api/app/v1/settings")
+                channel = configuration["settings"]["channel"]
+                if channel.get("qq_app_id") or configuration["secrets"]["qq_app_secret"]["configured"]:
+                    raise ValueError("导航场景需要未配置 QQ 的隔离服务")
+                channel_fixture = {
+                    "channel": {"kind": channel["kind"], "qq_app_id": ""},
+                    "notifications": {"enabled": configuration["settings"]["notifications"]["enabled"]},
+                }
+                self.api.request("PATCH", "/api/app/v1/settings", {
+                    "version": configuration["version"],
+                    "settings": {"channel": {"kind": "none", "qq_app_id": "100000019"}, "notifications": {"enabled": False}},
+                    "secrets": {"qq_app_secret": {"action": "replace", "value": uuid.uuid4().hex}},
+                })
             values, remote = self.prepare_data(flow, entry, note_name)
             parameters = {key: value for key, value in values.items() if key != "ATTACHMENT_SHA256"}
             write_result(directory / "test-data.json", parameters)
@@ -472,6 +493,16 @@ class MaestroRunner:
                         self.adb.run("forward", "--list").splitlines()) - before)
                 except Exception:
                     result["cleanup_errors"].append("forward_readback")
+            if channel_fixture is not None:
+                try:
+                    configuration = self.api.request("GET", "/api/app/v1/settings")
+                    if configuration["settings"]["channel"].get("qq_app_id") == "100000019":
+                        self.api.request("PATCH", "/api/app/v1/settings", {
+                            "version": configuration["version"], "settings": channel_fixture,
+                            "secrets": {"qq_app_secret": {"action": "clear"}},
+                        })
+                except Exception:
+                    result["cleanup_errors"].append("channel_settings_restore")
             try:
                 self.api.close()
             except Exception:

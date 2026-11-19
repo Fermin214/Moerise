@@ -426,10 +426,15 @@ func (a *ClientAPI) notifications(w http.ResponseWriter, r *http.Request, identi
 	tail := strings.TrimPrefix(r.URL.Path, "/api/app/v1/admin/notifications")
 	if tail == "" && r.Method == http.MethodGet {
 		query, err := url.ParseQuery(r.URL.RawQuery)
-		if err != nil || len(query) > 1 || (len(query) == 1 && len(query["status"]) != 1) {
+		if err != nil {
 			return nil, 0, failure("INVALID_ARGUMENT", "Invalid notification parameters", 422, false)
 		}
-		items, err := a.app.Notifications.List(query.Get("status"))
+		for key, values := range query {
+			if (key != "kind" && key != "status") || len(values) != 1 {
+				return nil, 0, failure("INVALID_ARGUMENT", "Invalid notification parameters", 422, false)
+			}
+		}
+		items, err := a.app.Notifications.List(query.Get("status"), query.Get("kind"))
 		return map[string]any{"notifications": items}, 200, err
 	}
 	parts := strings.Split(strings.TrimPrefix(tail, "/"), "/")
