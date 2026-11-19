@@ -357,7 +357,7 @@ scripts/android/release.sh --unsigned
 [Android 第三方许可](android/THIRD_PARTY_NOTICES.md)。更新依赖后重新导出清单并执行
 `python3 scripts/android/licenses.py`；CI 使用 `--check` 比较。
 
-Android 标签采用 `android-v*`。合并后 `Main CI` 从 GitHub Actions Secrets 读取
+Android 与 Linux 联合发布在同一个 `v<版本>` Release。合并后 `Main CI` 从 GitHub Actions Secrets 读取
 `ANDROID_SIGNING_KEYSTORE`（Base64 keystore）、`ANDROID_KEY_ALIAS`、
 `ANDROID_STORE_PASSWORD` 和 `ANDROID_KEY_PASSWORD`。发行构建在 API 29 模拟器全新安装签名 APK，
 检查登录、笔记保存与读回、应用重开后的会话。隔离 HTTPS 的临时 CA 安装到
@@ -396,7 +396,7 @@ $env:MOERISE_ANDROID_PYTHON = 'C:\工具\Python\python.exe'
 `signing.json` 保存本机签名档案，字段为 `keystore`、`alias`、`store_password`、
 `key_password`；`keystore` 指向已有发行密钥。签名档案和密钥保存在仓库外的私有目录，
 不随源码或发行产物分发。
-首次发行使用默认 `-VersionCode 1`；后续正式版本使用比已发行版本更高的值。
+Windows 构建默认使用 Gradle 中的 `versionCode`，也可以用 `-VersionCode` 显式指定。
 
 密码通过 `apksigner` 的 `env:` 参数读取，不写入命令行参数或归档。脚本使用已有密钥，
 只进行本机构建、签名与归档。发行构建要求已跟踪文件没有修改，未跟踪文件不阻断。

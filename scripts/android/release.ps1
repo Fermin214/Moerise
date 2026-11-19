@@ -14,7 +14,7 @@ param(
     [string] $Mode = 'unsigned',
     [string] $SourceRoot = 'C:\Projects\Moerise',
     [string] $SigningFile,
-    [ValidateRange(1, 2147483647)] [int] $VersionCode = 1,
+    [ValidateRange(1, 2147483647)] [int] $VersionCode,
     [switch] $ValidateOnly
 )
 
@@ -113,8 +113,8 @@ $trackedClean = [string]::IsNullOrWhiteSpace(
 $gradleArguments = @('-p', (Join-Path $androidRepoRoot 'mobile'), '--no-daemon', '--max-workers=1',
     '--no-parallel', '--console=plain',
     '-Dorg.gradle.jvmargs=-Xmx1536m -XX:MaxMetaspaceSize=768m -XX:ActiveProcessorCount=1 -Dfile.encoding=UTF-8',
-    ':androidApp:assembleRelease', ':androidApp:lintRelease', ':androidApp:exportReleaseDependencies',
-    "-PmoeriseVersionCode=$VersionCode")
+    ':androidApp:assembleRelease', ':androidApp:lintRelease', ':androidApp:exportReleaseDependencies')
+if ($PSBoundParameters.ContainsKey('VersionCode')) { $gradleArguments += "-PmoeriseVersionCode=$VersionCode" }
 if ($toolchain.ProjectCache) { $gradleArguments += @('--project-cache-dir', $toolchain.ProjectCache) }
 if ($ValidateOnly) {
     [pscustomobject] @{
@@ -149,7 +149,7 @@ try {
     $pushedLocation = $true
     $archiveRoot = $queue.output_root
     $null = New-Item -ItemType Directory -Force -Path $archiveRoot
-    $buildLog = Join-Path $archiveRoot "release-$($commit.Substring(0, 7))-$Mode-code$VersionCode.log"
+    $buildLog = Join-Path $archiveRoot "release-$($commit.Substring(0, 7))-$Mode.log"
     Invoke-Logged $gradle $gradleArguments $buildLog
     $null = Invoke-Text $python @('-X', 'utf8', 'scripts/android/licenses.py', '--check')
 
@@ -162,7 +162,8 @@ try {
     }
     $version = [string] $elements[0].versionName
     $builtVersionCode = [long] $elements[0].versionCode
-    if ($version -notmatch '^[A-Za-z0-9][A-Za-z0-9._+-]*$' -or $builtVersionCode -ne $VersionCode) {
+    if ($version -notmatch '^[A-Za-z0-9][A-Za-z0-9._+-]*$' -or $builtVersionCode -lt 1 -or
+        ($PSBoundParameters.ContainsKey('VersionCode') -and $builtVersionCode -ne $VersionCode)) {
         throw 'output-metadata.json 缺少有效的发行版本。'
     }
     $sourceApk = [IO.Path]::GetFullPath((Join-Path $apkDirectory $elements[0].outputFile))
@@ -171,7 +172,7 @@ try {
         -not (Test-Path -LiteralPath $sourceApk -PathType Leaf)) {
         throw 'output-metadata.json 的 APK 路径无效。'
     }
-    $output = Join-Path $archiveRoot "releases/v$version-code$versionCode-$($commit.Substring(0, 7))"
+    $output = Join-Path $archiveRoot "releases/v$version-code$builtVersionCode-$($commit.Substring(0, 7))"
     $null = New-Item -ItemType Directory -Force -Path $output
     $baseName = "moerise-android-v$version"
     $filename = if ($Mode -eq 'unsigned') { "$baseName-unsigned.apk" } else { "$baseName.apk" }
@@ -183,7 +184,7 @@ try {
     }
     $verifyArguments = @('-X', 'utf8', 'scripts/android/verify-apk.py', $apk,
         '--release', '--package', 'io.github.fermin214.moerise', '--version', $version,
-        '--version-code', "$VersionCode")
+        '--version-code', "$builtVersionCode")
     if ($requireProfile) { $verifyArguments += '--require-profile' }
     if ($Mode -eq 'unsigned') { $verifyArguments += '--unsigned' }
     Invoke-Logged $python $verifyArguments (Join-Path $output "$([IO.Path]::GetFileNameWithoutExtension($filename))-verification.txt")
@@ -206,7 +207,7 @@ try {
     [IO.File]::WriteAllText("$apk.sha256", "$checksum  $filename`n", $utf8)
     $metadata = [ordered] @{
         commit = $commit; apk = $filename; sha256 = $checksum; signed = ($Mode -eq 'sign')
-        version_name = $version; version_code = $versionCode
+        version_name = $version; version_code = $builtVersionCode
         source_date_epoch = [long] (Invoke-Text 'git.exe' @('show', '-s', '--format=%ct', $commit))
         java = ((Invoke-Text (Join-Path $env:JAVA_HOME 'bin/java.exe') @('-version')) -split '\r?\n')[0]
         build_tools = '36.0.0'

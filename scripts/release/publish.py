@@ -73,6 +73,18 @@ def android_release(root, sha, run_id):
     return f'android-v{value}', files, {}, ['--notes-file', str(metadata.with_name('INSTALL.md'))]
 
 
+def release_package(root, repo, sha, run_id, component):
+    if component == 'android':
+        return android_release(root, sha, run_id)
+    tag, files, images, notes = linux_release(root, repo)
+    if component == 'both':
+        android_tag, android_files, _, android_notes = android_release(root, sha, run_id)
+        if android_tag != f'android-{tag}':
+            raise SystemExit(f'Linux and Android versions differ: {tag}, {android_tag}')
+        files.extend([*android_files, Path(android_notes[1])])
+    return tag, files, images, notes
+
+
 def asset_digests(repo, release):
     digests = {}
     for asset in release['assets']:
@@ -165,36 +177,29 @@ def main():
     repo = os.environ.get('GH_REPO') or os.environ.get('GITHUB_REPOSITORY')
     if not repo and (not args.verify_only or args.component != 'android'):
         parser.error('Set GH_REPO or GITHUB_REPOSITORY')
-    releases = []
-    if args.component != 'android':
-        releases.append(linux_release(args.root, repo))
-    if args.component != 'core-web':
-        releases.append(android_release(args.root, args.sha, args.run_id))
-    for tag, files, images, notes in releases:
-        required = files + ([Path(notes[1])] if notes[0] == '--notes-file' else [])
-        if any(not path.is_file() or not path.stat().st_size for path in required):
-            raise SystemExit(f'Incomplete release files for {tag}')
+    tag, files, images, notes = release_package(args.root, repo, args.sha, args.run_id, args.component)
+    required = files + ([Path(notes[1])] if notes[0] == '--notes-file' else [])
+    if any(not path.is_file() or not path.stat().st_size for path in required):
+        raise SystemExit(f'Incomplete release files for {tag}')
     if args.verify_only:
         return
-    prepared = [(tag, files, images, notes, *prepare(repo, args.sha, tag, files))
-                for tag, files, images, notes in releases]
-    for tag, files, images, notes, release, digests in prepared:
-        print(f'{tag} from {args.sha}', flush=True)
-        if args.dry_run or (release and not release['draft']):
-            continue
-        endpoint, android = upload(repo, args.sha, tag, files, notes, release, digests)
-        for image, refs in images.items():
-            promote_image(image, refs)
-        target = tag_target(tag)
-        if not target:
-            output('gh', 'api', '--method', 'POST', f'repos/{repo}/git/refs',
-                   '-f', f'ref=refs/tags/{tag}', '-f', f'sha={args.sha}')
-        elif target != args.sha:
-            raise SystemExit(f'{tag} already points to {target}')
-        published = json.loads(output('gh', 'api', '--method', 'PATCH', endpoint, '-F', 'draft=false',
-                                      '-f', f'target_commitish={args.sha}',
-                                      '-f', f'make_latest={str(not android).lower()}'))
-        print(published['html_url'], flush=True)
+    release, digests = prepare(repo, args.sha, tag, files)
+    print(f'{tag} from {args.sha}', flush=True)
+    if args.dry_run or (release and not release['draft']):
+        return
+    endpoint, android = upload(repo, args.sha, tag, files, notes, release, digests)
+    for image, refs in images.items():
+        promote_image(image, refs)
+    target = tag_target(tag)
+    if not target:
+        output('gh', 'api', '--method', 'POST', f'repos/{repo}/git/refs',
+               '-f', f'ref=refs/tags/{tag}', '-f', f'sha={args.sha}')
+    elif target != args.sha:
+        raise SystemExit(f'{tag} already points to {target}')
+    published = json.loads(output('gh', 'api', '--method', 'PATCH', endpoint, '-F', 'draft=false',
+                                  '-f', f'target_commitish={args.sha}',
+                                  '-f', f'make_latest={str(not android).lower()}'))
+    print(published['html_url'], flush=True)
 
 
 if __name__ == '__main__':

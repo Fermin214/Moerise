@@ -132,7 +132,7 @@ jobs:
         if: inputs.fixture_run == '' && steps.apks.outputs.cache-hit != 'true'
         run: |
           source scripts/android/environment.sh
-          android_gradle :androidApp:assembleFixture :androidApp:assembleFixtureAndroidTest
+          android_gradle -PmoeriseVersionCode=1 :androidApp:assembleFixture :androidApp:assembleFixtureAndroidTest
           python3 scripts/android/fixture-artifacts.py write
           cp mobile/androidApp/build/outputs/apk/fixture/androidApp-fixture.apk "$RUNNER_TEMP/fixture-base.apk"
           android_gradle -PmoeriseVersionCode=2 :androidApp:assembleFixture

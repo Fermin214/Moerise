@@ -195,6 +195,8 @@ PR 按改动范围复用发布流程。Linux 预演在 AMD64 和 ARM64 各自构
 
 合并后，`Main CI` 并行运行两个 Linux 架构任务和一个 Android 任务。Linux 任务保存安装包和镜像摘要。Android 任务使用生产密钥，对同一 APK 检查清单、签名、16 KiB 对齐及最低版本设备流程，并记录设备验证所用 APK 的 SHA-256。
 
-准备发版时，通过 PR 更新对应版本号。Core 与 Web 的版本以 `internal/config.go` 和 `web/package.json` 为准，Android 在 `mobile/androidApp/build.gradle.kts` 中更新 `versionName` 并递增 `versionCode` 的默认值。
+准备联合发版时，通过一个 PR 对齐 Core、Web 和 Android 的版本号，同时更新 OpenAPI、npm 锁文件、Compose 和 `.env.example` 中的版本。Core 与 Web 的版本以 `internal/config.go` 和 `web/package.json` 为准。Android 在 `mobile/androidApp/build.gradle.kts` 中更新 `versionName` 并递增 `versionCode`。
 
-版本发布由维护者在 Actions 中启动 `Publish release`，填写成功的 `Main CI` 运行 ID，选择 Core/Web、Android 或两者。发布工作流校验提交和产物，使用同次运行的安装包、APK 和镜像摘要。若版本标签已指向其他提交，先解决标签冲突。工作流产物保留 90 天，或以仓库设置允许的期限为准。
+在 Actions 启动 `Publish release`，填写发布提交对应的成功 `Main CI` 运行 ID。默认的 `both` 先核对两个平台的版本，再用同一次运行的产物发布一个 `v<版本>` Release。附件包含 Linux AMD64 和 ARM64 安装包、签名 APK、APK 的 SHA-256 和构建信息、Android 安装说明和许可归档。Core、Web、Layout 的同版本镜像使用该次运行记录的摘要。
+
+单独发布 Core/Web 时选择 `core-web`，标签为 `v<版本>`。单独发布 Android 时选择 `android`，标签为 `android-v<版本>`。标签已指向其他提交或已公开的同标签附件不同，工作流会终止。工作流产物保留 90 天，或以仓库设置允许的期限为准。

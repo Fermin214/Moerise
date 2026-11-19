@@ -89,7 +89,7 @@ v0.1.0 以 Memos 为笔记权威存储，通过 Moerise Core 读写。本机保�
 | 本机存储 | Room KMP + SQLite；附件使用应用私有目录中的文件 |
 | 异步任务 | Kotlin Coroutines 与 Flow，任务随页面、账号和应用生命周期取消 |
 | 凭据 | Android Keystore 保护持久会话 Cookie；密码仅参与单次登录，CSRF Token 仅放内存 |
-| Android 包 | `io.github.fermin214.moerise`；`versionName=0.1.0`，首次发布 `versionCode=1`，`minSdk=29` |
+| Android 包 | `io.github.fermin214.moerise`，与 Linux 联合发布，`minSdk=29` |
 | 版本管理 | M0 验证并固定兼容的稳定版 Kotlin、Compose、AGP、Gradle、KSP、Room、Ktor 与 SDK；版本写入目录，Wrapper 固定发行包摘要 |
 
 采用以下目录结构；平台路径、凭据、文件和系统调用通过窄接口接入共享代码：
@@ -308,8 +308,8 @@ Android 代码单独使用 `.github/workflows/android-checks.yml`；涉及 Andro
 
 #### 1.11 APK 发行与后续扩展
 
-- Android 发行标签使用 `android-v0.1.0`，与服务端 `v*` 标签分开。发行流程见[开发指南](DEVELOPMENT.md#发布)。
-- APK 文件名为 `moerise-android-v0.1.0.apk`，至少覆盖 arm64-v8a；x86_64 用于设备自动化。M0 检查依赖 ABI，M8 固定发行 ABI 范围。
+- Linux 和 Android 联合发行使用同一个 `v<版本>` 标签。发行流程见[开发指南](DEVELOPMENT.md#发布)。
+- APK 文件名为 `moerise-android-v<版本>.apk`，覆盖 arm64-v8a 和设备自动化使用的 x86_64。
 - 签名密钥从 CI Secret 或仓库外的签名档案读取，并保留可恢复的备份；同一应用后续版本沿用签名身份并递增 `versionCode`。使用 `apksigner verify` 检查发行签名。
 - 发行包包含 APK、SHA-256、安装/升级说明与第三方许可。首版使用新安装数据和完整 schema 1；后续正式版本验证覆盖升级保留草稿、未确认请求、会话和语言偏好，结构变化时新增数据库迁移。
 - 构建工具说明、设备步骤和 API 适配说明在实现时补入开发文档，说明已实现的命令和行为。规划继续集中维护在本章节。
