@@ -67,6 +67,7 @@ LITERAL_TEXT = {
     "关键词|Keyword", "混合|Hybrid", TIMESTAMP_TEXT,
     "Select all|Select All|全选",
     "回顾|Review", "漫步|Walk", "观星|Stargazing",
+    "QQ 私聊|QQ private chat", "设置已保存。|Settings saved\\.",
     r"今天没有可回顾的旧笔记。|No old notes to review today\.",
     r"今天没有可回顾的旧笔记。|No old notes to review today\.|下一条|Next note|再看一遍|Start again",
 }
@@ -154,6 +155,10 @@ def source_ids():
     add("SettingsScreen.kt", "settings_page")
     add("SettingsScreen.kt", "settings_language", 'tag = "settings_language"')
     add("SettingsScreen.kt", "settings_stargazing_enabled", 'testTag("settings_${path.replace(\'.\', \'_\')}")')
+    add("SettingsScreen.kt", "settings_channel_kind", '"channel.kind", strings.text("定时回顾发往"')
+    add("SettingsScreen.kt", "settings_channel_qq_app_id", '"channel.qq_app_id", "QQ AppID"')
+    add("SettingsScreen.kt", "settings_secret_qq_app_secret_action", 'tag = "settings_secret_${name}_action"')
+    add("SettingsScreen.kt", "settings_save")
     for index in range(6):
         add("SettingsScreen.kt", f"settings_tab_{index}", 'tagPrefix = "settings_tab"')
     for identifier in ("server_origin", "server_username", "server_password"):

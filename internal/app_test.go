@@ -15,6 +15,7 @@ func TestAppSharesServicesAndClosesOnce(t *testing.T) {
 	settings.Channel.Kind = "feishu-app"
 	appID := "app-test"
 	settings.Channel.AppID = &appID
+	settings.Channel.AppSecret = new("application-secret")
 	store := testStore(t, settings)
 	source := NewMemosClient(settings.Memos)
 	defer source.Close()

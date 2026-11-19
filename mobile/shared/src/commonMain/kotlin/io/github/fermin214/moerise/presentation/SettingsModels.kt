@@ -21,6 +21,8 @@ data class SettingsUiState(
     val checking: Set<String> = emptySet(),
     val checks: Map<String, JsonObject> = emptyMap(),
     val checkErrors: Map<String, String> = emptyMap(),
+    val deliveries: List<JsonObject>? = null,
+    val resending: Set<String> = emptySet(),
 )
 
 internal object SettingsForm {
@@ -32,22 +34,24 @@ internal object SettingsForm {
             "max_concurrency", "max_retries", "max_output_tokens"),
         "embedding" to listOf("enabled", "provider", "protocol", "base_url", "model", "dimensions",
             "send_dimensions", "batch_size", "timeout_seconds", "max_concurrency", "max_retries", "query_instruction"),
-        "channel" to listOf("kind", "app_id", "user_open_id", "destination"),
+        "channel" to listOf("kind", "app_id", "user_open_id", "destination", "qq_app_id", "feishu_mode", "webhook_images", "webhook_app_id"),
         "insights" to listOf("default_prompt"),
     )
     val paths = setOf("timezone") + groups.flatMap { (group, names) -> names.map { "$group.$it" } }
     val secretNames = setOf("llm_api_key", "embedding_api_key", "app_secret", "verification_token",
-        "encrypt_key", "webhook_url", "webhook_secret", "bot_token")
+        "encrypt_key", "webhook_url", "webhook_secret", "bot_token", "qq_app_secret", "webhook_app_secret")
     val modelGroups = setOf("llm", "embedding")
     private val booleans = setOf("review.include_archived", "notifications.enabled",
-        "llm.enabled", "embedding.enabled", "embedding.send_dimensions", "stargazing.enabled")
+        "llm.enabled", "embedding.enabled", "embedding.send_dimensions", "stargazing.enabled", "channel.webhook_images")
     private val nullable = setOf("llm.base_url", "llm.model", "embedding.base_url", "embedding.model",
-        "embedding.query_instruction", "channel.app_id", "channel.user_open_id", "channel.destination")
+        "embedding.query_instruction", "channel.app_id", "channel.user_open_id", "channel.destination",
+        "channel.qq_app_id", "channel.webhook_app_id")
     private val choices = mapOf(
         "llm.protocol" to setOf("openai-compatible", "openai-responses", "anthropic"),
         "embedding.provider" to setOf("bailian", "openai-compatible"),
         "embedding.protocol" to setOf("dashscope", "openai-compatible"),
-        "channel.kind" to setOf("none", "feishu-app", "feishu-webhook", "telegram"),
+        "channel.kind" to setOf("none", "qq", "feishu-app", "feishu-webhook", "telegram"),
+        "channel.feishu_mode" to setOf("callback", "websocket"),
     )
     private val ranges = mapOf(
         "review.count" to 1.0..20.0,
@@ -90,7 +94,12 @@ internal object SettingsForm {
             put("timezone", settings["timezone"] as? JsonPrimitive ?: invalid())
             for ((group, names) in groups) put(group, buildJsonObject {
                 val source = settings.getValue(group).jsonObject
-                for (name in names) put(name, source[name] ?: invalid())
+                for (name in names) put(name, source[name] ?: when ("$group.$name") {
+                    "channel.qq_app_id", "channel.webhook_app_id" -> JsonNull
+                    "channel.feishu_mode" -> JsonPrimitive("websocket")
+                    "channel.webhook_images" -> JsonPrimitive(false)
+                    else -> invalid()
+                })
                 if (group == "notifications") {
                     val times = source["times"] as? JsonArray ?: invalid()
                     require(times.all { it is JsonPrimitive && it.isString }) { "SETTINGS_INPUT_INVALID" }
@@ -114,6 +123,7 @@ internal object SettingsForm {
         return buildJsonObject {
             put("version", version(response, positive = false))
             put("settings", public)
+            put("channel_status", channelStatus(response))
             put("secrets", buildJsonObject {
                 val source = response["secrets"] as? JsonObject
                 for (name in secretNames) put(name, buildJsonObject {
@@ -145,16 +155,16 @@ internal object SettingsForm {
         if (this["channel.kind"] == "none") this["notifications.enabled"] = "false"
     }
 
-    fun channelFieldEnabled(path: String, kind: String): Boolean = when (path) {
-        "channel.app_id", "channel.user_open_id" -> kind.startsWith("feishu-")
-        "channel.destination" -> kind == "feishu-app" || kind == "telegram"
-        else -> true
-    }
-
-    fun secretEnabled(name: String, kind: String): Boolean = when (name) {
-        "llm_api_key", "embedding_api_key" -> true
-        "bot_token" -> kind == "telegram"
-        else -> kind.startsWith("feishu-")
+    fun channelStatus(response: JsonObject): JsonObject = buildJsonObject {
+        val statuses = response["channel_status"] as? JsonObject ?: return@buildJsonObject
+        for (kind in listOf("qq", "telegram", "feishu-app")) {
+            val channel = statuses[kind] as? JsonObject ?: continue
+            put(kind, buildJsonObject {
+                for (key in listOf("state", "detail", "link", "peer")) {
+                    (channel[key] as? JsonPrimitive)?.takeIf { it.isString }?.let { put(key, it) }
+                }
+            })
+        }
     }
 
     fun value(path: String, text: String): JsonPrimitive = when {
@@ -194,10 +204,10 @@ internal object SettingsForm {
         require(zoneName.matches(timezone) && runCatching { serviceMonth(timezone) }.isSuccess) { "SETTINGS_INPUT_INVALID" }
         require(state.times.size in 1..24 && state.times.all(clock::matches) &&
             state.times.distinct().size == state.times.size) { "SETTINGS_INPUT_INVALID" }
-        val kind = state.values["channel.kind"] ?: invalid()
+        val images = state.values["channel.webhook_images"] == "true"
         val changes = linkedMapOf<String, JsonElement>()
         for (path in paths) {
-            if (!channelFieldEnabled(path, kind)) continue
+            if (path == "channel.webhook_app_id" && !images) continue
             val text = state.values[path] ?: invalid()
             val previous = original(snapshot, path)
             if (text.isEmpty() && (previous == null || previous == JsonNull)) continue
@@ -227,8 +237,10 @@ internal object SettingsForm {
             })
             put("secrets", buildJsonObject {
                 for (name in secretNames) {
-                    if (!secretEnabled(name, kind)) continue
-                    val edit = state.secrets[name] ?: SecretEdit()
+                    if (name in setOf("verification_token", "encrypt_key") && state.values["channel.feishu_mode"] != "callback") continue
+                    val edit = state.secrets[name] ?: continue
+                    if (name == "webhook_app_secret" && !images && edit.action != "clear") continue
+                    if (edit.action == "keep") continue
                     require(edit.action in setOf("keep", "replace", "clear")) { "SETTINGS_INPUT_INVALID" }
                     if (edit.action == "replace")
                         require(edit.value.isNotBlank() && edit.value.none { it in "*•●…" }) { "SETTINGS_INPUT_INVALID" }

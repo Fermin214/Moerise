@@ -5,6 +5,7 @@ package acceptance
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -123,6 +124,7 @@ func TestFeishuProactiveReviewWithRealMemosAcceptance(t *testing.T) {
 	settings.AccessTokens[1].Scopes = append(settings.AccessTokens[1].Scopes, "reviews:read")
 	pointer := func(value string) *string { return &value }
 	settings.Channel.Kind = "feishu-app"
+	settings.Channel.FeishuMode = "callback"
 	settings.Web.StateEncryptionKey = randomStateKey()
 	settings.Channel.AppID, settings.Channel.AppSecret = pointer("cli_acceptance"), pointer(strings.Repeat("s", 32))
 	settings.Channel.VerificationToken, settings.Channel.UserOpenID = pointer(strings.Repeat("v", 32)), pointer("ou_owner")
@@ -269,6 +271,7 @@ func TestFeishuEventsWithRealMemosAcceptance(t *testing.T) {
 	settings.AccessTokens[1].Scopes = append(settings.AccessTokens[1].Scopes, "reviews:read")
 	pointer := func(value string) *string { return &value }
 	settings.Channel.Kind = "feishu-app"
+	settings.Channel.FeishuMode = "callback"
 	settings.Web.StateEncryptionKey = randomStateKey()
 	settings.Channel.AppID, settings.Channel.AppSecret = pointer("cli_acceptance"), pointer(strings.Repeat("s", 32))
 	settings.Channel.VerificationToken, settings.Channel.UserOpenID = pointer(strings.Repeat("v", 32)), pointer("ou_owner")
@@ -400,6 +403,11 @@ func TestFeishuEventsWithRealMemosAcceptance(t *testing.T) {
 		t.Fatalf("saved image cannot be read: status=%d read=%v decode=%v", response.StatusCode, err, decodeErr)
 	}
 	names := []string{name, fileName, imageName}
+	send(event("om_bad_file", "ou_owner", "file", map[string]string{"file_key": "file_invalid", "file_name": "../notes.txt"}))
+	wait(t, "invalid attachment feedback", func() bool { return platform.reply("om_bad_file") != "" })
+	if reply := platform.reply("om_bad_file"); !strings.Contains(reply, "文件名") || !strings.Contains(reply, "8 MiB") {
+		t.Fatalf("invalid attachment feedback: %s", reply)
+	}
 	for i, command := range []string{"记录 #原样 内容", "查看 " + name, "搜索 测试", "洞察 " + name, "问答 测试", "回顾", "换一组"} {
 		id := fmt.Sprintf("om_literal_%d", i)
 		send(event(id, "ou_owner", "text", map[string]string{"text": command}))
@@ -419,7 +427,7 @@ func TestFeishuEventsWithRealMemosAcceptance(t *testing.T) {
 	platform.mu.Lock()
 	downloads := platform.downloads
 	platform.mu.Unlock()
-	if downloads != 2 {
+	if downloads != 3 {
 		t.Fatalf("duplicate event downloaded attachments again: %d", downloads)
 	}
 	if err := moerise.Restore(settings, snapshot, filepath.Join(h.root, "before-feishu-restore")); err != nil {
@@ -427,12 +435,21 @@ func TestFeishuEventsWithRealMemosAcceptance(t *testing.T) {
 	}
 	before := platform.replyCount()
 	start(true)
-	wait(t, "restored Feishu reply outcome review", func() bool {
-		unknown, err := api.Notifications.List("unknown")
-		return err == nil && len(unknown) == 1
-	})
-	if platform.replyCount() != before {
-		t.Fatal("restoring an old incoming event snapshot resent its completed reply")
+	send(record)
+	fresh := event("om_after_restore", "ou_owner", "sticker", map[string]string{})
+	fresh["event"].(map[string]any)["message"].(map[string]string)["create_time"] = fmt.Sprint(time.Now().UnixMilli())
+	send(fresh)
+	wait(t, "new Feishu reply after restoring the snapshot", func() bool { return platform.reply("om_after_restore") != "" })
+	db, err := sql.Open("sqlite", filepath.Join(settings.StateDir, "state.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var skipped bool
+	if err := db.QueryRow(`SELECT status='processed' AND reply_status='skipped' AND payload IS NULL AND result_kind IS NULL
+		AND last_error='STATE_RESTORED' AND NOT EXISTS (SELECT 1 FROM notifications WHERE source_event=message_id)
+		FROM channel_events WHERE message_id='om_record'`).Scan(&skipped); err != nil || !skipped || platform.replyCount() != before+1 {
+		t.Fatalf("restored record was not skipped: skipped=%v replies=%d err=%v", skipped, platform.replyCount()-before, err)
 	}
 	h.requireSourceRecords(names...)
 }

@@ -2,6 +2,7 @@ package moerise
 
 import (
 	"bytes"
+	"database/sql"
 	"encoding/base64"
 	"encoding/json"
 	"io"
@@ -154,5 +155,77 @@ func TestSettingsChannelChangePreservesNotificationRecovery(t *testing.T) {
 			}
 			store.Settings.Memos.User = owner
 		})
+	}
+}
+
+func TestBoundFeishuReviewCompletesAfterDestinationChange(t *testing.T) {
+	reviews, _ := reviewFixture(t, 4)
+	store := reviews.Store
+	config := feishuSettings(t)
+	store.Settings.Web.StateEncryptionKey = config.Web.StateEncryptionKey
+	store.Settings.Channel = config.Channel
+	store.Settings.Channel.FeishuMode, store.Settings.Channel.UserOpenID = "websocket", nil
+	store.Settings.Notifications.Enabled = true
+	if err := store.initializeProductSettings(); err != nil {
+		t.Fatal(err)
+	}
+	startup := store.Settings
+	app := NewApp(startup, store, reviews.Source)
+	defer app.Close()
+	if err := transaction(store.state, func(tx *sql.Tx) error {
+		_, err := store.bindBotPeer(tx, "feishu-app", configured(config.Channel.AppID), "ou_bound", time.Now())
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	platform := &reviewDeliveryPlatform{}
+	app.Feishu.Client = platform
+	built, closed := 0, 0
+	app.Notifications.channelTransport = func(channel ChannelConfig) (NotificationTransport, func()) {
+		built++
+		transport, release := app.notificationTransport(channel)
+		return transport, func() { closed++; release() }
+	}
+	at := time.Now().Add(48 * time.Hour)
+	location, _ := time.LoadLocation(store.Settings.Timezone)
+	day := at.In(location)
+	at = time.Date(day.Year(), day.Month(), day.Day(), 23, 59, 0, 0, location)
+	if n, err := app.Notifications.Schedule(t.Context(), at); err != nil || n != 1 {
+		t.Fatalf("schedule bound Feishu review: %d %v", n, err)
+	}
+	for range 2 {
+		deliverFeishuReply(t, app.Feishu)
+	}
+	if built != 1 || closed != 0 || platform.recipient != "ou_bound" || len(platform.texts) != 2 {
+		t.Fatalf("bound Feishu transport built=%d closed=%d recipient=%s sent=%d", built, closed, platform.recipient, len(platform.texts))
+	}
+	switchTo := settingsChange(store.productVersion, `{"channel":{"kind":"feishu-webhook"}}`)
+	switchTo.Secrets = map[string]SecretUpdate{"webhook_url": {Action: "replace", Value: new("https://example.invalid/unexpected-destination")}}
+	if _, err := app.UpdateSettings(t.Context(), switchTo); err != nil {
+		t.Fatal(err)
+	}
+	if closed != 1 {
+		t.Fatalf("released %d Feishu transports on settings change", closed)
+	}
+	app.Close()
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store = testStore(t, startup)
+	app = NewApp(startup, store, reviews.Source)
+	defer app.Close()
+	app.Feishu.Client = platform
+	for range 10 {
+		worked, err := app.Notifications.Deliver(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !worked {
+			break
+		}
+	}
+	pending, err := app.Notifications.List("pending")
+	if err != nil || len(pending) != 0 || len(platform.texts) < 3 || platform.recipient != "ou_bound" {
+		t.Fatalf("queued Feishu review did not finish at the bound destination: pending=%d sent=%d err=%v", len(pending), len(platform.texts), err)
 	}
 }

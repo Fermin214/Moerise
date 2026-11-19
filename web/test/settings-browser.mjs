@@ -24,18 +24,20 @@ function settings() {
       embedding: { enabled: false, provider: 'bailian', protocol: 'dashscope', base_url: null,
         model: 'qwen3.7-text-embedding', dimensions: 1024, send_dimensions: false, batch_size: 20, timeout_seconds: 30,
         max_concurrency: 2, max_retries: 2, query_instruction: null },
-      channel: { kind: 'none', app_id: null, user_open_id: null, destination: null },
+      channel: { kind: 'none', app_id: null, user_open_id: null, destination: null, feishu_mode: 'websocket',
+        qq_app_id: null, webhook_images: false, webhook_app_id: null },
       insights: { default_prompt: '用户自定义 Prompt' },
       stargazing: { enabled: true },
     },
     secrets: Object.fromEntries(['llm_api_key', 'embedding_api_key', 'app_secret', 'verification_token',
-      'encrypt_key', 'webhook_url', 'webhook_secret', 'bot_token'].map(name => [name, { configured: name === 'llm_api_key' }])),
+      'encrypt_key', 'webhook_url', 'webhook_secret', 'bot_token', 'qq_app_secret', 'webhook_app_secret'].map(name => [name, { configured: name === 'llm_api_key' }])),
+    channel_status: {},
     channel_capabilities: { text: false, images: false, record: false },
   };
 }
 async function fixture(t, language = 'zh-CN', returning = true) {
   const state = { value: settings(), session: false, gets: 0, patches: [], fail: null, hold: false, pending: [], csrf: false,
-    checks: [], checkFail: null, holdCheck: false, modelPending: [], index: 'disabled', mapReads: 0 };
+    checks: [], checkFail: null, holdCheck: false, modelPending: [], index: 'disabled', mapReads: 0, deliveries: [], resolutions: [] };
   const core = http.createServer(async (req, res) => {
     const path = new URL(req.url, 'http://localhost').pathname;
     const raw = await readRequestText(req);
@@ -83,6 +85,17 @@ async function fixture(t, language = 'zh-CN', returning = true) {
     }
     if (path === '/api/app/v1/notes') { json({ notes: [], next_page_token: '' }); return; }
     if (path === '/api/app/v1/chats' && req.method === 'GET') { json({ chats: [], next_page_token: '' }); return; }
+    if (path === '/api/app/v1/admin/notifications') {
+      if (new URL(req.url, 'http://localhost').searchParams.get('kind') !== 'review') { error('INVALID_ARGUMENT', 422); return; }
+      json({ notifications: state.deliveries }); return;
+    }
+    const resolveId = /^\/api\/app\/v1\/admin\/notifications\/([^/]+)\/resolve$/.exec(path)?.[1];
+    if (resolveId) {
+      assert.equal(req.headers['x-csrf-token'], 'csrf-settings');
+      const item = state.deliveries.find(entry => entry.id === resolveId);
+      const body = JSON.parse(raw); state.resolutions.push({ id: resolveId, ...body });
+      item.status = body.decision === 'sent' ? 'sent' : 'pending'; json({ notification: item }); return;
+    }
     if (path === '/api/app/v1/tags') { json({ tags: [] }); return; }
     if (path === '/api/app/v1/calendar') { json({ month: new URL(req.url, 'http://localhost').searchParams.get('month'), days: [] }); return; }
     if (path !== '/api/app/v1/settings') { error('SOURCE_NOT_FOUND', 404); return; }
@@ -318,6 +331,7 @@ test('settings browser saves public fields, explicit secrets, prompt and multi-s
   await setting(page, 'review.include_archived').check();
   await setting(page, 'timezone').fill('UTC');
   await setting(page, 'notifications.enabled').check();
+  await setting(page, 'channel.kind').selectOption('feishu-webhook');
   await page.getByRole('button', { name: '添加时段' }).click();
   await page.getByLabel('推送时段 2', { exact: true }).fill('18:30');
   await tab(page, 'models');
@@ -332,8 +346,7 @@ test('settings browser saves public fields, explicit secrets, prompt and multi-s
   await secret(page, 'LLM API Key').fill('new-llm-key');
   await operation(page, 'Embedding API Key').selectOption('clear');
   await tab(page, 'channel');
-  await setting(page, 'channel.kind').selectOption('feishu-webhook');
-  await operation(page, 'Webhook URL').selectOption('replace');
+  assert.equal(await operation(page, 'Webhook URL').isVisible(), false);
   await secret(page, 'Webhook URL').fill('https://hook.example.test/token');
   await tab(page, 'insights');
   await page.getByRole('button', { name: '恢复默认', exact: true }).click();
@@ -350,14 +363,14 @@ test('settings browser saves public fields, explicit secrets, prompt and multi-s
   assert.deepEqual(patch.secrets.llm_api_key, { action: 'replace', value: 'new-llm-key' });
   assert.deepEqual(patch.secrets.embedding_api_key, { action: 'clear' });
   assert.equal(patch.secrets.webhook_url.action, 'replace');
-  assert.deepEqual(patch.secrets.app_secret, { action: 'keep' });
+  assert.equal(patch.secrets.app_secret, undefined);
   assert.equal(patch.settings.llm.api_key, undefined);
   assert.equal(await page.locator('#settings-page input[type="password"]:visible').count(), 0);
   await tab(page, 'models');
   assert.equal(await operation(page, 'LLM API Key').inputValue(), 'keep');
   await tab(page, 'channel');
-  await page.getByText('文字推送：可用', { exact: true }).waitFor();
-  await page.getByText('图文推送：不可用', { exact: true }).waitFor();
+  assert.equal(await operation(page, 'Webhook URL').inputValue(), 'keep');
+  assert.equal(await setting(page, 'channel.webhook_app_id').isVisible(), false);
   await tab(page, 'review');
   await setting(page, 'review.count').fill('6');
   await page.getByRole('button', { name: '保存设置', exact: true }).click();
@@ -804,42 +817,78 @@ test('settings tabs retain edits, expose advanced fields and reveal invalid fiel
   assert.deepEqual(errors, []);
 });
 
-test('messaging channels start unselected and save Telegram through localized settings without exposing its token', async t => {
+test('independent channel secrets, review routing, connection status and manual resend work in both languages', async t => {
   const { page, state, errors, url } = await fixture(t, 'en-US');
+  state.value.channel_status.telegram = { state: 'connected', peer: '123', link: 'https://t.me/fixture_bot?start=local' };
+  state.value.channel_status.qq = { state: 'error', detail: 'BOT_CREDENTIALS' };
+  state.value.channel_status['feishu-app'] = { state: 'awaiting_verification' };
+  state.value.secrets.webhook_app_secret.configured = true;
+  state.deliveries.push({ id: 'first', kind: 'review', date: '2026-10-01', clock: '08:00', channel_kind: 'telegram', status: 'unknown' });
+  state.deliveries.push({ id: 'second', kind: 'review', date: '2026-10-01', clock: '12:00', channel_kind: 'feishu-app', status: 'unknown' });
+  state.deliveries.push({ id: 'third', kind: 'review', date: '2026-10-01', clock: '18:00', channel_kind: 'qq', status: 'unknown' });
   await page.goto(url + '/settings'); await login(page);
   await page.getByRole('button', { name: 'Save settings', exact: true }).waitFor();
   await tab(page, 'channel');
-  assert.equal(await setting(page, 'channel.kind').inputValue(), 'none');
-  await page.getByText('Choose a messaging channel to receive scheduled reviews, or read them in the Web app.', { exact: true }).waitFor();
-  assert.equal(await page.getByRole('combobox', { name: 'Telegram Bot Token operation', exact: true }).isVisible(), false);
-  await setting(page, 'channel.kind').selectOption('telegram');
-  await page.getByText(/Create a bot with @BotFather/).waitFor();
-  assert.equal(await page.getByRole('combobox', { name: 'App Secret operation', exact: true }).isVisible(), false);
+  await page.getByText(/Check the bot credentials/).waitFor();
+  await page.getByText('Waiting for callback verification', { exact: true }).waitFor();
+  assert.equal(await page.getByRole('link', { name: 'Open bot' }).getAttribute('href'), state.value.channel_status.telegram.link);
+  assert.equal(await setting(page, 'channel.kind').isVisible(), false);
+  await setting(page, 'channel.qq_app_id').fill('12345');
+  await page.getByLabel('New QQ AppSecret value').fill('private-qq');
+  await setting(page, 'channel.feishu_mode').selectOption('callback');
+  assert.ok(await page.getByLabel('New Verification Token value').isVisible());
+  await setting(page, 'channel.feishu_mode').selectOption('websocket');
+  assert.equal(await page.getByLabel('New Verification Token value').isVisible(), false);
+  await setting(page, 'channel.webhook_images').check();
+  assert.ok(await setting(page, 'channel.webhook_app_id').isVisible());
+  await setting(page, 'channel.webhook_images').uncheck();
+  await page.getByRole('combobox', { name: 'Webhook App Secret operation', exact: true }).selectOption('clear');
   await setting(page, 'channel.destination').fill('789');
-  await page.getByRole('combobox', { name: 'Telegram Bot Token operation', exact: true }).selectOption('replace');
   await page.getByLabel('New Telegram Bot Token value', { exact: true }).fill('123456:abcdefghijklmnopqrstuvwxyz_0123456789');
   await tab(page, 'general');
   await page.locator('#settings-language').selectOption('zh-CN');
   assert.equal(await secret(page, 'Telegram Bot Token').inputValue(), '123456:abcdefghijklmnopqrstuvwxyz_0123456789');
   await tab(page, 'review');
+  await setting(page, 'channel.kind').selectOption('telegram');
+  await page.getByText('接收会话：789', { exact: true }).waitFor();
   await setting(page, 'notifications.enabled').check();
   await page.getByRole('button', { name: '保存设置', exact: true }).click();
   await page.getByText('设置已保存。', { exact: true }).waitFor();
   const patch = state.patches[0];
-  assert.deepEqual(patch.settings.channel, { kind: 'telegram', destination: '789' });
+  assert.deepEqual(patch.settings.channel, { kind: 'telegram', destination: '789', qq_app_id: '12345' });
   assert.equal(patch.settings.notifications.enabled, true);
   assert.deepEqual(patch.secrets.bot_token, { action: 'replace', value: '123456:abcdefghijklmnopqrstuvwxyz_0123456789' });
+  assert.deepEqual(patch.secrets.webhook_app_secret, { action: 'clear' });
   assert.equal(patch.secrets.app_secret, undefined);
   await tab(page, 'channel');
-  await page.getByText('图文推送：可用', { exact: true }).waitFor();
+  assert.equal(await operation(page, 'QQ AppSecret').inputValue(), 'keep');
+  await operation(page, 'QQ AppSecret').selectOption('replace');
+  await secret(page, 'QQ AppSecret').fill('rotated-qq');
+  await page.getByRole('button', { name: '保存设置', exact: true }).click();
+  await page.getByText('设置已保存。', { exact: true }).waitFor();
+  assert.deepEqual(state.patches.at(-1).secrets, { qq_app_secret: { action: 'replace', value: 'rotated-qq' } });
   assert.equal(await secret(page, 'Telegram Bot Token').inputValue(), '');
   assert.equal(await page.locator('body').textContent().then(text => text.includes('123456:abcdefghijklmnopqrstuvwxyz_0123456789')), false);
-  await setting(page, 'channel.kind').selectOption('none');
+  await page.setViewportSize({ width: 390, height: 844 });
+  assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+  await tab(page, 'review'); await setting(page, 'channel.kind').selectOption('none');
   assert.equal(await setting(page, 'notifications.enabled').isChecked(), false);
   await page.getByRole('button', { name: '保存设置', exact: true }).click();
   await page.getByText('设置已保存。', { exact: true }).waitFor();
   assert.deepEqual(state.patches.at(-1).settings.channel, { kind: 'none' });
   assert.deepEqual(state.patches.at(-1).settings.notifications, { enabled: false });
   assert.equal(state.patches.at(-1).secrets.bot_token, undefined);
+  await tab(page, 'history');
+  const row = clock => page.locator('#settings-panel-history .settings-row').filter({ hasText: clock });
+  await row('08:00').getByRole('button', { name: '补发' }).click();
+  await page.getByText(/08:00 · Telegram · 等待发送/).waitFor();
+  await row('12:00').getByRole('textbox', { name: '飞书消息 ID（可选）' }).fill('om_fixture');
+  await row('12:00').getByRole('button', { name: '确认已送达' }).click();
+  await page.getByText(/12:00 · 飞书应用机器人 · 已发送/).waitFor();
+  await row('18:00').getByRole('button', { name: '确认已送达' }).click();
+  await page.getByText(/18:00 · QQ 私聊 · 已发送/).waitFor();
+  assert.deepEqual(state.resolutions, [
+    { id: 'first', decision: 'not_sent' }, { id: 'second', decision: 'sent', receipt: 'om_fixture' }, { id: 'third', decision: 'sent' },
+  ]);
   assert.deepEqual(errors, []);
 });

@@ -75,6 +75,7 @@ type SettingsView struct {
 	Secrets              map[string]SecretStatus `json:"secrets"`
 	ChannelCapabilities  ChannelCapabilities     `json:"channel_capabilities"`
 	DefaultInsightPrompt string                  `json:"default_insight_prompt"`
+	ChannelStatus        map[string]botStatus    `json:"channel_status"`
 }
 
 func productSettings(s Settings) ProductSettings {
@@ -143,6 +144,7 @@ func decryptProduct(settings Settings, version int64, body []byte) (Settings, er
 	if strictJSON(bytes.NewReader(plain), &product) != nil {
 		return settings, bad
 	}
+	product.normalizeDeliveryChannels()
 	return product.apply(settings), nil
 }
 
@@ -152,13 +154,41 @@ func storedProduct(db *sql.DB, settings Settings) (Settings, int64, error) {
 	err := db.QueryRow(`SELECT version, ciphertext FROM product_settings WHERE instance_id = ?`,
 		settings.Memos.InstanceID).Scan(&version, &body)
 	if errors.Is(err, sql.ErrNoRows) {
-		return settings, 0, nil
+		saved, err := deploymentProduct(db, settings)
+		return saved, 0, err
 	}
 	if err != nil {
 		return settings, 0, err
 	}
 	settings, err = decryptProduct(settings, version, body)
 	return settings, version, err
+}
+
+func deploymentProduct(db *sql.DB, settings Settings) (Settings, error) {
+	if settings.Channel.FeishuMode != "" {
+		return settings, nil
+	}
+	var migrated, bound, legacy bool
+	if err := db.QueryRow(`SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='legacy_channel_deployments'),
+		EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='bindings')`).Scan(&migrated, &bound); err != nil {
+		return settings, err
+	}
+	if bound {
+		query := `SELECT EXISTS(SELECT 1 FROM bindings WHERE instance_id=?)`
+		if migrated {
+			query = `SELECT EXISTS(SELECT 1 FROM legacy_channel_deployments WHERE instance_id=?)`
+		}
+		if err := db.QueryRow(query, settings.Memos.InstanceID).Scan(&legacy); err != nil {
+			return settings, err
+		}
+	}
+	if legacy {
+		product := productSettings(settings)
+		product.normalizeDeliveryChannels()
+		return product.apply(settings), nil
+	}
+	settings.Channel.FeishuMode = "websocket"
+	return settings, nil
 }
 
 // 部署值只初始化一次，后续读取持久版本。
@@ -184,8 +214,11 @@ func loadPersistedProduct(settings Settings) (Settings, error) {
 	}
 	defer db.Close()
 	var exists bool
-	if err := db.QueryRow(`SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'product_settings')`).Scan(&exists); err != nil || !exists {
+	if err := db.QueryRow(`SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'product_settings')`).Scan(&exists); err != nil {
 		return settings, err
+	}
+	if !exists {
+		return deploymentProduct(db, settings)
 	}
 	saved, _, err := storedProduct(db, settings)
 	return saved, err
@@ -196,8 +229,8 @@ func (s *Store) initializeProductSettings() error {
 	if err != nil {
 		return err
 	}
+	s.Settings, s.productVersion = saved, version
 	if version > 0 {
-		s.Settings, s.productVersion = saved, version
 		return nil
 	}
 	if s.Settings.Web.StateEncryptionKey == "" {
@@ -222,10 +255,12 @@ func secretFields(product *ProductSettings) map[string]**string {
 		"encrypt_key": &product.Channel.EncryptKey, "webhook_url": &product.Channel.WebhookURL,
 		"webhook_secret": &product.Channel.WebhookSecret,
 		"bot_token":      &product.Channel.BotToken,
+		"qq_app_secret":  &product.Channel.QQAppSecret, "webhook_app_secret": &product.Channel.WebhookAppSecret,
 	}
 }
 
 func publicProduct(product ProductSettings) map[string]any {
+	product.Channel.FeishuMode = product.Channel.feishuMode()
 	data, _ := json.Marshal(product)
 	var result map[string]any
 	_ = json.Unmarshal(data, &result)
@@ -238,7 +273,7 @@ func publicProduct(product ProductSettings) map[string]any {
 		delete(result[section].(map[string]any), "api_key")
 	}
 	channel := result["channel"].(map[string]any)
-	for _, key := range []string{"app_secret", "verification_token", "encrypt_key", "webhook_url", "webhook_secret", "bot_token"} {
+	for _, key := range []string{"app_secret", "verification_token", "encrypt_key", "webhook_url", "webhook_secret", "bot_token", "qq_app_secret", "webhook_app_secret"} {
 		delete(channel, key)
 	}
 	return result
@@ -263,14 +298,14 @@ func (s *Store) settingsView() SettingsView {
 	for key, field := range secretFields(&product) {
 		secrets[key] = SecretStatus{configured(*field) != ""}
 	}
-	channel := product.Channel
-	app := configured(channel.AppID) != "" && configured(channel.AppSecret) != ""
-	record := channel.Kind == "feishu-app" && app && configured(channel.VerificationToken) != "" && configured(channel.UserOpenID) != ""
-	text := record || channel.Kind == "feishu-webhook" && configured(channel.WebhookURL) != ""
-	telegram := channel.Kind == "telegram" && validTelegramToken(configured(channel.BotToken)) &&
-		validTelegramChat(configured(channel.Destination))
+	channel := s.deliveryChannel()
+	record := product.Channel.botEnabled("feishu-app") || product.Channel.botEnabled("qq") ||
+		product.Channel.botEnabled("telegram") && s.Settings.Web.StateEncryptionKey != ""
+	text := channel.botEnabled(channel.Kind) && configured(channel.Destination) != "" ||
+		channel.Kind == "feishu-webhook" && configured(channel.WebhookURL) != ""
+	images := text && (channel.Kind == "feishu-app" || channel.Kind == "telegram" || channel.Kind == "feishu-webhook" && product.Channel.WebhookImages)
 	return SettingsView{s.productVersion, publicProduct(product), secrets,
-		ChannelCapabilities{text || telegram, text && app || telegram, record}, DefaultInsightPrompt}
+		ChannelCapabilities{text, images, record}, DefaultInsightPrompt, s.botStatuses()}
 }
 
 func mergeSettings(target map[string]any, changes map[string]json.RawMessage) error {
@@ -363,19 +398,51 @@ func (s *Store) prepareSettings(update SettingsUpdate) (Settings, error) {
 
 func (s *Store) persistSettings(settings Settings) error {
 	version := s.productVersion + 1
+	oldQQ := s.Settings.Channel.botID("qq")
+	retiredKeys := map[string]bool{}
+	if oldQQ != "" && oldQQ != settings.Channel.botID("qq") {
+		channel := s.Settings.Channel
+		channel.Kind = "qq"
+		retiredKeys[notificationChannelKey(s.channelForDelivery(channel))] = true
+		for key, historical := range settings.notificationChannels {
+			if historical.Kind == "qq" && historical.botID("qq") == oldQQ {
+				retiredKeys[key] = true
+				delete(settings.notificationChannels, key)
+			}
+		}
+	}
 	body, err := encryptProduct(settings, version)
 	if err != nil {
 		return err
 	}
-	result, err := s.state.Exec(`UPDATE product_settings SET version = ?, ciphertext = ?, updated_at = ?
-		WHERE instance_id = ? AND version = ?`, version, body, nowText(), settings.Memos.InstanceID, s.productVersion)
-	if err != nil {
-		return err
-	}
-	changed, err := result.RowsAffected()
-	if err == nil && changed != 1 {
-		return failure("SETTINGS_CONFLICT", "Settings have changed; reload before saving", 409, false)
-	}
+	err = transaction(s.state, func(tx *sql.Tx) error {
+		result, err := tx.Exec(`UPDATE product_settings SET version = ?, ciphertext = ?, updated_at = ?
+			WHERE instance_id = ? AND version = ?`, version, body, nowText(), settings.Memos.InstanceID, s.productVersion)
+		if err != nil {
+			return err
+		}
+		if changed, _ := result.RowsAffected(); changed != 1 {
+			return failure("SETTINGS_CONFLICT", "Settings have changed; reload before saving", 409, false)
+		}
+		if len(retiredKeys) > 0 {
+			instance, user := settings.Memos.InstanceID, settings.Memos.User
+			for _, stmt := range []string{
+				`DELETE FROM bot_bindings WHERE instance_id=? AND user_name=? AND kind='qq' AND bot_id=?`,
+				`DELETE FROM bot_cursors WHERE instance_id=? AND user_name=? AND kind='qq' AND bot_id=?`,
+				`UPDATE bot_inbox SET body=NULL,phase='retired',error_code='BOT_REPLACED' WHERE instance_id=? AND user_name=? AND kind='qq' AND bot_id=? AND phase IN ('pending','reply','sending')`,
+			} {
+				if _, err := tx.Exec(stmt, instance, user, oldQQ); err != nil {
+					return err
+				}
+			}
+			for key := range retiredKeys {
+				if _, err := tx.Exec(`UPDATE notifications SET status='skipped',last_error='BOT_REPLACED' WHERE instance_id=? AND user_name=? AND channel_key=? AND status IN ('pending','unknown')`, instance, user, key); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	})
 	if err == nil {
 		s.productVersion = version
 	}

@@ -1,77 +1,13 @@
-# Telegram Review Delivery
+# Telegram 私聊与回顾推送
 
-Moerise supports scheduled daily review delivery through an official Telegram Bot. Each Moerise instance can configure one active messaging channel: Telegram, a Feishu App bot, a Feishu webhook, or none.
+在 Telegram 联系 **@BotFather**，用 `/newbot` 创建机器人。在 Moerise 的「设置 → 消息渠道 → Telegram」填入 Bot Token 并保存，点「打开机器人」，在聊天窗口点「开始」。Core 使用启动链接中的参数识别本人。已登记的私聊可以直接使用。
 
-When enabled, Moerise delivers full note text (split into ordered messages if necessary) and images as original files. The delivery header is titled `Daily review`, and each note concludes with its tags and creation date (e.g., `#ideas  Created on 2026-01-15`). Note content, tags, and file attachments retain their original languages.
+从只支持推送的版本升级时，原 Chat ID 继续接收定时回顾。首次使用私聊速记或查询回顾，需由笔记作者登录设置页，打开机器人并点「开始」。
 
----
+文字速记保留空格、换行和 `#标签`。Memos 确认已保存后，原私聊会收到回执。附件和图片配文会收到格式提示。单独发送 `/回顾` 或 `/review` 查询当天摘录，`//回顾` 和 `//review` 保存字面命令。
 
-## 1. Create and Configure a Telegram Bot
+在回顾设置中选择 Telegram、开启推送并选择时段。目标 Chat ID 留空时发送到已登记的私聊。要发到其他聊天，填写该私聊、群或频道的数字 ID，并为机器人开通发送权限。群聊或频道会收到入选笔记的全文和图片。更改目的地后，私聊速记和回顾查询仍在本人私聊使用。
 
-### Step 1: Create Your Bot
-1. In Telegram, start a chat with the official **@BotFather**.
-2. Send `/newbot` and follow the prompts to choose a display name and username.
-3. Save the generated **Bot Token** securely.
+Core 使用长轮询收件。机器人已有外部 Webhook 时，设置页显示冲突原因，原有定时推送可继续使用。私聊收件需要部署状态加密密钥。首次部署可通过 `MOERISE_TELEGRAM_BOT_TOKEN` 和 `MOERISE_TELEGRAM_CHAT_ID` 初始化配置。
 
-### Step 2: Initialize Chat
-1. Open a direct chat with your newly created bot and send `/start`. Telegram bots cannot initiate direct messages with users until the user contacts them first.
-
-### Step 3: Find Your Chat ID
-Retrieve your numeric Telegram Chat ID using the `getUpdates` API endpoint:
-
-```bash
-read -rs -p "Telegram Bot Token: " TELEGRAM_BOT_TOKEN
-printf '\n'
-curl --silent --show-error "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getUpdates"
-unset TELEGRAM_BOT_TOKEN
-```
-
-Look for `message.chat.id` in the returned JSON. For a private chat, this is a positive integer (e.g. `123456789`).
-
-- **For Groups**: Add your bot to the group, send a message mentioning the bot, and locate `message.chat.id` (usually a negative number).
-- **For Channels**: Add your bot as an administrator with posting rights, send a channel post, and locate `channel_post.chat.id`.
-
----
-
-## 2. Configure Moerise
-
-### Web UI Configuration
-Navigate to **Settings → Messaging Channel**:
-1. Select **Telegram**.
-2. Enter your **Telegram Bot Token**.
-3. Set **Delivery Destination** to your numeric Chat ID.
-4. Enable **Enable review delivery**, specify desired delivery times and timezone, and click **Save**.
-
-The Bot Token is encrypted inside `state.sqlite3` and is never exposed back to the browser.
-
-### Environment Variable Configuration (Docker Compose)
-For automated setup via `.env`:
-
-```dotenv
-MOERISE_CHANNEL_KIND=telegram
-MOERISE_TELEGRAM_BOT_TOKEN=123456789:ABCdefGHIjklMNOpqrSTUvwxYZ
-MOERISE_TELEGRAM_CHAT_ID=123456789
-MOERISE_NOTIFICATIONS_ENABLED=true
-MOERISE_NOTIFICATIONS_TIMES=09:00,18:00
-MOERISE_TIMEZONE=Asia/Shanghai
-```
-
-Deployment values initialize daily settings once; saved Web settings take precedence thereafter.
-
----
-
-## 3. Delivery Specifications & Format
-
-1. **Text Chunking**:
-   - Telegram enforces a limit of 4,096 UTF-16 units per message.
-   - Moerise splits long notes along paragraph breaks or line breaks while preserving UTF-8 integrity.
-   - Text is sent as plain text without risky Markdown parsing or automatic link previews to avoid formatting errors.
-2. **Whitespace and Invisible Character Preservation**:
-   - If a chunk consists solely of whitespace or invisible characters, Moerise automatically sends it as a `.txt` file attachment to prevent Telegram from rejecting the message as empty.
-3. **Images as Original Documents**:
-   - Images are uploaded using `sendDocument` (up to 10 MiB per image) to guarantee that image bytes and metadata remain uncompressed.
-4. **Rate Limiting & Retries**:
-   - Moerise obeys the Bot API response's `parameters.retry_after` value on HTTP 429 and maintains persistent cooldowns across restarts.
-   - If a message transmission times out or its status cannot be confirmed, it enters the `unknown` state. You can inspect and resolve deliveries via the [Notification Management API](NOTIFICATIONS.md).
-
-Telegram normalizes surrounding whitespace in plain text messages. Moerise preserves the submitted text and uses files for chunks that Telegram would treat as empty. Telegram has no general API for retrieving an arbitrary sent message by ID, so `unknown` deliveries require you to inspect the destination chat before resolving them.
+定时推送先发 `Daily review`，再按顺序发送正文、原图文件、标签和创建日期。长正文按 4,096 个 UTF-16 单元切分，全空白片段以文本文件发送。限流时遵守平台返回的冷却时间。某一片结果不明时，后续片段随该批跳过。核对聊天记录后可在发送记录中补发。[通知与推送](NOTIFICATIONS.md)

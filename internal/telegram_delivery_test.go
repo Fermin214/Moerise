@@ -276,7 +276,19 @@ func TestTelegramFullReviewRateLimitAndChannelRecovery(t *testing.T) {
 	if _, err := app.Notifications.Resolve(t.Context(), unknown[0].ID, "sent", "unverifiable-receipt", "owner"); errorCode(err) != "CHANNEL_RECEIPT_UNSUPPORTED" {
 		t.Fatalf("Telegram accepted an unqueryable receipt: %v", err)
 	}
-	if _, err := app.Notifications.Resolve(t.Context(), unknown[0].ID, "sent", "", "owner"); err != nil {
+	if n, err := app.Notifications.Schedule(t.Context(), at.AddDate(0, 0, 1)); err != nil || n != 1 {
+		t.Fatalf("new channel not scheduled: %d %v", n, err)
+	}
+	for range 100 {
+		if !deliver() {
+			break
+		}
+	}
+	if webhookCalls == 0 {
+		t.Fatal("interrupted Telegram delivery blocked the next scheduled review")
+	}
+	newSlotCalls := webhookCalls
+	if _, err := app.Notifications.Resolve(t.Context(), unknown[0].ID, "not_sent", "", "owner"); err != nil {
 		t.Fatal(err)
 	}
 	for range 100 {
@@ -284,7 +296,7 @@ func TestTelegramFullReviewRateLimitAndChannelRecovery(t *testing.T) {
 			break
 		}
 	}
-	if webhookCalls != 0 || len(texts) < 4 || texts[0] != "Daily review" || uploads != 2 {
+	if webhookCalls != newSlotCalls || len(texts) < 4 || texts[0] != "Daily review" || uploads != 3 {
 		t.Fatalf("old queue changed target, repeated its title or lost images: texts=%d uploads=%d webhook=%d",
 			len(texts), uploads, webhookCalls)
 	}
@@ -305,17 +317,6 @@ func TestTelegramFullReviewRateLimitAndChannelRecovery(t *testing.T) {
 	}
 	if n, err := app.Notifications.Schedule(t.Context(), at.Add(time.Hour)); err != nil || n != 0 {
 		t.Fatal("channel switch duplicated a processed review slot")
-	}
-	if n, err := app.Notifications.Schedule(t.Context(), at.AddDate(0, 0, 1)); err != nil || n != 1 {
-		t.Fatalf("new channel not scheduled: %d %v", n, err)
-	}
-	for range 100 {
-		if !deliver() {
-			break
-		}
-	}
-	if webhookCalls == 0 {
-		t.Fatal("new reviews did not use the selected Feishu webhook")
 	}
 }
 

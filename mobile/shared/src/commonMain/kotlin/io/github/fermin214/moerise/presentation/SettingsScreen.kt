@@ -22,6 +22,7 @@ import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
@@ -55,6 +56,7 @@ fun SettingsScreen(
     val scroll = rememberScrollState()
 
     LaunchedEffect(controller) { controller.load() }
+    LaunchedEffect(controller, tab) { controller.selectTab(tab) }
     DisposableEffect(controller) { onDispose { controller.leave() } }
 
     Column(Modifier.fillMaxSize().safeDrawingPadding().testTag("settings_page")) {
@@ -75,11 +77,12 @@ fun SettingsScreen(
                 WebTabs(
                     listOf(strings.text("通用", "General"), strings.text("回顾", "Review"),
                         strings.text("模型", "Models"), strings.text("洞察", "Insights"),
-                        strings.text("消息渠道", "Messaging channel"), strings.text("隐私", "Privacy")),
+                        strings.text("消息渠道", "Messaging channel"), strings.text("发送记录", "Delivery history"),
+                        strings.text("隐私", "Privacy")),
                     tab, { if (!state.busy) tab = it }, tagPrefix = "settings_tab", enabled = !state.busy,
                 )
                 when {
-                    tab == 5 -> PrivacySettings(mobile.privacy, strings)
+                    tab == 6 -> PrivacySettings(mobile.privacy, strings)
                     state.loading -> SettingsHint(strings.text("正在加载设置…", "Loading settings…"))
                     state.snapshot == null -> {
                         state.error?.let { SettingsMessage(settingsMessage(it, strings), error = true) }
@@ -132,6 +135,7 @@ fun SettingsScreen(
                                 )
                             }
                             4 -> SettingsChannel(controller, state, strings)
+                            5 -> SettingsHistory(controller, state, strings)
                         }
                         Column(
                             Modifier.fillMaxWidth().padding(top = 4.dp, bottom = 12.dp),
@@ -194,6 +198,16 @@ private fun SettingsReview(controller: SettingsController, state: SettingsUiStat
         )
         SettingsCheckbox(controller, state, "review.include_archived", strings.text("包含归档笔记", "Include archived notes"))
         SettingsCheckbox(controller, state, "notifications.enabled", strings.text("开启回顾推送", "Enable review delivery"))
+        SettingsChoiceField(controller, state, "channel.kind", strings.text("定时回顾发往", "Send scheduled reviews to"),
+            channelChoices(strings))
+        val kind = state.values["channel.kind"].orEmpty()
+        val target = when (kind) {
+            "telegram" -> state.values["channel.destination"]
+            "feishu-app" -> state.values["channel.user_open_id"]
+            else -> null
+        }?.takeIf { it.isNotBlank() } ?: state.snapshot.settingsObject("channel_status").settingsObject(kind).settingsText("peer")
+        if (!target.isNullOrBlank()) SettingsHint(strings.text("接收会话：$target", "Receiving chat: $target"))
+        else if (kind !in setOf("none", "feishu-webhook")) SettingsHint(strings.text("等待建立私聊", "Waiting for a private chat"))
         SettingsSubheading(strings.text("推送时段", "Delivery times"))
         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
             state.times.forEachIndexed { index, value ->
@@ -392,81 +406,122 @@ private fun SettingsModel(
     ))
 }
 
-@OptIn(ExperimentalLayoutApi::class)
+private fun channelChoices(strings: Strings) = listOf(
+    "none" to strings.text("不推送", "No destination"),
+    "qq" to strings.text("QQ 私聊", "QQ private chat"),
+    "telegram" to "Telegram",
+    "feishu-app" to strings.text("飞书应用机器人", "Feishu app bot"),
+    "feishu-webhook" to strings.text("飞书群 Webhook", "Feishu group webhook"),
+)
+
+private fun channelLabel(value: String?, strings: Strings) = when (value) {
+    "disabled" -> strings.text("未配置", "Not configured")
+    "connecting" -> strings.text("连接中", "Connecting")
+    "awaiting_verification" -> strings.text("等待回调验证", "Waiting for callback verification")
+    "connected" -> strings.text("已连接", "Connected")
+    "disconnected" -> strings.text("连接已断开", "Disconnected")
+    "error" -> strings.text("连接失败", "Connection failed")
+    "BOT_CREDENTIALS" -> strings.text("请检查机器人凭据。", "Check the bot credentials.")
+    "BOT_CONNECTION" -> strings.text("网络连接中断。", "Network connection interrupted.")
+    "QQ_SESSION_LOST" -> strings.text("离线期间可能有消息未收到。", "Messages may have been missed while offline.")
+    "BOT_RATE_LIMITED" -> strings.text("平台限制了请求频率。", "The platform is rate limiting requests.")
+    "BOT_PROTOCOL" -> strings.text("平台响应异常。", "Unexpected platform response.")
+    "TELEGRAM_WEBHOOK" -> strings.text("外部 Webhook 已占用收件。", "An external webhook is receiving updates.")
+    "BOT_STORAGE" -> strings.text("收件记录写入失败。", "Could not save incoming messages.")
+    "STATE_KEY_REQUIRED" -> strings.text("请配置状态加密密钥。", "Configure the state encryption key.")
+    "FEISHU_CONNECTION_ERROR" -> strings.text("连接飞书失败。", "Could not connect to Feishu.")
+    "pending" -> strings.text("等待发送", "Queued")
+    "running" -> strings.text("发送中", "Sending")
+    "sent" -> strings.text("已发送", "Sent")
+    "unknown" -> strings.text("送达结果不明", "Delivery unconfirmed")
+    "failed" -> strings.text("发送失败", "Delivery failed")
+    "skipped" -> strings.text("已跳过", "Skipped")
+    else -> value.orEmpty()
+}
+
+@Composable
+private fun SettingsConnection(status: JsonObject?, strings: Strings) {
+    SettingsHint(listOf(channelLabel(status.settingsText("state") ?: "disabled", strings),
+        channelLabel(status.settingsText("detail"), strings), status.settingsText("peer").orEmpty())
+        .filter { it.isNotBlank() }.joinToString(" · "))
+}
+
 @Composable
 private fun SettingsChannel(controller: SettingsController, state: SettingsUiState, strings: Strings) {
+    val channels = state.snapshot.settingsObject("channel_status")
+    val uri = LocalUriHandler.current
     SettingsSection(strings.text("消息渠道", "Messaging channel")) {
-        val kind = state.values["channel.kind"].orEmpty()
-        SettingsChoiceField(
-            controller, state, "channel.kind", strings.text("发送方式", "Delivery method"),
-            listOf(
-                "none" to strings.text("不启用消息渠道", "No messaging channel"),
-                "feishu-app" to strings.text("飞书应用机器人", "Feishu app bot"),
-                "feishu-webhook" to strings.text("飞书 Webhook", "Feishu webhook"),
-                "telegram" to "Telegram",
-            ),
-        )
-        val capabilities = state.snapshot.settingsObject("channel_capabilities")
-        FlowRow(
-            Modifier.fillMaxWidth().padding(top = 12.dp, bottom = 8.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            listOf(
-                "text" to strings.text("文字推送", "Text delivery"),
-                "images" to strings.text("图文推送", "Text and images"),
-                "record" to strings.text("双向记录", "Note capture"),
-            ).forEach { (key, label) ->
-                val available = capabilities.settingsBoolean(key)
-                val text = label + strings.text("：", ": ") +
-                    if (available) strings.text("可用", "Available") else strings.text("不可用", "Unavailable")
-                if (available) Surface(
-                    color = MoeriseColors.TagSurface,
-                    border = BorderStroke(1.dp, MoeriseColors.TagLine),
-                    shape = RoundedCornerShape(50),
-                ) {
-                    Text(
-                        text, color = Color(0xFF2A5BB5), fontSize = 13.sp, lineHeight = 20.8.sp,
-                        modifier = Modifier.padding(horizontal = 9.dp, vertical = 1.dp),
-                    )
-                } else SettingsHint(text)
-            }
+        if ("channels" in state.checkErrors) SettingsMessage(strings.text("连接状态不可用", "Connection status unavailable"), error = true)
+        SettingsSubheading(strings.text("QQ 私聊", "QQ private chat"))
+        SettingsField(controller, state, "channel.qq_app_id", "QQ AppID", keyboard = KeyboardType.Ascii)
+        SettingsSecret(controller, state, strings, "qq_app_secret", "QQ AppSecret")
+        SettingsConnection(channels.settingsObject("qq"), strings)
+        SettingsSubheading("Telegram")
+        SettingsSecret(controller, state, strings, "bot_token", "Telegram Bot Token")
+        SettingsField(controller, state, "channel.destination", strings.text("Telegram 接收会话", "Telegram delivery chat"),
+            hint = strings.text("留空使用本人私聊，也可填写群或频道的 Chat ID。", "Leave blank for your private chat, or enter a group or channel Chat ID."),
+            keyboard = KeyboardType.Ascii)
+        val telegram = channels.settingsObject("telegram")
+        val link = telegram.settingsText("link").orEmpty()
+        if (Regex("https://t\\.me/[A-Za-z0-9_]+(?:\\?start=[A-Za-z0-9_-]{1,64})?").matches(link)) {
+            SettingsGhost(strings.text("打开机器人", "Open bot"), { runCatching { uri.openUri(link) } },
+                modifier = Modifier.testTag("settings_open_telegram"))
         }
-        when {
-            kind == "none" -> SettingsHint(strings.text(
-                "选择消息渠道后可开启回顾推送，也可以只在 Web 阅读。",
-                "Choose a messaging channel to receive scheduled reviews, or read them in the Web app.",
-            ))
-            kind.startsWith("feishu-") -> {
-                SettingsHint(strings.text(
-                    "仅配置 Webhook URL 可发送文字。图文还需 App ID 和 App Secret；双向记录还需 Verification Token 和用户 Open ID。能力在保存后更新。",
-                    "A webhook URL supports text delivery. Images also need an App ID and App Secret. Note capture additionally needs a Verification Token and user Open ID. Save to update available features.",
-                ))
-                SettingsField(controller, state, "channel.app_id", "App ID")
-                SettingsSecret(controller, state, strings, "app_secret", "App Secret")
-                SettingsSecret(controller, state, strings, "verification_token", "Verification Token")
-                SettingsSecret(controller, state, strings, "encrypt_key", "Encrypt Key")
-                SettingsField(controller, state, "channel.user_open_id", strings.text("用户 Open ID", "User Open ID"))
-                SettingsSecret(controller, state, strings, "webhook_url", "Webhook URL")
-                SettingsSecret(controller, state, strings, "webhook_secret", "Webhook Secret", separator = false)
-            }
-            kind == "telegram" -> {
-                SettingsHint(strings.text(
-                    "通过 @BotFather 创建机器人，向它发送 /start，再从 getUpdates 获取自己的数字 Chat ID。支持英文回顾和图片原文件；无需公开回调地址。",
-                    "Create a bot with @BotFather, send /start to your bot, then find your numeric Chat ID in getUpdates. Reviews use English and include images as original files. No public callback URL is needed.",
-                ))
-                SettingsSecret(controller, state, strings, "bot_token", "Telegram Bot Token", separator = false)
-            }
+        SettingsConnection(telegram, strings)
+        SettingsSubheading(strings.text("飞书应用机器人", "Feishu app bot"))
+        SettingsChoiceField(controller, state, "channel.feishu_mode", strings.text("接收方式", "Receive messages via"),
+            listOf("websocket" to strings.text("长连接", "WebSocket"), "callback" to strings.text("公网回调", "Public callback")))
+        SettingsField(controller, state, "channel.app_id", "App ID")
+        SettingsSecret(controller, state, strings, "app_secret", "App Secret")
+        SettingsField(controller, state, "channel.user_open_id", strings.text("用户 Open ID", "User Open ID"),
+            hint = strings.text("私人应用可留空以绑定首个私聊。多人应用请指定用户。", "Leave blank to bind the first private chat. Specify a user for shared apps."))
+        if (state.values["channel.feishu_mode"] == "callback") {
+            SettingsSecret(controller, state, strings, "verification_token", "Verification Token")
+            SettingsSecret(controller, state, strings, "encrypt_key", "Encrypt Key")
         }
-        if (kind in setOf("feishu-app", "telegram")) SettingsField(
-            controller, state, "channel.destination", strings.text("推送目标", "Delivery destination"),
-            hint = strings.text(
-                "Telegram 填写数字 Chat ID；飞书应用可留空，使用绑定用户的 Open ID。",
-                "For Telegram, enter a numeric Chat ID. For a Feishu app, leave blank to use the bound user's Open ID.",
-            ),
-            keyboard = if (kind == "telegram") KeyboardType.Ascii else KeyboardType.Text,
-            separator = false,
-        )
+        SettingsConnection(channels.settingsObject("feishu-app"), strings)
+        SettingsSubheading(strings.text("飞书群 Webhook", "Feishu group webhook"))
+        SettingsSecret(controller, state, strings, "webhook_url", "Webhook URL")
+        SettingsSecret(controller, state, strings, "webhook_secret", "Webhook Secret")
+        SettingsCheckbox(controller, state, "channel.webhook_images", strings.text("推送图片", "Include images"))
+        val images = state.values["channel.webhook_images"] == "true"
+        if (images) SettingsField(controller, state, "channel.webhook_app_id", "Webhook App ID")
+        if (images || state.snapshot.settingsObject("secrets").settingsObject("webhook_app_secret").settingsBoolean("configured")) {
+            SettingsSecret(controller, state, strings, "webhook_app_secret", "Webhook App Secret", allowReplace = images)
+        }
+    }
+}
+
+@Composable
+private fun SettingsHistory(controller: SettingsController, state: SettingsUiState, strings: Strings) {
+    SettingsSection(strings.text("发送记录", "Delivery history")) {
+        val items = state.deliveries
+        if ("history" in state.checkErrors) SettingsMessage(strings.text("读取发送记录失败。", "Could not load delivery history."), error = true)
+        else if (items == null) SettingsHint(strings.text("加载中…", "Loading…"))
+        else if (items.isEmpty()) SettingsHint(strings.text("暂无发送记录", "No deliveries yet"))
+        items.orEmpty().forEach { item ->
+            val kind = channelChoices(strings).firstOrNull { it.first == item.settingsText("channel_kind") }?.second
+            val status = item.settingsText("status")
+            val id = item.settingsText("id").orEmpty()
+            SettingsHint(listOfNotNull(item.settingsText("date"), item.settingsText("clock"), kind,
+                channelLabel(status, strings), item.settingsText("last_error")).filter { it.isNotBlank() }.joinToString(" · "))
+            if (status == "unknown" && id.isNotEmpty()) key(id) {
+                val enabled = id !in state.resending && !state.busy
+                var receipt by remember { mutableStateOf("") }
+                if (item.settingsText("channel_kind") == "feishu-app") {
+                    val label = strings.text("飞书消息 ID（可选）", "Feishu message ID (optional)")
+                    SettingsInput(receipt, { if (it.encodeToByteArray().size <= 256) receipt = it }, label, enabled,
+                        modifier = Modifier.fillMaxWidth(), placeholder = label)
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    SettingsGhost(strings.text("确认已送达", "Confirm delivery"),
+                        { controller.resolveDelivery(id, "sent", receipt) }, enabled = enabled)
+                    SettingsGhost(strings.text("补发", "Resend"),
+                        { controller.resolveDelivery(id, "not_sent") }, enabled = enabled)
+                }
+            }
+            HorizontalDivider(color = MoeriseColors.Line)
+        }
     }
 }
 
@@ -597,12 +652,14 @@ private fun SettingsSecret(
     name: String,
     label: String,
     separator: Boolean = true,
+    allowReplace: Boolean = true,
 ) {
     val edit = state.secrets[name]
     val action = edit?.action ?: "keep"
     val configured = state.snapshot.settingsObject("secrets").settingsObject(name).settingsBoolean("configured")
+    val direct = !configured && !name.endsWith("_api_key")
     SettingsRow(label, separator = separator) {
-        Row(
+        if (!direct) Row(
             Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalAlignment = Alignment.CenterVertically,
@@ -614,22 +671,22 @@ private fun SettingsSecret(
                     "keep" to strings.text("保持", "Keep"),
                     "replace" to strings.text("替换", "Replace"),
                     "clear" to strings.text("清空", "Clear"),
-                ),
+                ).filter { allowReplace || it.first != "replace" },
                 strings.text("${label}操作", "$label operation"),
                 enabled = !state.busy,
                 tag = "settings_secret_${name}_action",
                 modifier = Modifier.width(116.dp),
             ) { controller.secret(name, it) }
         }
-        if (action == "replace") SettingsInput(
+        if (direct || action == "replace") SettingsInput(
             edit?.value.orEmpty(),
-            { controller.secret(name, "replace", it) },
+            { controller.secret(name, if (direct && it.isEmpty()) "keep" else "replace", it) },
             strings.text("${label}新值", "New $label value"),
             enabled = !state.busy,
             keyboard = KeyboardType.Password,
             password = true,
             placeholder = strings.text("填写真实的新值", "Enter the new value"),
-            autofocus = true,
+            autofocus = !direct,
             modifier = Modifier.fillMaxWidth().testTag("settings_secret_${name}_value"),
         )
     }

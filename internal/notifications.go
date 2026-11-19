@@ -18,6 +18,8 @@ type Notification struct {
 	Date         string  `json:"date"`
 	BatchID      *string `json:"batch_id"`
 	SlotID       *string `json:"slot_id,omitempty"`
+	ChannelKind  string  `json:"channel_kind,omitempty"`
+	Clock        string  `json:"clock,omitempty"`
 	SourceEvent  *string `json:"source_event"`
 	Status       string  `json:"status"`
 	Attempts     int     `json:"attempts"`
@@ -61,6 +63,8 @@ type NotificationService struct {
 	Store            *Store
 	Reviews          *ReviewService
 	Transport        NotificationTransport
+	transportKey     string
+	resolved         map[string]resolvedTransport
 	channelTransport func(ChannelConfig) (NotificationTransport, func())
 	mu               sync.Mutex
 }
@@ -70,10 +74,13 @@ func NewNotificationService(store *Store, reviews *ReviewService, transport Noti
 }
 
 func (s *NotificationService) channelKey() string {
-	return notificationChannelKey(s.Store.Settings.Channel)
+	return notificationChannelKey(s.Store.deliveryChannel())
 }
 
 func notificationChannelKey(channel ChannelConfig) string {
+	if channel.Kind == "qq" {
+		return hashBytes(canonicalJSON([]string{"qq", configured(channel.QQAppID), configured(channel.Destination)}))
+	}
 	if channel.Kind == "telegram" {
 		bot, _, _ := strings.Cut(configured(channel.BotToken), ":")
 		return hashBytes(canonicalJSON([]string{channel.Kind, bot, configured(channel.Destination)}))
@@ -82,8 +89,7 @@ func notificationChannelKey(channel ChannelConfig) string {
 	if channel.Kind == "feishu-app" && destination == "" {
 		destination = configured(channel.UserOpenID)
 	}
-	return hashBytes(canonicalJSON([]string{channel.Kind, configured(channel.AppID),
-		configured(channel.UserOpenID), destination, configured(channel.WebhookURL)}))
+	return hashBytes(canonicalJSON([]string{channel.Kind, configured(channel.AppID), configured(channel.UserOpenID), destination, configured(channel.WebhookURL)}))
 }
 
 // Schedule only creates the most recent due slot; existing queue entries recover independently.
@@ -151,7 +157,11 @@ func (s *NotificationService) Schedule(ctx context.Context, at time.Time) (int, 
 		return 0, err
 	}
 	available := false
-	if !done && slots[latest].Count > 0 {
+	eligible, err := s.slotAfterBinding(latestMoment)
+	if err != nil {
+		return 0, err
+	}
+	if !done && eligible && slots[latest].Count > 0 {
 		batch, err := s.Reviews.forNotification(ctx, Notification{BatchID: &batchID, SlotID: &slots[latest].ID})
 		if err != nil {
 			return 0, err
@@ -176,10 +186,10 @@ func (s *NotificationService) Schedule(ctx context.Context, at time.Time) (int, 
 				id := derivedID(settings.CursorSecret, "notification", instance, user, channel, logical)
 				stamp := nowText()
 				if _, err := tx.Exec(`INSERT INTO notifications
-					(id, instance_id, user_name, channel_key, logical_key, kind, local_date, batch_id, slot_id,
+					(id, instance_id, user_name, channel_key, channel_kind, logical_key, kind, local_date, batch_id, slot_id,
 					status, platform_uuid, available_at, created_at, updated_at)
-					VALUES (?, ?, ?, ?, ?, 'review', ?, ?, ?, 'pending', ?, ?, ?, ?)`,
-					id, instance, user, channel, logical, today, batchID, slot.ID,
+					VALUES (?, ?, ?, ?, ?, ?, 'review', ?, ?, ?, 'pending', ?, ?, ?, ?)`,
+					id, instance, user, channel, settings.Channel.Kind, logical, today, batchID, slot.ID,
 					derivedID(settings.CursorSecret, "notification-send", id), nowSeconds(), stamp, stamp); err != nil {
 					return err
 				}
@@ -218,7 +228,8 @@ func scheduledMoment(date, clock string, location *time.Location) (time.Time, er
 
 func (s *NotificationService) EnqueueReply(messageID string) (string, error) {
 	settings := s.Store.Settings
-	channel := s.channelKey()
+	replyChannel := s.Store.feishuReplyChannel()
+	channel := notificationChannelKey(replyChannel)
 	logical := "reply:" + messageID
 	id := derivedID(settings.CursorSecret, "notification", settings.Memos.InstanceID, settings.Memos.User, channel, logical)
 	err := transaction(s.Store.state, func(tx *sql.Tx) error {
@@ -226,7 +237,7 @@ func (s *NotificationService) EnqueueReply(messageID string) (string, error) {
 		var lastError *string
 		if err := tx.QueryRow(`SELECT reply_status, reply_uuid, created_at, last_error FROM channel_events
 			WHERE message_id = ? AND app_id = ? AND sender_open_id = ? AND status = 'processed'`,
-			messageID, configured(settings.Channel.AppID), configured(settings.Channel.UserOpenID)).
+			messageID, configured(replyChannel.AppID), configured(replyChannel.UserOpenID)).
 			Scan(&replyStatus, &uuid, &created, &lastError); err != nil {
 			return err
 		}
@@ -244,9 +255,9 @@ func (s *NotificationService) EnqueueReply(messageID string) (string, error) {
 		}
 		stamp := nowText()
 		if _, err := tx.Exec(`INSERT OR IGNORE INTO notifications
-			(id, instance_id, user_name, channel_key, logical_key, kind, local_date, source_event,
+			(id, instance_id, user_name, channel_key, channel_kind, logical_key, kind, local_date, source_event,
 			 status, platform_uuid, available_at, last_error, created_at, updated_at)
-			VALUES (?, ?, ?, ?, ?, 'reply', ?, ?, ?, ?, ?, ?, ?, ?)`, id, settings.Memos.InstanceID,
+			VALUES (?, ?, ?, ?, 'feishu-app', ?, 'reply', ?, ?, ?, ?, ?, ?, ?, ?)`, id, settings.Memos.InstanceID,
 			settings.Memos.User, channel, logical, at.In(location).Format(time.DateOnly), messageID,
 			status, uuid, nowSeconds(), lastError, stamp, stamp); err != nil {
 			return err
@@ -279,14 +290,15 @@ func syncEventNotification(tx *sql.Tx, item Notification, status string, receipt
 }
 
 const notificationColumns = `id, kind, local_date, batch_id, source_event, status, attempts, available_at,
-	receipt, last_error, created_at, updated_at, platform_uuid, channel_key, slot_id`
+	receipt, last_error, created_at, updated_at, platform_uuid, channel_key, slot_id, channel_kind,
+	COALESCE((SELECT clock FROM review_plan_slots WHERE id = notifications.slot_id), '')`
 
 func scanNotification(row interface{ Scan(...any) error }) (Notification, error) {
 	var notification Notification
 	err := row.Scan(&notification.ID, &notification.Kind, &notification.Date, &notification.BatchID,
 		&notification.SourceEvent, &notification.Status, &notification.Attempts, &notification.AvailableAt,
 		&notification.Receipt, &notification.LastError, &notification.CreatedAt, &notification.UpdatedAt,
-		&notification.PlatformUUID, &notification.channelKey, &notification.SlotID)
+		&notification.PlatformUUID, &notification.channelKey, &notification.SlotID, &notification.ChannelKind, &notification.Clock)
 	return notification, err
 }
 
@@ -341,9 +353,12 @@ func (s *NotificationService) Detail(id string) (NotificationDetail, error) {
 	return detail, rows.Err()
 }
 
-func (s *NotificationService) List(status string) ([]Notification, error) {
-	if status != "" && !slices.Contains([]string{"pending", "running", "unknown", "sent"}, status) {
+func (s *NotificationService) List(status string, kinds ...string) ([]Notification, error) {
+	if status != "" && !slices.Contains([]string{"pending", "running", "unknown", "sent", "failed", "skipped"}, status) {
 		return nil, failure("INVALID_ARGUMENT", "Invalid notification status", 422, false)
+	}
+	if len(kinds) > 1 || (len(kinds) == 1 && !slices.Contains([]string{"", "review", "reply"}, kinds[0])) {
+		return nil, failure("INVALID_ARGUMENT", "Invalid notification kind", 422, false)
 	}
 	settings := s.Store.Settings
 	query := "SELECT " + notificationColumns + ` FROM notifications WHERE instance_id = ? AND user_name = ?`
@@ -352,7 +367,11 @@ func (s *NotificationService) List(status string) ([]Notification, error) {
 		query += " AND status = ?"
 		args = append(args, status)
 	}
-	rows, err := s.Store.state.Query(query+" ORDER BY created_at DESC, id DESC LIMIT 100", args...)
+	if len(kinds) == 1 && kinds[0] != "" {
+		query += " AND kind = ?"
+		args = append(args, kinds[0])
+	}
+	rows, err := s.Store.state.Query(query+" ORDER BY (status = 'unknown') DESC, created_at DESC, id DESC LIMIT 100", args...)
 	if err != nil {
 		return nil, err
 	}
@@ -434,8 +453,12 @@ func (s *NotificationService) Deliver(ctx context.Context) (bool, error) {
 	}
 	if sendErr != nil {
 		code, status, outcome = errorCode(sendErr), "pending", "rejected"
-		if code == "SEND_OUTCOME_UNKNOWN" || code == "SYNC_INTERNAL" {
+		if code == "SEND_OUTCOME_UNKNOWN" || code == "DELIVERY_UNKNOWN" || code == "SYNC_INTERNAL" {
 			status, outcome = "unknown", "unknown"
+		} else if strings.HasPrefix(code, "QQ_REJECTED_") || code == "QQ_DELIVERY_REJECTED" {
+			status, outcome = "failed", "rejected"
+		} else if code == "REVIEW_EMPTY" || code == "CHANNEL_BINDING_CHANGED" {
+			status, outcome = "skipped", "skipped"
 		}
 		slog.Warn("notification deferred", "notification_id", item.ID, "code", code)
 	} else {

@@ -23,6 +23,8 @@ class SettingsController(
     private var client: CoreClient? = null
     private var operation: Job? = null
     private var polling: Job? = null
+    private var settingsTab = 0
+    private val resendJobs = mutableMapOf<String, Job>()
     private val checkJobs = mutableMapOf<String, Job>()
     private var editRevision = 0L
     private val fieldRevisions = mutableMapOf<String, Long>()
@@ -69,7 +71,7 @@ class SettingsController(
         ++generation
         cancelWork()
         mutable.update { it.copy(loading = false, busy = false,
-            secrets = it.secrets.mapValues { SecretEdit() }, checking = emptySet(),
+            secrets = it.secrets.mapValues { SecretEdit() }, checking = emptySet(), resending = emptySet(),
             checks = emptyMap(), checkErrors = emptyMap(), status = null) }
     }
 
@@ -98,6 +100,9 @@ class SettingsController(
         if (path == "channel.kind" && value == "none") changes["notifications.enabled"] = "false"
         val changed = changes.filter { (name, text) -> state.value.values[name] != text }
         if (changed.isEmpty()) return
+        if (path == "channel.webhook_images" && value == "false" && state.value.secrets["webhook_app_secret"]?.action == "replace") {
+            secret("webhook_app_secret", "keep")
+        }
         for (name in changed.keys) fieldRevisions[name] = ++editRevision
         mutable.update { it.copy(values = it.values + changed,
             error = if (it.conflict) "SETTINGS_CONFLICT" else null, status = null) }
@@ -144,6 +149,51 @@ class SettingsController(
         val prompt = (state.value.snapshot?.get("default_insight_prompt") as? JsonPrimitive)?.takeIf { it.isString } ?: return
         change("insights.default_prompt", prompt.content)
         mutable.update { it.copy(status = "SETTINGS_PROMPT_RESTORED") }
+    }
+
+    fun selectTab(tab: Int) {
+        if (settingsTab == tab) return
+        settingsTab = tab
+        val active = client ?: return
+        val key = owner ?: return
+        if (visible && state.value.snapshot != null && !state.value.busy && !state.value.conflict) {
+            poll(generation, active, key)
+        }
+    }
+
+    fun resolveDelivery(id: String, decision: String, receipt: String = "") {
+        if (!editable() || state.value.busy || id in state.value.resending || !Regex("[A-Za-z0-9_-]+").matches(id)) return
+        if (decision !in setOf("sent", "not_sent")) return
+        val active = client ?: return
+        val key = owner ?: return
+        val stamp = generation
+        mutable.update { it.copy(resending = it.resending + id, error = null) }
+        val job = scope.launch(start = CoroutineStart.LAZY) {
+            try {
+                val body = buildJsonObject {
+                    put("decision", decision)
+                    if (decision == "sent" && receipt.isNotBlank()) put("receipt", receipt.trim())
+                }
+                active.api(HttpMethod.Post, "/admin/notifications/$id/resolve", body.toString())
+                if (owns(stamp, active, key)) refreshHistory(stamp, active, key)
+            } catch (error: Exception) {
+                if (error is CancellationException) throw error
+                if (owns(stamp, active, key)) mutable.update { it.copy(error = errorCode(error)) }
+            } finally {
+                if (resendJobs[id] === currentCoroutineContext()[Job]) {
+                    resendJobs.remove(id)
+                    mutable.update { it.copy(resending = it.resending - id) }
+                }
+            }
+        }
+        resendJobs[id] = job
+        job.start()
+    }
+
+    private suspend fun refreshHistory(stamp: Long, active: CoreClient, key: String) {
+        val response = read(active.api(HttpMethod.Get, "/admin/notifications?kind=review"))
+        val items = (response["notifications"] as? JsonArray).orEmpty().filterIsInstance<JsonObject>()
+        if (owns(stamp, active, key)) mutable.update { it.copy(deliveries = items) }
     }
 
     fun save() {
@@ -276,18 +326,35 @@ class SettingsController(
         polling?.cancel()
         polling = scope.launch(start = CoroutineStart.LAZY) {
             while (owns(stamp, active, key) && !state.value.conflict) {
+                val target = when (settingsTab) {
+                    1, 4 -> "channels"
+                    5 -> "history"
+                    else -> "models"
+                }
                 try {
-                    val models = read(active.api(HttpMethod.Get, "/models"))
-                    if (!owns(stamp, active, key)) return@launch
                     val version = state.value.snapshot?.let { SettingsForm.version(it, positive = false) } ?: return@launch
-                    if (!versionMatches(models, version)) { conflict(); return@launch }
-                    require(SettingsForm.modelGroups.all { models[it] is JsonObject }) { "MODEL_STATUS_PROTOCOL" }
-                    mutable.update { it.copy(models = models, checkErrors = it.checkErrors - "models") }
+                    if (target == "channels") {
+                        val response = read(active.api(HttpMethod.Get, "/settings"))
+                        if (!owns(stamp, active, key)) return@launch
+                        if (!versionMatches(response, version)) { conflict(); return@launch }
+                        mutable.update { live -> live.copy(snapshot = live.snapshot?.let {
+                            JsonObject(it + ("channel_status" to SettingsForm.channelStatus(response)))
+                        }, checkErrors = live.checkErrors - target) }
+                    } else if (target == "history") {
+                        refreshHistory(stamp, active, key)
+                        mutable.update { it.copy(checkErrors = it.checkErrors - target) }
+                    } else {
+                        val models = read(active.api(HttpMethod.Get, "/models"))
+                        if (!owns(stamp, active, key)) return@launch
+                        if (!versionMatches(models, version)) { conflict(); return@launch }
+                        require(SettingsForm.modelGroups.all { models[it] is JsonObject }) { "MODEL_STATUS_PROTOCOL" }
+                        mutable.update { it.copy(models = models, checkErrors = it.checkErrors - target) }
+                    }
                 } catch (error: Exception) {
                     if (error is CancellationException) throw error
                     if (!owns(stamp, active, key)) return@launch
                     if (error is CoreException && error.detail.code == "SETTINGS_CONFLICT") { conflict(); return@launch }
-                    mutable.update { it.copy(checkErrors = it.checkErrors + ("models" to errorCode(error))) }
+                    mutable.update { it.copy(checkErrors = it.checkErrors + (target to errorCode(error))) }
                 }
                 delay(5000)
             }
@@ -330,6 +397,8 @@ class SettingsController(
     private fun cancelWork() {
         operation?.cancel()
         operation = null
+        resendJobs.values.toList().forEach { it.cancel() }
+        resendJobs.clear()
         cancelModels()
     }
 

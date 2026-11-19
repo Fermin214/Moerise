@@ -117,9 +117,9 @@ func (s *reviewDelivery) prepareReview(ctx context.Context, item Notification) (
 			if i != 0 {
 				id = derivedID(s.Store.Settings.CursorSecret, "review-part", item.ID, strconv.Itoa(i))
 				_, err := tx.Exec(`INSERT INTO notifications
-					(id, instance_id, user_name, channel_key, logical_key, kind, local_date, batch_id, slot_id,
+					(id, instance_id, user_name, channel_key, channel_kind, logical_key, kind, local_date, batch_id, slot_id,
 					status, platform_uuid, available_at, created_at, updated_at)
-					SELECT ?, instance_id, user_name, channel_key, ?, kind, local_date, batch_id, slot_id,
+					SELECT ?, instance_id, user_name, channel_key, channel_kind, ?, kind, local_date, batch_id, slot_id,
 					'pending', ?, 1.0e30, ?, ? FROM notifications WHERE id = ?`,
 					id, "review-part:"+item.ID+":"+strconv.Itoa(i),
 					derivedID(s.Store.Settings.CursorSecret, "notification-send", id), nowText(), nowText(), item.ID)

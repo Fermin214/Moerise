@@ -3878,6 +3878,15 @@
         ],
         "parameters": [
           {
+            "name": "kind",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": ["review", "reply"]
+            }
+          },
+          {
             "name": "status",
             "in": "query",
             "required": false,
@@ -3887,6 +3896,8 @@
                 "pending",
                 "running",
                 "unknown",
+                "failed",
+                "skipped",
                 "sent"
               ]
             }
@@ -8630,6 +8641,12 @@
               },
               "bot_token": {
                 "$ref": "#/components/schemas/SettingsSecretStatus"
+              },
+              "qq_app_secret": {
+                "$ref": "#/components/schemas/SettingsSecretStatus"
+              },
+              "webhook_app_secret": {
+                "$ref": "#/components/schemas/SettingsSecretStatus"
               }
             },
             "required": [
@@ -8640,8 +8657,20 @@
               "encrypt_key",
               "webhook_url",
               "webhook_secret",
-              "bot_token"
+              "bot_token",
+              "qq_app_secret",
+              "webhook_app_secret"
             ]
+          },
+          "channel_status": {
+            "type": "object",
+            "properties": {
+              "qq": {"$ref": "#/components/schemas/PrivateBotStatus"},
+              "telegram": {"$ref": "#/components/schemas/PrivateBotStatus"},
+              "feishu-app": {"$ref": "#/components/schemas/PrivateBotStatus"}
+            },
+            "required": ["qq", "telegram", "feishu-app"],
+            "additionalProperties": false
           },
           "channel_capabilities": {
             "type": "object",
@@ -8673,8 +8702,20 @@
           "settings",
           "secrets",
           "channel_capabilities",
+          "channel_status",
           "default_insight_prompt"
         ]
+      },
+      "PrivateBotStatus": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "state": {"enum": ["disabled", "connecting", "awaiting_verification", "connected", "error", "disconnected"]},
+          "detail": {"type": "string"},
+          "peer": {"type": "string"},
+          "link": {"type": "string"}
+        },
+        "required": ["state", "detail", "peer", "link"]
       },
       "ClientProductSettings": {
         "type": "object",
@@ -8862,10 +8903,15 @@
                   "none",
                   "feishu-app",
                   "feishu-webhook",
-                  "telegram"
+                  "telegram",
+                  "qq"
                 ],
-                "description": "消息渠道；默认 none，由用户选择飞书或 Telegram。"
+                "description": "定时回顾目的地。私聊收件独立运行。"
               },
+              "qq_app_id": {"type": ["string", "null"]},
+              "feishu_mode": {"enum": ["websocket", "callback"]},
+              "webhook_images": {"type": "boolean"},
+              "webhook_app_id": {"type": ["string", "null"]},
               "app_id": {
                 "type": [
                   "string",
@@ -8883,11 +8929,15 @@
                   "string",
                   "null"
                 ],
-                "description": "Telegram 使用非零数字 Chat ID；飞书应用可省略以使用绑定用户 Open ID。"
+                "description": "Telegram 推送目标 Chat ID。留空使用绑定的私聊。"
               }
             },
             "required": [
               "kind",
+              "qq_app_id",
+              "feishu_mode",
+              "webhook_images",
+              "webhook_app_id",
               "app_id",
               "user_open_id",
               "destination"
@@ -9117,10 +9167,15 @@
                   "none",
                   "feishu-app",
                   "feishu-webhook",
-                  "telegram"
+                  "telegram",
+                  "qq"
                 ],
-                "description": "消息渠道；默认 none，由用户选择飞书或 Telegram。"
+                "description": "定时回顾目的地。私聊收件独立运行。"
               },
+              "qq_app_id": {"type": "string"},
+              "feishu_mode": {"enum": ["websocket", "callback"]},
+              "webhook_images": {"type": "boolean"},
+              "webhook_app_id": {"type": "string"},
               "app_id": {
                 "type": "string"
               },
@@ -9161,6 +9216,8 @@
         "type": "object",
         "additionalProperties": false,
         "properties": {
+          "qq_app_secret": {"$ref": "#/components/schemas/SettingsSecretOperation"},
+          "webhook_app_secret": {"$ref": "#/components/schemas/SettingsSecretOperation"},
           "llm_api_key": {
             "$ref": "#/components/schemas/SettingsSecretOperation"
           },
@@ -10355,6 +10412,8 @@
         "type": "object",
         "additionalProperties": false,
         "properties": {
+          "channel_kind": {"type": "string"},
+          "clock": {"type": "string"},
           "id": {
             "type": "string",
             "format": "uuid"
@@ -10388,6 +10447,8 @@
               "pending",
               "running",
               "unknown",
+              "skipped",
+              "failed",
               "sent"
             ]
           },
@@ -10463,6 +10524,7 @@
             "enum": [
               "running",
               "rejected",
+              "skipped",
               "unknown",
               "sent"
             ]
@@ -11511,7 +11573,12 @@
       "ChatCreate": {
         "type": "object",
         "additionalProperties": false,
+        "oneOf": [{ "required": ["names"] }, { "required": ["materials"] }],
         "properties": {
+          "materials": {
+            "type": "array", "minItems": 1, "maxItems": 1000,
+            "items": { "$ref": "#/components/schemas/ChatMaterial" }
+          },
           "request_id": {
             "type": "string",
             "minLength": 1,
@@ -11541,7 +11608,12 @@
       "ChatUpdate": {
         "type": "object",
         "additionalProperties": false,
+        "oneOf": [{ "required": ["names"] }, { "required": ["materials"] }],
         "properties": {
+          "materials": {
+            "type": "array", "maxItems": 1000,
+            "items": { "$ref": "#/components/schemas/ChatMaterial" }
+          },
           "version": {
             "type": "integer",
             "minimum": 1

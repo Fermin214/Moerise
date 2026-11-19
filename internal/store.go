@@ -21,13 +21,16 @@ import (
 var migrations embed.FS
 
 type Store struct {
-	Settings       Settings
-	state          *sql.DB
-	index          *sql.DB
-	reviewMu       sync.Mutex
-	background     *semaphore.Weighted
-	productVersion int64
-	runtimeMu      *sync.RWMutex
+	Settings         Settings
+	state            *sql.DB
+	index            *sql.DB
+	reviewMu         sync.Mutex
+	background       *semaphore.Weighted
+	productVersion   int64
+	runtimeMu        *sync.RWMutex
+	botStates        sync.Map
+	feishuGeneration uint64
+	qqSendMu         sync.Mutex
 }
 
 // 同步、向量构建和地图生成按等待顺序共用后台名额，交互读取独立执行。
@@ -204,6 +207,10 @@ func NewStore(settings Settings) (*Store, error) {
 		return nil, err
 	}
 	if err := store.initializeProductSettings(); err != nil {
+		store.Close()
+		return nil, err
+	}
+	if err := store.initializeBots(); err != nil {
 		store.Close()
 		return nil, err
 	}

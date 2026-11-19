@@ -6,7 +6,7 @@
 
 ---
 
-Moerise uses [Memos](https://usememos.com/) as its note storage, with a bilingual Web interface, hybrid full-text and vector search, and four sections: Review, Walk, Insights, and Stargazing. Stargazing presents notes as semantic star clusters; Review supports scheduled Telegram and Feishu delivery.
+Moerise stores notes in [Memos](https://usememos.com/) and provides a bilingual Web interface, hybrid full-text and vector search, and four sections: Review, Walk, Insights, and Stargazing. QQ, Telegram and Feishu bots support private note capture, daily review requests and scheduled delivery.
 
 Your raw notes, tags, and media attachments always remain authoritative inside Memos. Moerise reads and writes exclusively through Memos' official APIs and preserves the content you enter.
 
@@ -33,7 +33,7 @@ Your raw notes, tags, and media attachments always remain authoritative inside M
 - 📬 **Review**
   - Randomly selects older notes based on configurable maturity delays (e.g. at least 3 days old) and recent repetition filters.
   - Saves a fixed full-day plan distributed across configured time slots; no unread badges, streaks, or mandatory checklist pressures.
-  - Optional scheduled delivery through **Telegram bots** or **Feishu bots / webhooks**.
+  - Schedule delivery to a **private QQ bot**, **Telegram**, a **Feishu app** or a **Feishu group webhook**.
   - New installations have no messaging channel selected; choose either channel in Settings.
 - 🔌 **Open Ecosystem & Agent Connectivity**
   - Provides a read-only Model Context Protocol (MCP) server alongside machine REST APIs.
@@ -141,6 +141,7 @@ Once running, navigate to `http://localhost:3000` and sign in using your Memos u
 | | [Daily Review](docs/DAILY-REVIEW.md) | Review selection logic, schedule allocation, and reading flow |
 | | [Feishu Integration](docs/FEISHU.md) | Feishu bot note capture, review notifications, and webhooks |
 | | [Telegram Delivery](docs/TELEGRAM.md) | Scheduled review delivery via Telegram bots |
+| | [QQ](docs/QQ.md) | Private note capture and review delivery |
 | | [AI & Insights](docs/AI.md) | LLM configuration, contextual token limits, and connection health |
 | | [Embeddings](docs/EMBEDDING.md) | Vector models (OpenAI / Bailian), chunking, and index generation |
 | | [Search Engine](docs/SEARCH.md) | FTS5 full-text search, cosine similarity, and RRF fusion |

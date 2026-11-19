@@ -21,10 +21,12 @@ Moerise 支持接入飞书平台，提供**企业自建应用机器人**与**群
 | `im:resource` | 获取与上传图片或文件资源 | 图文推送 | 上传回顾笔记中的图片资源至飞书获取 `image_key` |
 
 ### 2. 事件订阅配置
-1. 在「开发配置」→「事件与回调」中，将**请求网址 URL** 配置为：`https://你的域名/hooks/feishu`。
+1. 新应用在「开发配置」→「事件与回调」选择长连接，在 Moerise 填入应用凭据并保存。沿用公网回调的应用选择回调模式，将请求地址配置为 `https://你的域名/hooks/feishu`。
 2. 添加事件监听：`im.message.receive_v1`（接收消息 v2.0）。
 3. 如开启了“Encrypt Key（事件加密）”，需将密钥同步填入 Moerise 配置。
 4. 完成配置后，务必创建并**发布应用版本**，使权限与事件正式生效。
+
+公网回调显示「等待回调验证」，直到 Moerise 成功处理飞书的网址验证请求或有效私聊事件。更换应用凭据、回调校验信息或接收模式后需要重新验证。
 
 ---
 
@@ -38,9 +40,10 @@ Moerise 支持接入飞书平台，提供**企业自建应用机器人**与**群
 {
   "channel": {
     "kind": "feishu-app",
+    "feishu_mode": "websocket",
     "app_id": "cli_xxxxxxxxxxxxxxxx",
     "app_secret": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
-    "verification_token": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    "verification_token": null,
     "encrypt_key": null,
     "user_open_id": "ou_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
     "destination": null,
@@ -63,8 +66,8 @@ Moerise 支持接入飞书平台，提供**企业自建应用机器人**与**群
 | `app_secret` | string | 飞书应用凭证 App Secret |
 | `verification_token` | string | 飞书事件回调校验 Token |
 | `encrypt_key` | string / null | 飞书事件加密 Key（未开启加密填 `null`） |
-| `user_open_id` | string | 绑定的用户 Open ID（格式如 `ou_...`），决定谁有权在私聊中速记以及接收单聊回顾推送 |
-| `destination` | string / null | 指定时必须与 `user_open_id` 相同；`null` 表示使用绑定用户 |
+| `feishu_mode` | string | `websocket` 为长连接，`callback` 沿用公网回调 |
+| `user_open_id` | string / null | 私人应用留空，由首条有效私聊登记。多人可访问的应用应填写笔记作者的 `ou_...` |
 
 > [!TIP]
 > 环境变量配置时支持 `MOERISE_FEISHU_APP_ID`、`MOERISE_FEISHU_APP_SECRET`、`MOERISE_FEISHU_USER_OPEN_ID` 等变量。
@@ -83,7 +86,7 @@ Moerise 支持接入飞书平台，提供**企业自建应用机器人**与**群
 | **图片** | 下载原图原样保存为带有图片附件的 Memos 笔记 | 机器人回复保存结果 |
 | **文件** | 下载文件原样保存为带有文件附件的 Memos 笔记（单文件最大 8 MiB） | 机器人回复保存结果 |
 
-- **安全边界**：机器人只响应配置的 `user_open_id` 用户；来自其他飞书用户的私聊消息、群聊消息或机器人自身的消息均会被自动忽略。
+- 机器人只响应已指定或已登记的本人私聊。完整发送 `/回顾` 或 `/review` 可查询当天摘录；发送 `//回顾` 或 `//review` 保存字面命令。
 - **纯粹记录原则**：私聊不提供复杂指令系统，所有发送的文字均视为真实笔记正文，绝不误截断或擅自丢弃内容。
 
 ---
@@ -119,4 +122,4 @@ Moerise 支持接入飞书平台，提供**企业自建应用机器人**与**群
 
 - Webhook 模式无需配置公网回调域名，仅需 Core 能够对外发起 HTTPS 请求。
 - 支持基于 HMAC-SHA256 的时间戳签名防伪校验。
-- 若需通过 Webhook 发送图片，需同时提供拥有 `im:resource` 权限的自建应用 `app_id` 与 `app_secret` 用于图片上传。
+- 需要发送图片时启用 `channel.webhook_images`，填写拥有 `im:resource` 权限的 `webhook_app_id` 与 `webhook_app_secret`。环境变量分别为 `MOERISE_FEISHU_WEBHOOK_IMAGES`、`MOERISE_FEISHU_WEBHOOK_APP_ID` 和 `MOERISE_FEISHU_WEBHOOK_APP_SECRET`。

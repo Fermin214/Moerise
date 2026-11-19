@@ -17,7 +17,7 @@ Moerise 支持 Linux 原生二进制运行以及 Docker 容器部署。本文档
 | `MOERISE_MEMOS_TOKEN` | `memos.token` | 必填 | 绑定账号的 Memos 个人访问令牌 (PAT) |
 | `MOERISE_ACCESS_TOKEN` | `access_tokens` | 必填 | 外部机器 REST API 与 MCP 调用的 Bearer 访问令牌 |
 | `MOERISE_CURSOR_SECRET` | `cursor_secret` | 必填 | 用于分页签名与资源安全哈希的独立随机密钥（至少 32 字符） |
-| `MOERISE_STATE_ENCRYPTION_KEY` | `web.state_encryption_key` | Web 或飞书应用机器人启用时必填 | 加密存储凭据的 32 字节 Base64 编码主密钥 |
+| `MOERISE_STATE_ENCRYPTION_KEY` | `web.state_encryption_key` | Web 或机器人私聊收件必填 | 加密存储凭据和待写入正文的 32 字节 Base64 编码主密钥 |
 | `MOERISE_WEB_ENABLED` | `web.enabled` | Compose 为 `true`；Core 默认 `false` | 是否启用 Web 客户端会话支持 |
 | `MOERISE_TELEMETRY_FORWARDING` | `telemetry_forwarding` | `false` | 允许 Core 把用户同意分享的汇总转发给构建时指定的项目接收端。重启 Core 后生效。 |
 | `MOERISE_PUBLIC_ORIGIN` | `web.public_origin` | Web 启用时必填 | Web 客户端公开 origin，协议、主机名和端口须与浏览器访问地址一致 |

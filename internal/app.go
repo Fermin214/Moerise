@@ -49,7 +49,7 @@ func NewApp(settings Settings, store *Store, source Source) *App {
 	a.Map = NewMapService(store)
 	a.Notifications = NewNotificationService(store, a.Reviews, nil)
 	a.Feishu = NewFeishuService(store, source, a.Records, a.Notifications)
-	a.Notifications.Transport = newNotificationTransport(store.Settings.Channel, store, a.Reviews, a.Feishu)
+	a.Notifications.resetTransport(store.deliveryChannel(), a.Feishu)
 	a.Notifications.channelTransport = a.notificationTransport
 	a.closers = append(a.closers, a.closeRuntime, a.Chat.Close)
 	return a
@@ -131,7 +131,7 @@ func (a *App) Run(ctx context.Context, server *http.Server) error {
 		name string
 		err  error
 	}
-	done := make(chan outcome, 6)
+	done := make(chan outcome, 7)
 	var workers sync.WaitGroup
 	start := func(name string, run func(context.Context) error) {
 		workers.Go(func() { done <- outcome{name, run(workerCtx)} })
@@ -139,6 +139,7 @@ func (a *App) Run(ctx context.Context, server *http.Server) error {
 	start("sync", a.Worker.Run)
 	start("notifications", a.Notifications.Run)
 	start("Feishu", a.RunFeishu)
+	start("private bots", a.RunPrivateBots)
 	start("vector index", a.runVector)
 	start("stars", a.runMap)
 	go func() { done <- outcome{"HTTP", server.ListenAndServe()} }()

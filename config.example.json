@@ -69,6 +69,12 @@
   },
   "channel": {
     "kind": "none",
+    "qq_app_id": null,
+    "qq_app_secret": null,
+    "feishu_mode": "websocket",
+    "webhook_images": false,
+    "webhook_app_id": null,
+    "webhook_app_secret": null,
     "app_id": null,
     "app_secret": null,
     "verification_token": null,

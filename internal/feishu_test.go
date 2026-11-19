@@ -14,6 +14,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 func stringPointer(value string) *string { return &value }
@@ -23,6 +24,7 @@ func feishuSettings(t *testing.T) Settings {
 	settings := testSettings(t)
 	settings.Web.StateEncryptionKey = base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{9}, 32))
 	settings.Channel.Kind = "feishu-app"
+	settings.Channel.FeishuMode = "callback"
 	settings.Channel.AppID = stringPointer("cli_test_app")
 	settings.Channel.AppSecret = stringPointer(strings.Repeat("s", 32))
 	settings.Channel.VerificationToken = stringPointer(strings.Repeat("v", 32))
@@ -84,8 +86,14 @@ func TestFeishuCallbackAuthenticationAndEncryptedQueue(t *testing.T) {
 	if errorCode(call(plain, false)) != "UNAUTHENTICATED" || errorCode(call(encrypted, false)) != "UNAUTHENTICATED" {
 		t.Fatal("unsigned or unencrypted events bypassed verification")
 	}
+	if state := store.botStatuses()["feishu-app"].State; state != "awaiting_verification" {
+		t.Fatalf("callback state before verification: %s", state)
+	}
 	if err := call(encrypted, true); err != nil {
 		t.Fatal(err)
+	}
+	if state := store.botStatuses()["feishu-app"].State; state != "connected" {
+		t.Fatalf("callback state after an accepted event: %s", state)
 	}
 	if err := call(encrypted, true); err != nil {
 		t.Fatal("duplicate event was not acknowledged")
@@ -126,17 +134,68 @@ func TestFeishuCallbackAuthenticationAndEncryptedQueue(t *testing.T) {
 	if bytes.Contains(sealed, []byte("private incoming text")) {
 		t.Fatal("incoming private content was stored unencrypted")
 	}
-	data, err := service.unseal("om_private", sealed)
+	data, err := service.unseal("om_private", "ou_owner", sealed)
 	if err != nil || !bytes.Contains(data, []byte("private incoming text")) {
 		t.Fatal("queued event could not be recovered")
 	}
-	if _, err := service.unseal("om_other", sealed); err == nil {
+	if _, err := service.unseal("om_other", "ou_owner", sealed); err == nil {
 		t.Fatal("encrypted queue payload was not bound to its message")
 	}
 	challenge, _ := json.Marshal(map[string]string{"type": "url_verification", "token": configured(settings.Channel.VerificationToken), "challenge": "setup"})
 	if err := call(encryptedFeishuEvent(settings, challenge), false); err != nil {
 		t.Fatalf("encrypted URL verification requires its token, not a message signature: %v", err)
 	}
+}
+
+func TestFeishuCallbackVerificationAfterConfigurationChanges(t *testing.T) {
+	settings := feishuSettings(t)
+	store := testStore(t, settings)
+	app := NewApp(settings, store, nil)
+	defer app.Close()
+	state := func(want string) {
+		t.Helper()
+		if got := store.botStatuses()["feishu-app"].State; got != want {
+			t.Fatalf("Feishu state %s, want %s", got, want)
+		}
+	}
+	challenge := func(token string) error {
+		data := canonicalJSON(map[string]string{"type": "url_verification", "challenge": "challenge", "token": token})
+		_, _, err := app.Feishu.Receive(httptest.NewRequest("POST", "/hooks/feishu", bytes.NewReader(data)))
+		return err
+	}
+	update := func(patch SettingsUpdate) {
+		t.Helper()
+		if _, err := app.UpdateSettings(t.Context(), patch); err != nil {
+			t.Fatal(err)
+		}
+	}
+	state("awaiting_verification")
+	old := configured(settings.Channel.VerificationToken)
+	if err := challenge(old); err != nil {
+		t.Fatal(err)
+	}
+	state("connected")
+	fresh := strings.Repeat("n", 32)
+	update(SettingsUpdate{Version: store.productVersion, Secrets: map[string]SecretUpdate{"verification_token": {Action: "replace", Value: &fresh}}})
+	if errorCode(challenge(old)) != "UNAUTHENTICATED" {
+		t.Fatal("old token verified the new callback")
+	}
+	state("awaiting_verification")
+	if err := challenge(fresh); err != nil {
+		t.Fatal(err)
+	}
+	state("connected")
+	update(settingsChange(store.productVersion, `{"channel":{"feishu_mode":"websocket"}}`))
+	socket := store.socketConfig()
+	state("connecting")
+	store.setBotStatus("feishu-app", socket.id, "connected", "", "")
+	update(settingsChange(store.productVersion, `{"channel":{"feishu_mode":"callback"}}`))
+	state("awaiting_verification")
+	update(settingsChange(store.productVersion, `{"channel":{"feishu_mode":"websocket"}}`))
+	if socket == store.socketConfig() {
+		t.Fatal("a previous socket can update the new connection state")
+	}
+	state("connecting")
 }
 
 func TestFeishuClientTokenResourcesAndReplyUncertainty(t *testing.T) {
@@ -275,6 +334,50 @@ func TestUnknownFeishuReplyIsHeldWithoutRepeatingBusiness(t *testing.T) {
 	}
 }
 
+func TestFeishuLegacyReplyFollowsOriginalApplicationAndPeer(t *testing.T) {
+	settings := feishuSettings(t)
+	settings.Channel.FeishuMode = ""
+	settings.Channel.WebhookURL = stringPointer("https://example.invalid/legacy-webhook")
+	legacyKey := notificationChannelKey(settings.Channel)
+	payload, err := encryptProduct(settings, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	upgraded, err := decryptProduct(settings, 1, payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := testStore(t, upgraded)
+	old := store.Settings.notificationChannels[legacyKey]
+	if old.WebhookURL != nil || configured(old.UserOpenID) != "ou_owner" || old.Kind != "feishu-app" {
+		t.Fatalf("invalid preserved destination")
+	}
+	item := Notification{Kind: "reply", channelKey: legacyKey}
+	queue := NewNotificationService(store, nil, nil)
+	queue.channelTransport = func(channel ChannelConfig) (NotificationTransport, func()) {
+		if configured(channel.AppID) != "cli_test_app" || configured(channel.UserOpenID) != "ou_owner" {
+			t.Fatal("redirected private reply")
+		}
+		return &FeishuDelivery{}, func() {}
+	}
+	store.Settings.Channel.Kind = "none"
+	if _, _, err := queue.transportFor(item); err != nil {
+		t.Fatalf("legacy reply cannot use original private chat: %v", err)
+	}
+	for _, field := range []string{"app", "peer"} {
+		changed := upgraded.Channel
+		if field == "app" {
+			changed.AppID = stringPointer("cli_replacement")
+		} else {
+			changed.UserOpenID = stringPointer("ou_replacement")
+		}
+		store.Settings.Channel = changed
+		if _, _, err := queue.transportFor(item); errorCode(err) != "CHANNEL_BINDING_CHANGED" {
+			t.Fatalf("reused reply after %s changed: %v", field, err)
+		}
+	}
+}
+
 func TestFeishuPrivateTextRecordsVerbatim(t *testing.T) {
 	settings := feishuSettings(t)
 	store := testStore(t, settings)
@@ -349,7 +452,7 @@ func TestFeishuPrivateTextRecordsVerbatim(t *testing.T) {
 	for _, text := range []string{"", " \t\r\n", strings.Repeat("文", 21846)} {
 		before := posts
 		_, _, err := service.execute(context.Background(), feishuMessage{ID: "om_invalid", Type: "text",
-			Content: string(canonicalJSON(map[string]string{"text": text}))})
+			Content: string(canonicalJSON(map[string]string{"text": text}))}, time.Now())
 		if errorCode(err) != "INVALID_ARGUMENT" || posts != before {
 			t.Fatalf("invalid text reached source: %v posts=%d", err, posts)
 		}
@@ -403,7 +506,7 @@ func TestFeishuAttachmentVerbatimAndRecovery(t *testing.T) {
 				service := &FeishuService{Store: f.store, Source: f.client, Records: NewRecordService(f.store, f.client),
 					Client: &recordAttachmentPlatform{file: file}}
 				for range 2 {
-					kind, _, err := service.execute(context.Background(), message)
+					kind, _, err := service.execute(context.Background(), message, time.Now())
 					if err != nil || kind != "saved" || f.memo["content"] != expected || len(f.attachments()) != 1 {
 						t.Fatalf("attachment record: memo=%+v kind=%s err=%v", f.memo, kind, err)
 					}
