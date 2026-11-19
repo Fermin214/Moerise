@@ -43,7 +43,7 @@ func TestFeishuLiveReviewAcceptance(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { store.Close() }()
+	t.Cleanup(func() { store.Close() })
 	body := "今天整理了一点想法：先把事情记下来，再留些时间回看。\n文字保持原样，图片直接呈现。🙂\n#回顾"
 	picture := image.NewRGBA(image.Rect(0, 0, 320, 180))
 	draw.Draw(picture, picture.Bounds(), image.NewUniform(color.RGBA{R: 40, G: 130, B: 170, A: 255}), image.Point{}, draw.Src)
@@ -60,14 +60,6 @@ func TestFeishuLiveReviewAcceptance(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := moerise.NewSyncService(store, source).Sync(ctx, moerise.Job{Mode: "full"}); err != nil {
-		t.Fatal(err)
-	}
-	reviews := moerise.NewReviewService(store, source)
-	batch, err := reviews.Daily(ctx, time.Now())
-	if err != nil || len(batch.Items) != 1 || batch.Items[0].Name != note.Name {
-		t.Fatalf("synthetic daily review: %v", err)
-	}
 	channelKinds := []string{"feishu-app"}
 	var webhook struct {
 		URL    string `json:"url"`
@@ -82,20 +74,35 @@ func TestFeishuLiveReviewAcceptance(t *testing.T) {
 	}
 	for _, kind := range channelKinds {
 		t.Run(kind, func(t *testing.T) {
+			settings := settings
+			settings.StateDir, settings.IndexDir = t.TempDir(), t.TempDir()
 			settings.Channel = live.Channel
 			settings.Channel.Kind = kind
 			if kind == "feishu-webhook" {
 				settings.Channel.WebhookURL, settings.Channel.WebhookSecret = &webhook.URL, &webhook.Secret
+				settings.Channel.WebhookImages = true
+				settings.Channel.WebhookAppID, settings.Channel.WebhookAppSecret = live.Channel.AppID, live.Channel.AppSecret
 				settings.Channel.VerificationToken, settings.Channel.EncryptKey = nil, nil
 				settings.Channel.UserOpenID, settings.Channel.Destination = nil, nil
 			}
 			if err := settings.Validate(); err != nil {
 				t.Fatal(err)
 			}
-			store.Settings = settings
+			store, err := moerise.NewStore(settings)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { store.Close() }()
+			if _, err := moerise.NewSyncService(store, source).Sync(ctx, moerise.Job{Mode: "full"}); err != nil {
+				t.Fatal(err)
+			}
+			batch, err := moerise.NewReviewService(store, source).Daily(ctx, time.Now())
+			if err != nil || len(batch.Items) != 1 || batch.Items[0].Name != note.Name {
+				t.Fatalf("synthetic daily review: %v", err)
+			}
 			makeQueue := func() *moerise.NotificationService {
 				app := moerise.NewApp(store.Settings, store, source)
-				reviews = app.Reviews
+				t.Cleanup(app.Close)
 				return app.Notifications
 			}
 			queue := makeQueue()
@@ -112,10 +119,11 @@ func TestFeishuLiveReviewAcceptance(t *testing.T) {
 			if err := store.Close(); err != nil {
 				t.Fatal(err)
 			}
-			store, err = moerise.NewStore(settings)
+			reopened, err := moerise.NewStore(settings)
 			if err != nil {
 				t.Fatal(err)
 			}
+			store = reopened
 			queue = makeQueue()
 			if count, err := queue.Schedule(ctx, time.Now()); err != nil || count != 0 {
 				t.Fatalf("%s restart duplicated its slot: count=%d err=%v", kind, count, err)

@@ -259,9 +259,13 @@ button:disabled { cursor:default; opacity:.5; }
 .settings-secret { display:flex; align-items:center; justify-content:flex-end; gap:8px; flex-wrap:wrap; width:260px; flex:none; }
 .settings-secret select { width:90px; }
 .settings-secret input { width:100%; }
+.settings-delivery-actions { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+.settings-delivery-actions input { flex:1 1 100%; }
+.settings-channel { min-inline-size:0; margin:16px 0 0; padding:0; border:0; }
+.settings-channel legend { padding:0; font-weight:600; }
+.settings-channel p,.settings-channel + p,.settings-row span { overflow-wrap:anywhere; }
 .settings-card:has(#settings-insights-default_prompt) .settings-row { flex-direction:column; align-items:stretch; }
 .settings-card #settings-insights-default_prompt { width:100%; }
-.settings-capabilities { display:flex; gap:8px; flex-wrap:wrap; margin:12px 0 8px; }
 .settings-footer { display:flex; align-items:center; gap:8px; flex-wrap:wrap; padding:4px 0 12px; }
 .settings-footer p { margin:0; flex-basis:100%; }
 .settings-footer > .save { margin-left:auto; }

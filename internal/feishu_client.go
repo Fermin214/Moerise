@@ -87,6 +87,9 @@ func (c *FeishuClient) request(ctx context.Context, method, path string, body []
 	}
 	if response.StatusCode != 200 {
 		response.Body.Close()
+		if response.StatusCode == http.StatusTooManyRequests {
+			return nil, feishuRateLimit(response.Header)
+		}
 		if method == "POST" && response.StatusCode >= 500 {
 			return nil, upstreamError("SEND_OUTCOME_UNKNOWN", "Feishu send outcome is unknown")
 		}
@@ -145,7 +148,10 @@ func (c *FeishuClient) UploadImage(ctx context.Context, image CreateAttachment) 
 		c.token, c.expires = "", time.Time{}
 		c.mu.Unlock()
 	}
-	if response.StatusCode >= 500 || response.StatusCode == 429 {
+	if response.StatusCode == http.StatusTooManyRequests {
+		return "", feishuRateLimit(response.Header)
+	}
+	if response.StatusCode >= 500 {
 		return "", upstreamError("CHANNEL_UNAVAILABLE", "Feishu image upload must be retried")
 	}
 	var result struct {
@@ -190,6 +196,9 @@ func (c *FeishuClient) send(ctx context.Context, path string, body []byte) (stri
 		return "", upstreamError("SEND_OUTCOME_UNKNOWN", "Feishu returned an untrusted send response")
 	}
 	if *result.Code != 0 {
+		if *result.Code == 99991400 {
+			return "", feishuRateLimit(response.Header)
+		}
 		return "", upstreamError("CHANNEL_REJECTED", "Feishu rejected the message")
 	}
 	if result.Data.MessageID == "" {

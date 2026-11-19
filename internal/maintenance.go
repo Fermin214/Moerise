@@ -226,11 +226,28 @@ func Restore(settings Settings, source, safety string) error {
 			source_ok = 0, index_generation = NULL;
 		DELETE FROM jobs WHERE kind = 'sync';
 		DELETE FROM client_sessions;
+		DELETE FROM bot_cursors WHERE kind='qq';
+		INSERT OR REPLACE INTO bot_restore SELECT instance_id,CAST(round(unixepoch('subsec')*1000) AS INTEGER) FROM bindings;
+		UPDATE bot_inbox SET phase='restored',body=NULL,error_code='STATE_RESTORED'
+			WHERE phase IN ('pending','reply','sending');
+		WITH interrupted AS (
+			SELECT p.root_id, MIN(p.position) AS first FROM review_delivery_parts p
+			JOIN notifications n ON n.id=p.notification_id
+			WHERE n.status IN ('pending','running','unknown','failed') GROUP BY p.root_id
+		)
+		UPDATE notifications SET status='skipped', last_error='PART_INTERRUPTED'
+			WHERE status='pending' AND id IN (
+				SELECT p.notification_id FROM review_delivery_parts p JOIN interrupted batch
+				ON batch.root_id=p.root_id AND p.position>batch.first
+			);
 		UPDATE notifications SET status = 'unknown', last_error = 'STATE_RESTORED'
 			WHERE status IN ('pending', 'running');
 		UPDATE notification_attempts SET outcome = 'unknown' WHERE outcome = 'running';
-		UPDATE channel_events SET reply_status = 'unknown', last_error = 'STATE_RESTORED'
+		UPDATE channel_events SET status = 'processed', payload = NULL,
+			reply_status = CASE WHEN result_kind IS NULL THEN 'skipped' ELSE 'unknown' END, last_error = 'STATE_RESTORED'
 			WHERE status IN ('pending', 'processing', 'processed');
+		UPDATE notifications SET status = 'skipped', last_error = 'STATE_RESTORED' WHERE status = 'unknown'
+			AND source_event IN (SELECT message_id FROM channel_events WHERE reply_status = 'skipped');
 		PRAGMA user_version = 0;
 		COMMIT;
 		PRAGMA wal_checkpoint(TRUNCATE);

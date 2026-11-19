@@ -134,6 +134,15 @@ go test -tags=integration ./tests -v -count=1
 | `TestSearchQualityLiveAcceptance` | `MOERISE_SEARCH_QUALITY_CONFIG`、`MOERISE_SEARCH_QUALITY_OUTPUT` | Linux 下以仓库文档为材料调用真实 Embedding，测量检索质量、延迟与资源占用；可能产生模型费用 |
 | `TestChatQualityLiveAcceptance` | `MOERISE_CHAT_QUALITY_CONFIG`、`MOERISE_CHAT_QUALITY_OUTPUT` | 将虚构材料发送给真实 LLM，保存回复与协议检查结果，供人工评价；可能产生模型费用 |
 | `TestFeishuLiveReviewAcceptance` | `MOERISE_FEISHU_LIVE_CONFIG` | 向配置的真实飞书接收方发送虚构笔记与图片；可用 `MOERISE_FEISHU_LIVE_WEBHOOK` 提供含 `url`、`secret` 的 JSON 文件，追加群 Webhook 测试 |
+| `TestFourLiveBotDestinations` | `MOERISE_BOTS_LIVE_CONFIG` | 在独立 Memos 中核对三种私聊的笔记、回执和回顾，按真实时钟依次向四种目的地投递 |
+
+四渠道测试配置为 JSON。`channel` 使用配置模板中的字段，填写专用 QQ、Telegram、飞书应用凭据和飞书群 Webhook。`timezone` 填实例时区。首次接入时，在约 8 分钟内向三个机器人各发一句带 `#验收` 的笔记，再发 `/回顾`。Telegram 启动链接保存在配置文件旁的私有临时文件中，按日志给出的路径打开链接并点「开始」。
+
+已有私聊地址时，可在顶层填写 `qq_peer`（该 QQ 机器人的本人 OpenID）和 `telegram_private_chat_id`（该 Telegram 机器人的本人私聊 ID，使用字符串）。填写 `qq_peer` 后，程序先发一条 QQ 定时回顾作为通知，收到后有约 20 分钟发送三种私聊消息。填写 `telegram_private_chat_id` 后可直接在原私聊发消息。用 `first` 可指定第一个时段，格式为带时区偏移的 RFC 3339 整分时间。四个目的地在同一天验收，运行时设置 `-timeout=1h`。
+
+要额外验证 QQ 在当天没有私聊消息且回复窗口已过时能主动推送，可在顶层设置 `quiet_day_qq` 为 `true`，并使用 `-timeout=36h`。发送测试消息后保持 QQ 私聊安静，程序会在次日同一时刻检查平台回执。测试结束后自动清理临时链接、Docker 实例和笔记。
+
+单独排查私聊收发时，用 `-run '^TestFourLiveBotDestinations$/^private$'`。`first` 可以设晚一些，为人工发消息预留时间。需要在多次联调中复用同一 Telegram 启动链接时，在私有配置里设置固定的随机 `cursor_secret`。
 
 设置对应环境变量后，按测试名选择执行：
 

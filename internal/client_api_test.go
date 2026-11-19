@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -53,6 +54,28 @@ func TestClientNotificationRecoveryUsesBoundSession(t *testing.T) {
 		response := clientCall(api, "GET", route, "", cookie, "", "")
 		if response.Code != 200 || !strings.Contains(response.Body.String(), id) {
 			t.Fatalf("recovery read: %d %s", response.Code, response.Body.String())
+		}
+	}
+	for index := range 100 {
+		if _, err := api.app.Notifications.enqueue("reply", "reply-"+strconv.Itoa(index), "2026-10-30", nil, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := api.app.Store.state.Exec("UPDATE notifications SET status = 'unknown', created_at = '2099-01-01' WHERE kind = 'reply'"); err != nil {
+		t.Fatal(err)
+	}
+	base := "/api/app/v1/admin/notifications"
+	filtered := clientCall(api, "GET", base+"?kind=review&status=unknown", "", cookie, "", "")
+	var listed struct {
+		Notifications []Notification `json:"notifications"`
+	}
+	if err := json.Unmarshal(filtered.Body.Bytes(), &listed); err != nil || filtered.Code != 200 ||
+		len(listed.Notifications) != 1 || listed.Notifications[0].ID != id {
+		t.Fatalf("review hidden by newer replies: %d %s", filtered.Code, filtered.Body.String())
+	}
+	for _, query := range []string{"?kind=other", "?kind=review&kind=reply", "?kind=review&extra=sent"} {
+		if invalid := clientCall(api, "GET", base+query, "", cookie, "", ""); invalid.Code != 422 {
+			t.Fatalf("invalid filter %s returned %d", query, invalid.Code)
 		}
 	}
 	response := clientCall(api, "POST", path+"/resolve", `{"decision":"not_sent","receipt":""}`,

@@ -10,7 +10,7 @@ Moerise 采用分层配置与版本化持久设置架构：底层基础设施参
    - 包括 Memos 根地址、绑定作者账号、Memos PAT、对外公开域名（Core 使用 `MOERISE_PUBLIC_ORIGIN`，Web 使用 `PUBLIC_ORIGIN`）、监听端口、数据目录以及状态加密主密钥（`MOERISE_STATE_ENCRYPTION_KEY`）。
    - 通过 `.env` 环境变量或 `config.json` 传入，供 Core 启动时加载。
 2. **产品持久设置（日常偏好与凭据）**：
-   - 包括时区、每日回顾频率与时段、观星开关、模型提供商与 API Key、飞书/Telegram 渠道凭据及自定义 AI 提示词。
+   - 包括时区、每日回顾频率与时段、观星开关、模型提供商与 API Key、QQ、飞书和 Telegram 渠道凭据及自定义 AI 提示词。
    - 首次启动时从部署配置初始化并存入 `state.sqlite3`；后续以已保存设置为准。模型、渠道和提示词保存后热生效；时区、回顾规则和推送时段从下一个当地日生效，当天已固定计划保持原规则。重启服务或重建索引均不丢失设置。
 
 ---
@@ -28,7 +28,9 @@ Moerise 采用分层配置与版本化持久设置架构：底层基础设施参
 
 ### 1. 读取设置
 - 请求：`GET /api/app/v1/settings`
-- 返回内容包含设置版本号 `version`、各项配置对象、凭据状态及渠道能力矩阵（是否支持发送文字、图片、是否支持私聊速记）。
+- 返回内容包含设置版本号 `version`、产品设置、凭据状态和 `channel_capabilities`。其中 `text` 和 `images` 表示所选推送目的地是否已具备所需凭据和收件地址。Telegram 可直接填写 Chat ID，飞书群使用 Webhook URL。`record` 单独表示机器人是否已配置私聊速记。
+- `channel_status` 按 `qq`、`telegram`、`feishu-app` 返回连接状态 `state`、原因 `detail`、本人私聊地址 `peer` 和 Telegram 启动链接 `link`。首次使用在消息渠道页直接填写密钥，之后可更换或清除。
+- 「回顾」中的 `channel.kind` 只决定定时发送目的地。三个机器人可同时接收私聊，群 Webhook 只用于推送。选择群或频道后，该时段的笔记也会发送到该群或频道。
 
 ### 2. 增量更新设置
 - 请求：`PATCH /api/app/v1/settings`

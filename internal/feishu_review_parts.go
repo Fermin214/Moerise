@@ -18,7 +18,7 @@ func (s *FeishuDelivery) reviewTextEnd(content string) (int, error) { return rev
 func (s *FeishuDelivery) reviewTitle() string                       { return "「今日回顾」" }
 func (s *FeishuDelivery) reviewDatePrefix() string                  { return "创建于" }
 func (s *FeishuDelivery) reviewImages() bool {
-	return configured(s.Store.Settings.Channel.AppID) != "" && configured(s.Store.Settings.Channel.AppSecret) != ""
+	return configured(s.config.AppID) != "" && configured(s.config.AppSecret) != ""
 }
 
 func reviewTextFits(text string) bool {
@@ -60,13 +60,13 @@ func reviewTextEnd(content string) (int, error) {
 }
 
 func (s *FeishuDelivery) sendReviewText(ctx context.Context, item Notification, text string) (string, error) {
-	if s.Store.Settings.Channel.Kind == "feishu-webhook" {
+	if s.config.Kind == "feishu-webhook" {
 		return s.webhook(ctx, item.ID, text)
 	}
 	if s.Events == nil {
 		return "", upstreamError("CHANNEL_UNAVAILABLE", "Feishu application is unavailable")
 	}
-	return s.Events.Client.SendText(ctx, configured(s.Store.Settings.Channel.UserOpenID), item.PlatformUUID, text)
+	return s.Events.Client.SendText(ctx, configured(s.config.UserOpenID), item.PlatformUUID, text)
 }
 
 type feishuImagePlatform interface {
@@ -91,14 +91,14 @@ func (s *FeishuDelivery) sendReviewImage(ctx context.Context, item Notification,
 	if key == "" {
 		return "empty:" + item.ID, nil
 	}
-	if s.Store.Settings.Channel.Kind == "feishu-webhook" {
+	if s.config.Kind == "feishu-webhook" {
 		return s.webhookMessage(ctx, item.ID, "image", map[string]string{"image_key": key})
 	}
-	return s.imageClient().SendImage(ctx, configured(s.Store.Settings.Channel.UserOpenID), item.PlatformUUID, key)
+	return s.imageClient().SendImage(ctx, configured(s.config.UserOpenID), item.PlatformUUID, key)
 }
 
 func (s *FeishuDelivery) reviewImageKey(ctx context.Context, id string, part reviewDeliveryPart, note Note) (string, error) {
-	if configured(s.Store.Settings.Channel.AppID) == "" {
+	if configured(s.config.AppID) == "" {
 		return "", nil
 	}
 	client := s.imageClient()

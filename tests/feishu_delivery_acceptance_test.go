@@ -68,6 +68,7 @@ func TestFeishuFullReviewDeliveryWithRealMemosAcceptance(t *testing.T) {
 	settings.Notifications.Enabled, settings.Notifications.Times = true, []string{"00:00"}
 	pointer := func(value string) *string { return &value }
 	settings.Channel.Kind = "feishu-app"
+	settings.Channel.FeishuMode = "callback"
 	settings.Web.StateEncryptionKey = randomStateKey()
 	settings.Channel.AppID, settings.Channel.AppSecret = pointer("cli_acceptance"), pointer(strings.Repeat("s", 32))
 	settings.Channel.VerificationToken, settings.Channel.UserOpenID = pointer(strings.Repeat("v", 32)), pointer("ou_owner")
