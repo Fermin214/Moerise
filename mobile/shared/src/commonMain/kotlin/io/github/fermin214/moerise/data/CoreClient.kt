@@ -136,6 +136,7 @@ class CoreClient(
         for (attempt in 0..1) {
             var accepted = false
             try {
+                discardIdleHttpConnections(engine)
                 onRequest()
                 client.preparePost("$origin/api/app/v1/chats/$chatId/messages") {
                     header(HttpHeaders.Origin, origin)
@@ -164,6 +165,9 @@ class CoreClient(
                     parser.finish()
                 }
                 return
+            } catch (error: IOException) {
+                logClientFailure("POST chat_message", error)
+                throw error
             } catch (error: CoreException) {
                 if (accepted || attempt != 0 || error.detail.code != "CSRF_REJECTED") throw error
                 current = sessionLock.withLock {

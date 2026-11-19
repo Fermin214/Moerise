@@ -1,6 +1,7 @@
 package io.github.fermin214.moerise.data
 
 import com.sun.net.httpserver.HttpServer
+import io.github.fermin214.moerise.domain.ChatGenerate
 import io.github.fermin214.moerise.domain.CoreException
 import io.ktor.client.engine.mock.MockEngine
 import io.ktor.client.engine.mock.respond
@@ -31,6 +32,7 @@ class SessionTransportRecoveryTest {
         val writes = AtomicInteger()
         val readPorts = CopyOnWriteArrayList<Int>()
         val materialPorts = CopyOnWriteArrayList<Int>()
+        val messagePorts = CopyOnWriteArrayList<Int>()
         val cookies = CopyOnWriteArrayList<String>()
         val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
         server.createContext("/api/app/v1") { exchange ->
@@ -52,7 +54,8 @@ class SessionTransportRecoveryTest {
                     exchange.responseBody.write(body)
                 } else {
                     exchange.requestBody.readBytes()
-                    writes.incrementAndGet()
+                    if (exchange.requestURI.path.endsWith("/messages")) messagePorts += exchange.remoteAddress.port
+                    else writes.incrementAndGet()
                 }
             }
         }
@@ -70,6 +73,11 @@ class SessionTransportRecoveryTest {
                 assertEquals(2, materialReads.get())
                 assertEquals(readPorts.last(), materialPorts.first())
                 assertNotEquals(materialPorts[0], materialPorts[1])
+                assertFailsWith<IOException> {
+                    core.chatStream("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+                        ChatGenerate("insight-001", 1, "insight", "", "en")) {}
+                }
+                assertNotEquals(materialPorts.last(), messagePorts.single())
                 assertFailsWith<IOException> { core.api(HttpMethod.Post, "/notes", "{}", "fixed") }
                 assertEquals(1, writes.get())
             }
