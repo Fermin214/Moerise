@@ -7,9 +7,13 @@ onFlowComplete:
 ---
 - extendedWaitUntil:
     visible:
-      id: server_login
+      id: welcome_enter
     timeout: 15000
-    label: Require login on the fresh installation
+    label: Require the welcome dialog on the fresh installation
+- assertVisible:
+    id: privacy_share
+    checked: false
+    label: Check that statistics are off by default
 - runFlow:
     file: subflows/ensure-login.yaml
     label: Sign in to the HTTPS fixture

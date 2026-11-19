@@ -29,6 +29,7 @@ func (s *Settings) loadEnvironment() error {
 		{"SYNC_FULL_SECONDS", &s.Sync.FullSeconds},
 		{"SYNC_OVERLAP_SECONDS", &s.Sync.OverlapSeconds},
 		{"WEB_ENABLED", &s.Web.Enabled},
+		{"TELEMETRY_FORWARDING", &s.TelemetryForwarding},
 		{"PUBLIC_ORIGIN", &s.Web.PublicOrigin},
 		{"STATE_ENCRYPTION_KEY", &s.Web.StateEncryptionKey},
 		{"CURSOR_SECRET", &s.CursorSecret},

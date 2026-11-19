@@ -19,6 +19,7 @@ test('an open page recovers lazy modules after replacing the deployed build', { 
   const build = join(root, 'build'), active = join(root, 'active');
   await cp(fileURLToPath(new URL('../src/', import.meta.url)), join(build, 'src'), { recursive: true });
   await cp(fileURLToPath(new URL('../build.mjs', import.meta.url)), join(build, 'build.mjs'));
+  await cp(fileURLToPath(new URL('../package.json', import.meta.url)), join(build, 'package.json'));
   const deploy = async () => {
     execFileSync(process.execPath, [join(build, 'build.mjs')], { stdio: 'pipe' });
     await rm(active, { recursive: true, force: true });
@@ -53,6 +54,7 @@ test('an open page recovers lazy modules after replacing the deployed build', { 
     if (response.status() === 404) failures.push(new URL(response.url()).pathname);
   });
   await page.goto(url); await page.locator('#empty').waitFor({ state: 'visible' });
+  await page.getByRole('button', { name: '进入 Moerise' }).click();
   await writeFile(join(build, 'build.mjs'), (await readFile(join(build, 'build.mjs'), 'utf8')) + '\n// Upgraded build pipeline.\n');
   const after = await deploy();
   assert.notEqual(before, after);

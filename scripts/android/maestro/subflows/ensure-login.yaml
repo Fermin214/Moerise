@@ -11,6 +11,28 @@ onFlowComplete:
     label: Foreground the installed app without clearing or stopping it
 - extendedWaitUntil:
     visible:
+      id: welcome_enter|open_menu|server_login
+    timeout: 15000
+    label: Wait for welcome, login or the authenticated toolbar
+- runFlow:
+    when:
+      visible:
+        id: welcome_enter
+    commands:
+    - assertVisible:
+        id: welcome_enter
+        label: Check the welcome dialog
+    - assertVisible:
+        id: privacy_share
+        checked: false
+        label: Verify the default privacy choice
+    - tapOn:
+        id: welcome_enter
+        enabled: true
+        label: Continue with statistics disabled
+    label: Accept the default privacy choice on the first launch
+- extendedWaitUntil:
+    visible:
       id: open_menu|server_login
     timeout: 15000
     label: Wait for either login or the authenticated toolbar

@@ -202,8 +202,11 @@ try {
     browser = await chromium.launch({ headless: true, channel: process.env.MOERISE_PLAYWRIGHT_CHANNEL || undefined });
     page = await browser.newPage({ locale: 'zh-CN', viewport: { width: 1440, height: 1000 } });
     page.on('pageerror', error => report.errors.push(error.message));
+    let browserRebuilds = 0;
+    page.on('request', request => { if (new URL(request.url()).pathname.endsWith('/map/rebuild')) browserRebuilds++; });
     await page.goto(url + '/map'); await page.locator('#username').fill(username); await page.locator('#password').fill(password);
     const start = performance.now(); await page.locator('#login').click();
+    await page.getByRole('button', { name: '进入 Moerise' }).click();
     await page.waitForSelector(`#map-field[data-stars="${corpus.length}"][data-rendered="true"]`);
     report.loginToStarsMs = performance.now() - start;
     await page.screenshot({ path: resolve(root, 'stars-desktop.png') });
@@ -223,8 +226,8 @@ try {
     assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
     await page.screenshot({ path: resolve(root, 'stars-mobile.png') });
     await page.getByRole('button', { name: '关闭笔记详情', exact: true }).click();
-    await page.getByRole('button', { name: '切换星图氛围', exact: true }).click();
-    assert.equal(await page.getByRole('button', { name: '切换星图氛围', exact: true }).getAttribute('aria-pressed'), 'false');
+    assert.equal(await page.getByRole('button', { name: '重新生成星图', exact: true }).count(), 0);
+    assert.equal(browserRebuilds, 0);
   });
   await check('新增真实笔记后旧坐标与星体属性保持', async () => {
     const before = await api('GET', '/map');

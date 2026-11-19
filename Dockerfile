@@ -5,7 +5,8 @@ COPY go.mod go.sum ./
 RUN go mod download && go mod verify
 COPY main.go ./
 COPY internal ./internal
-RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/moerise . \
+ARG PROJECT_TELEMETRY_RECEIVER
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X moerise/internal.telemetryReceiverURL=${PROJECT_TELEMETRY_RECEIVER}" -o /out/moerise . \
     && mkdir -p /out/data/state /out/data/index /out/backups
 
 FROM scratch

@@ -106,6 +106,16 @@ internal fun AndroidComposeTestRule<FixtureActivityRule, MainActivity>.signIntoF
     val instrumentation = InstrumentationRegistry.getInstrumentation()
     require(instrumentation.targetContext.packageName == "io.github.fermin214.moerise.fixture")
     waitUntil(20_000) {
+        listOf("welcome_enter", "server_login", "home").any { onAllNodesWithTag(it).fetchSemanticsNodes().isNotEmpty() }
+    }
+    if (onAllNodesWithTag("welcome_enter").fetchSemanticsNodes().isNotEmpty()) {
+        onNodeWithTag("privacy_share").assertIsOff()
+        if (InstrumentationRegistry.getArguments().getString("privacyUpgrade") == "true") {
+            onNodeWithTag("privacy_share").performClick().assertIsOn()
+        }
+        onNodeWithTag("welcome_enter").performClick()
+    }
+    waitUntil(20_000) {
         onAllNodesWithTag("server_login").fetchSemanticsNodes().isNotEmpty() ||
             onAllNodesWithTag("home").fetchSemanticsNodes().isNotEmpty()
     }

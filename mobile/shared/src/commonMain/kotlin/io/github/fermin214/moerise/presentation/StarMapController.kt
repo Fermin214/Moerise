@@ -21,6 +21,7 @@ data class MapMetric(val kind: String, val value: Long, val version: String)
 class StarMapController(
     private val repository: suspend () -> NoteRepository, private val core: () -> CoreClient?,
     private val account: () -> String?, private val scope: CoroutineScope,
+    private val privacy: PrivacyController? = null,
 ) {
     private val mutable = MutableStateFlow(StarMapState())
     val state = mutable.asStateFlow()
@@ -42,14 +43,32 @@ class StarMapController(
     private var height = 0.0
     private var firstDrawVersion = ""
     private var receivedAt = 0L
+    private var openedAt: Long? = null
+
+    suspend fun prefetch() {
+        val owner = account() ?: return
+        val active = core() ?: return
+        if (visible || state.value.snapshot != null) return
+        val started = epochMillis()
+        val cached = repository().readSnapshot(owner, "map")
+        val body = cached?.body ?: active.boundedMap() ?: return
+        val snapshot = withContext(Dispatchers.Default) { CoreJson.decodeFromString<StarMap>(body).validate() }
+        if (!visible && snapshot.readable && owner == account() && active === core()) {
+            mutable.update { it.copy(snapshot = snapshot, status = snapshot.status) }
+            if (cached == null) repository().putSnapshot(SnapshotEntity(owner, "map", body, epochMillis()))
+            privacy?.record("stars", started = started, source = "prefetch")
+        }
+    }
 
     fun visible(value: Boolean) {
         if (value == visible) return
         visible = value
         if (value) {
+            openedAt = epochMillis()
             refresh()
             if (key == account()) state.value.selected?.let(::select)
         } else {
+            openedAt?.let { privacy?.record("stars", "canceled", it) }; openedAt = null
             ++epoch; readJob?.cancel(); postJob?.cancel(); polling?.cancel()
             ++readerGeneration; readerJob?.cancel(); cancelExcerpts()
             width = 0.0; height = 0.0
@@ -66,9 +85,14 @@ class StarMapController(
     fun unplaced() { mutable.update { it.copy(unplacedOnly = !it.unplacedOnly) } }
     fun atmosphere() { mutable.update { it.copy(photo = !it.photo) } }
     fun fullScreen() { mutable.update { it.copy(fullScreen = !it.fullScreen) } }
+    fun dismissReader() {
+        closeReader()
+        mutable.update { it.copy(unplacedOnly = false) }
+    }
     fun back(): Boolean = when {
-        state.value.fullScreen -> { fullScreen(); true }
         state.value.selected != null -> { closeReader(); true }
+        state.value.unplacedOnly -> { unplaced(); true }
+        state.value.fullScreen -> { fullScreen(); true }
         else -> false
     }
     fun size(width: Double, height: Double) {
@@ -115,6 +139,13 @@ class StarMapController(
             try {
                 previous?.join(); postJob?.join()
                 if (key != account) {
+                    if (state.value.snapshot == null) repository().readSnapshot(account, "map")?.let { cached ->
+                        val snapshot = withContext(Dispatchers.Default) { CoreJson.decodeFromString<StarMap>(cached.body).validate() }
+                        if (current(stamp, account, active) && snapshot.readable) {
+                            mutable.update { it.copy(snapshot = snapshot, status = snapshot.status) }
+                            fit()
+                        }
+                    }
                     val rebuild = repository().feature(account, "map-rebuild")?.let { CoreJson.decodeFromString<MapRebuild>(it) }
                     if (!current(stamp, account, active)) return@launch
                     key = account
@@ -129,6 +160,9 @@ class StarMapController(
                 }
                 if (!current(stamp, account, active)) return@launch
                 metric("parse_ms", (epochMillis() - receivedAt).coerceAtLeast(0))
+                if (map.readable && response.length <= 512 * 1024)
+                    repository().putSnapshot(SnapshotEntity(account, "map", response, receivedAt))
+                if (!current(stamp, account, active)) return@launch
                 val previousMap = state.value.snapshot
                 val frameChanged = previousMap?.layoutFrame != map.layoutFrame
                 val selected = state.value.selected
@@ -166,6 +200,10 @@ class StarMapController(
                 if (state.value.selected != null && state.value.reader == null && !state.value.reading) select(state.value.selected!!)
             } catch (error: Exception) {
                 if (error is CancellationException) throw error
+                if (current(stamp, account, active)) openedAt?.let {
+                    privacy?.record("stars", usageResult(error), it, error = error)
+                    openedAt = null
+                }
                 if (current(stamp, account, active)) mutable.update { it.copy(loading = false, error = errorCode(error),
                     compatible = errorCode(error) !in setOf("MAP_INCOMPATIBLE", "MAP_PROTOCOL")) }
             } finally { if (current(stamp, account, active)) schedulePoll() }
@@ -286,6 +324,7 @@ class StarMapController(
     fun drawn(duration: Long) {
         metric("draw_ms", duration)
         val version = state.value.snapshot?.layoutVersion ?: return
+        openedAt?.let { privacy?.record("stars", started = it); openedAt = null }
         if (firstDrawVersion != version) {
             firstDrawVersion = version
             metric("first_draw_ms", (epochMillis() - receivedAt).coerceAtLeast(0))

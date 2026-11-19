@@ -21,6 +21,8 @@ let html = (await readFile(`${output}/index.html`, 'utf8')).replace(/<[^>]+\ssty
     : cleaned.replace(/^<([^\s>]+)/, `<$1 class="${name}"`);
 });
 await writeFile(`${output}/layout.css`, rules.join('\n') + '\n');
+const pkg = JSON.parse(await readFile(new URL('./package.json', import.meta.url), 'utf8'));
+html = html.replace('</head>', `  <meta name="moerise-version" content="${pkg.version}">\n</head>`);
 const modules = new Map();
 for (const name of (await readdir(source)).filter(name => name.endsWith('.js')).sort()) {
   modules.set(name, await readFile(`${source}/${name}`, 'utf8'));

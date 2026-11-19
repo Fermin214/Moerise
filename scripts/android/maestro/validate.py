@@ -55,7 +55,7 @@ SYSTEM_TAP_IDS = {PROVIDER + "action_menu_select", XIAOMI + "file_name", XIAOMI 
 SYSTEM_TAP_IDS.add("android:id/overflow")
 SYSTEM_TAP_IDS.add("com.android.systemui:id/ok")
 UNION_IDS = {
-    "open_menu|server_login", "walk_settings|walk_start|walk_end",
+    "open_menu|server_login", "welcome_enter|open_menu|server_login", "walk_settings|walk_start|walk_end",
     "note_editor|" + PROVIDER + "action_menu_select",
     PROVIDER + "toolbar|" + XIAOMI + "pick_container",
 }
@@ -165,6 +165,8 @@ def source_ids():
         add("ConnectionScreen.kt", identifier, f'"{identifier}", !state.busy')
         add("ConnectionScreen.kt", identifier + "_empty", '"${tag}_empty"')
     add("ConnectionScreen.kt", "server_login")
+    add("PrivacyScreen.kt", "privacy_share")
+    add("PrivacyScreen.kt", "welcome_enter")
     add("ConnectionScreen.kt", "server_change")
     add("MoeriseApp.kt", "note_editor", 'editorTag: String = "note_editor"')
     for identifier in ("ime_visible", "ime_hidden"):
@@ -183,17 +185,20 @@ def source_ids():
                                ("cancel_note", 'cancelTag = "cancel_note_$id"')):
             add("MoeriseApp.kt", prefix + "_${" + variable + "}", source)
         add("MoeriseApp.kt", "note_editor_${" + variable + "}_empty", '"${editorTag}_empty"')
-        add("InsightScreen.kt", "chat_remove_${" + variable + "}", 'testTag("chat_remove_$name")')
     for identifier in ("insights_page", "chat_session_menu", "chat_new", "chat_delete", "chat_history",
-                       "chat_add_materials", "chat_apply_materials", "chat_material_toggle", "chat_error"):
+                       "chat_add_materials", "chat_material_summary", "chat_error", "chat_insight",
+                       "chat_save_selection", "chat_save_confirm"):
         add("InsightScreen.kt", identifier)
-    for identifier in ("chat_material_dialog", "chat_history_dialog"):
-        add("InsightScreen.kt", identifier, f'tag = "{identifier}"')
+    add("InsightScreen.kt", "chat_reply_completed", 'testTag("chat_reply_${turn.assistant.status}")')
+    add("InsightScreen.kt", "chat_save_dialog", 'close, "chat_save_dialog")')
+    add("InsightScreen.kt", "chat_history_dialog", 'closeDialog, "chat_history_dialog")')
+    add("InsightPickerDialog.kt", "chat_material_dialog", 'back, "chat_material_dialog")')
     add("InsightScreen.kt", "chat_history_dialog_close", 'testTag("${tag}_close")')
-    add("InsightScreen.kt", "chat_picker_tab_1", 'tagPrefix = "chat_picker_tab"')
-    add("InsightScreen.kt", "chat_picker_candidates_ready")
-    add("InsightScreen.kt", "chat_picker_all_tags")
-    add("InsightScreen.kt", "chat_picker_note_${NOTE_NAME}", 'testTag("chat_picker_note_${note.name}")')
+    add("InsightPickerDialog.kt", "chat_picker_tab_1", 'tagPrefix = "chat_picker_tab"')
+    for identifier in ("chat_picker_candidates_ready", "chat_picker_all_tags", "chat_apply_materials", "chat_picker_selected"):
+        add("InsightPickerDialog.kt", identifier)
+    for prefix in ("chat_picker_note", "chat_picker_read"):
+        add("InsightPickerDialog.kt", prefix + "_${NOTE_NAME}", f'testTag("{prefix}_${{note.name}}")')
     for page in ("review", "walk"):
         add("DiscoveryScreen.kt", page + "_page", 'testTag("${page}_page")')
     for identifier in ("review_next", "walk_start", "walk_end", "walk_settings",
@@ -312,14 +317,14 @@ def commands(items, flow, refs, inline=False, hook=False, focused=None, ime_guar
                     "Scrolling requires a bounded element search without coordinates")
             selector(value["element"])
             if value["direction"] in {"LEFT", "RIGHT"}:
-                require(value["element"].get("id") in {f"settings_tab_{index}" for index in range(5)},
+                require(value["element"].get("id") in {f"settings_tab_{index}" for index in range(6)},
                         "Horizontal scrolling is limited to the settings tab strip")
             focused = None
         elif kind == "swipe":
             require(keys == {"from", "direction", "duration"} and
                     value["direction"] in {"LEFT", "RIGHT"} and value["duration"] == 400 and
                     isinstance(value["from"], dict) and set(value["from"]) == {"id"} and
-                    value["from"]["id"] in {f"settings_tab_{index}" for index in range(5)},
+                    value["from"]["id"] in {f"settings_tab_{index}" for index in range(6)},
                     "Swipe requires a settings tab origin and a bounded horizontal gesture")
             focused, selected_all = None, False
         elif kind == "takeScreenshot":

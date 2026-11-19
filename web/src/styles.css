@@ -3,6 +3,7 @@
 @import url('/shell.css') layer(shell);
 @import url('/memos.css') layer(auth);
 @import url('/interaction.css') layer(interaction);
+@import url('/insight-layout.css') layer(interaction);
 @layer pages {
 [hidden] { display: none !important; }
 .note-content { overflow-wrap: anywhere; }
@@ -226,7 +227,7 @@ button:disabled { cursor:default; opacity:.5; }
 .stargazing .map-star-topic:focus-visible { outline:1px solid #a9c5df; outline-offset:3px; }
 .stargazing .map-preview { color:#c9d6e5; background:#0b192aee; border-color:#263749; box-shadow:none; }
 .stargazing > p { color:#b8c8d9; background:#0b192aee; }
-.map-page:fullscreen { background:#030a14; padding:0; height:100dvh; }
+.map-page:fullscreen,.map-page.map-fullscreen { position:fixed; inset:0; z-index:50; background:#030a14; padding:0; height:100dvh; }
 .map-unplaced { width:auto; min-height:40px; height:auto; padding:8px 12px; font-size:13px; position:absolute; bottom:14px; left:14px; z-index:4; color:#b8c8d9; background:#0b192aee; border-color:#263749; }
 .map-unplaced-list { display:flex; flex-direction:column; gap:8px; padding:12px; }
 .stargazing .map-reader > h2 { padding:0 16px; }

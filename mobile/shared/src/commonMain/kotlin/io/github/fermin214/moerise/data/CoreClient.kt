@@ -38,6 +38,7 @@ class CoreClient(
     private val cookies: SessionCookies,
     private val engine: HttpClientEngine = platformHttpEngine(),
     private val onUnauthorized: () -> Unit = {},
+    private val onRequestFailure: (Long, Exception) -> Unit = { _, _ -> },
     private val onRequest: () -> Unit = {},
 ) : AutoCloseable {
     private val sessionLock = Mutex()
@@ -57,7 +58,10 @@ class CoreClient(
 
     fun bindAccount(accountKey: String) { expectedAccount = accountKey }
 
-    suspend fun capabilities(): Capabilities = CoreJson.decodeFromString(send(HttpMethod.Get, "/capabilities"))
+    var lastCapabilities: Capabilities? = null
+        private set
+    suspend fun capabilities(): Capabilities = CoreJson.decodeFromString<Capabilities>(send(HttpMethod.Get, "/capabilities"))
+        .also { lastCapabilities = it }
 
     suspend fun login(username: String, password: String): SessionIdentity = sessionLock.withLock {
         val body = buildJsonObject { put("username", username); put("password", password) }.toString()
@@ -69,6 +73,24 @@ class CoreClient(
     }
 
     suspend fun session(): SessionIdentity = sessionLock.withLock { refreshSession() }
+
+    suspend fun boundedMap(): String? {
+        sessionLock.withLock { identity ?: refreshSession() }
+        onRequest()
+        return client.prepareGet("$origin/api/app/v1/map").execute { response ->
+            if (response.status.value == 401) { identity = null; onUnauthorized() }
+            if (!response.status.isSuccess()) return@execute null
+            val bytes = ByteArray(2 * 1024 * 1024 + 1)
+            val channel = response.bodyAsChannel()
+            var size = 0
+            while (size < bytes.size) {
+                val count = channel.readAvailable(bytes, size, bytes.size - size)
+                if (count < 0) break
+                size += count
+            }
+            if (size < bytes.size) bytes.decodeToString(0, size) else null
+        }
+    }
 
     private suspend fun refreshSession(): SessionIdentity {
         val next = withTimeout(CORE_REQUEST_TIMEOUT_MILLIS) {
@@ -86,6 +108,14 @@ class CoreClient(
     }
 
     suspend fun api(method: HttpMethod, path: String, body: String? = null, idempotencyKey: String? = null): String {
+        val started = epochMillis()
+        return try { authenticated(method, path, body, idempotencyKey) } catch (error: Exception) {
+            if (path != "/telemetry" && error !is kotlinx.coroutines.CancellationException) onRequestFailure(started, error)
+            throw error
+        }
+    }
+
+    private suspend fun authenticated(method: HttpMethod, path: String, body: String?, idempotencyKey: String?): String {
         val current = sessionLock.withLock { identity ?: refreshSession() }
         try {
             return send(method, path, body, current.csrfToken, idempotencyKey)

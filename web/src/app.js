@@ -5,16 +5,18 @@ import { pages, notePath, filters, timelineURL, safeFrom, detailURL, noteID, att
 import { el, button } from './dom.js';
 import { validNote, renderNoteCard, renderReadingCard } from './notes.js';
 import { createTimeline } from './timeline.js';
-import { createClient, validIdentity } from './client.js';
+import { createClient, validIdentity, sessionOwner } from './client.js';
 import { bindMenu, closeMenus } from './menus.js';
 import { bindSearchInput } from './search-input.js';
 import { createLeaveGuard } from './leave-guard.js';
 import { createRouter } from './router.js';
 import { clearMedia } from './media.js';
 import { initShell } from './shell.js';
+import { connectPrivacy, disconnectPrivacy, diagnose, resultOf, usage } from './privacy.js';
+import { syncStatus } from './sync-status.js';
 
 const $ = id => document.getElementById(id);
-const shell = initShell();
+const shell = initShell(loadSidebar);
 const draft = new Draft(), snapshots = new Map();
 const editors = new Map(), pendingWrites = new Map(), failures = new Map();
 const noteSizes = new Map();
@@ -42,11 +44,12 @@ const cardObserver = new ResizeObserver(entries => {
     measuredCards.clear();
   });
 });
-const sidebarTags = new Map(), sidebarCalendars = new Map();
+const sidebarTags = new Map(), sidebarCalendars = new Map(), recentChats = new Map();
+let preloadController = null, preloadTimer = null, serviceDay = '';
 let sidebarTagState = '', sidebarCalendarKey = '';
 let sidebarFocusTimer = null, sidebarFocusRefresh = null;
 let epoch = 0, viewSequence = 0, sidebarSequence = 0;
-let identity = null, logoutCSRF = null, authBusy = false, saving = false, readingFiles = false;
+let identity = null, logoutSession = null, authBusy = false, saving = false, readingFiles = false;
 let draftOwner = null;
 let timeline = null;
 let month = '', routeReturnKey = null;
@@ -57,10 +60,30 @@ let insightsPage = null;
 let mapPage = null, mapView = null, mapSnapshot = null;
 let discoveryPage = null, discovery = null;
 const client = createClient({
-  generation: () => epoch, session: () => identity, logoutToken: () => logoutCSRF,
-  onSession: value => { if (identity) { identity = value; updateStargazing(); } else logoutCSRF = value.csrf_token; },
+  generation: () => epoch, session: () => identity || logoutSession,
+  onSession: value => {
+    if (!identity) { logoutSession = value; return; }
+    const timezoneChanged = identity.timezone !== value.timezone;
+    identity = value; updateStargazing();
+    if (timezoneChanged) {
+      serviceDay = localToday(); month = sourceTimeline().values.date?.slice(0, 7) || serviceDay.slice(0, 7);
+      dirtySnapshots(); invalidateSidebar(); loadSidebar();
+    }
+  },
+  onOwnerChange: () => expire({ code: 'SESSION_UNAUTHORIZED' }, false),
 });
-const { request, sessionRequest } = client;
+const { request, sessionRequest, renewCSRF } = client;
+let capabilitiesRequest;
+function readCapabilities() {
+  if (!capabilitiesRequest) {
+    const pending = request('/capabilities').catch(error => {
+      if (capabilitiesRequest === pending) capabilitiesRequest = null;
+      throw error;
+    });
+    capabilitiesRequest = pending;
+  }
+  return capabilitiesRequest;
+}
 const searchInput = bindSearchInput($('q'), query => sidebarFilter({ query }));
 const discoveryCard = (note, review = false, className) => renderReadingCard(note, { review, className, formatTime, openNote });
 const pageDirty = () => settingsPage?.hasChanges() || insightsPage?.hasChanges();
@@ -80,6 +103,9 @@ function aborted() { return new DOMException('Stale request', 'AbortError'); }
 function stale(generation) { if (generation !== epoch) throw aborted(); }
 function invalidate() {
   epoch++; viewSequence++;
+  syncStatus.reset();
+  capabilitiesRequest = null;
+  stopPreload(); invalidateHistory();
   timeline?.destroy(); timeline = null;
   settingsPage?.destroy(); settingsPage = null;
   insightsPage?.destroy(); insightsPage = null;
@@ -104,7 +130,7 @@ function clearDrafts() {
 function hidePrivate({ resume = false } = {}) {
   shell.reset();
   if (resume) {
-    draftOwner ||= identity?.user.name;
+    draftOwner ||= sessionOwner(identity);
     for (const [name, operation] of pendingWrites) {
       operation.busy = false;
       failures.set(name, { code: 'NOTE_SAVE_UNCONFIRMED' });
@@ -134,14 +160,16 @@ function authControls({ busy = false, login = true } = {}) {
   $('login-form').hidden = !login;
   for (const id of ['username', 'password', 'login']) $(id).disabled = busy;
 }
-function expire(err) {
+function expire(err, resume = true) {
+  disconnectPrivacy(true);
   leaveGuard.cancel(); router.cancel();
-  invalidate(); hidePrivate({ resume: true }); logoutCSRF = null; authControls();
+  invalidate(); hidePrivate({ resume }); logoutSession = null; authControls();
   showError($('auth-error'), err);
   $('username').focus();
 }
 function handleFailure(element, err) {
   if (err.name === 'AbortError') return;
+  diagnose(err);
   if (err.status === 401) expire(err);
   else showError(element, err);
 }
@@ -191,21 +219,22 @@ function dirtySnapshots() {
   discoveryPage?.refresh();
   mapPage?.refresh();
 }
-async function enter(value) {
+async function enter(value, restored = false) {
   identity = validIdentity(value);
   updateStargazing();
-  if (draftOwner && draftOwner !== identity.user.name) clearDrafts();
+  if (draftOwner && draftOwner !== sessionOwner(identity)) clearDrafts();
   draftOwner = null;
-  logoutCSRF = null;
+  logoutSession = null;
   $('auth').hidden = true;
   $('app').hidden = $('workspace').hidden = false;
   $('password').value = '';
   setText($('account-name'), identity.user.display_name?.trim() || identity.user.name.replace(/^users\//, ''));
   $('account').hidden = false;
-  month = localToday().slice(0, 7);
+  serviceDay = localToday(); month = serviceDay.slice(0, 7);
   $('content').value = draft.content;
   for (const editor of editors.values()) editor.update();
   updateComposer();
+  connectPrivacy(identity, sessionRequest, restored && location.pathname === '/' ? performance.now() : null, readCapabilities);
   await showRoute();
 }
 async function restore() {
@@ -214,7 +243,7 @@ async function restore() {
   try {
     const value = await request('/session');
     stale(generation); authControls();
-    await enter(value);
+    await enter(value, true);
   } catch (err) {
     if (generation !== epoch || err.name === 'AbortError') return;
     authControls();
@@ -224,7 +253,7 @@ async function restore() {
 $('login-form').addEventListener('submit', async event => {
   event.preventDefault();
   if (authBusy) return;
-  if (logoutCSRF) { await logout(); if (logoutCSRF) return; }
+  if (logoutSession) { await logout(); if (logoutSession) return; }
   const generation = invalidate();
   authControls({ busy: true }); showError($('auth-error'), null);
   const body = { username: $('username').value, password: $('password').value };
@@ -241,14 +270,15 @@ $('login-form').addEventListener('submit', async event => {
 async function logout() {
   if (authBusy) return;
   if (identity && !(await leaveGuard.confirm())) return;
-  logoutCSRF ||= identity?.csrf_token;
-  if (!logoutCSRF) return;
+  logoutSession ||= identity;
+  if (!logoutSession) return;
+  disconnectPrivacy(true);
   history.replaceState({ ...history.state, mapView: null }, '');
   const generation = invalidate();
   hidePrivate(); authControls({ busy: true, login: false }); showError($('auth-error'), null);
   try {
     await sessionRequest('/session', { method: 'DELETE' });
-    stale(generation); logoutCSRF = null; authControls(); $('username').focus();
+    stale(generation); logoutSession = null; authControls(); $('username').focus();
   } catch (err) {
     if (generation !== epoch || err.name === 'AbortError') return;
     authControls(); showError($('auth-error'), err);
@@ -282,14 +312,36 @@ function invalidateSidebar() {
     cache.clear();
   }
 }
-function sidebarData(cache, key, path) {
-  for (const [other, entry] of cache) {
-    if (other !== key && entry.controller) { entry.controller.abort(); cache.delete(other); }
+function discard(cache, key) {
+  cache.get(key)?.controller?.abort();
+  cache.delete(key);
+}
+function invalidateHistory() { discard(recentChats, 'first'); }
+function readHistory(owner) { return sidebarData(recentChats, 'first', '/chats?page_size=20', owner); }
+function readTags(state, owner) { return sidebarData(sidebarTags, state, `/tags?${new URLSearchParams({ state })}`, owner); }
+function readCalendar(state, month, owner) {
+  return sidebarData(sidebarCalendars, `${state}:${month}`, `/calendar?${new URLSearchParams({ state, month })}`, owner);
+}
+function sidebarChanged(before, after) {
+  const dayOf = note => note && resolveText(formatTime(note.create_time)).slice(0, 10);
+  const oldDay = dayOf(before), newDay = dayOf(after);
+  const changedState = before?.state !== after?.state;
+  const tagsOf = note => JSON.stringify([...(note?.tags || [])].sort());
+  for (const [note, day] of [[before, oldDay], [after, newDay]]) {
+    if (!note) continue;
+    if (changedState || oldDay !== newDay) discard(sidebarCalendars, `${note.state}:${day.slice(0, 7)}`);
+    if ((changedState && note.tags?.length) || tagsOf(before) !== tagsOf(after)) discard(sidebarTags, note.state);
   }
+  loadSidebar();
+}
+function sidebarData(cache, key, path, owner) {
   const cached = cache.get(key);
+  if (owner?.signal?.aborted) return Promise.reject(aborted());
   if (cached && !cached.controller && Date.now() - cached.loadedAt >= 60_000) cache.delete(key);
   if (!cache.has(key)) {
-    const entry = { controller: new AbortController() };
+    const entry = { controller: new AbortController(), owner };
+    const cancel = () => { if (entry.owner === owner && cache.get(key) === entry) discard(cache, key); };
+    owner?.signal?.addEventListener('abort', cancel, { once: true });
     entry.promise = request(path, { controller: entry.controller }).then(data => {
       entry.controller = null;
       entry.loadedAt = Date.now();
@@ -297,26 +349,54 @@ function sidebarData(cache, key, path) {
     }).catch(err => {
       if (cache.get(key) === entry) cache.delete(key);
       throw err;
-    });
+    }).finally(() => owner?.signal?.removeEventListener('abort', cancel));
     cache.set(key, entry);
-  }
+    if (cache.size > 36) discard(cache, cache.keys().next().value);
+  } else if (!owner) cache.get(key).owner = null;
   return cache.get(key).promise;
 }
+function stopPreload() {
+  clearTimeout(preloadTimer); preloadController?.abort(); preloadController = null;
+}
+function schedulePreload() {
+  stopPreload();
+  if (!identity || !isTimeline() || document.hidden) return;
+  const generation = epoch;
+  preloadTimer = setTimeout(async () => {
+    const owner = preloadController = new AbortController();
+    try {
+      await loadSidebar(owner);
+      if (owner.signal.aborted || document.hidden) return;
+      await readHistory(owner);
+      if (owner.signal.aborted || document.hidden || mapSnapshot || identity?.stargazing_enabled === false) return;
+      const started = performance.now();
+      const snapshot = await request('/map', { controller: owner, maxBytes: 2 * 1024 * 1024 }).then(value => {
+        usage('stars', 'success', performance.now() - started, 'prefetch'); return value;
+      }, error => { usage('stars', resultOf(error), performance.now() - started, 'prefetch'); throw error; });
+      if (!owner.signal.aborted && generation === epoch && ['ready', 'empty'].includes(snapshot?.status)) mapSnapshot = snapshot;
+    } catch (error) { if (generation === epoch && error.status === 401) expire(error); }
+    finally { if (preloadController === owner) preloadController = null; }
+  }, 250);
+}
 function refreshSidebarOnFocus() {
-  if (!identity || document.visibilityState !== 'visible' || sidebarFocusRefresh) return;
+  if (document.hidden) { stopPreload(); return; }
+  if (!identity || sidebarFocusRefresh) return;
   clearTimeout(sidebarFocusTimer);
   sidebarFocusTimer = setTimeout(() => {
     sidebarFocusTimer = null;
     if (!identity || document.visibilityState !== 'visible') return;
-    for (const cache of [sidebarTags, sidebarCalendars]) {
-      for (const [key, entry] of cache) if (!entry.controller) cache.delete(key);
+    const day = localToday();
+    if (day !== serviceDay) {
+      if (month === serviceDay.slice(0, 7)) month = day.slice(0, 7);
+      serviceDay = day;
     }
     const pending = loadSidebar();
     sidebarFocusRefresh = pending;
     pending.finally(() => { if (sidebarFocusRefresh === pending) sidebarFocusRefresh = null; });
   }, 100);
 }
-async function loadSidebar() {
+async function loadSidebar(owner) {
+  if (!(owner instanceof AbortController)) owner = null;
   if (!identity) return;
   const sequence = ++sidebarSequence, generation = epoch;
   const { path, values } = sourceTimeline();
@@ -332,10 +412,9 @@ async function loadSidebar() {
     sidebarCalendarKey = calendarKey;
   }
   try {
-    const [tags, calendar] = await Promise.all([
-      sidebarData(sidebarTags, state, `/tags?${new URLSearchParams({ state })}`),
-      sidebarData(sidebarCalendars, calendarKey, `/calendar?${new URLSearchParams({ state, month: selectedMonth })}`),
-    ]);
+    const [tags, calendar] = owner
+      ? [await readTags(state, owner), await readCalendar(state, selectedMonth, owner)]
+      : await Promise.all([readTags(state), readCalendar(state, selectedMonth)]);
     if (generation !== epoch || sequence !== sidebarSequence) return;
     if (!Array.isArray(tags?.tags) || !Array.isArray(calendar?.days) || calendar.month !== selectedMonth) {
       sidebarTags.delete(state); sidebarCalendars.delete(calendarKey);
@@ -344,7 +423,7 @@ async function loadSidebar() {
     renderTags(tags.tags, values.tags);
     renderCalendar(calendar.days, values.date);
   } catch (err) {
-    if (generation !== epoch || sequence !== sidebarSequence) return;
+    if (generation !== epoch || sequence !== sidebarSequence || err.name === 'AbortError') return;
     handleFailure($('sidebar-error'), err);
     if (identity) $('sidebar-retry').hidden = false;
   }
@@ -392,6 +471,7 @@ function renderCalendar(days, selected, disabled = false) {
 function changeMonth(delta) {
   const [year, number] = month.split('-').map(Number), date = new Date(year, number - 1 + delta, 1);
   if (date.getFullYear() < 1000 || date.getFullYear() > 9999) return;
+  if (sidebarCalendars.get(sidebarCalendarKey)?.controller) discard(sidebarCalendars, sidebarCalendarKey);
   month = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
   loadSidebar();
 }
@@ -428,7 +508,7 @@ function renderList(items) {
   for (const note of items) {
     const previous = existing.get(note.name);
     const node = editors.get(note.name)?.form ||
-      (previous?.dataset.sourceHash === note.source_hash ? previous : renderNote(note, notePath.test(location.pathname)));
+      (previous?.matches('article') && previous.dataset.sourceHash === note.source_hash ? previous : renderNote(note, notePath.test(location.pathname)));
     if (node !== cursor) {
       if (node.parentNode === list && node === focusedEditor) {
         // 移动周围卡片，保持编辑表单连接，避免输入失焦。
@@ -450,7 +530,7 @@ function renderList(items) {
       if (index >= 6 && height && card.getBoundingClientRect().top >= innerHeight) {
         card.style.containIntrinsicBlockSize = `auto ${height}px`; card.classList.add('timeline-deferred');
       }
-      if (!card.dataset.visibilityBound) {
+      if (!card.hasAttribute('data-visibility-bound')) {
         card.dataset.visibilityBound = '';
         card.addEventListener('contentvisibilityautostatechange', event => { card.skipped = event.skipped; });
       }
@@ -480,7 +560,7 @@ async function refreshNote(note) {
     dirtySnapshots();
     if (timeline) await timeline.update(note.name, updated);
     else renderList([updated]);
-    invalidateSidebar(); loadSidebar();
+    sidebarChanged(note, updated);
   } catch (err) { if (generation === epoch && sequence === viewSequence) handleFailure($('list-error'), err); }
 }
 function confirmDelete(card, note) {
@@ -509,6 +589,8 @@ async function performWrite(note) {
   const operation = pendingWrites.get(note.name);
   if (!operation || operation.busy) return;
   const generation = epoch;
+  const started = performance.now();
+  const transfer = syncStatus.start();
   operation.busy = true; failures.delete(note.name);
   const editor = editors.get(note.name);
   editor?.update();
@@ -519,14 +601,18 @@ async function performWrite(note) {
     });
     stale(generation);
     if (operation.method !== 'DELETE' && !validNote(updated)) throw Object.assign(new Error('Invalid save response'), { code: 'NOTE_SAVE_UNCONFIRMED' });
+    transfer('success');
+    if (editor) { usage('edit', 'success'); usage('save_ack', 'success', performance.now() - started); }
     editor?.draft.clear(); editors.delete(note.name); pendingWrites.delete(note.name); failures.delete(note.name); dirtySnapshots();
     if (timeline) await timeline.update(note.name, updated);
     else if (location.pathname === `/notes/${noteID(note.name)}`) {
       if (operation.method === 'DELETE') navigate(safeFrom(new URLSearchParams(location.search).get('from')));
       else renderList([updated]);
     }
-    invalidateSidebar(); loadSidebar();
+    sidebarChanged(note, updated);
   } catch (err) {
+    transfer(resultOf(err));
+    if (editor && generation === epoch) { usage('edit', resultOf(err)); usage('save_ack', resultOf(err), performance.now() - started); }
     if (generation !== epoch || err.name === 'AbortError') return;
     operation.busy = false;
     if (err.status === 401) { expire(err); return; }
@@ -648,6 +734,7 @@ async function routeModule(load, generation, sequence) {
 }
 async function showRoute({ focus = false, returning = false } = {}) {
   if (!identity) return;
+  stopPreload();
   shell.closeNavigation();
   timeline?.destroy(); timeline = null;
   settingsPage?.destroy(); settingsPage = null;
@@ -678,13 +765,14 @@ async function showRoute({ focus = false, returning = false } = {}) {
     const active = link.getAttribute('href') === location.pathname; link.classList.toggle('on', active);
     if (active) link.setAttribute('aria-current', 'page'); else link.removeAttribute('aria-current');
   });
-  loadSidebar();
+  if (!isTimeline()) loadSidebar();
   if (isTimeline()) {
     if (location.pathname === '/archived') { $('view-title').hidden = false; setText($('view-title'), l("归档笔记")); }
     renderFilters();
     timeline = createTimeline({ key: router.key, url: router.url, snapshots, request, sessionRequest,
       render: renderList, showError, handleFailure });
     await timeline.open(returning);
+    if (sequence === viewSequence) schedulePreload();
   } else if (detail) {
     const from = safeFrom(new URLSearchParams(location.search).get('from'));
     const label = pages.get(new URL(from, location.origin).pathname) || l("主页");
@@ -715,17 +803,17 @@ async function showRoute({ focus = false, returning = false } = {}) {
     const module = await routeModule(() => import('./insights.js'), generation, sequence);
     if (!module) return;
     insightsPage = module.createInsightsPage({
-      sessionRequest, csrfToken: () => identity?.csrf_token, handleFailure, openNote,
+      owner: sessionOwner(identity), sessionRequest, csrfToken: () => identity?.csrf_token, handleFailure, openNote,
       navigate: async (url, options) => {
         if (url === router.url) { if (await leaveGuard.confirm(pageDirty())) showRoute({ focus: true }); }
         else navigate(url, options);
       },
       closeMenus,
-      renewCSRF: async () => { identity = validIdentity(await request('/session')); updateStargazing(); },
+      renewCSRF,
       replaceURL: url => router.replaceURL(url),
-      today: localToday, formatTime,
+      today: localToday, formatTime, readTags, readCalendar, readHistory, invalidateHistory, readCapabilities,
       onDirtyChange: () => leaveGuard.update(),
-      onSaved: () => { dirtySnapshots(); invalidateSidebar(); loadSidebar(); },
+      onSaved: note => { dirtySnapshots(); sidebarChanged(null, note); },
     });
     await insightsPage.mount($('workspace'));
   } else if (location.pathname === '/map') {
@@ -737,11 +825,12 @@ async function showRoute({ focus = false, returning = false } = {}) {
     }
     const module = await routeModule(() => import('./map.js'), generation, sequence);
     if (!module) return;
-    const saved = history.state?.mapView?.owner === identity.user.name ? history.state.mapView :
-      mapView?.owner === identity.user.name ? mapView : null;
+    const owner = sessionOwner(identity);
+    const saved = history.state?.mapView?.owner === owner ? history.state.mapView :
+      mapView?.owner === owner ? mapView : null;
     mapPage = module.createMapPage({
       request: sessionRequest, handleFailure, validNote, renderNote: note => discoveryCard(note, false, 'card map-note'),
-      initialView: saved,
+      initialView: saved, pushLayer: router.pushLayer,
       initialData: mapSnapshot,
       onData: value => {
         if (identity && generation === epoch && sequence === viewSequence) {
@@ -751,7 +840,7 @@ async function showRoute({ focus = false, returning = false } = {}) {
       },
       onViewChange: value => {
         if (!identity || generation !== epoch || sequence !== viewSequence) return;
-        mapView = { ...value, owner: identity.user.name };
+        mapView = { ...value, owner };
         history.replaceState({ ...history.state, mapView }, '');
       },
     });
@@ -765,6 +854,7 @@ async function showRoute({ focus = false, returning = false } = {}) {
       sessionRequest, handleFailure, onDirtyChange: () => leaveGuard.update(),
       confirmDiscard: dirty => leaveGuard.confirm(dirty),
       onSaved: data => {
+        capabilitiesRequest = null;
         identity.timezone = data.settings.timezone;
         updateStargazing(data.settings.stargazing.enabled);
         discovery?.invalidate({ settings: true });
@@ -810,16 +900,22 @@ $('composer').addEventListener('submit', async event => {
   let attempt;
   try { attempt = draft.begin(); } catch (err) { showError($('save-error'), err); return; }
   const generation = epoch;
+  const started = performance.now(), transfer = syncStatus.start();
+  const returnFocus = document.activeElement === $('content') || document.activeElement === $('save');
   saving = true; updateComposer(); showError($('save-error'), null);
   try {
     const note = await sessionRequest('/notes', { method: 'POST', body: attempt.body, headers: { 'Idempotency-Key': attempt.key } });
     stale(generation);
     if (!validNote(note)) throw Object.assign(new Error('Invalid create response'), { code: 'NOTE_SAVE_UNCONFIRMED' });
+    transfer('success'); usage('create', 'success'); usage('save_ack', 'success', performance.now() - started);
     draft.confirm(attempt); $('content').value = draft.content; dirtySnapshots();
-    await timeline?.refresh();
-    invalidateSidebar(); loadSidebar();
+    timeline?.update(note.name, note);
+    sidebarChanged(null, note);
+    if (returnFocus && [document.body, $('content'), $('save')].includes(document.activeElement) && !$('composer').hidden) $('content').focus({ preventScroll: true });
   } catch (err) {
+    transfer(resultOf(err));
     if (generation !== epoch) return;
+    usage('create', resultOf(err)); usage('save_ack', resultOf(err), performance.now() - started);
     draft.reject(attempt, err.code); handleFailure($('save-error'), err);
   } finally { if (generation === epoch) { saving = false; updateComposer(); } }
 });
@@ -853,7 +949,7 @@ document.addEventListener('click', event => {
   }
 });
 $('navigation-dialog').addEventListener('close', closeMenus);
-window.addEventListener('pagehide', () => { invalidate(); hidePrivate(); });
+window.addEventListener('pagehide', () => { disconnectPrivacy(); invalidate(); hidePrivate(); });
 window.addEventListener('pageshow', event => { if (event.persisted) restore(); });
 window.addEventListener('focus', refreshSidebarOnFocus);
 document.addEventListener('visibilitychange', refreshSidebarOnFocus);

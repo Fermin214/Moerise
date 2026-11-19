@@ -32,6 +32,7 @@ class InsightRecoveryTest {
         fun engine() = MockEngine { request ->
             val route = request.url.encodedPath.removePrefix("/api/app/v1")
             when {
+                route == "/capabilities" -> respond("""{"login_methods":["password"],"notes":"ready"}""")
                 route == "/session" -> respond("""{"instance_id":"one","user":{"name":"users/owner"},"timezone":"UTC","expires_at":"2027-01-01T00:00:00Z","csrf_token":"token"}""")
                 route == "/chats" && request.method == HttpMethod.Get -> respond(CoreJson.encodeToString(ChatPage(emptyList())))
                 route == "/chat-materials/resolve" -> respond(CoreJson.encodeToString(ChatMaterials(listOf(note), listOf(material), 3, 20_000)))

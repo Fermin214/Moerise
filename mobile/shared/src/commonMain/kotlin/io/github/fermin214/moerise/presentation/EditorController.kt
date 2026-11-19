@@ -201,7 +201,7 @@ class EditorController(
 
     suspend fun flushForLifecycle(): Boolean = flushWithFeedback()
 
-    suspend fun enqueue(returnHome: Boolean = true): Boolean {
+    suspend fun enqueue(returnHome: Boolean = true, onEnqueued: (DraftEntity) -> Unit = {}): Boolean {
         val before = state.value
         if (before.busy || before.importing) return false
         val submitted = before.draft?.copy(queuedRevisionJson = null) ?: return false
@@ -232,6 +232,7 @@ class EditorController(
                     else submitted
                 val write = repo.prepare(frozen, current)
                 val next = repo.enqueue(frozen, write)
+                onEnqueued(frozen)
                 val queued = repo.storedDraft(submitted.accountKey, submitted.id).draft
                 mutable.update { latest ->
                     val draft = latest.draft

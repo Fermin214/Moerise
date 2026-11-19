@@ -34,9 +34,11 @@ import kotlinx.coroutines.withTimeoutOrNull
 import java.util.concurrent.atomic.AtomicInteger
 
 class AndroidRuntime(application: MoeriseApplication) {
+    private var onClientFailure: ((Exception) -> Unit)? = null
     internal val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate +
         CoroutineExceptionHandler { _, error ->
             Log.e("MoeriseSync", "background_operation_failed=${error.javaClass.simpleName}")
+            if (error is Exception) onClientFailure?.invoke(error)
         })
     private val scheduler = BackgroundSyncScheduler(application)
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -69,10 +71,14 @@ class AndroidRuntime(application: MoeriseApplication) {
             queueChecks.trySend(Unit)
         },
         initialForeground = false,
+        installPreferences = AndroidInstallPreferences(application),
     )
     private var inForeground = false
 
     init {
+        onClientFailure = { error -> mainHandler.post {
+            mobile.privacy.record("client_error", "failure", source = if (inForeground) "user" else "background", error = error)
+        } }
         scope.launch {
             mobile.stars.metrics.collect { metric ->
                 Log.i("MoeriseMap", "${metric.kind}=${metric.value} version=${metric.version}")

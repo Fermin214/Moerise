@@ -13,7 +13,8 @@ internal class NoteWriteQueue(
     private val draftLock: Mutex,
     private val editors: () -> Collection<EditorController>,
     private val account: () -> String?,
-    private val onSaved: (String, Note) -> Unit = { _, _ -> },
+    private val privacy: PrivacyController? = null,
+    private val onSaved: (String, Note, String?) -> Unit = { _, _, _ -> },
 ) {
     private val sendLock = Mutex()
     private var received: WriteResult? = null
@@ -39,8 +40,14 @@ internal class NoteWriteQueue(
                 val result = received?.takeIf { it.write.id == write.id } ?: send(repo, client, write).also { received = it }
                 draftLock.withLock { commit(repo, result) }
                 received = null
-                if (result.error == null) result.remote?.let { onSaved(key, it) }
+                privacy?.endWrite("${write.draftId}:${write.draftRevision}", when {
+                    result.matches -> "success"
+                    result.error == null || result.error in setOf("WRITE_CONFLICT", "SOURCE_CHANGED", "IDEMPOTENCY_CONFLICT") -> "conflict"
+                    else -> "failure"
+                })
+                if (result.error == null) result.remote?.let { onSaved(key, it, write.draftId.takeIf { write.method == "POST" }) }
             } catch (failure: Exception) {
+                privacy?.endWrite("${write.draftId}:${write.draftRevision}", if (failure is CancellationException) "unknown" else usageResult(failure), failure)
                 withContext(NonCancellable) { runCatching { repo.status(write, "unknown") } }
                 throw failure
             }
@@ -57,6 +64,7 @@ internal class NoteWriteQueue(
             ?: repo.storedDraft(write.accountKey, write.draftId).draft
         repo.status(write, "sending")
         checkAccount(write.accountKey)
+        privacy?.sendingWrite("${write.draftId}:${write.draftRevision}")
         val response = try {
             client.api(HttpMethod.parse(write.method), write.path, write.body, write.idempotencyKey)
         } catch (error: CoreException) {

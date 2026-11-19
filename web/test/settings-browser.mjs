@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { returningBrowser } from './browser-helpers.mjs';
 import http from 'node:http';
 import { once } from 'node:events';
 import { text as readRequestText } from 'node:stream/consumers';
@@ -34,7 +35,7 @@ function settings() {
     channel_capabilities: { text: false, images: false, record: false },
   };
 }
-async function fixture(t, language = 'zh-CN') {
+async function fixture(t, language = 'zh-CN', returning = true) {
   const state = { value: settings(), session: false, gets: 0, patches: [], fail: null, hold: false, pending: [], csrf: false,
     checks: [], checkFail: null, holdCheck: false, modelPending: [], index: 'disabled', mapReads: 0, deliveries: [], resolutions: [] };
   const core = http.createServer(async (req, res) => {
@@ -54,6 +55,11 @@ async function fixture(t, language = 'zh-CN') {
       json(identity); return;
     }
     if (!state.session) { error('SESSION_UNAUTHORIZED', 401); return; }
+    if (path === '/api/app/v1/capabilities') { json({ version: '1.2.3', telemetry: { schema: 1, allowed: state.telemetry === true } }); return; }
+    if (path === '/api/app/v1/telemetry') {
+      assert.equal(req.headers['x-csrf-token'], 'csrf-settings');
+      state.batches ||= []; state.batches.push(JSON.parse(raw)); res.writeHead(204); res.end(); return;
+    }
     if (path === '/api/app/v1/models') {
       const model = group => ({ enabled: state.value.settings[group].enabled,
         configured: state.value.secrets[`${group}_api_key`].configured,
@@ -155,7 +161,9 @@ async function fixture(t, language = 'zh-CN') {
     args: process.env.MOERISE_PLAYWRIGHT_ENGINE ? [] : [`--log-file=${join(dist, 'chromium.log')}`],
     env: { ...process.env, CHROME_LOG_FILE: join(dist, 'chromium.log') },
   });
-  const page = await browser.newPage({ locale: language, viewport: { width: 1360, height: 960 } }), errors = [];
+  const context = await browser.newContext({ locale: language, viewport: { width: 1360, height: 960 } });
+  const page = await context.newPage(), errors = [];
+  if (returning) await returningBrowser(page);
   page.on('pageerror', err => errors.push(err.message));
   return { page, state, url, errors };
 }
@@ -169,6 +177,66 @@ const setting = (page, path) => page.locator(`[name="${path}"]`);
 const operation = (page, label) => page.getByRole('combobox', { name: `${label}操作`, exact: true });
 const secret = (page, label) => page.getByLabel(`${label}新值`, { exact: true });
 const tab = (page, id) => page.locator(`#settings-tab-${id}`).click();
+
+test('consent controls cross-tab reporting while a redacted diagnostic remains available offline', async t => {
+  const { page, state, url } = await fixture(t, 'zh-CN', false);
+  state.telemetry = true;
+  await page.goto(url + '/settings'); await login(page);
+  const welcome = page.getByRole('dialog', { name: '欢迎使用 Moerise' });
+  const consent = welcome.getByRole('switch');
+  assert.equal(await consent.isChecked(), false);
+  const owner = () => page.evaluate(() => localStorage.getItem('moerise.aggregate-owner.v1'));
+  assert.equal(await owner(), null);
+  assert.equal(await welcome.locator('button.save').count(), 1);
+  await consent.check();
+  assert.equal(await page.evaluate(() => localStorage.getItem('moerise.privacy.v1')), null);
+  await page.keyboard.press('Escape');
+  await tab(page, 'privacy');
+  const sharing = page.getByRole('switch', { name: '分享使用与故障统计' });
+  assert.equal(await sharing.isChecked(), false);
+  assert.equal(await owner(), null);
+  await page.evaluate(() => dispatchEvent(new ErrorEvent('error', { message: 'secret-text' })));
+  await page.getByRole('button', { name: '预览诊断摘要' }).click();
+  const preview = page.getByRole('dialog', { name: '诊断摘要' });
+  assert.doesNotMatch(await preview.locator('textarea').inputValue(), /secret-text|users\/1|https?:\/\//);
+  const edited = '{"platform":"web"}', summary = preview.getByRole('textbox');
+  await page.context().grantPermissions(['clipboard-read', 'clipboard-write'], { origin: url });
+  await summary.fill(edited);
+  await preview.getByRole('button', { name: '复制诊断摘要' }).click();
+  assert.equal(await page.evaluate(() => navigator.clipboard.readText()), edited);
+  await preview.getByRole('button', { name: '关闭' }).click();
+  assert.deepEqual(state.batches || [], []);
+  await sharing.check();
+  assert.match(await owner(), /^[a-f0-9]{64}$/);
+  const other = await page.context().newPage(); await other.goto(url + '/settings'); await tab(other, 'privacy');
+  assert.equal(await other.getByRole('switch').isChecked(), true);
+  const notify = target => target.evaluate(() => dispatchEvent(new ErrorEvent('error', { message: 'secret-text' })));
+  const sent = page.context().waitForEvent('response', response => response.url().endsWith('/telemetry'));
+  await Promise.all([notify(page), notify(other)]); await sent;
+  assert.equal(state.batches.length, 1);
+  const body = state.batches[0];
+  assert.deepEqual(Object.keys(body).sort(), ['client_version', 'core_version', 'platform', 'rows', 'schema', 'system_major']);
+  assert.equal(body.core_version, '1.2.3');
+  assert.equal(body.platform, 'web');
+  assert.ok(body.rows.every(row => row.operation === 'client_error' && row.result === 'failure' && row.count > 0));
+  assert.doesNotMatch(JSON.stringify(body), /secret-text|users\/1|https?:\/\//);
+  await notify(other);
+  await page.waitForFunction(() => JSON.parse(localStorage.getItem('moerise.aggregate.v1'))?.rows?.length);
+  await sharing.uncheck();
+  await other.waitForFunction(() => !document.querySelector('[data-privacy]').checked && !localStorage.getItem('moerise.aggregate.v1'));
+  assert.equal(await owner(), null);
+  await notify(other);
+  assert.equal(await other.evaluate(() => localStorage.getItem('moerise.aggregate.v1')), null);
+  assert.equal(state.batches.length, 1);
+  await sharing.check();
+  state.telemetry = false;
+  await page.reload(); await tab(page, 'privacy'); await page.waitForFunction(() => document.querySelector('[data-privacy]').disabled);
+  await other.waitForFunction(() => document.querySelector('[data-privacy]').disabled);
+  await notify(other);
+  assert.equal(await owner(), null);
+  assert.equal(await other.evaluate(() => localStorage.getItem('moerise.aggregate.v1')), null);
+  assert.equal(state.batches.length, 1);
+});
 
 for (const language of ['zh-CN', 'en-US']) {
   for (const mobile of [false, true]) {
@@ -606,7 +674,7 @@ test('settings leave confirmation covers navigation, browser history and reload 
   await page.getByRole('button', { name: '放弃修改', exact: true }).click();
   await page.waitForURL(value => value.pathname === '/');
   assert.equal(await page.locator('#settings-page').count(), 0);
-  assert.deepEqual(await page.evaluate(() => ({ local: localStorage.length, session: sessionStorage.length })), { local: 0, session: 0 });
+  assert.deepEqual(await page.evaluate(() => [...Object.keys(localStorage), ...Object.keys(sessionStorage)]), ['moerise.privacy.v1']);
   assert.deepEqual(errors, []);
 });
 
@@ -640,7 +708,7 @@ for (const noNavigation of [false, true]) for (const step of [-1, 1, -2]) test(`
   await page.getByRole('button', { name: '放弃修改', exact: true }).click();
   await page.waitForURL(url + (step === -2 ? '/' : '/map'));
   await page.locator('#settings-page').waitFor({ state: 'detached' });
-  assert.equal(await page.evaluate(() => localStorage.length + sessionStorage.length), 0);
+  assert.deepEqual(await page.evaluate(() => [...Object.keys(localStorage), ...Object.keys(sessionStorage)]), ['moerise.privacy.v1']);
 });
 
 test('settings button changes enable refresh protection and returning to saved values clears it', async t => {
@@ -731,7 +799,8 @@ test('settings tabs retain edits, expose advanced fields and reveal invalid fiel
   await page.keyboard.press('Home');
   assert.equal(await page.locator('#settings-tab-general').getAttribute('aria-selected'), 'true');
   await page.keyboard.press('End');
-  assert.equal(await page.locator('#settings-tab-channel').getAttribute('aria-selected'), 'true');
+  assert.equal(await page.locator('#settings-tab-privacy').getAttribute('aria-selected'), 'true');
+  await tab(page, 'channel');
   assert.equal(await setting(page, 'review.count').inputValue(), '7');
   assert.equal(await secret(page, 'LLM API Key').inputValue(), 'retained-across-tabs');
   assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));

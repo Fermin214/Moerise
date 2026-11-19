@@ -9,9 +9,9 @@ import (
 )
 
 type ChatSelection struct {
-	State, Query, FromDate, UntilDate, PageToken string
-	Tags                                         []string
-	PageSize                                     int
+	State, Query, FromDate, UntilDate, PageToken, TagMatch, Format string
+	Tags                                                           []string
+	PageSize                                                       int
 }
 
 type chatMaterialCursor struct {
@@ -22,12 +22,17 @@ type chatMaterialCursor struct {
 func parseChatSelection(query url.Values) (ChatSelection, error) {
 	input := ChatSelection{State: "ALL", PageSize: 100}
 	for key, values := range query {
-		if !slices.Contains([]string{"state", "query", "tag", "from", "until", "page_size", "page_token"}, key) ||
+		if !slices.Contains([]string{"state", "query", "tag", "tag_match", "format", "from", "until", "page_size", "page_token"}, key) ||
 			(key != "tag" && len(values) != 1) {
 			return input, failure("INVALID_ARGUMENT", "Invalid material selection parameters", 422, false)
 		}
 	}
 	input.Query, input.Tags = query.Get("query"), query["tag"]
+	input.TagMatch, input.Format = query.Get("tag_match"), query.Get("format")
+	if (query.Has("tag_match") && !slices.Contains([]string{"any", "all"}, input.TagMatch)) ||
+		(query.Has("format") && !slices.Contains([]string{"compact", "full"}, input.Format)) {
+		return input, failure("INVALID_ARGUMENT", "Invalid material filter or format", 422, false)
+	}
 	input.FromDate, input.UntilDate, input.PageToken = query.Get("from"), query.Get("until"), query.Get("page_token")
 	if query.Has("state") {
 		input.State = query.Get("state")
@@ -55,7 +60,7 @@ func (s *ChatService) Select(ctx context.Context, input ChatSelection) (NotePage
 	if err != nil {
 		return result, err
 	}
-	filter := LiveFilter{Query: args.Query, Tags: args.Tags}
+	filter := LiveFilter{Query: args.Query, Tags: args.Tags, AnyTag: input.TagMatch == "any"}
 	location, err := time.LoadLocation(s.Store.Settings.Timezone)
 	if err != nil {
 		return result, err

@@ -3,13 +3,16 @@ import http from 'node:http';
 import { once } from 'node:events';
 import { text as readRequestText } from 'node:stream/consumers';
 import { randomBytes, randomUUID } from 'node:crypto';
+import { parseArgs } from 'node:util';
 import { mkdir, readFile, writeFile, rm, realpath, lstat } from 'node:fs/promises';
 import { resolve, dirname, basename } from 'node:path';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 import { runProcess } from '../lib/process.mjs';
 import { createWebServer } from '../../web/server.mjs';
+import { fixtureInsightReply } from '../android/fixture-policy.mjs';
 
+const { values } = parseArgs({ options: { 'android-insights': { type: 'string' } } });
 assert.ok(process.env.MOERISE_PLAYWRIGHT_MODULE, '需要 MOERISE_PLAYWRIGHT_MODULE');
 const { chromium } = await import(pathToFileURL(process.env.MOERISE_PLAYWRIGHT_MODULE).href);
 const repo = fileURLToPath(new URL('../../', import.meta.url));
@@ -26,10 +29,10 @@ const fixtures = [];
 let browser, page, web, mock, sourceProxy, cookie = '', csrf = '', url, coreURL, sourceURL, pat;
 let network = false, step = '初始化', success = false;
 
-async function docker(args, cleanup = false) {
+async function docker(args, cleanup = false, timeout = 180_000) {
   try {
     return await runProcess('docker', args, {
-      cwd: repo, timeout: 180_000, signal: cleanup ? undefined : cancellation.signal,
+      cwd: repo, timeout, signal: cleanup ? undefined : cancellation.signal,
     });
   } catch { throw new Error(`Docker ${args[0]} 失败`); }
 }
@@ -94,7 +97,7 @@ const readyChat = () => page.locator('.insights-page[aria-busy="false"]').waitFo
 const ask = () => page.locator('[data-chat="ask"]');
 const send = () => page.getByRole('button', { name: '发送', exact: true });
 async function menuAction(label) {
-  await page.getByRole('button', { name: '会话', exact: true }).click();
+  await page.locator('[data-chat="menu"]').click();
   await page.getByRole('menuitem', { name: label, exact: true }).click();
 }
 async function sourceAPI(method, path, body, expected = 200) {
@@ -111,14 +114,27 @@ async function restoreBrowser() {
   await page.goto(`${url}/insights?${new URLSearchParams({ chat: selectedChat.id })}`);
   await readyChat();
 }
-async function pickAll() {
-  await page.getByRole('button', { name: '添加笔记', exact: true }).click();
-  await page.getByRole('button', { name: '按标签 / 逐条', exact: true }).click();
-  await page.getByRole('dialog').getByRole('button', { name: '原始标签', exact: true }).click();
-  await page.getByRole('dialog').getByRole('button', { name: '共同标签', exact: true }).click();
-  await page.getByRole('button', { name: `全选这 ${fixtures.length} 条`, exact: true }).click();
-  await page.getByRole('button', { name: '完成', exact: true }).click();
-  await page.getByRole('dialog').waitFor({ state: 'detached' });
+const dialog = () => page.getByRole('dialog');
+async function openMaterials() {
+  if (await page.locator('[data-chat="add"]').isVisible()) await page.locator('[data-chat="add"]').click();
+  else await menuAction('修改材料');
+}
+async function applyMaterials() {
+  await dialog().locator('.insight-done').click();
+  await dialog().waitFor({ state: 'detached' });
+}
+async function selectTag(tag) {
+  await dialog().getByRole('button', { name: '按标签', exact: true }).click();
+  await dialog().getByRole('button', { name: tag, exact: true }).click();
+  await dialog().locator('.insight-choice').first().waitFor();
+  await dialog().getByRole('button', { name: '全选', exact: true }).click();
+}
+async function saveSelection(select) {
+  await menuAction('保存为笔记');
+  if (select) await select(dialog());
+  const response = page.waitForResponse(response => response.url().endsWith('/save-selection') && response.request().method() === 'POST');
+  await dialog().getByRole('button', { name: '保存为笔记', exact: true }).click();
+  return (await response).json();
 }
 async function waitTurn(id, status) {
   let value;
@@ -139,7 +155,7 @@ try {
     containers.add(`${name}-build`);
     await docker(['run', ...dockerUser, '--name', `${name}-build`, '--mount', `type=bind,source=${repo},target=/src`, '-w', '/src',
       '-e', 'GOMODCACHE=/src/.local/gomodcache', '-e', 'GOCACHE=/src/.local/linux-gocache',
-      'golang:1.27.3-bookworm', 'go', 'build', '-o', `/src/.local/${basename(root)}/moerise`, '.']);
+      'golang:1.27.3-bookworm', 'go', 'build', '-o', `/src/.local/${basename(root)}/moerise`, '.'], false, 600_000);
     await runProcess(process.execPath, ['web/build.mjs'], { cwd: repo, signal: cancellation.signal });
   });
   const sourcePort = await port(), corePort = await port(), webPort = await port();
@@ -171,6 +187,9 @@ try {
       })}`, patch);
       fixtures.push(updated);
     }
+    for (let index = 0; index < 3; index++) await sourceAPI('POST', '/memos', {
+      content: `${'m'.repeat(7000)} ${index} #预算边界`, visibility: 'PRIVATE',
+    });
     let nextSourceRequest = 0;
     sourceProxy = http.createServer(async (req, res) => {
       const start = Math.max(Date.now(), nextSourceRequest); nextSourceRequest = start + 150;
@@ -197,7 +216,7 @@ try {
         evidence.llmCalls++; model.requests.push(structuredClone(body.messages));
         res.writeHead(200, { 'Content-Type': 'text/event-stream' });
         res.write(`data: ${JSON.stringify({ model: 'chat-fixture', choices: [{
-          index: 0, delta: { content: reply }, finish_reason: null,
+          index: 0, delta: { content: model.mode === 'android' ? fixtureInsightReply : reply }, finish_reason: null,
         }] })}\n\n`);
         if (model.mode === 'hold') {
           res.on('close', () => { if (!res.writableEnded) model.aborted++; }); return;
@@ -241,6 +260,7 @@ try {
     await request(url, '/api/app/v1/chats', { headers: { Authorization: `Bearer ${machineKey}` } }, 403);
     browser = await chromium.launch({ headless: true, channel: process.env.MOERISE_PLAYWRIGHT_CHANNEL || undefined });
     page = await browser.newPage({ locale: 'zh-CN', viewport: { width: 1360, height: 960 } });
+    await page.addInitScript(() => localStorage.setItem('moerise.privacy.v1', 'off'));
     await page.clock.setFixedTime('2026-10-31T00:00:00Z');
     page.on('pageerror', error => evidence.pageErrors.push(error.message));
     page.on('request', req => {
@@ -250,20 +270,18 @@ try {
     });
     await loginBrowser('/insights');
   });
-  await check('日期与标签组合选材、归档完整原文、一键洞察与自由追问', async () => {
-    await page.getByRole('button', { name: '添加笔记', exact: true }).click();
-    await page.getByRole('button', { name: '2026-10-20', exact: true }).click();
-    await page.getByRole('button', { name: '2026-10-21', exact: true }).click();
-    await page.getByRole('button', { name: '按标签 / 逐条', exact: true }).click();
-    await page.getByRole('dialog').getByRole('button', { name: '原始标签', exact: true }).click();
-    await page.getByRole('dialog').getByRole('button', { name: '共同标签', exact: true }).click();
-    await page.getByRole('button', { name: '全选这 3 条', exact: true }).click();
-    await page.getByRole('button', { name: '完成', exact: true }).click();
-    await page.getByRole('dialog').waitFor({ state: 'detached' });
+  await check('日期范围跨正常与归档选材、一键洞察与自由追问', async () => {
+    await openMaterials();
+    await dialog().getByRole('button', { name: '选择日期', exact: true }).click();
+    await dialog().locator('[data-day="2026-10-21"]').click();
+    await dialog().locator('[data-day="2026-10-20"]').click();
+    await dialog().getByRole('button', { name: '应用日期', exact: true }).click();
+    await dialog().getByRole('button', { name: '应用所选 3 条', exact: true }).waitFor();
+    await applyMaterials();
     selectedChat = await api('GET', `/chats/${new URL(page.url()).searchParams.get('chat')}`);
     assert.deepEqual(selectedChat.materials.map(item => item.name).sort(), fixtures.map(item => item.name).sort());
     const count = fixtures.reduce((sum, note) => sum + [...note.content].length, 0);
-    assert.match(await page.locator('[data-chat="material-toggle"]').textContent(), new RegExp(`${count} / 20000`));
+    assert.ok((await page.locator('[data-chat="material-toggle"]').textContent()).includes(count.toLocaleString('zh-CN')));
     await page.locator('[data-chat="one"]').click(); await readyChat();
     const firstMessages = model.requests[0];
     const materials = JSON.parse(firstMessages[1].content.replace('本轮明确选定的全部笔记材料：\n', ''));
@@ -277,24 +295,44 @@ try {
     assert.equal(await page.locator('.insight-answer strong').first().textContent(), '完整 Markdown');
   });
   await check('原回复主动保存、固定版本重试与 Memos 原文读回', async () => {
-    const response = page.waitForResponse(response => response.url().endsWith('/save') && response.request().method() === 'POST');
-    await page.getByRole('button', { name: '保存为笔记', exact: true }).first().click();
-    savedNote = await (await response).json();
-    await page.getByRole('button', { name: '已保存为笔记', exact: true }).waitFor();
-    const current = await api('GET', `/chats/${selectedChat.id}`), turn = current.turns[0];
+    savedNote = await saveSelection();
+    await dialog().waitFor({ state: 'detached' });
+    const current = await api('GET', `/chats/${selectedChat.id}`), turn = current.turns.at(-1);
     const replay = await api('POST', `/chats/${selectedChat.id}/messages/${turn.request_id}/save`, { version: turn.assistant.version });
     assert.equal(replay.name, savedNote.name);
     assert.equal((await sourceAPI('GET', `/${savedNote.name}`)).content, reply);
     assert.equal(savedNote.content, reply);
+    let frozen, note;
+    await page.route('**/save-selection', async route => {
+      frozen = route.request().postDataJSON();
+      note = await (await route.fetch()).json(); await route.abort();
+    }, { times: 1 });
+    await menuAction('保存为笔记');
+    await dialog().locator('.save-choice input').first().check();
+    await dialog().getByLabel(/还有哪些不同解释/).check();
+    await dialog().getByRole('button', { name: '保存为笔记', exact: true }).click();
+    await dialog().getByRole('button', { name: '重试保存', exact: true }).waitFor();
+    await page.reload(); await readyChat();
+    await menuAction('保存为笔记');
+    const retried = page.waitForResponse(response => response.url().endsWith('/save-selection') && response.request().method() === 'POST');
+    await dialog().getByRole('button', { name: '重试保存', exact: true }).click();
+    const response = await retried;
+    assert.deepEqual(response.request().postDataJSON(), frozen);
+    assert.equal((await response.json()).name, note.name);
+    await dialog().waitFor({ state: 'detached' });
+    assert.equal((await api('GET', `/chats/${selectedChat.id}/save-selection/${frozen.operation_key}`)).name, note.name);
+    assert.equal((await sourceAPI('GET', `/${note.name}`)).content, `**Moerise**\n\n${reply}\n\n**我**\n\n还有哪些不同解释？\n\n**Moerise**\n\n${reply}`);
     beforeRestart = await api('GET', `/chats/${selectedChat.id}`);
     await page.screenshot({ path: resolve(root, 'chat-desktop.png'), fullPage: true });
   });
-  await check('刷新、详情返回、侧栏重进与 Core 重启恢复', async () => {
+  await check('刷新后查看已选、侧栏重进与 Core 重启恢复', async () => {
     const calls = evidence.llmCalls;
     await page.reload(); await readyChat();
     assert.equal(await page.locator('.insight-assistant').count(), 2);
-    await page.locator('.insight-material .chip').first().click();
-    await page.getByRole('button', { name: '‹ 返回洞察', exact: true }).click(); await readyChat();
+    await openMaterials();
+    await dialog().getByRole('button', { name: '查看已选', exact: true }).click();
+    assert.equal(await dialog().locator('input:checked').count(), 3);
+    await page.keyboard.press('Escape');
     assert.equal(new URL(page.url()).searchParams.get('chat'), selectedChat.id);
     await page.locator('.side a[href="/"]').click();
     await page.locator('.side a[href="/insights"]').click(); await readyChat();
@@ -313,7 +351,11 @@ try {
     await page.getByRole('button', { name: '保存设置', exact: true }).click();
     await page.getByRole('status').filter({ hasText: '设置已保存' }).waitFor();
     await restoreBrowser();
-    await page.locator('[data-chat="one"]').click(); await readyChat();
+    assert.equal(await page.locator('[data-chat="one"]').isHidden(), true);
+    const response = await fetch(`${url}/api/app/v1/chats/${selectedChat.id}/messages`, { method: 'POST',
+      headers: { Cookie: cookie, Origin: url, 'X-CSRF-Token': csrf, 'Content-Type': 'application/json', Accept: 'text/event-stream' },
+      body: JSON.stringify({ version: beforeRestart.version, request_id: randomUUID(), kind: 'insight', language: 'zh-CN' }) });
+    assert.equal(response.status, 200); await response.text();
     assert.equal(model.requests.at(-1).at(-1).content, '新的真实聊天 Prompt');
     let current = await api('GET', `/chats/${selectedChat.id}`);
     assert.equal(current.turns[0].prompt, config.insights.default_prompt);
@@ -332,29 +374,13 @@ try {
   });
   await check('材料超限保留历史和完整选材', async () => {
     const calls = evidence.llmCalls, initial = await api('GET', `/chats/${selectedChat.id}`);
-    const budgetNotes = [];
-    for (let i = 0; i < 3; i++) budgetNotes.push(await sourceAPI('POST', '/memos', {
-      content: `${'m'.repeat(7000)} #预算边界`, visibility: 'PRIVATE',
-    }));
-    await page.getByRole('button', { name: '添加笔记', exact: true }).click();
-    await page.getByRole('button', { name: '按标签 / 逐条', exact: true }).click();
-    await page.getByRole('dialog').getByRole('button', { name: '预算边界', exact: true }).click();
-    await page.getByRole('button', { name: '全选这 3 条', exact: true }).click();
-    await page.getByRole('button', { name: '完成', exact: true }).click();
-    await page.getByRole('dialog').waitFor({ state: 'detached' });
-    const current = await api('GET', `/chats/${selectedChat.id}`);
-    assert.equal(current.materials.length, 6);
-    const resolved = await api('POST', '/chat-materials/resolve', { names: current.materials.map(item => item.name) });
-    assert.ok(resolved.characters > 20000);
-    for (const note of budgetNotes) assert.equal(resolved.notes.find(item => item.name === note.name).content, note.content);
-    await page.getByText('超过字数上限，请减少所选笔记。', { exact: true }).waitFor();
-    assert.ok(await send().isDisabled());
+    await openMaterials(); await selectTag('预算边界');
+    await dialog().getByRole('button', { name: '应用所选 6 条', exact: true }).waitFor();
+    assert.ok(await dialog().locator('.insight-done').isDisabled());
+    assert.equal((await api('GET', `/chats/${selectedChat.id}`)).materials.length, 3);
     assert.equal(evidence.llmCalls, calls);
-    for (let i = 0; i < 3; i++) {
-      await page.locator('.insight-material').filter({ hasText: 'mmmmmmmmmmmm' }).first()
-        .getByRole('button', { name: '移除这条笔记', exact: true }).click();
-      await readyChat();
-    }
+    await dialog().getByRole('button', { name: '取消全选', exact: true }).click();
+    await applyMaterials();
     assert.equal((await api('GET', `/chats/${selectedChat.id}`)).materials.length, 3);
     assert.deepEqual((await api('GET', `/chats/${selectedChat.id}`)).turns, initial.turns);
     await ask().fill('');
@@ -395,16 +421,11 @@ try {
     assert.equal(await page.locator('.insight-assistant').count(), 6);
     fixtures[0] = await sourceAPI('PATCH', `/${fixtures[0].name}?updateMask=content`,
       { content: '研究材料：再次修改已勾选材料，确认时读取完整新正文。 😀 #原始标签 #共同标签' });
-    await page.getByRole('button', { name: '添加笔记', exact: true }).click();
-    await page.getByRole('button', { name: '按标签 / 逐条', exact: true }).click();
-    await page.getByRole('dialog').getByRole('button', { name: '原始标签', exact: true }).click();
-    await page.getByRole('dialog').getByRole('button', { name: '共同标签', exact: true }).click();
-    await page.getByRole('button', { name: `全选这 ${fixtures.length} 条`, exact: true }).waitFor();
+    await openMaterials();
+    await dialog().getByRole('button', { name: '重新选择', exact: true }).click();
     assert.equal(await page.locator('.insight-choice input:checked').count(), fixtures.length);
-    await page.getByRole('button', { name: '完成', exact: true }).click();
-    await page.getByRole('dialog').waitFor({ state: 'detached' });
-    const count = fixtures.reduce((sum, note) => sum + [...note.content].length, 0);
-    assert.match(await page.locator('[data-chat="material-toggle"]').textContent(), new RegExp(`${count} / 20000`));
+    await applyMaterials();
+    await page.locator('[data-chat="updated"]:visible').waitFor();
     await ask().fill('使用重新选择的来源继续'); await send().click(); await readyChat();
     assert.equal(evidence.llmCalls, calls + 1);
     const material = JSON.parse(model.requests.at(-1)[1].content.replace('本轮明确选定的全部笔记材料：\n', ''));
@@ -413,10 +434,9 @@ try {
     await page.reload(); await readyChat();
     await page.locator('[data-chat="warning"]').filter({ hasText: '删除或无法访问' }).waitFor();
     assert.equal(await page.locator('.insight-assistant').count(), 7);
-    const current = await api('GET', `/chats/${selectedChat.id}`);
-    const unavailable = current.materials.findIndex(item => item.name === fixtures[1].name);
-    await page.locator('.insight-material').nth(unavailable).getByRole('button', { name: '移除这条笔记', exact: true }).click();
-    await readyChat();
+    await openMaterials();
+    await dialog().getByLabel(new RegExp(fixtures[1].name)).click();
+    await applyMaterials();
     assert.equal((await api('GET', `/chats/${selectedChat.id}`)).materials.length, 2);
     assert.equal(await page.locator('.insight-assistant').count(), 7);
     await page.setViewportSize({ width: 390, height: 844 });
@@ -434,13 +454,7 @@ try {
     assert.match(await page.locator('[data-chat="material-toggle"]').textContent(), /0 条/);
     assert.equal(evidence.llmCalls, calls);
     assert.equal((await api('GET', '/chats')).chats.length, 1);
-    await page.getByRole('button', { name: '添加笔记', exact: true }).click();
-    await page.getByRole('button', { name: '按标签 / 逐条', exact: true }).click();
-    await page.getByRole('dialog').getByRole('button', { name: '原始标签', exact: true }).click();
-    await page.getByRole('dialog').getByRole('button', { name: '共同标签', exact: true }).click();
-    await page.getByRole('button', { name: '全选这 2 条', exact: true }).click();
-    await page.getByRole('button', { name: '完成', exact: true }).click();
-    await page.getByRole('dialog').waitFor({ state: 'detached' });
+    await openMaterials(); await selectTag('原始标签'); await applyMaterials();
     secondaryChat = await api('GET', `/chats/${new URL(page.url()).searchParams.get('chat')}`);
     assert.notEqual(secondaryChat.id, selectedChat.id);
     await ask().fill('独立会话的首轮问题'); await send().click(); await readyChat();
@@ -470,42 +484,39 @@ try {
     assert.equal(evidence.llmCalls, calls + 1);
     for (const seed of seeds) await api('DELETE', `/chats/${seed.id}`, { version: seed.version }, 204);
   });
-  await check('主动停止、取消终态与删除前生成及保存排空', async () => {
+  await check('生成中保存早先的回答、主动停止、确认保存部分回答与删除', async () => {
     const calls = evidence.llmCalls;
-    let releaseSave, saved;
-    const holdSave = async route => {
-      const response = await route.fetch(); saved = await response.json();
-      await new Promise(resolve => { releaseSave = resolve; });
-      await route.fulfill({ response });
-    };
-    await page.route('**/messages/*/save', holdSave);
-    await page.getByRole('button', { name: '保存为笔记', exact: true }).click();
-    await wait('保存返回已到达浏览器代理', async () => !!releaseSave);
     model.mode = 'hold';
     await ask().fill('主动停止检查'); await send().click();
     await page.locator('.insight-answer strong').nth(1).waitFor();
+    const saved = await saveSelection();
+    await dialog().waitFor({ state: 'detached' });
     await page.getByRole('button', { name: '停止', exact: true }).click(); await readyChat();
-    let current = await waitTurn(secondaryChat.id, 'canceled');
+    const current = await waitTurn(secondaryChat.id, 'canceled');
     assert.equal(current.turns.at(-1).assistant.content, reply);
     assert.equal(current.turns.at(-1).assistant.error_code, 'CHAT_CANCELED');
-    assert.ok(await page.getByRole('button', { name: '保存为笔记', exact: true }).last().isDisabled());
+    await menuAction('保存为笔记');
+    await dialog().locator('.save-choice input:checked').uncheck();
+    await dialog().getByLabel(/已停止（内容不完整）/).check();
+    await dialog().getByRole('button', { name: '保存为笔记', exact: true }).click();
+    const response = page.waitForResponse(value => value.url().endsWith('/save-selection') && value.request().method() === 'POST');
+    await dialog().getByRole('button', { name: '确认保存', exact: true }).click();
+    const partial = await (await response).json();
+    await dialog().waitFor({ state: 'detached' });
     const deletes = evidence.browserRequests.filter(item => item.method === 'DELETE' && item.path.includes('/chats/')).length;
     await ask().fill('删除前停止检查'); await send().click();
     await page.locator('.insight-answer strong').nth(2).waitFor();
-    await menuAction('删除当前会话');
-    await page.locator('.cfm').getByRole('button', { name: '取消', exact: true }).click();
+    await menuAction('删除对话');
+    assert.equal(await dialog().getByRole('button', { name: '取消', exact: true }).evaluate(node => node === document.activeElement), true);
+    await page.keyboard.press('Escape');
     assert.equal(evidence.browserRequests.filter(item => item.method === 'DELETE' && item.path.includes('/chats/')).length, deletes);
-    await menuAction('删除当前会话');
+    await menuAction('删除对话');
     await page.screenshot({ path: resolve(root, 'chat-delete.png'), fullPage: true });
-    await page.locator('.cfm').getByRole('button', { name: '删除', exact: true }).click();
-    current = await waitTurn(secondaryChat.id, 'canceled');
-    assert.equal(current.turns.at(-1).assistant.content, reply);
-    assert.equal(evidence.browserRequests.filter(item => item.method === 'DELETE' && item.path.includes('/chats/')).length, deletes);
-    releaseSave();
+    await dialog().getByRole('button', { name: '删除对话', exact: true }).click();
     await page.waitForURL('**/insights?new=1'); await readyChat();
-    await page.unroute('**/messages/*/save', holdSave);
     await api('GET', `/chats/${secondaryChat.id}`, undefined, 404);
     assert.equal((await sourceAPI('GET', `/${saved.name}`)).content, reply);
+    assert.equal((await sourceAPI('GET', `/${partial.name}`)).content, reply);
     assert.equal((await sourceAPI('GET', `/${savedNote.name}`)).content, reply);
     assert.equal(await page.locator('.insight-assistant').count(), 0);
     assert.equal(evidence.llmCalls, calls + 2);
@@ -515,6 +526,39 @@ try {
     await readyChat();
     assert.equal(new URL(page.url()).searchParams.get('chat'), selectedChat.id);
     assert.deepEqual(await api('GET', `/chats/${selectedChat.id}`), mainBeforeControls);
+  });
+  if (values['android-insights']) await check('用 Android 设备的同一份材料比对 Web 洞察与保存结果', async () => {
+    const directory = resolve(values['android-insights']);
+    const sample = JSON.parse(await readFile(resolve(directory, 'test-data.json'), 'utf8'));
+    const result = JSON.parse(await readFile(resolve(directory, 'result.json'), 'utf8'));
+    assert.equal(result.flow, 'insights');
+    assert.equal(result.status, 'passed');
+    for (const field of ['independent_chat_with_exact_material', 'source_text_matches', 'saved_reply_matches']) {
+      assert.equal(result.server_assertions[field], true);
+    }
+    assert.equal(result.server_assertions.model_request_count, 1);
+    assert.match(sample.NOTE_TEXT, /^Maestro insights [0-9a-f]{32}$/);
+    assert.match(sample.PEER_NOTE_TEXT, /^Maestro peer [0-9a-f]{32}$/);
+    const note = await api('POST', '/notes', { content: sample.NOTE_TEXT }, 201);
+    await api('POST', '/notes', { content: sample.PEER_NOTE_TEXT }, 201);
+    await page.goto(`${url}/insights?new=1`); await readyChat(); await openMaterials();
+    await dialog().getByLabel(sample.NOTE_TEXT, { exact: true }).check();
+    assert.equal(await dialog().getByLabel(sample.PEER_NOTE_TEXT, { exact: true }).isChecked(), false);
+    await applyMaterials();
+    const calls = evidence.llmCalls, identifier = new URL(page.url()).searchParams.get('chat');
+    model.mode = 'android';
+    await page.locator('[data-chat="one"]').click(); await readyChat();
+    const chat = await waitTurn(identifier, 'completed');
+    assert.deepEqual(chat.materials.map(item => item.name), [note.name]);
+    const material = JSON.parse(model.requests.at(-1)[1].content.split('\n').slice(1).join('\n'));
+    assert.deepEqual(material.map(item => item.content), [sample.NOTE_TEXT]);
+    assert.equal(chat.turns[0].assistant.content, fixtureInsightReply);
+    const saved = await saveSelection();
+    await dialog().waitFor({ state: 'detached' });
+    assert.equal((await sourceAPI('GET', `/${saved.name}`)).content, fixtureInsightReply);
+    assert.equal(evidence.llmCalls, calls + 1);
+    evidence.androidComparison = { sample: sample.NOTE_TEXT, selected: 1, bytes: Buffer.byteLength(fixtureInsightReply) };
+    model.mode = 'complete';
   });
   await check('Cookie/Origin/CSRF、机器 REST/MCP 隔离及退出清理', async () => {
     const calls = evidence.llmCalls;
@@ -527,7 +571,7 @@ try {
       Authorization: `Bearer ${machineKey}`, Accept: 'application/json, text/event-stream', 'MCP-Protocol-Version': '2025-11-25',
     }, body: { jsonrpc: '2.0', id: 'chat-list', method: 'tools/list', params: {} } })).value;
     assert.ok(mcp.result.tools.every(tool => tool.annotations.readOnlyHint === true && !/chat|generate|save/.test(tool.name)));
-    assert.deepEqual(await page.evaluate(() => ({ local: localStorage.length, session: sessionStorage.length })), { local: 0, session: 0 });
+    assert.equal(await page.evaluate(() => /完整原文|不同解释|完整 Markdown/.test(JSON.stringify([localStorage, sessionStorage]))), false);
     await page.locator('#user-menu').click(); await page.locator('#logout').click();
     await page.locator('#login-form').waitFor({ state: 'visible' });
     assert.equal(await page.locator('.insights-page').count(), 0);

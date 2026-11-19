@@ -40,7 +40,7 @@ class NoteActionRecoveryTest {
         }
         val core = CoreClient("https://notes.example", SessionCookies("https://notes.example", MemorySecrets()), engine)
         try {
-            fun controller() = NoteDetailController({ NoteRepository(db) }, { key }, { core }, scope) {}
+            fun controller() = NoteDetailController({ NoteRepository(db) }, { key }, { core }, scope) { _, _, _ -> }
             val first = controller()
             withContext(dispatcher) { first.open("memos/one") }
             withTimeout(10_000) { first.state.first { !it.loading } }

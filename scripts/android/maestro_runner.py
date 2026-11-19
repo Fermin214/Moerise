@@ -372,9 +372,14 @@ class MaestroRunner:
                 if [item["name"] for item in chat["materials"]] == [values["NOTE_NAME"]]:
                     matches.append(chat)
             assert len(matches) == 1, "insight_material_count"
-            assert not matches[0]["turns"], "unexpected_model_request"
+            turns = matches[0]["turns"]
+            assert len(turns) == 1 and turns[0]["kind"] == "insight", "insight_generation_count"
+            answer = turns[0]["assistant"]
+            assert answer["status"] == "completed" and answer["content"], "insight_incomplete"
+            assert self.api.note(answer["saved_name"])["content"] == answer["content"], "saved_insight_text"
             assert self.api.note(values["NOTE_NAME"])["content"] == values["NOTE_TEXT"], "insight_source_mismatch"
-            observed.update(independent_chat_with_exact_material=True, source_text_matches=True, model_request_count=0)
+            observed.update(independent_chat_with_exact_material=True, source_text_matches=True, model_request_count=1,
+                            saved_reply_matches=True)
         return observed
 
     def wait_verify(self, flow, values, timeout=30):

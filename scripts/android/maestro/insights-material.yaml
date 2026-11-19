@@ -18,12 +18,24 @@ onFlowComplete:
     path: ${SCREENSHOT_PREFIX}-insights-material-added
     label: Capture the isolated test UI
 - tapOn:
-    id: chat_remove_${NOTE_NAME}
+    id: chat_add_materials
     enabled: true
-    label: Activate the specified control
+    label: Reopen the materials
+- tapOn:
+    id: chat_picker_selected
+    enabled: true
+    label: Show all selected notes
+- tapOn:
+    id: chat_picker_note_${NOTE_NAME}
+    enabled: true
+    label: Deselect the last material
+- tapOn:
+    id: chat_apply_materials
+    enabled: true
+    label: Clear the conversation materials
 - extendedWaitUntil:
     notVisible:
-      id: chat_remove_${NOTE_NAME}
+      id: chat_material_summary
     timeout: 15000
     label: Wait for the expected UI state
 - assertNotVisible:

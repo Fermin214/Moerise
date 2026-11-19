@@ -49,6 +49,16 @@ func (a *ClientAPI) chatRoute(w http.ResponseWriter, r *http.Request, identity *
 			return nil, 0, err
 		}
 		result, err := service.Select(r.Context(), input)
+		if input.Format == "compact" {
+			candidates := make([]ChatCandidate, 0, len(result.Notes))
+			for _, note := range result.Notes {
+				text := []rune(note.Content)
+				candidates = append(candidates, ChatCandidate{ChatMaterial{note.Name, note.SourceHash},
+					len(text), string(text[:min(160, len(text))]), note.CreateTime, note.State})
+			}
+			return map[string]any{"candidates": candidates, "next_page_token": result.NextPageToken,
+				"character_limit": ChatCharacterLimit, "source_limit": ChatSourceLimit}, 200, err
+		}
 		for i := range result.Notes {
 			result.Notes[i] = clientNote(result.Notes[i])
 		}
@@ -110,7 +120,7 @@ func (a *ClientAPI) chatRoute(w http.ResponseWriter, r *http.Request, identity *
 			return map[string]any{"chats": items, "next_page_token": next, "character_limit": ChatCharacterLimit}, 200, err
 		case http.MethodPost:
 			var input ChatCreate
-			if err := readClientJSON(w, r, 128*1024, []string{"request_id", "title", "names"}, &input); err != nil {
+			if err := readClientJSON(w, r, 512*1024, []string{"request_id", "title", "names", "materials"}, &input); err != nil {
 				return nil, 0, err
 			}
 			if err := a.app.Sessions.CheckActive(r.Context(), identity); err != nil {
@@ -130,6 +140,21 @@ func (a *ClientAPI) chatRoute(w http.ResponseWriter, r *http.Request, identity *
 			return nil, 0, failure("INVALID_RESOURCE", "Invalid chat resource", 422, false)
 		}
 		id := parts[1]
+		if len(parts) == 3 && parts[2] == "save-selection" && r.Method == http.MethodPost {
+			var input ChatSaveSelection
+			if err := readClientJSON(w, r, 512*1024, []string{"operation_key", "language", "messages", "confirm_incomplete"}, &input); err != nil {
+				return nil, 0, err
+			}
+			if err := a.app.Sessions.CheckActive(r.Context(), identity); err != nil {
+				return nil, 0, err
+			}
+			note, status, err := service.SaveSelection(r.Context(), id, input)
+			return clientNote(note), status, err
+		}
+		if len(parts) == 4 && parts[2] == "save-selection" && r.Method == http.MethodGet {
+			receipt, err := service.Store.selectionReceipt(id, parts[3])
+			return receipt, 200, err
+		}
 		if len(parts) == 2 {
 			switch r.Method {
 			case http.MethodGet:
@@ -137,7 +162,7 @@ func (a *ClientAPI) chatRoute(w http.ResponseWriter, r *http.Request, identity *
 				return result, 200, err
 			case http.MethodPatch:
 				var input ChatUpdate
-				if err := readClientJSON(w, r, 128*1024, []string{"version", "title", "names"}, &input); err != nil {
+				if err := readClientJSON(w, r, 512*1024, []string{"version", "title", "names", "materials"}, &input); err != nil {
 					return nil, 0, err
 				}
 				if err := a.app.Sessions.CheckActive(r.Context(), identity); err != nil {
@@ -182,7 +207,7 @@ func (a *ClientAPI) chatRoute(w http.ResponseWriter, r *http.Request, identity *
 				if err := a.app.Sessions.CheckActive(r.Context(), identity); err != nil {
 					return nil, 0, err
 				}
-				turn, err := service.Cancel(id, requestID)
+				turn, err := service.Cancel(r.Context(), id, requestID)
 				return turn, 200, err
 			case "save":
 				var input struct {

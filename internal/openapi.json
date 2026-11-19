@@ -2023,6 +2023,28 @@
         }
       }
     },
+    "/api/app/v1/telemetry": {
+      "post": {
+        "operationId": "client_telemetry_batch",
+        "summary": "发送本人设备已同意分享的统计计数",
+        "description": "实例允许时按固定去向转发，每个平台每 24 小时最多一次。上限为 48 KiB 和 256 行。转发失败或触及发送频率限制时丢弃。",
+        "security": [{ "BrowserSession": [] }, { "LocalBrowserSession": [] }],
+        "parameters": [
+          { "name": "X-CSRF-Token", "in": "header", "required": true, "schema": { "type": "string" } }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "$ref": "telemetry/schema-v1.json" } } }
+        },
+        "responses": {
+          "204": { "description": "批次处理结束。" },
+          "401": { "description": "需要本人会话。" },
+          "403": { "description": "实例禁止转发或 Origin、会话身份、CSRF 校验失败。" },
+          "415": { "description": "需要 application/json。" },
+          "422": { "description": "统计字段、枚举、版本、整数或大小无效。" }
+        }
+      }
+    },
     "/api/app/v1/capabilities": {
       "get": {
         "operationId": "client_capabilities",
@@ -7300,7 +7322,7 @@
       "post": {
         "operationId": "client_create_chat",
         "summary": "创建明确选材的持久聊天",
-        "description": "仅绑定作者的浏览器会话；拒绝 Authorization，写入要求精确 Origin 和 X-CSRF-Token，响应禁止缓存。请求体最多 128 KiB，同 request_id 同请求重放返回 200；创建不调用模型或写笔记。正常与归档均可选，保存来源引用与版本。",
+        "description": "仅绑定作者的浏览器会话。请求体最多 512 KiB。使用同一 request_id 重试同一请求返回 200。支持 names 或带来源摘要的 materials。创建时读取正常或归档原文并核验来源。",
         "security": [
           {
             "BrowserSession": []
@@ -7453,7 +7475,7 @@
       "patch": {
         "operationId": "client_update_chat",
         "summary": "按版本修改聊天标题与明确选材",
-        "description": "仅绑定作者的浏览器会话；拒绝 Authorization，写入要求精确 Origin 和 X-CSRF-Token，响应禁止缓存。请求体最多 128 KiB，明确重选时保存当前来源版本；历史轮次快照保持。",
+        "description": "仅绑定作者的浏览器会话。请求体最多 512 KiB。替换整组选材，可传空数组清空材料。提交 materials 时复查摘要，来源发生变化时返回 SOURCE_CHANGED 和 changed_names。",
         "security": [
           {
             "BrowserSession": []
@@ -7616,7 +7638,7 @@
       "get": {
         "operationId": "client_select_chat_materials",
         "summary": "组合筛选正常及归档聊天材料",
-        "description": "仅绑定作者的浏览器会话；拒绝 Authorization，写入要求精确 Origin 和 X-CSRF-Token，响应禁止缓存。默认 page_size=100。重复 tag 精确 AND；from/until 为产品时区创建日期的半开区间。ALL 先分页正常、再分页归档；各状态内创建时间倒序。筛选只用于选材，不再次过滤明确选中的材料。 认证、运行资源锁和来源读取共用最长 55 秒预算；超时返回 503 LIVE_LIST_LIMIT，取消返回 503 LIVE_LIST_CANCELED，来源 429 返回可重试的 503 UPSTREAM_RATE_LIMITED，不返回部分结果。",
+        "description": "使用本人会话。默认每页 100 条，多个标签取交集，tag_match=any 取并集。from 含起始日，until 不含结束日，按产品时区解释。ALL 先枚举正常笔记，再枚举归档笔记。format=compact 返回资源名、来源摘要、Unicode 码点数和前 160 个码点的预览。空页也须检查 next_page_token。来源读取共用 55 秒预算。",
         "security": [
           {
             "BrowserSession": []
@@ -7626,6 +7648,16 @@
           }
         ],
         "parameters": [
+          {
+            "name": "tag_match",
+            "in": "query",
+            "schema": { "type": "string", "enum": ["all", "any"], "default": "all" }
+          },
+          {
+            "name": "format",
+            "in": "query",
+            "schema": { "type": "string", "enum": ["full", "compact"], "default": "full" }
+          },
           {
             "name": "state",
             "in": "query",
@@ -7700,7 +7732,10 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ChatMaterialPage"
+                  "oneOf": [
+                    { "$ref": "#/components/schemas/ChatMaterialPage" },
+                    { "$ref": "#/components/schemas/ChatCandidatePage" }
+                  ]
                 }
               }
             }
@@ -7999,6 +8034,42 @@
           "503": {
             "$ref": "#/components/responses/ChatError"
           }
+        }
+      }
+    },
+    "/api/app/v1/chats/{chat_id}/save-selection": {
+      "post": {
+        "operationId": "client_save_chat_selection",
+        "summary": "按对话顺序将所选消息保存为一篇笔记",
+        "description": "按 operation_key 重试。只有用户写的提问、已完成回复和经明确确认的已停止回复可选。超过 65536 UTF-8 字节返回 CHAT_SAVE_LIMIT。",
+        "security": [{ "BrowserSession": [] }, { "LocalBrowserSession": [] }],
+        "parameters": [
+          { "name": "X-CSRF-Token", "in": "header", "required": true, "schema": { "type": "string" } },
+          { "name": "chat_id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ChatSaveSelection" } } }
+        },
+        "responses": {
+          "200": { "description": "已保存。", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ClientNote" } } } },
+          "201": { "description": "已新建。", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ClientNote" } } } },
+          "default": { "$ref": "#/components/responses/ChatError" }
+        }
+      }
+    },
+    "/api/app/v1/chats/{chat_id}/save-selection/{operation_key}": {
+      "get": {
+        "operationId": "client_chat_save_receipt",
+        "summary": "读取会话保存操作的结果",
+        "security": [{ "BrowserSession": [] }, { "LocalBrowserSession": [] }],
+        "parameters": [
+          { "name": "chat_id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } },
+          { "name": "operation_key", "in": "path", "required": true, "schema": { "$ref": "#/components/schemas/ChatOperationKey" } }
+        ],
+        "responses": {
+          "200": { "description": "保存状态。", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ChatSaveReceipt" } } } },
+          "default": { "$ref": "#/components/responses/ChatError" }
         }
       }
     },
@@ -9660,6 +9731,11 @@
       },
       "ErrorDetail": {
         "properties": {
+          "changed_names": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "选材复查时返回需要重选的资源名。"
+          },
           "code": {
             "type": "string",
             "title": "Code"
@@ -10660,9 +10736,26 @@
         "additionalProperties": false,
         "required": [
           "login_methods",
-          "notes"
+          "notes",
+          "version",
+          "chat",
+          "telemetry"
         ],
         "properties": {
+          "version": { "type": "string", "description": "Core 版本。" },
+          "telemetry": {
+            "type": "object", "additionalProperties": false, "required": ["schema", "allowed"],
+            "properties": { "schema": { "const": 1 }, "allowed": { "type": "boolean" } }
+          },
+          "chat": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["material_selection", "save_selection"],
+            "properties": {
+              "material_selection": { "type": "boolean" },
+              "save_selection": { "type": "boolean" }
+            }
+          },
           "login_methods": {
             "type": "array",
             "items": {
@@ -11305,6 +11398,7 @@
         "type": "object",
         "additionalProperties": false,
         "properties": {
+          "material_version": { "type": "integer", "minimum": 1 },
           "id": {
             "type": "string"
           },
@@ -11345,6 +11439,7 @@
           }
         },
         "required": [
+          "material_version",
           "id",
           "request_id",
           "kind",
@@ -11361,6 +11456,7 @@
         "type": "object",
         "additionalProperties": false,
         "properties": {
+          "material_version": { "type": "integer", "minimum": 1 },
           "id": {
             "type": "string",
             "format": "uuid"
@@ -11397,6 +11493,7 @@
           }
         },
         "required": [
+          "material_version",
           "id",
           "title",
           "preview",
@@ -11411,6 +11508,7 @@
         "type": "object",
         "additionalProperties": false,
         "properties": {
+          "material_version": { "type": "integer", "minimum": 1 },
           "id": {
             "type": "string",
             "format": "uuid"
@@ -11459,6 +11557,7 @@
           }
         },
         "required": [
+          "material_version",
           "id",
           "title",
           "preview",
@@ -11503,8 +11602,7 @@
         },
         "required": [
           "request_id",
-          "title",
-          "names"
+          "title"
         ]
       },
       "ChatUpdate": {
@@ -11537,14 +11635,18 @@
         },
         "required": [
           "version",
-          "title",
-          "names"
+          "title"
         ]
       },
       "ChatGenerate": {
         "type": "object",
         "additionalProperties": false,
+        "oneOf": [{ "required": ["names"] }, { "required": ["materials"] }],
         "properties": {
+          "materials": {
+            "type": "array", "minItems": 1, "maxItems": 1000,
+            "items": { "$ref": "#/components/schemas/ChatMaterial" }
+          },
           "request_id": {
             "type": "string",
             "minLength": 1,
@@ -11586,7 +11688,12 @@
       "ChatVersion": {
         "type": "object",
         "additionalProperties": false,
+        "oneOf": [{ "required": ["names"] }, { "required": ["materials"] }],
         "properties": {
+          "materials": {
+            "type": "array", "maxItems": 1000,
+            "items": { "$ref": "#/components/schemas/ChatMaterial" }
+          },
           "version": {
             "type": "integer",
             "minimum": 1
@@ -11645,6 +11752,61 @@
           "characters",
           "limit"
         ]
+      },
+      "ChatOperationKey": {
+        "type": "string", "minLength": 1, "maxLength": 128,
+        "pattern": "^[A-Za-z0-9._:-]+$(?![\\s\\S])"
+      },
+      "ChatSaveSelection": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["operation_key", "language", "messages"],
+        "properties": {
+          "operation_key": { "$ref": "#/components/schemas/ChatOperationKey" },
+          "language": { "enum": ["zh-CN", "en"] },
+          "confirm_incomplete": { "type": "boolean", "default": false },
+          "messages": {
+            "type": "array", "minItems": 1, "uniqueItems": true,
+            "items": {
+              "type": "object", "additionalProperties": false,
+              "required": ["request_id", "role", "version"],
+              "properties": {
+                "request_id": { "$ref": "#/components/schemas/ChatOperationKey" },
+                "role": { "enum": ["user", "assistant"] },
+                "version": { "type": "integer", "minimum": 1 }
+              }
+            }
+          }
+        }
+      },
+      "ChatSaveReceipt": {
+        "type": "object", "additionalProperties": false,
+        "required": ["name", "status"],
+        "properties": { "name": { "type": "string" }, "status": { "enum": ["pending", "saved"] } }
+      },
+      "ChatCandidatePage": {
+        "type": "object", "additionalProperties": false,
+        "required": ["candidates", "next_page_token", "character_limit", "source_limit"],
+        "properties": {
+          "candidates": {
+            "type": "array",
+            "items": {
+              "type": "object", "additionalProperties": false,
+              "required": ["name", "source_hash", "characters", "preview", "create_time", "state"],
+              "properties": {
+                "name": { "type": "string" },
+                "source_hash": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+                "characters": { "type": "integer", "minimum": 0 },
+                "preview": { "type": "string", "maxLength": 160 },
+                "create_time": { "type": "string", "format": "date-time" },
+                "state": { "enum": ["NORMAL", "ARCHIVED"] }
+              }
+            }
+          },
+          "next_page_token": { "type": "string" },
+          "character_limit": { "const": 20000 },
+          "source_limit": { "const": 1000 }
+        }
       },
       "ChatMaterialPage": {
         "type": "object",

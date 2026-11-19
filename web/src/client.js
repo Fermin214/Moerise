@@ -1,11 +1,15 @@
 import { l } from './i18n.js';
 
-export function createClient({ generation, session, onSession, logoutToken }) {
+export function sessionOwner(value) {
+  return value ? `${value.instance_id || ''}\0${value.user.name}` : null;
+}
+
+export function createClient({ generation, session, onSession, onOwnerChange }) {
   const controllers = new Set();
   const stale = expected => {
     if (expected !== generation()) throw new DOMException('Stale request', 'AbortError');
   };
-  async function request(path, { method = 'GET', body, headers = {}, controller = new AbortController() } = {}) {
+  async function request(path, { method = 'GET', body, headers = {}, controller = new AbortController(), maxBytes } = {}) {
     const expected = generation();
     controllers.add(controller);
     let timedOut = false;
@@ -17,13 +21,26 @@ export function createClient({ generation, session, onSession, logoutToken }) {
         body: body === undefined ? undefined : JSON.stringify(body), signal: controller.signal,
       });
       stale(expected);
-      const data = response.status === 204 ? null : await response.json();
+      let data = null;
+      if (response.ok && maxBytes) {
+        const reader = response.body.getReader(), decoder = new TextDecoder();
+        let total = 0, text = '';
+        for (;;) {
+          const chunk = await reader.read();
+          if (chunk.done) break;
+          total += chunk.value.byteLength;
+          if (total > maxBytes) { await reader.cancel(); throw new DOMException('Prefetch limit', 'AbortError'); }
+          text += decoder.decode(chunk.value, { stream: true });
+        }
+        data = JSON.parse(text + decoder.decode());
+      } else if (response.status !== 204) data = await response.json();
       stale(expected);
       if (!response.ok) {
         const failure = data?.error || {};
         throw Object.assign(new Error(failure.message || l("请求失败，请重试。")), {
           code: failure.code || 'HTTP_ERROR', status: response.status,
           retryable: failure.retryable === true, requestId: failure.request_id,
+          changed_names: Array.isArray(failure.changed_names) ? failure.changed_names.filter(name => typeof name === 'string') : [],
         });
       }
       return data;
@@ -37,23 +54,35 @@ export function createClient({ generation, session, onSession, logoutToken }) {
       controllers.delete(controller);
     }
   }
+  async function renewCSRF() {
+    const owner = sessionOwner(session());
+    const value = validIdentity(await request('/session'));
+    if (!owner || owner !== sessionOwner(value)) {
+      onOwnerChange();
+      throw new DOMException('Session changed', 'AbortError');
+    }
+    onSession(value);
+    return value.csrf_token;
+  }
   async function sessionRequest(path, options = {}) {
-    const headers = { ...options.headers, 'X-CSRF-Token': session()?.csrf_token || logoutToken() };
+    const expected = generation();
+    const headers = { ...options.headers, 'X-CSRF-Token': session()?.csrf_token };
     try { return await request(path, { ...options, headers }); }
     catch (err) {
       if (err.code !== 'CSRF_REJECTED') throw err;
-      let value;
-      try { value = validIdentity(await request('/session')); }
+      stale(expected);
+      let token;
+      try { token = await renewCSRF(); }
       catch (refreshError) {
-        if (options.method === 'DELETE' && refreshError.status === 401) return request(path, { ...options, headers });
+        if (path === '/session' && options.method === 'DELETE' && refreshError.status === 401) return request(path, { ...options, headers });
         throw refreshError;
       }
-      onSession(value);
-      return request(path, { ...options, headers: { ...headers, 'X-CSRF-Token': value.csrf_token } });
+      stale(expected);
+      return request(path, { ...options, headers: { ...headers, 'X-CSRF-Token': token } });
     }
   }
   return {
-    request, sessionRequest,
+    request, sessionRequest, renewCSRF,
     cancel() { for (const controller of controllers) controller.abort(); controllers.clear(); },
   };
 }

@@ -8,10 +8,14 @@ import (
 	"testing"
 )
 
+func createLegacyChat(store *Store, key, title string, materials []ChatMaterial) (ChatSession, bool, error) {
+	return store.createChat(key, title, materials, hashBytes(canonicalJSON([]any{title, materialNames(materials)})))
+}
+
 func testChat(t *testing.T, store *Store, key string) ChatSession {
 	t.Helper()
 	materials := []ChatMaterial{{"memos/normal", strings.Repeat("a", 64)}, {"memos/archived", strings.Repeat("b", 64)}}
-	chat, created, err := store.createChat(key, "笔记讨论", materials)
+	chat, created, err := createLegacyChat(store, key, "笔记讨论", materials)
 	if err != nil || !created {
 		t.Fatalf("create chat: created=%v error=%v", created, err)
 	}
@@ -35,17 +39,17 @@ func TestChatStoreLifecycleAndFrozenTurn(t *testing.T) {
 	if chat.Version != 1 || chat.MaterialCount != 2 || len(chat.Turns) != 0 || chat.CreatedAt == "" {
 		t.Fatalf("invalid chat: %+v", chat)
 	}
-	replay, created, err := store.createChat("create", chat.Title, chat.Materials)
+	replay, created, err := createLegacyChat(store, "create", chat.Title, chat.Materials)
 	if err != nil || created || replay.ID != chat.ID {
 		t.Fatalf("creation replay: %+v %v %v", replay, created, err)
 	}
 	changedRefs := append([]ChatMaterial{}, chat.Materials...)
 	changedRefs[0].SourceHash = strings.Repeat("c", 64)
-	replay, created, err = store.createChat("create", chat.Title, changedRefs)
+	replay, created, err = createLegacyChat(store, "create", chat.Title, changedRefs)
 	if err != nil || created || !reflect.DeepEqual(replay.Materials, chat.Materials) {
 		t.Fatal("creation retry replaced frozen materials")
 	}
-	if _, _, err := store.createChat("create", "不同请求", chat.Materials); errorCode(err) != "IDEMPOTENCY_CONFLICT" {
+	if _, _, err := createLegacyChat(store, "create", "不同请求", chat.Materials); errorCode(err) != "IDEMPOTENCY_CONFLICT" {
 		t.Fatalf("creation conflict: %v", err)
 	}
 	turn := testChatTurn(t, store, chat, "first")
@@ -155,6 +159,41 @@ func TestChatStoreConcurrentRequestsAreAtomic(t *testing.T) {
 	input.Version = updated.Version
 	if _, created, err := store.reserveChatTurn(chat.ID, input, 4, "new", "new"); err != nil || !created {
 		t.Fatalf("explicit new request failed: %v", err)
+	}
+}
+
+func TestChatSelectionByteBudgetAndLiveQuestion(t *testing.T) {
+	store := testStore(t, testSettings(t))
+	chat := testChat(t, store, "bounded-selection")
+	turn := testChatTurn(t, store, chat, "answer")
+	content := strings.Repeat("星", 21845) + "\n"
+	if err := store.appendChatText(chat.ID, turn.ID, content); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.finishChatTurn(chat.ID, turn.ID, "completed", "", LLMUsage{}); err != nil {
+		t.Fatal(err)
+	}
+	final, err := store.chatTurn(chat.ID, turn.RequestID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	live := testChatTurn(t, store, chat, "live")
+	answer := ChatMessageRef{turn.RequestID, "assistant", final.Assistant.Version}
+	question := ChatMessageRef{live.RequestID, "user", live.User.Version}
+	selection := ChatSaveSelection{OperationKey: "full-answer", Language: "zh-CN", Messages: []ChatMessageRef{answer}}
+	if _, text, err := store.reserveSelection(chat.ID, selection); err != nil || text != content || len(text) != 65536 {
+		t.Fatal("an exact-budget completed reply must remain available while another turn runs", err)
+	}
+	selection.OperationKey, selection.Messages = "too-large", []ChatMessageRef{question, answer}
+	if _, _, err := store.reserveSelection(chat.ID, selection); errorCode(err) != "CHAT_SAVE_LIMIT" {
+		t.Fatal("combined text must include every role separator in the byte budget", err)
+	}
+	if _, err := store.selectionReceipt(chat.ID, selection.OperationKey); errorCode(err) != "CHAT_SAVE_NOT_FOUND" {
+		t.Fatal("oversized selection retained a receipt", err)
+	}
+	selection.Messages = []ChatMessageRef{question}
+	if _, text, err := store.reserveSelection(chat.ID, selection); err != nil || text != live.User.Content {
+		t.Fatal("a single live question must preserve its exact persisted text", err)
 	}
 }
 
@@ -305,11 +344,11 @@ func TestChatStoreScopeValidationAndSaveBoundaries(t *testing.T) {
 		t.Fatalf("saved stale message version: %v", err)
 	}
 	for _, materials := range [][]ChatMaterial{nil, {{"memos/one", "bad"}}, {chat.Materials[0], chat.Materials[0]}} {
-		if _, _, err := store.createChat("invalid", "title", materials); errorCode(err) != "INVALID_ARGUMENT" {
+		if _, _, err := createLegacyChat(store, "invalid", "title", materials); errorCode(err) != "INVALID_ARGUMENT" {
 			t.Fatalf("accepted invalid materials: %+v %v", materials, err)
 		}
 	}
-	if _, _, err := store.createChat("invalid", strings.Repeat("字", 201), chat.Materials); errorCode(err) != "INVALID_ARGUMENT" {
+	if _, _, err := createLegacyChat(store, "invalid", strings.Repeat("字", 201), chat.Materials); errorCode(err) != "INVALID_ARGUMENT" {
 		t.Fatalf("accepted oversized title: %v", err)
 	}
 	if _, _, err := store.reserveChatTurn(chat.ID, ChatGenerate{RequestID: "bad", Version: 1, Kind: "insight", Content: "not empty"}, 1, "prompt", "model"); errorCode(err) != "INVALID_ARGUMENT" {
@@ -324,7 +363,7 @@ func TestChatStoreMigrationRollbackAndPagination(t *testing.T) {
 		t.Fatal(err)
 	}
 	materials := []ChatMaterial{{"memos/one", strings.Repeat("a", 64)}, {"memos/two", strings.Repeat("b", 64)}}
-	if _, _, err := store.createChat("rollback", "title", materials); err == nil {
+	if _, _, err := createLegacyChat(store, "rollback", "title", materials); err == nil {
 		t.Fatal("expected material insert failure")
 	}
 	for _, table := range []string{"chat_sessions", "chat_materials"} {

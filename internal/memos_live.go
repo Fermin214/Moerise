@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/url"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -20,6 +21,7 @@ type LiveSource interface {
 type LiveFilter struct {
 	Query        string
 	Tags         []string
+	AnyTag       bool `json:",omitempty"`
 	CreatedFrom  time.Time
 	CreatedUntil time.Time
 }
@@ -44,17 +46,16 @@ func (f LiveFilter) matches(memo *Memo) bool {
 	if f.Query != "" && !strings.Contains(strings.ToLower(memo.Content), strings.ToLower(f.Query)) {
 		return false
 	}
+	matched := false
 	for _, tag := range f.Tags {
-		found := false
-		for _, actual := range memo.Tags {
-			if actual == tag {
-				found = true
-				break
-			}
-		}
-		if !found {
+		found := slices.Contains(memo.Tags, tag)
+		if !f.AnyTag && !found {
 			return false
 		}
+		matched = matched || found
+	}
+	if f.AnyTag && len(f.Tags) != 0 && !matched {
+		return false
 	}
 	if !f.CreatedFrom.IsZero() || !f.CreatedUntil.IsZero() {
 		created, err := time.Parse(time.RFC3339Nano, memo.CreateTime)
@@ -76,8 +77,16 @@ func (f LiveFilter) cel() string {
 	if f.Query != "" {
 		expr += " && content.contains(" + literal(f.Query) + ")"
 	}
-	for _, tag := range f.Tags {
-		expr += " && " + literal(tag) + " in tags"
+	if len(f.Tags) != 0 {
+		terms := make([]string, 0, len(f.Tags))
+		for _, tag := range f.Tags {
+			terms = append(terms, literal(tag)+" in tags")
+		}
+		if f.AnyTag {
+			expr += " && (" + strings.Join(terms, " || ") + ")"
+		} else {
+			expr += " && " + strings.Join(terms, " && ")
+		}
 	}
 	if !f.CreatedFrom.IsZero() {
 		expr += " && created_ts >= timestamp(" + literal(f.CreatedFrom.UTC().Format(time.RFC3339Nano)) + ")"

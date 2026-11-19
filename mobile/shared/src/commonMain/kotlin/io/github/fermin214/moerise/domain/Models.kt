@@ -20,7 +20,15 @@ data class SessionIdentity(
 }
 
 @Serializable
-data class Capabilities(@SerialName("login_methods") val loginMethods: List<String>, val notes: String)
+data class Capabilities(@SerialName("login_methods") val loginMethods: List<String>, val notes: String,
+    val chat: ChatCapabilities = ChatCapabilities(), val version: String = "unknown",
+    val telemetry: TelemetryCapability = TelemetryCapability())
+
+@Serializable data class TelemetryCapability(val schema: Int = 0, val allowed: Boolean = false)
+
+@Serializable
+data class ChatCapabilities(@SerialName("material_selection") val materialSelection: Boolean = false,
+    @SerialName("save_selection") val saveSelection: Boolean = false)
 
 @Serializable
 data class Note(
@@ -39,7 +47,8 @@ data class Note(
 data class NotePage(val notes: List<Note>, @SerialName("next_page_token") val nextPageToken: String = "")
 
 @Serializable
-data class ApiError(val code: String, val message: String = "", val retryable: Boolean = false, @SerialName("request_id") val requestId: String = "")
+data class ApiError(val code: String, val message: String = "", val retryable: Boolean = false,
+    @SerialName("request_id") val requestId: String = "", @SerialName("changed_names") val changedNames: List<String> = emptyList())
 
 @Serializable
 data class ErrorEnvelope(val error: ApiError)

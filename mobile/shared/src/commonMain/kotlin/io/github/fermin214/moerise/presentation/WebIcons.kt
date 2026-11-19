@@ -37,6 +37,7 @@ enum class WebIcon {
     ChevronRight,
     Archive,
     Refresh,
+    Sync,
     CloudCheck,
     Upload,
     CloudOff,
@@ -121,6 +122,7 @@ private fun WebIcon.svgPath(): String = when (this) {
     // 归档使用 Web 日历的容器外框与横向分隔线。
     WebIcon.Archive -> "M4 10h16"
     WebIcon.Refresh -> "M20 7v5h-5M4 17v-5h5M6 7a7 7 0 0 1 12-1l2 3M4 15l2 3a7 7 0 0 0 12-1"
+    WebIcon.Sync -> SyncRingPath
     WebIcon.CloudCheck -> "M6 18a4 4 0 0 1-1-7.9A6 6 0 0 1 17 9.2a4.5 4.5 0 0 1 1 8.8M9 15l3 3 5-6"
     WebIcon.Upload -> "M12 16V4M7 9l5-5 5 5M4 16v4h16v-4"
     WebIcon.CloudOff -> "M3 3l18 18M7 7a6 6 0 0 1 10.3 3.2A4 4 0 0 1 20 17M5 10a4 4 0 0 0 1 8h10"

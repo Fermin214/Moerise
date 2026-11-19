@@ -68,10 +68,13 @@ export function buildSettingsPatch(snapshot, draft, operations = {}) {
   return { version: snapshot.version, settings, secrets };
 }
 
+import { privacySettings } from './privacy.js';
+
 export function createSettingsPage({ sessionRequest, handleFailure, onSaved = () => {}, onDirtyChange = () => {},
   confirmDiscard = () => Promise.resolve(true) }) {
   let root, snapshot, form, error, status, reload, save, controller, pendingBody;
   let baseline = '';
+  let unbindPrivacy;
   let sequence = 0, active = false, busy = false, conflict = false;
   let controls = new Map(), secretControls = new Map(), times = [];
   let modelViews = new Map(), modelController, modelTimer, indexText, indexProgress;
@@ -97,6 +100,7 @@ export function createSettingsPage({ sessionRequest, handleFailure, onSaved = ()
     pendingBody = null;
   }
   function destroy() {
+    unbindPrivacy?.();
     active = false; sequence++; lifecycle?.abort(); controller?.abort(); abortModels(); stopChannelPoll(); clearSecrets();
     deliveryRequests = new Set();
     root?.remove(); root = snapshot = form = controller = null;
@@ -141,6 +145,7 @@ export function createSettingsPage({ sessionRequest, handleFailure, onSaved = ()
       tabs.get(id).scrollIntoView({ block: 'nearest', inline: 'nearest' });
     }
     stopChannelPoll();
+    if (form.querySelector('.settings-footer')) form.querySelector('.settings-footer').hidden = id === 'privacy';
     if (active && !busy && !conflict) refreshChannel();
   }
   function section(id, title, caption = title) {
@@ -621,6 +626,8 @@ export function createSettingsPage({ sessionRequest, handleFailure, onSaved = ()
     };
     images.addEventListener('change', updateUpload); updateUpload();
     showChannelStatus(snapshot.channel_status);
+    unbindPrivacy?.();
+    unbindPrivacy = privacySettings(section('privacy', l("隐私")));
     const footer = el('div', 'settings-footer');
     error = el('p', 'error sub'); error.setAttribute('role', 'alert'); error.hidden = true;
     status = el('p', 'sub'); status.setAttribute('role', 'status');

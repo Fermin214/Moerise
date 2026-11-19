@@ -86,7 +86,8 @@ if [[ "$android_acceptance_needs_tests" == 1 ]]; then
 fi
 adb -s "$android_device" shell pm clear io.github.fermin214.moerise.fixture >/dev/null
 run_android_instrumentation() {
-    local android_class="$1" android_log="$2" android_visual="${3:-false}"
+    local android_class="$1" android_log="$2" android_visual="${3:-false}" android_privacy_upgrade=false
+    if [[ -n "${MOERISE_ANDROID_UPGRADE_APK:-}" ]]; then android_privacy_upgrade=true; fi
     # 只把登录字段传入设备，Memos 来源令牌留在主机。
     if ! python3 - "$android_fixture_connection" <<'PY' | adb -s "$android_device" shell 'cat > /data/local/tmp/moerise-android-fixture.json'
 import json, sys
@@ -101,7 +102,7 @@ PY
     timeout 30s adb -s "$android_device" shell am force-stop io.github.fermin214.moerise.fixture || return 1
     : > "$android_log"
     if ! timeout --signal=TERM --kill-after=15s 600s adb -s "$android_device" shell am instrument -w \
-        -e timeout_msec 300000 -e visualSetup "$android_visual" -e class "$android_class" \
+        -e timeout_msec 300000 -e visualSetup "$android_visual" -e privacyUpgrade "$android_privacy_upgrade" -e class "$android_class" \
         io.github.fermin214.moerise.fixture.test/androidx.test.runner.AndroidJUnitRunner |
         tee -a .local/android/device-acceptance.log "$android_log"; then
         return 1
@@ -150,7 +151,9 @@ PY
     else
         case "$android_acceptance_group" in
         lifecycle)
-            if ! run_android_instrumentation 'io.github.fermin214.moerise.QuickNoteTest#loginWriteRecreateSaveAndReadBack' "$android_acceptance_log"; then
+            if ! run_android_instrumentation 'io.github.fermin214.moerise.QuickNoteTest#loginWriteRecreateSaveAndReadBack' "$android_acceptance_log" ||
+                ! node scripts/android/seed-timeline.mjs "$android_fixture_connection" ||
+                ! run_android_instrumentation 'io.github.fermin214.moerise.QuickNoteTest#editThirtiethNoteInPlace' "${android_acceptance_log%.log}-position.log"; then
                 android_acceptance_status=failed
             fi ;;
         ime|stars)

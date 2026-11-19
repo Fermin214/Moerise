@@ -318,7 +318,8 @@ export function createMapScene(field, { onPick, onHover, onTopic, onExcerpts }) 
       const rect = field.getBoundingClientRect(), world = { x: view.x + (clientX - rect.left - width / 2) / view.scale,
         y: view.y + (clientY - rect.top - height / 2) / view.scale };
       const target = visible.find(node => insidePolygon(world, node.polygon));
-      if (target && !target.name) focusRegion(target);
+      if (target && !target.name) { focusRegion(target); return true; }
+      return false;
     },
     hover(name) {
       if (name === hovered) return;

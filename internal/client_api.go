@@ -24,13 +24,14 @@ type loginWindow struct {
 }
 
 type ClientAPI struct {
-	app    *App
-	mu     sync.Mutex
-	limits map[string]loginWindow
+	app             *App
+	telemetryClient *http.Client
+	mu              sync.Mutex
+	limits          map[string]loginWindow
 }
 
 func NewClientAPI(app *App) *ClientAPI {
-	return &ClientAPI{app: app, limits: map[string]loginWindow{}}
+	return &ClientAPI{app: app, limits: map[string]loginWindow{}, telemetryClient: telemetryTransport()}
 }
 
 func NewHandler(app *App) (http.Handler, error) {
@@ -53,9 +54,14 @@ func writeClientError(w http.ResponseWriter, err error, id string) {
 	if !errors.As(err, &service) {
 		service = &ServiceError{"INTERNAL", "Internal service error", 500, true}
 	}
-	writeJSON(w, service.Status, map[string]any{"error": map[string]any{
+	detail := map[string]any{
 		"code": service.Code, "message": service.Message, "retryable": service.Retryable, "request_id": id,
-	}})
+	}
+	var changed *chatSourceChanges
+	if errors.As(err, &changed) {
+		detail["changed_names"] = changed.names
+	}
+	writeJSON(w, service.Status, map[string]any{"error": detail})
 }
 
 func (a *ClientAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -277,7 +283,9 @@ func (a *ClientAPI) route(w http.ResponseWriter, r *http.Request) (any, int, err
 		if method != http.MethodGet {
 			return nil, 0, failure("METHOD_NOT_ALLOWED", "Method Not Allowed", 405, false)
 		}
-		return map[string]any{"login_methods": []string{"password"}, "notes": "ready"}, 200, nil
+		return map[string]any{"login_methods": []string{"password"}, "notes": "ready",
+			"version": Version, "telemetry": map[string]any{"schema": 1, "allowed": telemetryEnabled(a.app.Store.Settings)},
+			"chat": map[string]bool{"material_selection": true, "save_selection": true}}, 200, nil
 	}
 	if path == "/api/app/v1/session" && method == http.MethodPost {
 		var body ClientLogin
@@ -343,6 +351,8 @@ func (a *ClientAPI) route(w http.ResponseWriter, r *http.Request) (any, int, err
 		}
 	}
 	switch path {
+	case "/api/app/v1/telemetry":
+		return a.forwardTelemetry(r)
 	case "/api/app/v1/session":
 		if method == http.MethodGet {
 			identity.Timezone = a.app.Store.Settings.Timezone

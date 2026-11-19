@@ -107,6 +107,7 @@ export function createDiscovery({ request, sessionRequest, getIdentity, localTod
       controls.append(positions, actions);
     }
     async function loadReview() {
+      const started = performance.now();
       cancel();
       const ticket = sequence;
       if (reviewView?.batch.date !== localToday() || reviewView?.batch.timezone !== getIdentity()?.timezone) reviewView = null;
@@ -121,9 +122,11 @@ export function createDiscovery({ request, sessionRequest, getIdentity, localTod
           throw Object.assign(new Error('Invalid daily review'), { code: 'REVIEW_RESPONSE_INVALID' });
         }
         changed = JSON.stringify(batch) !== JSON.stringify(reviewView?.batch);
+        usage('review', 'success', performance.now() - started);
         const position = reviewView?.batch.id === batch.id ? reviewView.position : 0;
         reviewView = { batch, position: Math.min(position, Math.max(0, batch.items.length - 1)) };
       } catch (err) {
+        usage('review', resultOf(err), performance.now() - started);
         if (!active(ticket) || err.name === 'AbortError') return;
         if (err.status === 401) { expire(err); return; }
         failure = err;
@@ -242,6 +245,7 @@ export function createDiscovery({ request, sessionRequest, getIdentity, localTod
     }
     async function walkRequest(path, body) {
       if (busy || !configured) return;
+      const started = performance.now();
       let pending = path === '/walks/next' && preparedNext?.source === walkView?.result &&
         preparedNext.key === JSON.stringify(body) ? preparedNext : null;
       if (pending?.outcome?.error || (pending?.loadedAt && Date.now() - pending.loadedAt >= 60_000)) pending = null;
@@ -256,6 +260,7 @@ export function createDiscovery({ request, sessionRequest, getIdentity, localTod
         if (!active(ticket)) return;
         if (outcome.error) throw outcome.error;
         const result = outcome.result;
+        usage('walk', result.item || result.exhausted ? 'success' : 'over_limit', pending ? undefined : performance.now() - started);
         walkView.warnings = result.warnings;
         if (!result.item && !result.exhausted) {
           failure = { code: 'WALK_RESOURCE_LIMIT' };
@@ -265,6 +270,7 @@ export function createDiscovery({ request, sessionRequest, getIdentity, localTod
           } else walkView.result = { ...result, item: walkView.result?.item };
         }
       } catch (err) {
+        usage('walk', resultOf(err), performance.now() - started);
         if (!active(ticket) || err.name === 'AbortError') return;
         if (err.status === 401) { expire(err); return; }
         failure = err;
@@ -346,3 +352,4 @@ export function createDiscovery({ request, sessionRequest, getIdentity, localTod
     },
   };
 }
+import { usage, resultOf } from './privacy.js';

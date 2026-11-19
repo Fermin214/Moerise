@@ -10,7 +10,7 @@ import { resolve, relative, isAbsolute } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { runProcess } from '../lib/process.mjs';
 import { createWebServer } from '../../web/server.mjs';
-import { tuneFixtureConfig, createModelGate, applyModelPolicy } from './fixture-policy.mjs';
+import { tuneFixtureConfig, createModelGate, applyModelPolicy, fixtureInsightReply } from './fixture-policy.mjs';
 import { createMemosThrottle } from './memos-throttle.mjs';
 
 const repo = fileURLToPath(new URL('../../', import.meta.url));
@@ -159,7 +159,7 @@ try {
       const question = body.messages.at(-1).content;
       res.writeHead(200, { 'Content-Type': 'text/event-stream' });
       res.write(`data: ${JSON.stringify({ model: 'android-fixture', choices: [{
-        index: 0, delta: { content: 'Android 洞察 🌌\n\n来自隔离模型的回复。' }, finish_reason: null,
+        index: 0, delta: { content: fixtureInsightReply }, finish_reason: null,
       }] })}\n\n`);
       if (question.includes('ANDROID_HOLD')) return;
       if (question.includes('ANDROID_FAIL')) { res.end(); return; }
@@ -284,6 +284,7 @@ try {
     res.once('finish', () => console.info(JSON.stringify({
       source: 'fixture_web', time: new Date().toISOString(), event: 'api_response',
       family, method: req.method, status: res.statusCode,
+      ...(family === 'notes' && req.method === 'GET' ? { paginated: new URL(req.url, origin).searchParams.has('page_token') } : {}),
       elapsed_ms: Math.round(performance.now() - started),
     })));
   });

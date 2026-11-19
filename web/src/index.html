@@ -95,6 +95,7 @@
     <main id="main" class="main" tabindex="-1">
       <div class="feed">
         <section id="workspace" class="stage" hidden>
+          <span id="sync-status" role="img" hidden></span>
           <button id="back" class="ghost back" type="button" hidden data-i18n="‹ 返回主页">‹ 返回主页</button>
           <h1 id="view-title" class="vt" hidden></h1>
           <p id="capability" class="sub" hidden></p>
@@ -107,9 +108,9 @@
           </form>
           <div id="filters" class="fbar" hidden></div>
           <p id="empty" class="sub" style="text-align:center" hidden data-i18n="没有匹配的笔记">没有匹配的笔记</p>
+          <div id="notes" style="display:flex;flex-direction:column;gap:14px"></div>
           <p id="list-error" class="error" role="alert" hidden></p>
           <button id="list-retry" class="ghost" type="button" hidden data-i18n="重试">重试</button>
-          <div id="notes" style="display:flex;flex-direction:column;gap:14px"></div>
           <button id="load-more" class="ghost" type="button" hidden data-i18n="加载更多">加载更多</button>
           <div id="page-end" aria-hidden="true"></div>
         </section>

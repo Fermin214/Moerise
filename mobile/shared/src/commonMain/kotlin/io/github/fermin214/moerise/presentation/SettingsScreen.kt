@@ -74,7 +74,15 @@ fun SettingsScreen(
                     fontWeight = FontWeight.SemiBold,
                     modifier = Modifier.semantics { heading() },
                 )
+                WebTabs(
+                    listOf(strings.text("通用", "General"), strings.text("回顾", "Review"),
+                        strings.text("模型", "Models"), strings.text("洞察", "Insights"),
+                        strings.text("消息渠道", "Messaging channel"), strings.text("发送记录", "Delivery history"),
+                        strings.text("隐私", "Privacy")),
+                    tab, { if (!state.busy) tab = it }, tagPrefix = "settings_tab", enabled = !state.busy,
+                )
                 when {
+                    tab == 6 -> PrivacySettings(mobile.privacy, strings)
                     state.loading -> SettingsHint(strings.text("正在加载设置…", "Loading settings…"))
                     state.snapshot == null -> {
                         state.error?.let { SettingsMessage(settingsMessage(it, strings), error = true) }
@@ -86,19 +94,6 @@ fun SettingsScreen(
                         )
                     }
                     else -> {
-                        WebTabs(
-                            listOf(
-                                strings.text("通用", "General"),
-                                strings.text("回顾", "Review"),
-                                strings.text("模型", "Models"),
-                                strings.text("洞察", "Insights"),
-                                strings.text("消息渠道", "Messaging channel"),
-                                strings.text("发送记录", "Delivery history"),
-                            ),
-                            tab, { if (!state.busy) tab = it },
-                            tagPrefix = "settings_tab",
-                            enabled = !state.busy,
-                        )
                         when (tab) {
                             0 -> SettingsSection(strings.text("通用", "General")) {
                                 SettingsRow(strings.text("语言", "Language"), separator = false) {

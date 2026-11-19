@@ -22,6 +22,8 @@ import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.customActions
+import androidx.compose.ui.semantics.CustomAccessibilityAction
 import androidx.compose.ui.semantics.onClick
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.role
@@ -81,7 +83,7 @@ private suspend fun densityCloud(stars: List<PaintedStar>): StarCloud? = withCon
 fun StarCanvas(state: StarMapState, controller: StarMapController, strings: Strings,
     onSelect: (String) -> Unit = controller::select) {
     StarCanvas(state, strings, controller::size, controller::transform, controller::focus, controller::pick,
-        controller::excerpts, controller::drawn, onSelect)
+        controller::excerpts, controller::drawn, onSelect, controller::dismissReader)
 }
 
 @Composable
@@ -90,6 +92,7 @@ fun StarCanvas(
     onTransform: (Double, Double, Double, Double, Double) -> Unit, onFocus: (List<String>) -> Unit,
     onPick: (Double, Double, Double) -> Unit, onExcerpts: (List<String>) -> Unit, onDrawn: (Long) -> Unit,
     onSelect: ((String) -> Unit)? = null,
+    onBlank: () -> Unit = {},
 ) {
     val map = state.snapshot ?: return
     val stellar = map.algorithm == "umap-balanced-v1"
@@ -367,6 +370,9 @@ fun StarCanvas(
             onSize(width, height)
         }) {
         Canvas(Modifier.fillMaxSize().testTag("star_canvas").semantics {
+            customActions = listOf(
+                CustomAccessibilityAction(strings.text("放大", "Zoom in")) { onTransform(1.35, 0.0, 0.0, 0.0, 0.0); true },
+                CustomAccessibilityAction(strings.text("缩小", "Zoom out")) { onTransform(1 / 1.35, 0.0, 0.0, 0.0, 0.0); true })
             contentDescription = strings.text("观星，拖动平移，双指缩放。Tab 选星，Enter 阅读。",
                 "Star map. Drag to pan; pinch to zoom. Tab to choose a star, Enter to read.")
         }
@@ -391,8 +397,8 @@ fun StarCanvas(
                                         val world = RegionPosition(view.x + (down.position.x - width / 2) / view.scale,
                                             view.y + (down.position.y - height / 2) / view.scale)
                                         livePcaLayer?.regions?.firstOrNull { it.name == null && insideRegion(world, it.polygon) }
-                                            ?.let { focusRegion(it.id, it.members) }
-                                    }
+                                            ?.let { focusRegion(it.id, it.members) } ?: onBlank()
+                                    } else onBlank()
                                 }
                                 break
                             }

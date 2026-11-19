@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/http/httputil"
 	"net/url"
 	"path/filepath"
 	"reflect"
@@ -160,7 +161,24 @@ func TestClientChatMemosAcceptance(t *testing.T) {
 	model := &chatAcceptanceModel{key: randomToken(), release: make(chan struct{}, 1)}
 	server := httptest.NewServer(model)
 	t.Cleanup(server.Close)
-	h := newHarness(t)
+	var dropSaved atomic.Bool
+	h := newHarnessWithUpstream(t, func(upstream string) string {
+		target, _ := url.Parse(upstream)
+		proxy := httputil.NewSingleHostReverseProxy(target)
+		proxy.ModifyResponse = func(response *http.Response) error {
+			if response.Request.Method == "POST" && response.Request.URL.Path == "/api/v1/memos" && dropSaved.Swap(false) {
+				response.Body.Close()
+				response.StatusCode = http.StatusServiceUnavailable
+				response.Body = io.NopCloser(strings.NewReader("{}"))
+				response.ContentLength = 2
+				response.Header.Del("Content-Length")
+			}
+			return nil
+		}
+		fixture := httptest.NewServer(proxy)
+		t.Cleanup(fixture.Close)
+		return fixture.URL
+	})
 	h.settings.AccessTokens[1].Scopes = append(h.settings.AccessTokens[1].Scopes, "sync:read")
 	c := managedClient(t, h)
 	h.client.Timeout = 30 * time.Second
@@ -236,7 +254,33 @@ func TestClientChatMemosAcceptance(t *testing.T) {
 	}
 	t.Log("PASS real normal/archive pagination with combined date, keyword and exact AND tags")
 
-	creation := map[string]any{"request_id": "chat-original", "title": "真实材料讨论", "names": names}
+	union := url.Values{"format": {"compact"}, "tag_match": {"any"}, "tag": {"材料", "共同"}, "page_size": {"3"}}
+	refs := map[string]moerise.ChatMaterial{}
+	for page := 0; ; page++ {
+		if page > 8 {
+			t.Fatal("compact selection failed to finish")
+		}
+		result := c.call("GET", "/api/app/v1/chat-materials?"+union.Encode(), nil, 200)
+		for _, raw := range result["candidates"].([]any) {
+			item := raw.(map[string]any)
+			name := item["name"].(string)
+			if _, known := content[name]; !known || refs[name].Name != "" || item["content"] != nil ||
+				item["preview"] != content[name] || int(item["characters"].(float64)) != utf8.RuneCountInString(content[name]) {
+				t.Fatalf("unexpected compact union candidate: %#v", item)
+			}
+			refs[name] = moerise.ChatMaterial{Name: name, SourceHash: item["source_hash"].(string)}
+		}
+		if token := result["next_page_token"].(string); token != "" {
+			union.Set("page_token", token)
+		} else {
+			break
+		}
+	}
+	if len(refs) != len(content) {
+		t.Fatalf("tag union omitted sources: %+v", refs)
+	}
+	selectedRefs := []moerise.ChatMaterial{refs[names[0]], refs[names[1]], refs[names[2]]}
+	creation := map[string]any{"request_id": "chat-original", "title": "真实材料讨论", "materials": selectedRefs}
 	chat := acceptanceChat(t, c.call("POST", "/api/app/v1/chats", creation, 201))
 	if replay := acceptanceChat(t, c.call("POST", "/api/app/v1/chats", creation, 200)); replay.ID != chat.ID || model.calls() != 0 {
 		t.Fatal("chat creation was duplicated or called the model")
@@ -279,6 +323,26 @@ func TestClientChatMemosAcceptance(t *testing.T) {
 		saved["content"] != chatAcceptanceReply {
 		t.Fatal("saved reply was rewritten or created more than once")
 	}
+	selection := moerise.ChatSaveSelection{OperationKey: "keep-messages", Language: "en", Messages: []moerise.ChatMessageRef{
+		{RequestID: follow.RequestID, Role: "user", Version: follow.User.Version},
+		{RequestID: first.RequestID, Role: "assistant", Version: first.Assistant.Version},
+	}}
+	wantJoined := "**Moerise**\n\n" + first.Assistant.Content + "\n\n**Me**\n\n" + question
+	dropSaved.Store(true)
+	lost := c.call("POST", base+"/save-selection", selection, 503)
+	if lost["error"].(map[string]any)["code"] != "WRITE_OUTCOME_UNKNOWN" {
+		t.Fatal("lost Memos response was not classified as unknown")
+	}
+	joined := c.call("POST", base+"/save-selection", selection, 200)
+	if joined["content"] != wantJoined {
+		t.Fatalf("wrong ordered selection: %q", joined["content"])
+	}
+	one := moerise.ChatSaveSelection{OperationKey: "first-only", Language: "zh-CN", Messages: selection.Messages[1:]}
+	if repeated := c.call("POST", base+"/save-selection", one, 200); repeated["name"] != saved["name"] {
+		t.Fatal("single-reply save did not reuse the legacy save")
+	}
+	one.OperationKey = selection.OperationKey
+	c.call("POST", base+"/save-selection", one, 409)
 	c.call("POST", base+"/messages/first/save", map[string]any{"version": first.Assistant.Version + 1}, 409)
 	before := acceptanceChat(t, c.call("GET", base, nil, 200))
 	if len(before.Turns) != 2 || before.Turns[0].Assistant.SavedName != saved["name"] || before.Turns[1].ID != follow.ID {
@@ -289,6 +353,11 @@ func TestClientChatMemosAcceptance(t *testing.T) {
 	calls := model.calls()
 	h.stop()
 	h.start()
+	receipt := c.call("GET", base+"/save-selection/"+selection.OperationKey, nil, 200)
+	retry := c.call("POST", base+"/save-selection", selection, 200)
+	if receipt["status"] != "saved" || receipt["name"] != joined["name"] || retry["name"] != joined["name"] {
+		t.Fatal("lost-response retry after restart did not reuse saved note")
+	}
 	if after := acceptanceChat(t, c.call("GET", base, nil, 200)); !reflect.DeepEqual(before, after) || model.calls() != calls {
 		t.Fatal("ordinary restart lost chat or regenerated a reply")
 	}
@@ -345,6 +414,11 @@ func TestClientChatMemosAcceptance(t *testing.T) {
 	content[names[0]] = "来源已明确更新。 #材料 #共同"
 	h.call(h.memos, "/api/v1/"+names[0]+"?updateMask=content", "PATCH", h.upstream,
 		map[string]string{"content": content[names[0]]}, 200)
+	conflicted := c.call("PATCH", base, map[string]any{"version": chat.Version, "title": chat.Title, "materials": selectedRefs}, 409)
+	sourceError := conflicted["error"].(map[string]any)
+	if sourceError["code"] != "SOURCE_CHANGED" || !reflect.DeepEqual(sourceError["changed_names"], []any{names[0]}) {
+		t.Fatalf("incorrect changed sources: %+v", sourceError)
+	}
 	rejected = c.call("POST", base+"/messages", moerise.ChatGenerate{
 		RequestID: "stale-source", Version: chat.Version, Kind: "insight",
 	}, 409)
@@ -355,7 +429,8 @@ func TestClientChatMemosAcceptance(t *testing.T) {
 	updated := completeAcceptanceChat(t, c, chat.ID, moerise.ChatGenerate{
 		RequestID: "reselected", Version: chat.Version, Kind: "question", Content: "根据重新选择的材料继续。",
 	})
-	if updated.Prompt != "新的讨论视角" || updated.SettingsVersion <= first.SettingsVersion ||
+	if updated.Prompt != "新的讨论视角" || updated.SettingsVersion <= first.SettingsVersion || first.MaterialVersion != 1 ||
+		chat.MaterialVersion != 2 || updated.MaterialVersion != 2 || chat.Turns[0].MaterialVersion != 1 ||
 		updated.Materials[0].SourceHash == first.Materials[0].SourceHash || model.calls() != calls+1 {
 		t.Fatal("explicit reselection failed to freeze the new source or settings version")
 	}
@@ -449,13 +524,49 @@ func TestClientChatMemosAcceptance(t *testing.T) {
 	}
 	t.Log("PASS live source changes before completion cannot publish a successful reply")
 
+	chat = acceptanceChat(t, c.call("GET", base, nil, 200))
+	c.call("DELETE", base, map[string]any{"version": chat.Version}, 204)
+	c.call("GET", base, nil, 404)
+	if source := h.call(h.memos, "/api/v1/"+saved["name"].(string), "GET", h.upstream, nil, 200); source["content"] != chatAcceptanceReply {
+		t.Fatal("deleting a chat deleted or changed the saved Memos note")
+	}
+	if source := h.call(h.memos, "/api/v1/"+joined["name"].(string), "GET", h.upstream, nil, 200); source["content"] != wantJoined {
+		t.Fatal("deleting a chat lost a composite note")
+	}
+	db := h.database("state")
+	defer db.Close()
+	for _, check := range []struct{ table, column, id string }{
+		{"chat_turns", "chat_id", chat.ID},
+		{"chat_materials", "chat_id", chat.ID},
+		{"chat_saves", "turn_id", first.ID},
+		{"chat_selection_saves", "chat_id", chat.ID},
+	} {
+		var count int
+		if err := db.QueryRow("SELECT COUNT(*) FROM "+check.table+" WHERE "+check.column+" = ?", check.id).Scan(&count); err != nil || count != 0 {
+			t.Fatalf("delete did not clear chat association %s: count=%d error=%v", check.table, count, err)
+		}
+	}
+	t.Log("PASS active deletion clears chat product state and keeps the original saved Memos note")
+}
+
+func TestClientChatTerminalMemosAcceptance(t *testing.T) {
+	model := &chatAcceptanceModel{key: randomToken(), release: make(chan struct{}, 1)}
+	server := httptest.NewServer(model)
+	t.Cleanup(server.Close)
+	h := newHarness(t)
+	address, modelName := server.URL+"/v1", "chat-acceptance"
+	h.settings.LLM.Enabled, h.settings.LLM.BaseURL = true, &address
+	h.settings.LLM.APIKey, h.settings.LLM.Model = &model.key, &modelName
+	h.settings.LLM.MaxRetries = 0
+	c := managedClient(t, h)
+	source := c.call("POST", "/api/app/v1/notes", map[string]any{"content": "终止回复的材料"}, 201)
 	for _, mode := range []string{"cancel", "disconnect", "restart", "protocol", "logout"} {
 		model.mode.Store(1)
 		if mode == "protocol" {
 			model.mode.Store(2)
 		}
 		current := acceptanceChat(t, c.call("POST", "/api/app/v1/chats", map[string]any{
-			"request_id": "terminal-" + mode, "title": mode, "names": []string{names[0]},
+			"request_id": "terminal-" + mode, "title": mode, "names": []string{source["name"].(string)},
 		}, 201))
 		input := moerise.ChatGenerate{RequestID: "terminal", Version: current.Version, Kind: "question", Content: "检查流中断。"}
 		response, scanner := openAcceptanceChatStream(t, c, current.ID, input)
@@ -503,6 +614,19 @@ func TestClientChatMemosAcceptance(t *testing.T) {
 			t.Fatal("supplier EOF was mistaken for completion")
 		}
 		c.call("POST", path+"/messages/terminal/save", map[string]any{"version": terminal.Assistant.Version}, 409)
+		partial := moerise.ChatSaveSelection{OperationKey: "partial", Language: "zh-CN",
+			Messages: []moerise.ChatMessageRef{{RequestID: terminal.RequestID, Role: "assistant", Version: terminal.Assistant.Version}}}
+		if expected == "canceled" {
+			c.call("POST", path+"/save-selection", partial, 409)
+			partial.ConfirmIncomplete = true
+			note := c.call("POST", path+"/save-selection", partial, 201)
+			if note["content"] != chatAcceptanceReply {
+				t.Fatal("confirmed stopped selection lost persisted body")
+			}
+		} else if mode == "disconnect" {
+			partial.ConfirmIncomplete = true
+			c.call("POST", path+"/save-selection", partial, 409)
+		}
 		beforeReplay := model.calls()
 		replayed, scan := openAcceptanceChatStream(t, c, current.ID, input)
 		var replayText strings.Builder
@@ -516,26 +640,6 @@ func TestClientChatMemosAcceptance(t *testing.T) {
 		}
 		t.Log("PASS durable partial reply and no automatic regeneration:", mode)
 	}
-	model.mode.Store(0)
-	chat = acceptanceChat(t, c.call("GET", base, nil, 200))
-	c.call("DELETE", base, map[string]any{"version": chat.Version}, 204)
-	c.call("GET", base, nil, 404)
-	if source := h.call(h.memos, "/api/v1/"+saved["name"].(string), "GET", h.upstream, nil, 200); source["content"] != chatAcceptanceReply {
-		t.Fatal("deleting a chat deleted or changed the saved Memos note")
-	}
-	db := h.database("state")
-	defer db.Close()
-	for _, check := range []struct{ table, column, id string }{
-		{"chat_turns", "chat_id", chat.ID},
-		{"chat_materials", "chat_id", chat.ID},
-		{"chat_saves", "turn_id", first.ID},
-	} {
-		var count int
-		if err := db.QueryRow("SELECT COUNT(*) FROM "+check.table+" WHERE "+check.column+" = ?", check.id).Scan(&count); err != nil || count != 0 {
-			t.Fatalf("delete did not clear chat association %s: count=%d error=%v", check.table, count, err)
-		}
-	}
-	t.Log("PASS active deletion clears chat product state and keeps the original saved Memos note")
 }
 
 func TestClientChatMaterialCharacterLimitMemosAcceptance(t *testing.T) {
