@@ -95,7 +95,9 @@ class FixtureAPI:
                     code = json.loads(error.read()).get("error", {}).get("code", code)
                 except (ValueError, AttributeError):
                     pass
-                if error.code in (429, 503) and attempt < 2 and (method == "GET" or key):
+                settings_busy = (method == "PATCH" and path == "/api/app/v1/settings"
+                                 and error.code == 503 and code == "SETTINGS_BUSY")
+                if error.code in (429, 503) and attempt < 2 and (method == "GET" or key or settings_busy):
                     retry_after = error.headers.get("Retry-After", "1")
                     time.sleep(min(5, max(1, int(retry_after) if retry_after.isdigit() else 1)))
                     continue
@@ -506,6 +508,9 @@ class MaestroRunner:
                             "version": configuration["version"], "settings": channel_fixture,
                             "secrets": {"qq_app_secret": {"action": "clear"}},
                         })
+                except FixtureError as error:
+                    result["channel_restore_error"] = {"http_status": error.status, "error_code": error.code}
+                    result["cleanup_errors"].append("channel_settings_restore")
                 except Exception:
                     result["cleanup_errors"].append("channel_settings_restore")
             try:
