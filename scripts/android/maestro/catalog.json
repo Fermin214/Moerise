@@ -22,7 +22,7 @@
     },
     "actions": {
       "file": "actions.yaml",
-      "timeout_seconds": 600,
+      "timeout_seconds": 780,
       "seed_notes": true
     },
     "insights": {
@@ -32,7 +32,7 @@
     },
     "navigation": {
       "file": "navigation.yaml",
-      "timeout_seconds": 600,
+      "timeout_seconds": 900,
       "seed_notes": true
     },
     "language": {
