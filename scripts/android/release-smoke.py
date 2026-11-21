@@ -41,7 +41,7 @@ def require_restored_session(adb, app, output, command_error):
             continue
         assert ids.isdisjoint({"server_login", "welcome_enter"}), "升级后未恢复账号或 Keystore 会话"
         if "open_menu" in ids:
-            return
+            return xml
         time.sleep(.5)
     raise RuntimeError("升级后未进入已登录主页：" + ",".join(errors))
 
@@ -102,6 +102,9 @@ def main():
         report["secure_cookie"] = True
         runner.api.close()
         result = runner.run_flow("upgrade-smoke" if upgrade else "release-smoke")
+        report["flows"]["upgrade-smoke" if upgrade else "release-smoke"] = result
+        if result["status"] != "passed":
+            raise RuntimeError("发行场景失败：" + str(result["cause"]))
         if upgrade:
             runner.api.login()
             deadline = time.monotonic() + 60
@@ -109,17 +112,13 @@ def main():
                 if time.monotonic() >= deadline:
                     raise RuntimeError("upgraded pending write did not drain")
                 time.sleep(.5)
-            xml = adb.run("shell", "uiautomator", "dump", "/sdcard/moerise-upgrade.xml")
-            xml = adb.run("shell", "cat", "/sdcard/moerise-upgrade.xml")
+            xml = require_restored_session(adb, runner.app, args.output / "upgrade/completed-window.xml", phone.CommandError)
             assert upgrade["draft"] in xml, "upgraded draft missing"
             assert "welcome_enter" not in xml and "server_login" not in xml, "upgraded account or Keystore missing"
             assert len(runner.api.matching_notes(previous_note)) == 1, "0.2.0 笔记丢失"
             report["upgrade"] = {"from": "0.2.0", "account": True, "draft": True, "pending_write_count": 1,
                                  "keystore_session": True, "previous_apk_sha256": hashlib.sha256(args.upgrade_from.read_bytes()).hexdigest()}
 
-        report["flows"]["upgrade-smoke" if upgrade else "release-smoke"] = result
-        if result["status"] != "passed":
-            raise RuntimeError("发行场景失败：" + str(result["cause"]))
         for package in reversed(DRIVERS):
             if adb.run("shell", "pm", "path", package, check=False).strip():
                 adb.run("shell", "am", "force-stop", package)
