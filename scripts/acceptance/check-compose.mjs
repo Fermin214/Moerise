@@ -443,7 +443,7 @@ async function runScenario(kind) {
     await compose(['down', '--remove-orphans']);
     assert.equal((await docker(['ps', '-aq', '--filter', `label=com.docker.compose.project=${project}`,
       '--filter', 'label=com.docker.compose.service=web'])).trim(), '');
-    await compose(['up', '-d', '--no-build']);
+    await compose(['up', '-d', '--no-build', 'memos', 'moerise', 'layout']);
     await ready(url);
     const restoredVolumes = JSON.parse(await docker(['inspect', '--format', '{{json .Mounts}}',
       (await compose(['ps', '--quiet', 'moerise'])).trim()]))
