@@ -22,4 +22,3 @@ data class InsightState(
         (recovery.mutation?.method in setOf(null, "DELETE")) &&
         recovery.creation == null && (!busy || streaming || running)
 }
-

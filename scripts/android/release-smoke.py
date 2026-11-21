@@ -25,6 +25,7 @@ def main():
     parser.add_argument("--serial", default="emulator-5554")
     parser.add_argument("--fixture", required=True)
     parser.add_argument("--apk", required=True, type=Path)
+    parser.add_argument("--upgrade-from", type=Path)
     parser.add_argument("--output", required=True, type=Path)
     args = parser.parse_args()
     if not args.serial.startswith("emulator-"):
@@ -52,15 +53,42 @@ def main():
     try:
         if adb.run("shell", "pm", "path", runner.app, check=False).strip():
             raise RuntimeError("发行检查要求尚未安装此包的模拟器")
-        adb.run("install", str(args.apk.resolve()), timeout=120)
+        upgrade = None
+        if args.upgrade_from:
+            adb.run("install", str(args.upgrade_from.resolve()), timeout=120)
+            prior = runner.run_flow("release-smoke")
+            if prior["status"] != "passed":
+                raise RuntimeError("0.2.0 preparation failed: " + str(prior.get("cause")))
+            spec = importlib.util.spec_from_file_location("upgrade_state", ROOT / "scripts/android/upgrade-state.py")
+            upgrade_state = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(upgrade_state)
+            upgrade = upgrade_state.seed_upgrade(adb, runner.app, args.output / "upgrade")
+            adb.run("install", "-r", str(args.apk.resolve()), timeout=120)
+            runner = MaestroRunner(ROOT, adb, args.fixture, args.output / "upgraded" / "maestro", release=True)
+        else:
+            adb.run("install", str(args.apk.resolve()), timeout=120)
         runner.api.login()
         jar = next(handler.cookiejar for handler in runner.api.opener.handlers
                    if isinstance(handler, urllib.request.HTTPCookieProcessor))
         assert any(cookie.name == "__Host-moerise_session" and cookie.secure for cookie in jar), "Secure Cookie 缺失"
         report["secure_cookie"] = True
         runner.api.close()
-        result = runner.run_flow("release-smoke")
-        report["flows"]["release-smoke"] = result
+        result = runner.run_flow("home-smoke" if upgrade else "release-smoke")
+        if upgrade:
+            runner.api.login()
+            deadline = time.monotonic() + 60
+            while len(runner.api.matching_notes(upgrade["queued"])) != 1:
+                if time.monotonic() >= deadline:
+                    raise RuntimeError("upgraded pending write did not drain")
+                time.sleep(.5)
+            xml = adb.run("shell", "uiautomator", "dump", "/sdcard/moerise-upgrade.xml")
+            xml = adb.run("shell", "cat", "/sdcard/moerise-upgrade.xml")
+            assert upgrade["draft"] in xml, "upgraded draft missing"
+            assert "welcome_enter" not in xml and "server_login" not in xml, "upgraded account or Keystore missing"
+            report["upgrade"] = {"from": "0.2.0", "account": True, "draft": True, "pending_write_count": 1,
+                                 "keystore_session": True, "previous_apk_sha256": hashlib.sha256(args.upgrade_from.read_bytes()).hexdigest()}
+
+        report["flows"]["home-smoke" if upgrade else "release-smoke"] = result
         if result["status"] != "passed":
             raise RuntimeError("发行场景失败：" + str(result["cause"]))
         for package in reversed(DRIVERS):

@@ -10,6 +10,7 @@ android_release_min_sdk="$(sed -n 's/^moerise\.minSdk=//p' mobile/gradle.propert
 android_release_apk="${1:?需要指定已签名的 APK}"
 test -s "$android_release_apk"
 mkdir -p .local/android
+android_smoke_output="${MOERISE_ANDROID_SMOKE_OUTPUT:-.local/android/release-smoke}"
 android_release_fixture="$(mktemp -d "$android_repo_root/.local/android/release-fixture-XXXXXXXX")"
 chmod 700 "$android_release_fixture"
 android_release_fixture_pid="" android_release_tls_pid=""
@@ -51,10 +52,10 @@ PY
         fi
     done
     timeout 10 adb reverse --remove tcp:28443 >/dev/null 2>&1 || true
-    mkdir -p .local/android/release-smoke
+    mkdir -p "$android_smoke_output"
     for android_release_log in fixture core tls; do
         if [[ -f "$android_release_fixture/$android_release_log.log" ]]; then
-            cp "$android_release_fixture/$android_release_log.log" ".local/android/release-smoke/$android_release_log.log"
+            cp "$android_release_fixture/$android_release_log.log" "$android_smoke_output/$android_release_log.log"
         fi
     done
     rm -rf "$android_release_fixture"
@@ -154,6 +155,8 @@ for zygote in $zygotes; do
 done
 DEVICE
 [[ "$(timeout 10 adb shell getenforce | tr -d '\r')" == Enforcing ]]
-python3 scripts/android/release-smoke.py --serial "$ANDROID_SERIAL" \
+android_release_upgrade=()
+if [[ -n "${MOERISE_ANDROID_UPGRADE_FROM:-}" ]]; then android_release_upgrade=(--upgrade-from "$MOERISE_ANDROID_UPGRADE_FROM"); fi
+python3 scripts/android/release-smoke.py "${android_release_upgrade[@]}" --serial "$ANDROID_SERIAL" \
     --fixture "$android_release_fixture/connection.json" --apk "$android_release_apk" \
-    --output .local/android/release-smoke
+    --output "$android_smoke_output"
