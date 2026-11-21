@@ -5,7 +5,7 @@ version=${1:?Supply the release version}
 : "${GITHUB_SERVER_URL:?}" "${GITHUB_REPOSITORY:?}" "${GITHUB_SHA:?}"
 
 build_image() {
-    docker build --label "org.opencontainers.image.source=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" \
+    docker build --build-arg "PROJECT_TELEMETRY_RECEIVER=${PROJECT_TELEMETRY_RECEIVER:-}" --label "org.opencontainers.image.source=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" \
         --label "org.opencontainers.image.revision=$GITHUB_SHA" \
         --label "org.opencontainers.image.version=$version" --tag "moerise-ci-$1" "$2"
 }

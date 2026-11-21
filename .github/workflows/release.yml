@@ -17,6 +17,8 @@ jobs:
             runner: ubuntu-24.04-arm
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
+    env:
+      PROJECT_TELEMETRY_RECEIVER: ${{ vars.PROJECT_TELEMETRY_RECEIVER }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-go@4dc6199c7b1a012772edbd06daecab0f50c9053c # v6.1.0
@@ -37,7 +39,9 @@ jobs:
           CGO_ENABLED: "0"
         run: |
           mkdir -p build
-          go build -trimpath -ldflags="-s -w" -o build/moerise .
+          go build -trimpath -o build/moerise-telemetry ./cmd/moerise-telemetry
+          node scripts/acceptance/check-telemetry.mjs build/moerise-telemetry
+          go build -trimpath -ldflags="-s -w -X moerise/internal.telemetryReceiverURL=${PROJECT_TELEMETRY_RECEIVER}" -o build/moerise .
           version=$(build/moerise version)
           [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
           test "$version" = "$(node -p 'require("./web/package.json").version')"

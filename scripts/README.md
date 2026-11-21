@@ -17,6 +17,7 @@ node scripts/acceptance/check-compose.mjs --browser
 
 | 脚本 | 覆盖内容 |
 | --- | --- |
+| `check-telemetry.mjs <接收端二进制>` | 在隔离目录启动真实接收端，验证 HTTP 入库与周报 CSV，退出后清理数据库 |
 | `check-compose.mjs` | Compose 构建、启动、健康检查、代理、会话、观星开关与可选布局服务、持久化与备份恢复；`--browser` 增加浏览器流程 |
 | `check-discovery.mjs` | Web 每日回顾、语义漫步、只读机器接口和模型异常 |
 | `check-chat.mjs` | 材料选择、流式回复、追问、保存成笔记与重启恢复。`--android-insights <目录>` 使用 Android 设备验收的 `insights/test-data.json` 和同目录的 `result.json`，比对两端选择的原文和写入 Memos 的笔记。 |

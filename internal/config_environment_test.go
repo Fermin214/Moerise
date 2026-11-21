@@ -99,8 +99,13 @@ func TestEnvironmentOnlyConfiguration(t *testing.T) {
 	}
 	loaded, err := LoadSettings(filepath.Join(t.TempDir(), "absent.json"))
 	if err != nil || loaded.Review.MinAgeHours != 72 || loaded.Review.RecentDays != 7 ||
-		loaded.Memos.PageSize != 500 || loaded.Sync.PollSeconds != 120 {
+		loaded.Memos.PageSize != 500 || loaded.Sync.PollSeconds != 120 || !loaded.TelemetryForwarding {
 		t.Fatalf("environment-only defaults: %+v %v", loaded.Review, err)
+	}
+	t.Setenv("MOERISE_TELEMETRY_FORWARDING", "false")
+	loaded, err = LoadSettings(filepath.Join(t.TempDir(), "absent.json"))
+	if err != nil || loaded.TelemetryForwarding {
+		t.Fatalf("forwarding environment opt-out: %v %v", loaded.TelemetryForwarding, err)
 	}
 	t.Setenv("MOERISE_FEISHU_MODE", "")
 	t.Setenv("MOERISE_FEISHU_APP_ID", "cli_private")

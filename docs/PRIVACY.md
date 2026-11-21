@@ -40,4 +40,8 @@ go build -o moerise-telemetry ./cmd/moerise-telemetry
 ./moerise-telemetry -db /var/lib/moerise-telemetry/daily.sqlite3 report
 ```
 
-`serve` 默认只监听 `127.0.0.1:8091`。每周运行 `report`，输出含当天在内最近七个 UTC 日期的 CSV。已知结果不足 20 次的组只显示数量。启用外发的 Core 构建使用链接参数 `-X moerise/internal.telemetryReceiverURL=<HTTPS 接收地址>`，镜像使用构建参数 `PROJECT_TELEMETRY_RECEIVER`。实例部署者通过 `MOERISE_TELEMETRY_FORWARDING` 控制是否允许转发。
+`serve` 默认只监听 `127.0.0.1:8091`。每周运行 `report`，输出含当天在内最近七个 UTC 日期的 CSV。已知结果不足 20 次的组只显示数量。启用外发的 Core 构建使用链接参数 `-X moerise/internal.telemetryReceiverURL=<HTTPS 接收地址>`，镜像使用构建参数 `PROJECT_TELEMETRY_RECEIVER`。Core 默认允许转发，实例部署者通过 `MOERISE_TELEMETRY_FORWARDING=false` 或配置文件中的 `telemetry_forwarding: false` 关闭。此实例开关不改变设备同意状态；Web 和 Android 都需用户显式开启，升级保留既有设备选择。
+
+Dallas 的用户级服务监听 `127.0.0.1:18091`；CLI 默认端口仍为 `8091`。用户级 systemd 单元位于 `deploy/telemetry/moerise-telemetry.service`。二进制安装到 `~/.local/lib/moerise-telemetry/moerise-telemetry`，数据目录为 `~/.local/share/moerise-telemetry`；将单元安装至 `~/.config/systemd/user/` 后执行 `systemctl --user enable --now moerise-telemetry`。服务日志不记录来源地址、请求头或请求体。Cloudflare Tunnel 仅转发接收子域名至回环监听端口，入口关闭请求日志与追踪采样。
+
+发行流水线通过仓库变量 `PROJECT_TELEMETRY_RECEIVER` 同时注入原生 Core 二进制与 Core 镜像。源码构建未指定该值时，接收地址为空，Core 不外发。
