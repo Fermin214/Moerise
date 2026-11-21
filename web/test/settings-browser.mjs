@@ -95,12 +95,12 @@ async function fixture(t, language = 'zh-CN', returning = true) {
       if (new URL(req.url, 'http://localhost').searchParams.get('kind') !== 'review') { error('INVALID_ARGUMENT', 422); return; }
       json({ notifications: state.deliveries }); return;
     }
-    const resolveId = /^\/api\/app\/v1\/admin\/notifications\/([^/]+)\/resolve$/.exec(path)?.[1];
+    const resolveId = /^\/api\/app\/v1\/admin\/notifications\/([^/]+)\/retry$/.exec(path)?.[1];
     if (resolveId) {
       assert.equal(req.headers['x-csrf-token'], 'csrf-settings');
       const item = state.deliveries.find(entry => entry.id === resolveId);
       const body = JSON.parse(raw); state.resolutions.push({ id: resolveId, ...body });
-      item.status = body.decision === 'sent' ? 'sent' : 'pending'; json({ notification: item }); return;
+      assert.deepEqual(body, {}); item.status = 'pending'; json({ notification: item }); return;
     }
     if (path === '/api/app/v1/tags') { json({ tags: [] }); return; }
     if (path === '/api/app/v1/calendar') { json({ month: new URL(req.url, 'http://localhost').searchParams.get('month'), days: [] }); return; }
@@ -831,9 +831,9 @@ test('independent channel secrets, review routing, connection status and manual 
   state.value.channel_status.qq = { state: 'error', detail: 'BOT_CREDENTIALS' };
   state.value.channel_status['feishu-app'] = { state: 'awaiting_verification' };
   state.value.secrets.webhook_app_secret.configured = true;
-  state.deliveries.push({ id: 'first', kind: 'review', date: '2026-10-01', clock: '08:00', channel_kind: 'telegram', status: 'unknown' });
-  state.deliveries.push({ id: 'second', kind: 'review', date: '2026-10-01', clock: '12:00', channel_kind: 'feishu-app', status: 'unknown' });
-  state.deliveries.push({ id: 'third', kind: 'review', date: '2026-10-01', clock: '18:00', channel_kind: 'qq', status: 'unknown' });
+  state.deliveries.push({ id: 'first', kind: 'review', date: '2026-10-01', clock: '08:00', channel_kind: 'telegram', status: 'failed' });
+  state.deliveries.push({ id: 'second', kind: 'review', date: '2026-10-01', clock: '12:00', channel_kind: 'feishu-app', status: 'failed' });
+  state.deliveries.push({ id: 'third', kind: 'review', date: '2026-10-01', clock: '18:00', channel_kind: 'qq', status: 'failed' });
   await page.goto(url + '/settings'); await login(page);
   await page.getByRole('button', { name: 'Save settings', exact: true }).waitFor();
   await tab(page, 'review');
@@ -888,15 +888,10 @@ test('independent channel secrets, review routing, connection status and manual 
   assert.equal(state.patches.at(-1).secrets.bot_token, undefined);
   assert.equal(await page.locator('#settings-history-card .settings-footer').count(), 0);
   const row = clock => page.locator('#settings-history-card .settings-row').filter({ hasText: clock });
-  await row('08:00').getByRole('button', { name: '补发' }).click();
-  await page.getByText(/08:00 · Telegram · 等待发送/).waitFor();
-  await row('12:00').getByRole('textbox', { name: '飞书消息 ID（可选）' }).fill('om_fixture');
-  await row('12:00').getByRole('button', { name: '确认已送达' }).click();
-  await page.getByText(/12:00 · 飞书应用机器人 · 已发送/).waitFor();
-  await row('18:00').getByRole('button', { name: '确认已送达' }).click();
-  await page.getByText(/18:00 · QQ 私聊 · 已发送/).waitFor();
-  assert.deepEqual(state.resolutions, [
-    { id: 'first', decision: 'not_sent' }, { id: 'second', decision: 'sent', receipt: 'om_fixture' }, { id: 'third', decision: 'sent' },
-  ]);
+  for (const clock of ['08:00', '12:00', '18:00']) {
+    await row(clock).getByRole('button', { name: '重试', exact: true }).click();
+    await row(clock).getByText(/等待发送/).waitFor();
+  }
+  assert.deepEqual(state.resolutions, [{ id: 'first' }, { id: 'second' }, { id: 'third' }]);
   assert.deepEqual(errors, []);
 });

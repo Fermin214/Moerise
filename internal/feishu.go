@@ -5,9 +5,7 @@ import (
 	"crypto/hmac"
 	"database/sql"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"log/slog"
 	"net/http"
 	"regexp"
 	"strconv"
@@ -133,48 +131,17 @@ func (s *FeishuService) receiveEvent(event feishuEvent) (bool, error) {
 		return false, failure("INVALID_ARGUMENT", "Invalid Feishu event or message identifier", 422, false)
 	}
 	payload, _ := json.Marshal(message)
-	hash := hashBytes(payload)
-	sealed, err := s.seal(message.ID, peer, payload)
-	if err != nil {
-		return false, err
-	}
-	now := time.Now()
-	at := now
+	at := time.Now()
 	if millis, err := strconv.ParseInt(event.Event.Message.CreateTime, 10, 64); err == nil && millis > 0 {
 		at = time.UnixMilli(millis)
 	}
-	accepted := false
-	err = transaction(s.Store.state, func(tx *sql.Tx) error {
-		var restored int64
-		if err := tx.QueryRow(`SELECT COALESCE((SELECT restored_at FROM bot_restore WHERE instance_id=?),0)`,
-			s.Store.Settings.Memos.InstanceID).Scan(&restored); err != nil || at.UnixMilli() <= restored {
-			return err
-		}
-		if owner == "" {
-			bound, err := s.Store.bindBotPeer(tx, "feishu-app", event.Header.AppID, peer, now)
-			if err != nil || bound != peer {
-				return err
-			}
-		}
-		accepted = true
-		var saved string
-		err := tx.QueryRow("SELECT event_hash FROM channel_events WHERE message_id = ?", message.ID).Scan(&saved)
-		if err == nil {
-			if saved != hash {
-				return failure("IDEMPOTENCY_CONFLICT", "Feishu message payload changed", 409, false)
-			}
-			return nil
-		}
-		if !errors.Is(err, sql.ErrNoRows) {
-			return err
-		}
-		_, err = tx.Exec(`INSERT INTO channel_events
-			(message_id, event_id, event_hash, app_id, sender_open_id, payload, status, reply_uuid, available_at, created_at)
-			VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)`, message.ID, event.Header.EventID, hash,
-			configured(config.AppID), peer, sealed, newID(), nowSeconds(), at.UTC().Format(time.RFC3339Nano))
-		return err
+	err := transaction(s.Store.state, func(tx *sql.Tx) error {
+		return s.Store.acceptBotMessage(tx, "feishu-app", event.Header.AppID, botMessage{ID: message.ID, Index: event.Header.EventID, Peer: peer, Kind: "feishu", Text: string(payload), Digest: hashBytes(payload), At: at, Bind: true})
 	})
-	return accepted && err == nil, err
+	if err == nil {
+		s.Store.wakeChannels()
+	}
+	return err == nil, err
 }
 
 func (s *Store) feishuOwner() (string, error) {
@@ -184,120 +151,6 @@ func (s *Store) feishuOwner() (string, error) {
 	}
 	owner, _, err := s.botPeer("feishu-app", configured(channel.AppID))
 	return owner, err
-}
-
-func (s *FeishuService) prepare() error {
-	config := s.Store.Settings.Channel
-	owner, err := s.Store.feishuOwner()
-	if err != nil {
-		return err
-	}
-	if _, err := s.Store.state.Exec(`UPDATE channel_events SET status = 'pending' WHERE status = 'processing'
-		AND app_id = ? AND sender_open_id = ?`, configured(config.AppID), owner); err != nil {
-		return err
-	}
-	rows, err := s.Store.state.Query(`SELECT message_id FROM channel_events WHERE status = 'processed' AND result_kind IS NOT NULL
-		AND (reply_status = 'pending' OR (reply_status = 'unknown' AND last_error = 'STATE_RESTORED'
-		AND NOT EXISTS (SELECT 1 FROM notifications WHERE source_event = message_id)))
-		AND app_id = ? AND sender_open_id = ?`,
-		configured(config.AppID), owner)
-	if err != nil {
-		return err
-	}
-	adopt := []string{}
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			rows.Close()
-			return err
-		}
-		adopt = append(adopt, id)
-	}
-	err = rows.Err()
-	rows.Close()
-	if err != nil {
-		return err
-	}
-	for _, id := range adopt {
-		if _, err := s.Notifications.EnqueueReply(id); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func (s *FeishuService) processOne(ctx context.Context) (bool, error) {
-	config := s.Store.Settings.Channel
-	owner, err := s.Store.feishuOwner()
-	if err != nil || owner == "" {
-		return false, err
-	}
-	var messageID, status, kind, resource string
-	var payload []byte
-	var attempts int
-	var received string
-	err = s.Store.state.QueryRow(`SELECT message_id, status, COALESCE(result_kind, ''),
-		COALESCE(resource_name, ''), payload, attempts, created_at FROM channel_events
-		WHERE (status = 'pending' OR status = 'processed' AND reply_status = 'pending') AND available_at <= ?
-		AND app_id = ? AND sender_open_id = ? ORDER BY available_at, created_at LIMIT 1`,
-		nowSeconds(), configured(config.AppID), owner).
-		Scan(&messageID, &status, &kind, &resource, &payload, &attempts, &received)
-	if errors.Is(err, sql.ErrNoRows) {
-		return false, nil
-	}
-	if err != nil {
-		return false, err
-	}
-	if status == "pending" {
-		if _, err := s.Store.state.Exec("UPDATE channel_events SET status = 'processing' WHERE message_id = ?", messageID); err != nil {
-			return false, err
-		}
-		var body []byte
-		body, err = s.unseal(messageID, owner, payload)
-		var message feishuMessage
-		if err == nil {
-			err = json.Unmarshal(body, &message)
-		}
-		if err == nil {
-			var at time.Time
-			at, err = time.Parse(time.RFC3339Nano, received)
-			if err == nil {
-				kind, resource, err = s.execute(ctx, message, at)
-			}
-		}
-		if err != nil {
-			var service *ServiceError
-			if errors.As(err, &service) && !service.Retryable {
-				kind, resource = "error", service.Code
-				if service.Code == "INVALID_ARGUMENT" {
-					switch message.Type {
-					case "text":
-						kind = "invalid-text"
-					case "image", "file":
-						kind = "invalid-attachment"
-					}
-				}
-			} else {
-				return true, s.retry(messageID, "pending", attempts, errorCode(err))
-			}
-		}
-		if _, err := s.Store.state.Exec(`UPDATE channel_events SET status = 'processed', result_kind = ?,
-			resource_name = ?, payload = NULL, attempts = attempts + 1,
-			last_error = CASE WHEN reply_status = 'unknown' THEN last_error ELSE NULL END
-			WHERE message_id = ?`, kind, resource, messageID); err != nil {
-			return false, err
-		}
-	}
-	_, err = s.Notifications.EnqueueReply(messageID)
-	return true, err
-}
-
-func (s *FeishuService) retry(id, status string, attempts int, code string) error {
-	slog.Warn("feishu event deferred", "message_id", id, "code", code)
-	_, err := s.Store.state.Exec(`UPDATE channel_events SET status = ?, attempts = attempts + 1,
-		available_at = ?, last_error = ? WHERE message_id = ?`,
-		status, nowSeconds()+float64(int64(1)<<min(attempts+1, 8)), code, id)
-	return err
 }
 
 const feishuHelp = "直接发送文字或图片即可记录笔记，也支持文件消息。"
@@ -334,7 +187,7 @@ func (s *FeishuService) execute(ctx context.Context, message feishuMessage, at t
 	}
 	command, body := botTextCommand(content.Text)
 	if command == "review" {
-		batch, err := s.Notifications.Reviews.Daily(ctx, at)
+		batch, err := s.Notifications.Reviews.DailyLocal(ctx, at)
 		if err != nil {
 			return "review-unavailable", "", nil
 		}
@@ -352,7 +205,7 @@ func (s *FeishuService) render(ctx context.Context, kind, resource string) (stri
 	case "review-unavailable":
 		return "暂时读不到笔记", nil
 	case "review":
-		batch, err := s.Notifications.Reviews.Get(ctx, resource)
+		batch, err := s.Notifications.Reviews.GetLocal(ctx, resource)
 		if err != nil {
 			return "暂时读不到笔记", nil
 		}
@@ -366,7 +219,7 @@ func (s *FeishuService) render(ctx context.Context, kind, resource string) (stri
 	case "error":
 		return "操作失败：" + resource + "。请检查参数后重新发送。", nil
 	case "saved":
-		note, err := NewNoteService(s.Store.Settings, s.Store, s.Source).Get(ctx, resource)
+		note, err := NewNoteService(s.Store.Settings, s.Store, s.Source).GetLocal(ctx, resource)
 		if errorCode(err) == "SOURCE_NOT_FOUND" {
 			return "笔记已删除或不可访问。", nil
 		}

@@ -95,7 +95,7 @@ func TestClientDiscoveryMemosAcceptance(t *testing.T) {
 		state := h.database("state")
 		defer state.Close()
 		var before, after int
-		if err := state.QueryRow("SELECT COUNT(*) FROM review_plans").Scan(&before); err != nil {
+		if err := state.QueryRow("SELECT COUNT(*) FROM review_batches").Scan(&before); err != nil {
 			t.Fatal(err)
 		}
 		result, status, err := h.request(h.base, "/api/ext/v1/reviews/daily", "GET", h.operator, nil)
@@ -109,7 +109,7 @@ func TestClientDiscoveryMemosAcceptance(t *testing.T) {
 		if err != nil || code != 200 || raw["error"] != nil {
 			t.Fatalf("machine MCP daily read: status=%d err=%v response=%v", code, err, raw)
 		}
-		if err := state.QueryRow("SELECT COUNT(*) FROM review_plans").Scan(&after); err != nil || before != after {
+		if err := state.QueryRow("SELECT COUNT(*) FROM review_batches").Scan(&after); err != nil || before != after {
 			t.Fatalf("machine read changed daily plans: before=%d after=%d err=%v", before, after, err)
 		}
 	})
@@ -155,9 +155,9 @@ func TestClientDiscoveryMemosAcceptance(t *testing.T) {
 			t.Fatalf("eligible note omitted from six-position plan: %s", name)
 		}
 	}
-	count("SELECT COUNT(*) FROM review_plans", 1)
-	count("SELECT COUNT(*) FROM review_plan_slots WHERE item_count = 3", 2)
-	count("SELECT COUNT(*) FROM review_plan_slots WHERE (ordinal = 0 AND first_position = 0 AND clock = '08:00') OR (ordinal = 1 AND first_position = 3 AND clock = '20:00')", 2)
+	count("SELECT COUNT(*) FROM review_batches", 1)
+	count("SELECT COUNT(*) FROM review_batches,json_each(slots_json) s WHERE json_extract(s.value,'$.count')=3", 2)
+	count("SELECT COUNT(*) FROM review_batches,json_each(slots_json) s WHERE (s.key=0 AND json_extract(s.value,'$.first')=0 AND json_extract(s.value,'$.clock')='08:00') OR (s.key=1 AND json_extract(s.value,'$.first')=3 AND json_extract(s.value,'$.clock')='20:00')", 2)
 	count("SELECT COUNT(DISTINCT memo_name) FROM review_items", 6)
 	detail := c.call("GET", clientNotePath(image), nil, 200)
 	protected := detail["attachments"].([]any)[0].(map[string]any)["content_url"].(string)
@@ -281,7 +281,7 @@ func TestClientDiscoveryMemosAcceptance(t *testing.T) {
 	}, 200)
 	assertPlan()
 	c.call("POST", "/api/app/v1/walks/start", map[string]any{}, 503)
-	count("SELECT COUNT(*) FROM review_plans", 1)
+	count("SELECT COUNT(*) FROM review_batches", 1)
 	oldCookie := c.cookie
 	c.call("DELETE", "/api/app/v1/session", nil, 204)
 	(&clientHarness{h: h, cookie: oldCookie}).call("GET", "/api/app/v1/reviews/daily", nil, 401)

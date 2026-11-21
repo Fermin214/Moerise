@@ -694,6 +694,7 @@ func runPhase1AutoBackupAndRollback(t *testing.T, v020Bin string) {
 		t.Fatal(err)
 	}
 
+	originalBackup := filepath.Join(t.TempDir(), "pre-v020.sqlite3")
 	for i := range 7 {
 		stateDB, err := openDB(filepath.Join(settings.StateDir, "state.sqlite3"), false)
 		if err != nil {
@@ -712,6 +713,19 @@ func runPhase1AutoBackupAndRollback(t *testing.T, v020Bin string) {
 		if err := upgraded.Close(); err != nil {
 			t.Fatal(err)
 		}
+		if i == 0 {
+			backups, err := listAutoBackups(autoBackupDir(settings))
+			if err != nil || len(backups) != 1 {
+				t.Fatalf("initial backup: %v", err)
+			}
+			body, err := os.ReadFile(backups[0].path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(originalBackup, body, 0600); err != nil {
+				t.Fatal(err)
+			}
+		}
 		time.Sleep(2 * time.Millisecond)
 	}
 	entries, err := listAutoBackups(autoBackupDir(settings))
@@ -719,7 +733,7 @@ func runPhase1AutoBackupAndRollback(t *testing.T, v020Bin string) {
 		t.Fatalf("expected max %d auto backups retained, got %d (%v)", maxAutoMigrationBackups, len(entries), err)
 	}
 
-	res, err := Rollback(settings, "")
+	res, err := Rollback(settings, originalBackup)
 	if err != nil || !res.CrossVersion || res.DowngradeVersion != "0.2.0" || res.MaxSnapshotMigration != "007" {
 		t.Fatalf("rollback result unexpected: %+v err=%v", res, err)
 	}

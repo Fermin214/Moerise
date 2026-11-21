@@ -59,6 +59,7 @@ func TestBotReviewKeepsRequestDayAndRechecksSource(t *testing.T) {
 	}
 	deleted := plan.Items[0]
 	delete(notes, deleted.Name)
+	refreshReviewFixture(t, store, notes)
 	step()
 	if probe.peer != "35" || !strings.Contains(probe.text, requested.Format(time.DateOnly)) ||
 		strings.Contains(probe.text, deleted.Note.Content) || !strings.Contains(probe.text, plan.Items[1].Note.Content) {
@@ -117,7 +118,7 @@ func TestQQRestoreAndReplacementRetirePendingWork(t *testing.T) {
 	requireEmpty(store.state, `SELECT COUNT(*) FROM bot_bindings WHERE kind='qq'`)
 	requireEmpty(store.state, `SELECT COUNT(*) FROM bot_cursors WHERE kind='qq'`)
 	requireEmpty(store.state, `SELECT COUNT(*) FROM bot_inbox WHERE phase!='retired' OR body IS NOT NULL`)
-	requireEmpty(store.state, `SELECT COUNT(*) FROM notifications WHERE status!='skipped'`)
+	requireEmpty(store.state, `SELECT COUNT(*) FROM delivery_logs WHERE last_error!='BOT_REPLACED'`)
 	msg.ID, msg.Peer = "new", "new-owner"
 	if err := (botReceiverStore{store}).Accept(t.Context(), "qq", "9102", botCursor{}, &msg); err != nil {
 		t.Fatal(err)
@@ -138,7 +139,7 @@ func TestQQRestoreAndReplacementRetirePendingWork(t *testing.T) {
 	}
 	requireEmpty(restored.state, `SELECT COUNT(*) FROM bot_cursors WHERE kind='qq'`)
 	requireEmpty(restored.state, `SELECT COUNT(*) FROM bot_inbox WHERE phase!='restored' OR body IS NOT NULL`)
-	requireEmpty(restored.state, `SELECT COUNT(*) FROM notifications WHERE status IN ('pending','running')`)
+	requireEmpty(restored.state, `SELECT COUNT(*) FROM delivery_logs WHERE status IN ('pending','running')`)
 	var restoreMillis int64
 	if err := restored.state.QueryRow(`SELECT restored_at FROM bot_restore WHERE instance_id=?`, settings.Memos.InstanceID).Scan(&restoreMillis); err != nil ||
 		time.Since(time.UnixMilli(restoreMillis)) > time.Minute {

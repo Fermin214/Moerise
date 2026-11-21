@@ -145,14 +145,7 @@ func TestFeishuProactiveReviewWithRealMemosAcceptance(t *testing.T) {
 	platform := &feishuPlatform{replies: map[string]string{}, uuids: map[string]string{}, dropNextSend: true}
 	api.Feishu.Client = platform
 	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan error, 1)
-	go func() { done <- api.RunFeishu(ctx) }()
-	defer func() {
-		cancel()
-		if err := <-done; err != nil && !errors.Is(err, context.Canceled) {
-			t.Errorf("Feishu worker stopped: %v", err)
-		}
-	}()
+	defer cancel()
 	server := httptest.NewServer(api)
 	defer server.Close()
 	for i := range 7 {
@@ -195,15 +188,29 @@ func TestFeishuProactiveReviewWithRealMemosAcceptance(t *testing.T) {
 	edited, deleted := batch.Items[0].Name, batch.Items[1].Name
 	h.call(h.memos, "/api/v1/"+edited+"?updateMask=content", "PATCH", h.upstream, map[string]string{"content": "edited before push"}, 200)
 	h.call(h.memos, "/api/v1/"+deleted, "DELETE", h.upstream, nil, 200)
+	if _, err := store.Enqueue("full", true); err != nil {
+		t.Fatal(err)
+	}
+	job, err = store.Claim()
+	if err != nil || job == nil {
+		t.Fatal(err)
+	}
+	synced, err = api.Worker.Sync(ctx, *job)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Complete(job.ID, synced); err != nil {
+		t.Fatal(err)
+	}
 	if progress, err := api.Notifications.Deliver(ctx); err != nil || !progress {
 		t.Fatalf("proactive send: progress=%v err=%v", progress, err)
 	}
-	receipt, text, recipient, calls := platform.lastPush()
+	_, text, recipient, calls := platform.lastPush()
 	if calls != 1 || recipient != "ou_owner" || text != "「今日回顾」" {
 		t.Fatalf("push destination or live content: recipient=%s text=%s calls=%d", recipient, text, calls)
 	}
 	detail, err := api.Notifications.Detail(notification.ID)
-	if err != nil || detail.Notification.Status != "unknown" || len(detail.Attempts) != 1 {
+	if err != nil || detail.Notification.Status != "failed" || detail.Notification.Attempts != 1 {
 		t.Fatalf("lost response was not held: %+v %v", detail, err)
 	}
 	if progress, err := api.Notifications.Deliver(ctx); err != nil || progress {
@@ -213,9 +220,8 @@ func TestFeishuProactiveReviewWithRealMemosAcceptance(t *testing.T) {
 	if calls != 1 {
 		t.Fatal("unknown push generated another platform request")
 	}
-	resolved, err := api.Notifications.Resolve(ctx, notification.ID, "sent", receipt, "users/owner")
-	if err != nil || resolved.Notification.Receipt == nil || *resolved.Notification.Receipt != receipt {
-		t.Fatalf("verified receipt: %+v %v", resolved, err)
+	if _, err := api.Notifications.Retry(ctx, notification.ID); err != nil {
+		t.Fatal(err)
 	}
 	for range 10 {
 		progress, err := api.Notifications.Deliver(ctx)
@@ -228,7 +234,7 @@ func TestFeishuProactiveReviewWithRealMemosAcceptance(t *testing.T) {
 	}
 	sent, err := api.Notifications.List("sent")
 	waiting, waitingErr := api.Notifications.List("pending")
-	unknown, unknownErr := api.Notifications.List("unknown")
+	unknown, unknownErr := api.Notifications.List("failed")
 	if err != nil || waitingErr != nil || unknownErr != nil || len(sent) != 5 || len(waiting) != 0 || len(unknown) != 0 {
 		t.Fatalf("review fragments did not finish: sent=%d pending=%d unknown=%d", len(sent), len(waiting), len(unknown))
 	}
@@ -283,7 +289,6 @@ func TestFeishuEventsWithRealMemosAcceptance(t *testing.T) {
 	var server *httptest.Server
 	var cancel context.CancelFunc
 	var workerDone chan error
-	var notificationDone chan error
 	start := func(run bool) {
 		t.Helper()
 		var err error
@@ -301,9 +306,7 @@ func TestFeishuEventsWithRealMemosAcceptance(t *testing.T) {
 			var ctx context.Context
 			ctx, cancel = context.WithCancel(context.Background())
 			workerDone = make(chan error, 1)
-			notificationDone = make(chan error, 1)
-			go func() { workerDone <- api.RunFeishu(ctx) }()
-			go func() { notificationDone <- api.Notifications.Run(ctx) }()
+			go func() { workerDone <- api.RunChannels(ctx) }()
 		}
 	}
 	stop := func() {
@@ -312,10 +315,6 @@ func TestFeishuEventsWithRealMemosAcceptance(t *testing.T) {
 			err := <-workerDone
 			if err != nil && !errors.Is(err, context.Canceled) {
 				t.Errorf("Feishu worker stopped: %v", err)
-			}
-			err = <-notificationDone
-			if err != nil && !errors.Is(err, context.Canceled) {
-				t.Errorf("notification worker stopped: %v", err)
 			}
 			cancel = nil
 		}
@@ -446,9 +445,7 @@ func TestFeishuEventsWithRealMemosAcceptance(t *testing.T) {
 	}
 	defer db.Close()
 	var skipped bool
-	if err := db.QueryRow(`SELECT status='processed' AND reply_status='skipped' AND payload IS NULL AND result_kind IS NULL
-		AND last_error='STATE_RESTORED' AND NOT EXISTS (SELECT 1 FROM notifications WHERE source_event=message_id)
-		FROM channel_events WHERE message_id='om_record'`).Scan(&skipped); err != nil || !skipped || platform.replyCount() != before+1 {
+	if err := db.QueryRow(`SELECT phase='restored' AND body IS NULL AND error_code='STATE_RESTORED' FROM bot_inbox WHERE message_id='om_record'`).Scan(&skipped); err != nil || !skipped || platform.replyCount() != before+1 {
 		t.Fatalf("restored record was not skipped: skipped=%v replies=%d err=%v", skipped, platform.replyCount()-before, err)
 	}
 	h.requireSourceRecords(names...)

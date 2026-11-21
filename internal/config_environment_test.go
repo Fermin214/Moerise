@@ -216,7 +216,7 @@ func TestDeploymentOnlyLegacyQueueSurvivesUpgradeAndRestart(t *testing.T) {
 			return platform, func() {}
 		}
 		if start == 0 {
-			if _, err := queue.Resolve(t.Context(), itemID, "not_sent", "", settings.Memos.User); err != nil {
+			if _, err := queue.Retry(t.Context(), itemID); err != nil {
 				t.Fatal(err)
 			}
 		} else if progress, err := queue.Deliver(t.Context()); err != nil || !progress || platform.calls != 1 {

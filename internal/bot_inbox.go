@@ -78,7 +78,7 @@ func (r botReceiverStore) Accept(ctx context.Context, kind, botID string, cursor
 		return context.Canceled
 	}
 	instance, user := s.Settings.Memos.InstanceID, s.Settings.Memos.User
-	return transactionContext(ctx, s.state, func(tx *sql.Tx) error {
+	err := transactionContext(ctx, s.state, func(tx *sql.Tx) error {
 		if msg != nil {
 			if err := s.acceptBotMessage(tx, kind, botID, *msg); err != nil {
 				return err
@@ -88,6 +88,10 @@ func (r botReceiverStore) Accept(ctx context.Context, kind, botID string, cursor
 			DO UPDATE SET session=excluded.session,sequence=excluded.sequence`, instance, user, kind, botID, cursor.Session, cursor.Sequence)
 		return err
 	})
+	if err == nil {
+		s.wakeChannels()
+	}
+	return err
 }
 
 func (s *Store) acceptBotMessage(tx *sql.Tx, kind, botID string, msg botMessage) error {
@@ -105,6 +109,11 @@ func (s *Store) acceptBotMessage(tx *sql.Tx, kind, botID string, msg botMessage)
 	var peer string
 	var err error
 	if msg.Bind {
+		if kind == "feishu-app" && configured(s.Settings.Channel.UserOpenID) == msg.Peer {
+			if _, err = tx.Exec(`INSERT INTO bot_bindings VALUES(?,?,?,?,?,?) ON CONFLICT(instance_id,user_name,kind,bot_id) DO UPDATE SET peer=excluded.peer,bound_at=excluded.bound_at WHERE peer!=excluded.peer`, instance, user, kind, botID, msg.Peer, time.Now().UnixMilli()); err != nil {
+				return err
+			}
+		}
 		peer, err = s.bindBotPeer(tx, kind, botID, msg.Peer, time.Now())
 	} else {
 		err = tx.QueryRow(`SELECT peer FROM bot_bindings WHERE instance_id=? AND user_name=? AND kind=? AND bot_id=?`, instance, user, kind, botID).Scan(&peer)
@@ -126,7 +135,10 @@ func (s *Store) acceptBotMessage(tx *sql.Tx, kind, botID string, msg botMessage)
 	err = tx.QueryRow(`SELECT write_key,digest,msg_index FROM bot_inbox WHERE instance_id=? AND user_name=? AND kind=? AND bot_id=? AND peer=? AND message_id=?`,
 		instance, user, kind, botID, peer, msg.ID).Scan(&savedKey, &savedDigest, &savedIndex)
 	if err == nil {
-		if savedDigest != digest || savedIndex != "" && msg.Index != "" && savedIndex != msg.Index {
+		if savedDigest != digest || kind != "feishu-app" && savedIndex != "" && msg.Index != "" && savedIndex != msg.Index {
+			if kind == "feishu-app" {
+				return failure("IDEMPOTENCY_CONFLICT", "Feishu message payload changed", 409, false)
+			}
 			_, err = tx.Exec(`UPDATE bot_inbox SET phase='conflict',body=NULL,error_code='MESSAGE_CONFLICT' WHERE write_key=?`, savedKey)
 		} else if savedIndex == "" && msg.Index != "" {
 			_, err = tx.Exec(`UPDATE bot_inbox SET msg_index=? WHERE write_key=?`, msg.Index, savedKey)
@@ -142,7 +154,7 @@ func (s *Store) acceptBotMessage(tx *sql.Tx, kind, botID string, msg botMessage)
 	if op == "text" {
 		op, text = botTextCommand(text)
 	}
-	if op == "text" {
+	if op == "text" || op == "feishu" {
 		cipher, err := newStateCipher(s.Settings, "bot_inbox")
 		if err != nil {
 			return err

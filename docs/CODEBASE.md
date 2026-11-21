@@ -85,9 +85,9 @@ Android 文件的版本管理规则见 [Android 开发](ANDROID.md#文件与产�
 | 向量与观星 | `embedding.go` 适配向量协议；`vector_index.go` 发布向量代次；`map_stars.go` 调用 `services/layout/` 并支持可选单次 LLM 命名；`map_stars_store.go` 保存快照；`map.go` 每日 03:00 调度与手动重建；`map_layout.go`、`map_store.go` 提供共享快照类型与索引增量对账 |
 | 每日回顾 | `reviews.go` 选择笔记并读取计划；`review_plans.go` 冻结规则与时段分配；`reviews_api.go` 提供只读查询 |
 | AI 聊天 | `chat_selection.go` 解析所选材料；`chat.go` 编排生成；`chat_store.go` 保存会话和消息；`llm*.go` 适配模型协议与错误；`models_api.go` 提供模型诊断 |
-| 通知与渠道 | `notifications.go` 管理调度、发送尝试和结果确认；`notification_channels.go` 绑定任务接收方；`review_delivery.go` 生成有序回顾分片；`feishu_delivery.go`、`feishu_review_parts.go`、`telegram_delivery.go` 适配平台 |
+| 通知与渠道 | `notifications.go` 管理调度、发送记录和失败重试；`notification_channels.go` 绑定任务接收方；`review_delivery.go` 生成有序回顾分片；`feishu_delivery.go`、`feishu_review_parts.go`、`telegram_delivery.go` 适配平台 |
 | 飞书记录 | `feishu.go` 接收私聊并原样记录；`feishu_crypto.go` 验证回调和加密队列；`feishu_client.go` 处理平台凭据、资源与消息 |
-| 机器人私聊 | `bot_qq_gateway.go` 与 `bot_telegram.go` 接收事件，`bot_inbox.go` 在同一事务绑定地址、去重和提交进度，`bot_runtime.go` 写入私密笔记、查询回顾并确认回执 |
+| 机器人私聊 | `bot_qq_gateway.go` 与 `bot_telegram.go` 接收事件，`bot_inbox.go` 在同一事务绑定地址、去重和提交进度，`bot_runtime.go` 写入私密笔记、查询回顾并保存发送结果；`channel_runtime.go` 统一 QQ、Telegram、飞书应用连接与事件唤醒 |
 
 ---
 

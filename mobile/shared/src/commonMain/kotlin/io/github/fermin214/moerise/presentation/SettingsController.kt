@@ -161,20 +161,15 @@ class SettingsController(
         }
     }
 
-    fun resolveDelivery(id: String, decision: String, receipt: String = "") {
+    fun retryDelivery(id: String) {
         if (!editable() || state.value.busy || id in state.value.resending || !Regex("[A-Za-z0-9_-]+").matches(id)) return
-        if (decision !in setOf("sent", "not_sent")) return
         val active = client ?: return
         val key = owner ?: return
         val stamp = generation
         mutable.update { it.copy(resending = it.resending + id, error = null) }
         val job = scope.launch(start = CoroutineStart.LAZY) {
             try {
-                val body = buildJsonObject {
-                    put("decision", decision)
-                    if (decision == "sent" && receipt.isNotBlank()) put("receipt", receipt.trim())
-                }
-                active.api(HttpMethod.Post, "/admin/notifications/$id/resolve", body.toString())
+                active.api(HttpMethod.Post, "/admin/notifications/$id/retry", "{}")
                 if (owns(stamp, active, key)) refreshHistory(stamp, active, key)
             } catch (error: Exception) {
                 if (error is CancellationException) throw error

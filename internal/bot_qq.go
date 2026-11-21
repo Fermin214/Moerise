@@ -3,7 +3,6 @@ package moerise
 import (
 	"bytes"
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"io"
@@ -162,22 +161,13 @@ func (bot *qqBot) Send(ctx context.Context, peer, messageID, text string) (strin
 	bot.store.qqSendMu.Lock()
 	defer bot.store.qqSendMu.Unlock()
 	key := hashBytes(canonicalJSON([]string{"qq", bot.appID}))
-	var retryAt float64
-	err := bot.store.state.QueryRowContext(ctx, `SELECT retry_at FROM notification_rate_limits WHERE provider_key=?`, key).Scan(&retryAt)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return "", &notificationRetryError{error: upstreamError("BOT_STORAGE", "Cannot read QQ cooldown"), after: time.Second}
-	}
-	if remaining := retryAt - nowSeconds(); remaining > 0 {
-		return "", &notificationRetryError{error: upstreamError("BOT_RATE_LIMITED", "QQ rate limit reached"), after: time.Duration(remaining * float64(time.Second))}
+	if remaining := bot.store.providerDelay(key); remaining > 0 {
+		return "", &notificationRetryError{error: upstreamError("BOT_RATE_LIMITED", "QQ rate limit reached"), after: remaining}
 	}
 	receipt, err := bot.send(ctx, peer, messageID, text)
 	var limited *notificationRetryError
 	if errors.As(err, &limited) && errorCode(err) == "BOT_RATE_LIMITED" {
-		_, saveErr := bot.store.state.Exec(`INSERT INTO notification_rate_limits (provider_key,retry_at) VALUES (?,?)
-			ON CONFLICT(provider_key) DO UPDATE SET retry_at=MAX(retry_at,excluded.retry_at)`, key, nowSeconds()+limited.after.Seconds())
-		if saveErr != nil {
-			return "", &notificationRetryError{error: upstreamError("BOT_STORAGE", "Cannot save QQ cooldown"), after: limited.after}
-		}
+		bot.store.deferProvider(key, limited.after)
 	}
 	return receipt, err
 }

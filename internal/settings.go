@@ -564,7 +564,7 @@ func (s *Store) persistSettings(settings Settings) error {
 				}
 			}
 			for key := range retiredKeys {
-				if _, err := tx.Exec(`UPDATE notifications SET status='skipped',last_error='BOT_REPLACED' WHERE instance_id=? AND user_name=? AND channel_key=? AND status IN ('pending','unknown')`, instance, user, key); err != nil {
+				if _, err := tx.Exec(`UPDATE delivery_logs SET status='failed',last_error='BOT_REPLACED' WHERE instance_id=? AND user_name=? AND channel_key=? AND status IN ('pending','running','failed')`, instance, user, key); err != nil {
 					return err
 				}
 			}

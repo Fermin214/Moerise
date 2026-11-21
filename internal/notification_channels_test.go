@@ -14,7 +14,7 @@ import (
 )
 
 func TestSettingsChannelChangePreservesNotificationRecovery(t *testing.T) {
-	for _, mode := range []string{"sent", "pending", "unknown_sent", "unknown_not_sent", "unknown_without_slot"} {
+	for _, mode := range []string{"sent", "pending", "failed"} {
 		t.Run(mode, func(t *testing.T) {
 			var oldCalls, newCalls atomic.Int32
 			unknown := mode != "sent" && mode != "pending"
@@ -71,11 +71,6 @@ func TestSettingsChannelChangePreservesNotificationRecovery(t *testing.T) {
 			if mode != "pending" {
 				drain()
 			}
-			if mode == "unknown_without_slot" {
-				if _, err := store.state.Exec("DELETE FROM review_schedule_slots"); err != nil {
-					t.Fatal(err)
-				}
-			}
 			beforeCalls := oldCalls.Load()
 			update := SettingsUpdate{Version: 1, Secrets: map[string]SecretUpdate{
 				"webhook_url": {Action: "replace", Value: &newChannel.URL},
@@ -112,24 +107,16 @@ func TestSettingsChannelChangePreservesNotificationRecovery(t *testing.T) {
 				t.Fatalf("old notification missing from management list: %v", err)
 			}
 			if unknown {
-				if detail.Notification.Status != "unknown" || detail.Notification.Attempts != 1 {
+				if detail.Notification.Status != "failed" || detail.Notification.Attempts != 1 {
 					t.Fatalf("channel change altered unknown outcome: %+v", detail.Notification)
 				}
 				drain()
 				if oldCalls.Load() != beforeCalls || newCalls.Load() != 0 {
 					t.Fatal("unknown notification was automatically resent after changing channel")
 				}
-				decision := "not_sent"
-				if mode == "unknown_sent" {
-					decision = "sent"
-				}
 				fail.Store(false)
-				resolved, err := app.Notifications.Resolve(t.Context(), root.ID, decision, "", "users/owner")
-				if err != nil || len(resolved.Resolutions) != 1 {
-					t.Fatalf("old notification cannot be resolved: %v", err)
-				}
-				if decision == "not_sent" && resolved.Notification.PlatformUUID == root.PlatformUUID {
-					t.Fatal("confirmed retry reused the original send UUID")
+				if _, err := app.Notifications.Retry(t.Context(), root.ID); err != nil {
+					t.Fatal(err)
 				}
 			}
 			drain()

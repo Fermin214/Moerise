@@ -472,9 +472,7 @@ private fun channelLabel(value: String?, strings: Strings) = when (value) {
     "pending" -> strings.text("等待发送", "Queued")
     "running" -> strings.text("发送中", "Sending")
     "sent" -> strings.text("已发送", "Sent")
-    "unknown" -> strings.text("送达结果不明", "Delivery unconfirmed")
     "failed" -> strings.text("发送失败", "Delivery failed")
-    "skipped" -> strings.text("已跳过", "Skipped")
     else -> value.orEmpty()
 }
 
@@ -545,20 +543,9 @@ private fun SettingsHistory(controller: SettingsController, state: SettingsUiSta
             val id = item.settingsText("id").orEmpty()
             SettingsHint(listOfNotNull(item.settingsText("date"), item.settingsText("clock"), kind,
                 channelLabel(status, strings), item.settingsText("last_error")).filter { it.isNotBlank() }.joinToString(" · "))
-            if (status == "unknown" && id.isNotEmpty()) key(id) {
-                val enabled = id !in state.resending && !state.busy
-                var receipt by remember { mutableStateOf("") }
-                if (item.settingsText("channel_kind") == "feishu-app") {
-                    val label = strings.text("飞书消息 ID（可选）", "Feishu message ID (optional)")
-                    SettingsInput(receipt, { if (it.encodeToByteArray().size <= 256) receipt = it }, label, enabled,
-                        modifier = Modifier.fillMaxWidth(), placeholder = label)
-                }
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    SettingsGhost(strings.text("确认已送达", "Confirm delivery"),
-                        { controller.resolveDelivery(id, "sent", receipt) }, enabled = enabled)
-                    SettingsGhost(strings.text("补发", "Resend"),
-                        { controller.resolveDelivery(id, "not_sent") }, enabled = enabled)
-                }
+            if (status == "failed" && id.isNotEmpty()) key(id) {
+                SettingsGhost(strings.text("重试", "Retry"), { controller.retryDelivery(id) },
+                    enabled = id !in state.resending && !state.busy)
             }
             HorizontalDivider(color = MoeriseColors.Line)
         }

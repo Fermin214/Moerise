@@ -171,6 +171,7 @@ func (a *App) installRuntime(settings Settings, replacements *runtimeReplacement
 		a.Feishu, a.Notifications.Transport = replacements.events, replacements.transport
 		a.Notifications.transportKey = a.Notifications.channelKey()
 	}
+	a.Store.wakeBackground()
 }
 
 func feishuReceiverConfig(channel ChannelConfig) [6]string {
@@ -222,47 +223,15 @@ func (a *App) runVector(ctx context.Context) error {
 		case worked:
 			delay = 0
 		default:
-			delay = time.Second
-		}
-	}
-}
-
-// RunFeishu processes channel work with the same runtime replacement lock as serving.
-func (a *App) RunFeishu(ctx context.Context) error {
-	workerCtx, cancel := context.WithCancel(ctx)
-	socketDone := make(chan struct{})
-	go func() {
-		defer close(socketDone)
-		a.runFeishuSocket(workerCtx)
-	}()
-	defer func() { cancel(); <-socketDone }()
-	var initialized *FeishuService
-	for {
-		unlock := a.Store.lockRuntime()
-		events := a.Feishu
-		var worked bool
-		var err error
-		if events != nil {
-			if initialized != events {
-				err = events.prepare()
-				if err == nil {
-					initialized = events
-				}
-			}
-			if err == nil {
-				worked, err = events.processOne(ctx)
-			}
-		}
-		unlock()
-		if err != nil {
-			return err
-		}
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-		if !worked {
-			if err := runtimePause(ctx, 500*time.Millisecond); err != nil {
+			if err := waitRuntime(ctx, a.Store.vectorWake, time.Time{}); err != nil {
 				return err
+			}
+			delay = 0
+		}
+		if worked {
+			select {
+			case a.Store.mapWake <- struct{}{}:
+			default:
 			}
 		}
 	}

@@ -130,7 +130,7 @@ func (s *Store) bindBotPeer(tx *sql.Tx, kind, botID, peer string, at time.Time) 
 }
 
 func (s *Store) initializeBots() error {
-	_, err := s.state.Exec(`UPDATE bot_inbox SET phase='unknown',error_code='PROCESS_INTERRUPTED' WHERE phase='sending'`)
+	_, err := s.state.Exec(`UPDATE bot_inbox SET phase='failed',error_code='PROCESS_INTERRUPTED' WHERE phase='sending'`)
 	return err
 }
 

@@ -359,20 +359,24 @@ func (a *App) runMap(ctx context.Context) error {
 		if err := a.Map.Update(ctx); err != nil && ctx.Err() == nil {
 			slog.Warn("stars snapshot failed", "code", errorCode(err))
 		}
-		delay := time.Second
+		var timeout <-chan time.Time
+		var timer *time.Timer
 		if schedule := a.Map.schedule.Load(); schedule != nil {
-			if wait := min(time.Until(schedule.next), time.Minute); wait > time.Second {
-				delay = wait
-			}
+			timer = time.NewTimer(max(time.Until(schedule.next), time.Millisecond))
+			timeout = timer.C
 		}
-		timer := time.NewTimer(delay)
 		select {
 		case <-ctx.Done():
-			timer.Stop()
+			if timer != nil {
+				timer.Stop()
+			}
 			return ctx.Err()
 		case <-a.Map.wake:
+		case <-a.Store.mapWake:
+		case <-timeout:
+		}
+		if timer != nil {
 			timer.Stop()
-		case <-timer.C:
 		}
 	}
 }

@@ -2,6 +2,7 @@ package moerise
 
 import (
 	"context"
+	"database/sql"
 	"log/slog"
 	"sync/atomic"
 	"time"
@@ -168,6 +169,10 @@ func (s *SyncService) Sync(ctx context.Context, job Job) (map[string]any, error)
 }
 
 func (s *SyncService) Schedule() error {
+	var pending bool
+	if err := s.Store.state.QueryRow(`SELECT EXISTS(SELECT 1 FROM jobs WHERE instance_id=? AND status='pending')`, s.Store.Settings.Memos.InstanceID).Scan(&pending); err != nil || pending {
+		return err
+	}
 	state, err := s.Store.Status()
 	if err != nil {
 		return err
@@ -199,8 +204,6 @@ func (s *SyncService) Run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	timer := time.NewTicker(time.Second)
-	defer timer.Stop()
 	for ctx.Err() == nil {
 		unlock := s.Store.lockRuntime()
 		worked, err := s.runOne(ctx)
@@ -211,13 +214,48 @@ func (s *SyncService) Run(ctx context.Context) error {
 		if worked {
 			continue
 		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-timer.C:
+		unlock = s.Store.lockRuntime()
+		next, err := s.deadline()
+		unlock()
+		if err != nil {
+			return err
+		}
+		if err := waitRuntime(ctx, s.Store.syncWake, next); err != nil {
+			return err
 		}
 	}
 	return ctx.Err()
+}
+
+func (s *SyncService) deadline() (time.Time, error) {
+	var available sql.NullFloat64
+	if err := s.Store.state.QueryRow(`SELECT MIN(available_at) FROM jobs WHERE instance_id=? AND status='pending'`, s.Store.Settings.Memos.InstanceID).Scan(&available); err != nil {
+		return time.Time{}, err
+	}
+	if available.Valid {
+		return time.UnixMilli(int64(available.Float64 * 1000)), nil
+	}
+	state, err := s.Store.Status()
+	if err != nil {
+		return time.Time{}, err
+	}
+	if state.LastFull == nil || state.LastIncremental == nil {
+		return time.Now(), nil
+	}
+	full, err := time.Parse(time.RFC3339Nano, *state.LastFull)
+	if err != nil {
+		return time.Time{}, err
+	}
+	incremental, err := time.Parse(time.RFC3339Nano, *state.LastIncremental)
+	if err != nil {
+		return time.Time{}, err
+	}
+	next := full.Add(time.Duration(s.Store.Settings.Sync.FullSeconds) * time.Second)
+	poll := incremental.Add(time.Duration(s.Store.Settings.Sync.PollSeconds) * time.Second)
+	if poll.Before(next) {
+		next = poll
+	}
+	return next, nil
 }
 
 func (s *SyncService) runOne(ctx context.Context) (bool, error) {

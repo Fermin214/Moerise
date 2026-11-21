@@ -34,9 +34,9 @@ type reviewDeliveryPart struct {
 
 func (s *reviewDelivery) reviewPart(id string) (reviewDeliveryPart, error) {
 	var part reviewDeliveryPart
-	err := s.Store.state.QueryRow(`SELECT root_id, position, kind, memo_name, source_version,
+	err := s.Store.state.QueryRow(`SELECT root_id, part_ordinal, part_kind, memo_name, source_version,
 		byte_start, byte_end, attachment_name, COALESCE(image_key, '')
-		FROM review_delivery_parts WHERE notification_id = ?`, id).
+		FROM delivery_logs WHERE id = ? AND part_kind != ''`, id).
 		Scan(&part.Root, &part.Position, &part.Kind, &part.Name, &part.Version,
 			&part.Start, &part.End, &part.Attachment, &part.ImageKey)
 	return part, err
@@ -106,7 +106,7 @@ func (s *reviewDelivery) prepareReview(ctx context.Context, item Notification) (
 	}
 	err = transaction(s.Store.state, func(tx *sql.Tx) error {
 		var exists bool
-		if err := tx.QueryRow(`SELECT EXISTS(SELECT 1 FROM review_delivery_parts WHERE root_id = ?)`, item.ID).Scan(&exists); err != nil {
+		if err := tx.QueryRow(`SELECT part_kind!='' FROM delivery_logs WHERE id=?`, item.ID).Scan(&exists); err != nil {
 			return err
 		}
 		if exists {
@@ -114,24 +114,15 @@ func (s *reviewDelivery) prepareReview(ctx context.Context, item Notification) (
 		}
 		for i, candidate := range parts {
 			id := item.ID
-			if i != 0 {
+			if i > 0 {
 				id = derivedID(s.Store.Settings.CursorSecret, "review-part", item.ID, strconv.Itoa(i))
-				_, err := tx.Exec(`INSERT INTO notifications
-					(id, instance_id, user_name, channel_key, channel_kind, logical_key, kind, local_date, batch_id, slot_id,
-					status, platform_uuid, available_at, created_at, updated_at)
-					SELECT ?, instance_id, user_name, channel_key, channel_kind, ?, kind, local_date, batch_id, slot_id,
-					'pending', ?, 1.0e30, ?, ? FROM notifications WHERE id = ?`,
-					id, "review-part:"+item.ID+":"+strconv.Itoa(i),
-					derivedID(s.Store.Settings.CursorSecret, "notification-send", id), nowText(), nowText(), item.ID)
+				_, err := tx.Exec(`INSERT INTO delivery_logs (id,instance_id,user_name,channel_key,channel_kind,logical_key,kind,local_date,batch_id,slot_id,clock,status,platform_uuid,available_at,created_at,updated_at,root_id,part_ordinal)
+     VALUES(?,?,?,?,?,?,'review',?,?,?,?,'pending',?,0,?,?,?,?)`, id, s.Store.Settings.Memos.InstanceID, s.Store.Settings.Memos.User, item.channelKey, item.ChannelKind, "review-part:"+item.ID+":"+strconv.Itoa(i), item.Date, item.BatchID, item.SlotID, item.Clock, derivedID(s.Store.Settings.CursorSecret, "notification-send", id), nowText(), nowText(), item.ID, i)
 				if err != nil {
 					return err
 				}
 			}
-			if _, err := tx.Exec(`INSERT INTO review_delivery_parts
-				(notification_id, root_id, position, kind, memo_name, source_version,
-				byte_start, byte_end, attachment_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-				id, item.ID, i, candidate.Kind, candidate.Name, candidate.Version,
-				candidate.Start, candidate.End, candidate.Attachment); err != nil {
+			if _, err := tx.Exec(`UPDATE delivery_logs SET root_id=?,part_ordinal=?,part_kind=?,memo_name=?,source_version=?,byte_start=?,byte_end=?,attachment_name=? WHERE id=?`, candidate.Root, i, candidate.Kind, candidate.Name, candidate.Version, candidate.Start, candidate.End, candidate.Attachment, id); err != nil {
 				return err
 			}
 		}
@@ -144,17 +135,13 @@ func (s *reviewDelivery) prepareReview(ctx context.Context, item Notification) (
 }
 
 func (s *reviewDelivery) reviewNote(ctx context.Context, part reviewDeliveryPart) (Note, error) {
-	if err := s.Reviews.verify(ctx); err != nil {
-		return Note{}, err
-	}
-	memo, err := s.Reviews.Source.Get(ctx, part.Name)
+	memo, err := s.Store.GetMemoLocal(ctx, part.Name)
 	if err != nil {
 		return Note{}, err
 	}
 	if memo == nil {
 		return Note{}, failure("SOURCE_NOT_FOUND", "Review note is unavailable", 404, false)
 	}
-	// Reuse Memos' existing normalized source version rather than storing a body copy.
 	if memo.SourceHash != part.Version {
 		return Note{}, failure("SOURCE_CHANGED", "Review note changed during delivery", 409, false)
 	}
@@ -200,10 +187,7 @@ func (s *reviewDelivery) reviewFooterText(part reviewDeliveryPart, note Note) (s
 }
 
 func (s *reviewDelivery) skipReviewNote(part reviewDeliveryPart) error {
-	_, err := s.Store.state.Exec(`UPDATE review_delivery_parts SET kind = 'empty'
-		WHERE root_id = ? AND memo_name = ? AND position >= ? AND notification_id IN
-		(SELECT id FROM notifications WHERE status IN ('pending', 'running'))`,
-		part.Root, part.Name, part.Position)
+	_, err := s.Store.state.Exec(`UPDATE delivery_logs SET part_kind='empty' WHERE root_id=? AND memo_name=? AND part_ordinal>=? AND status IN ('pending','running')`, part.Root, part.Name, part.Position)
 	return err
 }
 
@@ -215,17 +199,7 @@ func (s *reviewDelivery) sendReviewPart(ctx context.Context, item Notification) 
 	if part.Kind == "empty" {
 		return "empty:" + item.ID, nil
 	}
-	if part.Position != 0 {
-		var ready bool
-		if err := s.Store.state.QueryRow(`SELECT n.status = 'sent'
-			FROM review_delivery_parts p JOIN notifications n ON n.id = p.notification_id
-			WHERE p.root_id = ? AND p.position = ?`, part.Root, part.Position-1).Scan(&ready); err != nil {
-			return "", err
-		}
-		if !ready {
-			return "", upstreamError("CHANNEL_PART_PENDING", "Previous review part is not confirmed")
-		}
-	}
+
 	if part.Kind == "header" {
 		ready, err := s.reviewHeaderReady(ctx, part.Root)
 		if err != nil {
@@ -259,9 +233,7 @@ func (s *reviewDelivery) sendReviewPart(ctx context.Context, item Notification) 
 	if part.Kind == "footer" {
 		var delivered bool
 		if err := s.Store.state.QueryRow(`SELECT EXISTS (
-			SELECT 1 FROM review_delivery_parts p JOIN notifications n ON n.id = p.notification_id
-			WHERE p.root_id = ? AND p.memo_name = ? AND p.kind IN ('text', 'image')
-			AND n.status = 'sent' AND (n.receipt IS NULL OR n.receipt NOT LIKE 'empty:%'))`, part.Root, part.Name).Scan(&delivered); err != nil {
+			SELECT 1 FROM delivery_logs WHERE root_id = ? AND memo_name = ? AND part_kind IN ('text','image') AND status='sent' AND (receipt IS NULL OR receipt NOT LIKE 'empty:%'))`, part.Root, part.Name).Scan(&delivered); err != nil {
 			return "", err
 		}
 		if !delivered {
@@ -282,8 +254,7 @@ func (s *reviewDelivery) sendReviewPart(ctx context.Context, item Notification) 
 
 // Check for actual content before emitting the standalone title.
 func (s *reviewDelivery) reviewHeaderReady(ctx context.Context, root string) (bool, error) {
-	rows, err := s.Store.state.Query(`SELECT notification_id FROM review_delivery_parts
-		WHERE root_id = ? AND kind IN ('text', 'image') ORDER BY position`, root)
+	rows, err := s.Store.state.Query(`SELECT id FROM delivery_logs WHERE root_id=? AND part_kind IN ('text','image') ORDER BY part_ordinal`, root)
 	if err != nil {
 		return false, err
 	}
@@ -330,7 +301,7 @@ func (s *reviewDelivery) reviewHeaderReady(ctx context.Context, root string) (bo
 		if key != "" {
 			return true, nil
 		}
-		if _, err := s.Store.state.Exec(`UPDATE review_delivery_parts SET kind = 'empty' WHERE notification_id = ?`, id); err != nil {
+		if _, err := s.Store.state.Exec(`UPDATE delivery_logs SET part_kind='empty' WHERE id=?`, id); err != nil {
 			return false, err
 		}
 	}

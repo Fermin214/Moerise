@@ -29,7 +29,7 @@ const connectionLabels = {
   STATE_KEY_REQUIRED: l("请配置状态加密密钥。"), FEISHU_CONNECTION_ERROR: l("连接飞书失败。"),
 };
 const deliveryLabels = {
-  pending: l("等待发送"), running: l("发送中"), sent: l("已发送"), unknown: l("送达结果不明"), failed: l("发送失败"), skipped: l("已跳过"),
+  pending: l("等待发送"), running: l("发送中"), sent: l("已发送"), failed: l("发送失败"),
 };
 function invalid(message, field) {
   return Object.assign(new Error(resolveText(message)), { code: 'SETTINGS_INPUT_INVALID', localizedMessage: message, field });
@@ -331,7 +331,6 @@ export function createSettingsPage({ sessionRequest, handleFailure, onSaved = ()
     const signature = JSON.stringify(reviews);
     if (historySignature === signature) return;
     historySignature = signature;
-    const receipts = new Map([...history.querySelectorAll('[data-delivery-receipt]')].map(input => [input.dataset.deliveryReceipt, input.value]));
     history.replaceChildren();
     if (!reviews.length) history.append(el('p', 'sub', l("暂无发送记录")));
     for (const item of reviews) {
@@ -339,28 +338,15 @@ export function createSettingsPage({ sessionRequest, handleFailure, onSaved = ()
       const kind = destinations.find(([key]) => key === item.channel_kind)?.[1];
       const status = deliveryLabels[item.status] || item.status;
       line.append(el('span', '', () => [item.date, item.clock, resolveText(kind), resolveText(status), item.last_error].filter(Boolean).join(' · ')));
-      if (item.status === 'unknown') {
-        const actions = el('div', 'settings-delivery-actions');
-        let receipt;
-        if (item.channel_kind === 'feishu-app') {
-          receipt = el('input'); receipt.type = 'text'; receipt.maxLength = 256;
-          receipt.autocomplete = 'off'; receipt.dataset.deliveryReceipt = item.id;
-          receipt.value = receipts.get(item.id) || '';
-          setAttr(receipt, 'placeholder', l("飞书消息 ID（可选）"));
-          setAttr(receipt, 'aria-label', l("飞书消息 ID（可选）"));
-          receipt.addEventListener('keydown', event => { if (event.key === 'Enter') event.preventDefault(); });
-          actions.append(receipt);
-        }
-        async function resolveDelivery(decision) {
+      if (item.status === 'failed') {
+        const retry = button(l("重试"), 'ghost', async () => {
           const requests = deliveryRequests;
           if (requests.has(item.id)) return;
           requests.add(item.id);
-          const body = { decision };
-          if (decision === 'sent' && receipt?.value.trim()) body.receipt = receipt.value.trim();
-          confirm.disabled = retry.disabled = true;
+          retry.disabled = true;
           try {
-            await sessionRequest(`/admin/notifications/${encodeURIComponent(item.id)}/resolve`, {
-              method: 'POST', body,
+            await sessionRequest(`/admin/notifications/${encodeURIComponent(item.id)}/retry`, {
+              method: 'POST', body: {},
             });
           } catch (err) {
             if (requests === deliveryRequests && form?.isConnected) failure(err);
@@ -371,11 +357,9 @@ export function createSettingsPage({ sessionRequest, handleFailure, onSaved = ()
               if (activeTab === 'review') { stopChannelPoll(); refreshChannel(); }
             }
           }
-        }
-        const confirm = button(l("确认已送达"), 'ghost', () => resolveDelivery('sent'));
-        const retry = button(l("补发"), 'ghost', () => resolveDelivery('not_sent'));
-        confirm.disabled = retry.disabled = deliveryRequests.has(item.id);
-        actions.append(confirm, retry); line.append(actions);
+        });
+        retry.disabled = deliveryRequests.has(item.id);
+        line.append(retry);
       }
       history.append(line);
     }

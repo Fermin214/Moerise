@@ -263,7 +263,7 @@ func TestKnownPrivateBotAddressesAcceptance(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		_ = app.RunPrivateBots(runCtx)
+		_ = app.RunChannels(runCtx)
 	}()
 	defer func() { stop(); <-done }()
 	fixture.telegram(31, 1, "private", "Telegram #验收")
@@ -305,7 +305,7 @@ func TestPrivateBotsWithMemosAcceptance(t *testing.T) {
 		done := make(chan struct{})
 		go func() {
 			defer close(done)
-			_ = app.RunPrivateBots(ctx)
+			_ = app.RunChannels(ctx)
 		}()
 		shutdown = func() {
 			cancel()

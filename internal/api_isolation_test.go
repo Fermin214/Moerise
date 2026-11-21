@@ -48,7 +48,7 @@ func TestExternalAPIRejectsWritesBeforeParsingOrSourceAccess(t *testing.T) {
 			}
 		})
 	}
-	for _, table := range []string{"note_writes", "jobs", "review_batches", "notifications"} {
+	for _, table := range []string{"note_writes", "jobs", "review_batches", "delivery_logs"} {
 		var count int
 		if err := store.state.QueryRow("SELECT COUNT(*) FROM " + table).Scan(&count); err != nil || count != 0 {
 			t.Fatalf("external operation changed %s: count=%d err=%v", table, count, err)

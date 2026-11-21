@@ -164,7 +164,7 @@ func TestFourLiveBotDestinations(t *testing.T) {
 	var workers sync.WaitGroup
 	errs := make(chan error, 3)
 	defer func() { cancel(); workers.Wait() }()
-	for _, run := range []func(context.Context) error{app.RunPrivateBots, app.RunFeishu, app.Notifications.Run} {
+	for _, run := range []func(context.Context) error{app.RunChannels} {
 		workers.Go(func() { errs <- run(ctx) })
 	}
 	await := func(t *testing.T, until time.Time, description string, ready func() bool) {
@@ -220,13 +220,10 @@ func TestFourLiveBotDestinations(t *testing.T) {
 			var stamp time.Time
 			var err error
 			if kind == "feishu-app" {
-				var created string
-				err = db.QueryRow(`SELECT n.resource_name,r.resource_name,r.created_at FROM channel_events n,channel_events r
-					WHERE n.result_kind='saved' AND r.result_kind='review' AND n.sender_open_id=r.sender_open_id
-					AND n.reply_status='sent' AND r.reply_status='sent' AND n.receipt IS NOT NULL AND r.receipt IS NOT NULL
-					ORDER BY n.created_at DESC,r.created_at DESC LIMIT 1`).Scan(&noteName, &batchID, &created)
+				var millis int64
+				err = db.QueryRow(`SELECT n.resource_name,r.resource_name,r.message_at FROM bot_inbox n JOIN bot_inbox r USING(instance_id,user_name,kind,bot_id,peer) WHERE n.kind='feishu-app' AND n.result_kind='saved' AND r.result_kind='review' AND n.phase='sent' AND r.phase='sent' AND n.receipt IS NOT NULL AND r.receipt IS NOT NULL ORDER BY n.received_at DESC,r.received_at DESC LIMIT 1`).Scan(&noteName, &batchID, &millis)
 				if err == nil {
-					stamp, err = time.Parse(time.RFC3339Nano, created)
+					stamp = time.UnixMilli(millis)
 				}
 			} else {
 				var millis int64
@@ -279,9 +276,7 @@ func TestFourLiveBotDestinations(t *testing.T) {
 				date, clock := slot.Format(time.DateOnly), slot.Format("15:04")
 				var total, confirmed, failed int
 				err := db.QueryRow(`SELECT count(*),count(*) FILTER (WHERE n.status='sent' AND n.receipt IS NOT NULL AND n.receipt NOT LIKE 'empty:%'),
-				count(*) FILTER (WHERE n.status IN ('unknown','skipped','failed') OR n.channel_kind<>?)
-				FROM notifications n JOIN review_plan_slots s ON s.id=n.slot_id AND s.batch_id=n.batch_id
-				WHERE n.kind='review' AND n.local_date=? AND s.clock=? AND s.item_count>0`, kind, date, clock).
+				count(*) FILTER (WHERE n.status='failed' OR n.channel_kind<>?) FROM delivery_logs n WHERE n.kind='review' AND n.local_date=? AND n.clock=?`, kind, date, clock).
 					Scan(&total, &confirmed, &failed)
 				if err != nil || failed > 0 {
 					t.Fatalf("%s delivery %s %s: failed=%d err=%v", kind, date, clock, failed, err)
