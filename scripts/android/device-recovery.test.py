@@ -18,7 +18,7 @@ SCRIPT = Path(__file__).with_name("device-recovery.py")
 spec = importlib.util.spec_from_file_location("device_recovery", SCRIPT)
 recovery = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(recovery)
-SCHEMA = SCRIPT.parents[2] / "mobile/shared/schemas/io.github.fermin214.moerise.data.LocalDatabase/1.json"
+SCHEMA = SCRIPT.parents[2] / "mobile/androidApp/schemas/io.github.fermin214.moerise.data.LocalDatabase/1.json"
 MARKER = "a" * 32
 SAVED = [f"Saved offline {MARKER}_one", f"Saved offline {MARKER}_two"]
 UNFINISHED = f"Unsent input {MARKER}"

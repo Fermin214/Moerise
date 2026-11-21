@@ -27,4 +27,4 @@ PY
 if [[ "${MOERISE_ANDROID_SEED_BENCHMARK:-0}" == 1 ]]; then node scripts/android/seed-benchmark.mjs; fi
 android_live_task=coreIntegrationTest
 if [[ "${MOERISE_ANDROID_STARS:-0}" == 1 ]]; then android_live_task=starsIntegrationTest; fi
-android_gradle ":shared:$android_live_task" "$@"
+android_gradle ":androidApp:$android_live_task" "$@"

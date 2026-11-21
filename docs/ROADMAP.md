@@ -92,27 +92,22 @@ v0.1.0 以 Memos 为笔记权威存储，通过 Moerise Core 读写。本机保�
 | Android 包 | `io.github.fermin214.moerise`，与 Linux 联合发布，`minSdk=29` |
 | 版本管理 | M0 验证并固定兼容的稳定版 Kotlin、Compose、AGP、Gradle、KSP、Room、Ktor 与 SDK；版本写入目录，Wrapper 固定发行包摘要 |
 
-采用以下目录结构；平台路径、凭据、文件和系统调用通过窄接口接入共享代码：
+Android 使用标准应用模块与三个纯 Kotlin 模块：
 
 ```text
 mobile/
   gradle/                  # Wrapper、版本目录和依赖校验
-  androidApp/              # Application、Activity、Manifest、系统适配
-  shared/
-    src/commonMain/        # 业务、协议、持久化定义、页面与设计资源
-    src/commonTest/        # 协议与恢复路径的专项测试
-    src/androidMain/       # Android 数据库路径、网络引擎等实现
-    src/jvmMain/           # Linux JVM 测试所用的数据库与网络适配
-    src/jvmTest/           # 真实 SQLite 持久化、重开与事务恢复检查
-  benchmark/               # M8 的 Android 启动与观星性能测量
-scripts/android/           # 构建、联调、设备验收和发行入口
+  androidApp/src/main/     # Compose 页面、Room、平台适配和业务编排
+  androidApp/src/test/     # 协议、持久化和恢复检查
+  androidApp/src/androidTest/ # 设备生命周期和交互
+  androidApp/schemas/      # 已发行 Room 契约
+  core/model/             # 数据模型
+  core/sync/              # 排序、游标和同步规则
+  core/markdown/          # Markdown 分块和标签处理
+  benchmark/              # 启动与观星性能测量
 ```
 
-Android 应用模块与 KMP 库模块分开，KMP Android 库采用官方 `com.android.kotlin.multiplatform.library` 插件。`commonMain` 不引用 `android.*`、Activity 或 Android 专用持久化类型。iOS 交付阶段添加平台实现与应用入口，使用 macOS/Xcode 构建验证。
-
-共享模块同时声明 Android 和 JVM 目标，Linux 使用 `:shared:jvmTest` 运行共享协议与状态测试；Room 采用 BundledSQLiteDriver，在 JVM 临时文件上执行真实事务、关闭重开和迁移检查。Android 设备测试验证 Android 数据库路径、生命周期与文件适配。M0 固定各任务名并检查非零测试数量，不能用只有源码集而没有执行目标的检查替代。
-
-共享层分为 `domain`、`data`、`presentation` 三个包，不增加多余的 Gradle 模块。`NoteRepository`、`SessionRepository`、`AttachmentStore` 隔离 UI 与 Core DTO、Cookie 及文件系统；Core 资源名保存在远端引用字段中，本机草稿使用独立 UUID。独立本地模式通过新的存储与用例实现扩展。
+纯 Kotlin 模块不引用 `android.*`。Room 使用系统 SQLite，Android 单元流程验证真实文件的事务、关闭重开和迁移；设备流程验证数据库路径、生命周期与 Keystore。草稿沿用本地 UUID，远端资源名独立存储。
 
 #### 1.3 界面与交互基线
 

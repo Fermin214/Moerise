@@ -16,7 +16,7 @@ except ImportError:
 
 ROOT = Path(__file__).resolve().parent
 REPO = ROOT.parents[2]
-PRESENTATION = REPO / "mobile/shared/src/commonMain/kotlin/io/github/fermin214/moerise/presentation"
+PRESENTATION = REPO / "mobile/androidApp/src/main/kotlin/io/github/fermin214/moerise/presentation"
 CREDENTIALS = {
     "MAESTRO_FIXTURE_ORIGIN": "server_origin",
     "MAESTRO_FIXTURE_USERNAME": "server_username",
@@ -452,7 +452,7 @@ def validate_source_ids():
     for filename, fragment in SOURCE_IDS.values():
         path = PRESENTATION / filename
         if filename == "PlatformAttachments.kt":
-            path = REPO / "mobile/shared/src/androidMain/kotlin/io/github/fermin214/moerise/presentation" / filename
+            path = REPO / "mobile/androidApp/src/main/kotlin/io/github/fermin214/moerise/presentation" / filename
         require(fragment in path.read_text(encoding="utf-8"), "Allowlisted ID fragment is absent from source")
     sidebar = (PRESENTATION / "WebSidebar.kt").read_text(encoding="utf-8")
     for target in ("home", "review", "walk", "insights", "map"):

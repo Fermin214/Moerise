@@ -7,10 +7,10 @@ Android 工程位于 `mobile/`，应用模块为 `androidApp`，共享界面、�
 | 路径 | 职责与版本管理 |
 | --- | --- |
 | `mobile/androidApp/src/main/`、`src/debug/` | 应用入口、平台集成、资源及开发网络配置，提交源码 |
-| `mobile/shared/src/commonMain/`、`androidMain/`、`jvmMain/` | 共享实现及 Android、JVM 平台适配，提交源码 |
-| `mobile/shared/src/commonTest/`、`jvmTest/`、`mobile/androidApp/src/androidTest/` | 协议、恢复与设备回归流程，提交测试和虚构契约数据 |
+| `mobile/androidApp/src/main/`、`mobile/core/` | Android 应用及纯 Kotlin 模型、同步和 Markdown 逻辑，提交源码 |
+| `mobile/androidApp/src/test/`、`mobile/core/*/src/test/`、`mobile/androidApp/src/androidTest/` | 协议、恢复与设备回归流程，提交测试和虚构契约数据 |
 | `mobile/benchmark/`、`mobile/androidApp/src/benchmark/` | 性能 runner 与隔离性能场景，提交源码，发行包不包含性能 Activity |
-| `mobile/shared/schemas/` | Room 数据库版本契约，提交并保留已发行版本 |
+| `mobile/androidApp/schemas/` | Room 数据库版本契约，提交并保留已发行版本 |
 | `mobile/gradle/`、`gradlew*`、`*.gradle.kts` | 可复现构建、依赖版本与摘要校验，提交；Wrapper JAR 是构建入口 |
 | `mobile/androidApp/src/main/baselineProfiles/` | 经设备采集、整理后用于发行的文本优化规则，提交；原始采集包放在 `.local/android/` |
 | `scripts/android/` | 可重复使用的构建、设备、隔离服务与发行工具，提交；入口见[脚本说明](../scripts/README.md) |
@@ -38,7 +38,7 @@ Gradle Wrapper 固定为 8.13，并校验发行包 SHA-256。依赖版本见 [�
 
 `scripts/android/check.sh` 顺序运行共享 JVM 测试、Android lint 和 debug APK 构建，并检查测试报告中实际执行的数量。JVM 测试使用 Room 与 BundledSQLiteDriver 的临时文件数据库，覆盖关闭重开后草稿和冻结请求的恢复及账号隔离。
 
-Android 0.1.0 是首次发行，Room 版本为 1，以完整的 [schema 1](../mobile/shared/schemas/io.github.fermin214.moerise.data.LocalDatabase/1.json) 建立初始结构，包含账号、草稿、冻结请求、快照和功能恢复记录。开发期 APK 与数据库不提供兼容迁移，也不作为首版升级验证的起点；首版设备流程使用新安装数据。正式发行后发生结构变化时，递增 Room 版本并新增迁移，保留已发行的 schema。
+Android 0.1.0 是首次发行，Room 版本为 1，以完整的 [schema 1](../mobile/androidApp/schemas/io.github.fermin214.moerise.data.LocalDatabase/1.json) 建立初始结构，包含账号、草稿、冻结请求、快照和功能恢复记录。开发期 APK 与数据库不提供兼容迁移，也不作为首版升级验证的起点；首版设备流程使用新安装数据。正式发行后发生结构变化时，递增 Room 版本并新增迁移，保留已发行的 schema。
 
 共享检查覆盖数据库关闭重开、创建与编辑的丢失响应恢复、保存确认事务期间续写，以及原键重放返回外部修改时的冲突合并。队列保存每次点击时的内容快照；后续输入只在本机保存，继续提交的修订在创建确认后绑定远端笔记。洞察使用真实 Room 文件检查重开后保留新建请求、生成请求和部分回复，读取恢复不会自动生成。
 
@@ -58,7 +58,7 @@ adb install -r mobile/androidApp/build/outputs/apk/debug/androidApp-debug.apk
 
 ## 共享与平台边界
 
-`commonMain` 使用 Compose、Coroutines 和 Room；Android 数据库路径位于 `androidMain`，Linux JVM 文件数据库构造位于 `jvmMain`。共享代码不引用 `android.*`。独立本地模式、iOS 平台和各功能的交付范围见[开发路线图](ROADMAP.md#1-阶段四android-客户端)。
+`androidApp` 使用标准 Android 插件、Compose、Coroutines 和 Room，数据库使用系统 SQLite。`core/model`、`core/sync`、`core/markdown` 为纯 Kotlin 模块，不依赖 `android.*`。数据库沿用 `noBackupFilesDir/data/moerise.sqlite3`，Keystore 沿用 `moerise-session-v1`。
 
 主页的颜色、字号、编辑器、笔记卡片和导航侧栏与手机 Web 共用视觉规范。笔记列表在平板上居中显示，阅读区最大宽度为 800 dp。侧栏的日历、导航与标签共用一个纵向滚动区域；设置与账号占用独立的底部空间，滚动内容不会被底部控件遮挡。
 
@@ -95,7 +95,7 @@ scripts/android/live-check.sh
 隔离实例通过 Memos 官方 API 将 `contentLengthLimit` 设为 65,536，用于覆盖 Core 的
 64 KiB 内容上限。真实服务的笔记长度还受其 Memos 实例配置约束。
 
-单独联调设备时运行 `scripts/android/start-fixture.sh`。脚本输出 Web 来源、私有连接档案路径和 `adb reverse` 命令；连接档案只用于隔离环境，包含虚构账号和临时凭据。按 Ctrl+C 清理服务与来源数据。观星六类顶层状态及更新中的固定响应样本位于 `mobile/shared/src/commonTest/resources/contracts/map/`。
+单独联调设备时运行 `scripts/android/start-fixture.sh`。脚本输出 Web 来源、私有连接档案路径和 `adb reverse` 命令；连接档案只用于隔离环境，包含虚构账号和临时凭据。按 Ctrl+C 清理服务与来源数据。观星六类顶层状态及更新中的固定响应样本位于 `mobile/androidApp/src/test/resources/contracts/map/`。
 
 Windows 通过公共锁调用 `scripts/android/start-fixture.ps1`，命令见[设备检查](android/DEVICE-CHECKS.md#fixture-生命周期)。复用已有观星语料时，设置
 `MOERISE_ANDROID_CORPUS` 为笔记 JSON 数组路径、`MOERISE_ANDROID_VECTORS` 为按相同行序排列的
