@@ -30,6 +30,7 @@ const project = `moerise-acceptance-${id}`;
 const directoryName = `compose-acceptance-${id}`;
 const root = resolve(repo, '.local', directoryName);
 const envFile = resolve(root, '.env');
+const legacyCompose = resolve(root, 'legacy-web.yaml');
 const template = readFileSync(resolve(repo, '.env.example'), 'utf8');
 const skipBuild = flags.has('--skip-build');
 const imageTag = skipBuild ? (process.env.MOERISE_IMAGE_TAG || 'moerise-local') : project;
@@ -428,6 +429,26 @@ async function runScenario(kind) {
   await check('强制重建 Core/Web 容器后保留产品状态', async () => {
     await compose(['up', '-d', '--no-build', '--force-recreate', 'moerise']);
     await ready(url);
+    await retained();
+  });
+  if (kind === 'bundled') await check('拆除独立 Web 容器并沿用入口及产品卷', async () => {
+    const model = JSON.parse(await compose(['config', '--format', 'json']));
+    writeFileSync(legacyCompose, JSON.stringify({ services: { web: model.services.moerise } }), { mode: 0o600 });
+    const volumeIDs = JSON.parse(await docker(['inspect', '--format', '{{json .Mounts}}',
+      (await compose(['ps', '--quiet', 'moerise'])).trim()]))
+      .filter(mount => mount.Type === 'volume').map(mount => mount.Name).sort();
+    await compose(['stop', 'moerise']);
+    await compose(['--file', legacyCompose, 'up', '-d', '--no-build', 'web']);
+    await ready(url);
+    await compose(['down', '--remove-orphans']);
+    assert.equal((await docker(['ps', '-aq', '--filter', `label=com.docker.compose.project=${project}`,
+      '--filter', 'label=com.docker.compose.service=web'])).trim(), '');
+    await compose(['up', '-d', '--no-build']);
+    await ready(url);
+    const restoredVolumes = JSON.parse(await docker(['inspect', '--format', '{{json .Mounts}}',
+      (await compose(['ps', '--quiet', 'moerise'])).trim()]))
+      .filter(mount => mount.Type === 'volume').map(mount => mount.Name).sort();
+    assert.deepEqual(restoredVolumes, volumeIDs);
     await retained();
   });
   if (chromium) await check('真实浏览器登录、原文/附件、筛选、详情返回和扩展页', async () => {

@@ -20,21 +20,30 @@ def command_failure(error):
     return {"cause": error.code, "output": output}
 
 
-def require_restored_session(adb, app, output):
+def require_restored_session(adb, app, output, command_error):
+    for package in reversed(DRIVERS):
+        if adb.run("shell", "pm", "path", package, check=False).strip():
+            adb.run("shell", "am", "force-stop", package)
     adb.run("shell", "am", "start", "-W", "-n", app + "/io.github.fermin214.moerise.MainActivity")
     deadline = time.monotonic() + 70
+    errors = []
     while time.monotonic() < deadline:
-        adb.run("shell", "uiautomator", "dump", "/sdcard/moerise-upgrade-session.xml", timeout=15)
-        xml = adb.run("shell", "cat", "/sdcard/moerise-upgrade-session.xml")
-        output.parent.mkdir(parents=True, exist_ok=True)
-        output.write_text(xml, encoding="utf-8")
-        ids = {node.get("resource-id", "").rsplit(":id/", 1)[-1]
-               for node in ET.fromstring(xml).iter("node")}
+        try:
+            adb.run("shell", "uiautomator", "dump", "/sdcard/moerise-upgrade-session.xml", timeout=15)
+            xml = adb.run("shell", "cat", "/sdcard/moerise-upgrade-session.xml")
+            output.parent.mkdir(parents=True, exist_ok=True)
+            output.write_text(xml, encoding="utf-8")
+            ids = {node.get("resource-id", "").rsplit(":id/", 1)[-1]
+                   for node in ET.fromstring(xml).iter("node")}
+        except (command_error, ET.ParseError) as error:
+            errors.append(type(error).__name__)
+            time.sleep(.5)
+            continue
         assert ids.isdisjoint({"server_login", "welcome_enter"}), "升级后未恢复账号或 Keystore 会话"
         if "open_menu" in ids:
             return
         time.sleep(.5)
-    raise RuntimeError("升级后未进入已登录主页")
+    raise RuntimeError("升级后未进入已登录主页：" + ",".join(errors))
 
 
 def main():
@@ -83,7 +92,7 @@ def main():
             upgrade = upgrade_state.seed_upgrade(adb, runner.app, args.output / "upgrade")
             adb.run("install", "-r", str(args.apk.resolve()), timeout=120)
             runner = MaestroRunner(ROOT, adb, args.fixture, args.output / "upgraded" / "maestro", release=True)
-            require_restored_session(adb, runner.app, args.output / "upgrade/installed-window.xml")
+            require_restored_session(adb, runner.app, args.output / "upgrade/installed-window.xml", phone.CommandError)
         else:
             adb.run("install", str(args.apk.resolve()), timeout=120)
         runner.api.login()
@@ -154,6 +163,10 @@ def main():
     finally:
         report.setdefault("status", "failed")
         write_result(args.output / "result.json", report)
+        try:
+            (args.output / "logcat.txt").write_text(adb.run("logcat", "-d", "-t", "1000", check=False), encoding="utf-8")
+        except phone.CommandError:
+            pass
     print(json.dumps({"status": report["status"], "flows": list(report["flows"])}, ensure_ascii=False))
 
 
