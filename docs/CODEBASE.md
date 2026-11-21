@@ -48,7 +48,7 @@ flowchart TD
 | `tests/` | 带 `integration` 构建标签的真实 Memos 集成测试 |
 | `tests/testdata/` | 检索问题标注与虚构聊天质量评测数据 |
 | `mobile/androidApp/` | Android 入口、生命周期、平台资源和设备流程；`src/benchmark/` 仅进入性能包 |
-| `mobile/shared/` | 客户端界面、协议、同步与持久化；`jvmMain` 为 Linux 检查提供平台适配 |
+| `mobile/androidApp/`、`mobile/core/` | 原生 Android 界面、平台存储与纯 Kotlin 模型、同步和 Markdown |
 | `mobile/benchmark/` | 独立 Macrobenchmark runner 与 Profile 采集流程 |
 | `mobile/gradle/` | 工具链版本、Wrapper 和依赖完整性校验 |
 | `scripts/android/` | 构建、隔离服务、设备验收、性能与发行入口 |

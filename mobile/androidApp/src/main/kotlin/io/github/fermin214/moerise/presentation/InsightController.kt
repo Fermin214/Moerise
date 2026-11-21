@@ -11,27 +11,6 @@ import kotlinx.serialization.json.*
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.TimeSource
 
-data class InsightState(
-    val recovery: InsightRecovery = InsightRecovery(), val chat: ChatSession? = null,
-    val materials: ChatMaterials? = null,
-    val history: List<ChatSummary> = emptyList(), val historyNext: String = "", val tab: Int = 0,
-    val busy: Boolean = false, val streaming: Boolean = false,
-    val error: String? = null,
-    val conflicted: Boolean = false, val stopping: Boolean = false, val deleting: Boolean = false,
-    val capabilities: ChatCapabilities = ChatCapabilities(materialSelection = true, saveSelection = true), val starting: String = "",
-    val confirmed: List<ChatTurn> = emptyList(), val failedGeneration: Boolean = false,
-    val saving: Boolean = false, val pendingSave: ChatSaveIntent? = null, val saveError: String? = null,
-    val savedOperation: String = "",
-) {
-    val running get() = chat?.turns?.any { it.assistant.status == "running" } == true
-    val canStop get() = streaming || running || recovery.partial?.assistant?.status == "running"
-    val locked get() = busy || running || conflicted || stopping || deleting ||
-        recovery.generation != null || recovery.mutation != null || recovery.creation != null
-    val canDelete get() = chat != null && pendingSave == null && !saving && !stopping && !deleting &&
-        (recovery.mutation == null || recovery.mutation.method == "DELETE") &&
-        recovery.creation == null && (!busy || streaming || running)
-}
-
 class InsightController(
     private val repository: suspend () -> NoteRepository, private val core: () -> CoreClient?,
     private val account: () -> String?, private val scope: CoroutineScope, private val language: () -> String,
@@ -56,9 +35,8 @@ class InsightController(
     private var historyOwner: String? = null
     private var historyLoaded = 0L
     private val historyCursors = mutableSetOf<String>()
-    private val disk = Mutex()
+    private val recoveryStore = InsightRecoveryStore(repository)
     private var diskRevision = 0L
-    private val writtenRevisions = mutableMapOf<String, Long>()
     private val seeds = mutableSetOf<String>()
 
     fun tab(value: Int) { mutable.update { it.copy(tab = value) }; if (value == 2) history() }
@@ -83,7 +61,7 @@ class InsightController(
                         continue
                     }
                     persist(account, state.value.recovery, diskRevision)
-                    if (writtenRevisions[account] == diskRevision) return@launch
+                    if (recoveryStore.isWritten(account,diskRevision)) return@launch
                 }
             } catch (error: Exception) {
                 if (error is CancellationException) throw error
@@ -98,9 +76,7 @@ class InsightController(
         if (!value) { leave(); return }
         execute { active, account, stamp ->
             if (key != account) {
-                val recovery = disk.withLock { repository().feature(account, "insights") }?.let {
-                    CoreJson.decodeFromString<InsightRecovery>(it)
-                } ?: InsightRecovery()
+                val recovery = recoveryStore.read(account)
                 checkActive(stamp, account)
                 key = account
                 mutable.update { it.copy(recovery = recovery) }
@@ -143,19 +119,15 @@ class InsightController(
         leave()
         operation?.join(); control?.join(); lifecycleWrite?.join(); polling?.cancelAndJoin(); questionWrite?.cancelAndJoin()
         picker.awaitRequests(); saving?.join()
-        disk.withLock { key = null }
+        key = null
         seeds.clear(); mutable.value = InsightState()
     }
 
     suspend fun flush() {
         key?.let { persist(it, state.value.recovery, ++diskRevision) }
     }
-    private suspend fun persist(account: String, recovery: InsightRecovery, revision: Long) = disk.withLock {
-        // A slower lifecycle write must not overwrite the request recorded immediately before a POST.
-        if (revision < (writtenRevisions[account] ?: 0L)) return@withLock
-        repository().putFeature(account, "insights", CoreJson.encodeToString(recovery))
-        writtenRevisions[account] = revision
-    }
+    private suspend fun persist(account: String, recovery: InsightRecovery, revision: Long) =
+        recoveryStore.write(account,recovery,revision)
     private suspend fun record(account: String, recovery: InsightRecovery, stamp: Long) {
         checkActive(stamp, account)
         mutable.update { it.copy(recovery = recovery) }

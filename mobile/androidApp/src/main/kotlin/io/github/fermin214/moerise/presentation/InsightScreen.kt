@@ -139,7 +139,7 @@ fun InsightScreen(mobile: MobileController, strings: Strings, scroll: List<Scrol
                     if (recovery.creation != null) TextButton(controller::applyMaterials, enabled = online && !state.busy) {
                         Text(strings.text("恢复新建会话", "Recover conversation"))
                     }
-                    if (recovery.mutation != null) TextButton({ if (recovery.mutation.method == "DELETE") dialog = "delete" else controller.retryMutation() },
+                    if (recovery.mutation != null) TextButton({ if (recovery.mutation?.method == "DELETE") dialog = "delete" else controller.retryMutation() },
                         enabled = online && !state.busy) { Text(strings.text("检查操作结果", "Check operation result")) }
                     if (pending != null && !state.streaming) TextButton(controller::refresh, enabled = online && !state.busy) {
                         Text(strings.text("检查回复", "Check reply"))

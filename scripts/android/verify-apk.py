@@ -71,6 +71,7 @@ with zipfile.ZipFile(args.apk) as archive:
     for name in archive.namelist():
         if not name.startswith("lib/") or not name.endswith(".so"):
             continue
+        assert "sqlite" not in name.lower(), f"APK 不应打包 SQLite 原生库：{name}"
         binary = archive.read(name)
         assert len(binary) >= 64 and binary[:4] == b"\x7fELF" and binary[5] == 1 and binary[4] in (1, 2), name
         abi = name.split("/")[1]
@@ -96,7 +97,7 @@ with zipfile.ZipFile(args.apk) as archive:
                 assert file_offset % required == virtual_address % required, f"{name}: LOAD 地址不满足 {required} 对齐"
         assert loads, f"{name}: 缺少 LOAD 段"
         native_count += 1
-assert not args.release or {"arm64-v8a", "x86_64"} <= abis, f"缺少发行 ABI：{abis}"
+assert not args.release or native_count == 0 or {"arm64-v8a", "x86_64"} <= abis, f"缺少发行 ABI：{abis}"
 print(json.dumps(dict(package=package, version_name=version, version_code=int(code) if code else None, min_sdk=min_sdk,
                      abis=sorted(abis), native_libraries=native_count, page_alignment=16384),
                  ensure_ascii=False))

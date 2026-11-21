@@ -36,7 +36,7 @@ Gradle Wrapper 固定为 8.13，并校验发行包 SHA-256。依赖版本见 [�
 
 ## 检查与 APK
 
-`scripts/android/check.sh` 顺序运行共享 JVM 测试、Android lint 和 debug APK 构建，并检查测试报告中实际执行的数量。JVM 测试使用 Room 与 BundledSQLiteDriver 的临时文件数据库，覆盖关闭重开后草稿和冻结请求的恢复及账号隔离。
+`scripts/android/check.sh` 运行纯 Kotlin 模块测试、Android 单元测试、lint 和 debug APK 构建，并检查非零执行数量。Android 单元测试使用 Robolectric 与系统 SQLite 文件数据库，覆盖关闭重开后草稿、冻结请求、游标和账号隔离。
 
 Android 0.1.0 是首次发行，Room 版本为 1，以完整的 [schema 1](../mobile/androidApp/schemas/io.github.fermin214.moerise.data.LocalDatabase/1.json) 建立初始结构，包含账号、草稿、冻结请求、快照和功能恢复记录。开发期 APK 与数据库不提供兼容迁移，也不作为首版升级验证的起点；首版设备流程使用新安装数据。正式发行后发生结构变化时，递增 Room 版本并新增迁移，保留已发行的 schema。
 

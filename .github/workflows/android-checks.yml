@@ -295,7 +295,7 @@ jobs:
         if: inputs.refresh_dependencies == true
         run: |
           source scripts/android/environment.sh
-          android_gradle --write-verification-metadata sha256 :core:model:test :core:sync:test :core:markdown:test :androidApp:testDebugUnitTest :androidApp:assembleDebug :androidApp:exportReleaseDependencies
+          android_gradle --continue --write-verification-metadata sha256 :core:model:test :core:sync:test :core:markdown:test :androidApp:testDebugUnitTest :androidApp:assembleDebug :androidApp:exportReleaseDependencies
           python3 scripts/android/licenses.py
       - uses: actions/upload-artifact@v4
         if: always() && inputs.refresh_dependencies == true
