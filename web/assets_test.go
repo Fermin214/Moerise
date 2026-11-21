@@ -32,10 +32,10 @@ func TestStaticRoutesAndEncodings(t *testing.T) {
 			t.Fatalf("%s: %d %v %s", path, w.Code, w.Header(), w.Body.String())
 		}
 	}
-	for _, path := range []string{"/api/ext/v1/notes", "/api/app/v1/session", "/mcp", "/hooks/feishu", "/health/ready"} {
+	for _, path := range []string{"/api/ext/v1/notes", "/api/app/v1/session", "/mcp", "/hooks/feishu", "/health/ready", "/docs"} {
 		w := httptest.NewRecorder()
 		handler.ServeHTTP(w, httptest.NewRequest("GET", path, nil))
-		if w.Code != http.StatusTeapot {
+		if w.Code != http.StatusTeapot || w.Header().Get("Content-Security-Policy") != "" {
 			t.Fatalf("API boundary %s: %d", path, w.Code)
 		}
 	}

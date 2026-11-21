@@ -92,7 +92,7 @@ def main():
         assert any(cookie.name == "__Host-moerise_session" and cookie.secure for cookie in jar), "Secure Cookie 缺失"
         report["secure_cookie"] = True
         runner.api.close()
-        result = runner.run_flow("home-smoke" if upgrade else "release-smoke")
+        result = runner.run_flow("upgrade-smoke" if upgrade else "release-smoke")
         if upgrade:
             runner.api.login()
             deadline = time.monotonic() + 60
@@ -108,7 +108,7 @@ def main():
             report["upgrade"] = {"from": "0.2.0", "account": True, "draft": True, "pending_write_count": 1,
                                  "keystore_session": True, "previous_apk_sha256": hashlib.sha256(args.upgrade_from.read_bytes()).hexdigest()}
 
-        report["flows"]["home-smoke" if upgrade else "release-smoke"] = result
+        report["flows"]["upgrade-smoke" if upgrade else "release-smoke"] = result
         if result["status"] != "passed":
             raise RuntimeError("发行场景失败：" + str(result["cause"]))
         for package in reversed(DRIVERS):

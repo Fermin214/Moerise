@@ -279,6 +279,10 @@ func TestNotificationUpgradePreservesUncertainFragmentsAndAudit(t *testing.T) {
 	if _, err := db.Exec("INSERT INTO schema_migrations VALUES ('001',?,'stamp')", hashBytes(body)); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := db.Exec(`INSERT INTO channel_events(message_id,event_id,event_hash,app_id,sender_open_id,status,reply_uuid,reply_status,available_at,created_at,last_error)
+		VALUES('restored','restored-event','digest','app','peer','processed','restored-reply','skipped',0,'2026-11-21T00:00:00Z','STATE_RESTORED')`); err != nil {
+		t.Fatal(err)
+	}
 	if err := migrate(db, "state"); err != nil {
 		t.Fatal(err)
 	}
@@ -293,6 +297,7 @@ func TestNotificationUpgradePreservesUncertainFragmentsAndAudit(t *testing.T) {
 	var intact bool
 	if err := db.QueryRow(`SELECT EXISTS(SELECT 1 FROM delivery_logs WHERE id='first' AND status='failed')
         AND EXISTS(SELECT 1 FROM delivery_logs WHERE id='next' AND status='pending' AND root_id='first' AND part_ordinal=1 AND memo_name='memos/note' AND available_at=0)
+        AND EXISTS(SELECT 1 FROM bot_inbox WHERE message_id='restored' AND phase='restored' AND body IS NULL)
         AND NOT EXISTS(SELECT 1 FROM pragma_foreign_key_check)
         AND NOT EXISTS(SELECT 1 FROM sqlite_master WHERE type='trigger')
         AND NOT EXISTS(SELECT 1 FROM sqlite_master WHERE name IN ('notifications','notification_attempts','notification_resolutions','channel_events','review_plans','review_plan_slots'))`).Scan(&intact); err != nil || !intact {

@@ -44,7 +44,8 @@ func (a *App) processBotMessage(ctx context.Context, kind, id string, sender bot
 	err := store.state.QueryRowContext(ctx, `SELECT i.write_key,i.peer,i.message_id,i.operation,i.phase,i.reply,i.body,i.received_at,i.message_at,i.batch_id,i.result_kind,i.resource_name
 		FROM bot_inbox i JOIN bot_bindings b USING(instance_id,user_name,kind,bot_id,peer)
 		WHERE i.instance_id=? AND i.user_name=? AND i.kind=? AND i.bot_id=? AND i.phase IN ('pending','reply') AND i.available_at<=?
-		ORDER BY i.received_at,i.rowid LIMIT 1`, store.Settings.Memos.InstanceID, store.Settings.Memos.User, kind, id, time.Now().UnixMilli()).
+		AND (i.kind!='feishu-app' OR ?='' OR i.peer=?)
+		ORDER BY i.received_at,i.rowid LIMIT 1`, store.Settings.Memos.InstanceID, store.Settings.Memos.User, kind, id, time.Now().UnixMilli(), configured(store.Settings.Channel.UserOpenID), configured(store.Settings.Channel.UserOpenID)).
 		Scan(&task.key, &task.peer, &task.message, &task.operation, &task.phase, &task.reply, &task.body, &task.received, &task.sentAt, &task.batch, &task.result, &task.resource)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil

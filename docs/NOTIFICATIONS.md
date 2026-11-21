@@ -1,6 +1,6 @@
 # 通知调度与机器人渠道
 
-Moerise 使用 `review_batches` 保存每日回顾计划，`delivery_logs` 保存渠道、分片顺序、发送状态、回执及错误。Web 和 Android 在「回顾与推送」页展示发送记录，失败条目可直接重试。
+Moerise 使用 `review_batches` 保存每日回顾计划，`delivery_logs` 保存渠道、分片顺序、发送状态、回执及错误。Web 和 Android 在「回顾与推送」页展示发送记录，失败条目优先展示，可直接重试。
 
 ## 调度
 

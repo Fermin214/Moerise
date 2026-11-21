@@ -221,7 +221,7 @@ func (s *NotificationService) List(status string, kinds ...string) ([]Notificati
 		query += " AND kind=?"
 		args = append(args, kinds[0])
 	}
-	rows, err := s.Store.state.Query(query+` ORDER BY created_at DESC,root_id,part_ordinal LIMIT 100`, args...)
+	rows, err := s.Store.state.Query(query+` ORDER BY (status='failed') DESC,created_at DESC,root_id,part_ordinal LIMIT 100`, args...)
 	if err != nil {
 		return nil, err
 	}

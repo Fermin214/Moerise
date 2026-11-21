@@ -140,6 +140,18 @@ func TestClientNotificationRecoveryUsesBoundSession(t *testing.T) {
 		len(listed.Notifications) != 1 || listed.Notifications[0].ID != id {
 		t.Fatalf("review hidden by newer replies: %d %s", filtered.Code, filtered.Body.String())
 	}
+	for index := range 110 {
+		if _, err := api.app.Notifications.enqueue("review", "newer-part-"+strconv.Itoa(index), "2026-10-30", nil, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := api.app.Store.state.Exec(`UPDATE delivery_logs SET created_at='2099-01-02' WHERE status='pending'`); err != nil {
+		t.Fatal(err)
+	}
+	visible := clientCall(api, "GET", base+"?kind=review", "", cookie, "", "")
+	if err := json.Unmarshal(visible.Body.Bytes(), &listed); err != nil || visible.Code != 200 || len(listed.Notifications) != 100 || listed.Notifications[0].ID != id {
+		t.Fatalf("failed delivery hidden by newer pending fragments: %d %s", visible.Code, visible.Body.String())
+	}
 	for _, query := range []string{"?kind=other", "?kind=review&kind=reply", "?kind=review&extra=sent"} {
 		if invalid := clientCall(api, "GET", base+query, "", cookie, "", ""); invalid.Code != 422 {
 			t.Fatalf("invalid filter %s returned %d", query, invalid.Code)

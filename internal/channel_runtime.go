@@ -148,8 +148,9 @@ func (a *App) channelDeadline(active map[string]*botConnection, now time.Time) (
 		var due sql.NullInt64
 		err := s.state.QueryRow(`SELECT MIN(i.available_at) FROM bot_inbox i JOIN bot_bindings b
 			USING(instance_id,user_name,kind,bot_id,peer)
-			WHERE i.instance_id=? AND i.user_name=? AND i.kind=? AND i.bot_id=? AND i.phase IN ('pending','reply')`,
-			s.Settings.Memos.InstanceID, s.Settings.Memos.User, kind, client.id).Scan(&due)
+			WHERE i.instance_id=? AND i.user_name=? AND i.kind=? AND i.bot_id=? AND i.phase IN ('pending','reply')
+			AND (i.kind!='feishu-app' OR ?='' OR i.peer=?)`,
+			s.Settings.Memos.InstanceID, s.Settings.Memos.User, kind, client.id, configured(s.Settings.Channel.UserOpenID), configured(s.Settings.Channel.UserOpenID)).Scan(&due)
 		if err != nil {
 			return next, err
 		}

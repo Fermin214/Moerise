@@ -32,7 +32,7 @@ scripts/android/check.sh
 
 工具默认位于 `~/.local/share/moerise-android/`；可通过 `MOERISE_ANDROID_TOOLS` 改变目录。已有工具链时设置 `JAVA_HOME` 和 `ANDROID_HOME`，后者需包含 `platforms;android-36`、`build-tools;36.0.0` 与 `platform-tools`。
 
-Gradle Wrapper 固定为 8.13，并校验发行包 SHA-256。依赖版本见 [版本目录](../mobile/gradle/libs.versions.toml)：Kotlin 2.2.20、Compose Multiplatform 1.9.1、AGP 8.11.1、KSP 2.2.20-2.0.4、Room 2.8.3 和 SQLite 2.6.1。
+Gradle Wrapper 固定为 8.13，并校验发行包 SHA-256。依赖版本见 [版本目录](../mobile/gradle/libs.versions.toml)：Kotlin 2.2.20、Jetpack Compose 1.9.3、AGP 8.11.1、KSP 2.2.20-2.0.4、Room 2.8.3 和 SQLite 2.6.1。
 
 ## 检查与 APK
 
@@ -350,8 +350,8 @@ scripts/android/release.sh --unsigned
 安装说明和第三方声明；R8 mapping 随构建保存。
 
 `verify-apk.py` 检查包名、版本、发行调试标志、签名、ZIP 和 native ELF 的
-16 KiB 对齐。首次发行以新安装数据完成设备实际运行与 HTTPS 检查，使用完整 schema 1；
-后续正式版本再验证同签名覆盖升级及所需的数据库迁移。具体操作见
+16 KiB 对齐，并拒绝打包 SQLite 原生库。发行流程在全新安装和从 0.2.0 同签名 APK
+覆盖安装后分别检查 HTTPS 会话、草稿、待发队列及数据库迁移。具体操作见
 [设备检查](android/DEVICE-CHECKS.md#发行与升级)。
 [安装与升级](android/INSTALL.md)可随发行包分发。
 
@@ -362,9 +362,9 @@ scripts/android/release.sh --unsigned
 Android 与 Linux 联合发布在同一个 `v<版本>` Release。合并后 `Main CI` 从 GitHub Actions Secrets 读取
 `ANDROID_SIGNING_KEYSTORE`（Base64 keystore）、`ANDROID_KEY_ALIAS`、
 `ANDROID_STORE_PASSWORD` 和 `ANDROID_KEY_PASSWORD`。发行构建在 API 29 模拟器全新安装签名 APK，
-检查登录、笔记保存与读回、应用重开后的会话。隔离 HTTPS 的临时 CA 安装到
+检查登录、笔记保存与读回、应用重开后的会话；再从 0.2.0 同签名 APK 覆盖升级，检查中文草稿、冻结待发请求、账号和 Keystore。隔离 HTTPS 的临时 CA 安装到
 模拟器系统信任库，应用使用发行版证书校验与 Secure Cookie。结果归档为 `android-release-checks`。
-`Publish release` 校验该次构建的 APK 摘要与冒烟结果一致，使用原产物发布 APK、SHA-256、
+`Publish release` 校验该次构建的 APK 摘要与安装、升级结果一致，使用原产物发布 APK、SHA-256、
 构建 JSON 和许可 ZIP。具体步骤见[发布](DEVELOPMENT.md#发布)。
 
 PR 的 Android 检查在 API 36 模拟器运行登录、记录、编辑、附件、洞察选材、草稿恢复与离线队列流程。

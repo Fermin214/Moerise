@@ -106,7 +106,8 @@ class StarMapIntegrationTest {
                 }.toString(), UUID.randomUUID().toString()))
             }
             val edited = change(" changed vector")
-            val vectorUpdate = ready(33) { it.points.any { point -> point.name == target && point.sourceHash == edited.sourceHash } }
+            val vectorUpdate = ready(33) { it.layoutVersion != increment.layoutVersion &&
+                it.points.any { point -> point.name == target && point.sourceHash == edited.sourceHash } }
             stable(increment, vectorUpdate, setOf(target))
             request(HttpMethod.Delete, "/notes/${added.name.removePrefix("memos/")}",
                 buildJsonObject { put("source_hash", added.sourceHash) }.toString())

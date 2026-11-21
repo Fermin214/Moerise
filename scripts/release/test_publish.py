@@ -43,7 +43,7 @@ class PublishTests(unittest.TestCase):
                          flows={'release-smoke': {'status': 'passed', 'server_assertions': {'created_note_count': 1}}})
             upgrade_report = result.parent / 'upgrade-smoke/result.json'
             upgrade_report.parent.mkdir()
-            upgrade_smoke = smoke | dict(flows={'home-smoke': {'status': 'passed'}},
+            upgrade_smoke = smoke | dict(flows={'upgrade-smoke': {'status': 'passed'}},
                 upgrade={'from': '0.2.0', 'pending_write_count': 1, 'account': True, 'draft': True,
                          'keystore_session': True, 'local_database_restored': True})
             with patch.object(publish, 'output', return_value='moerise.minSdk=29\n'):

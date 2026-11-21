@@ -1,5 +1,10 @@
 {
   "flows": {
+    "upgrade-smoke": {
+      "file": "upgrade-smoke.yaml",
+      "timeout_seconds": 120,
+      "seed_notes": false
+    },
     "release-smoke": {
       "file": "release-smoke.yaml",
       "timeout_seconds": 180,
@@ -47,7 +52,7 @@
     },
     "home-smoke": {
       "file": "home-smoke.yaml",
-      "timeout_seconds": 120,
+      "timeout_seconds": 180,
       "seed_notes": false
     },
     "archive": {

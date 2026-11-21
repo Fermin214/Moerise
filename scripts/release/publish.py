@@ -75,7 +75,7 @@ def android_release(root, sha, run_id):
     if (any(upgrade_smoke.get(key) != value for key, value in expected_report.items())
             or str(upgrade_smoke.get('api')) != min_sdk
             or upgrade_smoke.get('session_restored_without_login') is not True
-            or upgrade_smoke.get('flows', {}).get('home-smoke', {}).get('status') != 'passed'
+            or upgrade_smoke.get('flows', {}).get('upgrade-smoke', {}).get('status') != 'passed'
             or upgrade.get('from') != '0.2.0' or upgrade.get('pending_write_count') != 1
             or any(upgrade.get(key) is not True for key in ('account', 'draft', 'keystore_session', 'local_database_restored'))):
         raise SystemExit('Android APK does not match the successful upgrade test')

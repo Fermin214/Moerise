@@ -27,7 +27,6 @@ func Handler(directory string, next http.Handler) http.Handler {
 		w.Header().Set("Cache-Control", "no-store")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("Referrer-Policy", "no-referrer")
-		w.Header().Set("Content-Security-Policy", "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'")
 		w.Header().Set("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
 		path := r.URL.Path
 		if strings.HasPrefix(path, "/api/") || path == "/mcp" || strings.HasPrefix(path, "/hooks/") ||
@@ -35,6 +34,7 @@ func Handler(directory string, next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
+		w.Header().Set("Content-Security-Policy", "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'")
 		name := strings.TrimPrefix(path, "/")
 		switch path {
 		case "/", "/archived", "/review", "/walk", "/insights", "/map", "/settings":

@@ -24,11 +24,10 @@ def seed_upgrade(adb, package, output):
         database = folder / "moerise.sqlite3"
         db = sqlite3.connect(database)
         try:
-            profile = db.execute("SELECT accountKey FROM profiles").fetchone()
-            assert profile, "0.2.0 account missing"
-            account = profile[0]
-            home = db.execute("SELECT id FROM drafts WHERE accountKey=? AND slot='home'", (account,)).fetchone()
+            profiles = db.execute("SELECT * FROM profiles ORDER BY accountKey").fetchall()
+            home = db.execute("SELECT id,accountKey FROM drafts WHERE slot='home'").fetchone()
             assert home, "0.2.0 home draft missing"
+            account = home[1]
             db.execute("UPDATE drafts SET content=?,revision=revision+1 WHERE id=?", (draft_text, home[0]))
             draft_id, operation, key = (str(uuid.uuid4()) for _ in range(3))
             frozen = {"id": draft_id, "accountKey": account, "content": queued_text, "revision": 1,
@@ -53,7 +52,7 @@ def seed_upgrade(adb, package, output):
         adb.run("shell", "chmod", "600", root + "/moerise.sqlite3")
         adb.run("shell", "rm", "-f", root + "/moerise.sqlite3-wal", root + "/moerise.sqlite3-shm", temporary)
         adb.run("shell", "restorecon", root + "/moerise.sqlite3")
-    result = {"draft": draft_text, "queued": queued_text, "account": account, "write_key": key}
+    result = {"draft": draft_text, "queued": queued_text, "account": account, "write_key": key, "profiles": profiles}
     output.mkdir(parents=True, exist_ok=True)
     (output / "seed.json").write_text(json.dumps(result) + "\n")
     return result
@@ -75,7 +74,7 @@ def verify_upgrade(adb, package, expected):
         try:
             assert db.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
             assert db.execute("PRAGMA user_version").fetchone()[0] == 2
-            assert db.execute("SELECT accountKey FROM profiles").fetchall() == [(expected["account"],)]
+            assert [list(row) for row in db.execute("SELECT * FROM profiles ORDER BY accountKey").fetchall()] == [list(row) for row in expected["profiles"]]
             assert db.execute("SELECT content FROM drafts WHERE accountKey=? AND slot='home'",
                               (expected["account"],)).fetchone() == (expected["draft"],)
             assert db.execute("SELECT count(*) FROM pending_writes WHERE accountKey=?",

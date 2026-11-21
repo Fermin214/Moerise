@@ -4,7 +4,9 @@ import (
 	"context"
 	"database/sql"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
+	"net/http"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -13,6 +15,54 @@ import (
 
 type botReplyProbe struct {
 	peer, message, text string
+}
+
+func TestFeishuRecipientChangeRetiresWorkAndRebinds(t *testing.T) {
+	settings := feishuSettings(t)
+	store := testStore(t, settings)
+	client := fakeClient(settings, func(*http.Request) (int, any, error) {
+		t.Error("retired private message reached Memos")
+		return 500, nil, nil
+	})
+	app := NewApp(settings, store, client)
+	defer app.Close()
+	accept := func(id, peer string) {
+		t.Helper()
+		var event feishuEvent
+		_ = json.Unmarshal(testFeishuEvent(store.Settings, id, peer, "private note"), &event)
+		if _, err := app.Feishu.receiveEvent(event); err != nil {
+			t.Fatal(err)
+		}
+	}
+	accept("old", "ou_owner")
+	if _, err := app.UpdateSettings(t.Context(), settingsChange(store.productVersion, `{"channel":{"user_open_id":"ou_next"}}`)); err != nil {
+		t.Fatal(err)
+	}
+	probe := &botReplyProbe{}
+	if worked, err := app.processBotMessage(t.Context(), "feishu-app", configured(settings.Channel.AppID), probe); err != nil || worked {
+		t.Fatalf("retired private work executed: %v %v", worked, err)
+	}
+	var phase string
+	var body []byte
+	if err := store.state.QueryRow(`SELECT phase,body FROM bot_inbox WHERE message_id='old'`).Scan(&phase, &body); err != nil || phase != "retired" || len(body) != 0 {
+		t.Fatalf("old private work: %s %v", phase, err)
+	}
+	accept("next", "ou_next")
+	peer, _, err := store.botPeer("feishu-app", configured(settings.Channel.AppID))
+	if err != nil || peer != "ou_next" {
+		t.Fatalf("replacement recipient did not bind: %s %v", peer, err)
+	}
+	if _, err := store.state.Exec(`UPDATE bot_inbox SET phase='retired',body=NULL WHERE message_id='next'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := app.UpdateSettings(t.Context(), settingsChange(store.productVersion, `{"channel":{"user_open_id":""}}`)); err != nil {
+		t.Fatal(err)
+	}
+	accept("unconfigured", "ou_third")
+	peer, _, err = store.botPeer("feishu-app", configured(settings.Channel.AppID))
+	if err != nil || peer != "ou_third" {
+		t.Fatalf("clearing recipient kept the old binding: %s %v", peer, err)
+	}
 }
 
 func (probe *botReplyProbe) Send(_ context.Context, peer, message, text string) (string, error) {

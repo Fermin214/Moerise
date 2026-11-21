@@ -104,6 +104,7 @@ SELECT 'feishu:'||e.message_id,b.instance_id,b.user_name,'feishu-app',e.app_id,e
     e.message_id,e.event_id,e.event_hash,'feishu-legacy',e.payload,
     CAST(unixepoch(e.created_at,'subsec')*1000 AS INTEGER),CAST(unixepoch(e.created_at,'subsec')*1000 AS INTEGER),
     CASE WHEN EXISTS(SELECT 1 FROM delivery_logs d WHERE d.source_event=e.message_id) THEN 'logged'
+        WHEN e.reply_status='skipped' THEN 'restored'
         WHEN e.status='succeeded' THEN 'sent'
         WHEN e.status IN ('pending','processing') THEN 'pending'
         WHEN e.reply_status='unknown' THEN 'failed' ELSE 'reply' END,
