@@ -206,7 +206,7 @@ try {
   const field = path => page.locator(`[name="${path}"]`);
   const settingPage = async () => {
     await page.goto(`${url}/settings`);
-    await page.locator('#settings-tab-models').click();
+    await page.locator('#settings-tab-ai').click();
     await page.getByRole('button', { name: '保存设置', exact: true }).waitFor();
   };
   const save = async () => {
@@ -229,7 +229,7 @@ try {
     await page.goto(`${url}/settings`); await page.locator('#username').fill(username); await page.locator('#password').fill(password);
     await page.locator('#login').click();
     await page.getByRole('button', { name: '进入 Moerise', exact: true }).click();
-    await page.locator('#settings-tab-models').click();
+    await page.locator('#settings-tab-ai').click();
     await page.locator('#settings-index-status').filter({ hasText: '已关闭' }).waitFor();
     assert.equal((await models()).llm.enabled, false);
     await request(url, '/api/app/v1/models', {}, 401);

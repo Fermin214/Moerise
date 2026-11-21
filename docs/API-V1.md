@@ -51,10 +51,10 @@ Moerise 服务端提供两组 RESTful API 以及一个 Model Context Protocol (M
 | `POST` | `/api/app/v1/search` | 基于本地索引执行检索；`keyword` 走 FTS5 分词与标签交集，`semantic` 与 `hybrid` 使用向量索引融合召回并按相关度分页。 |
 | `POST` | `/api/app/v1/walks/start` | 启动一次随机漫步，可指定起始笔记或由系统随机挑选起点。 |
 | `POST` | `/api/app/v1/walks/next` | 提交走过的路径，基于语义关联抽取未访问过的下一篇漫步笔记。 |
-| `GET` | `/api/app/v1/map` | 读取观星快照，包含完整点集 `points`、语义主题 `topics` 和笔记关联 `links`；主题可包含语义子主题 `districts`。 |
+| `GET` | `/api/app/v1/map` | 读取观星快照，包含完整点集 `points`（含 `excerpt` 摘要与 `create_time`）、语义主题 `topics` 和笔记关联 `links`；主题可包含语义子主题 `districts`。 |
 | `POST` | `/api/app/v1/map/rebuild` | 排队重新生成星图与主题，返回 `202 {"status":"queued"}`；要求本人会话、同源与 CSRF 校验。 |
 
-观星使用均衡 UMAP，普通变化按一分钟间隔合并，未变笔记复用坐标。`stellar` 定义可复现的星体属性；`layout_frame` 标识坐标框架，主动重建或更换向量空间时变化；更新期间 `update_state` 可为 `building` 或 `unavailable`，已发布快照继续可读。字段定义由 [OpenAPI 生成器](../internal/openapi_gen.go) 产出并经 `/openapi.json` 提供，布局说明见[观星](STARGAZING.md)。
+观星使用均衡 UMAP，每日在服务时区 03:00 按需检查并调度更新（普通变化不再高频率自动重算），未变笔记复用坐标；全量构建时根据 `stargazing.llm_naming` 开关决定是否单次调用 LLM 归纳主题命名。`stellar` 定义可复现的星体属性；`layout_frame` 标识坐标框架，主动重建或更换向量空间时变化；更新期间 `update_state` 可为 `building` 或 `unavailable`，已发布快照继续可读。字段定义由 [OpenAPI 生成器](../internal/openapi_gen.go) 产出并经 `/openapi.json` 提供，布局说明见[观星](STARGAZING.md)。
 
 `stargazing.enabled=false` 时，读取返回 `status: disabled`、`disabled_reason: stargazing` 和空点集；重建返回 `409 STARGAZING_DISABLED`。Embedding 关闭时对应 `disabled_reason: embedding` 与 `409 EMBEDDING_DISABLED`。关闭不删除已发布快照或向量。
 

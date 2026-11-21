@@ -16,7 +16,7 @@ APKS = (
 
 def source_digest():
     paths = subprocess.check_output(
-        ["git", "ls-files", "-c", "-o", "--exclude-standard", "-z", "--", "mobile"], cwd=ROOT
+        ["git", "ls-files", "-c", "-o", "--exclude-standard", "-z", "--", "mobile", ":(exclude)mobile/shared/schemas"], cwd=ROOT
     ).split(b"\0")
     digest = hashlib.sha256()
     for relative in sorted(set(paths) - {b""}):

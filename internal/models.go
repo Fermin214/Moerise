@@ -119,6 +119,8 @@ type MapPoint struct {
 	Y          float64     `json:"y"`
 	Semantic   bool        `json:"semantic"`
 	Tags       []string    `json:"tags"`
+	Excerpt    string      `json:"excerpt,omitempty"`
+	CreateTime string      `json:"create_time,omitempty"`
 	Stellar    *MapStellar `json:"stellar,omitempty"`
 	vectorHash string
 }

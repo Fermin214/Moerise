@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"net/http"
-	"net/http/httptest"
 	"reflect"
 	"strings"
 	"sync"
@@ -96,7 +95,7 @@ func TestMapReadsAndUnchangedDailyChecksNeverScanVectorsOrCallModels(t *testing.
 			t.Fatalf("snapshot read rescanned vectors: %v", err)
 		}
 		stamp, _ := time.Parse(time.RFC3339Nano, first.GeneratedAt)
-		if err := reader.update(t.Context(), stamp.Add(2*mapSnapshotInterval)); err != nil {
+		if err := reader.update(t.Context(), nextMapSchedule(stamp, service.Store.Settings.Timezone)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -105,60 +104,29 @@ func TestMapReadsAndUnchangedDailyChecksNeverScanVectorsOrCallModels(t *testing.
 	}
 }
 
-func TestMapReadsFixedPCASnapshotDuringStarsUpgrade(t *testing.T) {
-	for _, algorithm := range []string{"pca-fixed-v2", "pca-topics-v3"} {
-		t.Run(algorithm, func(t *testing.T) {
-			store, index, _, provider := indexFixture(t)
-			store.Settings.Embedding.Dimensions, provider.dimensions = 2, 2
-			finishIndex(t, index)
-			settings := store.Settings
-			topics := `[]`
-			wantTopics := []MapTopic{}
-			if algorithm == "pca-topics-v3" {
-				topics = `[{"id":"topic-aaaaaaaaaaaaaaaa","label":"笔记","members":["memos/a"],"x":1.5,"y":-0.75}]`
-				wantTopics = []MapTopic{{ID: "topic-aaaaaaaaaaaaaaaa", Label: "笔记", X: 1.5, Y: -0.75, Members: []string{"memos/a"}}}
-			}
-			if _, err := store.index.Exec(`INSERT INTO map_layouts
-				(instance_id, user_name, space_hash, algorithm, generation_id, projection_revision, version, basis_json, generated_at, topics_json)
-				VALUES (?, ?, ?, ?, 'generation-pca', 7, 'version-pca', '{"mean":[0,0],"axes":[[1,0],[0,1]],"scale":0.5}',
-				'2026-05-01T12:00:00Z', ?)`, settings.Memos.InstanceID, settings.Memos.User, embeddingSpace(settings.Embedding), algorithm, topics); err != nil {
-				t.Fatal(err)
-			}
-			if _, err := store.index.Exec(`INSERT INTO map_points
-				(instance_id, user_name, name, source_hash, vector_hash, x, y, semantic, tags_json)
-				VALUES (?, ?, 'memos/a', 'source-a', 'vector-a', 1.5, -0.75, 1, '["旧图"]')`, settings.Memos.InstanceID, settings.Memos.User); err != nil {
-				t.Fatal(err)
-			}
-			service, _ := testStarsService(t, store, nil)
-			before, err := service.Read(t.Context())
-			if err != nil || before.Status != "ready" || before.Algorithm != algorithm || before.LayoutVersion != "version-pca" ||
-				before.LayoutFrame == "" || len(before.Points) != 1 || before.Points[0].X != 1.5 || before.Points[0].Y != -0.75 ||
-				before.Points[0].Name != "memos/a" || !reflect.DeepEqual(before.Points[0].Tags, []string{"旧图"}) ||
-				!reflect.DeepEqual(before.Topics, wantTopics) {
-				t.Fatalf("upgrade lost published PCA: %+v %v", before, err)
-			}
-			workerURL := service.workerURL
-			unavailable := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(503) }))
-			t.Cleanup(unavailable.Close)
-			service.workerURL = unavailable.URL
-			now := time.Now().UTC()
-			if err := service.update(t.Context(), now); errorCode(err) != "MAP_LAYOUT_UNAVAILABLE" {
-				t.Fatalf("unexpected worker result: %v", err)
-			}
-			after, err := service.Read(t.Context())
-			before.UpdateState = "unavailable"
-			if err != nil || !reflect.DeepEqual(before, after) {
-				t.Fatalf("worker failure hid PCA snapshot: %+v %v", after, err)
-			}
-			service.workerURL = workerURL
-			if err := service.update(t.Context(), now.Add(mapSnapshotInterval)); err != nil {
-				t.Fatal(err)
-			}
-			restarted, err := NewMapService(store).Read(t.Context())
-			if err != nil || restarted.Algorithm != starsAlgorithm || restarted.Status != "ready" || len(restarted.Points) != 5 {
-				t.Fatalf("published UMAP did not supersede PCA: %+v %v", restarted, err)
-			}
-		})
+func TestMapIgnoresLegacyPCARowsAndBuildsStars(t *testing.T) {
+	store, index, _, provider := indexFixture(t)
+	store.Settings.Embedding.Dimensions, provider.dimensions = 2, 2
+	finishIndex(t, index)
+	settings := store.Settings
+	if _, err := store.index.Exec(`INSERT INTO map_layouts
+		(instance_id, user_name, space_hash, algorithm, generation_id, projection_revision, version, basis_json, generated_at, topics_json)
+		VALUES (?, ?, ?, 'pca-topics-v3', 'generation-pca', 7, 'version-pca', '{"mean":[0,0],"axes":[[1,0],[0,1]],"scale":0.5}',
+		'2026-05-01T12:00:00Z', '[{"id":"topic-aaaaaaaaaaaaaaaa","label":"笔记","members":["memos/a"],"x":1.5,"y":-0.75}]')`,
+		settings.Memos.InstanceID, settings.Memos.User, embeddingSpace(settings.Embedding)); err != nil {
+		t.Fatal(err)
+	}
+	service, _ := testStarsService(t, store, nil)
+	before, err := service.Read(t.Context())
+	if err != nil || before.Status != "building" || before.Algorithm != starsAlgorithm {
+		t.Fatalf("legacy layout row leaked incompatible snapshot: %+v %v", before, err)
+	}
+	if err := service.Update(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	restarted, err := NewMapService(store).Read(t.Context())
+	if err != nil || restarted.Algorithm != starsAlgorithm || restarted.Status != "ready" || len(restarted.Points) != 5 {
+		t.Fatalf("published UMAP did not supersede legacy rows: %+v %v", restarted, err)
 	}
 }
 
@@ -181,17 +149,25 @@ func TestMapDailySnapshotCombinesChangesAndPersistsSchedule(t *testing.T) {
 		t.Fatal(err)
 	}
 	finishIndex(t, index)
+	due := nextMapSchedule(stamp, service.Store.Settings.Timezone)
+	beforeDue := due.Add(-time.Second)
 	restarted := NewMapService(service.Store)
+	restarted.workerURL = service.workerURL
 	for _, worker := range []*MapService{service, restarted} {
-		if err := worker.update(t.Context(), stamp.Add(mapSnapshotInterval/2)); err != nil {
+		if err := worker.update(t.Context(), beforeDue); err != nil {
 			t.Fatal(err)
 		}
 		result, err := worker.Read(t.Context())
-		if err != nil || !reflect.DeepEqual(first, result) {
-			t.Fatalf("ordinary changes bypassed daily interval: %v", err)
+		if err != nil || result.LayoutVersion != first.LayoutVersion {
+			t.Fatalf("ordinary changes bypassed daily schedule: %v", err)
+		}
+		for _, pt := range result.Points {
+			if pt.Name == "memos/b" && pt.Excerpt != "" {
+				t.Fatalf("deleted note excerpt remained valid before daily rebuild: %+v", pt)
+			}
 		}
 	}
-	if err := service.update(t.Context(), stamp.Add(mapSnapshotInterval)); err != nil {
+	if err := service.update(t.Context(), due); err != nil {
 		t.Fatal(err)
 	}
 	second, err := service.Read(t.Context())
@@ -213,11 +189,12 @@ func TestMapDailySnapshotCombinesChangesAndPersistsSchedule(t *testing.T) {
 func TestMapOldSnapshotSurvivesIndexingAndNewSpaceNeverReadsOldPoints(t *testing.T) {
 	service, index, _, _, first := readyMapService(t)
 	stamp, _ := time.Parse(time.RFC3339Nano, first.GeneratedAt)
+	due := nextMapSchedule(stamp, service.Store.Settings.Timezone)
 	added := testMemo(t, "new", "pending note")
 	if err := service.Store.Refresh(added.Name, &added); err != nil {
 		t.Fatal(err)
 	}
-	if err := service.update(t.Context(), stamp.Add(mapSnapshotInterval)); err != nil {
+	if err := service.update(t.Context(), due); err != nil {
 		t.Fatal(err)
 	}
 	result, err := service.Read(t.Context())
@@ -248,6 +225,7 @@ func TestMapOldSnapshotSurvivesIndexingAndNewSpaceNeverReadsOldPoints(t *testing
 func TestMapConcurrentUpdatesCoalesceAndReadsDoNotWaitForGeneration(t *testing.T) {
 	service, _, _, _, first := readyMapService(t)
 	stamp, _ := time.Parse(time.RFC3339Nano, first.GeneratedAt)
+	due := nextMapSchedule(stamp, service.Store.Settings.Timezone)
 	held, err := service.Store.index.BeginTx(t.Context(), nil)
 	if err != nil {
 		t.Fatal(err)
@@ -255,7 +233,7 @@ func TestMapConcurrentUpdatesCoalesceAndReadsDoNotWaitForGeneration(t *testing.T
 	defer held.Rollback()
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan error, 1)
-	go func() { done <- service.update(ctx, stamp.Add(mapSnapshotInterval)) }()
+	go func() { done <- service.update(ctx, due) }()
 	result, err := service.Read(t.Context())
 	if err != nil || !reflect.DeepEqual(first, result) {
 		t.Fatalf("read blocked behind builder: %v", err)

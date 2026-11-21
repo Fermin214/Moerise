@@ -30,10 +30,14 @@ class MobileController(
     val archive = TimelineController(repository, { session.core }, scope, "ARCHIVED")
     val filterReads = FilterReads(repository, { session.core?.takeIf { session.state.value.connected } }, { session.state.value.profile?.takeUnless { session.state.value.needsLogin }?.accountKey },
         { session.state.value.profile?.timezone ?: "UTC" }, scope)
-    val search = SearchController({ session.core }, { session.state.value.profile?.accountKey }, scope, filterReads, privacy)
-    val sidebar = SearchController({ session.core }, { session.state.value.profile?.accountKey }, scope, filterReads)
-    val review = ReviewController({ session.core }, { session.state.value.profile?.accountKey }, scope, privacy)
-    val walk = WalkController({ session.core }, { session.state.value.profile?.accountKey }, scope, privacy)
+    val search = SearchController({ session.core }, { session.state.value.profile?.accountKey }, scope, filterReads, privacy, repository) {
+        session.state.value.profile?.timezone ?: "UTC"
+    }
+    val sidebar = SearchController({ session.core }, { session.state.value.profile?.accountKey }, scope, filterReads, repository = repository) {
+        session.state.value.profile?.timezone ?: "UTC"
+    }
+    val review = ReviewController({ session.core }, { session.state.value.profile?.accountKey }, scope, privacy, repository)
+    val walk = WalkController({ session.core }, { session.state.value.profile?.accountKey }, scope, privacy, repository, enablePrefetch = true)
     val insights = InsightController(repository, { session.core }, { session.state.value.profile?.accountKey }, scope,
         { Strings(session.language.value).text("zh-CN", "en") },
         timezone = { session.state.value.profile?.timezone ?: "UTC" }, filters = filterReads, privacy = privacy) { key, note ->
@@ -63,9 +67,18 @@ class MobileController(
         timeline.onSaved(key, note, draftId); homeNote.acceptSaved(key, note)
     }
     val sync = SyncController(session, repository, writes, scope, {
-        timeline.refresh()
-        if (archive.state.value.fresh) archive.refresh()
-        scope.launch { runCatching { repository().collectFiles() } }
+        scope.launch {
+            val account = session.state.value.profile?.accountKey ?: return@launch
+            val synced = runCatching { repository().isNotesSynced(account) }.getOrDefault(false)
+            if (synced) {
+                timeline.reloadLocal()
+                archive.reloadLocal()
+            } else {
+                timeline.refresh()
+                if (archive.state.value.fresh) archive.refresh()
+            }
+            runCatching { repository().collectFiles() }
+        }
     }, initialForeground, privacy)
     private val mutableEditing = MutableStateFlow(false)
     val editing = mutableEditing.asStateFlow()
@@ -169,8 +182,11 @@ class MobileController(
                 if (profile == null) return@collectLatest
                 delay(250)
                 try {
-                    filterReads.tags("NORMAL")
-                    filterReads.calendar("NORMAL", serviceMonth(profile.timezone))
+                    if (!repository().isNotesSynced(profile.accountKey)) {
+                        filterReads.tags("NORMAL")
+                        filterReads.calendar("NORMAL", serviceMonth(profile.timezone))
+                    }
+                    review.prefetch()
                     insights.prefetchHistory()
                     if (profile.stargazingEnabled) stars.prefetch()
                 } catch (error: Exception) { if (error is CancellationException) throw error }

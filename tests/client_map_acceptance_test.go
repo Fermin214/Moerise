@@ -270,13 +270,17 @@ func TestClientMapMemosAcceptance(t *testing.T) {
 	added := c.call("POST", "/api/app/v1/notes", map[string]string{"content": "balcony herbs new observation"}, 201)
 	h.sync("full")
 	h.vectorsReady()
-	if stable := acceptanceMap(t, c); !reflect.DeepEqual(first, stable) {
-		t.Fatal("ordinary edits bypassed snapshot coalescing interval")
+	stable := acceptanceMap(t, c)
+	if stable.LayoutVersion != first.LayoutVersion || stable.LayoutFrame != first.LayoutFrame {
+		t.Fatal("ordinary edits bypassed daily snapshot schedule")
+	}
+	if point := points(stable)[notes[4]["name"].(string)]; point.Excerpt != "" {
+		t.Fatal("deleted note kept stale map excerpt")
 	}
 	// Advance the derived snapshot timestamp without adding a production clock switch.
 	h.stop()
 	db := h.database("index")
-	_, err := db.Exec("UPDATE star_snapshots SET generated_at = ?", time.Now().UTC().Add(-2*time.Minute).Format(time.RFC3339Nano))
+	_, err := db.Exec("UPDATE star_snapshots SET generated_at = ?", time.Now().UTC().Add(-48*time.Hour).Format(time.RFC3339Nano))
 	db.Close()
 	if err != nil {
 		t.Fatal(err)

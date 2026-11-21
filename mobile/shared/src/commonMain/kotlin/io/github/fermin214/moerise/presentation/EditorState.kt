@@ -42,6 +42,18 @@ suspend fun expectedSubmittedResult(draft: DraftEntity, write: PendingWriteEntit
     if (remote.attachments.filter { it["name"]?.jsonPrimitive?.content in keptNames } != kept) return false
     val added = remote.attachments.filter { it["name"]?.jsonPrimitive?.content !in keptNames }.toMutableList()
     if (added.size != edits.staged.size) return false
+    if (edits.staged.isEmpty()) return true
+    if (remote.attachmentReceipts.isNotEmpty()) {
+        if (remote.attachmentReceipts.size != edits.staged.size) return false
+        val addedNames = added.mapNotNull { it["name"]?.jsonPrimitive?.content }.toMutableSet()
+        for ((position, file) in edits.staged.withIndex()) {
+            val receipt = remote.attachmentReceipts.firstOrNull { it.position == position } ?: return false
+            if (!addedNames.remove(receipt.name) || receipt.contentSha256 != file.sha256) return false
+            val payload = "[${JsonPrimitive(write.idempotencyKey)}, $position, ${JsonPrimitive(receipt.name)}, ${JsonPrimitive(file.sha256)}]"
+            if (receipt.receiptDigest != sha256(payload.encodeToByteArray())) return false
+        }
+        return addedNames.isEmpty()
+    }
     for (file in edits.staged) {
         var match: JsonObject? = null
         for (item in added) {

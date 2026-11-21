@@ -39,16 +39,19 @@ onFlowComplete:
       id: save_note
     timeout: 15000
     label: Wait for the expected UI state
+- runFlow:
+    file: open-menu.yaml
+    label: Open navigation to sync
 - extendedWaitUntil:
     visible:
-      id: sync_notes
+      id: sidebar_sync
       enabled: true
     timeout: 15000
-    label: Wait for the expected UI state
+    label: Wait for the sidebar sync button
 - tapOn:
-    id: sync_notes
+    id: sidebar_sync
     enabled: true
-    label: Activate the specified control
+    label: Trigger manual sync from the sidebar
 - extendedWaitUntil:
     visible:
       id: note_editor

@@ -70,7 +70,6 @@ export class StarScene {
         if (!canContinue()) return false;
         step = steps.next();
         if (!step.done) {
-          this.ctx.getImageData(0, 0, 1, 1);
           await (globalThis.scheduler?.yield ? scheduler.yield() : new Promise(resolve => setTimeout(resolve, 0)));
         }
       } while (!step.done);

@@ -10,20 +10,6 @@ plugins {
     alias(libs.plugins.room)
 }
 
-val syncRingDirectory = layout.buildDirectory.dir("generated/moerise-icons")
-val generateSyncRing by tasks.registering {
-    val source = rootProject.layout.projectDirectory.file("../web/src/sync-ring.js")
-    inputs.file(source)
-    outputs.dir(syncRingDirectory)
-    doLast {
-        val path = source.asFile.readText().substringAfter("'").substringBefore("'")
-        require(path.matches(Regex("[MmAaLlHhVvZz0-9., -]+")))
-        val file = syncRingDirectory.get().file("SyncRingPath.kt").asFile
-        file.parentFile.mkdirs()
-        file.writeText("package io.github.fermin214.moerise.presentation\n\ninternal const val SyncRingPath = \"$path\"\n")
-    }
-}
-
 kotlin {
     compilerOptions.freeCompilerArgs.add("-Xexpect-actual-classes")
     androidLibrary {
@@ -36,7 +22,6 @@ kotlin {
         compilerOptions.jvmTarget.set(JvmTarget.JVM_17)
     }
     sourceSets {
-        commonMain.get().kotlin.srcDir(generateSyncRing)
         listOf(androidMain, jvmMain).forEach { it.get().kotlin.srcDir("src/jvmSharedMain/kotlin") }
         commonMain.dependencies {
             implementation(compose.runtime)

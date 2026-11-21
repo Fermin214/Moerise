@@ -6,6 +6,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.*
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.selection.SelectionContainer
@@ -116,9 +117,20 @@ fun InsightScreen(mobile: MobileController, strings: Strings, scroll: List<Scrol
                         ReplyWaiting(strings)
                     }
                 }
-                if (!following && messages.canScrollForward) TextButton(onClick = {
-                    scope.launch { messages.scrollTo(messages.maxValue); following = true }
-                }, modifier = Modifier.align(Alignment.BottomEnd)) { Text(strings.text("回到最新", "Jump to latest")) }
+                if (!following && messages.canScrollForward) Surface(
+                    modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 10.dp).size(44.dp),
+                    shape = CircleShape,
+                    color = Color.White,
+                    border = BorderStroke(1.dp, MoeriseColors.Line),
+                    shadowElevation = 4.dp,
+                ) {
+                    IconButton(
+                        onClick = { scope.launch { messages.animateScrollTo(messages.maxValue); following = true } },
+                        modifier = Modifier.fillMaxSize().testTag("chat_latest"),
+                    ) {
+                        WebIcon(WebIcon.ArrowDown, strings.text("回到最新", "Jump to latest"), tint = MoeriseColors.Ink)
+                    }
+                }
             }
             if (!picker.visible && dialog.isEmpty()) {
                 state.error?.let { InsightError(it, strings) }
@@ -270,9 +282,7 @@ private fun InsightSaveDialog(controller: InsightController, state: InsightState
     val chat = state.chat ?: return
     val durable = selectableMessages(state.confirmed).associateBy { it.ref }
     val choices = selectableMessages(chat.turns).map { preview ->
-        val item = durable[preview.ref] ?: return@map preview.copy(eligible = false)
-        item.copy(eligible = item.eligible && (state.capabilities.saveSelection ||
-            item.ref.role == "assistant" && item.status == "completed" && !state.locked))
+        durable[preview.ref] ?: preview.copy(eligible = false)
     }
     val savedBefore = remember { state.savedOperation }
     val chosen = remember(chat.id) { mutableStateListOf<ChatMessageRef>().apply {
@@ -286,14 +296,10 @@ private fun InsightSaveDialog(controller: InsightController, state: InsightState
     var confirming by remember { mutableStateOf(false) }
     LaunchedEffect(state.savedOperation) { if (savedBefore != state.savedOperation) close() }
     InsightOverlay(strings.text("保存为笔记", "Save as note"), strings, close, "chat_save_dialog") {
-        if (!state.capabilities.saveSelection) Text(strings.text("升级 Core 后可选择提问和多条消息。", "Upgrade Core to save questions or multiple messages."))
         LazyColumn(Modifier.weight(1f)) {
             items(choices, key = { "${it.ref.requestId}/${it.ref.role}" }) { item ->
                 Row(Modifier.fillMaxWidth().clickable(enabled = item.eligible && !state.saving && state.pendingSave == null) {
-                    if (!chosen.remove(item.ref)) {
-                        if (!state.capabilities.saveSelection) chosen.clear()
-                        chosen.add(item.ref)
-                    }
+                    if (!chosen.remove(item.ref)) chosen.add(item.ref)
                 }.padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
                     Checkbox(checked = item.ref in chosen, onCheckedChange = null, enabled = item.eligible)
                     Column(Modifier.padding(start = 8.dp)) {
@@ -316,7 +322,7 @@ private fun InsightSaveDialog(controller: InsightController, state: InsightState
         WebAction(if (state.pendingSave != null) strings.text("重试保存", "Retry save") else strings.text("保存为笔记", "Save as note"), {
             if (state.pendingSave != null) controller.retrySave()
             else if (incomplete) confirming = true
-            else { controller.saveSelection(selected.map { it.ref }, false); if (!state.capabilities.saveSelection) close() }
+            else controller.saveSelection(selected.map { it.ref }, false)
         }, enabled = !state.saving && (state.pendingSave != null || selected.isNotEmpty() && bytes <= 65_536),
             modifier = Modifier.align(Alignment.End).testTag("chat_save_confirm"))
     }

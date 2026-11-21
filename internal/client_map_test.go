@@ -91,9 +91,17 @@ func TestClientMapContractAndMachineIsolation(t *testing.T) {
 		t.Fatalf("map contract: %d %s %v", response.Code, response.Body, response.Header())
 	}
 	validateAPISchema(t, clientChatSchema(t, "MapResponse"), response.Body.Bytes())
-	for _, secret := range []string{"private body", fixture.settings.Memos.Token, fixture.settings.Web.StateEncryptionKey, "vector_hash", "base_url"} {
+	for _, secret := range []string{fixture.settings.Memos.Token, fixture.settings.Web.StateEncryptionKey, "vector_hash", "base_url"} {
 		if strings.Contains(response.Body.String(), secret) {
-			t.Fatalf("map leaked private original or credential: %s", secret)
+			t.Fatalf("map leaked credential or internal field: %s", secret)
+		}
+	}
+	for _, point := range result.Points {
+		if point.Name == "memos/archived" && point.Excerpt != "" {
+			t.Fatalf("archived point exposed excerpt: %+v", point)
+		}
+		if point.Name == "memos/a" && (point.Excerpt != "private body a" || point.CreateTime == "") {
+			t.Fatalf("point missed expected excerpt or create_time: %+v", point)
 		}
 	}
 	assertSettingsError(t, clientCall(api, "GET", path+"?layout_version=old", "", cookie, "", ""), 422, "INVALID_ARGUMENT")

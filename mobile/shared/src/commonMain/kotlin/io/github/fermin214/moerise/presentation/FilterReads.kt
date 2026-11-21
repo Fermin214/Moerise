@@ -19,11 +19,18 @@ class FilterReads(
 
     fun clear() { generation++; locks.clear() }
 
-    suspend fun tags(state: String): TagPage =
-        CoreJson.decodeFromString(read("tags:$state", "/tags?state=$state"))
+    suspend fun tags(state: String): TagPage {
+        val key = account() ?: throw CancellationException()
+        val repo = repository()
+        if (repo.isNotesSynced(key)) return repo.localTagPage(key, state)
+        return CoreJson.decodeFromString(read("tags:$state", "/tags?state=$state"))
+    }
 
     suspend fun calendar(state: String, month: String): CalendarPage {
         require(month.matches(Regex("\\d{4}-(0[1-9]|1[0-2])")))
+        val key = account() ?: throw CancellationException()
+        val repo = repository()
+        if (repo.isNotesSynced(key)) return repo.localCalendarPage(key, state, month, timezone())
         return CoreJson.decodeFromString<CalendarPage>(read("calendar:$state:$month", "/calendar?state=$state&month=$month"))
             .also { require(it.month == month) }
     }

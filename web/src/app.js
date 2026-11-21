@@ -370,7 +370,7 @@ function schedulePreload() {
       await readHistory(owner);
       if (owner.signal.aborted || document.hidden || mapSnapshot || identity?.stargazing_enabled === false) return;
       const started = performance.now();
-      const snapshot = await request('/map', { controller: owner, maxBytes: 2 * 1024 * 1024 }).then(value => {
+      const snapshot = await request('/map', { controller: owner, maxBytes: 8 * 1024 * 1024 }).then(value => {
         usage('stars', 'success', performance.now() - started, 'prefetch'); return value;
       }, error => { usage('stars', resultOf(error), performance.now() - started, 'prefetch'); throw error; });
       if (!owner.signal.aborted && generation === epoch && ['ready', 'empty'].includes(snapshot?.status)) mapSnapshot = snapshot;
@@ -878,6 +878,22 @@ function updateComposer() {
   leaveGuard.update();
 }
 $('content').addEventListener('input', () => { draft.content = $('content').value; updateComposer(); });
+$('sync-trigger').addEventListener('click', async () => {
+  if (!identity) return;
+  const trigger = $('sync-trigger');
+  trigger.disabled = true;
+  const transfer = syncStatus.start();
+  try {
+    dirtySnapshots(); invalidateSidebar();
+    await Promise.all([loadSidebar(), isTimeline() ? timeline?.open(true) : Promise.resolve()]);
+    transfer('success');
+  } catch (err) {
+    transfer(resultOf(err));
+    handleFailure($('list-error'), err);
+  } finally {
+    trigger.disabled = false;
+  }
+});
 $('content').addEventListener('keydown', event => {
   if ((event.ctrlKey || event.metaKey) && event.key === 'Enter' && !event.isComposing) {
     event.preventDefault(); if (!$('save').disabled) $('composer').requestSubmit();

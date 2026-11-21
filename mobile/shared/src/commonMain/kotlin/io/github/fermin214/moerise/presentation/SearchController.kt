@@ -37,6 +37,8 @@ class SearchController(
     private val core: () -> CoreClient?, private val account: () -> String?, private val scope: CoroutineScope,
     private val reads: FilterReads? = null,
     private val privacy: PrivacyController? = null,
+    private val repository: (suspend () -> NoteRepository)? = null,
+    private val timezone: () -> String = { "UTC" },
 ) {
     private val mutable = MutableStateFlow(SearchState())
     val state = mutable.asStateFlow()
@@ -55,32 +57,67 @@ class SearchController(
     fun change(query: SearchQuery) {
         if (query == state.value.query) return
         ++generation; request?.cancel()
-        if (query.state != state.value.query.state) {
+        val stateChanged = query.state != state.value.query.state
+        if (stateChanged) {
             ++filterGeneration; filters?.cancel()
             mutable.update { it.copy(tags = emptyList(), calendar = null, filtersLoading = false, filtersError = null) }
         }
-        mutable.update { it.copy(query = query, notes = emptyList(), next = "", loading = false, error = null,
-            responseMode = null, semantic = null) }
+        val keepLocalList = !stateChanged && query.text.isBlank() && state.value.query.text.isBlank()
+        mutable.update {
+            it.copy(
+                query = query,
+                notes = if (keepLocalList) it.notes else emptyList(),
+                next = "",
+                loading = false,
+                error = null,
+                responseMode = if (keepLocalList) it.responseMode else null,
+                semantic = if (keepLocalList) it.semantic else null,
+            )
+        }
     }
 
     fun tab(value: Int) { mutable.update { it.copy(tab = value) } }
     fun month(value: String) { mutable.update { it.copy(month = value) } }
 
     fun search(append: Boolean = false) {
-        val active = core() ?: return
         val key = account() ?: return
         if (state.value.loading) return
         val query = state.value.query
         val token = if (append) state.value.next.takeIf { it.isNotEmpty() } ?: return else ""
         val stamp = ++generation
         request?.cancel()
-        mutable.update { it.copy(loading = true, error = null) }
+        val effectiveMode = if (query.text.isBlank()) "keyword" else query.mode
+        val localCandidate = effectiveMode == "keyword" && repository != null
         val operation = "search_${if (query.text.isBlank()) "keyword" else query.mode}"
         val started = epochMillis()
+        if (!localCandidate) mutable.update { it.copy(loading = true, error = null) }
         request = scope.launch {
             try {
                 require(query.mode in setOf("keyword", "semantic", "hybrid")) { "SEARCH_MODE_INVALID" }
-                val effectiveMode = if (query.text.isBlank()) "keyword" else query.mode
+                if (localCandidate) {
+                    val repo = repository!!.invoke()
+                    if (repo.isNotesSynced(key)) {
+                        val offset = if (append && token.startsWith("local:")) token.removePrefix("local:").toIntOrNull() ?: 0 else 0
+                        val (rows, hasMore) = repo.localSearch(key, query, timezone(), 20, offset)
+                        if (stamp != generation || key != account()) return@launch
+                        val next = if (hasMore) "local:${offset + rows.size}" else ""
+                        mutable.update {
+                            it.copy(
+                                notes = (if (append) it.notes + rows else rows).distinctBy { note -> note.name },
+                                next = next,
+                                responseMode = "keyword",
+                                semantic = SearchSemantic(),
+                                loading = false,
+                                error = null,
+                            )
+                        }
+                        if (!append) privacy?.record(operation, started = started)
+                        return@launch
+                    }
+                    if (core() == null) return@launch
+                    mutable.update { it.copy(loading = true, error = null) }
+                }
+                val active = core() ?: return@launch
                 val page = if (effectiveMode == "keyword") {
                     val parameters = buildList {
                         add("state" to query.state); add("order" to "created_desc"); add("page_size" to "20")

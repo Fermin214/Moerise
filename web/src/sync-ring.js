@@ -1,1 +1,2 @@
-export const syncRing = 'M5.4 7.5A8 8 0 0 1 16 5.1L13 5.5M16 5.1l-.8-3M19.2 8.5A8 8 0 0 1 15.9 19l1.1-2.9M15.9 19l3 .7M11.4 20A8 8 0 0 1 4.1 12l1.9 2.4M4.1 12l-2 2.4';
+export const syncCloud = 'M7.5 18h9.2a4.3 4.3 0 0 0 .5-8.57A5.5 5.5 0 0 0 6.5 8.1 3.8 3.8 0 0 0 7.5 18Z';
+export const syncRing = syncCloud;

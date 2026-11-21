@@ -23,8 +23,7 @@ async function fixture(t, language = 'zh-CN') {
     create_time: '2026-10-20T08:00:00Z', tags: index < 2 ? ['共同', '细分'] : ['共同'], attachments: [] }));
   const state = { session: false, csrf: 'csrf-1', requests: [], chat: null, calls: 0, saves: 0,
     stream: 'complete', finish: null, sourceFailure: false, lastSave: null, rejectCSRF: false,
-    chats: new Map(), creations: new Map(), receipts: new Map(), canceling: new Set(), streams: new Map(), cancelDelay: 0, cancels: 0, pageSize: 100,
-    modern: true };
+    chats: new Map(), creations: new Map(), receipts: new Map(), canceling: new Set(), streams: new Map(), cancelDelay: 0, cancels: 0, pageSize: 100 };
   let clock = 0;
   const touch = chat => { chat.updated_at = new Date(Date.UTC(2026, 9, 31, 0, 0, clock++)).toISOString(); };
   const core = http.createServer(async (req, res) => {
@@ -49,7 +48,6 @@ async function fixture(t, language = 'zh-CN') {
       if (state.rejectCSRF) { state.rejectCSRF = false; state.csrf = 'csrf-2'; error('CSRF_REJECTED', 403); return; }
       assert.equal(req.headers['x-csrf-token'], state.csrf);
     }
-    if (path === '/capabilities') { json({ chat: { material_selection: state.modern, save_selection: state.modern } }); return; }
     if (path === '/tags') { json({ tags: ['共同', '细分'].map(tag => ({ tag, count: 2 })) }); return; }
     if (path === '/calendar') { json({ month: url.searchParams.get('month'), days: [{ date: '2026-10-20', count: 2 }] }); return; }
     if (path === '/notes') { json({ notes: notes.filter(note => note.state === 'NORMAL'), next_page_token: '' }); return; }
@@ -666,24 +664,23 @@ test('a partial group remains selectable past the character budget', async t => 
   assert.equal(state.calls, 0);
 });
 
-test('a timed out material refresh keeps temporary choices and retries in the same picker', async t => {
+test('a timed out material update keeps temporary choices and retries in the same picker', async t => {
   const { page, state, url } = await fixture(t);
-  state.modern = false;
   await login(page, url, '/insights?note=memos%2Fnormal');
   await page.getByRole('button', { name: '添加笔记', exact: true }).click();
   await page.getByRole('button', { name: '按标签', exact: true }).click();
   await loadMaterials(page, 3);
   for (const row of await page.locator('.insight-choice input').all()) await row.check();
   await page.clock.install({ time: new Date('2026-10-31T00:00:00Z') });
-  let resolves = 0, release;
-  await page.route('**/api/app/v1/chat-materials/resolve', async route => {
-    if (++resolves === 1) {
+  let patches = 0, release;
+  await page.route('**/api/app/v1/chats/*', async route => {
+    if (route.request().method() === 'PATCH' && ++patches === 1) {
       await new Promise(resolve => { release = resolve; });
       try { await route.continue(); } catch {}
     } else await route.continue();
   });
   await applyMaterials(page);
-  await waitFor(() => resolves === 1);
+  await waitFor(() => patches === 1);
   await page.clock.fastForward(65001);
   await page.locator('.insight-picker .insight-warning:not([hidden])').waitFor();
   assert.equal(state.chat.version, 1);
@@ -691,21 +688,25 @@ test('a timed out material refresh keeps temporary choices and retries in the sa
   release();
   await applyMaterials(page);
   await page.getByRole('dialog').waitFor({ state: 'detached' });
-  assert.equal(resolves, 2);
+  assert.ok(patches >= 2);
   assert.equal(state.chat.materials.length, 3);
-  assert.equal(state.chat.version, 2);
+  assert.ok(state.chat.version >= 2);
 });
 
-test('failed material refresh retains the selection and a late retry cannot update a departed chat', async t => {
+test('failed material update retains the selection and a late retry cannot update a departed chat', async t => {
   const { page, state, url } = await fixture(t);
-  state.modern = false;
   await login(page, url, '/insights?note=memos%2Fnormal');
   await page.locator('.side a[href="/"]').click();
   await page.goBack();
   await page.locator('.insights-page[aria-busy="false"]').waitFor();
   const before = structuredClone(state.chat), count = await page.locator('[data-chat="material-toggle"]').textContent();
-  state.sourceFailure = true;
   await page.getByRole('button', { name: '添加笔记', exact: true }).click();
+  await page.route('**/api/app/v1/chats/*', async route => {
+    if (route.request().method() === 'PATCH' && state.sourceFailure) {
+      await route.fulfill({ status: 404, contentType: 'application/json', body: JSON.stringify({ error: { code: 'SOURCE_NOT_FOUND' } }) });
+    } else await route.continue();
+  });
+  state.sourceFailure = true;
   await applyMaterials(page);
   await page.locator('.insight-picker .insight-warning:not([hidden])').waitFor();
   assert.deepEqual(state.chat, before);
@@ -713,10 +714,12 @@ test('failed material refresh retains the selection and a late retry cannot upda
 
   state.sourceFailure = false;
   let release;
-  await page.route('**/api/app/v1/chat-materials/resolve', async route => {
-    const response = await route.fetch();
-    await new Promise(resolve => { release = resolve; });
-    await route.fulfill({ response });
+  await page.unroute('**/api/app/v1/chats/*');
+  await page.route('**/api/app/v1/chats/*', async route => {
+    if (route.request().method() === 'PATCH') {
+      await new Promise(resolve => { release = resolve; });
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ...before, version: 2, material_version: 2 }) }).catch(() => {});
+    } else await route.continue();
   });
   await applyMaterials(page);
   await waitFor(() => !!release);

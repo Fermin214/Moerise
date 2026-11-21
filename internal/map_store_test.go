@@ -41,8 +41,14 @@ func TestMapSnapshotIncludesArchivedAndUnlocatedNotes(t *testing.T) {
 		t.Fatalf("snapshot lost archive/file or called model: %+v", initial.points)
 	}
 	data, err := json.Marshal(initial.points)
-	if err != nil || strings.Contains(string(data), "body a") || strings.Contains(string(data), "vector_hash") {
-		t.Fatalf("map exposed cached body or internal vector: %s %v", data, err)
+	if err != nil || strings.Contains(string(data), "vector_hash") || initial.points[0].Excerpt != "body a" || initial.points[0].CreateTime == "" {
+		t.Fatalf("map exposed internal vector or missed excerpt/create_time: %s %v", data, err)
+	}
+	if err := store.index.QueryRow("SELECT state FROM memos WHERE name = 'memos/e'").Scan(new(string)); err != nil {
+		t.Fatal(err)
+	}
+	if initial.points[4].Excerpt != "" {
+		t.Fatalf("archived note retained excerpt: %+v", initial.points[4])
 	}
 	reopened, err := NewStore(store.Settings)
 	if err != nil {
@@ -171,5 +177,30 @@ func TestIndexRebuildKeepsProductSettings(t *testing.T) {
 	var count int
 	if err := reopened.index.QueryRow("SELECT COUNT(*) FROM star_snapshots").Scan(&count); err != nil || count != 0 {
 		t.Fatalf("index rebuild retained derived coordinates: %d %v", count, err)
+	}
+}
+
+func TestMapReadBumpsProjectionRevisionAndRefreshesPointExcerpt(t *testing.T) {
+	store, index, memos, _ := indexFixture(t)
+	finishIndex(t, index)
+	service, _ := testStarsService(t, store, nil)
+	if err := service.Update(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	first, err := service.Read(t.Context())
+	if err != nil || first.Status != "ready" || first.Points[0].Excerpt != "body a" {
+		t.Fatalf("initial map read: %+v err=%v", first, err)
+	}
+	edited := testMemo(t, "a", "updated body a excerpt")
+	memos[edited.Name] = rawMemo("a", "updated body a excerpt")
+	if err := store.Refresh(edited.Name, &edited); err != nil {
+		t.Fatal(err)
+	}
+	second, err := service.Read(t.Context())
+	if err != nil || second.LayoutVersion != first.LayoutVersion {
+		t.Fatalf("second map read: %+v err=%v", second, err)
+	}
+	if second.ProjectionRevision <= first.ProjectionRevision || second.Points[0].Excerpt != "updated body a excerpt" {
+		t.Fatalf("stale map read: rev %d->%d excerpt=%q", first.ProjectionRevision, second.ProjectionRevision, second.Points[0].Excerpt)
 	}
 }

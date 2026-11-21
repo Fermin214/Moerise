@@ -99,4 +99,53 @@ class StarMapRecoveryTest {
             scope.coroutineContext[Job]!!.cancelAndJoin(); core.close(); db.close(); dispatcher.close(); folder.deleteRecursively()
         }
     }
+
+    @Test
+    fun clearedExcerptInvalidatesReaderAndIgnoresStaleLocalData() = runBlocking<Unit> {
+        val folder = Files.createTempDirectory("moerise-stars-cleared-").toFile()
+        val path = folder.resolve("data.sqlite3").absolutePath
+        val dispatcher = Executors.newSingleThreadExecutor().asCoroutineDispatcher()
+        val scope = CoroutineScope(SupervisorJob() + dispatcher)
+        val db = jvmDatabase(path)
+        val repository = NoteRepository(db)
+        val key = "https://notes.example\u0000one\u0000users/owner"
+        val base = CoreJson.decodeFromString<StarMap>(javaClass.getResourceAsStream("/contracts/map/ready.json")!!.bufferedReader().use { it.readText() })
+        val pointHash = base.points.single().sourceHash
+        repository.recordLocalNote(key, Note("one", "memos/fixture", "old room body", "NORMAL", pointHash))
+        val remote = AtomicReference(base.copy(points = base.points.map { it.copy(excerpt = "initial excerpt") }))
+        val noteCalls = AtomicInteger()
+        val engine = MockEngine { request ->
+            when (request.url.encodedPath.removePrefix("/api/app/v1")) {
+                "/session" -> respond("""{"instance_id":"one","user":{"name":"users/owner"},"timezone":"UTC","expires_at":"2027-01-01T00:00:00Z","csrf_token":"token"}""")
+                "/map" -> respond(CoreJson.encodeToString(remote.get()))
+                "/notes/fixture" -> {
+                    noteCalls.incrementAndGet()
+                    respond(CoreJson.encodeToString(Note("one", "memos/fixture", "old reader body", "NORMAL", pointHash)))
+                }
+                else -> error("unexpected ${request.url}")
+            }
+        }
+        val core = CoreClient("https://notes.example", SessionCookies("https://notes.example", MemorySecrets()), engine)
+        try {
+            val controller = StarMapController({ repository }, { core }, { key }, scope)
+            withContext(dispatcher) { controller.size(800.0, 600.0); controller.visible(true) }
+            withTimeout(10_000) { controller.state.first { !it.loading && it.snapshot != null } }
+            withContext(dispatcher) { controller.select("memos/fixture") }
+            withTimeout(10_000) { controller.state.first { it.reader?.content == "old reader body" } }
+            withContext(dispatcher) { controller.excerpts(listOf("memos/fixture")) }
+            assertEquals("initial excerpt", controller.state.value.excerpts["memos/fixture"])
+
+            remote.set(base.copy(projectionRevision = base.projectionRevision + 1, points = base.points.map { it.copy(excerpt = "") }))
+            withContext(dispatcher) { controller.refresh() }
+            withTimeout(10_000) { controller.state.first { !it.loading && it.snapshot?.points?.single()?.excerpt == "" } }
+            assertNull(controller.state.value.reader)
+            assertFalse("memos/fixture" in controller.state.value.excerpts)
+
+            withContext(dispatcher) { controller.excerpts(listOf("memos/fixture")) }
+            assertFalse("memos/fixture" in controller.state.value.excerpts)
+            assertEquals(1, noteCalls.get())
+        } finally {
+            scope.coroutineContext[Job]!!.cancelAndJoin(); core.close(); db.close(); dispatcher.close(); folder.deleteRecursively()
+        }
+    }
 }

@@ -104,10 +104,13 @@ class SyncController internal constructor(
                     return@withLock false
                 }
                 val active = session.core ?: return@withLock false
+                val repo = repository()
                 val drained = writes.drain(key, active)
                 if (key != account) return@withLock false
-                val notes = repository().queuedNotes(key)
-                val pending = repository().automaticWritesPending(key)
+                if (drained) repo.syncNotes(key, active)
+                if (key != account) return@withLock false
+                val notes = repo.queuedNotes(key)
+                val pending = repo.automaticWritesPending(key)
                 mutable.value = SyncUiState(
                     when {
                         notes.any { it.conflictJson != null } -> SyncStatus.ATTENTION

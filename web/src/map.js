@@ -6,7 +6,7 @@ const resource = /^memos\/[A-Za-z0-9_-]+$/;
 const digest = /^[a-f0-9]{64}$/;
 
 export function validMap(value) {
-  if (!value || !statuses.has(value.status) || typeof value.algorithm !== 'string' || !value.algorithm ||
+  if (!value || !statuses.has(value.status) || value.algorithm !== 'umap-balanced-v1' ||
       !Number.isSafeInteger(value.projection_revision) || value.projection_revision < 0 || !Array.isArray(value.points)) return false;
   if (value.disabled_reason !== undefined && (value.status !== 'disabled' ||
       !['stargazing', 'embedding'].includes(value.disabled_reason))) return false;
@@ -18,7 +18,9 @@ export function validMap(value) {
   for (const point of value.points) {
     if (!point || !resource.test(point.name) || names.has(point.name) || typeof point.source_hash !== 'string' || !point.source_hash ||
         !Number.isFinite(point.x) || !Number.isFinite(point.y) || typeof point.semantic !== 'boolean' ||
-        !Array.isArray(point.tags) || point.tags.some(tag => typeof tag !== 'string')) return false;
+        !Array.isArray(point.tags) || point.tags.some(tag => typeof tag !== 'string') ||
+        (point.excerpt !== undefined && typeof point.excerpt !== 'string') ||
+        (point.create_time !== undefined && typeof point.create_time !== 'string')) return false;
     names.add(point.name);
     if (point.stellar !== undefined) {
       const a = point.stellar;
@@ -26,9 +28,8 @@ export function validMap(value) {
           !['ordinary', 'core', 'isolated'].includes(a.role) || !Number.isFinite(a.radius) || a.radius <= 0 || a.radius > 4 ||
           !Number.isFinite(a.luminosity) || a.luminosity < 0 || a.luminosity > 1) return false;
     }
-    if (value.algorithm === 'umap-balanced-v1' && point.semantic && !point.stellar) return false;
+    if (point.semantic && !point.stellar) return false;
   }
-  if (value.algorithm === 'pca-topics-v3' && (!Array.isArray(value.topics) || !Array.isArray(value.links))) return false;
   if (value.topics !== undefined || value.links !== undefined) {
     if (!Array.isArray(value.topics) || !Array.isArray(value.links) || value.topics.length > value.points.length ||
         value.links.length > value.points.length * 3 || !ready && (value.topics.length || value.links.length)) return false;
@@ -56,7 +57,6 @@ export function validMap(value) {
             local.add(name);
           }
         }
-        if (value.algorithm !== 'umap-balanced-v1' && topic.districts.length && local.size !== members.size) return false;
       }
     }
     for (const link of value.links) {
@@ -119,11 +119,9 @@ function node(tag, className = '', text = '') {
 export function createMapPage({ request, handleFailure, validNote, renderNote, initialView, onViewChange, pushLayer, initialData, onData = () => {} }) {
   const lifecycle = new AbortController();
   let alive = true, mapSequence = 0, noteSequence = 0, mapController = null, noteController = null, timer = null, animation = null;
-  let result = null, view = null, overviewScale = 100, selected = initialView?.selected || '', readName = '', loading = false;
-  let candidate = '', dragged = false, origin = null, nodeDrag = false, holdTimer = null;
-  let scene = null, hovered = '', hoverTimer = null, hoverController = null, hoverSequence = 0;
-  let excerptTimer = null, desiredExcerpts = [];
-  const excerptCache = new Map(), excerptControllers = new Map();
+  let result = null, view = null, overviewScale = 100, selected = initialView?.selected || '', readName = '', loading = false, rebuilding = false;
+  let candidate = '', dragged = false, origin = null;
+  let scene = null, hovered = '', hoverTimer = null;
   const points = new Map(), pointers = new Map();
   const root = node('div', 'map-page');
   const pageKey = history.state?.webKey;
@@ -216,9 +214,7 @@ export function createMapPage({ request, handleFailure, validNote, renderNote, i
     const rect = field.getBoundingClientRect();
     return { x: clientX - rect.left - rect.width / 2, y: clientY - rect.top - rect.height / 2 };
   }
-  const fitResult = () => result?.algorithm === 'umap-balanced-v1'
-    ? fitStarView(result.points, field.clientWidth, field.clientHeight, true, result.topics)
-    : fitMapView(result?.points || [], field.clientWidth, field.clientHeight);
+  const fitResult = () => fitStarView(result?.points || [], field.clientWidth, field.clientHeight, true, result?.topics || []);
   function fit() { if (result) { setHover(''); move(fitResult()); } }
   function tool(label, path, action, parent = tools) {
     const button = node('button', 'btn'); button.type = 'button';
@@ -229,9 +225,28 @@ export function createMapPage({ request, handleFailure, validNote, renderNote, i
     button.addEventListener('click', action); parent.append(button);
     return button;
   }
+  async function rebuildMap() {
+    if (rebuilding) return;
+    rebuilding = true;
+    rebuild.disabled = true;
+    say(l("正在重新生成星图…"));
+    try {
+      await request('/map/rebuild', { method: 'POST', body: {} });
+      if (!alive) return;
+      await load(false);
+    } catch (error) {
+      if (alive && error.name !== 'AbortError') fail(error);
+    } finally {
+      if (alive) {
+        rebuilding = false;
+        rebuild.disabled = !result || result.disabled_reason === 'stargazing' || result.disabled_reason === 'embedding';
+      }
+    }
+  }
   tool(l("放大"), 'M5 12h14M12 5v14', () => { if (view) move(transformMapView(view, 1.35, { x: 0, y: 0 })); }).classList.add('focus-tool');
   tool(l("缩小"), 'M5 12h14', () => { if (view) move(transformMapView(view, 1 / 1.35, { x: 0, y: 0 })); }).classList.add('focus-tool');
   tool(l("显示全图"), 'M3 12h4m10 0h4M12 3v4m0 10v4M18 12a6 6 0 1 1-12 0 6 6 0 0 1 12 0', fit);
+  const rebuild = tool(l("重新生成星图"), 'M3 12a9 9 0 0 1 15.3-6.4L21 8M21 3v5h-5M21 12a9 9 0 0 1-15.3 6.4L3 16M3 21v-5h5', rebuildMap);
   const fullscreen = tool(l("全屏预览"), 'M8 3H3v5M16 3h5v5M21 16v5h-5M8 21H3v-5', () => {
     const kind = history.state?.mapReader;
     if (history.state?.mapFullscreen) {
@@ -258,77 +273,26 @@ export function createMapPage({ request, handleFailure, validNote, renderNote, i
   }, { signal: lifecycle.signal });
   const retry = node('button', 'btn map-retry', l("重试"));
   retry.hidden = true; retry.addEventListener('click', () => load(false)); root.append(retry);
+  const pointExcerpt = point => point?.excerpt || (point?.tags?.length ? point.tags.map(tag => `#${tag}`).join(' ') : '') || '';
   function setHover(name) {
     if (hovered === name) return;
-    hovered = name; hoverSequence++; clearTimeout(hoverTimer); hoverController?.abort(); hoverController = null;
+    hovered = name; clearTimeout(hoverTimer);
     preview.hidden = true; scene?.hover(name);
     if (!name || name === selected) return;
-    const ticket = hoverSequence;
-    hoverTimer = setTimeout(async () => {
-      hoverController = new AbortController();
-      try {
-        const note = await request(`/notes/${name.slice(6)}`, { controller: hoverController });
-        if (!alive || ticket !== hoverSequence || !validNote(note) || note.name !== name) return;
-        const text = [...note.content.replace(/\s+/gu, ' ').trim()].slice(0, 110).join('') || note.attachments?.[0]?.filename;
-        if (!text) return;
-        preview.textContent = text;
-        const position = scene.position(name);
-        if (!position) return;
-        preview.hidden = false;
-        preview.style.left = `${Math.max(12, Math.min(field.clientWidth - preview.offsetWidth - 12, position.x + 18))}px`;
-        preview.style.top = `${Math.max(12, Math.min(field.clientHeight - preview.offsetHeight - 12, position.y + 12))}px`;
-      } catch (error) {
-        if (alive && ticket === hoverSequence && error.status === 401) handleFailure(message, error);
-      } finally { if (ticket === hoverSequence) hoverController = null; }
-    }, 240);
-  }
-  function clearExcerpts() {
-    clearTimeout(excerptTimer); desiredExcerpts = []; excerptCache.clear();
-    for (const controller of excerptControllers.values()) controller.abort();
-    excerptControllers.clear();
-  }
-  function cacheExcerpt(target, name, text) {
-    excerptCache.set(name, text);
-    target.excerpt(name, text);
-    if (excerptCache.size > 96) {
-      const oldest = excerptCache.keys().next().value;
-      excerptCache.delete(oldest);
-      target.excerpt(oldest, '');
-    }
-  }
-  function pumpExcerpts() {
-    if (!alive || !scene) return;
-    for (const name of desiredExcerpts) {
-      if (excerptControllers.size >= 3) break;
-      if (excerptCache.has(name) || excerptControllers.has(name)) continue;
-      const controller = new AbortController(), target = scene, ticket = mapSequence;
-      excerptControllers.set(name, controller);
-      request(`/notes/${name.slice(6)}`, { controller }).then(note => {
-        if (!activeMap(ticket) || scene !== target || controller.signal.aborted) return;
-        if (!validNote(note) || note.name !== name) throw new Error('Invalid map excerpt');
-        const text = [...note.content.replace(/!\[[^\]]*\]\([^)]*\)/gu, '')
-          .replace(/\[([^\]]*)\]\([^)]*\)/gu, '$1').replace(/[#*`>]/gu, '').replace(/\s+/gu, ' ').trim()]
-          .slice(0, 100).join('') || note.attachments?.[0]?.filename || '';
-        cacheExcerpt(target, name, text);
-      }).catch(error => {
-        if (!activeMap(ticket) || scene !== target || controller.signal.aborted) return;
-        cacheExcerpt(target, name, '');
-        if (error.status === 401) handleFailure(message, error);
-      }).finally(() => {
-        if (excerptControllers.get(name) === controller) {
-          excerptControllers.delete(name);
-          if (scene === target && activeMap(ticket)) pumpExcerpts();
-        }
-      });
-    }
+    const text = pointExcerpt(points.get(name)) || l("附件笔记");
+    hoverTimer = setTimeout(() => {
+      if (!alive || hovered !== name) return;
+      preview.textContent = text;
+      const position = scene?.position(name);
+      if (!position) return;
+      preview.hidden = false;
+      preview.style.left = `${Math.max(12, Math.min(field.clientWidth - preview.offsetWidth - 12, position.x + 18))}px`;
+      preview.style.top = `${Math.max(12, Math.min(field.clientHeight - preview.offsetHeight - 12, position.y + 12))}px`;
+    }, 120);
   }
   function showExcerpts(names) {
-    clearTimeout(excerptTimer); desiredExcerpts = names;
-    for (const [name, controller] of excerptControllers) {
-      if (!names.includes(name)) { controller.abort(); excerptControllers.delete(name); }
-    }
-    for (const name of names) if (excerptCache.has(name)) scene.excerpt(name, excerptCache.get(name));
-    excerptTimer = setTimeout(pumpExcerpts, 180);
+    if (!alive || !scene) return;
+    for (const name of names) scene.excerpt(name, pointExcerpt(points.get(name)));
   }
   function refreshLater(delay) {
     clearTimeout(timer);
@@ -374,22 +338,22 @@ export function createMapPage({ request, handleFailure, validNote, renderNote, i
     } finally { if (activeNote(ticket)) { noteController = null; busy(); } }
   }
   function resetPointers() {
-    clearTimeout(holdTimer); scene?.release();
     for (const id of pointers.keys()) if (field.hasPointerCapture(id)) field.releasePointerCapture(id);
-    pointers.clear(); candidate = ''; dragged = false; origin = null; nodeDrag = false; field.classList.remove('dragging');
+    pointers.clear(); candidate = ''; dragged = false; origin = null; field.classList.remove('dragging');
   }
   function display(next) {
     if (openedAt != null && ['ready', 'empty'].includes(next.status)) {
       usage('stars', 'success', performance.now() - openedAt); openedAt = null;
     }
-    setHover(''); clearExcerpts(); resetPointers(); scene?.destroy(); scene = null;
+    setHover(''); resetPointers(); scene?.destroy(); scene = null;
     result = next; field.replaceChildren(); points.clear(); field.dataset.rendered = 'false';
     tools.hidden = next.disabled_reason === 'stargazing';
-    root.classList.toggle('stargazing', next.algorithm === 'umap-balanced-v1');
+    rebuild.disabled = rebuilding || next.disabled_reason === 'stargazing' || next.disabled_reason === 'embedding';
+    root.classList.add('stargazing');
     for (const point of next.points) points.set(point.name, point);
     field.append(tools, preview, unplaced);
     const missing = next.points.filter(point => !point.semantic).length;
-    unplaced.hidden = next.algorithm !== 'umap-balanced-v1' || missing === 0;
+    unplaced.hidden = missing === 0;
     setText(unplaced, l("未定位笔记（{0}）", { 0: missing }));
     if (!['ready', 'empty'].includes(next.status)) {
       clearReader();
@@ -435,9 +399,15 @@ export function createMapPage({ request, handleFailure, validNote, renderNote, i
         return;
       }
       onData(next);
+      const samePoints = (a, b) => a.length === b.length && a.every((p, i) => {
+        const q = b[i];
+        return p.name === q.name && p.source_hash === q.source_hash && p.excerpt === q.excerpt &&
+          p.create_time === q.create_time && p.semantic === q.semantic;
+      });
       if (result && ['ready', 'empty'].includes(next.status) && result.status === next.status &&
           result.layout_version === next.layout_version && result.layout_frame === next.layout_frame &&
-          result.vector_generation === next.vector_generation && result.projection_revision === next.projection_revision) {
+          result.vector_generation === next.vector_generation && result.projection_revision === next.projection_revision &&
+          samePoints(result.points, next.points)) {
         say(!retry.hidden ? l("观星暂时不可用，稍后重试。") : next.status === 'empty' ? l("还没有可显示的笔记。") : '', !retry.hidden);
         return;
       }
@@ -448,7 +418,7 @@ export function createMapPage({ request, handleFailure, validNote, renderNote, i
     } catch (error) {
       if (!activeMap(ticket) || error.name === 'AbortError') return;
       if (!result) {
-        setHover(''); clearExcerpts(); resetPointers(); scene?.destroy(); scene = null;
+        setHover(''); resetPointers(); scene?.destroy(); scene = null;
         field.replaceChildren(tools, preview); points.clear(); clearReader();
       }
       fail(error);
@@ -463,9 +433,7 @@ export function createMapPage({ request, handleFailure, validNote, renderNote, i
     const center = positions.reduce((total, position) => ({ x: total.x + position.x / positions.length, y: total.y + position.y / positions.length }), { x: 0, y: 0 });
     return { center, distance: positions.length === 2 ? Math.hypot(positions[0].x - positions[1].x, positions[0].y - positions[1].y) : 0 };
   }
-  const pointerPick = event => result?.algorithm === 'umap-balanced-v1'
-    ? scene?.pick(event.clientX, event.clientY) || ''
-    : event.target.closest('.map-dot')?.dataset.name || scene?.pick(event.clientX, event.clientY) || '';
+  const pointerPick = event => scene?.pick(event.clientX, event.clientY) || '';
   field.addEventListener('pointerdown', event => {
     if (!view || event.target.closest('.map-tools,.map-topic,.map-unplaced') || (event.pointerType === 'mouse' && event.button !== 0)) return;
     setHover('');
@@ -474,13 +442,10 @@ export function createMapPage({ request, handleFailure, validNote, renderNote, i
     if (!pointers.size) {
       origin = { x: event.clientX, y: event.clientY };
       candidate = pointerPick(event);
-      dragged = false; nodeDrag = result?.algorithm !== 'umap-balanced-v1' && !!candidate && event.pointerType !== 'touch';
-      if (result?.algorithm !== 'umap-balanced-v1' && candidate && event.pointerType === 'touch') holdTimer = setTimeout(() => {
-        if (pointers.size === 1 && !dragged) { nodeDrag = true; scene?.drag(candidate, 0, 0); }
-      }, 320);
+      dragged = false;
     }
     pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
-    if (pointers.size > 1) { dragged = true; nodeDrag = false; clearTimeout(holdTimer); scene?.release(); }
+    if (pointers.size > 1) dragged = true;
     field.setPointerCapture(event.pointerId); field.classList.add('dragging');
   });
   field.addEventListener('pointermove', event => {
@@ -492,11 +457,7 @@ export function createMapPage({ request, handleFailure, validNote, renderNote, i
       return;
     }
     const before = gesture(); pointers.set(event.pointerId, { x: event.clientX, y: event.clientY }); const after = gesture();
-    if (origin && Math.hypot(event.clientX - origin.x, event.clientY - origin.y) > 5) { dragged = true; clearTimeout(holdTimer); }
-    if (nodeDrag && pointers.size === 1) {
-      if (dragged) scene?.drag(candidate, event.clientX - origin.x, event.clientY - origin.y);
-      return;
-    }
+    if (origin && Math.hypot(event.clientX - origin.x, event.clientY - origin.y) > 5) dragged = true;
     const factor = before.distance > 0 && after.distance > 0 ? after.distance / before.distance : 1;
     move(transformMapView(view, factor, local(before.center.x, before.center.y), local(after.center.x, after.center.y)));
   });
@@ -513,7 +474,6 @@ export function createMapPage({ request, handleFailure, validNote, renderNote, i
   for (const event of ['pointerup', 'pointercancel', 'lostpointercapture']) field.addEventListener(event, endPointer);
   field.addEventListener('pointerleave', () => { if (!pointers.size) setHover(''); });
   field.addEventListener('blur', () => field.classList.remove('pointer-focus'));
-  field.addEventListener('contextmenu', event => { if (nodeDrag) event.preventDefault(); });
   field.addEventListener('wheel', event => {
     if (!view || !result?.points.length) return;
     event.preventDefault(); setHover('');
@@ -547,9 +507,9 @@ export function createMapPage({ request, handleFailure, validNote, renderNote, i
       if (validMap(initialData)) display(initialData);
       await load(!result);
     },
-    refresh() { clearReader(); setHover(''); clearExcerpts(); return load(false); },
+    refresh() { clearReader(); setHover(''); return load(false); },
     destroy() {
-      alive = false; lifecycle.abort(); mapSequence++; clearTimeout(timer); mapController?.abort(); setHover(''); clearExcerpts(); clearReader(); resetPointers(); resize.disconnect(); scene?.destroy();
+      alive = false; lifecycle.abort(); mapSequence++; clearTimeout(timer); mapController?.abort(); setHover(''); clearReader(); resetPointers(); resize.disconnect(); scene?.destroy();
       if (animation !== null) cancelAnimationFrame(animation);
       root.remove();
     },

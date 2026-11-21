@@ -6,7 +6,7 @@ const fields = {
   notifications: ['enabled', 'times'],
   llm: ['enabled', 'protocol', 'base_url', 'model', 'timeout_seconds', 'max_concurrency', 'max_retries', 'max_output_tokens'],
   embedding: ['enabled', 'provider', 'protocol', 'base_url', 'model', 'dimensions', 'send_dimensions', 'batch_size', 'timeout_seconds', 'max_concurrency', 'max_retries', 'query_instruction'],
-  stargazing: ['enabled'],
+  stargazing: ['enabled', 'llm_naming'],
   channel: ['kind', 'qq_app_id', 'app_id', 'user_open_id', 'destination', 'feishu_mode', 'webhook_images', 'webhook_app_id'],
   insights: ['default_prompt'],
 };
@@ -72,12 +72,12 @@ import { privacySettings } from './privacy.js';
 
 export function createSettingsPage({ sessionRequest, handleFailure, onSaved = () => {}, onDirtyChange = () => {},
   confirmDiscard = () => Promise.resolve(true) }) {
-  let root, snapshot, form, error, status, reload, save, controller, pendingBody;
+  let root, snapshot, form, error, status, reload, save, controller, pendingBody, footer, historySection;
   let baseline = '';
   let unbindPrivacy;
   let sequence = 0, active = false, busy = false, conflict = false;
   let controls = new Map(), secretControls = new Map(), times = [];
-  let modelViews = new Map(), modelController, modelTimer, indexText, indexProgress;
+  let modelViews = new Map(), modelController, modelTimer, indexText, indexProgress, mapRebuildButton;
   let activeTab = 'general', tabs = new Map(), panels = new Map();
   let channelViews = new Map(), destinationHint, telegramLink, channelTimer, channelController, history, historySignature;
   let deliveryRequests = new Set();
@@ -145,7 +145,8 @@ export function createSettingsPage({ sessionRequest, handleFailure, onSaved = ()
       tabs.get(id).scrollIntoView({ block: 'nearest', inline: 'nearest' });
     }
     stopChannelPoll();
-    if (form.querySelector('.settings-footer')) form.querySelector('.settings-footer').hidden = id === 'privacy';
+    if (footer) footer.hidden = id === 'privacy';
+    if (historySection) historySection.hidden = id !== 'review';
     if (active && !busy && !conflict) refreshChannel();
   }
   function section(id, title, caption = title) {
@@ -298,24 +299,26 @@ export function createSettingsPage({ sessionRequest, handleFailure, onSaved = ()
       kind !== 'none' && kind !== 'feishu-webhook' ? l("等待建立私聊") : '');
   }
   async function refreshChannel() {
-    if (!['review', 'channel', 'history'].includes(activeTab) || !active || !form || busy || conflict || document.hidden || channelController) return;
+    if (activeTab !== 'review' || !active || !form || busy || conflict || document.hidden || channelController) return;
     const request = new AbortController();
     channelController = request;
-    try {
-      if (activeTab === 'history') {
-        const data = await sessionRequest('/admin/notifications?kind=review', { controller: request });
-        if (channelController === request) showHistory(data.notifications);
-      } else {
-        const data = await sessionRequest('/settings', { controller: request });
-        if (channelController !== request) return;
-        if (data.version !== snapshot.version) { versionConflict(); return; }
-        snapshot.channel_status = data.channel_status;
-        showChannelStatus(snapshot.channel_status);
-      }
-    } catch (err) {
+    const loadStatus = sessionRequest('/settings', { controller: request }).then(data => {
+      if (channelController !== request) return;
+      if (data.version !== snapshot.version) { versionConflict(); return; }
+      snapshot.channel_status = data.channel_status;
+      showChannelStatus(snapshot.channel_status);
+    }, err => {
       if (channelController !== request || err.name === 'AbortError') return;
-      if (activeTab === 'history') { historySignature = ''; handleFailure(history, err); }
-      else for (const view of channelViews.values()) setText(view, l("连接状态不可用"));
+      for (const view of channelViews.values()) setText(view, l("连接状态不可用"));
+    });
+    const loadHistory = sessionRequest('/admin/notifications?kind=review', { controller: request }).then(data => {
+      if (channelController === request) showHistory(data.notifications);
+    }, err => {
+      if (channelController !== request || err.name === 'AbortError') return;
+      historySignature = ''; handleFailure(history, err);
+    });
+    try {
+      await Promise.all([loadStatus, loadHistory]);
     } finally {
       if (channelController === request) {
         channelController = null;
@@ -365,7 +368,7 @@ export function createSettingsPage({ sessionRequest, handleFailure, onSaved = ()
             requests.delete(item.id);
             if (requests === deliveryRequests && active) {
               historySignature = '';
-              if (activeTab === 'history') { stopChannelPoll(); refreshChannel(); }
+              if (activeTab === 'review') { stopChannelPoll(); refreshChannel(); }
             }
           }
         }
@@ -418,6 +421,7 @@ export function createSettingsPage({ sessionRequest, handleFailure, onSaved = ()
   }
   function versionConflict() {
     abortModels(); stopChannelPoll(); conflict = true; save.disabled = true; updateChecks();
+    if (mapRebuildButton) mapRebuildButton.disabled = true;
     for (const view of modelViews.values()) {
       setText(view.config, l("设置已变更，请重新加载。"));
       setText(view.result, '');
@@ -555,9 +559,48 @@ export function createSettingsPage({ sessionRequest, handleFailure, onSaved = ()
     language.value = languagePreference();
     language.addEventListener('change', () => setLanguage(language.value, { persist: true }));
     row(general, l("语言"), language);
+    field(general, 'timezone', l("时区"), { hint: l("使用 IANA 名称，例如 Asia/Hong_Kong。") });
     field(general, 'stargazing.enabled', l("启用观星"), { type: 'checkbox' });
-    const review = section('review', l("回顾"));
-    field(review, 'timezone', l("时区"), { hint: l("使用 IANA 名称，例如 Asia/Hong_Kong。") });
+    field(general, 'stargazing.llm_naming', l("星系智能命名"), {
+      type: 'checkbox', hint: l("全量构建时由模型总结星系标题，关闭或超时时回退关键词提取。"),
+    });
+    const rebuildBox = el('div', 'settings-inline-actions');
+    rebuildBox.id = 'settings-map-rebuild-box';
+    const rebuildStatus = el('span', 'sub'); rebuildStatus.setAttribute('role', 'status');
+    mapRebuildButton = button(l("重新生成星图"), 'ghost', async () => {
+      if (mapRebuildButton.disabled) return;
+      mapRebuildButton.disabled = true;
+      setText(rebuildStatus, l("正在重新生成星图…"));
+      try {
+        await sessionRequest('/map/rebuild', { method: 'POST', body: {} });
+        if (active) setText(rebuildStatus, l("已请求重新生成星图。"));
+      } catch (err) {
+        if (active && err.name !== 'AbortError') modelError(rebuildStatus, err);
+      } finally {
+        if (active) mapRebuildButton.disabled = busy || conflict || !snapshot.settings.stargazing.enabled || !snapshot.settings.embedding.enabled;
+      }
+    });
+    mapRebuildButton.id = 'settings-rebuild-map';
+    mapRebuildButton.disabled = !snapshot.settings.stargazing.enabled || !snapshot.settings.embedding.enabled;
+    rebuildBox.append(mapRebuildButton, rebuildStatus);
+    row(general, l("星图更新"), rebuildBox, l("每日 03:00 更新"));
+
+    const ai = section('ai', 'AI');
+    model(ai, 'llm', 'LLM'); model(ai, 'embedding', 'Embedding');
+    indexText = el('p', 'sub', l("正在读取索引状态…")); indexText.id = 'settings-index-status'; indexText.setAttribute('role', 'status');
+    indexProgress = el('progress'); indexProgress.hidden = true; setAttr(indexProgress, 'aria-label', l("语义索引进度"));
+    ai.append(indexText, indexProgress);
+    ai.append(el('h3', '', l("默认洞察 Prompt")));
+    const prompt = field(ai, 'insights.default_prompt', l("一键洞察使用的 Prompt"), { type: 'textarea' });
+    prompt.rows = 7;
+    const restore = button(l("恢复默认"), 'ghost', () => {
+      prompt.value = snapshot.default_insight_prompt; setText(status, l("已恢复默认 Prompt，保存后生效。"));
+      onDirtyChange();
+    });
+    restore.disabled = typeof snapshot.default_insight_prompt !== 'string'; ai.append(restore);
+
+    const review = section('review', l("回顾与推送"));
+    review.append(el('h3', '', l("每日回顾")));
     field(review, 'review.count', l("每次数量（条）"), { type: 'number', min: 1, max: 20 });
     field(review, 'review.min_age_hours', l("等待期（小时）"), { type: 'number', min: 0, max: 87600 });
     field(review, 'review.recent_days', l("重复排除期（天）"), { type: 'number', min: 0, max: 3650 });
@@ -571,33 +614,21 @@ export function createSettingsPage({ sessionRequest, handleFailure, onSaved = ()
     });
     const clocks = el('div', 'settings-clocks'); clocks.append(el('h3', '', l("推送时段"))); review.append(clocks); renderTimes(clocks);
     review.append(el('p', 'sub settings-hint', l("回顾参数、时段和时区从后续日期生效，已固定的当天计划保持不变。")));
-    const models = section('models', l("模型")); model(models, 'llm', 'LLM'); model(models, 'embedding', 'Embedding');
-    indexText = el('p', 'sub', l("正在读取索引状态…")); indexText.id = 'settings-index-status'; indexText.setAttribute('role', 'status');
-    indexProgress = el('progress'); indexProgress.hidden = true; setAttr(indexProgress, 'aria-label', l("语义索引进度"));
-    models.append(indexText, indexProgress);
-    const insights = section('insights', l("默认洞察 Prompt"), l("洞察"));
-    const prompt = field(insights, 'insights.default_prompt', l("一键洞察使用的 Prompt"), { type: 'textarea' });
-    prompt.rows = 7;
-    const restore = button(l("恢复默认"), 'ghost', () => {
-      prompt.value = snapshot.default_insight_prompt; setText(status, l("已恢复默认 Prompt，保存后生效。"));
-      onDirtyChange();
-    });
-    restore.disabled = typeof snapshot.default_insight_prompt !== 'string'; insights.append(restore);
-    historySignature = ''; history = el('div'); section('history', l("发送记录")).append(history);
-    const channel = section('channel', l("消息渠道"));
-    const qq = channelFields(channel, l("QQ 私聊"));
+    review.append(el('h3', '', l("消息渠道")));
+    const qq = channelFields(review, l("QQ 私聊"));
+    qq.append(el('p', 'sub', l("支持随时私聊速记与查回顾。")));
     field(qq, 'channel.qq_app_id', 'QQ AppID').inputMode = 'numeric'; secret(qq, 'qq_app_secret');
-    const telegram = channelFields(channel, 'Telegram');
+    const telegram = channelFields(review, 'Telegram');
     secret(telegram, 'bot_token');
-    field(telegram, 'channel.destination', l("Telegram 接收会话"), { hint: l("留空使用本人私聊，也可填写群或频道的 Chat ID。") })
+    field(telegram, 'channel.destination', l("Telegram 接收会话"), { hint: l("留空使用本人私聊（支持随时速记与查回顾），也可填写群或频道的 Chat ID。") })
       .addEventListener('input', () => showChannelStatus(snapshot.channel_status));
     telegramLink = el('a', '', l("打开机器人")); telegramLink.target = '_blank'; telegramLink.rel = 'noreferrer';
     telegram.append(telegramLink);
-    const feishu = channelFields(channel, l("飞书应用机器人"));
+    const feishu = channelFields(review, l("飞书应用机器人"));
     const mode = field(feishu, 'channel.feishu_mode', l("接收方式"), { options: [['websocket', l("长连接")], ['callback', l("公网回调")]] });
     field(feishu, 'channel.app_id', 'App ID');
     secret(feishu, 'app_secret');
-    field(feishu, 'channel.user_open_id', l("用户 Open ID"), { hint: l("私人应用可留空以绑定首个私聊。多人应用请指定用户。") })
+    field(feishu, 'channel.user_open_id', l("用户 Open ID"), { hint: l("私人应用可留空以绑定首个私聊，支持随时私聊速记与查回顾。多人应用请指定用户。") })
       .addEventListener('input', () => showChannelStatus(snapshot.channel_status));
     const callback = el('div'); feishu.append(callback);
     secret(callback, 'verification_token'); secret(callback, 'encrypt_key');
@@ -605,7 +636,7 @@ export function createSettingsPage({ sessionRequest, handleFailure, onSaved = ()
     for (const [key, block] of [['qq', qq], ['telegram', telegram], ['feishu-app', feishu]]) {
       const status = el('p', 'sub'); status.setAttribute('role', 'status'); block.append(status); channelViews.set(key, status);
     }
-    const webhook = channelFields(channel, l("飞书群 Webhook"));
+    const webhook = channelFields(review, l("飞书群 Webhook"));
     secret(webhook, 'webhook_url'); secret(webhook, 'webhook_secret');
     const images = field(webhook, 'channel.webhook_images', l("推送图片"), { type: 'checkbox' });
     const upload = el('div'); webhook.append(upload);
@@ -628,12 +659,18 @@ export function createSettingsPage({ sessionRequest, handleFailure, onSaved = ()
     showChannelStatus(snapshot.channel_status);
     unbindPrivacy?.();
     unbindPrivacy = privacySettings(section('privacy', l("隐私")));
-    const footer = el('div', 'settings-footer');
+    footer = el('div', 'settings-footer');
     error = el('p', 'error sub'); error.setAttribute('role', 'alert'); error.hidden = true;
     status = el('p', 'sub'); status.setAttribute('role', 'status');
     save = el('button', 'save', l("保存设置")); save.type = 'submit';
     reload = button(l("重新加载设置"), 'ghost', reloadSettings);
     footer.append(error, status, reload, save); form.append(footer);
+    historySignature = ''; history = el('div');
+    historySection = el('section', 'card settings-card');
+    historySection.id = 'settings-history-card';
+    historySection.setAttribute('aria-labelledby', 'settings-tab-review');
+    historySection.append(el('h2', '', l("最近发送记录")), history);
+    form.append(historySection);
     root.replaceChildren(form); busy = conflict = false; baseline = formSignature(form); onDirtyChange();
     selectTab(activeTab);
     updateChecks();

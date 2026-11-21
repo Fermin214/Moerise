@@ -1,10 +1,48 @@
 package moerise
 
 import (
+	"regexp"
 	"slices"
 	"strings"
 	"unicode"
 )
+
+var (
+	excerptFencePattern  = regexp.MustCompile("(?m)^\\s*(?:```|~~~).*$")
+	excerptRulePattern   = regexp.MustCompile(`(?m)^\s*(?:[-*_]\s*){3,}$`)
+	excerptPrefixPattern = regexp.MustCompile(`(?m)^(?:\s*(?:#{1,6}\s+|>+\s*|(?:[-*+]|\d+[.)])\s+(?:\[[ xX]\]\s+)?))+`)
+	excerptImagePattern  = regexp.MustCompile(`!\[([^\]]*)\]\([^)]*\)`)
+	excerptLinkPattern   = regexp.MustCompile(`\[([^\]]+)\]\([^)]*\)`)
+	excerptInlinePattern = regexp.MustCompile("`([^`]*)`|\\*\\*([^*]*)\\*\\*|__([^_]*)__|~~([^~]*)~~")
+)
+
+func trimRunes(value string, limit int) string {
+	runes := []rune(strings.Join(strings.Fields(value), " "))
+	if len(runes) <= limit {
+		return string(runes)
+	}
+	return strings.TrimSpace(string(runes[:limit])) + "…"
+}
+
+func mapPointExcerpt(content string, attachments []map[string]any) string {
+	text := excerptFencePattern.ReplaceAllString(content, " ")
+	text = excerptRulePattern.ReplaceAllString(text, " ")
+	text = excerptPrefixPattern.ReplaceAllString(text, "")
+	text = excerptImagePattern.ReplaceAllString(text, "$1")
+	text = excerptLinkPattern.ReplaceAllString(text, "$1")
+	text = excerptInlinePattern.ReplaceAllString(text, "$1$2$3$4")
+	text = strings.NewReplacer("*", "", "`", "", "~", "").Replace(text)
+	if cleaned := trimRunes(text, 90); cleaned != "" {
+		return cleaned
+	}
+	for _, item := range attachments {
+		name, _ := item["filename"].(string)
+		if cleaned := trimRunes(name, 90); cleaned != "" {
+			return cleaned
+		}
+	}
+	return ""
+}
 
 func mapKeywords(content string) []string {
 	stop := "的了是在和与也就都而或把被让这那一个我们你它有不着地得为及到很更"

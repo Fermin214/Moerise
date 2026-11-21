@@ -11,13 +11,13 @@ import { resultOf, usage } from './privacy.js';
 
 const uuid = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
 export function createInsightsPage({ owner, sessionRequest, csrfToken, renewCSRF, handleFailure, navigate, closeMenus, replaceURL,
-  today, formatTime, onSaved, readTags, readCalendar, readHistory, readCapabilities, invalidateHistory = () => {}, onDirtyChange = () => {} }) {
+  today, formatTime, onSaved, readTags, readCalendar, readHistory, invalidateHistory = () => {}, onDirtyChange = () => {} }) {
   let root, active = false, chat = null, busy = false, picker = null;
-  let selected = new Map(), pendingCreate = null, pendingUpdate = null, pendingGenerate = null, controller = null, selectionController = null, pollTimer = null;
+  let selected = new Map(), pendingCreate = null, pendingUpdate = null, pendingGenerate = null, controller = null, pollTimer = null;
   let running = false, conflicted = false, sourceWarning = '', disposed = 0;
   let stopping = false, deleting = false, generationDone = null, historyDialog = null;
   let renderTimer = null, lifecycle = null;
-  let characterLimit = 20000, capabilities = {}, provenance, following = true, saveDialog, deleteDialog;
+  let characterLimit = 20000, provenance, following = true, saveDialog, deleteDialog;
   let retryTurn, uncertain = false, checking = false, streaming = false;
   const turnNodes = new Map();
   const changedNames = new Set();
@@ -175,23 +175,12 @@ export function createInsightsPage({ owner, sessionRequest, csrfToken, renewCSRF
   }
   async function persistSelection() {
     const ticket = disposed;
-    if (selected.size && !capabilities.material_selection) {
-      const resolving = selectionController = new AbortController();
-      try {
-        const materials = await sessionRequest('/chat-materials/resolve', {
-          method: 'POST', body: { names: [...selected.keys()] }, controller: resolving,
-        });
-        if (!current(ticket)) throw new DOMException('Stale chat', 'AbortError');
-        if (Number.isSafeInteger(materials.limit) && materials.limit > 0) characterLimit = materials.limit;
-        selected = new Map(materials.notes.map(note => [note.name, note]));
-      } finally { if (selectionController === resolving) selectionController = null; }
-    }
     await persistSelectionReferences();
     if (current(ticket) && chat?.materials.some(ref => selected.get(ref.name)?.source_hash !== ref.source_hash)) failure({ code: 'SOURCE_CHANGED' });
   }
   async function persistSelectionReferences() {
     const ticket = disposed, names = [...selected.keys()];
-    const refs = capabilities.material_selection ? { materials: [...selected.values()].map(({ name, source_hash }) => ({ name, source_hash })) } : { names };
+    const refs = { materials: [...selected.values()].map(({ name, source_hash }) => ({ name, source_hash })) };
     if (!chat) {
       if (!names.length) return;
       pendingCreate ||= { request_id: crypto.randomUUID(), title: resolveText(l("洞察")), ...refs };
@@ -527,7 +516,7 @@ export function createInsightsPage({ owner, sessionRequest, csrfToken, renewCSRF
     picker = createMaterialPicker({ parent: root, selected, today, sessionRequest, previous: provenance, changedNames,
       readTags: readTags || (state => sessionRequest(`/tags?state=${state}`)),
       readCalendar: readCalendar || ((state, month) => sessionRequest(`/calendar?${new URLSearchParams({ month, state })}`)),
-      modern: !!capabilities.material_selection, existing: !!chat?.materials.length,
+      existing: !!chat?.materials.length,
       characterLimit, onLimit: value => { characterLimit = value; renderMaterials(); },
       onFailure: failure, onClose: () => { picker = null; }, onDirtyChange,
       onSubmit: async (choices, groups) => {
@@ -554,7 +543,6 @@ export function createInsightsPage({ owner, sessionRequest, csrfToken, renewCSRF
     active = false; disposed++; lifecycle?.abort(); controller?.abort(); controller = null;
     if (renderTimer !== null) clearTimeout(renderTimer);
     renderTimer = null; turnNodes.clear();
-    selectionController?.abort(); selectionController = null;
     clearTimeout(pollTimer); picker?.destroy(); picker = null;
     historyDialog?.abort.abort(); historyDialog?.modal.destroy(); historyDialog = null;
     saveDialog?.destroy(); deleteDialog?.destroy();
@@ -589,7 +577,8 @@ export function createInsightsPage({ owner, sessionRequest, csrfToken, renewCSRF
         <div data-chat="pending" hidden><div class="insight-user" data-chat="pending-question"></div><span class="sub" role="status" data-i18n="正在洞察……">正在洞察……</span></div>
       </div>
       <div class="insight-bottom"><span class="sub insight-warning" role="status" data-chat="warning" hidden></span>
-        <div class="chat-tools"><button type="button" class="pbtn" data-chat="latest" data-i18n="回到最新" hidden>回到最新</button>
+        <div class="chat-jump" data-chat="jump" hidden><button type="button" class="btn chat-latest" data-chat="latest" aria-label="回到最新" data-i18n-aria-label="回到最新" hidden><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M6 13l6 6 6-6"/></svg></button></div>
+        <div class="chat-tools">
         <button type="button" class="pbtn" data-chat="check" data-i18n="检查回复" hidden>检查回复</button>
         <button type="button" class="pbtn" data-chat="retry" data-i18n="重新生成" hidden>重新生成</button>
         <button type="button" class="pbtn" data-chat="server" data-i18n="使用服务器版本" hidden>使用服务器版本</button></div>
@@ -610,13 +599,14 @@ export function createInsightsPage({ owner, sessionRequest, csrfToken, renewCSRF
       find('change').addEventListener('click', openPicker);
       find('save').addEventListener('click', () => {
         if (saveDialog || !chat) return;
-        saveDialog = openChatSave({ parent: root, owner, chat, modern: !!capabilities.save_selection, sessionRequest,
+        saveDialog = openChatSave({ parent: root, owner, chat, sessionRequest,
           onSaved: note => { onSaved?.(note); warning(l("已保存为笔记")); },
           onFailure: failure, onClose: () => { saveDialog = null; } });
       });
       const messages = find('messages');
       messages.addEventListener('scroll', () => {
-        following = messages.scrollHeight - messages.scrollTop - messages.clientHeight < 28; find('latest').hidden = following;
+        following = messages.scrollHeight - messages.scrollTop - messages.clientHeight < 28;
+        find('jump').hidden = find('latest').hidden = following;
       }, { passive: true });
       find('latest').addEventListener('click', () => { messages.scrollTop = messages.scrollHeight; });
       find('check').addEventListener('click', checkResult);
@@ -653,9 +643,6 @@ export function createInsightsPage({ owner, sessionRequest, csrfToken, renewCSRF
       const generation = disposed, query = new URLSearchParams(location.search), chatID = query.get('chat'), note = query.get('note');
       busy = true; controls();
       try {
-        try { capabilities = (await (readCapabilities ? readCapabilities() : sessionRequest('/capabilities'))).chat || {}; }
-        catch (err) { if (err.status !== 404) throw err; }
-        if (!current(generation)) return;
         if (note && /^memos\/[A-Za-z0-9_-]+$/.test(note)) {
           const materials = await sessionRequest('/chat-materials/resolve', { method: 'POST', body: { names: [note] } });
           if (!active || generation !== disposed) return;

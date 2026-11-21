@@ -3,7 +3,7 @@ import { l, setAttr } from './i18n.js';
 import { createModal } from './modal.js';
 
 const choiceKey = 'moerise.privacy.v1', batchKey = 'moerise.aggregate.v1', quotaKey = 'moerise.sent.v1';
-const ownerKey = 'moerise.aggregate-owner.v1', generationKey = 'moerise.choice-generation.v1';
+const ownerKey = 'moerise.aggregate-owner.v1';
 const day = 86400000;
 const operations = new Set('create edit enqueue save_ack sync search_keyword search_semantic search_hybrid review walk stars insight material_date material_tags material_manual save_answer save_multiple save_question startup client_error request_error crash anr'.split(' '));
 const results = new Set('success failure canceled conflict unknown timeout over_limit'.split(' '));
@@ -20,14 +20,13 @@ function put(key, value) {
 }
 function version(value) { return /^(?:0|[1-9]\d{0,2})(?:\.(?:0|[1-9]\d{0,2})){2}$/.test(value || '') ? value : 'unknown'; }
 function choice() { return get(choiceKey) || memoryChoice; }
-function enabled() { return !!account && get(ownerKey) === account && allowed && choice() === 'on' && !!navigator.locks; }
+function enabled() { return !!account && get(ownerKey) === account && allowed && choice() === 'on'; }
 function discardBatch() {
   sending?.abort(); clearTimeout(timer); timer = null;
   put(ownerKey, null); put(batchKey, null);
 }
 function choose(on) {
   memoryChoice = on && allowed ? 'on' : 'off';
-  put(generationKey, memoryChoice === 'on' ? crypto.randomUUID() : null);
   put(choiceKey, memoryChoice);
   if (memoryChoice === 'on') put(ownerKey, account);
   else discardBatch();
@@ -67,44 +66,35 @@ export function diagnose(error) {
 }
 export function usage(operation, result, elapsed, source = 'user') {
   if (!enabled() || !operations.has(operation) || !results.has(result) || !sources.has(source)) return;
-  const stamp = revision, choiceGeneration = get(generationKey);
-  navigator.locks.request(batchKey, () => {
-    if (stamp !== revision || !enabled() || get(generationKey) !== choiceGeneration) return;
-    const data = batch(), now = Date.now(), meta = metadata();
-    if (data.owner !== account) return;
-    const rows = (data.rows || []).filter(row => now - row.since < 2 * day && row.since <= now);
-    const bucket = duration(elapsed);
-    const same = rows.find(row => row.operation === operation && row.result === result && row.duration === bucket && row.source === source);
-    if (same) same.count = Math.min(65535, same.count + 1);
-    else if (rows.length < 256) rows.push({ operation, result, duration: bucket, source, count: 1, since: now });
-    put(batchKey, JSON.stringify({ owner: account, meta, rows }));
-    if (!timer && !document.hidden) timer = setTimeout(flush, 1000);
-  }).catch(() => {});
+  const data = batch(), now = Date.now(), meta = metadata();
+  if (data.owner !== account) return;
+  const rows = (data.rows || []).filter(row => now - row.since < 2 * day && row.since <= now);
+  const bucket = duration(elapsed);
+  const same = rows.find(row => row.operation === operation && row.result === result && row.duration === bucket && row.source === source);
+  if (same) same.count = Math.min(65535, same.count + 1);
+  else if (rows.length < 256) rows.push({ operation, result, duration: bucket, source, count: 1, since: now });
+  put(batchKey, JSON.stringify({ owner: account, meta, rows }));
+  if (!timer && !document.hidden) timer = setTimeout(flush, 1000);
 }
 async function flush() {
   clearTimeout(timer); timer = null;
   const stored = batch();
   if (!enabled() || document.hidden || sending || stored.owner !== account || !stored.rows?.length ||
       Date.now() - Number(get(quotaKey) || 0) < day) return;
-  const stamp = revision, choiceGeneration = get(generationKey);
-  let payload;
+  const stamp = revision;
   try {
     const cap = await api('/capabilities');
-    if (stamp !== revision || !enabled() || document.hidden || get(generationKey) !== choiceGeneration) return;
+    if (stamp !== revision || !enabled() || document.hidden) return;
     if (cap?.telemetry?.allowed !== true || cap.telemetry.schema !== 1) {
       allowed = false; discardBatch(); window.dispatchEvent(new Event('moeriseprivacy')); return;
     }
-    await navigator.locks.request(batchKey, () => {
-      if (!enabled() || document.hidden || revision !== stamp || get(generationKey) !== choiceGeneration) return;
-      const now = Date.now(), data = batch();
-      if (data.owner !== account) return;
-      const rows = (data.rows || []).filter(row => row.since <= now && now - row.since < 2 * day);
-      if (!rows.length || now - Number(get(quotaKey) || 0) < day) return;
-      if (!put(quotaKey, String(now))) return;
-      put(batchKey, JSON.stringify({ owner: account, rows: [] }));
-      payload = { ...data.meta, rows: rows.map(({ since, ...row }) => row) };
-    });
-    if (!payload || revision !== stamp || !enabled() || document.hidden || get(generationKey) !== choiceGeneration) return;
+    const now = Date.now(), data = batch();
+    if (data.owner !== account) return;
+    const rows = (data.rows || []).filter(row => row.since <= now && now - row.since < 2 * day);
+    if (!rows.length || now - Number(get(quotaKey) || 0) < day) return;
+    if (!put(quotaKey, String(now))) return;
+    put(batchKey, JSON.stringify({ owner: account, rows: [] }));
+    const payload = { ...data.meta, rows: rows.map(({ since, ...row }) => row) };
     sending = new AbortController();
     await api('/telemetry', { method: 'POST', body: payload, controller: sending });
   } catch {} finally { sending = null; }
@@ -131,7 +121,7 @@ export async function connectPrivacy(identity, request, editorReadyAt, readCapab
   try { caps = await readCapabilities(); } catch {}
   if (stamp !== revision) return;
   coreVersion = version(caps?.version);
-  allowed = caps?.telemetry?.schema === 1 && caps.telemetry.allowed === true && !!navigator.locks;
+  allowed = caps?.telemetry?.schema === 1 && caps.telemetry.allowed === true;
   try {
     const bytes = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(name));
     if (stamp !== revision) return;
@@ -208,11 +198,6 @@ export function privacySettings(parent) {
 }
 if (typeof window !== 'undefined') {
   window.addEventListener('storage', event => {
-    if ((event.key === ownerKey || event.key === null) && get(ownerKey) !== account) {
-      revision++; sending?.abort(); diagnostic = null;
-      if (get(ownerKey) || choice() === 'on') allowed = false;
-      window.dispatchEvent(new Event('moeriseprivacy'));
-    }
     if (event.key !== choiceKey && event.key !== null) return;
     memoryChoice = '';
     if (choice() !== 'on') sending?.abort();

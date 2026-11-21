@@ -629,7 +629,13 @@ func runPhase1AutoBackupAndRollback(t *testing.T, v020Bin string) {
 		t.Fatal(err)
 	}
 	cfgPath := filepath.Join(root, "config.json")
+	var cfgMap map[string]any
 	cfgBytes, _ := json.Marshal(settings)
+	_ = json.Unmarshal(cfgBytes, &cfgMap)
+	if sg, ok := cfgMap["stargazing"].(map[string]any); ok {
+		delete(sg, "llm_naming")
+	}
+	cfgBytes, _ = json.Marshal(cfgMap)
 	if err := os.WriteFile(cfgPath, cfgBytes, 0600); err != nil {
 		t.Fatal(err)
 	}

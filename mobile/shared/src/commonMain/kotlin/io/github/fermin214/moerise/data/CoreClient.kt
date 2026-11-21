@@ -80,7 +80,7 @@ class CoreClient(
         return client.prepareGet("$origin/api/app/v1/map").execute { response ->
             if (response.status.value == 401) { identity = null; onUnauthorized() }
             if (!response.status.isSuccess()) return@execute null
-            val bytes = ByteArray(2 * 1024 * 1024 + 1)
+            val bytes = ByteArray(8 * 1024 * 1024 + 1)
             val channel = response.bodyAsChannel()
             var size = 0
             while (size < bytes.size) {
@@ -90,6 +90,18 @@ class CoreClient(
             }
             if (size < bytes.size) bytes.decodeToString(0, size) else null
         }
+    }
+
+    suspend fun syncNotes(cursor: String = "", limit: Int = 100): SyncNotesResponse {
+        val query = buildString {
+            append("/sync/notes?limit=")
+            append(limit.coerceIn(1, 200))
+            if (cursor.isNotEmpty()) {
+                append("&cursor=")
+                append(cursor.encodeURLQueryComponent(encodeFull = true))
+            }
+        }
+        return CoreJson.decodeFromString(api(HttpMethod.Get, query))
     }
 
     private suspend fun refreshSession(): SessionIdentity {

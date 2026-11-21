@@ -23,13 +23,14 @@ data class SettingsUiState(
     val checkErrors: Map<String, String> = emptyMap(),
     val deliveries: List<JsonObject>? = null,
     val resending: Set<String> = emptySet(),
+    val rebuildingMap: Boolean = false,
 )
 
 internal object SettingsForm {
     val groups = linkedMapOf(
         "review" to listOf("count", "min_age_hours", "recent_days", "include_archived"),
         "notifications" to listOf("enabled"),
-        "stargazing" to listOf("enabled"),
+        "stargazing" to listOf("enabled", "llm_naming"),
         "llm" to listOf("enabled", "protocol", "base_url", "model", "timeout_seconds",
             "max_concurrency", "max_retries", "max_output_tokens"),
         "embedding" to listOf("enabled", "provider", "protocol", "base_url", "model", "dimensions",
@@ -42,7 +43,7 @@ internal object SettingsForm {
         "encrypt_key", "webhook_url", "webhook_secret", "bot_token", "qq_app_secret", "webhook_app_secret")
     val modelGroups = setOf("llm", "embedding")
     private val booleans = setOf("review.include_archived", "notifications.enabled",
-        "llm.enabled", "embedding.enabled", "embedding.send_dimensions", "stargazing.enabled", "channel.webhook_images")
+        "llm.enabled", "embedding.enabled", "embedding.send_dimensions", "stargazing.enabled", "stargazing.llm_naming", "channel.webhook_images")
     private val nullable = setOf("llm.base_url", "llm.model", "embedding.base_url", "embedding.model",
         "embedding.query_instruction", "channel.app_id", "channel.user_open_id", "channel.destination",
         "channel.qq_app_id", "channel.webhook_app_id")
@@ -98,6 +99,7 @@ internal object SettingsForm {
                     "channel.qq_app_id", "channel.webhook_app_id" -> JsonNull
                     "channel.feishu_mode" -> JsonPrimitive("websocket")
                     "channel.webhook_images" -> JsonPrimitive(false)
+                    "stargazing.llm_naming" -> JsonPrimitive(true)
                     else -> invalid()
                 })
                 if (group == "notifications") {

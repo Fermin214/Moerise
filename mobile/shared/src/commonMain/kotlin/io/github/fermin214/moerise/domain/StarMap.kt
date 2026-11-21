@@ -8,6 +8,7 @@ import kotlin.math.*
 @Serializable data class StarPoint(
     val name: String, @SerialName("source_hash") val sourceHash: String, val x: Double, val y: Double,
     val semantic: Boolean, val tags: List<String>, val stellar: Stellar? = null,
+    val excerpt: String = "", @SerialName("create_time") val createTime: String = "",
 )
 @Serializable data class StarDistrict(val id: String, val label: String, val x: Double, val y: Double, val members: List<String>)
 @Serializable data class StarTopic(
@@ -25,7 +26,7 @@ import kotlin.math.*
 ) {
     val readable get() = status == "ready" || status == "empty"
     fun validate(): StarMap {
-        require(algorithm in setOf("umap-balanced-v1", "pca-topics-v3")) { "MAP_INCOMPATIBLE" }
+        require(algorithm == "umap-balanced-v1") { "MAP_INCOMPATIBLE" }
         require(status in setOf("disabled", "waiting", "building", "unavailable", "ready", "empty") &&
             projectionRevision >= 0 && updateState in setOf("", "building", "unavailable")) { "MAP_PROTOCOL" }
         require(disabledReason.isEmpty() || status == "disabled" &&
@@ -41,7 +42,7 @@ import kotlin.math.*
             require(Regex("^memos/[A-Za-z0-9_-]+$").matches(point.name) && names.add(point.name) &&
                 point.sourceHash.isNotBlank() && point.x.isFinite() && point.y.isFinite()) { "MAP_PROTOCOL" }
             if (point.semantic) semantic += point.name
-            require(algorithm != "umap-balanced-v1" || !point.semantic || point.stellar != null) { "MAP_PROTOCOL" }
+            require(!point.semantic || point.stellar != null) { "MAP_PROTOCOL" }
             point.stellar?.let {
                 require(it.seed.isFinite() && it.seed in 0.0..1.0 && it.radius.isFinite() && it.radius > 0 && it.radius <= 4 &&
                     it.luminosity.isFinite() && it.luminosity in 0.0..1.0 && it.role in setOf("ordinary", "core", "isolated")) { "MAP_PROTOCOL" }
@@ -59,7 +60,6 @@ import kotlin.math.*
                     district.label.length <= 200 && district.x.isFinite() && district.y.isFinite() && district.members.isNotEmpty() &&
                     district.members.all { it in members && local.add(it) }) { "MAP_PROTOCOL" }
             }
-            require(algorithm == "umap-balanced-v1" || topic.districts.isEmpty() || local.size == members.size) { "MAP_PROTOCOL" }
         }
         val pairs = mutableSetOf<Pair<String, String>>()
         for (link in links) {

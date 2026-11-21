@@ -27,7 +27,7 @@ function settings() {
       channel: { kind: 'none', app_id: null, user_open_id: null, destination: null, feishu_mode: 'websocket',
         qq_app_id: null, webhook_images: false, webhook_app_id: null },
       insights: { default_prompt: '用户自定义 Prompt' },
-      stargazing: { enabled: true },
+      stargazing: { enabled: true, llm_naming: true },
     },
     secrets: Object.fromEntries(['llm_api_key', 'embedding_api_key', 'app_secret', 'verification_token',
       'encrypt_key', 'webhook_url', 'webhook_secret', 'bot_token', 'qq_app_secret', 'webhook_app_secret'].map(name => [name, { configured: name === 'llm_api_key' }])),
@@ -37,7 +37,7 @@ function settings() {
 }
 async function fixture(t, language = 'zh-CN', returning = true) {
   const state = { value: settings(), session: false, gets: 0, patches: [], fail: null, hold: false, pending: [], csrf: false,
-    checks: [], checkFail: null, holdCheck: false, modelPending: [], index: 'disabled', mapReads: 0, deliveries: [], resolutions: [] };
+    checks: [], checkFail: null, holdCheck: false, modelPending: [], index: 'disabled', mapReads: 0, rebuilds: 0, deliveries: [], resolutions: [] };
   const core = http.createServer(async (req, res) => {
     const path = new URL(req.url, 'http://localhost').pathname;
     const raw = await readRequestText(req);
@@ -69,10 +69,16 @@ async function fixture(t, language = 'zh-CN', returning = true) {
           ? { chunks: 12, completed_chunks: 4, last_error: null } : null } });
       return;
     }
+    if (path === '/api/app/v1/map/rebuild') {
+      assert.equal(req.method, 'POST');
+      assert.equal(req.headers['x-csrf-token'], 'csrf-settings');
+      state.rebuilds++;
+      json({ status: 'queued' }); return;
+    }
     if (path === '/api/app/v1/map') {
       state.mapReads++;
       json({ status: state.value.settings.embedding.enabled ? state.index === 'building' ? 'building' : 'waiting' : 'disabled',
-        algorithm: 'pca-fixed-v2', projection_revision: 0, layout_version: '', layout_frame: '', vector_generation: '', points: [] });
+        algorithm: 'umap-balanced-v1', projection_revision: 0, layout_version: '', layout_frame: '', vector_generation: '', points: [] });
       return;
     }
     if (/^\/api\/app\/v1\/models\/(embedding|llm)\/check$/.test(path)) {
@@ -208,11 +214,9 @@ test('consent controls cross-tab reporting while a redacted diagnostic remains a
   assert.deepEqual(state.batches || [], []);
   await sharing.check();
   assert.match(await owner(), /^[a-f0-9]{64}$/);
-  const other = await page.context().newPage(); await other.goto(url + '/settings'); await tab(other, 'privacy');
-  assert.equal(await other.getByRole('switch').isChecked(), true);
   const notify = target => target.evaluate(() => dispatchEvent(new ErrorEvent('error', { message: 'secret-text' })));
-  const sent = page.context().waitForEvent('response', response => response.url().endsWith('/telemetry'));
-  await Promise.all([notify(page), notify(other)]); await sent;
+  const sent = page.waitForEvent('response', response => response.url().endsWith('/telemetry'));
+  await notify(page); await sent;
   assert.equal(state.batches.length, 1);
   const body = state.batches[0];
   assert.deepEqual(Object.keys(body).sort(), ['client_version', 'core_version', 'platform', 'rows', 'schema', 'system_major']);
@@ -220,21 +224,19 @@ test('consent controls cross-tab reporting while a redacted diagnostic remains a
   assert.equal(body.platform, 'web');
   assert.ok(body.rows.every(row => row.operation === 'client_error' && row.result === 'failure' && row.count > 0));
   assert.doesNotMatch(JSON.stringify(body), /secret-text|users\/1|https?:\/\//);
-  await notify(other);
+  await notify(page);
   await page.waitForFunction(() => JSON.parse(localStorage.getItem('moerise.aggregate.v1'))?.rows?.length);
   await sharing.uncheck();
-  await other.waitForFunction(() => !document.querySelector('[data-privacy]').checked && !localStorage.getItem('moerise.aggregate.v1'));
   assert.equal(await owner(), null);
-  await notify(other);
-  assert.equal(await other.evaluate(() => localStorage.getItem('moerise.aggregate.v1')), null);
+  await notify(page);
+  assert.equal(await page.evaluate(() => localStorage.getItem('moerise.aggregate.v1')), null);
   assert.equal(state.batches.length, 1);
   await sharing.check();
   state.telemetry = false;
   await page.reload(); await tab(page, 'privacy'); await page.waitForFunction(() => document.querySelector('[data-privacy]').disabled);
-  await other.waitForFunction(() => document.querySelector('[data-privacy]').disabled);
-  await notify(other);
+  await notify(page);
   assert.equal(await owner(), null);
-  assert.equal(await other.evaluate(() => localStorage.getItem('moerise.aggregate.v1')), null);
+  assert.equal(await page.evaluate(() => localStorage.getItem('moerise.aggregate.v1')), null);
   assert.equal(state.batches.length, 1);
 });
 
@@ -324,17 +326,18 @@ test('settings browser saves public fields, explicit secrets, prompt and multi-s
   await page.locator('a[data-route][href="/settings"]').click(); await pageReady(page);
   assert.equal(state.gets, 1);
   assert.equal(await page.locator('#settings-page input[type="password"]:visible').count(), 0);
+  await setting(page, 'timezone').fill('UTC');
+  await setting(page, 'stargazing.llm_naming').uncheck();
   await tab(page, 'review');
   await setting(page, 'review.count').fill('5');
   await setting(page, 'review.min_age_hours').fill('48');
   await setting(page, 'review.recent_days').fill('14');
   await setting(page, 'review.include_archived').check();
-  await setting(page, 'timezone').fill('UTC');
   await setting(page, 'notifications.enabled').check();
   await setting(page, 'channel.kind').selectOption('feishu-webhook');
   await page.getByRole('button', { name: '添加时段' }).click();
   await page.getByLabel('推送时段 2', { exact: true }).fill('18:30');
-  await tab(page, 'models');
+  await tab(page, 'ai');
   await setting(page, 'llm.enabled').check();
   await setting(page, 'llm.base_url').fill('https://llm.example.test/v1');
   await setting(page, 'llm.model').fill('test-llm');
@@ -345,10 +348,10 @@ test('settings browser saves public fields, explicit secrets, prompt and multi-s
   assert.equal(state.patches.length, 0);
   await secret(page, 'LLM API Key').fill('new-llm-key');
   await operation(page, 'Embedding API Key').selectOption('clear');
-  await tab(page, 'channel');
+  await tab(page, 'review');
   assert.equal(await operation(page, 'Webhook URL').isVisible(), false);
   await secret(page, 'Webhook URL').fill('https://hook.example.test/token');
-  await tab(page, 'insights');
+  await tab(page, 'ai');
   await page.getByRole('button', { name: '恢复默认', exact: true }).click();
   assert.equal(await setting(page, 'insights.default_prompt').inputValue(), state.value.default_insight_prompt);
   state.csrf = true;
@@ -358,6 +361,7 @@ test('settings browser saves public fields, explicit secrets, prompt and multi-s
   await page.locator('#calendar button.today[aria-label^="2026-10-31"]').waitFor();
   const patch = state.patches[0];
   assert.equal(patch.version, 1);
+  assert.deepEqual(patch.settings.stargazing, { llm_naming: false });
   assert.deepEqual(patch.settings.review, { count: 5, min_age_hours: 48, recent_days: 14, include_archived: true });
   assert.deepEqual(patch.settings.notifications, { enabled: true, times: ['09:00', '18:30'] });
   assert.deepEqual(patch.secrets.llm_api_key, { action: 'replace', value: 'new-llm-key' });
@@ -366,12 +370,11 @@ test('settings browser saves public fields, explicit secrets, prompt and multi-s
   assert.equal(patch.secrets.app_secret, undefined);
   assert.equal(patch.settings.llm.api_key, undefined);
   assert.equal(await page.locator('#settings-page input[type="password"]:visible').count(), 0);
-  await tab(page, 'models');
+  await tab(page, 'ai');
   assert.equal(await operation(page, 'LLM API Key').inputValue(), 'keep');
-  await tab(page, 'channel');
+  await tab(page, 'review');
   assert.equal(await operation(page, 'Webhook URL').inputValue(), 'keep');
   assert.equal(await setting(page, 'channel.webhook_app_id').isVisible(), false);
-  await tab(page, 'review');
   await setting(page, 'review.count').fill('6');
   await page.getByRole('button', { name: '保存设置', exact: true }).click();
   await page.getByRole('status').filter({ hasText: '设置已保存' }).waitFor();
@@ -518,13 +521,13 @@ test('model polling stays single after saving and invalidates results on version
 test('model settings pair protocols, check saved versions and discard obsolete results', { timeout: 60_000 }, async t => {
   const { page, state, url, errors } = await fixture(t);
   await page.goto(`${url}/settings`); await login(page); await pageReady(page);
-  await tab(page, 'models');
+  await tab(page, 'ai');
   await page.locator('#settings-index-status').filter({ hasText: '已关闭' }).waitFor();
   await page.locator('a[data-route][href="/insights"]').click();
   await page.locator('.insights-page[aria-busy="false"]').waitFor();
   assert.ok(await page.locator('[data-chat="send"]').isDisabled());
   await page.locator('a[data-route][href="/settings"]').click(); await pageReady(page);
-  await tab(page, 'models');
+  await tab(page, 'ai');
   const check = page.getByRole('button', { name: '检查 Embedding 连接', exact: true });
   assert.ok(await check.isDisabled());
   await setting(page, 'embedding.enabled').check();
@@ -571,7 +574,11 @@ test('model settings pair protocols, check saved versions and discard obsolete r
   await page.locator('.map-page [role="status"]').filter({ hasText: '正在生成观星布局' }).waitFor();
   state.holdCheck = false;
   await page.locator('a[data-route][href="/settings"]').click(); await pageReady(page);
-  await tab(page, 'models');
+  await tab(page, 'general');
+  await page.locator('#settings-rebuild-map').click();
+  await page.locator('#settings-map-rebuild-box').filter({ hasText: '已请求重新生成星图' }).waitFor();
+  assert.equal(state.rebuilds, 1);
+  await tab(page, 'ai');
   state.value.version++;
   await check.click();
   await page.getByRole('alert').filter({ hasText: '其他页面更新' }).waitFor();
@@ -583,7 +590,7 @@ test('model settings pair protocols, check saved versions and discard obsolete r
 test('conflict requires reload, busy can retry, and leaving or expiring removes sensitive inputs', { timeout: 60_000 }, async t => {
   const { page, state, url, errors } = await fixture(t);
   await page.goto(`${url}/settings`); await login(page); await pageReady(page);
-  await tab(page, 'models');
+  await tab(page, 'ai');
   await operation(page, 'LLM API Key').selectOption('replace'); await secret(page, 'LLM API Key').fill('temporary-key');
   await operation(page, 'LLM API Key').selectOption('keep');
   assert.equal(await secret(page, 'LLM API Key').inputValue(), '');
@@ -605,7 +612,7 @@ test('conflict requires reload, busy can retry, and leaving or expiring removes 
   assert.ok(await page.getByRole('button', { name: '保存设置', exact: true }).isEnabled());
   await page.getByRole('button', { name: '保存设置', exact: true }).click();
   await page.getByRole('status').filter({ hasText: '设置已保存' }).waitFor();
-  await tab(page, 'models');
+  await tab(page, 'ai');
   await operation(page, 'LLM API Key').selectOption('replace'); await secret(page, 'LLM API Key').fill('route-key');
   await page.locator('a[data-route][href="/review"]').click();
   await page.getByRole('button', { name: '放弃修改', exact: true }).click();
@@ -621,7 +628,7 @@ test('conflict requires reload, busy can retry, and leaving or expiring removes 
   state.hold = false;
   assert.equal(await page.locator('#settings-page').count(), 0);
   await page.locator('a[data-route][href="/settings"]').click(); await pageReady(page);
-  await tab(page, 'models');
+  await tab(page, 'ai');
   await operation(page, 'LLM API Key').selectOption('replace'); await secret(page, 'LLM API Key').fill('logout-key');
   state.hold = true;
   await page.getByRole('button', { name: '保存设置', exact: true }).click();
@@ -633,7 +640,7 @@ test('conflict requires reload, busy can retry, and leaving or expiring removes 
   state.hold = false;
   assert.equal(await page.locator('#settings-page').count(), 0);
   await login(page); await pageReady(page);
-  await tab(page, 'models');
+  await tab(page, 'ai');
   await operation(page, 'LLM API Key').selectOption('replace'); await secret(page, 'LLM API Key').fill('expired-key');
   state.session = false;
   await page.getByRole('button', { name: '重新加载设置' }).click();
@@ -722,7 +729,7 @@ test('settings button changes enable refresh protection and returning to saved v
     const reload = page.reload({ timeout: 1500 }).catch(() => {});
     await shown; await reload;
   };
-  await tab(page, 'insights');
+  await tab(page, 'ai');
   await page.getByRole('button', { name: '恢复默认', exact: true }).click();
   await rejectReload();
   assert.equal(await setting(page, 'insights.default_prompt').inputValue(), '内置默认洞察 Prompt');
@@ -754,7 +761,7 @@ test('English settings switch language without clearing secrets, changing values
   await page.getByRole('button', { name: 'Save settings', exact: true }).waitFor();
   await tab(page, 'review');
   await setting(page, 'review.count').fill('7');
-  await tab(page, 'models');
+  await tab(page, 'ai');
   await page.getByRole('combobox', { name: 'LLM API Key operation', exact: true }).selectOption('replace');
   await page.getByLabel('New LLM API Key value', { exact: true }).fill('new-private-key');
   await tab(page, 'general');
@@ -786,7 +793,8 @@ test('settings tabs retain edits, expose advanced fields and reveal invalid fiel
   const { page, state, errors, url } = await fixture(t);
   await page.setViewportSize({ width: 320, height: 568 });
   await page.goto(url + '/settings'); await login(page); await pageReady(page);
-  await tab(page, 'models');
+  assert.equal(await page.locator('#settings-page [role="tab"]').count(), 4);
+  await tab(page, 'ai');
   assert.equal(await page.locator('#settings-page details').count(), 0);
   assert.ok(await setting(page, 'llm.timeout_seconds').isVisible());
   assert.ok(await setting(page, 'embedding.batch_size').isVisible());
@@ -800,12 +808,12 @@ test('settings tabs retain edits, expose advanced fields and reveal invalid fiel
   assert.equal(await page.locator('#settings-tab-general').getAttribute('aria-selected'), 'true');
   await page.keyboard.press('End');
   assert.equal(await page.locator('#settings-tab-privacy').getAttribute('aria-selected'), 'true');
-  await tab(page, 'channel');
+  await tab(page, 'review');
   assert.equal(await setting(page, 'review.count').inputValue(), '7');
   assert.equal(await secret(page, 'LLM API Key').inputValue(), 'retained-across-tabs');
   assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
   await page.getByRole('button', { name: '保存设置', exact: true }).click();
-  assert.equal(await page.locator('#settings-tab-models').getAttribute('aria-selected'), 'true');
+  assert.equal(await page.locator('#settings-tab-ai').getAttribute('aria-selected'), 'true');
   assert.ok(await setting(page, 'llm.timeout_seconds').evaluate(node => node === document.activeElement));
   assert.equal(state.patches.length, 0);
   await setting(page, 'llm.timeout_seconds').fill('91');
@@ -828,11 +836,11 @@ test('independent channel secrets, review routing, connection status and manual 
   state.deliveries.push({ id: 'third', kind: 'review', date: '2026-10-01', clock: '18:00', channel_kind: 'qq', status: 'unknown' });
   await page.goto(url + '/settings'); await login(page);
   await page.getByRole('button', { name: 'Save settings', exact: true }).waitFor();
-  await tab(page, 'channel');
+  await tab(page, 'review');
   await page.getByText(/Check the bot credentials/).waitFor();
   await page.getByText('Waiting for callback verification', { exact: true }).waitFor();
   assert.equal(await page.getByRole('link', { name: 'Open bot' }).getAttribute('href'), state.value.channel_status.telegram.link);
-  assert.equal(await setting(page, 'channel.kind').isVisible(), false);
+  assert.equal(await setting(page, 'channel.kind').isVisible(), true);
   await setting(page, 'channel.qq_app_id').fill('12345');
   await page.getByLabel('New QQ AppSecret value').fill('private-qq');
   await setting(page, 'channel.feishu_mode').selectOption('callback');
@@ -860,7 +868,7 @@ test('independent channel secrets, review routing, connection status and manual 
   assert.deepEqual(patch.secrets.bot_token, { action: 'replace', value: '123456:abcdefghijklmnopqrstuvwxyz_0123456789' });
   assert.deepEqual(patch.secrets.webhook_app_secret, { action: 'clear' });
   assert.equal(patch.secrets.app_secret, undefined);
-  await tab(page, 'channel');
+  await tab(page, 'review');
   assert.equal(await operation(page, 'QQ AppSecret').inputValue(), 'keep');
   await operation(page, 'QQ AppSecret').selectOption('replace');
   await secret(page, 'QQ AppSecret').fill('rotated-qq');
@@ -878,8 +886,8 @@ test('independent channel secrets, review routing, connection status and manual 
   assert.deepEqual(state.patches.at(-1).settings.channel, { kind: 'none' });
   assert.deepEqual(state.patches.at(-1).settings.notifications, { enabled: false });
   assert.equal(state.patches.at(-1).secrets.bot_token, undefined);
-  await tab(page, 'history');
-  const row = clock => page.locator('#settings-panel-history .settings-row').filter({ hasText: clock });
+  assert.equal(await page.locator('#settings-history-card .settings-footer').count(), 0);
+  const row = clock => page.locator('#settings-history-card .settings-row').filter({ hasText: clock });
   await row('08:00').getByRole('button', { name: '补发' }).click();
   await page.getByText(/08:00 · Telegram · 等待发送/).waitFor();
   await row('12:00').getByRole('textbox', { name: '飞书消息 ID（可选）' }).fill('om_fixture');

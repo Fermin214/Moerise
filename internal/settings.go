@@ -265,7 +265,7 @@ func decryptProduct(settings Settings, version int64, body []byte) (Settings, er
 	if err != nil {
 		return settings, bad
 	}
-	product := ProductSettings{Stargazing: StargazingConfig{Enabled: true}}
+	product := ProductSettings{Stargazing: StargazingConfig{Enabled: true, LLMNaming: true}}
 	if tolerantJSON(bytes.NewReader(plain), &product) != nil {
 		return settings, bad
 	}

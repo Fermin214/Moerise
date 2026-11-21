@@ -509,8 +509,10 @@ test('search composition, menu keyboard, route focus and refresh protection pres
   assert.ok(await query.evaluate(node => node === document.activeElement));
   await query.fill(''); await query.press('Enter');
   await page.waitForURL(value => !value.search);
+  await page.locator('#notes[aria-busy="false"]').waitFor();
   const more = page.locator('[data-name="memos/n00"] .more');
   await more.focus(); await page.keyboard.press('ArrowDown');
+  await page.locator('[data-name="memos/n00"] .more[aria-expanded="true"]').waitFor();
   await page.getByRole('menuitem', { name: '编辑', exact: true }).waitFor();
   assert.equal(await page.evaluate(() => document.activeElement.textContent), '编辑');
   await page.keyboard.press('End');

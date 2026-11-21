@@ -2,12 +2,21 @@ package io.github.fermin214.moerise.data
 
 import androidx.room.immediateTransaction
 import androidx.room.useWriterConnection
+import io.github.fermin214.moerise.domain.CoreException
 import io.github.fermin214.moerise.domain.Note
 import io.github.fermin214.moerise.domain.NotePage
+import io.github.fermin214.moerise.presentation.CalendarPage
+import io.github.fermin214.moerise.presentation.DayCount
+import io.github.fermin214.moerise.presentation.SearchQuery
+import io.github.fermin214.moerise.presentation.TagCount
+import io.github.fermin214.moerise.presentation.TagPage
+import io.github.fermin214.moerise.presentation.displayServiceTime
 import kotlinx.serialization.json.*
 import kotlin.time.Instant
 import kotlin.time.ExperimentalTime
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 
 expect fun newLocalId(): String
@@ -17,8 +26,34 @@ data class RestoredDraft(val draft: DraftEntity, val pending: PendingWriteEntity
 @OptIn(ExperimentalTime::class)
 fun orderedNotes(notes: List<Note>): List<Note> = notes.sortedByDescending { Instant.parse(it.createTime) }
 
+@OptIn(ExperimentalTime::class)
+private fun sortableTime(value: String): String = runCatching {
+    val instant = Instant.parse(value)
+    val sec = instant.epochSeconds.toString().padStart(20, '0')
+    val nano = instant.nanosecondsOfSecond.toString().padStart(9, '0')
+    "$sec.$nano"
+}.getOrDefault(value)
+
+private fun Note.toEntity(accountKey: String): NoteEntity = NoteEntity(
+    accountKey = accountKey,
+    name = name,
+    instanceId = instanceId,
+    content = content,
+    state = state,
+    sourceHash = sourceHash,
+    createTime = sortableTime(createTime),
+    updateTime = sortableTime(updateTime),
+    noteJson = CoreJson.encodeToString(this),
+)
+
+private fun Note.tagEntities(accountKey: String): List<NoteTagEntity> =
+    tags.asSequence().filter { it.isNotBlank() }.distinct().map { NoteTagEntity(accountKey, name, it) }.toList()
+
+private fun NoteEntity.toNote(): Note = CoreJson.decodeFromString(noteJson)
+
 class NoteRepository(private val db: LocalDatabase, private val files: AttachmentFiles? = null) {
     private val recoveredAccounts = mutableSetOf<String>()
+    private val syncLock = Mutex()
     private suspend fun <T> transaction(block: suspend () -> T): T =
         db.useWriterConnection { it.immediateTransaction { block() } }
 
@@ -98,6 +133,7 @@ class NoteRepository(private val db: LocalDatabase, private val files: Attachmen
         require(remote.instanceId == write.accountKey.split('\u0000')[1])
         db.dao().deleteWrite(write.id)
         db.dao().deleteDraft(write.draftId)
+        upsertLocalNoteLocked(write.accountKey, remote)
         updateSnapshot(write.accountKey, remote)
     }
 
@@ -119,6 +155,8 @@ class NoteRepository(private val db: LocalDatabase, private val files: Attachmen
         transaction {
             db.dao().deleteWrites(key); db.dao().deleteDrafts(key); db.dao().deleteSnapshots(key)
             db.dao().deleteFeatures(key); db.dao().deleteProfile(key)
+            db.dao().deleteAllNoteTags(key); db.dao().deleteAllNotes(key)
+            db.dao().deleteSyncState(key); db.dao().deleteCachedSnapshots(key)
         }
         val remaining = attachmentIds()
         owned.distinctBy { it.id }.filter { it.id !in remaining }.forEach { files?.remove(it) }
@@ -173,8 +211,141 @@ class NoteRepository(private val db: LocalDatabase, private val files: Attachmen
         db.dao().putDraft(next)
         if (conflict) db.dao().putWrite(write.copy(status = "conflict"))
         else db.dao().deleteWrite(write.id)
-        if (remote != null) updateSnapshot(write.accountKey, remote)
+        if (remote != null) {
+            upsertLocalNoteLocked(write.accountKey, remote)
+            updateSnapshot(write.accountKey, remote)
+        }
     }
+
+    private suspend fun upsertLocalNoteLocked(key: String, note: Note) {
+        db.dao().deleteNoteTagsByName(key, listOf(note.name))
+        db.dao().putNote(note.toEntity(key))
+        val tags = note.tagEntities(key)
+        if (tags.isNotEmpty()) db.dao().putNoteTags(tags)
+    }
+
+    private suspend fun deleteLocalNoteLocked(key: String, name: String) {
+        db.dao().deleteNoteTagsByName(key, listOf(name))
+        db.dao().deleteNotesByName(key, listOf(name))
+    }
+
+    suspend fun recordLocalNote(key: String, note: Note) = transaction {
+        upsertLocalNoteLocked(key, note)
+    }
+
+    suspend fun deleteLocalNote(key: String, name: String) = transaction {
+        deleteLocalNoteLocked(key, name)
+    }
+
+    suspend fun isNotesSynced(key: String): Boolean = db.dao().syncState(key)?.initialized == true
+
+    suspend fun syncNotes(key: String, core: CoreClient): Boolean = syncLock.withLock {
+        val instance = key.split('\u0000').getOrNull(1).orEmpty()
+        val noteRegex = Regex("^memos/[A-Za-z0-9_-]+$")
+        val initial = db.dao().syncState(key)
+        var cursor = initial?.cursor.orEmpty()
+        val visited = mutableSetOf(cursor)
+        val upserts = linkedMapOf<String, Note>()
+        val deletions = linkedSetOf<String>()
+        var reset = initial?.initialized != true
+        var resetGeneration: String? = null
+        var generation = initial?.syncGeneration.orEmpty()
+        try {
+            while (true) {
+                val page = core.syncNotes(cursor, limit = 100)
+                require(page.mode in setOf("full", "delta", "reset")) { "SYNC_PROTOCOL" }
+                require(page.items.all {
+                    it.instanceId == instance && noteRegex.matches(it.name) &&
+                        it.state in setOf("NORMAL", "ARCHIVED") && it.sourceHash.isNotBlank()
+                }) { "ACCOUNT_CHANGED" }
+                require(page.deleted.all(noteRegex::matches)) { "SYNC_PROTOCOL" }
+                if (page.mode == "reset" && (!reset || resetGeneration != page.syncGeneration)) {
+                    reset = true
+                    resetGeneration = page.syncGeneration
+                    upserts.clear()
+                    deletions.clear()
+                }
+                page.items.forEach { note ->
+                    deletions.remove(note.name)
+                    upserts[note.name] = note
+                }
+                page.deleted.forEach { name ->
+                    upserts.remove(name)
+                    deletions.add(name)
+                }
+                generation = page.syncGeneration
+                if (!page.hasMore) {
+                    cursor = page.nextCursor
+                    break
+                }
+                require(page.nextCursor.isNotBlank() && visited.add(page.nextCursor)) { "SYNC_PROTOCOL" }
+                cursor = page.nextCursor
+            }
+        } catch (error: CoreException) {
+            if (error.status == 404 && initial == null) return@withLock false
+            throw error
+        }
+        val now = epochMillis()
+        transaction {
+            if (reset) {
+                db.dao().deleteAllNoteTags(key)
+                db.dao().deleteAllNotes(key)
+            } else {
+                val clearedNames = (deletions + upserts.keys).distinct()
+                clearedNames.chunked(200).forEach { chunk -> db.dao().deleteNoteTagsByName(key, chunk) }
+                deletions.toList().chunked(200).forEach { chunk -> db.dao().deleteNotesByName(key, chunk) }
+            }
+            if (upserts.isNotEmpty()) {
+                val entities = upserts.values.map { it.toEntity(key) }
+                entities.chunked(200).forEach { chunk -> db.dao().putNotes(chunk) }
+                val tags = upserts.values.flatMap { it.tagEntities(key) }
+                tags.chunked(200).forEach { chunk -> db.dao().putNoteTags(chunk) }
+            }
+            db.dao().putSyncState(SyncStateEntity(key, cursor, generation, initialized = true, updatedAt = now))
+        }
+        reset || upserts.isNotEmpty() || deletions.isNotEmpty()
+    }
+
+    suspend fun localNote(key: String, name: String): Note? = db.dao().note(key, name)?.toNote()
+
+    suspend fun localNotesPage(key: String, state: String, limit: Int, offset: Int): Pair<List<Note>, Boolean> {
+        val rows = db.dao().notesPage(key, state, limit + 1, offset)
+        val hasMore = rows.size > limit
+        return rows.take(limit).map { it.toNote() } to hasMore
+    }
+
+    suspend fun localTagPage(key: String, state: String): TagPage =
+        TagPage(db.dao().tagCounts(key, state).map { TagCount(it.tag, it.count) })
+
+    suspend fun localCalendarPage(key: String, state: String, month: String, timezone: String): CalendarPage {
+        val counts = linkedMapOf<String, Int>()
+        db.dao().notesByState(key, state).forEach { entity ->
+            val note = entity.toNote()
+            val day = displayServiceTime(note.createTime, timezone).take(10)
+            if (day.startsWith("$month-")) counts[day] = (counts[day] ?: 0) + 1
+        }
+        return CalendarPage(month, counts.entries.sortedBy { it.key }.map { (date, count) -> DayCount(date, count) })
+    }
+
+    suspend fun localSearch(key: String, query: SearchQuery, timezone: String, limit: Int, offset: Int): Pair<List<Note>, Boolean> {
+        val needle = query.text.trim()
+        val filtered = db.dao().notesByState(key, query.state).asSequence()
+            .map { it.toNote() }
+            .filter { note ->
+                (query.tags.isEmpty() || query.tags.all { tag -> tag in note.tags }) &&
+                    (query.date.isEmpty() || displayServiceTime(note.createTime, timezone).take(10) == query.date) &&
+                    (needle.isEmpty() || note.content.contains(needle, ignoreCase = true))
+            }
+            .drop(offset)
+            .take(limit + 1)
+            .toList()
+        val hasMore = filtered.size > limit
+        return filtered.take(limit) to hasMore
+    }
+
+    suspend fun readCachedSnapshot(key: String, kind: String): CachedSnapshotEntity? = db.dao().cachedSnapshot(key, kind)
+    suspend fun putCachedSnapshot(key: String, kind: String, body: String, fetchedAt: Long = epochMillis()) =
+        db.dao().putCachedSnapshot(CachedSnapshotEntity(key, kind, body, fetchedAt))
 
     private suspend fun updateSnapshot(key: String, remote: Note) {
         val previous = snapshot(key)?.notes ?: emptyList()
@@ -233,8 +404,11 @@ class NoteRepository(private val db: LocalDatabase, private val files: Attachmen
 
     suspend fun finishAction(write: PendingWriteEntity, remote: Note?, name: String) = transaction {
         db.dao().deleteWrite(write.id)
-        if (remote != null) updateSnapshot(write.accountKey, remote)
-        else {
+        if (remote != null) {
+            upsertLocalNoteLocked(write.accountKey, remote)
+            updateSnapshot(write.accountKey, remote)
+        } else {
+            deleteLocalNoteLocked(write.accountKey, name)
             val notes = snapshot(write.accountKey)?.notes?.filter { it.name != name } ?: emptyList()
             db.dao().putSnapshot(SnapshotEntity(write.accountKey, "home", CoreJson.encodeToString(NotePage(notes)), epochMillis()))
         }

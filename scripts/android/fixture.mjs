@@ -255,7 +255,7 @@ try {
     const log = await open(coreLog, 'w', 0o600);
     const starting = new AbortController();
     core = spawn(resolve(root, coreExecutable), ['serve', '--config', resolve(root, 'config.json'), '--host', '127.0.0.1', '--port', String(corePort)], {
-      cwd: repo, env: { ...coreEnv, GOMAXPROCS: '1', ...(stars ? { MOERISE_LAYOUT_URL: layoutOrigin } : {}) }, stdio: ['ignore', log.fd, log.fd],
+      cwd: repo, env: { ...coreEnv, GOMAXPROCS: '1', ...(stars ? { MOERISE_LAYOUT_URL: layoutOrigin, MOERISE_LAYOUT_CHECK_SECONDS: '2' } : {}) }, stdio: ['ignore', log.fd, log.fd],
     });
     core.once('exit', () => starting.abort());
     const spawned = once(core, 'spawn');

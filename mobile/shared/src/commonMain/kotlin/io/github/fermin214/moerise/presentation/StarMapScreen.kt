@@ -33,6 +33,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.toggleableState
 import androidx.compose.ui.state.ToggleableState
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import io.github.fermin214.moerise.data.CoreClient
 
 @OptIn(ExperimentalLayoutApi::class)
@@ -40,13 +41,22 @@ import io.github.fermin214.moerise.data.CoreClient
 fun StarMapScreen(mobile: MobileController, strings: Strings, noteScroll: LazyListState,
     onMenu: () -> Unit, onSearch: () -> Unit) {
     val connection by mobile.session.state.collectAsState()
-    StarMapScreen(mobile.stars, mobile.session.core, connection.profile?.stargazingEnabled != false, strings, noteScroll, onMenu, onSearch)
+    StarMapScreen(
+        mobile.stars,
+        mobile.session.core,
+        connection.profile?.stargazingEnabled != false,
+        strings,
+        noteScroll,
+        onMenu,
+        onSearch,
+        timezone = connection.profile?.timezone ?: "UTC",
+    )
 }
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun StarMapScreen(controller: StarMapController, core: CoreClient?, enabled: Boolean, strings: Strings,
-    noteScroll: LazyListState, onMenu: () -> Unit, onSearch: () -> Unit) {
+    noteScroll: LazyListState, onMenu: () -> Unit, onSearch: () -> Unit, timezone: String = "UTC") {
     val state by controller.state.collectAsState()
     val map = state.snapshot
     if (!enabled || state.disabledReason == "stargazing") {
@@ -60,7 +70,6 @@ fun StarMapScreen(controller: StarMapController, core: CoreClient?, enabled: Boo
         }
         return
     }
-    val stellar = map?.algorithm == "umap-balanced-v1" || map == null
     val mapFocus = remember { FocusRequester() }
     val density = LocalDensity.current.density
     var fieldFocused by remember { mutableStateOf(false) }
@@ -101,8 +110,8 @@ fun StarMapScreen(controller: StarMapController, core: CoreClient?, enabled: Boo
                 Row(Modifier.fillMaxSize(), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
                     Surface(Modifier.weight(1f).fillMaxHeight(),
                         shape = RoundedCornerShape(if (state.fullScreen) 0.dp else 14.dp),
-                        color = if (stellar) Color(0xFF030A14) else Color(0xFFFBFCFE),
-                        border = BorderStroke(1.dp, if (stellar) Color(0xFF172638) else MoeriseColors.Line)) {
+                        color = Color(0xFF030A14),
+                        border = BorderStroke(1.dp, Color(0xFF172638))) {
                         BoxWithConstraints(Modifier.fillMaxSize()) {
                             Box(Modifier.fillMaxSize().focusRequester(mapFocus).onFocusChanged { fieldFocused = it.isFocused }
                                 .onKeyEvent { event ->
@@ -128,34 +137,35 @@ fun StarMapScreen(controller: StarMapController, core: CoreClient?, enabled: Boo
                             Surface(
                                 Modifier.align(Alignment.TopEnd).padding(12.dp)
                                     .widthIn(max = (maxWidth - 24.dp).coerceAtLeast(44.dp)),
-                                color = if (stellar) Color(0xEE081321) else Color(0xF2FFFFFF),
-                                shape = RoundedCornerShape(if (stellar) 8.dp else 12.dp),
-                                border = BorderStroke(1.dp, if (stellar) Color(0xFF263749) else MoeriseColors.Line),
+                                color = Color(0xEE081321),
+                                shape = RoundedCornerShape(8.dp),
+                                border = BorderStroke(1.dp, Color(0xFF263749)),
                             ) {
                                 FlowRow(Modifier.padding(3.dp)) {
-                                    MapTool(MapToolIcon.Fit, strings.text("显示全图", "Fit map"), stellar, enabled = map != null,
+                                    MapTool(MapToolIcon.Fit, strings.text("显示全图", "Fit map"), enabled = map != null,
                                         tag = "map_fit", onClick = { controller.fit(true) })
+                                    MapTool(MapToolIcon.Refresh, strings.text("重新生成星图", "Rebuild star map"),
+                                        enabled = map != null && !state.posting && !state.loading,
+                                        tag = "map_rebuild", onClick = { controller.rebuild(true) })
                                     MapTool(MapToolIcon.Frame, strings.text(if (state.fullScreen) "退出全屏" else "全屏预览",
-                                        if (state.fullScreen) "Exit full screen" else "Fullscreen"), stellar,
+                                        if (state.fullScreen) "Exit full screen" else "Fullscreen"),
                                         pressed = state.fullScreen, tag = "map_fullscreen", onClick = controller::fullScreen)
                                 }
                             }
                             val missing = map?.points?.count { !it.semantic } ?: 0
-                            if (stellar && missing > 0) OutlinedButton(
+                            if (missing > 0) OutlinedButton(
                                 onClick = { controller.closeReader(); if (!state.unplacedOnly) controller.unplaced() },
                                 modifier = Modifier.align(Alignment.BottomStart).padding(14.dp).testTag("map_unplaced"),
                                 shape = RoundedCornerShape(10.dp), border = BorderStroke(1.dp, Color(0xFF263749)),
                                 colors = ButtonDefaults.outlinedButtonColors(containerColor = Color(0xEE0B192A), contentColor = Color(0xFFB8C8D9)),
                             ) { Text(strings.text("未定位笔记（$missing）", "Notes without positions ($missing)")) }
                             if (message != null) Surface(
-                                Modifier.align(Alignment.BottomStart).padding(start = 16.dp, end = 16.dp, bottom = if (stellar && missing > 0) 72.dp else 12.dp),
-                                color = if (stellar) Color(0xEE0B192A) else Color(0xFFFBFCFE), shape = RoundedCornerShape(6.dp),
+                                Modifier.align(Alignment.BottomStart).padding(start = 16.dp, end = 16.dp, bottom = if (missing > 0) 72.dp else 12.dp),
+                                color = Color(0xEE0B192A), shape = RoundedCornerShape(6.dp),
                             ) {
                                 Column {
                                 Text(message, style = MaterialTheme.typography.bodySmall,
-                                    color = if (messageError) {
-                                        if (stellar) Color(0xFFFFB4AB) else MaterialTheme.colorScheme.error
-                                    } else if (stellar) Color(0xFFB8C8D9) else MoeriseColors.Muted,
+                                    color = if (messageError) Color(0xFFFFB4AB) else Color(0xFFB8C8D9),
                                     modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp).testTag("map_status")
                                         .semantics { liveRegion = if (messageError) LiveRegionMode.Assertive else LiveRegionMode.Polite })
                                 if (messageError) TextButton(onClick = controller::refresh) { Text(strings.text("重试", "Retry")) }
@@ -163,10 +173,10 @@ fun StarMapScreen(controller: StarMapController, core: CoreClient?, enabled: Boo
                             }
                         }
                     }
-                    if (wideReader) MapUnplacedNotes(controller, core, state, strings, noteScroll, closeReader,
+                    if (wideReader) MapUnplacedNotes(controller, core, state, strings, timezone, noteScroll, closeReader,
                         Modifier.width(readerWidth).fillMaxHeight())
                 }
-                if (readerVisible && !wideReader) MapUnplacedNotes(controller, core, state, strings, noteScroll, closeReader,
+                if (readerVisible && !wideReader) MapUnplacedNotes(controller, core, state, strings, timezone, noteScroll, closeReader,
                     Modifier.align(Alignment.BottomCenter).fillMaxWidth().heightIn(max = readerHeight), bottomSheet = true)
             }
         }
@@ -175,22 +185,35 @@ fun StarMapScreen(controller: StarMapController, core: CoreClient?, enabled: Boo
 
 @Composable
 private fun MapUnplacedNotes(controller: StarMapController, core: CoreClient?, state: StarMapState, strings: Strings,
-    noteScroll: LazyListState, onClose: () -> Unit,
+    timezone: String, noteScroll: LazyListState, onClose: () -> Unit,
     modifier: Modifier, bottomSheet: Boolean = false) {
     Surface(modifier, color = Color.White,
         shape = if (bottomSheet) RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp) else RoundedCornerShape(14.dp),
         border = BorderStroke(1.dp, MoeriseColors.Line), shadowElevation = if (bottomSheet) 8.dp else 0.dp) {
         Column {
-            Row(Modifier.fillMaxWidth().padding(horizontal = 6.dp, vertical = 4.dp), horizontalArrangement = Arrangement.End) {
+            val selectedPoint = state.selected?.let { name -> state.snapshot?.points?.firstOrNull { it.name == name } }
+            val readerDate = (state.reader?.createTime ?: selectedPoint?.createTime)?.takeIf { it.isNotBlank() }
+                ?.let { displayNoteDate(it, timezone, strings.text("zh", "en") == "en") }
+            Row(Modifier.fillMaxWidth().padding(start = 18.dp, top = 6.dp, end = 6.dp),
+                verticalAlignment = Alignment.CenterVertically) {
+                if (readerDate != null) Text(readerDate, fontSize = 13.sp, color = MoeriseColors.Muted,
+                    modifier = Modifier.weight(1f)) else Spacer(Modifier.weight(1f))
                 IconButton(onClick = onClose, modifier = Modifier.size(44.dp).testTag("map_close_reader")) {
                     WebIcon(WebIcon.Close, strings.text("关闭阅读卡", "Close reader"))
                 }
             }
             if (state.selected != null) {
                 key(state.selected) {
-                    Column(Modifier.verticalScroll(rememberScrollState()).padding(16.dp).testTag("map_reader")) {
-                        state.reader?.let { note -> MarkdownBody(note.content, note = note, core = core)
-                            NoteAttachments(note, core, strings) }
+                    Column(
+                        Modifier.verticalScroll(rememberScrollState()).padding(start = 18.dp, top = 0.dp, end = 18.dp, bottom = 16.dp).testTag("map_reader"),
+                        verticalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        state.reader?.let { note ->
+                            val presentation = remember(note.content, note.tags) { notePresentation(note.content, note.tags) }
+                            if (presentation.body.isNotBlank()) MarkdownBody(presentation.body, note = note, core = core)
+                            NoteAttachments(note, core, strings)
+                            NoteTags(presentation.tags)
+                        }
                         if (state.reading) Text(strings.text("正在读取笔记…", "Loading note…"))
                         state.readerError?.let { Text(editorError(it, strings), color = MaterialTheme.colorScheme.error) }
                     }
@@ -215,18 +238,17 @@ private fun MapUnplacedNotes(controller: StarMapController, core: CoreClient?, s
 
 private enum class MapToolIcon(val path: String) {
     Fit("M3 12h4m10 0h4M12 3v4m0 10v4M18 12a6 6 0 1 1-12 0 6 6 0 0 1 12 0"),
+    Refresh("M21 12a9 9 0 1 1-2.64-6.36L21 8M21 3v5h-5"),
     Frame("M8 3H3v5M16 3h5v5M21 16v5h-5M8 21H3v-5"),
 }
 
 @Composable
-private fun MapTool(icon: MapToolIcon, label: String, stellar: Boolean, enabled: Boolean = true,
+private fun MapTool(icon: MapToolIcon, label: String, enabled: Boolean = true,
     pressed: Boolean? = null, tag: String, onClick: () -> Unit) {
-    val tint = if (stellar) Color(0xFFAEBFD2) else MoeriseColors.Muted
-    val buttonSize = if (stellar) 32.dp else 36.dp
+    val tint = Color(0xFFAEBFD2)
+    val buttonSize = 32.dp
     CompositionLocalProvider(LocalMinimumInteractiveComponentSize provides buttonSize) {
-        Surface(color = if (pressed == true) {
-            if (stellar) Color(0xFF1A2A3C) else MoeriseColors.Selected
-        } else Color.Transparent, shape = RoundedCornerShape(6.dp)) {
+        Surface(color = if (pressed == true) Color(0xFF1A2A3C) else Color.Transparent, shape = RoundedCornerShape(6.dp)) {
             IconButton(onClick, enabled = enabled, modifier = Modifier.size(buttonSize).testTag(tag).semantics {
                 contentDescription = label
                 if (pressed != null) toggleableState = if (pressed) ToggleableState.On else ToggleableState.Off

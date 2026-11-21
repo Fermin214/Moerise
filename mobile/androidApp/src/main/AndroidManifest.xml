@@ -6,7 +6,8 @@
     <application
         android:name=".MoeriseApplication"
         android:label="${appLabel}"
-        android:icon="@drawable/moerise_logo"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher_round"
         android:allowBackup="false"
         android:fullBackupContent="@xml/backup_rules"
         android:dataExtractionRules="@xml/data_extraction_rules"
