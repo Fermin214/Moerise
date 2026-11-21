@@ -20,7 +20,7 @@ Moerise 是基于 Memos 的单用户自托管笔记系统。`internal/` 是按�
 
 ## 关键约束
 
-- Memos 保存笔记原文、标签和附件，只通过官方 API 访问。一个实例绑定一名作者，管理员 PAT 同样受作者范围限制；来源身份实时核验，笔记原文通过官方 API 复查。
+- Memos 保存笔记原文、标签和附件，只通过官方 API 写入与同步；客户端日常读取走本地同步索引，写前核验作者身份并与写入直通保持一致。一个实例绑定一名作者，管理员 PAT 同样受作者范围限制。
 - `/api/app/v1` 使用本人会话，可执行笔记写入和产品设置操作，保持同源、Cookie 和 CSRF 校验。`/api/ext/v1` 与 `/mcp` 只读，配置仅接受 `notes:read`、`sync:read`、`reviews:read`。
 - `state.sqlite3` 保存需备份的产品状态，包括设置、会话、聊天与回顾计划；`index.sqlite3` 保存可重建的检索、向量和地图索引。重建索引保留产品状态。
 - 正常与归档笔记的全部分页成功后，才能发布投影并推进同步水位。
@@ -30,7 +30,9 @@ Moerise 是基于 Memos 的单用户自托管笔记系统。`internal/` 是按�
 ## 实现与文档
 
 - 手写代码默认不加解释性注释，例外见[贡献指南的开发约定](CONTRIBUTING.md#开发约定)。
-- 接口变化一起检查对应路由、`internal/*models.go`、`internal/openapi.json`、接口文档和调用端。
+- 接口变化一起检查对应路由、`internal/*models.go`、`internal/openapi_gen.go`、接口文档及多端调用方（`web/src/`、`mobile/`、`tests/`、`scripts/acceptance/`、`scripts/android/seed-*.mjs`）。
+- 状态、认证与同步边界及快照恢复改动，须齐步排查全部错误出口与同类重置入口，复用共享淘汰与恢复屏障；数据库迁移以包含非 JSON、中文和空字段的真实存量行验证。
+- Go 阻塞通道、流与锁资源在 `t.Cleanup` 中释放；定向 `-race` 运行显式指定 `-timeout`（如 `120s`），依赖 Git 历史的测试须保证在 `fetch-depth: 1` 浅克隆下仍执行核心断言。
 - 配置与设置变化一起检查 `internal/config*.go`、`internal/settings*.go`、前端设置页、配置模板和配置文档，覆盖热更新与版本冲突。
 - 前端修改落在 `web/src/`，`web/dist/` 由构建生成。界面文案同时维护中文源文案、`web/src/en.js` 和相关浏览器流程。
 - 行为变化同步更新对应文档和配置示例，新增文档在[文档导航](docs/README.md)登记。功能说明描述实际行为，规划集中写入路线图。
@@ -42,10 +44,10 @@ Moerise 是基于 Memos 的单用户自托管笔记系统。`internal/` 是按�
 
 | 改动范围 | 验证入口 |
 | --- | --- |
-| Go 业务与接口 | `go test ./...`、`go vet ./...`、`gofmt -l main.go internal tests` |
+| Go 业务与接口 | `go test ./...`、`go test -race -timeout=25m -count=1 ./...`、`go vet ./...`、`gofmt -l main.go internal tests` |
 | Web 逻辑、样式与构建 | `npm --prefix web run build`、`npm --prefix web test` |
 | Web 界面与交互 | `npm --prefix web run test:browser` |
-| 共用脚本工具 | `node --test scripts/lib/*.test.mjs` |
+| 共用脚本与策略 | `node --test scripts/lib/*.test.mjs scripts/android/fixture-policy.test.mjs` |
 | 同步、Memos 协议、迁移、备份恢复或通知推送 | `go test -tags=integration ./tests -v -count=1` |
 | Compose、Core、Web 联合验收 | `node scripts/acceptance/check-compose.mjs --browser`，其他功能脚本见[脚本说明](scripts/README.md) |
 

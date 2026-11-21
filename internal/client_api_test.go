@@ -67,6 +67,39 @@ func TestOpenAPIOperationIDsAreUnique(t *testing.T) {
 	if prop["type"] != "string" || prop["format"] != "byte" {
 		t.Fatalf("ClientAttachmentInput.content schema unexpected: %+v", prop)
 	}
+	for path, methods := range raw.Paths {
+		for method, op := range methods {
+			if method == "head" {
+				continue
+			}
+			for _, code := range []string{"200", "201", "206"} {
+				rVal, exists := op.Responses[code]
+				if !exists {
+					continue
+				}
+				resp, _ := rVal.(map[string]any)
+				content, _ := resp["content"].(map[string]any)
+				if len(content) == 0 {
+					t.Fatalf("missing response content for %s %s %s: %+v", method, path, code, rVal)
+				}
+			}
+		}
+	}
+	for name, schema := range raw.Components.Schemas {
+		prop, ok := schema.Properties["content"]
+		if !ok {
+			continue
+		}
+		if types, isSlice := prop["type"].([]any); isSlice {
+			for _, item := range types {
+				if item == "array" {
+					t.Fatalf("schema %s.content uses array type instead of byte string: %+v", name, prop)
+				}
+			}
+		} else if prop["type"] == "array" {
+			t.Fatalf("schema %s.content uses array type instead of byte string: %+v", name, prop)
+		}
+	}
 }
 
 func TestClientNotificationRecoveryUsesBoundSession(t *testing.T) {
