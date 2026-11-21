@@ -252,7 +252,7 @@ M2 提供 `note_editor_ready` 性能标记及首个输入校验；M7 记录观�
 
 | 里程碑 | 工作内容 | 交付物与完成条件 |
 | --- | --- | --- |
-| M0：工程与工具链 | 配置用户目录中的 JDK、Android 命令行 SDK，固定稳定依赖矩阵，建立 Android/JVM 共享工程，提取设计资源，验证 Markdown 候选组件 | Linux 干净检出构建 debug APK，`:shared:jvmTest` 实际执行非零测试并使用 BundledSQLiteDriver；Android 安装后显示主页样式和中英文资源；固定版本目录、Wrapper 摘要和 SDK 清单 |
+| M0：工程与工具链 | 配置用户目录中的 JDK、Android 命令行 SDK，固定稳定依赖矩阵，建立 Android/JVM 共享工程，提取设计资源，验证 Markdown 候选组件 | Linux 干净检出构建 debug APK，纯 Kotlin 与 Android 单元测试实际执行非零测试并使用系统 SQLite；Android 安装后显示主页样式和中英文资源；固定版本目录、Wrapper 摘要和 SDK 清单 |
 | M1：连接与会话 | 地址规范化、capabilities、登录、Cookie 安全持久化、内存 CSRF、退出、401、账号隔离及受保护 API 请求，固定观星快照与重建契约 | 真机连接隔离的 Core + Memos 环境；重启后恢复会话；一次新建后可读回并清理；错误来源、失效 Cookie 和错误 CSRF 按预期处理；观星响应样本与服务端版本对应 |
 | M2：快速记录闭环 | Room、草稿落盘、附件暂存基础、主页编辑器、创建笔记、冻结请求、幂等重试、最近时间线快照与性能标记 | 打开 → 写作 → 保存 → 读回；断网写草稿后恢复；发送后丢响应、进程终止和输入继续修改均不丢已落盘内容、不重复创建；产出首份真机启动基准 |
 | M3：笔记管理与附件 | 时间线分页与刷新、主页 Markdown 阅读、单条原位编辑、归档、恢复、删除、图片上传、附件移除/下载/系统打开 | 真机完成笔记全生命周期；切换编辑先落盘、顶部草稿恢复、保存修订与取消恢复正确；Core 与 Memos 原文和附件一致；来源冲突、文件超限、文件引用冲突、软键盘和旋转恢复均有验证 |
@@ -271,7 +271,7 @@ M0 同时记录 Linux 构建所需的 JDK、SDK、Gradle JVM 参数和依赖仓�
 
 | 层级 | 执行位置 | 入口与覆盖 |
 | --- | --- | --- |
-| 构建与共享检查 | Linux 服务器、CI | M0 提供 `scripts/android/check.sh`，聚合 Kotlin 检查、`:shared:jvmTest`、Android lint 与 `assembleDebug`，核对真实 SQLite 测试及非零执行数量 |
+| 构建与共享检查 | Linux 服务器、CI | M0 提供 `scripts/android/check.sh`，聚合 Kotlin 检查、`:androidApp:testDebugUnitTest`、Android lint 与 `assembleDebug`，核对真实 SQLite 测试及非零执行数量 |
 | 真实服务联调 | Linux Docker + ADB 设备 | M1 提供 `scripts/android/start-fixture.sh`，复用已有 Memos 初始化逻辑，启动独立 Core/Web/Memos；观星场景加入布局服务和固定测试向量，输出非敏感连接信息与设备反向端口配置 |
 | Android 端到端 | 连接的真机，或有硬件加速的 CI 模拟器 | M2 起提供 `scripts/android/acceptance.sh`；使用 Android instrumentation 驱动应用完成记录、管理、搜索和探索流程 |
 | 协议异常 | Linux 主机测试与可控服务 | Ktor MockEngine 或本地故障服务注入超时、错误码、断帧、重复响应、来源冲突和写入成功后丢响应 |

@@ -6,7 +6,7 @@ const read = path => readFile(new URL(`../../${path}`, import.meta.url), 'utf8')
 const [contract, web, android] = await Promise.all([
   read('internal/telemetry/schema-v1.json').then(JSON.parse),
   read('web/src/privacy.js'),
-  read('mobile/shared/src/commonMain/kotlin/io/github/fermin214/moerise/presentation/PrivacyController.kt'),
+  read('mobile/androidApp/src/main/kotlin/io/github/fermin214/moerise/presentation/PrivacyController.kt'),
 ]);
 const literals = value => [...value.matchAll(/["']([a-z][a-z0-9_ ]*)["']/g)].flatMap(match => match[1].trim().split(/\s+/)).filter(Boolean);
 

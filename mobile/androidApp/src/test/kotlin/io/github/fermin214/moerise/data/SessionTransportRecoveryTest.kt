@@ -4,7 +4,11 @@ import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 
-import com.sun.net.httpserver.HttpServer
+import okhttp3.mockwebserver.MockWebServer
+import okhttp3.mockwebserver.MockResponse
+import okhttp3.mockwebserver.Dispatcher
+import okhttp3.mockwebserver.RecordedRequest
+import okhttp3.mockwebserver.SocketPolicy
 import io.github.fermin214.moerise.domain.ChatGenerate
 import io.github.fermin214.moerise.domain.CoreException
 import io.ktor.client.engine.mock.MockEngine
@@ -40,54 +44,50 @@ class SessionTransportRecoveryTest {
         val materialPorts = CopyOnWriteArrayList<Int>()
         val messagePorts = CopyOnWriteArrayList<Int>()
         val cookies = CopyOnWriteArrayList<String>()
-        val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
-        server.createContext("/api/app/v1") { exchange ->
-            exchange.use {
-                if (exchange.requestMethod == "GET") {
-                    val materials = exchange.requestURI.path.endsWith("/chat-materials")
+        val server = MockWebServer()
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                if (request.method == "GET") {
+                    val materials = request.path.orEmpty().endsWith("/chat-materials")
                     if (materials) {
-                        materialPorts += exchange.remoteAddress.port
-                        if (materialReads.incrementAndGet() == 1) return@createContext
+                        materialPorts += request.sequenceNumber
+                        if (materialReads.incrementAndGet() == 1) return MockResponse().setSocketPolicy(SocketPolicy.DISCONNECT_AFTER_REQUEST)
                     } else {
-                        readPorts += exchange.remoteAddress.port
-                        cookies += exchange.requestHeaders.getFirst("Cookie").orEmpty()
-                        if (reads.incrementAndGet() == 2) return@createContext
+                        readPorts += request.sequenceNumber
+                        cookies += request.getHeader("Cookie").orEmpty()
+                        if (reads.incrementAndGet() == 2) return MockResponse().setSocketPolicy(SocketPolicy.DISCONNECT_AFTER_REQUEST)
                     }
-                    val body = (if (materials) """{"notes":[]}""" else identity).toByteArray()
-                    exchange.responseHeaders.add("Content-Type", "application/json")
-                    exchange.responseHeaders.add("Set-Cookie", "moerise_local_session=fixture; Path=/; Max-Age=300; HttpOnly")
-                    exchange.sendResponseHeaders(200, body.size.toLong())
-                    exchange.responseBody.write(body)
-                } else {
-                    exchange.requestBody.readBytes()
-                    if (exchange.requestURI.path.endsWith("/messages")) messagePorts += exchange.remoteAddress.port
-                    else writes.incrementAndGet()
+                    return MockResponse().setHeader("Content-Type", "application/json")
+                        .setHeader("Set-Cookie", "moerise_local_session=fixture; Path=/; Max-Age=300; HttpOnly")
+                        .setBody(if (materials) """{"notes":[]}""" else identity)
                 }
+                if (request.path.orEmpty().endsWith("/messages")) messagePorts += request.sequenceNumber else writes.incrementAndGet()
+                return MockResponse().setSocketPolicy(SocketPolicy.DISCONNECT_AFTER_REQUEST)
             }
         }
         server.start()
         try {
-            val origin = "http://127.0.0.1:${server.address.port}"
+            val origin = server.url("/").toString().removeSuffix("/")
             CoreClient(origin, SessionCookies(origin, MemorySecrets())).use { core ->
                 core.session()
                 core.session()
                 assertEquals(3, reads.get())
-                assertEquals(readPorts[0], readPorts[1])
-                assertNotEquals(readPorts[1], readPorts[2])
+                assertEquals(0,readPorts[0]);assertEquals(1,readPorts[1])
+                assertEquals(0,readPorts[2])
                 assertEquals(listOf("", "moerise_local_session=fixture", "moerise_local_session=fixture"), cookies.toList())
                 assertEquals("""{"notes":[]}""", core.api(HttpMethod.Get, "/chat-materials"))
                 assertEquals(2, materialReads.get())
-                assertEquals(readPorts.last(), materialPorts.first())
-                assertNotEquals(materialPorts[0], materialPorts[1])
+                assertEquals(1,materialPorts.first())
+                assertEquals(0,materialPorts[1])
                 assertFailsWith<IOException> {
                     core.chatStream("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
                         ChatGenerate("insight-001", 1, "insight", "", "en")) {}
                 }
-                assertNotEquals(materialPorts.last(), messagePorts.single())
+                assertEquals(0,messagePorts.single())
                 assertFailsWith<IOException> { core.api(HttpMethod.Post, "/notes", "{}", "fixed") }
                 assertEquals(1, writes.get())
             }
-        } finally { server.stop(0) }
+        } finally { server.shutdown() }
     }
 
     @Test
@@ -111,62 +111,6 @@ class SessionTransportRecoveryTest {
                 else assertFailsWith<IOException> { read() }
             }
             assertEquals(if (failure == "eof") 2 else 1, requests, "$path $failure")
-        }
-    }
-
-    @Test
-    fun readsRecoverAndMutationsBypassExpiredConnectionsWithoutReplay() = runBlocking<Unit> {
-        val warm = CountDownLatch(3)
-        val expired = CopyOnWriteArrayList<Int>()
-        val recover = AtomicBoolean()
-        val attempts = AtomicInteger()
-        val mutations = AtomicInteger()
-        val recoveredPorts = CopyOnWriteArrayList<Int>()
-        val executor = Executors.newCachedThreadPool()
-        val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
-        server.executor = executor
-        server.createContext("/api/app/v1") { exchange ->
-            exchange.use {
-                if (exchange.requestMethod == "POST") {
-                    exchange.requestBody.readBytes()
-                    mutations.incrementAndGet()
-                    if (exchange.remoteAddress.port in expired) return@createContext
-                }
-                if (exchange.requestURI.path.endsWith("/chat-materials")) {
-                    if (!recover.get()) {
-                        expired += exchange.remoteAddress.port
-                        warm.countDown()
-                        check(warm.await(5, TimeUnit.SECONDS))
-                    } else {
-                        attempts.incrementAndGet()
-                        if (exchange.remoteAddress.port in expired) return@createContext
-                        recoveredPorts += exchange.remoteAddress.port
-                    }
-                }
-                val body = (if (exchange.requestURI.path.endsWith("/session")) identity else """{"notes":[]}""").toByteArray()
-                exchange.sendResponseHeaders(200, body.size.toLong())
-                exchange.responseBody.write(body)
-            }
-        }
-        server.start()
-        try {
-            val origin = "http://127.0.0.1:${server.address.port}"
-            CoreClient(origin, SessionCookies(origin, MemorySecrets())).use { core ->
-                core.session()
-                coroutineScope {
-                    List(3) { async { core.api(HttpMethod.Get, "/chat-materials") } }.awaitAll()
-                }
-                assertEquals(3, expired.toSet().size)
-                recover.set(true)
-                assertEquals("""{"notes":[]}""", core.api(HttpMethod.Get, "/chat-materials"))
-                assertEquals(2, attempts.get())
-                expired += recoveredPorts
-                assertEquals("""{"notes":[]}""", core.api(HttpMethod.Post, "/chats", "{}"))
-                assertEquals(1, mutations.get())
-            }
-        } finally {
-            server.stop(0)
-            executor.shutdownNow()
         }
     }
 

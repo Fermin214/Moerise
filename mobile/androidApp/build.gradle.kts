@@ -85,6 +85,7 @@ dependencies {
     ksp(libs.room.compiler)
     testImplementation(kotlin("test"))
     testImplementation(libs.ktor.client.mock)
+    testImplementation(libs.mockwebserver)
     testImplementation(libs.robolectric)
     testImplementation(libs.androidx.test.core)
     implementation(libs.androidx.activity.compose)
