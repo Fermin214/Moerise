@@ -224,7 +224,8 @@ function removeTemporaryRoot() {
 
 async function runScenario(kind) {
   scenario = kind;
-  const [webPort, memosPort, corePort] = await freePorts(3);
+  const [webPort, memosPort] = await freePorts(2);
+  const corePort = webPort;
   const url = `http://127.0.0.1:${webPort}`;
   const sourceURL = `http://127.0.0.1:${memosPort}`;
   const username = `acceptance-${randomBytes(6).toString('hex')}`;
@@ -234,7 +235,7 @@ async function runScenario(kind) {
     COMPOSE_PROFILES: kind === 'bundled' ? 'memos' : '',
     COMPOSE_PROJECT_NAME: project, MOERISE_IMAGE_TAG: imageTag,
     MOERISE_ENV_FILE: envFile.replaceAll('\\', '/'),
-    WEB_BIND_ADDRESS: '127.0.0.1', WEB_PORT: webPort, MEMOS_PORT: memosPort, MOERISE_PORT: corePort,
+    MOERISE_BIND_ADDRESS: '127.0.0.1', MEMOS_PORT: memosPort, MOERISE_PORT: corePort,
     MOERISE_PUBLIC_ORIGIN: url, MOERISE_WEB_ENABLED: 'true',
     MOERISE_MEMOS_INSTANCE_ID: instance,
     MOERISE_MEMOS_BASE_URL: kind === 'bundled' ? 'http://memos:5230' : 'http://source:5230',
@@ -250,7 +251,7 @@ async function runScenario(kind) {
   evidence.scenarios.push({ scenario: kind, project, url, sourceURL });
   await check('布局服务由 stargazing profile 独立启用', async () => {
     const base = (await compose(['config', '--services'])).split(/\s+/);
-    assert.ok(base.includes('moerise') && base.includes('web') && !base.includes('layout'));
+    assert.ok(base.includes('moerise') && !base.includes('web') && !base.includes('layout'));
     assert.equal(base.includes('memos'), kind === 'bundled');
     const enabled = (await compose(['--profile', 'stargazing', 'config', '--services'])).split(/\s+/);
     assert.ok(enabled.includes('layout'));
@@ -258,9 +259,9 @@ async function runScenario(kind) {
   if (!skipBuild && !buildAttempted) {
     await check('构建 Core、Web 与布局服务', async () => {
       buildAttempted = true;
-      await compose(['build', 'moerise', 'web', 'layout'], { timeout: 1_200_000 });
+      await compose(['build', 'moerise', 'layout'], { timeout: 1_200_000 });
       evidence.images = {};
-      for (const image of [`ghcr.io/fermin214/moerise:${imageTag}`, `ghcr.io/fermin214/moerise-web:${imageTag}`,
+      for (const image of [`ghcr.io/fermin214/moerise:${imageTag}`,
         `ghcr.io/fermin214/moerise-layout:${imageTag}`]) {
         evidence.images[image] = (await docker(['image', 'inspect', '--format', '{{.Id}}', image])).trim();
       }
@@ -307,7 +308,7 @@ async function runScenario(kind) {
     values.MOERISE_MEMOS_USER = me.user.name;
     values.MOERISE_MEMOS_TOKEN = pat;
     writeEnv(values);
-    await compose(['up', '-d', '--no-build', 'moerise', 'web', 'layout']);
+    await compose(['up', '-d', '--no-build', 'moerise', 'layout']);
     await ready(url);
   });
 
@@ -425,7 +426,7 @@ async function runScenario(kind) {
     await retained();
   });
   await check('强制重建 Core/Web 容器后保留产品状态', async () => {
-    await compose(['up', '-d', '--no-build', '--force-recreate', 'moerise', 'web']);
+    await compose(['up', '-d', '--no-build', '--force-recreate', 'moerise']);
     await ready(url);
     await retained();
   });
@@ -549,7 +550,7 @@ async function runScenario(kind) {
   await check('停止 Core 并重建索引后保留产品状态', async () => {
     await compose(['stop', 'moerise']);
     await compose(['run', '--rm', '--no-deps', '--name', oneOffNames[0], 'moerise', 'rebuild-index']);
-    await compose(['up', '-d', '--no-build', 'moerise', 'web']);
+    await compose(['up', '-d', '--no-build', 'moerise']);
     await ready(url);
     await retained();
   });
@@ -586,7 +587,7 @@ async function runScenario(kind) {
       '--volume', `${snapshot}:/restore-source:ro`,
       'moerise', 'restore', '--source', '/restore-source', '--safety-backup', '/backups/before-restore',
     ]);
-    await compose(['up', '-d', '--no-build', 'moerise', 'web']);
+    await compose(['up', '-d', '--no-build', 'moerise']);
     await ready(url);
     await api('GET', '/api/app/v1/session', undefined, 401);
     const login = await api('POST', '/api/app/v1/session', { username, password });
@@ -612,18 +613,20 @@ async function runScenario(kind) {
     await ready(url);
     await retained();
   });
-  await check('Web 不暴露机器 REST 与 MCP', async () => {
-    expectStatus(await request(url, '/api/ext/v1/notes', { headers: { Cookie: cookie } }), 404, '机器 REST');
-    expectStatus(await request(url, '/mcp', { method: 'POST', body: {}, headers: { Cookie: cookie, Origin: url } }), 404, 'MCP');
+  await check('同端口外部 REST 与 MCP 保持独立令牌与只读边界', async () => {
+    expectStatus(await request(url, '/api/ext/v1/notes', { headers: { Cookie: cookie } }), 401, '机器 REST');
+    expectStatus(await request(url, '/api/ext/v1/notes', { headers: { Authorization: `Bearer ${values.MOERISE_ACCESS_TOKEN}` } }), 200, '只读机器 REST');
+    expectStatus(await request(url, '/api/ext/v1/notes', { method: 'POST', body: {}, headers: { Authorization: `Bearer ${values.MOERISE_ACCESS_TOKEN}` } }), 403, '禁止外部写入');
+    expectStatus(await request(url, '/mcp', { method: 'POST', body: {}, headers: { Cookie: cookie, Origin: url } }), 401, 'MCP');
   });
   if (kind === 'external') {
     await check('应用停止后独立 Memos 仍存活', async () => {
-      await compose(['stop', 'web', 'moerise']);
+      await compose(['stop', 'moerise']);
       const source = expectStatus(await request(sourceURL, `/api/v1/${note.name}`, {
         headers: { Authorization: `Bearer ${pat}` },
       }), 200, '独立来源存活');
       assert.equal(source.value?.content, edited);
-      await compose(['up', '-d', '--no-build', 'moerise', 'web']);
+      await compose(['up', '-d', '--no-build', 'moerise']);
       await ready(url);
       await retained();
     });
@@ -670,7 +673,7 @@ try {
     }
     if (buildAttempted) {
       try {
-        for (const image of [`ghcr.io/fermin214/moerise:${imageTag}`, `ghcr.io/fermin214/moerise-web:${imageTag}`,
+        for (const image of [`ghcr.io/fermin214/moerise:${imageTag}`,
           `ghcr.io/fermin214/moerise-layout:${imageTag}`]) {
           const found = await docker(['image', 'ls', '--quiet', image], { cleanup: true });
           if (found) await docker(['image', 'rm', image], { cleanup: true });

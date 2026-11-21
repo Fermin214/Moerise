@@ -1,6 +1,7 @@
 name: Linux packages and images
 
 on:
+  workflow_dispatch:
   workflow_call:
 
 jobs:
@@ -24,6 +25,7 @@ jobs:
       - uses: actions/setup-node@v6.5.0
         with:
           node-version: "24"
+      - run: npm --prefix web run build
       - name: Run ARM64 Memos acceptance
         if: matrix.arch == 'arm64'
         env:
@@ -41,25 +43,35 @@ jobs:
           test "$version" = "$(node -p 'require("./web/package.json").version')"
           name="moerise_${version}_linux_${RELEASE_ARCH}"
           package="build/$name"
-          mkdir -p "$package/web" "$package/services/layout" "$package/docs"
+          mkdir -p "$package" "$package/services/layout" "$package/docs"
           mv build/moerise "$package/"
-          npm --prefix web run build
           cp config.example.json .env.example LICENSE "$package/"
-          cp -R web/dist "$package/web/"
-          cp web/server.mjs web/package.json web/MEMOS-LICENSE "$package/web/"
+          cp web/MEMOS-LICENSE "$package/MEMOS-LICENSE"
           cp services/layout/server.py services/layout/semantic.py services/layout/requirements.txt "$package/services/layout/"
           cp docs/OPERATIONS.md docs/STARGAZING.md "$package/docs/"
-          HOST=127.0.0.1 PORT=3000 node "$package/web/server.mjs" &
-          web_pid=$!
-          trap 'kill "$web_pid" 2>/dev/null || true' EXIT
-          curl -fsS --retry 10 --retry-connrefused --max-time 5 http://127.0.0.1:3000/health/live
-          curl -fsS --max-time 5 --output /dev/null http://127.0.0.1:3000/
+          bash scripts/release/smoke-core.sh "$package/moerise"
           tar -czf "build/$name.tar.gz" -C build "$name"
           printf '%s\n' "$version" > "build/version-${RELEASE_ARCH}.txt"
       - name: Build and smoke test container images
         env:
           ARCH: ${{ matrix.arch }}
         run: bash scripts/release/build-images.sh "$(cat "build/version-$ARCH.txt")"
+      - name: Check bundled and external Compose deployments
+        if: matrix.arch == 'amd64'
+        env:
+          MOERISE_PLAYWRIGHT_MODULE: ${{ github.workspace }}/web/node_modules/playwright/index.mjs
+          MOERISE_PLAYWRIGHT_CHANNEL: chrome
+          MOERISE_IMAGE_TAG: ci-compose
+        run: |
+          npm --prefix web ci
+          docker tag moerise-ci-core ghcr.io/fermin214/moerise:ci-compose
+          docker tag moerise-ci-layout ghcr.io/fermin214/moerise-layout:ci-compose
+          node scripts/acceptance/check-compose.mjs --skip-build --browser
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: failure()
+        with:
+          name: compose-${{ matrix.arch }}
+          path: .local/compose-acceptance-*/
       - name: Store the verified images and record their digests
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         shell: bash
@@ -68,7 +80,7 @@ jobs:
           GHCR_TOKEN: ${{ github.token }}
         run: |
           printf '%s' "$GHCR_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
-          for component in core web layout; do
+          for component in core layout; do
             image="ghcr.io/${GITHUB_REPOSITORY,,}"
             if [[ "$component" != core ]]; then image="$image-$component"; fi
             candidate="$image:ci-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-$ARCH"
@@ -86,7 +98,6 @@ jobs:
             build/*.tar.gz
             build/version-${{ matrix.arch }}.txt
             build/core-${{ matrix.arch }}.txt
-            build/web-${{ matrix.arch }}.txt
             build/layout-${{ matrix.arch }}.txt
           compression-level: 0
           if-no-files-found: error

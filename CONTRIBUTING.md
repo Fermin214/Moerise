@@ -53,7 +53,7 @@ Core 默认监听 8787，Web 默认监听 3000。Web 的 `PUBLIC_ORIGIN` 必须�
 | `internal/openapi_gen.go` | 由 Go 结构体生成的内嵌 OpenAPI v3 契约 |
 | `internal/migrations/` | 状态库与索引库的版本化 SQLite 迁移 |
 | `web/src/` | 无第三方运行依赖的 JavaScript、HTML 与 CSS 前端 |
-| `web/server.mjs`、`web/build.mjs` | 静态服务、同源代理与构建 |
+| `web/assets.go`、`web/build.mjs` | 内嵌静态服务与构建 |
 | `web/test/` | Node 单元测试与 Playwright 浏览器测试 |
 | `tests/` | 真实 Memos 集成测试 |
 | `scripts/` | 联合验收、性能评测与共用工具，见[脚本说明](scripts/README.md) |

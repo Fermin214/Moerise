@@ -7,6 +7,9 @@
 .env.*
 !.env.example
 dist/
+!web/dist/
+web/dist/*
+!web/dist/.keep
 build/
 /moerise
 /moerise.exe

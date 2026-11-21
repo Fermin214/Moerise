@@ -54,10 +54,10 @@ cp .env.example .env
 docker compose up -d memos
 ```
 
-在浏览器打开 `http://localhost:5231` 创建账户并获取 PAT 与资源名，配置到 `.env` 后拉取镜像并启动整套服务。Core 与 Web 使用 GHCR 中 `MOERISE_IMAGE_TAG` 对应的版本镜像，自动匹配 AMD64 或 ARM64：
+在浏览器打开 `http://localhost:5231` 创建账户并获取 PAT 与资源名，配置到 `.env` 后拉取镜像并启动整套服务。内嵌 Web 的 Core 使用 GHCR 中 `MOERISE_IMAGE_TAG` 对应的版本镜像，自动匹配 AMD64 或 ARM64：
 
 ```bash
-docker compose pull moerise web layout
+docker compose pull moerise layout
 docker compose up -d
 docker compose ps
 ```
@@ -72,7 +72,7 @@ MOERISE_MEMOS_BASE_URL=https://memos.example.com
 MOERISE_MEMOS_PUBLIC_URL=https://memos.example.com
 ```
 
-已有实例需为 Memos 0.31.x，绑定账号与 PAT 须与 `.env` 中的资源名一致；容器内的 `localhost` 指容器自身。随后运行 `docker compose pull moerise web layout` 和 `docker compose up -d` 完成对接。源码部署使用 `docker compose up -d --build`；Core、Web、布局服务使用同一版本的代码。
+已有实例需为 Memos 0.31.x，绑定账号与 PAT 须与 `.env` 中的资源名一致；容器内的 `localhost` 指容器自身。随后运行 `docker compose pull moerise layout` 和 `docker compose up -d` 完成对接。源码部署使用 `docker compose up -d --build`；Core 与布局服务使用同一版本的代码。
 
 ### 观星按需启用
 
@@ -82,21 +82,21 @@ MOERISE_MEMOS_PUBLIC_URL=https://memos.example.com
 
 ```bash
 docker compose stop layout
-docker compose pull moerise web
+docker compose pull moerise
 docker compose up -d
 ```
 
 新安装可在 `.env` 中设置 `MOERISE_STARGAZING_ENABLED=false` 初始化开关。已有实例以持久设置为准。关闭后 Core 不再调度布局，已有快照、向量和模型卷保留，语义检索与漫步照常使用。
 
-恢复时在 profile 中加回 `stargazing`，执行 `docker compose pull moerise web layout` 和 `docker compose up -d`，再开启应用开关。应用开关不会启停 Docker 容器；仅移除 profile 不会停止已运行的布局容器。保留 `layout-data` 卷可以复用 UMAP 模型。
+恢复时在 profile 中加回 `stargazing`，执行 `docker compose pull moerise layout` 和 `docker compose up -d`，再开启应用开关。应用开关不会启停 Docker 容器；仅移除 profile 不会停止已运行的布局容器。保留 `layout-data` 卷可以复用 UMAP 模型。
 
 ### 3. HTTPS 与运行检查
 
-本地部署的 Web、Core 与 Memos 端口默认绑定回环地址。远程访问时，在 Web 前配置 HTTPS 反向代理，并将 `MOERISE_PUBLIC_ORIGIN` 设为浏览器访问的完整 origin（如 `https://notes.example.com`）。Web 只代理 `/api/app/v1`；机器 REST/MCP 和飞书回调按需转发至 Core 的 8787 端口。
+Core 与 Memos 的端口默认绑定回环地址。Core 在 `http://localhost:3000` 同时提供网页与 API。远程访问时，在 Core 前配置 HTTPS 反向代理，将 `MOERISE_PUBLIC_ORIGIN` 设为浏览器访问的完整 origin（如 `https://notes.example.com`）；按需开放只读 REST/MCP 和飞书回调路径。
 
 ```bash
 curl --fail http://localhost:3000/health/ready
-docker compose logs --tail=100 moerise web
+docker compose logs --tail=100 moerise
 ```
 
 就绪检查需静态资源正常、来源健康、全量同步完成且后台循环存活；否则返回 503。同步状态可通过带 `sync:read` 凭据的 `GET /api/ext/v1/sync` 查看。
@@ -110,7 +110,7 @@ docker compose logs --tail=100 moerise web
 ./build/moerise serve --config .local/config.json --host 127.0.0.1
 ```
 
-Web 需单独构建与运行，步骤见 [Web 指南](WEB.md)。`--config` 优先于 `MOERISE_CONFIG_FILE`；二者省略时读取 `.local/config.json`。
+发行二进制内嵌 Web，启用 `web.enabled` 后由同一端口提供网页。源码构建先运行 `npm --prefix web run build`，再运行 `go build .`。`--config` 优先于 `MOERISE_CONFIG_FILE`；二者省略时读取 `.local/config.json`。
 
 启用观星时，使用 Python 3.12 在独立终端或服务管理器中启动布局服务：
 
@@ -121,7 +121,7 @@ MOERISE_LAYOUT_STATE="$PWD/.local/layout-data" \
   .local/layout-venv/bin/python services/layout/server.py serve
 ```
 
-服务默认仅监听 `127.0.0.1:8766`。将模型目录持久化，Core 默认连接该地址。布局服务不可用时，已发布星图仍可读取；首次生成和后续更新会重试。生产环境通过 systemd 等进程管理器启动 Core、Web 和布局服务。
+服务默认仅监听 `127.0.0.1:8766`。将模型目录持久化，Core 默认连接该地址。布局服务不可用时，已发布星图仍可读取；首次生成和后续更新会重试。生产环境通过 systemd 等进程管理器启动 Core 和布局服务。
 
 ---
 
@@ -129,12 +129,12 @@ MOERISE_LAYOUT_STATE="$PWD/.local/layout-data" \
 
 Moerise Core 会自动根据 Linux cgroup 的内存限制与 CPU 配额动态计算任务并发度与分批预算。在 `deploy/resources/` 目录下提供了常见主机规格的预设配置，可直接合并入 `.env`：
 
-| 服务器规格 | 推荐配置文件 | Core / Memos / Web 内存上限 | 基础服务合计上限 |
+| 服务器规格 | 推荐配置文件 | Core / Memos 内存上限 | 基础服务合计上限 |
 | --- | --- | --- | --- |
-| 1 核 / 1 GiB | `deploy/resources/1c1g.env` | 256 / 192 / 96 MiB | 544 MiB |
-| 2 核 / 1 GiB | `deploy/resources/2c1g.env` | 384 / 192 / 96 MiB | 672 MiB |
-| 2 核 / 2–4 GiB | `deploy/resources/2c2g.env` | 512 / 256 / 128 MiB | 896 MiB |
-| 4 核 / 4–8 GiB | `deploy/resources/4c4g.env` | 768 / 256 / 128 MiB | 1,152 MiB |
+| 1 核 / 1 GiB | `deploy/resources/1c1g.env` | 256 / 192 MiB | 448 MiB |
+| 2 核 / 1 GiB | `deploy/resources/2c1g.env` | 384 / 192 MiB | 576 MiB |
+| 2 核 / 2–4 GiB | `deploy/resources/2c2g.env` | 512 / 256 MiB | 768 MiB |
+| 4 核 / 4–8 GiB | `deploy/resources/4c4g.env` | 768 / 256 MiB | 1,024 MiB |
 
 表中不含布局服务。启用观星应另计 `LAYOUT_MEMORY_LIMIT` 的 1 GiB 上限，建议整机至少 2 GiB；1 GiB 档仅用于基础服务预算。布局任务结束后科学计算子进程退出，父进程保持轻量。笔记长度、分块数量、向量维度和模型并发均影响开销；为操作系统及其他服务预留空间。2C4G 主机可使用 `2c2g.env` 作为初始配置。
 
@@ -198,7 +198,7 @@ docker compose up -d --no-build moerise
 ## 五、升级与回滚
 
 1. 备份 Memos 数据、Moerise 产品状态及配置，记录源码提交或镜像摘要。服务启动且检测到 `state.sqlite3` 存在待执行的数据库迁移前，会自动使用 `VACUUM INTO` 将当前状态库热备份至 `<state_dir>/backups/auto-pre-<version>-<timestamp>.sqlite3`（校验完整性与外键后落盘，最多保留最近 5 份）。
-2. 保持 Compose 项目名、来源绑定、数据卷和状态加密密钥一致，将 `.env` 中的 `MOERISE_IMAGE_TAG` 设为目标版本。启用观星时，确保 `COMPOSE_PROFILES` 包含 `stargazing`，执行 `docker compose pull moerise web layout` 和 `docker compose up -d`；停用观星时只拉取 `moerise web`。
+2. 保持 Compose 项目名、来源绑定、数据卷和状态加密密钥一致，将 `.env` 中的 `MOERISE_IMAGE_TAG` 设为目标版本。启用观星时，确保 `COMPOSE_PROFILES` 包含 `stargazing`，执行 `docker compose pull moerise layout` 和 `docker compose up -d`；停用观星时只拉取 `moerise`。
 3. 检查就绪状态、原文和附件、设置版本、回顾与聊天历史；启用 Embedding 时另查索引构建状态。
 4. 同版本或跨版本回滚可在停止 Core 后执行内置 `rollback` 命令（默认选取最近一份自动热备份，也可通过 `--backup <路径>` 指定历史快照；命令先为当前状态生成 `pre-rollback-*` 安全副本，再原子替换 `state.sqlite3` 并清理 `sync_state` 与 `index.sqlite3`，重启后自动重建派生索引）：
 

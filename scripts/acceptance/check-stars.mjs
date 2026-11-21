@@ -8,7 +8,6 @@ import { resolve, basename } from 'node:path';
 import { parseArgs } from 'node:util';
 import { pathToFileURL } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
-import { createWebServer } from '../../web/server.mjs';
 import { runProcess } from '../lib/process.mjs';
 
 const { values } = parseArgs({ options: {
@@ -118,14 +117,12 @@ async function rss(pid) {
 try {
   await mkdir(runtimeRoot, { recursive: true }); log = await open(resolve(root, 'core.log'), 'w', 0o600);
   await check('构建 Core 与 Web', async () => {
-    const results = await Promise.allSettled([
-      runProcess('go', ['build', '-o', resolve(root, 'moerise'), '.'], { cwd: repo }),
-      runProcess(process.execPath, ['web/build.mjs'], { cwd: repo }),
-    ]);
-    for (const result of results) if (result.status === 'rejected') throw result.reason;
+    await runProcess(process.execPath, ['web/build.mjs'], { cwd: repo });
+    await runProcess('go', ['build', '-o', resolve(root, 'moerise'), '.'], { cwd: repo });
   });
   sourceURL = resumed?.sourceURL || `http://127.0.0.1:${await freePort()}`; coreURL = `http://127.0.0.1:${await freePort()}`;
-  url = resumedConfig?.web.public_origin || `http://127.0.0.1:${await freePort()}`;
+  url = resumedConfig?.web.public_origin || coreURL;
+  coreURL = url;
   await check('独立 Memos 与既有笔记、向量语料', async () => {
     if (resumed) {
       pat = resumed.pat; owner = resumed.owner; created = true;
@@ -179,8 +176,6 @@ try {
       dimensions, max_retries: 0, batch_size: 20 };
     await writeFile(resolve(root, 'config.json'), JSON.stringify(config), { mode: 0o600 });
     await startCore();
-    web = createWebServer({ coreOrigin: coreURL, publicOrigin: url, dist: resolve(repo, 'web/dist') });
-    web.listen(Number(new URL(url).port), '127.0.0.1'); await once(web, 'listening');
     await api('POST', '/session', { username, password });
     const first = await readyMap(corpus.length);
     assert.equal(new Set(first.points.map(point => point.name)).size, corpus.length);

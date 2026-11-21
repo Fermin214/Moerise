@@ -111,7 +111,7 @@ Android 文件的版本管理规则见 [Android 开发](ANDROID.md#文件与产�
 | `i18n.js`、`en.js` | 语言选择、消息绑定与英语翻译 |
 | `styles.css`、`tokens.css`、`interaction.css`、`shell.css`、`memos.css` | CSS 分层入口、视觉变量、共享交互、主界面与登录样式 |
 | `index.html`、`favicon.svg` | HTML 入口和站点图标 |
-| `web/build.mjs`、`web/server.mjs` | 带内容摘要的静态构建、压缩资源、同源代理与缓存策略 |
+| `web/build.mjs`、`web/assets.go` | 带内容摘要的静态构建、压缩资源、内嵌服务与缓存策略 |
 | `web/MEMOS-LICENSE` | Memos 衍生登录界面代码与样式的许可证 |
 
 ---

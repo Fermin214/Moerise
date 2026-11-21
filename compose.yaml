@@ -39,7 +39,7 @@ services:
     restart: unless-stopped
     init: true
     ports:
-      - "127.0.0.1:${MOERISE_PORT:-8787}:8787"
+      - "${MOERISE_BIND_ADDRESS:-127.0.0.1}:${MOERISE_PORT:-3000}:8787"
     volumes:
       - backup-data:/backups
       - state-data:/data/state
@@ -51,31 +51,6 @@ services:
     tmpfs: ["/tmp:size=16m"]
     mem_limit: ${MOERISE_MEMORY_LIMIT:-384m}
     cpus: ${MOERISE_CPU_LIMIT:-2.0}
-    logging:
-      options:
-        max-size: "5m"
-        max-file: "2"
-
-  web:
-    image: ghcr.io/fermin214/moerise-web:${MOERISE_IMAGE_TAG:-0.2.0}
-    build: ./web
-    environment:
-      CORE_ORIGIN: http://moerise:8787
-      PUBLIC_ORIGIN: ${MOERISE_PUBLIC_ORIGIN:-http://localhost:3000}
-    depends_on:
-      moerise:
-        condition: service_healthy
-    restart: unless-stopped
-    init: true
-    ports:
-      - "${WEB_BIND_ADDRESS:-127.0.0.1}:${WEB_PORT:-3000}:3000"
-    networks: [local]
-    security_opt: ["no-new-privileges:true"]
-    cap_drop: [ALL]
-    read_only: true
-    tmpfs: ["/tmp:size=16m"]
-    mem_limit: ${WEB_MEMORY_LIMIT:-128m}
-    cpus: ${WEB_CPU_LIMIT:-0.5}
     logging:
       options:
         max-size: "5m"

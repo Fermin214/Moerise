@@ -8,7 +8,6 @@ import { resolve, dirname, basename } from 'node:path';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 import { runProcess } from '../lib/process.mjs';
-import { createWebServer } from '../../web/server.mjs';
 
 assert.ok(process.env.MOERISE_PLAYWRIGHT_MODULE, '需要 MOERISE_PLAYWRIGHT_MODULE');
 const { chromium } = await import(pathToFileURL(process.env.MOERISE_PLAYWRIGHT_MODULE).href);
@@ -96,14 +95,14 @@ let batch, image, file, specified;
 try {
   await mkdir(root, { recursive: true });
   await check('编译 Linux Core 与正式 Web', async () => {
+    await runProcess(process.execPath, ['web/build.mjs'], { cwd: repo, signal: cancellation.signal });
     containers.add(`${name}-build`);
     await docker(['run', ...dockerUser, '--name', `${name}-build`, '--mount', `type=bind,source=${repo},target=/src`, '-w', '/src',
       '-e', 'GOMODCACHE=/src/.local/gomodcache', '-e', 'GOCACHE=/src/.local/linux-gocache',
       'golang:1.27.3-bookworm', 'go', 'build', '-o', `/src/.local/${basename(root)}/moerise`, '.']);
-    await runProcess(process.execPath, ['web/build.mjs'], { cwd: repo, signal: cancellation.signal });
   });
-  const sourcePort = await port(), corePort = await port(), webPort = await port();
-  sourceURL = `http://127.0.0.1:${sourcePort}`; coreURL = `http://127.0.0.1:${corePort}`; url = `http://127.0.0.1:${webPort}`;
+  const sourcePort = await port(), corePort = await port();
+  sourceURL = `http://127.0.0.1:${sourcePort}`; coreURL = `http://127.0.0.1:${corePort}`; url = coreURL;
   await check('真实 Memos 原文、纯图和纯文件来源', async () => {
     network = true; await docker(['network', 'create', name]);
     containers.add(source);
@@ -184,8 +183,6 @@ try {
     await docker(['run', ...dockerUser, '-dt', '--name', core, '--network', name, '--mount', `type=bind,source=${root},target=/data`,
       '--add-host', 'host.docker.internal:host-gateway', '-p', `127.0.0.1:${corePort}:8787`,
       'golang:1.27.3-bookworm', '/data/moerise', 'serve', '--config', '/data/config.json', '--host', '0.0.0.0', '--port', '8787']);
-    web = createWebServer({ coreOrigin: coreURL, publicOrigin: url, dist: resolve(repo, 'web/dist') });
-    web.listen(webPort, '127.0.0.1'); await once(web, 'listening');
     await wait('Core', async () => { try { await request(coreURL, '/health/ready'); return true; } catch { return false; } });
     await request(url, '/api/app/v1/reviews/daily', {}, 401);
     await request(url, '/api/app/v1/reviews/daily', { headers: { Authorization: `Bearer ${machineKey}` } }, 403);

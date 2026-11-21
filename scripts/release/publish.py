@@ -31,7 +31,7 @@ def linux_release(root, repo):
         raise SystemExit('Linux package versions differ')
     files = [root / f'linux-{arch}/moerise_{value}_linux_{arch}.tar.gz' for arch in ARCHES]
     images = {}
-    for component, suffix in [('core', ''), ('web', '-web'), ('layout', '-layout')]:
+    for component, suffix in [('core', ''), ('layout', '-layout')]:
         image = f'ghcr.io/{repo.lower()}{suffix}'
         refs = []
         for arch in ARCHES:

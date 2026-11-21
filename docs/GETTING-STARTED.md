@@ -97,7 +97,7 @@ docker compose up -d
 
 ## 四、反向代理与 HTTPS
 
-Compose 默认端口绑定回环地址。公网部署时，在 Web 前配置 Nginx、Caddy 或 Traefik 等 HTTPS 反向代理，并设置：
+Compose 默认端口绑定回环地址。公网部署时，在 Core 前配置 Nginx、Caddy 或 Traefik 等 HTTPS 反向代理，并设置：
 
 ```dotenv
 MOERISE_PUBLIC_ORIGIN=https://notes.example.com
@@ -105,7 +105,7 @@ MOERISE_PUBLIC_ORIGIN=https://notes.example.com
 
 `MOERISE_PUBLIC_ORIGIN` 必须与浏览器访问的协议、主机名和端口一致。
 
-将该域名转发至 Web 的 3000 端口。Web 内部代理 `/api/app/v1`；外部机器 REST 与 MCP（`/api/ext/v1`、`/mcp`）按需直接转发至 Core 的 8787 端口。
+将该域名转发至 Core 对外映射的 3000 端口。网页、`/api/app/v1`、外部只读 REST 与 MCP（`/api/ext/v1`、`/mcp`）共用入口；外部接口仍需独立令牌。
 
 ---
 

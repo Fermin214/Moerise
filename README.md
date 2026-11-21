@@ -50,8 +50,7 @@ Moerise 使用 [Memos](https://usememos.com/) 保存笔记，提供双语 Web �
 
 ```mermaid
 flowchart LR
-    Browser["Web 浏览器"] -->|"同源 Cookie / API"| Web["Moerise Web 服务"]
-    Web -->|"固定 API 反向代理"| Core["Moerise Core 服务端"]
+    Browser["Web 浏览器"] -->|"内嵌网页 / 同源 Cookie API"| Core["Moerise Core 服务端"]
     Agent["外部 Agent / MCP 客户端"] -->|"只读 Bearer Token"| Core
     Feishu["飞书平台"] <-->|"事件回调 / 消息推送"| Core
     Core -->|"消息推送"| Telegram["Telegram 平台"]
@@ -69,7 +68,7 @@ flowchart LR
 
 ## 快速开始
 
-Moerise 推荐使用 Docker Compose 进行一体化部署，自带官方 Memos 0.31.x；同时也支持连接你已有的 Memos 实例。Core 与 Web 使用 GHCR 的版本镜像，支持 AMD64 和 ARM64。
+Moerise 推荐使用 Docker Compose 进行一体化部署，自带官方 Memos 0.31.x；同时也支持连接你已有的 Memos 实例。内嵌 Web 的 Core 使用 GHCR 的版本镜像，支持 AMD64 和 ARM64。
 
 ### 1. 部署一体化服务
 
@@ -115,11 +114,11 @@ openssl rand -base64 32  # MOERISE_STATE_ENCRYPTION_KEY
 ### 2. 启动完整服务
 
 ```bash
-docker compose pull moerise web layout
+docker compose pull moerise layout
 docker compose up -d
 ```
 
-源码部署使用 `docker compose up -d --build`，同时构建 Core、Web 和布局服务。
+源码部署使用 `docker compose up -d --build`，同时构建内嵌 Web 的 Core 和布局服务。
 
 `.env.example` 默认通过 `memos,stargazing` profiles 启用内置 Memos 和布局服务。不使用观星时，在「设置 → 通用」关闭「启用观星」，移除 `stargazing` profile 并执行 `docker compose stop layout`。语义检索和漫步不受影响，恢复方式见[运行指南](docs/OPERATIONS.md#观星按需启用)。
 

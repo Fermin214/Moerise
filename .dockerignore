@@ -7,3 +7,10 @@
 !internal/**
 **/*_test.go
 **/testdata/
+
+!web/
+!web/assets.go
+!web/build.mjs
+!web/package.json
+!web/src/
+!web/src/**

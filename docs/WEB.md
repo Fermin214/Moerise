@@ -1,6 +1,6 @@
 # Moerise Web 客户端指南
 
-Moerise Web 使用原生 JavaScript、HTML 和 CSS，独立构建、部署，通过同源代理访问 Core。浏览器端没有第三方运行时依赖。
+Moerise Web 使用原生 JavaScript、HTML 和 CSS，独立构建后内嵌于 Core 二进制，通过同源接口访问服务。浏览器端没有第三方运行时依赖。
 
 ---
 
@@ -85,8 +85,8 @@ Moerise Web 仅需 Node.js 24 或更高版本，构建产物零第三方运行�
 npm --prefix web ci
 npm --prefix web run build
 
-# 启动 Web 前端服务
-npm --prefix web start
+# 启动内嵌网页的 Core，开发时直接读取构建目录
+go run . serve --host 127.0.0.1 --port 3000 --web-dir web/dist
 ```
 
 ### 构建流水线特性
@@ -106,22 +106,15 @@ npm --prefix web start
 
 ## 五、环境变量与同源网络拓扑
 
-Web 服务端通过固定反向代理将 `/api/app/v1/*` 请求安全转发给 Core 核心服务：
+Core 同时提供静态网页、本人会话 API、只读 REST/MCP 和飞书回调。Compose 默认将回环地址的 `3000` 端口映射至 Core 的 `8787` 端口，使用 `MOERISE_PORT` 和 `MOERISE_BIND_ADDRESS` 调整。`MOERISE_PUBLIC_ORIGIN` 必须与浏览器访问的 origin 一致；生产环境使用 HTTPS。
 
-| 环境变量 | 默认值 | 说明 |
-| --- | --- | --- |
-| `CORE_ORIGIN` | `http://127.0.0.1:8787` | Moerise Core 内部监听地址（仅在服务端内部使用） |
-| `PUBLIC_ORIGIN` | `http://localhost:3000` | 浏览器访问的公开对外域名与协议（生产环境必须为 HTTPS） |
-| `HOST` | `0.0.0.0` | Web 服务监听地址 |
-| `PORT` | `3000` | Web 服务监听端口 |
+SPA 页面回退仅接受 `/`、`/archived`、`/review`、`/walk`、`/insights`、`/map`、`/settings` 与 `/notes/{id}`。`/api/*`、`/mcp`、`/hooks/*` 和 `/health/*` 直接进入各自服务路由。附件 Range 与洞察 SSE 由 Core 直接响应。
 
 ---
 
 ## 六、健康检查与存活探测
 
-Web 服务提供遵循业界标准的存活与就绪探测接口：
-
-| 路径 | 方法 | 成功状态 | 检查逻辑与依据 |
+| 路径 | 方法 | 成功状态 | 检查逻辑 |
 | --- | --- | --- | --- |
-| `/health/live` | GET, HEAD | 200 `{"status":"ok"}` | 验证静态构建产物 `dist/index.html` 处于可读状态。 |
-| `/health/ready` | GET, HEAD | 200 `{"status":"ready"}` | 验证静态产物正常，且内部连接 Core 的 `/health/ready` 正常响应。 |
+| `/health/live` | GET | 200 | Core HTTP 服务存活。 |
+| `/health/ready` | GET | 200 `{"status":"ready"}` | 来源健康、完整同步已完成且同步循环存活，否则返回 503。 |

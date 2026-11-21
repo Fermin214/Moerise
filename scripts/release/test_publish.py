@@ -78,7 +78,7 @@ class PublishTests(unittest.TestCase):
                 linux.mkdir()
                 (linux / f'version-{arch}.txt').write_text('0.2.0')
                 (linux / f'moerise_0.2.0_linux_{arch}.tar.gz').write_bytes(arch.encode())
-                for component, suffix in [('core', ''), ('web', '-web'), ('layout', '-layout')]:
+                for component, suffix in [('core', ''), ('layout', '-layout')]:
                     (linux / f'{component}-{arch}.txt').write_text(f'ghcr.io/{REPO}{suffix}@sha256:' + 'a' * 64)
             android_files = [root / f'moerise-android-v0.2.0{suffix}'
                              for suffix in ('.apk', '.apk.sha256', '.apk.json', '-notices.zip')]

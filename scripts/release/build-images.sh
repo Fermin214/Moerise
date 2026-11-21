@@ -18,9 +18,6 @@ smoke_http() (
     for ((attempt = 1; attempt <= 30; attempt++)); do
         if response=$(curl -fsS --connect-timeout 1 --max-time 2 "http://$address$route" 2>&1) &&
             jq -e --arg expected "$expected" '.status == $expected' <<< "$response" >/dev/null 2>&1; then
-            if [[ "$component" == web ]]; then
-                curl -fsS --max-time 5 -o /dev/null "http://$address/"
-            fi
             printf '%s HTTP smoke passed\n' "$component"
             return 0
         fi
@@ -36,7 +33,6 @@ smoke_http() (
 
 build_image core .
 test "$(docker run --rm moerise-ci-core version)" = "$version"
-build_image web web
-smoke_http web 3000 /health/live ok
+bash scripts/release/smoke-core.sh --image moerise-ci-core
 build_image layout services/layout
 smoke_http layout 8766 /health ready

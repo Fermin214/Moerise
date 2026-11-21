@@ -36,14 +36,14 @@ go mod verify
    ```
 
 ### 3. Web 前端开发与热运行
-在另一个终端启动 Web 静态代理服务：
+先构建网页，再编译或启动 Core：
 ```bash
 npm --prefix web ci
 npm --prefix web run build
-CORE_ORIGIN=http://127.0.0.1:8787 PUBLIC_ORIGIN=http://localhost:3000 npm --prefix web start
+go run . serve --host 127.0.0.1 --port 3000 --web-dir web/dist
 ```
 
-访问 `http://localhost:3000` 即可开始联调。修改前端源码后需重新执行 `npm --prefix web run build`。
+访问 `http://localhost:3000`。`--web-dir` 在每次请求时读取磁盘文件；修改源码后重新执行 Web 构建即可刷新。发布构建不传此参数，网页由二进制内嵌提供。
 
 ### 4. 观星布局服务
 
@@ -191,12 +191,12 @@ python3 scripts/performance/evaluate-search.py --config .local/config.json --cre
 
 ## 发布
 
-PR 按改动范围复用发布流程。Linux 预演在 AMD64 和 ARM64 各自构建安装包和 Core、Web、Layout 镜像，检查镜像能启动并提供服务。Android 预演使用临时密钥，在最低支持版本 Android 10（API 29）安装签名 APK，通过 HTTPS 登录，写入并读回笔记，重启后检查会话。Android 设备回归在 API 36 上覆盖完整编辑、附件和洞察。
+PR 按改动范围复用发布流程。Linux 预演在 AMD64 和 ARM64 各自构建安装包和 Core、Layout 镜像，检查镜像能启动并提供服务。Android 预演使用临时密钥，在最低支持版本 Android 10（API 29）安装签名 APK，通过 HTTPS 登录，写入并读回笔记，重启后检查会话。Android 设备回归在 API 36 上覆盖完整编辑、附件和洞察。
 
 合并后，`Main CI` 并行运行两个 Linux 架构任务和一个 Android 任务。Linux 任务保存安装包和镜像摘要。Android 任务使用生产密钥，对同一 APK 检查清单、签名、16 KiB 对齐及最低版本设备流程，并记录设备验证所用 APK 的 SHA-256。
 
 准备联合发版时，通过一个 PR 对齐 Core、Web 和 Android 的版本号，同时更新 OpenAPI、npm 锁文件、Compose 和 `.env.example` 中的版本。Core 与 Web 的版本以 `internal/config.go` 和 `web/package.json` 为准。Android 在 `mobile/androidApp/build.gradle.kts` 中更新 `versionName` 并递增 `versionCode`。
 
-在 Actions 启动 `Publish release`，填写发布提交对应的成功 `Main CI` 运行 ID。默认的 `both` 先核对两个平台的版本，再用同一次运行的产物发布一个 `v<版本>` Release。附件包含 Linux AMD64 和 ARM64 安装包、签名 APK、APK 的 SHA-256 和构建信息、Android 安装说明和许可归档。Core、Web、Layout 的同版本镜像使用该次运行记录的摘要。
+在 Actions 启动 `Publish release`，填写发布提交对应的成功 `Main CI` 运行 ID。默认的 `both` 先核对两个平台的版本，再用同一次运行的产物发布一个 `v<版本>` Release。附件包含 Linux AMD64 和 ARM64 安装包、签名 APK、APK 的 SHA-256 和构建信息、Android 安装说明和许可归档。Core、Layout 的同版本镜像使用该次运行记录的摘要。
 
 单独发布 Core/Web 时选择 `core-web`，标签为 `v<版本>`。单独发布 Android 时选择 `android`，标签为 `android-v<版本>`。标签已指向其他提交或已公开的同标签附件不同，工作流会终止。工作流产物保留 90 天，或以仓库设置允许的期限为准。
