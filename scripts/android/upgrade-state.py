@@ -12,7 +12,7 @@ def seed_upgrade(adb, package, output):
     root = "/data/user/0/" + package + "/no_backup/data"
     archive = adb.run("exec-out", "tar", "-C", root, "-cf", "-", ".", binary=True)
     marker = uuid.uuid4().hex
-    draft_text, queued_text = "Upgrade draft " + marker, "Upgrade queued " + marker
+    draft_text, queued_text = "升级草稿 " + marker, "升级待发 " + marker
     with tempfile.TemporaryDirectory(prefix="moerise-upgrade-") as directory:
         folder = Path(directory)
         with tarfile.open(fileobj=io.BytesIO(archive)) as source:
@@ -22,7 +22,8 @@ def seed_upgrade(adb, package, output):
                     assert len(entries) == 1 and entries[0].isfile()
                     (folder / name).write_bytes(source.extractfile(entries[0]).read())
         database = folder / "moerise.sqlite3"
-        with sqlite3.connect(database) as db:
+        db = sqlite3.connect(database)
+        try:
             profile = db.execute("SELECT accountKey FROM profiles").fetchone()
             assert profile, "0.2.0 account missing"
             account = profile[0]
@@ -41,6 +42,8 @@ def seed_upgrade(adb, package, output):
             db.commit()
             assert db.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
             db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        finally:
+            db.close()
         temporary = "/data/local/tmp/moerise-upgrade-" + marker + ".sqlite3"
         adb.run("push", str(database), temporary)
         identity = adb.run("shell", "stat", "-c", "%u:%g", root + "/moerise.sqlite3").strip()
@@ -54,3 +57,28 @@ def seed_upgrade(adb, package, output):
     output.mkdir(parents=True, exist_ok=True)
     (output / "seed.json").write_text(json.dumps(result) + "\n")
     return result
+
+
+def verify_upgrade(adb, package, expected):
+    adb.run("shell", "am", "force-stop", package)
+    root = "/data/user/0/" + package + "/no_backup/data"
+    archive = adb.run("exec-out", "tar", "-C", root, "-cf", "-", ".", binary=True)
+    with tempfile.TemporaryDirectory(prefix="moerise-upgrade-verify-") as directory:
+        database = Path(directory) / "moerise.sqlite3"
+        with tarfile.open(fileobj=io.BytesIO(archive)) as source:
+            for name in (database.name, database.name + "-wal"):
+                entries = [item for item in source.getmembers() if item.name in (name, "./" + name)]
+                if entries:
+                    assert len(entries) == 1 and entries[0].isfile()
+                    (database.parent / name).write_bytes(source.extractfile(entries[0]).read())
+        db = sqlite3.connect(database)
+        try:
+            assert db.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+            assert db.execute("PRAGMA user_version").fetchone()[0] == 2
+            assert db.execute("SELECT accountKey FROM profiles").fetchall() == [(expected["account"],)]
+            assert db.execute("SELECT content FROM drafts WHERE accountKey=? AND slot='home'",
+                              (expected["account"],)).fetchone() == (expected["draft"],)
+            assert db.execute("SELECT count(*) FROM pending_writes WHERE accountKey=?",
+                              (expected["account"],)).fetchone()[0] == 0
+        finally:
+            db.close()

@@ -20,6 +20,23 @@ def command_failure(error):
     return {"cause": error.code, "output": output}
 
 
+def require_restored_session(adb, app, output):
+    adb.run("shell", "am", "start", "-W", "-n", app + "/io.github.fermin214.moerise.MainActivity")
+    deadline = time.monotonic() + 70
+    while time.monotonic() < deadline:
+        adb.run("shell", "uiautomator", "dump", "/sdcard/moerise-upgrade-session.xml", timeout=15)
+        xml = adb.run("shell", "cat", "/sdcard/moerise-upgrade-session.xml")
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(xml, encoding="utf-8")
+        ids = {node.get("resource-id", "").rsplit(":id/", 1)[-1]
+               for node in ET.fromstring(xml).iter("node")}
+        assert ids.isdisjoint({"server_login", "welcome_enter"}), "升级后未恢复账号或 Keystore 会话"
+        if "open_menu" in ids:
+            return
+        time.sleep(.5)
+    raise RuntimeError("升级后未进入已登录主页")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--serial", default="emulator-5554")
@@ -59,12 +76,14 @@ def main():
             prior = runner.run_flow("release-smoke")
             if prior["status"] != "passed":
                 raise RuntimeError("0.2.0 preparation failed: " + str(prior.get("cause")))
+            previous_note = json.loads((args.output / "maestro/release-smoke/test-data.json").read_text())["NEW_NOTE_TEXT"]
             spec = importlib.util.spec_from_file_location("upgrade_state", ROOT / "scripts/android/upgrade-state.py")
             upgrade_state = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(upgrade_state)
             upgrade = upgrade_state.seed_upgrade(adb, runner.app, args.output / "upgrade")
             adb.run("install", "-r", str(args.apk.resolve()), timeout=120)
             runner = MaestroRunner(ROOT, adb, args.fixture, args.output / "upgraded" / "maestro", release=True)
+            require_restored_session(adb, runner.app, args.output / "upgrade/installed-window.xml")
         else:
             adb.run("install", str(args.apk.resolve()), timeout=120)
         runner.api.login()
@@ -85,6 +104,7 @@ def main():
             xml = adb.run("shell", "cat", "/sdcard/moerise-upgrade.xml")
             assert upgrade["draft"] in xml, "upgraded draft missing"
             assert "welcome_enter" not in xml and "server_login" not in xml, "upgraded account or Keystore missing"
+            assert len(runner.api.matching_notes(previous_note)) == 1, "0.2.0 笔记丢失"
             report["upgrade"] = {"from": "0.2.0", "account": True, "draft": True, "pending_write_count": 1,
                                  "keystore_session": True, "previous_apk_sha256": hashlib.sha256(args.upgrade_from.read_bytes()).hexdigest()}
 
@@ -120,6 +140,11 @@ def main():
                 report["session_restore_errors"].append({"cause": "invalid_ui_xml"})
             time.sleep(1)
         adb.run("shell", "pidof", runner.app)
+        if upgrade:
+            assert upgrade["draft"] in xml, "重开后草稿丢失"
+            assert len(runner.api.matching_notes(upgrade["queued"])) == 1, "重开后待发笔记重复"
+            upgrade_state.verify_upgrade(adb, runner.app, upgrade)
+            report["upgrade"]["local_database_restored"] = True
         report["status"] = "passed"
     except Exception as error:
         report["failure"] = {"type": type(error).__name__, "message": str(error)}

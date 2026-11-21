@@ -104,7 +104,7 @@ func (a *App) RunChannels(ctx context.Context) error {
 		if a.Store.Settings.Notifications.Enabled {
 			created, err := a.Notifications.Schedule(ctx, time.Now())
 			worked = worked || created > 0
-			if err != nil {
+			if err != nil && errorCode(err) != "INDEX_NOT_READY" {
 				failure = err
 			}
 		}

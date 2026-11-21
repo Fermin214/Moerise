@@ -285,6 +285,7 @@ func (s *MapService) prepare(ctx context.Context, now time.Time) (*mapJob, error
 	unlockRuntime := s.Store.lockRuntime()
 	defer unlockRuntime()
 	if !s.Store.Settings.Stargazing.Enabled || !s.Store.Settings.Embedding.Enabled {
+		s.schedule.Store(nil)
 		return nil, nil
 	}
 	key := s.cacheKey()
@@ -317,8 +318,12 @@ func (s *MapService) prepare(ctx context.Context, now time.Time) (*mapJob, error
 		}
 	}
 	status, err := store.VectorStatusContext(ctx)
-	if err != nil || !status.Ready {
+	if err != nil {
 		return nil, err
+	}
+	if !status.Ready {
+		s.schedule.Store(nil)
+		return nil, nil
 	}
 	if sameAlgorithm && token == "" && previous.generation == status.Active.ID && previous.revision == status.ProjectionRevision {
 		s.schedule.Store(&mapSchedule{key, nextMapSchedule(now, store.Settings.Timezone)})

@@ -45,6 +45,9 @@ func TestMapServiceReadStatusesAndEmpty(t *testing.T) {
 	if err != nil || result.Status != "waiting" {
 		t.Fatalf("waiting: %+v %v", result, err)
 	}
+	if err := service.Update(t.Context()); err != nil || service.schedule.Load() != nil {
+		t.Fatalf("waiting map retained a polling deadline: %v", err)
+	}
 	id, err := index.prepare()
 	if err != nil {
 		t.Fatal(err)

@@ -17,10 +17,8 @@ import io.ktor.http.HttpMethod
 import io.ktor.http.HttpStatusCode
 import java.io.EOFException
 import java.io.IOException
-import java.net.InetSocketAddress
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.CopyOnWriteArrayList
-import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
@@ -40,9 +38,9 @@ class SessionTransportRecoveryTest {
         val reads = AtomicInteger()
         val materialReads = AtomicInteger()
         val writes = AtomicInteger()
-        val readPorts = CopyOnWriteArrayList<Int>()
-        val materialPorts = CopyOnWriteArrayList<Int>()
-        val messagePorts = CopyOnWriteArrayList<Int>()
+        val readSequences = CopyOnWriteArrayList<Int>()
+        val materialSequences = CopyOnWriteArrayList<Int>()
+        val messageSequences = CopyOnWriteArrayList<Int>()
         val cookies = CopyOnWriteArrayList<String>()
         val server = MockWebServer()
         server.dispatcher = object : Dispatcher() {
@@ -50,10 +48,10 @@ class SessionTransportRecoveryTest {
                 if (request.method == "GET") {
                     val materials = request.path.orEmpty().endsWith("/chat-materials")
                     if (materials) {
-                        materialPorts += request.sequenceNumber
+                        materialSequences += request.sequenceNumber
                         if (materialReads.incrementAndGet() == 1) return MockResponse().setSocketPolicy(SocketPolicy.DISCONNECT_AFTER_REQUEST)
                     } else {
-                        readPorts += request.sequenceNumber
+                        readSequences += request.sequenceNumber
                         cookies += request.getHeader("Cookie").orEmpty()
                         if (reads.incrementAndGet() == 2) return MockResponse().setSocketPolicy(SocketPolicy.DISCONNECT_AFTER_REQUEST)
                     }
@@ -61,7 +59,7 @@ class SessionTransportRecoveryTest {
                         .setHeader("Set-Cookie", "moerise_local_session=fixture; Path=/; Max-Age=300; HttpOnly")
                         .setBody(if (materials) """{"notes":[]}""" else identity)
                 }
-                if (request.path.orEmpty().endsWith("/messages")) messagePorts += request.sequenceNumber else writes.incrementAndGet()
+                if (request.path.orEmpty().endsWith("/messages")) messageSequences += request.sequenceNumber else writes.incrementAndGet()
                 return MockResponse().setSocketPolicy(SocketPolicy.DISCONNECT_AFTER_REQUEST)
             }
         }
@@ -72,22 +70,67 @@ class SessionTransportRecoveryTest {
                 core.session()
                 core.session()
                 assertEquals(3, reads.get())
-                assertEquals(0,readPorts[0]);assertEquals(1,readPorts[1])
-                assertEquals(0,readPorts[2])
+                assertEquals(listOf(0, 1, 0), readSequences.toList())
                 assertEquals(listOf("", "moerise_local_session=fixture", "moerise_local_session=fixture"), cookies.toList())
                 assertEquals("""{"notes":[]}""", core.api(HttpMethod.Get, "/chat-materials"))
                 assertEquals(2, materialReads.get())
-                assertEquals(1,materialPorts.first())
-                assertEquals(0,materialPorts[1])
+                assertEquals(listOf(1, 0), materialSequences.toList())
                 assertFailsWith<IOException> {
                     core.chatStream("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
                         ChatGenerate("insight-001", 1, "insight", "", "en")) {}
                 }
-                assertEquals(0,messagePorts.single())
+                assertEquals(0, messageSequences.single())
                 assertFailsWith<IOException> { core.api(HttpMethod.Post, "/notes", "{}", "fixed") }
                 assertEquals(1, writes.get())
             }
         } finally { server.shutdown() }
+    }
+
+    @Test
+    fun readsRecoverAndMutationsBypassExpiredConnectionsWithoutReplay() = runBlocking<Unit> {
+        val warm = CountDownLatch(3)
+        val recover = AtomicBoolean()
+        val attempts = AtomicInteger()
+        val mutations = AtomicInteger()
+        val warmSequences = CopyOnWriteArrayList<Int>()
+        val server = MockWebServer()
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                if (request.method == "POST") {
+                    mutations.incrementAndGet()
+                    if (request.sequenceNumber > 0) return MockResponse().setSocketPolicy(SocketPolicy.DISCONNECT_AFTER_REQUEST)
+                }
+                if (request.path.orEmpty().endsWith("/chat-materials")) {
+                    if (!recover.get()) {
+                        warmSequences += request.sequenceNumber
+                        warm.countDown()
+                        check(warm.await(5, TimeUnit.SECONDS))
+                    } else {
+                        attempts.incrementAndGet()
+                        if (request.sequenceNumber > 0) return MockResponse().setSocketPolicy(SocketPolicy.DISCONNECT_AFTER_REQUEST)
+                    }
+                }
+                return MockResponse().setBody(if (request.path.orEmpty().endsWith("/session")) identity else """{"notes":[]}""")
+            }
+        }
+        server.start()
+        try {
+            val origin = server.url("/").toString().removeSuffix("/")
+            CoreClient(origin, SessionCookies(origin, MemorySecrets())).use { core ->
+                core.session()
+                coroutineScope {
+                    List(3) { async { core.api(HttpMethod.Get, "/chat-materials") } }.awaitAll()
+                }
+                assertEquals(listOf(0, 0, 1), warmSequences.sorted())
+                recover.set(true)
+                assertEquals("""{"notes":[]}""", core.api(HttpMethod.Get, "/chat-materials"))
+                assertEquals(2, attempts.get())
+                assertEquals("""{"notes":[]}""", core.api(HttpMethod.Post, "/chats", "{}"))
+                assertEquals(1, mutations.get())
+            }
+        } finally {
+            server.shutdown()
+        }
     }
 
     @Test
