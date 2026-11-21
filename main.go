@@ -27,7 +27,7 @@ func main() {
 
 func run(args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: moerise serve|check-config|check-embedding|check-llm|backup|restore|rebuild-index|healthcheck|version")
+		return errors.New("usage: moerise serve|check-config|check-embedding|check-llm|backup|restore|rollback|rebuild-index|healthcheck|version")
 	}
 	if args[0] == "version" {
 		fmt.Println(moerise.Version)
@@ -40,6 +40,7 @@ func run(args []string) error {
 	output := options.String("output", "", "New backup directory")
 	source := options.String("source", "", "Backup directory")
 	safety := options.String("safety-backup", "", "New directory for the replaced state")
+	backup := options.String("backup", "", "Auto-backup sqlite3 file to roll back to")
 	if err := options.Parse(args[1:]); err != nil {
 		return err
 	}
@@ -127,6 +128,23 @@ func run(args []string) error {
 			return err
 		}
 		fmt.Println("Projection cleared; product state retained. Start the service to sync.")
+		return nil
+	case "rollback":
+		result, err := moerise.Rollback(settings, *backup)
+		if err != nil {
+			return err
+		}
+		if result.CrossVersion {
+			target := result.DowngradeVersion
+			if target == "" {
+				target = "the matching older release"
+			}
+			fmt.Printf("Rolled back state.sqlite3 from %s (replaced copy saved at %s); index.sqlite3 cleared for automatic rebuild.\nCross-version downgrade detected (snapshot schema %s < current %s): switch binary/image back to %s before starting Moerise so newer migrations are not re-applied.\n",
+				result.BackupPath, result.SafetyPath, result.MaxSnapshotMigration, result.CurrentKnownMigration, target)
+			return nil
+		}
+		fmt.Printf("Rolled back state.sqlite3 from %s (replaced copy saved at %s); index.sqlite3 cleared for automatic rebuild.\nSame-version snapshot restore completed; start Moerise to resume and rebuild the index.\n",
+			result.BackupPath, result.SafetyPath)
 		return nil
 	default:
 		return errors.New("unknown command")

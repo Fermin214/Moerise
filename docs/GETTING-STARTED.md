@@ -32,7 +32,7 @@ docker compose up -d memos
 | `MOERISE_MEMOS_USER` | `/api/v1/auth/me` 返回的完整 `user.name` |
 | `MOERISE_MEMOS_INSTANCE_ID` | 唯一且稳定的实例标识，如 `primary-memos` |
 | `MOERISE_TIMEZONE` | IANA 时区，如 `Asia/Shanghai`、`Europe/London` |
-| `MOERISE_ACCESS_TOKEN` | 外部机器 REST/MCP 的独立访问密钥 |
+| `MOERISE_ACCESS_TOKEN` | 外部机器 REST/MCP 的独立访问密钥（可选；无需外部脚本访问时可留空） |
 | `MOERISE_CURSOR_SECRET` | 分页签名的独立随机密钥 |
 | `MOERISE_STATE_ENCRYPTION_KEY` | 加密持久凭据的 32 字节 Base64 密钥 |
 

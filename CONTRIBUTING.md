@@ -50,7 +50,7 @@ Core 默认监听 8787，Web 默认监听 3000。Web 的 `PUBLIC_ORIGIN` 必须�
 | 路径 | 职责 |
 | --- | --- |
 | `main.go`、`internal/` | 命令行、共享服务、HTTP API 与平台适配 |
-| `internal/openapi.json` | 内嵌 OpenAPI v3 契约 |
+| `internal/openapi_gen.go` | 由 Go 结构体生成的内嵌 OpenAPI v3 契约 |
 | `internal/migrations/` | 状态库与索引库的版本化 SQLite 迁移 |
 | `web/src/` | 无第三方运行依赖的 JavaScript、HTML 与 CSS 前端 |
 | `web/server.mjs`、`web/build.mjs` | 静态服务、同源代理与构建 |

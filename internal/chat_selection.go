@@ -5,6 +5,7 @@ import (
 	"net/url"
 	"slices"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -85,6 +86,7 @@ func (s *ChatService) Select(ctx context.Context, input ChatSelection) (NotePage
 	if phase == "ALL" {
 		phase = "NORMAL"
 	}
+	var after *[2]string
 	if args.PageToken != "" {
 		var cursor chatMaterialCursor
 		if s.Notes.readCursor(args.PageToken, &cursor) != nil || cursor.Kind != "chat-materials-v1" ||
@@ -94,28 +96,41 @@ func (s *ChatService) Select(ctx context.Context, input ChatSelection) (NotePage
 			return result, failure("INVALID_PAGE_TOKEN", "Invalid material page token", 422, false)
 		}
 		phase, token = cursor.Phase, cursor.Token
-	}
-	if err := s.Notes.Verify(ctx); err != nil {
-		return result, err
-	}
-	memos, next, err := s.Notes.livePage(ctx, phase, args.PageSize, token, filter)
-	if err != nil {
-		return result, err
-	}
-	checked, _, err := s.Notes.checkLiveMemos(ctx, memos, phase, filter, true, memosLiveMaxRetainedBytes)
-	if err != nil {
-		return result, err
-	}
-	for _, memo := range checked {
-		if memo != nil {
-			result.Notes = append(result.Notes, memo.Note(s.Notes.Settings))
+		if token != "" {
+			parts := strings.SplitN(token, "\x00", 2)
+			if len(parts) != 2 || !memoPattern.MatchString(parts[1]) {
+				return result, failure("INVALID_PAGE_TOKEN", "Invalid material page token", 422, false)
+			}
+			if _, err := time.Parse(time.RFC3339Nano, parts[0]); err != nil {
+				return result, failure("INVALID_PAGE_TOKEN", "Invalid material page token", 422, false)
+			}
+			key := [2]string{parts[0], parts[1]}
+			after = &key
 		}
 	}
-	if err := s.Notes.Verify(ctx); err != nil {
-		return NotePage{}, err
+	memos, err := s.Notes.Store.ListLocalMemos(ctx, []string{phase}, filter, after, args.PageSize+1)
+	if err != nil {
+		return result, err
+	}
+	next := ""
+	if len(memos) > args.PageSize {
+		memos = memos[:args.PageSize]
+		last := memos[len(memos)-1]
+		next = last.CreateTime + "\x00" + last.Name
+	}
+	for _, memo := range memos {
+		result.Notes = append(result.Notes, memo.Note(s.Notes.Settings))
 	}
 	if next == "" && input.State == "ALL" && phase == "NORMAL" {
-		phase = "ARCHIVED"
+		archived, err := s.Notes.Store.ListLocalMemos(ctx, []string{"ARCHIVED"}, filter, nil, 1)
+		if err != nil {
+			return result, err
+		}
+		if len(archived) > 0 {
+			phase = "ARCHIVED"
+		} else {
+			return result, nil
+		}
 	} else if next == "" {
 		return result, nil
 	}

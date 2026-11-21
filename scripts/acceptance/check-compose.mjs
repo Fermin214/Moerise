@@ -599,14 +599,15 @@ async function runScenario(kind) {
     unlinkSync(resolve(snapshot, 'manifest.json'));
     unlinkSync(resolve(snapshot, 'state.sqlite3'));
   });
-  await check('来源断连时 live=200、ready=503 且 API 不返回缓存', async () => {
+  await check('来源断连时 live=200、ready=503 且客户端本地可读', async () => {
     await sourceControl('stop');
-    for (const path of ['/api/app/v1/notes', notePath(note), download]) {
+    for (const path of ['/api/app/v1/notes', notePath(note)]) {
       const result = await request(url, path, { headers: { Cookie: cookie } });
-      assert.ok(result.status >= 500 && result.status <= 599, '来源断连仍返回成功或会话失效');
-      assert.ok(!result.text.includes(edited) && !result.bytes.includes(attachmentBytes) &&
-        !result.text.includes(pat) && !result.value?.notes && !result.value?.content, '来源断连泄露缓存或凭据');
+      assert.equal(result.status, 200, '来源断连时客户端本地索引应继续可读');
     }
+    const attResult = await request(url, download, { headers: { Cookie: cookie } });
+    assert.ok(attResult.status >= 500 && attResult.status <= 599, '来源断连附件代理仍返回成功或会话失效');
+    assert.ok(!attResult.bytes.includes(attachmentBytes) && !attResult.text.includes(pat), '来源断连泄露缓存或凭据');
     // Core readiness reads persisted sync state; the default source poll interval is 60 seconds.
     await waitFor('来源断连就绪降级', async () => (await request(url, '/health/ready')).status === 503, 90_000);
     expectStatus(await request(url, '/health/live'), 200, 'Web 存活');

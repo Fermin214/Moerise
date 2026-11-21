@@ -253,6 +253,7 @@ func TestClientManagementMemosAcceptance(t *testing.T) {
 		h.call(h.memos, "/api/v1/memos/"+name+"?updateMask=create_time", "PATCH", h.upstream,
 			map[string]string{"createTime": created}, 200)
 	}
+	h.sync("full")
 	query := "query=" + url.QueryEscape("针叶") + "&tag=" + url.QueryEscape("过滤") +
 		"&tag=" + url.QueryEscape("组合") + "&date=2026-10-29&page_size=2"
 	token := ""
@@ -344,6 +345,7 @@ func TestClientMutationTimestampsMemosAcceptance(t *testing.T) {
 	} {
 		h.call(h.memos, "/api/v1/"+native["name"].(string)+"?updateMask=update_time",
 			"PATCH", h.upstream, map[string]string{"updateTime": "2020-01-01T00:00:00Z"}, 200)
+		h.sync("full")
 		native = c.call("GET", clientNotePath(native), nil, 200)
 		change["source_hash"] = native["source_hash"]
 		before := time.Now().UTC().Truncate(time.Second)
@@ -398,6 +400,7 @@ func TestClientAttachmentDeletionPreflightMemosAcceptance(t *testing.T) {
 			map[string]any{"source_hash": native["source_hash"], "content": body}, 200)
 		h.call(h.memos, "/api/v1/"+native["name"].(string)+"?updateMask=update_time",
 			"PATCH", h.upstream, map[string]string{"updateTime": "2020-01-01T00:00:00Z"}, 200)
+		h.sync("full")
 		native = c.call("GET", clientNotePath(native), nil, 200)
 		c.key = "reference-delete-" + syntax
 		remove := map[string]any{"source_hash": native["source_hash"], "content": body,
@@ -449,6 +452,7 @@ func TestClientExistingAttachmentCountsMemosAcceptance(t *testing.T) {
 			"POST", h.upstream, map[string]any{"memo": source["name"],
 				"filename": fmt.Sprintf("existing-%d.txt", i), "type": "text/plain", "content": file["content"]}, 200)
 	}
+	h.sync("full")
 	native := c.call("GET", clientNotePath(source), nil, 200)
 	for i, change := range []map[string]any{
 		{"content": "edited with twelve attachments", "attachments": []any{}},

@@ -75,6 +75,21 @@ func (s *NoteService) Get(ctx context.Context, name string) (Note, error) {
 	return memo.Note(s.Settings), nil
 }
 
+func (s *NoteService) GetLocal(ctx context.Context, name string) (Note, error) {
+	memo, err := s.Store.GetMemoLocal(ctx, name)
+	if err != nil {
+		return Note{}, err
+	}
+	if memo == nil {
+		return Note{}, failure("SOURCE_NOT_FOUND", "Memo is unavailable", 404, false)
+	}
+	return memo.Note(s.Settings), nil
+}
+
+func (s *NoteService) SyncNotes(ctx context.Context, cursor string, limit int) (SyncNotesResponse, error) {
+	return s.Store.SyncNotes(ctx, s, cursor, limit)
+}
+
 func parseNoteList(query url.Values, live bool) (NoteList, error) {
 	args := NoteList{State: "NORMAL", PageSize: 20}
 	if live {

@@ -468,3 +468,31 @@ func TestCanceledScanDoesNotAdvance(t *testing.T) {
 		t.Fatal("cancellation advanced watermark")
 	}
 }
+
+func TestOptionalAccessTokensDisableExternalAndMCP(t *testing.T) {
+	s := testSettings(t)
+	s.AccessTokens = nil
+	if err := s.Validate(); err != nil {
+		t.Fatalf("empty access_tokens rejected: %v", err)
+	}
+	store := testStore(t, s)
+	source := fakeClient(s, func(r *http.Request) (int, any, error) {
+		status, body, _ := identityResponse(r)
+		return status, body, nil
+	})
+	api, err := NewAPI(NewApp(s, store, source))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct{ method, path string }{
+		{"GET", "/api/ext/v1/notes"},
+		{"POST", "/mcp"},
+	} {
+		req := httptest.NewRequest(tc.method, tc.path, strings.NewReader(`{}`))
+		rec := httptest.NewRecorder()
+		api.ServeHTTP(rec, req)
+		if rec.Code != 404 {
+			t.Fatalf("%s %s = %d, want 404", tc.method, tc.path, rec.Code)
+		}
+	}
+}

@@ -91,6 +91,11 @@ func TestClientSettingsSessionAndMachineIsolation(t *testing.T) {
 	fixture.mu.Lock()
 	fixture.userName = "users/another"
 	fixture.mu.Unlock()
+	cached := clientCall(api, "GET", clientSettingsPath, "", cookie, "", "")
+	if cached.Code != 200 {
+		t.Fatalf("warm cache should not hit Memos per read: %d %s", cached.Code, cached.Body.String())
+	}
+	api.app.Sessions.ExpireCache()
 	response := clientCall(api, "GET", clientSettingsPath, "", cookie, "", "")
 	assertSettingsError(t, response, 403, "ACCOUNT_NOT_BOUND")
 	if api.app.Store.productVersion != 1 {
@@ -290,9 +295,8 @@ func TestClientSettingsBodyLimit(t *testing.T) {
 func TestClientSettingsRuntimeLockCoversAuthentication(t *testing.T) {
 	api, fixture := clientFixture(t)
 	cookie, identity := settingsSession(t, api)
-	hash, _ := sessionHash(cookie.Value)
 	for _, method := range []string{"GET", "PATCH"} {
-		api.app.Sessions.cache(hash, memosCredentials{})
+		api.app.Sessions.ClearCache()
 		observed := make(chan bool, 1)
 		fixture.mu.Lock()
 		fixture.refreshHook = func() {

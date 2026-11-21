@@ -376,10 +376,10 @@ func TestSearchAcceptance(t *testing.T) {
 			t.Fatal("native enhanced search ignored archive scope", archive)
 		}
 		sourceFailure.Store(true)
-		unavailable := c.call("POST", "/api/app/v1/search", input, 503)
+		available := c.call("POST", "/api/app/v1/search", input, 200)
 		sourceFailure.Store(false)
-		if unavailable["notes"] != nil {
-			t.Fatal("source outage exposed a partial native page")
+		if len(available["notes"].([]any)) == 0 {
+			t.Fatal("local native search failed during source outage")
 		}
 		settings := c.call("GET", "/api/app/v1/settings", nil, 200)
 		c.call("PATCH", "/api/app/v1/settings", map[string]any{

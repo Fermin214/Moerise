@@ -45,7 +45,8 @@ type clientSearchCursor struct {
 	Filter   string               `json:"filter"`
 	Expires  int64                `json:"expires"`
 	Index    clientSearchIndex    `json:"index"`
-	Sources  []clientSearchSource `json:"sources"`
+	Sources  []clientSearchSource `json:"sources,omitempty"`
+	Offset   int                  `json:"offset,omitempty"`
 	Mode     string               `json:"mode"`
 	Semantic SearchSemantic       `json:"semantic"`
 }
@@ -53,7 +54,7 @@ type clientSearchCursor struct {
 func (s *SearchService) clientIndex(ctx context.Context) (clientSearchIndex, error) {
 	index := clientSearchIndex{Space: embeddingSpace(s.Store.Settings.Embedding),
 		Enabled: s.Store.Settings.Embedding.Enabled}
-	err := s.Store.index.QueryRowContext(ctx, `SELECT p.generation, p.revision, COALESCE(
+	err := s.Store.indexReader().QueryRowContext(ctx, `SELECT p.generation, p.revision, COALESCE(
 		(SELECT id FROM vector_generations WHERE instance_id = p.instance_id
 			AND user_name = ? AND status = 'active'), '')
 		FROM projection_meta p WHERE p.instance_id = ?`,
@@ -98,10 +99,13 @@ func (s *SearchService) ClientPage(ctx context.Context, notes *NoteService, inpu
 		return result, failure("INVALID_ARGUMENT", "Invalid client search parameters", 422, false)
 	}
 	if input.Mode == "keyword" {
-		args.PageToken = input.PageToken
-		result.NotePage, err = notes.ListLive(ctx, args)
-		result.Mode, result.Semantic.Reason = "keyword", "KEYWORD_MODE"
-		return result, err
+		query := strings.TrimSpace(args.Query)
+		if query == "" || len(searchTerms(query, false)) == 0 {
+			args.PageToken = input.PageToken
+			result.NotePage, err = notes.ListLocal(ctx, args)
+			result.Mode, result.Semantic.Reason = "keyword", "KEYWORD_MODE"
+			return result, err
+		}
 	}
 	query := strings.TrimSpace(args.Query)
 	if query == "" {
@@ -126,47 +130,81 @@ func (s *SearchService) ClientPage(ctx context.Context, notes *NoteService, inpu
 	if input.PageToken != "" {
 		if notes.readCursorLimit(input.PageToken, &cursor, clientSearchTokenBytes) != nil ||
 			cursor.Kind != "client-search-v1" || !slices.Equal(cursor.Context, notes.liveContext()) ||
-			cursor.Filter != binding || cursor.Expires <= time.Now().Unix() || cursor.Index != index ||
-			len(cursor.Sources) == 0 || len(cursor.Sources) > 3*searchCandidates {
+			cursor.Filter != binding || cursor.Expires <= time.Now().Unix() || cursor.Index != index {
+			return result, failure("INVALID_PAGE_TOKEN", "Search page token is invalid or expired", 422, false)
+		}
+		validRanked := (cursor.Mode == "semantic" || cursor.Mode == "hybrid") && len(cursor.Sources) > 0 && len(cursor.Sources) <= 3*searchCandidates && cursor.Offset == 0
+		validKeyword := cursor.Mode == "keyword" && len(cursor.Sources) == 0 && cursor.Offset > 0
+		if !validRanked && !validKeyword {
 			return result, failure("INVALID_PAGE_TOKEN", "Search page token is invalid or expired", 422, false)
 		}
 	}
-	if err := notes.Verify(ctx); err != nil {
-		return result, err
-	}
 	if input.PageToken == "" {
-		candidates, mode, semantic, err := s.rankedCandidates(ctx, request)
-		if err != nil {
-			return result, err
-		}
-		cursor.Mode, cursor.Semantic = mode, semantic
-		seen := map[string]bool{}
-		for _, candidate := range candidates {
-			if !seen[candidate.name] {
-				seen[candidate.name] = true
-				cursor.Sources = append(cursor.Sources, clientSearchSource{candidate.name, candidate.sourceHash})
+		if input.Mode == "keyword" {
+			cursor.Mode, cursor.Semantic = "keyword", SearchSemantic{Reason: "KEYWORD_MODE"}
+		} else {
+			candidates, mode, semantic, err := s.rankedCandidatesLimit(ctx, request, searchCandidates)
+			if err != nil {
+				return result, err
+			}
+			cursor.Mode, cursor.Semantic = mode, semantic
+			if mode != "keyword" {
+				seen := map[string]bool{}
+				for _, candidate := range candidates {
+					if !seen[candidate.name] {
+						seen[candidate.name] = true
+						cursor.Sources = append(cursor.Sources, clientSearchSource{candidate.name, candidate.sourceHash})
+					}
+				}
 			}
 		}
 	}
 	result.Mode, result.Semantic = cursor.Mode, cursor.Semantic
-	consumed := 0
-	for _, source := range cursor.Sources {
-		if len(result.Notes) >= args.PageSize {
-			break
-		}
-		consumed++
-		memo, err := notes.fresh(ctx, source.Name)
+	hasMore := false
+	if cursor.Mode == "keyword" {
+		sources, err := s.Store.searchKeywordNotesPage(ctx, request, args.PageSize+1, cursor.Offset)
 		if err != nil {
 			return ClientSearchPage{}, err
 		}
-		if memo == nil || memo.Name != source.Name || memo.SourceHash != source.Hash ||
-			!searchAccepts(request, memo.State, memo.Tags) || !searchDateAccepts(request, memo.CreateTime) {
-			continue
+		if len(sources) > args.PageSize {
+			hasMore = true
+			sources = sources[:args.PageSize]
 		}
-		result.Notes = append(result.Notes, memo.Note(notes.Settings))
-	}
-	if err := notes.Verify(ctx); err != nil {
-		return ClientSearchPage{}, err
+		for _, source := range sources {
+			memo, err := s.Store.GetMemoLocal(ctx, source.Name)
+			if err != nil {
+				return ClientSearchPage{}, err
+			}
+			if memo == nil || memo.Name != source.Name || memo.SourceHash != source.Hash ||
+				!searchAccepts(request, memo.State, memo.Tags) || !searchDateAccepts(request, memo.CreateTime) {
+				continue
+			}
+			result.Notes = append(result.Notes, memo.Note(notes.Settings))
+		}
+		cursor.Offset += len(sources)
+	} else {
+		consumed := 0
+		for _, source := range cursor.Sources {
+			if len(result.Notes) >= args.PageSize {
+				break
+			}
+			consumed++
+			memo, err := s.Store.GetMemoLocal(ctx, source.Name)
+			if err != nil {
+				return ClientSearchPage{}, err
+			}
+			if memo == nil || memo.Name != source.Name || memo.SourceHash != source.Hash ||
+				!searchAccepts(request, memo.State, memo.Tags) || !searchDateAccepts(request, memo.CreateTime) {
+				continue
+			}
+			result.Notes = append(result.Notes, memo.Note(notes.Settings))
+		}
+		hasMore = consumed < len(cursor.Sources)
+		if hasMore {
+			cursor.Sources = cursor.Sources[consumed:]
+		} else {
+			cursor.Sources = nil
+		}
 	}
 	current, err := s.clientIndex(ctx)
 	if err != nil {
@@ -175,9 +213,7 @@ func (s *SearchService) ClientPage(ctx context.Context, notes *NoteService, inpu
 	if current != index {
 		return ClientSearchPage{}, failure("SOURCE_CHANGED", "Search sources changed; refresh the search", 409, true)
 	}
-	if consumed < len(cursor.Sources) {
-		// 只携带签名的排序和来源摘要，不在分页状态中保存笔记正文。
-		cursor.Sources = cursor.Sources[consumed:]
+	if hasMore {
 		result.NextPageToken = notes.signCursor(cursor)
 		if len(result.NextPageToken) > clientSearchTokenBytes {
 			return ClientSearchPage{}, failure("SEARCH_RESOURCE_LIMIT", "Search pagination exceeded its transport budget", 503, true)

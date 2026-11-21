@@ -15,7 +15,7 @@ Moerise 支持 Linux 原生二进制运行以及 Docker 容器部署。本文档
 | `MOERISE_MEMOS_PUBLIC_URL` | `memos.public_url` | 必填 | 浏览器中打开 Memos 原文的外部可访问基地址 |
 | `MOERISE_MEMOS_USER` | `memos.user` | 必填 | 绑定的 Memos 作者资源名（格式如 `users/abc123`） |
 | `MOERISE_MEMOS_TOKEN` | `memos.token` | 必填 | 绑定账号的 Memos 个人访问令牌 (PAT) |
-| `MOERISE_ACCESS_TOKEN` | `access_tokens` | 必填 | 外部机器 REST API 与 MCP 调用的 Bearer 访问令牌 |
+| `MOERISE_ACCESS_TOKEN` | `access_tokens` | 可选 | 外部机器 REST API 与 MCP 调用的 Bearer 访问令牌；留空则禁用 `/api/ext/v1` 与 `/mcp` |
 | `MOERISE_CURSOR_SECRET` | `cursor_secret` | 必填 | 用于分页签名与资源安全哈希的独立随机密钥（至少 32 字符） |
 | `MOERISE_STATE_ENCRYPTION_KEY` | `web.state_encryption_key` | Web 或机器人私聊收件必填 | 加密存储凭据和待写入正文的 32 字节 Base64 编码主密钥 |
 | `MOERISE_WEB_ENABLED` | `web.enabled` | Compose 为 `true`；Core 默认 `false` | 是否启用 Web 客户端会话支持 |
@@ -197,9 +197,15 @@ docker compose up -d --no-build moerise
 
 ## 五、升级与回滚
 
-1. 备份 Memos 数据、Moerise 产品状态及配置，记录源码提交或镜像摘要。
+1. 备份 Memos 数据、Moerise 产品状态及配置，记录源码提交或镜像摘要。服务启动且检测到 `state.sqlite3` 存在待执行的数据库迁移前，会自动使用 `VACUUM INTO` 将当前状态库热备份至 `<state_dir>/backups/auto-pre-<version>-<timestamp>.sqlite3`（校验完整性与外键后落盘，最多保留最近 5 份）。
 2. 保持 Compose 项目名、来源绑定、数据卷和状态加密密钥一致，将 `.env` 中的 `MOERISE_IMAGE_TAG` 设为目标版本。启用观星时，确保 `COMPOSE_PROFILES` 包含 `stargazing`，执行 `docker compose pull moerise web layout` 和 `docker compose up -d`；停用观星时只拉取 `moerise web`。
 3. 检查就绪状态、原文和附件、设置版本、回顾与聊天历史；启用 Embedding 时另查索引构建状态。
-4. 回滚时先停止服务并切换代码或镜像；数据库结构不兼容时，恢复目标版本对应的状态备份，再启动。
+4. 同版本或跨版本回滚可在停止 Core 后执行内置 `rollback` 命令（默认选取最近一份自动热备份，也可通过 `--backup <路径>` 指定历史快照；命令先为当前状态生成 `pre-rollback-*` 安全副本，再原子替换 `state.sqlite3` 并清理 `sync_state` 与 `index.sqlite3`，重启后自动重建派生索引）：
 
-数据库迁移不会随 Git 回滚自动逆向执行。Memos 镜像在 Compose 中独立固定版本与摘要，升级 Memos 前先验证 Moerise 对目标协议版本的支持。
+```bash
+docker compose stop moerise
+docker compose run --rm --no-deps -T moerise rollback
+docker compose up -d --no-build moerise
+```
+
+若跨版本降级至 `0.2.0`（镜像标签切换回 `0.2.0` 前已执行上述回滚），命令会提示将 Core 镜像或二进制切换为 `0.2.0` 后再启动；数据库结构变更不会随 Git 回滚自动逆向执行。Memos 镜像在 Compose 中独立固定版本与摘要，升级 Memos 前先验证 Moerise 对目标协议版本的支持。

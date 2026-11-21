@@ -16,20 +16,13 @@ func TestClientSourceReadBudgetIncludesAuthenticationAndRuntimeWait(t *testing.T
 			cookie, _ := settingsSession(t, api)
 			memo := rawMemo("one", "#tag original")
 			memo["createTime"], memo["updateTime"] = "2026-11-01T00:00:00Z", "2026-11-01T00:00:00Z"
+			refreshIndexMemo(t, api.app.Store, memo)
 			source := fakeClient(api.app.Store.Settings, func(r *http.Request) (int, any, error) {
 				if status, body, ok := identityResponse(r); ok {
 					return status, body, nil
 				}
-				if r.URL.Path == "/api/v1/memos" {
-					return 200, map[string]any{"memos": []any{memo}}, nil
-				}
-				if r.URL.Path == "/api/v1/users:stats" {
-					return 200, map[string]any{"stats": []SourceStats{{
-						Name: api.app.Store.Settings.Memos.User + "/stats", Total: 1, Tags: map[string]int{"tag": 1},
-						Created: []string{"2026-11-01T00:00:00Z"}, Updated: []string{"2026-11-01T00:00:00Z"},
-					}}}, nil
-				}
-				return 200, memo, nil
+				t.Fatalf("unexpected upstream Memos call %s %s on local read", r.Method, r.URL.Path)
+				return 500, nil, nil
 			})
 			api.app.Notes.Source = source
 			api.app.Chat.Notes = api.app.Notes
@@ -50,12 +43,21 @@ func TestClientSourceReadBudgetIncludesAuthenticationAndRuntimeWait(t *testing.T
 			r.AddCookie(cookie)
 			w := httptest.NewRecorder()
 			api.ServeHTTP(w, r)
-			if w.Code != 200 || len(deadlines) < 2 {
-				t.Fatalf("source read did not authenticate and read source: %d %s", w.Code, w.Body.String())
+			if w.Code != 200 || len(deadlines) != 0 {
+				t.Fatalf("warm local read failed or hit upstream: %d %s deadlines=%v", w.Code, w.Body.String(), deadlines)
+			}
+			api.app.Sessions.ClearCache()
+			started := time.Now()
+			r2 := httptest.NewRequest(http.MethodGet, "/api/app/v1"+path, nil)
+			r2.AddCookie(cookie)
+			w2 := httptest.NewRecorder()
+			api.ServeHTTP(w2, r2)
+			if w2.Code != 200 || len(deadlines) == 0 {
+				t.Fatalf("uncached read did not authenticate within deadline: %d %s", w2.Code, w2.Body.String())
 			}
 			for _, deadline := range deadlines {
-				if !deadline.Equal(deadlines[0]) {
-					t.Fatalf("source reads did not share the authentication budget: %v", deadlines)
+				if !deadline.Equal(deadlines[0]) || deadline.Before(started) {
+					t.Fatalf("uncached auth did not share request budget: %v", deadlines)
 				}
 			}
 		})
@@ -92,6 +94,9 @@ func TestClientSourceReadRateLimitDoesNotReturnPartialContent(t *testing.T) {
 			cookie, _ := settingsSession(t, api)
 			settings := api.app.Store.Settings
 			settings.Memos.PageSize = 1
+			memo := rawMemo("one", "#tag local")
+			memo["createTime"], memo["updateTime"] = "2020-01-01T00:00:00Z", "2020-01-01T00:00:00Z"
+			refreshIndexMemo(t, api.app.Store, memo)
 			pages := 0
 			source := fakeClient(settings, func(r *http.Request) (int, any, error) {
 				if status, body, ok := identityResponse(r); ok {
@@ -100,26 +105,21 @@ func TestClientSourceReadRateLimitDoesNotReturnPartialContent(t *testing.T) {
 				if r.URL.Path == "/api/v1/memos" || r.URL.Path == "/api/v1/users:stats" {
 					pages++
 					if pages == 1 {
-						if r.URL.Path == "/api/v1/users:stats" {
-							return 200, map[string]any{"stats": []SourceStats{{
-								Name: settings.Memos.User + "/stats", Total: 1, Tags: map[string]int{"tag": 1},
-								Created: []string{"2020-01-01T00:00:00Z"}, Updated: []string{"2020-01-01T00:00:00Z"},
-							}}}, nil
-						}
 						return 200, map[string]any{"memos": []any{rawMemo("one", "PRIVATE_ORIGINAL")}, "nextPageToken": "next"}, nil
 					}
 					return 429, map[string]string{"message": "PRIVATE_UPSTREAM_BODY"}, nil
 				}
-				t.Fatalf("unexpected per-note read after list failure: %s", r.URL.Path)
 				return 500, nil, nil
 			})
 			api.app.Notes.Source = source
 			api.app.Chat.Notes = api.app.Notes
 			w := clientCall(api, "GET", "/api/app/v1"+path, "", cookie, "", "")
-			if w.Code != 503 || !strings.Contains(w.Body.String(), "UPSTREAM_RATE_LIMITED") || pages != 2 ||
-				strings.Contains(w.Body.String(), "PRIVATE") || strings.Contains(w.Body.String(), `"notes"`) ||
-				strings.Contains(w.Body.String(), `"tags"`) || strings.Contains(w.Body.String(), `"days"`) {
-				t.Fatalf("rate limit returned partial content or raw source error: %d %s (%d pages)", w.Code, w.Body.String(), pages)
+			if w.Code != 200 || pages != 0 {
+				t.Fatalf("local client read failed or called upstream: %d %s (%d pages)", w.Code, w.Body.String(), pages)
+			}
+			_, err := api.app.Notes.ListLive(t.Context(), NoteList{State: "NORMAL", PageSize: 10})
+			if errorCode(err) != "UPSTREAM_RATE_LIMITED" || pages != 2 || strings.Contains(err.Error(), "PRIVATE") {
+				t.Fatalf("external source list did not fail cleanly on rate limit: err=%v pages=%d", err, pages)
 			}
 		})
 	}
@@ -131,20 +131,11 @@ func TestClientSourceReadCancelsIndexConnectionWait(t *testing.T) {
 			t.Run(path+map[bool]string{false: "/cancel", true: "/deadline"}[deadline], func(t *testing.T) {
 				api, _ := clientFixture(t)
 				cookie, _ := settingsSession(t, api)
-				started := make(chan struct{})
-				source := fakeClient(api.app.Store.Settings, func(r *http.Request) (int, any, error) {
-					if status, body, ok := identityResponse(r); ok {
-						return status, body, nil
-					}
-					if r.URL.Path == "/api/v1/memos" {
-						return 200, map[string]any{"memos": []any{rawMemo("one", "original")}}, nil
-					}
-					close(started)
-					return 200, rawMemo("one", "original"), nil
-				})
-				api.app.Notes.Source = source
-				api.app.Chat.Notes = api.app.Notes
-				connection, err := api.app.Store.index.Conn(t.Context())
+				refreshIndexMemo(t, api.app.Store, rawMemo("one", "original"))
+				readerDB := api.app.Store.indexReader()
+				readerDB.SetMaxOpenConns(1)
+				defer readerDB.SetMaxOpenConns(4)
+				connection, err := readerDB.Conn(t.Context())
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -160,20 +151,14 @@ func TestClientSourceReadCancelsIndexConnectionWait(t *testing.T) {
 				w := httptest.NewRecorder()
 				done := make(chan struct{})
 				go func() { api.ServeHTTP(w, r); close(done) }()
-				select {
-				case <-started:
-				case <-time.After(2 * time.Second):
-					connection.Close()
-					<-done
-					t.Fatal("source read did not reach the index refresh")
-				}
 				if !deadline {
+					time.Sleep(25 * time.Millisecond)
 					cancel()
 				}
 				<-ctx.Done()
 				select {
 				case <-done:
-				case <-time.After(300 * time.Millisecond):
+				case <-time.After(500 * time.Millisecond):
 					connection.Close()
 					<-done
 					t.Fatal("canceled request kept waiting for the index connection")
@@ -184,11 +169,6 @@ func TestClientSourceReadCancelsIndexConnectionWait(t *testing.T) {
 				}
 				if w.Code != 503 || !strings.Contains(w.Body.String(), want) {
 					t.Fatalf("index wait escaped request cancellation: %d %s", w.Code, w.Body.String())
-				}
-				connection.Close()
-				var count int
-				if err := api.app.Store.index.QueryRow("SELECT COUNT(*) FROM memos").Scan(&count); err != nil || count != 0 {
-					t.Fatalf("canceled request refreshed the index: count=%d err=%v", count, err)
 				}
 			})
 		}

@@ -213,6 +213,7 @@ try {
     await page.goto(`${url}/review`);
     await page.locator('#username').fill(username); await page.locator('#password').fill(password);
     await page.locator('#login').click();
+    await page.getByRole('button', { name: '进入 Moerise', exact: true }).click();
     await page.getByRole('button', { name: '第 6 / 6 条', exact: true }).waitFor();
   });
   await check('全天固定回顾、完整原文、纯图及受保护详情', async () => {
@@ -252,6 +253,22 @@ try {
     await wait('重启后语义就绪', async () => (await api('GET', '/models')).index_status === 'ready');
   });
   await check('详情指定起点、next 排除已走路径及详情返回', async () => {
+    const walkNexts = [];
+    page.on('response', res => {
+      if (new URL(res.url()).pathname !== '/api/app/v1/walks/next' || res.status() !== 200) return;
+      let reqPath = [];
+      try { reqPath = JSON.parse(res.request().postData() || '{}').path || []; } catch {}
+      walkNexts.push({ key: JSON.stringify(reqPath), json: res.json().catch(() => null) });
+    });
+    const waitWalkNext = async prior => {
+      const key = JSON.stringify(prior);
+      let matched;
+      await wait(`walks/next ${prior.length}`, async () => {
+        matched = walkNexts.findLast(item => item.key === key);
+        return !!matched;
+      });
+      return matched.json;
+    };
     specified = fixtures[0];
     await page.goto(`${url}/notes/${noteID(specified)}`);
     await page.locator('article.note').getByRole('button', { name: '从这条漫步', exact: true }).click();
@@ -263,18 +280,18 @@ try {
     assert.equal(evidence.browserRequests.filter(req => req.path.endsWith('/walks/start')).length, started);
     const seen = [specified.name];
     for (let index = 1; index < 5; index++) {
-      const response = page.waitForResponse(response => response.url().endsWith('/api/app/v1/walks/next'));
+      const prior = [...seen];
       await next().click();
-      const result = await (await response).json();
+      const result = await waitWalkNext(prior);
       assert.equal(result.exhausted, false); assert.deepEqual(result.warnings, []);
       const name = result.item.note.name;
       assert.equal(seen.includes(name), false); seen.push(name); assert.deepEqual(result.path, seen);
       await page.locator(`.discovery-note[data-name="${name}"]:visible`).waitFor();
     }
     assert.deepEqual([...seen].sort(), fixtures.map(note => note.name).sort());
-    const response = page.waitForResponse(response => response.url().endsWith('/api/app/v1/walks/next'));
+    const prior = [...seen];
     await next().click();
-    const result = await (await response).json();
+    const result = await waitWalkNext(prior);
     assert.equal(result.exhausted, true); assert.deepEqual(result.path, seen);
     await page.getByText('能走的路都走完了。', { exact: true }).waitFor();
     await page.locator(`.discovery-note[data-name="${seen.at(-1)}"]:visible`).waitFor();
@@ -315,6 +332,7 @@ try {
     const oldCookie = cookie;
     await api('DELETE', '/session', undefined, 204);
     await request(url, '/api/app/v1/reviews/daily', { headers: { Cookie: oldCookie } }, 401);
+    await page.locator('#navigation-toggle').click();
     await page.locator('#user-menu').click(); await page.locator('#logout').click();
     await page.locator('#login-form').waitFor({ state: 'visible' });
     assert.equal(await page.locator('#discovery-page').count(), 0);

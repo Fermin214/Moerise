@@ -47,7 +47,7 @@ func (s *Store) VectorStatus() (*VectorIndexStatus, error) {
 func (s *Store) VectorStatusContext(ctx context.Context) (*VectorIndexStatus, error) {
 	result := &VectorIndexStatus{}
 	// One read transaction prevents combining counts and pointers from different publications.
-	err := transactionContext(ctx, s.index, func(tx *sql.Tx) error {
+	err := transactionContext(ctx, s.indexReader(), func(tx *sql.Tx) error {
 		if err := tx.QueryRowContext(ctx, "SELECT revision FROM projection_meta WHERE instance_id = ?", s.Settings.Memos.InstanceID).
 			Scan(&result.ProjectionRevision); err != nil {
 			return err
@@ -192,7 +192,7 @@ type pendingVector struct {
 }
 
 func (s *VectorIndexService) pending(id string) ([]pendingVector, error) {
-	rows, err := s.Store.index.Query(`SELECT c.name, n.source_hash, c.content_hash, c.content
+	rows, err := s.Store.indexReader().Query(`SELECT c.name, n.source_hash, c.content_hash, c.content
 		FROM vector_chunks c JOIN vector_notes n ON n.generation_id = c.generation_id AND n.name = c.name
 		WHERE c.generation_id = ? AND c.vector IS NULL ORDER BY c.name, c.ordinal LIMIT ?`,
 		id, s.Store.Settings.Embedding.BatchSize)
@@ -305,6 +305,10 @@ func (s *VectorIndexService) Step(ctx context.Context) (worked bool, err error) 
 	if err != nil || !status.SourceOK || status.LastFull == nil {
 		return false, err
 	}
+	handled, worked, err := s.incrementalStep(ctx)
+	if handled {
+		return worked, err
+	}
 	id, err := s.prepare()
 	if err != nil || id == "" {
 		return false, err
@@ -357,4 +361,256 @@ func (s *VectorIndexService) Step(ctx context.Context) (worked bool, err error) 
 		return false, err
 	}
 	return true, s.save(id, batch, result)
+}
+
+func (s *VectorIndexService) incrementalStep(ctx context.Context) (handled bool, worked bool, err error) {
+	settings := s.Store.Settings
+	instance, user := settings.Memos.InstanceID, settings.Memos.User
+	space := embeddingSpace(settings.Embedding)
+
+	var activeID, activeSpace string
+	var activeRevision, projRevision int64
+	readTx, err := s.Store.indexReader().BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return true, false, err
+	}
+	if err := readTx.QueryRowContext(ctx, "SELECT revision FROM projection_meta WHERE instance_id = ?", instance).Scan(&projRevision); err != nil {
+		readTx.Rollback()
+		return true, false, err
+	}
+	err = readTx.QueryRowContext(ctx, `SELECT id, space_hash, projection_revision FROM vector_generations
+		WHERE instance_id = ? AND user_name = ? AND status = 'active'`,
+		instance, user).Scan(&activeID, &activeSpace, &activeRevision)
+	if errors.Is(err, sql.ErrNoRows) || (err == nil && activeSpace != space) {
+		readTx.Rollback()
+		return false, false, nil
+	}
+	if err != nil {
+		readTx.Rollback()
+		return true, false, err
+	}
+	if activeRevision == projRevision {
+		readTx.Rollback()
+		_, cleanErr := s.Store.index.Exec("DELETE FROM vector_generations WHERE instance_id = ? AND user_name = ? AND status = 'building'", instance, user)
+		return true, false, cleanErr
+	}
+
+	deleted := []string{}
+	rows, err := readTx.QueryContext(ctx, `SELECT n.name FROM vector_notes n
+		LEFT JOIN memos m ON m.instance_id = ? AND m.user_name = ? AND m.name = n.name
+		WHERE n.generation_id = ? AND m.name IS NULL`,
+		instance, user, activeID)
+	if err != nil {
+		readTx.Rollback()
+		return true, false, err
+	}
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			rows.Close()
+			readTx.Rollback()
+			return true, false, err
+		}
+		deleted = append(deleted, name)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		readTx.Rollback()
+		return true, false, err
+	}
+	rows.Close()
+
+	rows, err = readTx.QueryContext(ctx, `SELECT m.payload_json FROM memos m
+		LEFT JOIN vector_notes n ON n.generation_id = ? AND n.name = m.name
+		WHERE m.instance_id = ? AND m.user_name = ? AND (n.name IS NULL OR n.source_hash != m.source_hash)
+		ORDER BY m.name`,
+		activeID, instance, user)
+	if err != nil {
+		readTx.Rollback()
+		return true, false, err
+	}
+	changed := []Memo{}
+	for rows.Next() {
+		var data []byte
+		if err := rows.Scan(&data); err != nil {
+			rows.Close()
+			readTx.Rollback()
+			return true, false, err
+		}
+		memo, err := decodeMemo(data)
+		if err != nil {
+			rows.Close()
+			readTx.Rollback()
+			return true, false, err
+		}
+		if memo.Creator != user {
+			deleted = append(deleted, memo.Name)
+			continue
+		}
+		changed = append(changed, memo)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		readTx.Rollback()
+		return true, false, err
+	}
+	rows.Close()
+
+	batch := []pendingVector{}
+	seenContent := map[string]bool{}
+	for _, memo := range changed {
+		for _, chunk := range ChunkText(memo.Content) {
+			if seenContent[chunk.ContentHash] {
+				continue
+			}
+			var cached int
+			err := readTx.QueryRowContext(ctx, `SELECT 1 FROM vector_cache WHERE space_hash = ? AND content_hash = ?`,
+				space, chunk.ContentHash).Scan(&cached)
+			if err == nil {
+				continue
+			}
+			if !errors.Is(err, sql.ErrNoRows) {
+				readTx.Rollback()
+				return true, false, err
+			}
+			seenContent[chunk.ContentHash] = true
+			batch = append(batch, pendingVector{memo.Name, memo.SourceHash, chunk.ContentHash, chunk.Content})
+			if len(batch) >= settings.Embedding.BatchSize {
+				break
+			}
+		}
+		if len(batch) >= settings.Embedding.BatchSize {
+			break
+		}
+	}
+	readTx.Rollback()
+
+	defer func() {
+		if err != nil && ctx.Err() == nil {
+			_, saveErr := s.Store.index.Exec("UPDATE vector_generations SET last_error = ? WHERE id = ?", errorCode(err), activeID)
+			err = errors.Join(err, saveErr)
+		}
+	}()
+
+	if _, err := s.Source.Identity(ctx); err != nil {
+		return true, false, err
+	}
+	if len(batch) > 0 {
+		checked := map[string]bool{}
+		for _, item := range batch {
+			if checked[item.name] {
+				continue
+			}
+			checked[item.name] = true
+			fresh, err := s.Source.Get(ctx, item.name)
+			if err != nil {
+				return true, false, err
+			}
+			if fresh == nil || fresh.Creator != user || fresh.SourceHash != item.sourceHash {
+				if fresh != nil && fresh.Creator != user {
+					fresh = nil
+				}
+				return true, true, s.Store.Refresh(item.name, fresh)
+			}
+		}
+		if _, err := s.Source.Identity(ctx); err != nil {
+			return true, false, err
+		}
+		texts := make([]string, len(batch))
+		for i, item := range batch {
+			texts[i] = item.text
+		}
+		result, err := s.Provider.Embed(ctx, texts, EmbeddingDocument)
+		if err != nil {
+			return true, false, err
+		}
+		if len(result.Vectors) != len(batch) {
+			return true, false, failure("EMBEDDING_PROTOCOL", "Invalid index vector count", 503, false)
+		}
+		vectors := make([][]byte, len(batch))
+		for i, vector := range result.Vectors {
+			if vectors[i], err = encodeVector(vector, settings.Embedding.Dimensions); err != nil {
+				return true, false, err
+			}
+		}
+		if err := ctx.Err(); err != nil {
+			return true, false, err
+		}
+		if err := transaction(s.Store.index, func(tx *sql.Tx) error {
+			for i, item := range batch {
+				if _, err := tx.Exec("INSERT OR REPLACE INTO vector_cache VALUES (?, ?, ?)",
+					space, item.contentHash, vectors[i]); err != nil {
+					return err
+				}
+			}
+			_, err := tx.Exec("UPDATE vector_generations SET last_error = NULL WHERE id = ?", activeID)
+			return err
+		}); err != nil {
+			return true, false, err
+		}
+		return true, true, nil
+	}
+
+	retry := false
+	err = transaction(s.Store.index, func(tx *sql.Tx) error {
+		var currentRevision int64
+		if err := tx.QueryRow("SELECT revision FROM projection_meta WHERE instance_id = ?", instance).Scan(&currentRevision); err != nil {
+			return err
+		}
+		if currentRevision != projRevision {
+			retry = true
+			return nil
+		}
+		var currentSpace string
+		err := tx.QueryRow("SELECT space_hash FROM vector_generations WHERE id = ? AND status = 'active'", activeID).Scan(&currentSpace)
+		if errors.Is(err, sql.ErrNoRows) || (err == nil && currentSpace != space) {
+			retry = true
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if _, err := tx.Exec("DELETE FROM vector_generations WHERE instance_id = ? AND user_name = ? AND status = 'building'", instance, user); err != nil {
+			return err
+		}
+		for _, name := range deleted {
+			if _, err := tx.Exec("DELETE FROM vector_notes WHERE generation_id = ? AND name = ?", activeID, name); err != nil {
+				return err
+			}
+		}
+		for _, memo := range changed {
+			if _, err := tx.Exec("DELETE FROM vector_notes WHERE generation_id = ? AND name = ?", activeID, memo.Name); err != nil {
+				return err
+			}
+			if _, err := tx.Exec("INSERT INTO vector_notes VALUES (?, ?, ?, ?)", activeID, memo.Name, memo.SourceHash, memo.ContentHash); err != nil {
+				return err
+			}
+			for _, chunk := range ChunkText(memo.Content) {
+				var vec []byte
+				if err := tx.QueryRow("SELECT vector FROM vector_cache WHERE space_hash = ? AND content_hash = ?", space, chunk.ContentHash).Scan(&vec); err != nil {
+					return err
+				}
+				if _, err := tx.Exec(`INSERT INTO vector_chunks VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+					activeID, memo.Name, chunk.Ordinal, chunk.ByteStart, chunk.ByteEnd, chunk.LineStart, chunk.LineEnd,
+					chunk.ContentHash, chunk.Content, vec); err != nil {
+					return err
+				}
+			}
+		}
+		if _, err := tx.Exec(`DELETE FROM vector_cache WHERE NOT EXISTS
+			(SELECT 1 FROM vector_chunks c JOIN vector_generations g ON g.id = c.generation_id
+			 WHERE g.space_hash = vector_cache.space_hash AND c.content_hash = vector_cache.content_hash)`); err != nil {
+			return err
+		}
+		_, err = tx.Exec("UPDATE vector_generations SET projection_revision = ?, published_at = ?, last_error = NULL WHERE id = ?",
+			projRevision, nowText(), activeID)
+		return err
+	})
+	if err != nil {
+		return true, false, err
+	}
+	if retry {
+		return true, true, nil
+	}
+	return true, true, nil
 }

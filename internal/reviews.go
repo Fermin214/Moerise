@@ -45,7 +45,11 @@ func (s *ReviewService) verify(ctx context.Context) error {
 
 // Daily freezes the day's selection and disjoint slot allocations together.
 func (s *ReviewService) Daily(ctx context.Context, at time.Time) (ReviewBatch, error) {
-	return s.batch(ctx, at)
+	return s.batchWith(ctx, at, false)
+}
+
+func (s *ReviewService) DailyLocal(ctx context.Context, at time.Time) (ReviewBatch, error) {
+	return s.batchWith(ctx, at, true)
 }
 
 func (s *ReviewService) ReadDaily(ctx context.Context, at time.Time) (ReviewBatch, error) {
@@ -78,11 +82,13 @@ func (s *ReviewService) dailyID(db reviewQuery, instance, user, date string) *sq
         WHERE instance_id = ? AND user_name = ? AND local_date = ?`, instance, user, date)
 }
 
-func (s *ReviewService) batch(ctx context.Context, at time.Time) (ReviewBatch, error) {
+func (s *ReviewService) batchWith(ctx context.Context, at time.Time, local bool) (ReviewBatch, error) {
 	s.Store.reviewMu.Lock()
 	defer s.Store.reviewMu.Unlock()
-	if err := s.verify(ctx); err != nil {
-		return ReviewBatch{}, err
+	if !local {
+		if err := s.verify(ctx); err != nil {
+			return ReviewBatch{}, err
+		}
 	}
 	settings := s.Store.reviewSettings(at)
 	location, err := time.LoadLocation(settings.Timezone)
@@ -94,7 +100,7 @@ func (s *ReviewService) batch(ctx context.Context, at time.Time) (ReviewBatch, e
 	var id string
 	err = s.dailyID(s.Store.state, instance, user, date).Scan(&id)
 	if err == nil {
-		return s.load(ctx, id)
+		return s.loadRangeWith(ctx, id, 0, -1, local)
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
 		return ReviewBatch{}, err
@@ -106,7 +112,7 @@ func (s *ReviewService) batch(ctx context.Context, at time.Time) (ReviewBatch, e
 	if state.LastFull == nil {
 		return ReviewBatch{}, upstreamError("INDEX_NOT_READY", "Daily review requires the first complete synchronization")
 	}
-	candidates, err := s.selectMemos(ctx, at, location, settings.Review.Count*len(settings.Notifications.Clocks()))
+	candidates, err := s.selectMemosWith(ctx, at, location, settings.Review.Count*len(settings.Notifications.Clocks()), local)
 	if err != nil {
 		return ReviewBatch{}, err
 	}
@@ -138,10 +144,10 @@ func (s *ReviewService) batch(ctx context.Context, at time.Time) (ReviewBatch, e
 	if err != nil {
 		return ReviewBatch{}, err
 	}
-	return s.load(ctx, id)
+	return s.loadRangeWith(ctx, id, 0, -1, local)
 }
 
-func (s *ReviewService) selectMemos(ctx context.Context, at time.Time, location *time.Location, count int) ([]Memo, error) {
+func (s *ReviewService) selectMemosWith(ctx context.Context, at time.Time, location *time.Location, count int, local bool) ([]Memo, error) {
 	instance, user := s.binding()
 	rows, err := s.Store.state.Query(`SELECT i.memo_name, MAX(b.local_date) FROM review_items i
 		JOIN review_batches b ON b.id = i.batch_id WHERE b.instance_id = ? AND b.user_name = ?
@@ -163,7 +169,7 @@ func (s *ReviewService) selectMemos(ctx context.Context, at time.Time, location 
 	if err != nil {
 		return nil, err
 	}
-	rows, err = s.Store.index.Query(`SELECT payload_json FROM memos WHERE instance_id = ? AND user_name = ?`, instance, user)
+	rows, err = s.Store.indexReader().Query(`SELECT payload_json FROM memos WHERE instance_id = ? AND user_name = ?`, instance, user)
 	if err != nil {
 		return nil, err
 	}
@@ -200,11 +206,16 @@ func (s *ReviewService) selectMemos(ctx context.Context, at time.Time, location 
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		memo, err := s.Source.Get(ctx, candidate.Name)
-		if err != nil {
-			return nil, err
+		var memo *Memo
+		if local {
+			memo, err = s.Store.GetMemoLocal(ctx, candidate.Name)
+		} else {
+			memo, err = s.Source.Get(ctx, candidate.Name)
+			if err == nil {
+				err = s.Store.Refresh(candidate.Name, memo)
+			}
 		}
-		if err := s.Store.Refresh(candidate.Name, memo); err != nil {
+		if err != nil {
 			return nil, err
 		}
 		if memo == nil || !s.eligible(*memo, at) {
@@ -215,8 +226,10 @@ func (s *ReviewService) selectMemos(ctx context.Context, at time.Time, location 
 			break
 		}
 	}
-	if err := s.verify(ctx); err != nil {
-		return nil, err
+	if !local {
+		if err := s.verify(ctx); err != nil {
+			return nil, err
+		}
 	}
 	return selected, nil
 }
@@ -245,10 +258,14 @@ func reviewContent(content string, attachments []map[string]any) bool {
 }
 
 func (s *ReviewService) load(ctx context.Context, id string) (ReviewBatch, error) {
-	return s.loadRange(ctx, id, 0, -1)
+	return s.loadRangeWith(ctx, id, 0, -1, false)
 }
 
 func (s *ReviewService) loadRange(ctx context.Context, id string, first, count int) (ReviewBatch, error) {
+	return s.loadRangeWith(ctx, id, first, count, false)
+}
+
+func (s *ReviewService) loadRangeWith(ctx context.Context, id string, first, count int, local bool) (ReviewBatch, error) {
 	instance, user := s.binding()
 	batch := ReviewBatch{Items: []ReviewItem{}}
 	err := s.Store.state.QueryRow(`SELECT b.id, b.local_date, b.timezone, b.created_at, p.settings_version
@@ -281,11 +298,16 @@ func (s *ReviewService) loadRange(ctx context.Context, id string, first, count i
 	}
 	for i := range batch.Items {
 		item := &batch.Items[i]
-		memo, err := s.Source.Get(ctx, item.Name)
-		if err != nil {
-			return ReviewBatch{}, err
+		var memo *Memo
+		if local {
+			memo, err = s.Store.GetMemoLocal(ctx, item.Name)
+		} else {
+			memo, err = s.Source.Get(ctx, item.Name)
+			if err == nil {
+				err = s.Store.Refresh(item.Name, memo)
+			}
 		}
-		if err := s.Store.Refresh(item.Name, memo); err != nil {
+		if err != nil {
 			return ReviewBatch{}, err
 		}
 		if memo == nil {
@@ -295,8 +317,10 @@ func (s *ReviewService) loadRange(ctx context.Context, id string, first, count i
 			item.Note = &note
 		}
 	}
-	if err := s.verify(ctx); err != nil {
-		return ReviewBatch{}, err
+	if !local {
+		if err := s.verify(ctx); err != nil {
+			return ReviewBatch{}, err
+		}
 	}
 	return batch, nil
 }

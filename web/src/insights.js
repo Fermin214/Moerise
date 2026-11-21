@@ -49,6 +49,7 @@ export function createInsightsPage({ owner, sessionRequest, csrfToken, renewCSRF
       CHAT_CONFLICT: l("会话已在其他页面更改，请重新进入后继续。"),
       LLM_DISABLED: l("请在设置中启用 LLM。"),
       LLM_PROTOCOL: l("模型返回的内容未完整结束，已保留部分回复。"),
+      LLM_OUTPUT_LIMIT: l("模型输出达到长度上限，已保留部分回复。"),
       CHAT_NOT_FOUND: l("该会话已删除或无法访问。"),
     };
     const text = messages[err.code] || errorText(err);
@@ -122,7 +123,7 @@ export function createInsightsPage({ owner, sessionRequest, csrfToken, renewCSRF
         entry.markdown.render(content, turn.assistant.status === 'running');
         entry.text = content; entry.status = turn.assistant.status;
       }
-      entry.action.hidden = !content || !['canceled', 'interrupted', 'failed'].includes(turn.assistant.status);
+      entry.action.hidden = !content || !['canceled', 'interrupted', 'failed', 'truncated'].includes(turn.assistant.status);
       entry.wait.hidden = !!content || turn.assistant.status !== 'running';
       const before = turns[turns.indexOf(turn) - 1];
       entry.notice.hidden = !before || !turn.material_version || before.material_version === turn.material_version;
@@ -156,8 +157,8 @@ export function createInsightsPage({ owner, sessionRequest, csrfToken, renewCSRF
     const turn = chat?.turns.at(-1);
     if (!uncertain && turn && ['failed', 'interrupted'].includes(turn.assistant.status)) retryTurn = turn;
     if (sourceWarning) { warning(sourceWarning); return; }
-    if (turn && ['failed', 'canceled', 'interrupted'].includes(turn.assistant.status)) {
-      failure({ code: turn.assistant.error_code || { canceled: 'CHAT_CANCELED', interrupted: 'CHAT_INTERRUPTED' }[turn.assistant.status] || 'CHAT_FAILED' });
+    if (turn && ['failed', 'canceled', 'interrupted', 'truncated'].includes(turn.assistant.status)) {
+      failure({ code: turn.assistant.error_code || { canceled: 'CHAT_CANCELED', interrupted: 'CHAT_INTERRUPTED', truncated: 'LLM_OUTPUT_LIMIT' }[turn.assistant.status] || 'CHAT_FAILED' });
     }
   }
   function setURL() {
@@ -464,6 +465,7 @@ export function createInsightsPage({ owner, sessionRequest, csrfToken, renewCSRF
             pendingGenerate = null;
             invalidateHistory();
             onDirtyChange();
+            if (event.turn.assistant.status === 'truncated') terminalWarning();
           }
           if (event.type === 'message') onDirtyChange();
         });

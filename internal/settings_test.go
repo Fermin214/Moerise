@@ -194,3 +194,62 @@ func TestProductSettingsInitializationAndEnvironmentPrecedence(t *testing.T) {
 		t.Fatal("fixture unexpectedly uses stored data")
 	}
 }
+
+func TestProductSettingsToleratesAndPreservesUnknownFields(t *testing.T) {
+	settings, store := settingsFixture(t)
+	aead, err := newStateCipher(settings, "product_settings")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload map[string]any
+	rawKnown, _ := json.Marshal(productSettings(settings))
+	if err := json.Unmarshal(rawKnown, &payload); err != nil {
+		t.Fatal(err)
+	}
+	payload["future_top_level"] = map[string]any{"enabled": true, "ratio": 0.75}
+	sg := payload["stargazing"].(map[string]any)
+	sg["future_layout_mode"] = "galaxy-v2"
+	futureBytes, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nonce := make([]byte, aead.NonceSize())
+	if _, err := rand.Read(nonce); err != nil {
+		t.Fatal(err)
+	}
+	cipherBody := aead.Seal(nonce, nonce, futureBytes, settingsAAD(settings, 2))
+	if _, err := store.state.Exec(`UPDATE product_settings SET version = 2, ciphertext = ? WHERE instance_id = ?`, cipherBody, settings.Memos.InstanceID); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := NewStore(settings)
+	if err != nil {
+		t.Fatalf("failed opening store with future settings keys: %v", err)
+	}
+	defer reopened.Close()
+	next, err := reopened.prepareSettings(settingsChange(2, `{"stargazing":{"enabled":false}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := reopened.persistSettings(next); err != nil {
+		t.Fatal(err)
+	}
+	var version int64
+	var savedCipher []byte
+	if err := reopened.state.QueryRow(`SELECT version, ciphertext FROM product_settings WHERE instance_id = ?`, settings.Memos.InstanceID).Scan(&version, &savedCipher); err != nil {
+		t.Fatal(err)
+	}
+	plain, err := aead.Open(nil, savedCipher[:aead.NonceSize()], savedCipher[aead.NonceSize():], settingsAAD(settings, version))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var roundTripped map[string]any
+	if err := json.Unmarshal(plain, &roundTripped); err != nil {
+		t.Fatal(err)
+	}
+	if roundTripped["future_top_level"] == nil {
+		t.Fatalf("lost top-level unknown field on round-trip: %s", plain)
+	}
+	if got := roundTripped["stargazing"].(map[string]any); got["enabled"] != false || got["future_layout_mode"] != "galaxy-v2" {
+		t.Fatalf("unexpected stargazing payload after round-trip: %s", plain)
+	}
+}

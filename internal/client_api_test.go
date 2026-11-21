@@ -33,6 +33,40 @@ func TestOpenAPIOperationIDsAreUnique(t *testing.T) {
 			seen[id] = location
 		}
 	}
+	var raw struct {
+		Paths map[string]map[string]struct {
+			Responses map[string]any `json:"responses"`
+		} `json:"paths"`
+		Components struct {
+			Responses map[string]any `json:"responses"`
+			Schemas   map[string]struct {
+				Properties map[string]map[string]any `json:"properties"`
+			} `json:"schemas"`
+		} `json:"components"`
+	}
+	if err := json.Unmarshal(openAPISpec(), &raw); err != nil {
+		t.Fatal(err)
+	}
+	if raw.Components.Responses["ChatError"] == nil {
+		t.Fatal("openapi missing ChatError response component")
+	}
+	for _, tc := range []struct{ path, method, code, media string }{
+		{"/api/app/v1/notes", "get", "200", "application/json"},
+		{"/api/app/v1/sync/notes", "get", "200", "application/json"},
+		{"/api/app/v1/chats/{chat_id}/messages", "post", "200", "text/event-stream"},
+		{"/api/app/v1/notes/{memo_id}/attachments/{attachment_id}/content", "get", "200", "application/octet-stream"},
+		{"/api/app/v1/notes/{memo_id}/attachments/{attachment_id}/content", "get", "206", "application/octet-stream"},
+	} {
+		resp, _ := raw.Paths[tc.path][tc.method].Responses[tc.code].(map[string]any)
+		content, _ := resp["content"].(map[string]any)
+		if content == nil || content[tc.media] == nil {
+			t.Fatalf("missing response content for %s %s %s: %+v", tc.method, tc.path, tc.code, resp)
+		}
+	}
+	prop := raw.Components.Schemas["ClientAttachmentInput"].Properties["content"]
+	if prop["type"] != "string" || prop["format"] != "byte" {
+		t.Fatalf("ClientAttachmentInput.content schema unexpected: %+v", prop)
+	}
 }
 
 func TestClientNotificationRecoveryUsesBoundSession(t *testing.T) {
@@ -264,7 +298,7 @@ func TestClientRenewalKeepsCookieAndLoginDeadline(t *testing.T) {
 	if _, err := api.app.Store.state.Exec("UPDATE client_sessions SET refresh_expires_at = ? WHERE session_hash = ?", deadline.Unix(), hash); err != nil {
 		t.Fatal(err)
 	}
-	api.app.Sessions.cache(hash, memosCredentials{})
+	api.app.Sessions.ClearCache()
 	cookie := &http.Cookie{Name: api.cookieName(), Value: rawID}
 	response := clientCall(api, "GET", "/api/app/v1/session", "", cookie, "", "")
 	var identity SessionIdentity

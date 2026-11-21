@@ -72,7 +72,7 @@ func selectionText(tx *sql.Tx, chatID string, input ChatSaveSelection) (string, 
 		if version != wanted {
 			return "", "", chatConflict()
 		}
-		if strings.TrimSpace(content) == "" || (status != "completed" && !(status == "canceled" && input.ConfirmIncomplete)) {
+		if strings.TrimSpace(content) == "" || (status != "completed" && !((status == "canceled" || status == "truncated") && input.ConfirmIncomplete)) {
 			return "", "", failure("CHAT_MESSAGE_INCOMPLETE", "A stopped reply requires confirmation; other unfinished replies cannot be saved", 409, false)
 		}
 		if len(input.Messages) > 1 {

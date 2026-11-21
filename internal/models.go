@@ -80,19 +80,36 @@ type Memo struct {
 	ContentHash string           `json:"content_hash"`
 }
 
+type AttachmentReceipt struct {
+	Name          string `json:"name"`
+	Position      int    `json:"position"`
+	ContentSHA256 string `json:"content_sha256"`
+	ReceiptDigest string `json:"receipt_digest"`
+}
+
 type Note struct {
-	InstanceID  string           `json:"instance_id"`
-	Name        string           `json:"name"`
-	Creator     string           `json:"creator"`
-	State       string           `json:"state"`
-	Visibility  string           `json:"visibility"`
-	Content     string           `json:"content"`
-	Tags        []string         `json:"tags"`
-	Attachments []map[string]any `json:"attachments"`
-	CreateTime  string           `json:"create_time"`
-	UpdateTime  string           `json:"update_time"`
-	SourceHash  string           `json:"source_hash"`
-	URL         string           `json:"url"`
+	InstanceID         string              `json:"instance_id"`
+	Name               string              `json:"name"`
+	Creator            string              `json:"creator"`
+	State              string              `json:"state"`
+	Visibility         string              `json:"visibility"`
+	Content            string              `json:"content"`
+	Tags               []string            `json:"tags"`
+	Attachments        []map[string]any    `json:"attachments"`
+	AttachmentReceipts []AttachmentReceipt `json:"attachment_receipts,omitempty"`
+	CreateTime         string              `json:"create_time"`
+	UpdateTime         string              `json:"update_time"`
+	SourceHash         string              `json:"source_hash"`
+	URL                string              `json:"url"`
+}
+
+type SyncNotesResponse struct {
+	Mode           string   `json:"mode"`
+	Items          []Note   `json:"items"`
+	Deleted        []string `json:"deleted"`
+	NextCursor     string   `json:"next_cursor"`
+	HasMore        bool     `json:"has_more"`
+	SyncGeneration string   `json:"sync_generation"`
 }
 
 type MapPoint struct {
@@ -230,9 +247,20 @@ type WalkResponse struct {
 }
 
 func (m Memo) Note(settings Settings) Note {
-	return Note{settings.Memos.InstanceID, m.Name, m.Creator, m.State, m.Visibility,
-		m.Content, m.Tags, m.Attachments, m.CreateTime, m.UpdateTime, m.SourceHash,
-		settings.Memos.PublicURL + "/" + m.Name}
+	return Note{
+		InstanceID:  settings.Memos.InstanceID,
+		Name:        m.Name,
+		Creator:     m.Creator,
+		State:       m.State,
+		Visibility:  m.Visibility,
+		Content:     m.Content,
+		Tags:        m.Tags,
+		Attachments: m.Attachments,
+		CreateTime:  m.CreateTime,
+		UpdateTime:  m.UpdateTime,
+		SourceHash:  m.SourceHash,
+		URL:         settings.Memos.PublicURL + "/" + m.Name,
+	}
 }
 
 type Job struct {

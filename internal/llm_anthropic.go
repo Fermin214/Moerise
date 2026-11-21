@@ -237,17 +237,17 @@ type anthropicResponse struct {
 	Refusal      json.RawMessage  `json:"refusal"`
 }
 
-func anthropicFinish(reason *string) error {
+func anthropicFinish(reason *string) (string, error) {
 	if reason == nil || *reason == "" {
-		return llmProtocolError()
+		return "", llmProtocolError()
 	}
 	if *reason == "end_turn" {
-		return nil
+		return "end_turn", nil
 	}
 	if *reason == "max_tokens" {
-		return llmFinishError("length")
+		return "length", nil
 	}
-	return llmFinishError(*reason)
+	return "", llmFinishError(*reason)
 }
 
 func readAnthropicLLMJSON(reader io.Reader) (LLMResult, error) {
@@ -264,11 +264,18 @@ func readAnthropicLLMJSON(reader io.Reader) (LLMResult, error) {
 		llmPresent(response.Error) || llmPresent(response.Refusal) || llmPresent(response.StopSequence) {
 		return LLMResult{}, llmProtocolError()
 	}
-	if err := anthropicFinish(response.StopReason); err != nil {
+	finishReason, err := anthropicFinish(response.StopReason)
+	if err != nil {
 		return LLMResult{}, err
 	}
 	var content strings.Builder
 	for _, block := range response.Content {
+		if block.Type == "thinking" || block.Type == "redacted_thinking" {
+			if llmPresent(block.Refusal) {
+				return LLMResult{}, llmProtocolError()
+			}
+			continue
+		}
 		if block.Type != "text" || block.Text == nil || llmPresent(block.Refusal) {
 			return LLMResult{}, llmProtocolError()
 		}
@@ -278,9 +285,12 @@ func readAnthropicLLMJSON(reader io.Reader) (LLMResult, error) {
 		content.WriteString(*block.Text)
 	}
 	if strings.TrimSpace(content.String()) == "" {
+		if finishReason == "length" {
+			return LLMResult{}, llmFinishError("length")
+		}
 		return LLMResult{}, llmProtocolError()
 	}
-	result := LLMResult{Content: content.String(), Model: response.Model, FinishReason: "end_turn"}
+	result := LLMResult{Content: content.String(), Model: response.Model, FinishReason: finishReason}
 	var usage anthropicUsage
 	if response.Usage != nil {
 		if err := response.Usage.merge(&usage); err != nil {
@@ -331,7 +341,7 @@ func readAnthropicLLMStream(ctx context.Context, reader io.Reader, callback func
 	var usage anthropicUsage
 	var content strings.Builder
 	var data []byte
-	name, eventSize := "", 0
+	name, openBlockType, eventSize := "", "", 0
 	started, open, finalPhase, finished, delivered := false, false, false, false, false
 	nextIndex := 0
 	emit := func(text string) error {
@@ -383,18 +393,33 @@ func readAnthropicLLMStream(ctx context.Context, reader io.Reader, callback func
 			}
 		case "content_block_start":
 			if !started || open || finalPhase || event.Index == nil || *event.Index != nextIndex ||
-				event.ContentBlock == nil || event.ContentBlock.Type != "text" ||
-				event.ContentBlock.Text == nil || llmPresent(event.ContentBlock.Refusal) {
+				event.ContentBlock == nil || llmPresent(event.ContentBlock.Refusal) {
 				return false, llmProtocolError()
 			}
-			open = true
-			if err := emit(*event.ContentBlock.Text); err != nil {
-				return false, err
+			switch event.ContentBlock.Type {
+			case "text":
+				if event.ContentBlock.Text == nil {
+					return false, llmProtocolError()
+				}
+				open, openBlockType = true, "text"
+				if err := emit(*event.ContentBlock.Text); err != nil {
+					return false, err
+				}
+			case "thinking", "redacted_thinking":
+				open, openBlockType = true, event.ContentBlock.Type
+			default:
+				return false, llmProtocolError()
 			}
 		case "content_block_delta":
 			if !started || !open || finalPhase || event.Index == nil || *event.Index != nextIndex ||
-				event.Delta == nil || event.Delta.Type != "text_delta" || event.Delta.Text == nil ||
-				event.Delta.StopReason != nil || llmPresent(event.Delta.StopSequence) || llmPresent(event.Delta.Refusal) {
+				event.Delta == nil || event.Delta.StopReason != nil ||
+				llmPresent(event.Delta.StopSequence) || llmPresent(event.Delta.Refusal) {
+				return false, llmProtocolError()
+			}
+			if openBlockType == "thinking" || openBlockType == "redacted_thinking" {
+				break
+			}
+			if event.Delta.Type != "text_delta" || event.Delta.Text == nil {
 				return false, llmProtocolError()
 			}
 			if err := emit(*event.Delta.Text); err != nil {
@@ -404,7 +429,7 @@ func readAnthropicLLMStream(ctx context.Context, reader io.Reader, callback func
 			if !started || !open || finalPhase || event.Index == nil || *event.Index != nextIndex {
 				return false, llmProtocolError()
 			}
-			open = false
+			open, openBlockType = false, ""
 			nextIndex++
 		case "message_delta":
 			if !started || open || event.Delta == nil || event.Delta.Type != "" ||
@@ -416,10 +441,11 @@ func readAnthropicLLMStream(ctx context.Context, reader io.Reader, callback func
 				if finished {
 					return false, llmProtocolError()
 				}
-				if err := anthropicFinish(event.Delta.StopReason); err != nil {
+				finishReason, err := anthropicFinish(event.Delta.StopReason)
+				if err != nil {
 					return false, err
 				}
-				finished, result.FinishReason = true, "end_turn"
+				finished, result.FinishReason = true, finishReason
 			}
 			if event.Usage != nil {
 				if err := event.Usage.merge(&usage); err != nil {
@@ -427,7 +453,13 @@ func readAnthropicLLMStream(ctx context.Context, reader io.Reader, callback func
 				}
 			}
 		case "message_stop":
-			if !started || open || !finished || strings.TrimSpace(content.String()) == "" {
+			if !started || open || !finished {
+				return false, llmProtocolError()
+			}
+			if strings.TrimSpace(content.String()) == "" {
+				if result.FinishReason == "length" {
+					return false, llmFinishError("length")
+				}
 				return false, llmProtocolError()
 			}
 			result.Usage = usage.normalized()

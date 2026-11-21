@@ -104,10 +104,18 @@ func TestClientModelCheckSharedDeadline(t *testing.T) {
 		return LLMResult{Content: "OK"}, nil
 	})
 	started := time.Now()
+	warm := clientCall(api, "POST", "/api/app/v1/models/llm/check", `{"version":1}`,
+		cookie, fixture.settings.Web.PublicOrigin, identity.CSRFToken)
+	if warm.Code != 200 || len(deadlines) != 1 {
+		t.Fatalf("cached model check unexpectedly called auth/source: %d %s %v", warm.Code, warm.Body, deadlines)
+	}
+	deadlines = nil
+	started = time.Now()
+	api.app.Sessions.ClearCache()
 	response := clientCall(api, "POST", "/api/app/v1/models/llm/check", `{"version":1}`,
 		cookie, fixture.settings.Web.PublicOrigin, identity.CSRFToken)
-	if response.Code != 200 || len(deadlines) < 4 {
-		t.Fatalf("check did not authenticate and call the model: %d %s %v", response.Code, response.Body, deadlines)
+	if response.Code != 200 || len(deadlines) < 3 {
+		t.Fatalf("uncached check did not share auth and model deadline: %d %s %v", response.Code, response.Body, deadlines)
 	}
 	for _, deadline := range deadlines {
 		if !deadline.Equal(deadlines[0]) || deadline.Before(started) ||
@@ -122,9 +130,14 @@ func TestClientModelCheckDeadlineDuringAuthenticationAndLocks(t *testing.T) {
 		t.Run(stage, func(t *testing.T) {
 			api, fixture := clientFixture(t)
 			cookie, identity := settingsSession(t, api)
+			api.app.Store.Settings.LLM.Enabled = true
+			api.app.LLM = aiLLMFunc(func(context.Context, []LLMMessage, func(string) error) (LLMResult, error) {
+				return LLMResult{Content: "OK"}, nil
+			})
 			unlock := func() {}
 			switch stage {
 			case "authentication":
+				api.app.Sessions.ClearCache()
 				api.app.Sessions.auth.client.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
 					<-r.Context().Done()
 					return nil, r.Context().Err()
@@ -133,6 +146,7 @@ func TestClientModelCheckDeadlineDuringAuthenticationAndLocks(t *testing.T) {
 				api.app.runtimeMu.Lock()
 				unlock = api.app.runtimeMu.Unlock
 			case "session_lock":
+				api.app.Sessions.ClearCache()
 				hash, _ := sessionHash(cookie.Value)
 				var err error
 				unlock, err = api.app.Sessions.lock(t.Context(), hash)

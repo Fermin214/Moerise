@@ -281,6 +281,7 @@ func TestSessionCredentialFailures(t *testing.T) {
 			fixture.mu.Lock()
 			test.change(fixture)
 			fixture.mu.Unlock()
+			service.ExpireCache()
 			_, err := service.Authenticate(context.Background(), raw)
 			serviceErr, ok := err.(*ServiceError)
 			if !ok || serviceErr.Status != test.status {
@@ -482,6 +483,7 @@ func TestSessionEncryptionBindingAndRecovery(t *testing.T) {
 					otherHash, hash); err != nil {
 					t.Fatal(err)
 				}
+				service.ClearCache()
 			case "source changed":
 				service.Close()
 				store.Settings.Memos.BaseURL = "http://127.0.0.1:1"
@@ -579,5 +581,52 @@ func TestSessionBoundRequestsFollowDurableRevocation(t *testing.T) {
 	service.mu.Unlock()
 	if count != 0 {
 		t.Fatal("request release retained a session registration")
+	}
+}
+
+func TestSessionCacheConcurrentZeroHTTPAndEviction(t *testing.T) {
+	fixture := newSessionAuthFixture(t)
+	store := sessionTestStore(t, fixture.settings)
+	service := sessionTestService(t, store)
+	raw, identity := sessionTestLogin(t, service)
+	fixture.mu.Lock()
+	fixture.refreshStatus = 500
+	fixture.patStatus = 500
+	fixture.userStatus = 500
+	fixture.mu.Unlock()
+
+	var wg sync.WaitGroup
+	errs := make(chan error, 16)
+	for range 16 {
+		wg.Go(func() {
+			got, err := service.Authenticate(t.Context(), raw)
+			if err != nil {
+				errs <- err
+				return
+			}
+			if got.CSRFToken != identity.CSRFToken || got.User.Name != fixture.settings.Memos.User {
+				errs <- fmt.Errorf("unexpected cached identity: %+v", got)
+			}
+		})
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatal(err)
+	}
+
+	boundCtx, release, err := service.BindRequest(t.Context(), identity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	if err := service.Logout(t.Context(), raw); err != nil {
+		t.Fatal(err)
+	}
+	if boundCtx.Err() == nil {
+		t.Fatal("logout did not cancel active bound request")
+	}
+	if _, err := service.Authenticate(t.Context(), raw); errorCode(err) != "SESSION_UNAUTHORIZED" {
+		t.Fatalf("evicted session accepted: %v", err)
 	}
 }

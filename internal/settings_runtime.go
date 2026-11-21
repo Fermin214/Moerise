@@ -148,10 +148,8 @@ func (a *App) installRuntime(settings Settings, replacements *runtimeReplacement
 	}
 	a.Store.Settings, a.Notes.Settings = settings, settings
 	if replacements.llmChanged {
-		if a.LLM != nil {
-			a.LLM.Close()
-		}
-		a.LLM, a.Chat.Provider = replacements.llm, replacements.llm
+		a.LLM = replacements.llm
+		a.Chat.swapProvider(replacements.llm)
 	}
 	if replacements.embeddingChanged {
 		if a.Search.Provider != nil {

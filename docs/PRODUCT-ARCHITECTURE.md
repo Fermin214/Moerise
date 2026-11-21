@@ -75,12 +75,12 @@ flowchart LR
   - 登录请求校验 `Origin`；登录后的非只读请求（POST / PATCH / DELETE）还需校验 `X-CSRF-Token`。
   - 刷新凭据使用基于 AES-256-GCM 的状态加密密钥安全持久化于 `state.sqlite3`，短期访问令牌仅保留在内存中。普通服务重启可无缝恢复登录态。
 - **机器接口安全**：
-  - 外部 REST (`/api/ext/v1`) 与 MCP (`/mcp`) 仅接受配置的 `MOERISE_ACCESS_TOKEN` Bearer 鉴权。
+  - 外部 REST (`/api/ext/v1`) 与 MCP (`/mcp`) 仅接受配置的 `MOERISE_ACCESS_TOKEN` Bearer 鉴权（未配置令牌时返回 404 关闭入口）。
   - 外部接口实施严格的服务端白名单，仅开放笔记检索、只读获取、相关笔记与漫步，彻底屏蔽写入与状态修改接口。
 
 ### 2. 笔记读写与幂等保障
 
-- **实时时间线读取**：客户端时间线按创建时间与资源名倒序从 Memos 读取实时候选并校验作者身份，结合服务端分页游标；普通编辑不改变创建时间。
+- **本地索引读取与变更日志**：客户端列表、详情、标签、日历、关键词与混合搜索优先读取本地同步库 `index.sqlite3`，支持按游标递增拉取变更与删除墓碑；外部机器接口及单篇写入/变更继续通过 Memos 官方 API 核验或直写并即时刷新本地索引。
 - **防重复创建（幂等机制）**：
   - 客户端创建笔记强制提交 `Idempotency-Key`。
   - Core 将幂等键、内容哈希与分配的 `memoId` 记录在 `state.sqlite3` 中。
@@ -129,7 +129,7 @@ flowchart LR
 | `internal/memos.go`, `memos_live.go` | Memos 官方 API 客户端、协议转换与实时时间线分页 |
 | `internal/memos_auth.go`, `sessions.go` | Memos 官方认证适配、加密 Session 管理与 CSRF 防御 |
 | `internal/client_api.go`, `client_models.go` | 面向 Web/移动端的前端应用 API 路由与契约 |
-| `internal/api.go`, `models.go`, `openapi.json` | 开放机器 REST API 路由、权限作用域检查与 OpenAPI 定义 |
+| `internal/api.go`, `models.go`, `openapi_gen.go` | 开放机器 REST API 路由、权限作用域检查与动态生成 OpenAPI 定义 |
 | `internal/mcp.go` | Model Context Protocol 只读 Server 协议适配 |
 | `internal/records.go`, `attachments.go` | 笔记内容持久幂等、媒体附件读写流与安全性校验 |
 | `internal/reviews.go`, `review_plans.go` | 每日回顾抽样算法、全天计划生成与时段分配策略 |

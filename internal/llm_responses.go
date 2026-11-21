@@ -178,10 +178,13 @@ func decodeResponsesResult(data []byte) (LLMResult, error) {
 	if !validLLMName(response.Model) {
 		return LLMResult{}, llmProtocolError()
 	}
-	if response.Status == "incomplete" && response.Incomplete != nil && response.Incomplete.Reason == "max_output_tokens" {
-		return LLMResult{}, llmFinishError("length")
-	}
-	if response.Status != "completed" || llmPresent(response.Error) || response.Incomplete != nil {
+	finishReason := "stop"
+	if response.Status == "incomplete" {
+		if response.Incomplete == nil || response.Incomplete.Reason != "max_output_tokens" {
+			return LLMResult{}, failure("LLM_REJECTED", "LLM response did not complete normally", 503, false)
+		}
+		finishReason = "length"
+	} else if response.Status != "completed" || llmPresent(response.Error) || response.Incomplete != nil {
 		return LLMResult{}, failure("LLM_REJECTED", "LLM response did not complete normally", 503, false)
 	}
 	var content strings.Builder
@@ -189,7 +192,8 @@ func decodeResponsesResult(data []byte) (LLMResult, error) {
 		if item.Type == "reasoning" {
 			continue
 		}
-		if item.Type != "message" || item.Role != "assistant" || item.Status != "completed" {
+		if item.Type != "message" || item.Role != "assistant" ||
+			(item.Status != "completed" && !(finishReason == "length" && item.Status == "incomplete")) {
 			return LLMResult{}, failure("LLM_REJECTED", "LLM returned unsupported output", 503, false)
 		}
 		for _, part := range item.Content {
@@ -203,9 +207,12 @@ func decodeResponsesResult(data []byte) (LLMResult, error) {
 		}
 	}
 	if strings.TrimSpace(content.String()) == "" {
+		if finishReason == "length" {
+			return LLMResult{}, llmFinishError("length")
+		}
 		return LLMResult{}, llmProtocolError()
 	}
-	result := LLMResult{Content: content.String(), Model: response.Model, FinishReason: "stop"}
+	result := LLMResult{Content: content.String(), Model: response.Model, FinishReason: finishReason}
 	if usage := response.Usage; usage != nil {
 		result.Usage = LLMUsage{InputTokens: usage.Input, OutputTokens: usage.Output, TotalTokens: usage.Total}
 		if usage.Details != nil {
@@ -402,11 +409,14 @@ func readResponsesStream(ctx context.Context, reader io.Reader, callback func(st
 			}
 			return &result, nil
 		case "response.incomplete":
-			_, err := decodeResponsesResult(event.Response)
-			if err == nil {
-				err = llmProtocolError()
+			result, err := decodeResponsesResult(event.Response)
+			if err != nil {
+				return nil, err
 			}
-			return nil, err
+			if result.FinishReason != "length" || result.Content != text.String() || len(parts) == 0 {
+				return nil, llmProtocolError()
+			}
+			return &result, nil
 		case "response.failed":
 			var response responsesWire
 			if json.Unmarshal(event.Response, &response) != nil || response.Status != "failed" {

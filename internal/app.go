@@ -94,7 +94,7 @@ func OpenApp(settings Settings) (_ *App, result error) {
 			return nil, err
 		}
 		a.LLM = provider
-		a.Chat.Provider = provider
+		a.Chat.swapProvider(provider)
 	}
 	if settings.Embedding.Enabled {
 		provider, err := NewEmbeddingProvider(settings.Embedding)
@@ -110,6 +110,7 @@ func OpenApp(settings Settings) (_ *App, result error) {
 			return nil, err
 		}
 		a.Sessions = sessions
+		a.Worker.onAuthFailure = sessions.EvictAllAndCancel
 		cleanup = append(cleanup, sessions.Close)
 	}
 	a.closers = cleanup

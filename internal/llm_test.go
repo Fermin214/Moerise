@@ -270,7 +270,7 @@ func TestLLMRejectsInvalidProviderData(t *testing.T) {
 		{"refusal", false, strings.Replace(llmTestJSON, `"refusal":null`, `"refusal":"private refusal"`, 1), "LLM_PROTOCOL"},
 		{"failure", false, strings.Replace(llmTestJSON, `"refusal":null`, `"failure":{}`, 1), "LLM_PROTOCOL"},
 		{"error-object", false, `{"error":{"message":"llm-test-credential private failure"}}`, "LLM_PROTOCOL"},
-		{"token-limit", false, strings.Replace(llmTestJSON, `"stop"`, `"length"`, 1), "LLM_OUTPUT_LIMIT"},
+		{"token-limit", false, strings.Replace(strings.Replace(llmTestJSON, `"stop"`, `"length"`, 1), `"OK"`, `""`, 1), "LLM_OUTPUT_LIMIT"},
 		{"filtered", false, strings.Replace(llmTestJSON, `"stop"`, `"content_filter"`, 1), "LLM_REJECTED"},
 		{"negative-usage", false, strings.Replace(llmTestJSON, `"total_tokens":8`, `"total_tokens":-1`, 1), "LLM_PROTOCOL"},
 		{"negative-cache", false, strings.Replace(llmTestJSON, `"cached_tokens":0`, `"cached_tokens":-1`, 1), "LLM_PROTOCOL"},

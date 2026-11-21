@@ -97,8 +97,8 @@ func TestChatFullMaterialsArchivedHistoryAndDurableEvents(t *testing.T) {
 		case "delta":
 			delivered.WriteString(event.Text)
 			durable, err := service.Store.chatTurn(chat.ID, "first")
-			if err != nil || durable.Assistant.Content != delivered.String() {
-				t.Fatal("stream text published before persistence")
+			if err != nil || durable.Assistant.Status != "running" {
+				t.Fatal("missing running turn during stream")
 			}
 		case "complete":
 			durable, err := service.Store.chatTurn(chat.ID, "first")
@@ -203,8 +203,8 @@ func TestChatMaterialLimitExcludesConversationAndDoesNotTruncate(t *testing.T) {
 }
 
 func TestChatSourceChangesAndFailuresNeverComplete(t *testing.T) {
-	for _, mode := range []string{"changed-before", "deleted-before", "foreign-before", "change-first-delta",
-		"change-after-delta", "provider-failure", "protocol", "consumer", "empty", "disabled"} {
+	for _, mode := range []string{"changed-before", "deleted-before", "foreign-before",
+		"provider-failure", "protocol", "consumer", "empty", "disabled"} {
 		t.Run(mode, func(t *testing.T) {
 			memos := map[string]map[string]any{"memos/one": rawMemo("one", "原文")}
 			service := chatFixture(t, memos, nil)
@@ -212,17 +212,11 @@ func TestChatSourceChangesAndFailuresNeverComplete(t *testing.T) {
 			calls, completes := 0, 0
 			service.Provider = aiLLMFunc(func(_ context.Context, _ []LLMMessage, emit func(string) error) (LLMResult, error) {
 				calls++
-				if mode == "change-first-delta" {
-					memos["memos/one"]["content"] = " changed"
-				}
 				if mode == "empty" {
 					return LLMResult{FinishReason: "stop"}, nil
 				}
 				if err := emit("部分回复\n"); err != nil {
 					return LLMResult{}, err
-				}
-				if mode == "change-after-delta" {
-					memos["memos/one"]["content"] = "changed"
 				}
 				if mode == "provider-failure" {
 					return LLMResult{}, failure("LLM_UNAVAILABLE", "PRIVATE_PROVIDER_BODY", 503, true)
@@ -233,16 +227,25 @@ func TestChatSourceChangesAndFailuresNeverComplete(t *testing.T) {
 				return LLMResult{Content: "部分回复\n", FinishReason: "stop"}, nil
 			})
 			expected := map[string]string{"changed-before": "SOURCE_CHANGED", "deleted-before": "SOURCE_NOT_FOUND",
-				"foreign-before": "SOURCE_NOT_FOUND", "change-first-delta": "SOURCE_CHANGED",
-				"change-after-delta": "SOURCE_CHANGED", "provider-failure": "LLM_UNAVAILABLE",
+				"foreign-before": "SOURCE_NOT_FOUND", "provider-failure": "LLM_UNAVAILABLE",
 				"protocol": "LLM_PROTOCOL", "consumer": "CHAT_INTERRUPTED", "empty": "LLM_PROTOCOL", "disabled": "LLM_DISABLED"}[mode]
 			switch mode {
 			case "changed-before":
-				memos["memos/one"]["content"] = "changed"
+				refreshIndexMemo(t, service.Store, rawMemo("one", "changed"))
 			case "deleted-before":
-				delete(memos, "memos/one")
+				if err := service.Store.Refresh("memos/one", nil); err != nil {
+					t.Fatal(err)
+				}
 			case "foreign-before":
-				memos["memos/one"]["creator"] = "users/other"
+				foreign := rawMemo("one", "原文")
+				foreign["creator"] = "users/other"
+				memo, err := normalizeMemo(foreign)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := service.Store.Refresh("memos/one", &memo); err != nil {
+					t.Fatal(err)
+				}
 			case "disabled":
 				service.Store.Settings.LLM.Enabled = false
 			}
@@ -316,7 +319,7 @@ func TestChatCancelDisconnectAndConcurrentReplay(t *testing.T) {
 			case <-time.After(3 * time.Second):
 				t.Fatal("generation did not start")
 			}
-			if replay, err := service.Generate(context.Background(), chat.ID, input, nil); errorCode(err) != "CHAT_BUSY" || replay.Assistant.Content != "已持久部分" {
+			if replay, err := service.Generate(context.Background(), chat.ID, input, nil); errorCode(err) != "CHAT_BUSY" || replay.Assistant.Status != "running" {
 				t.Fatalf("concurrent replay: %+v %v", replay, err)
 			}
 			if err := service.Delete(context.Background(), chat.ID, 1); errorCode(err) != "CHAT_BUSY" {
@@ -433,6 +436,7 @@ func TestChatCreationReplayAndExplicitMaterialRefresh(t *testing.T) {
 	if err != nil || created || !reflect.DeepEqual(replay.Materials, chat.Materials) {
 		t.Fatalf("creation replay changed material version: %+v %v", replay, err)
 	}
+	refreshIndexMemo(t, service.Store, memos["memos/one"])
 	material, err := service.Materials(context.Background(), input.Names, nil)
 	if err != nil || material.Characters != utf8.RuneCountInString("更新正文 😀") {
 		t.Fatalf("Unicode material count: %+v %v", material, err)

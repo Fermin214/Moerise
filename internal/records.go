@@ -176,7 +176,24 @@ func (s *RecordService) Create(ctx context.Context, key string, input CreateNote
 			}
 			return Note{}, 0, failure("SOURCE_NOT_FOUND", "Memo is unavailable", 404, false)
 		}
-		return s.finish(ctx, key, memo, 200)
+		if err := s.verify(ctx); err != nil {
+			return Note{}, 0, err
+		}
+		receipts, err := buildReplayAttachmentReceipts(func(pos int) (string, bool, error) {
+			return s.existingAttachmentName(key, pos)
+		}, key, input.Attachments, memo.Attachments)
+		if err != nil {
+			return Note{}, 0, err
+		}
+		if err := s.Store.updateNoteWrite(key, "succeeded", ""); err != nil {
+			return Note{}, 0, err
+		}
+		if err := s.Store.Refresh(memo.Name, memo); err != nil {
+			return Note{}, 0, err
+		}
+		note := memo.Note(s.Store.Settings)
+		note.AttachmentReceipts = receipts
+		return note, 200, nil
 	}
 	if memo == nil && write.SourceCreated {
 		return Note{}, 0, failure("SOURCE_NOT_FOUND", "The partially recorded memo was deleted", 404, false)
@@ -247,11 +264,21 @@ func (s *RecordService) reconcile(ctx context.Context, key string, memo *Memo, c
 			return s.unknown(key, errorCode(err))
 		}
 	}
-	return s.finish(ctx, key, memo, status)
+	return s.finishWithAttachments(ctx, key, input.Attachments, memo, status)
 }
 
 func (s *RecordService) finish(ctx context.Context, key string, memo *Memo, status int) (Note, int, error) {
+	return s.finishWithAttachments(ctx, key, nil, memo, status)
+}
+
+func (s *RecordService) finishWithAttachments(ctx context.Context, key string, files []CreateAttachment, memo *Memo, status int) (Note, int, error) {
 	if err := s.verify(ctx); err != nil {
+		return Note{}, 0, err
+	}
+	receipts, err := buildAttachmentReceipts(func(pos int) (string, error) {
+		return s.attachmentName(key, pos)
+	}, key, files, memo.Attachments)
+	if err != nil {
 		return Note{}, 0, err
 	}
 	if err := s.Store.updateNoteWrite(key, "succeeded", ""); err != nil {
@@ -260,5 +287,7 @@ func (s *RecordService) finish(ctx context.Context, key string, memo *Memo, stat
 	if err := s.Store.Refresh(memo.Name, memo); err != nil {
 		return Note{}, 0, err
 	}
-	return memo.Note(s.Store.Settings), status, nil
+	note := memo.Note(s.Store.Settings)
+	note.AttachmentReceipts = receipts
+	return note, status, nil
 }

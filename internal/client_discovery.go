@@ -14,7 +14,7 @@ func (a *ClientAPI) discoveryRoute(w http.ResponseWriter, r *http.Request) (any,
 		if r.Method != http.MethodGet {
 			return nil, 0, failure("METHOD_NOT_ALLOWED", "Method Not Allowed", 405, false)
 		}
-		batch, err := a.app.Reviews.Daily(r.Context(), time.Now())
+		batch, err := a.app.Reviews.DailyLocal(r.Context(), time.Now())
 		for i := range batch.Items {
 			if batch.Items[i].Note != nil {
 				note := clientNote(*batch.Items[i].Note)
@@ -47,7 +47,7 @@ func (a *ClientAPI) discoveryRoute(w http.ResponseWriter, r *http.Request) (any,
 		if err := readClientJSON(w, r, 1024*1024, []string{"name"}, &body); err != nil {
 			return nil, 0, err
 		}
-		result, err = a.app.Search.StartWalk(r.Context(), body.Name)
+		result, err = a.app.Search.StartWalkLocal(r.Context(), body.Name)
 	} else {
 		var body struct {
 			Name string   `json:"name"`
@@ -59,7 +59,7 @@ func (a *ClientAPI) discoveryRoute(w http.ResponseWriter, r *http.Request) (any,
 		if body.Name == "" {
 			return nil, 0, failure("INVALID_ARGUMENT", "A walk seed is required", 422, false)
 		}
-		result, err = a.app.Search.Walk(r.Context(), WalkRequest{Name: body.Name, Path: body.Path})
+		result, err = a.app.Search.WalkLocal(r.Context(), WalkRequest{Name: body.Name, Path: body.Path})
 	}
 	if result.Item != nil {
 		result.Item.Note = clientNote(result.Item.Note)

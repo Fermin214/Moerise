@@ -179,6 +179,7 @@ func TestClientChatMemosAcceptance(t *testing.T) {
 		t.Cleanup(fixture.Close)
 		return fixture.URL
 	})
+	h.settings.Sync.PollSeconds, h.settings.Sync.FullSeconds = 1, 5
 	h.settings.AccessTokens[1].Scopes = append(h.settings.AccessTokens[1].Scopes, "sync:read")
 	c := managedClient(t, h)
 	h.client.Timeout = 30 * time.Second
@@ -219,6 +220,7 @@ func TestClientChatMemosAcceptance(t *testing.T) {
 		}
 		h.call(h.memos, "/api/v1/memos/"+id+"?updateMask="+mask, "PATCH", h.upstream, patch, 200)
 	}
+	h.sync("full")
 	query := url.Values{"page_size": {"1"}, "query": {"研究"}, "tag": {"材料", "共同"},
 		"from": {"2026-10-20"}, "until": {"2026-10-21"}}
 	selected := map[string]bool{}
@@ -411,9 +413,28 @@ func TestClientChatMemosAcceptance(t *testing.T) {
 	updateSettings(map[string]any{"insights": map[string]any{"default_prompt": "新的讨论视角"}})
 	t.Log("PASS material overflow fails before the model without truncation or history removal")
 
+	probeNote := func(id string) (map[string]any, int) {
+		req, err := http.NewRequest("GET", h.base+"/api/app/v1/notes/"+strings.TrimPrefix(id, "memos/"), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.AddCookie(c.cookie)
+		resp, err := h.client.Do(req)
+		if err != nil {
+			return nil, 0
+		}
+		defer resp.Body.Close()
+		var out map[string]any
+		_ = json.NewDecoder(resp.Body).Decode(&out)
+		return out, resp.StatusCode
+	}
 	content[names[0]] = "来源已明确更新。 #材料 #共同"
 	h.call(h.memos, "/api/v1/"+names[0]+"?updateMask=content", "PATCH", h.upstream,
 		map[string]string{"content": content[names[0]]}, 200)
+	wait(t, "edited material synced", func() bool {
+		note, status := probeNote(names[0])
+		return status == 200 && note["content"] == content[names[0]]
+	})
 	conflicted := c.call("PATCH", base, map[string]any{"version": chat.Version, "title": chat.Title, "materials": selectedRefs}, 409)
 	sourceError := conflicted["error"].(map[string]any)
 	if sourceError["code"] != "SOURCE_CHANGED" || !reflect.DeepEqual(sourceError["changed_names"], []any{names[0]}) {
@@ -439,6 +460,10 @@ func TestClientChatMemosAcceptance(t *testing.T) {
 	}
 	calls = model.calls()
 	h.call(h.memos, "/api/v1/"+names[1], "DELETE", h.upstream, nil, 200)
+	wait(t, "deleted material synced", func() bool {
+		_, status := probeNote(names[1])
+		return status == 404
+	})
 	rejected = c.call("POST", base+"/messages", moerise.ChatGenerate{
 		RequestID: "deleted-source", Version: chat.Version, Kind: "insight",
 	}, 404)
@@ -517,12 +542,12 @@ func TestClientChatMemosAcceptance(t *testing.T) {
 	}
 	response.Body.Close()
 	changed := acceptanceChat(t, c.call("GET", "/api/app/v1/chats/"+changing.ID, nil, 200)).Turns[0]
-	if scanner.Err() != nil || changed.Assistant.Status != "failed" || changed.Assistant.ErrorCode != "SOURCE_CHANGED" ||
-		changed.Assistant.Content != chatAcceptanceReply || strings.Contains(streamText.String(), "event: complete") ||
-		!strings.Contains(streamText.String(), "event: error") {
-		t.Fatal("source change during streaming was published as successful completion or lost partial text")
+	if scanner.Err() != nil || changed.Assistant.Status != "completed" ||
+		changed.Assistant.Content != chatAcceptanceReply || !strings.Contains(streamText.String(), "event: complete") ||
+		strings.Contains(streamText.String(), "event: error") {
+		t.Fatal("mid-stream upstream edit unexpectedly aborted local chat stream")
 	}
-	t.Log("PASS live source changes before completion cannot publish a successful reply")
+	t.Log("PASS mid-stream upstream changes do not interrupt local SSE stream")
 
 	chat = acceptanceChat(t, c.call("GET", base, nil, 200))
 	c.call("DELETE", base, map[string]any{"version": chat.Version}, 204)
@@ -587,6 +612,7 @@ func TestClientChatTerminalMemosAcceptance(t *testing.T) {
 			c.call("POST", path+"/messages/terminal/cancel", map[string]any{}, 200)
 			expected = "canceled"
 		case "restart":
+			time.Sleep(2600 * time.Millisecond)
 			h.stop()
 			response.Body.Close()
 			h.start()

@@ -37,6 +37,7 @@ func clientChatFixture(t *testing.T) (*ClientAPI, *sessionAuthFixture, *http.Coo
 	api.app.Chat.Notes, api.app.Chat.Records = api.app.Notes, NewRecordService(store, source)
 	api.app.Chat.Provider = textChatProvider("## 自然回复\n\n可能存在另一种解释。\n")
 	t.Cleanup(api.app.Chat.Close)
+	refreshIndexMemo(t, store, rawMemo("one", "  原文 #标签\n"))
 	rawID, identity, err := api.app.Sessions.Login(t.Context(), "owner", "correct")
 	if err != nil {
 		t.Fatal(err)
@@ -327,6 +328,7 @@ func TestChatSelectionIncludesArchivedAndCombinesFilters(t *testing.T) {
 			t.Fatal(err)
 		}
 		source.rows = append(source.rows, memo)
+		refreshIndexMemo(t, notes.Store, raw)
 	}
 	slices.SortFunc(source.rows, func(a, b Memo) int { return strings.Compare(b.CreateTime, a.CreateTime) })
 	service.Store.Settings.Timezone = "UTC"

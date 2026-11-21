@@ -8,9 +8,10 @@ import (
 )
 
 type SyncService struct {
-	Store  *Store
-	Source Source
-	alive  atomic.Bool
+	Store         *Store
+	Source        Source
+	alive         atomic.Bool
+	onAuthFailure func()
 }
 
 func NewSyncService(store *Store, source Source) *SyncService {
@@ -49,6 +50,17 @@ func (s *SyncService) scan(ctx context.Context, run, job string, since *int64) e
 	return nil
 }
 
+func (s *SyncService) handleSourceError(err error) error {
+	if err == nil {
+		return nil
+	}
+	code := errorCode(err)
+	if (code == "UPSTREAM_AUTH" || code == "IDENTITY_MISMATCH" || code == "ACCOUNT_NOT_BOUND") && s.onAuthFailure != nil {
+		s.onAuthFailure()
+	}
+	return err
+}
+
 func (s *SyncService) Sync(ctx context.Context, job Job) (map[string]any, error) {
 	unlock, err := s.Store.lockBackground(ctx)
 	if err != nil {
@@ -57,7 +69,7 @@ func (s *SyncService) Sync(ctx context.Context, job Job) (map[string]any, error)
 	defer unlock()
 	version, err := s.Source.Identity(ctx)
 	if err != nil {
-		return nil, err
+		return nil, s.handleSourceError(err)
 	}
 	if err := s.Store.SourceHealth(true, "", version); err != nil {
 		return nil, err
@@ -68,6 +80,10 @@ func (s *SyncService) Sync(ctx context.Context, job Job) (map[string]any, error)
 	}
 	full := job.Mode == "full" || state.Watermark == nil
 	started, run := time.Now().UTC(), newID()
+	startSeq, err := s.Store.MaxChangeSeq()
+	if err != nil {
+		return nil, err
+	}
 	var since *int64
 	if !full {
 		watermark, err := time.Parse(time.RFC3339Nano, *state.Watermark)
@@ -92,7 +108,7 @@ func (s *SyncService) Sync(ctx context.Context, job Job) (map[string]any, error)
 			restartedAtMinimum = true
 		} else if err != errMemosPaginationRestart {
 			if err != nil {
-				return nil, err
+				return nil, s.handleSourceError(err)
 			}
 			break
 		}
@@ -117,7 +133,7 @@ func (s *SyncService) Sync(ctx context.Context, job Job) (map[string]any, error)
 			}
 			fresh, err := s.Source.Get(ctx, name)
 			if err != nil {
-				return nil, err
+				return nil, s.handleSourceError(err)
 			}
 			if fresh == nil {
 				absent[name] = true
@@ -130,13 +146,13 @@ func (s *SyncService) Sync(ctx context.Context, job Job) (map[string]any, error)
 		}
 	}
 	if _, err := s.Source.Identity(ctx); err != nil {
-		return nil, err
+		return nil, s.handleSourceError(err)
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 	// Publish first: an interrupted watermark update must replay an already complete scan.
-	result, err := s.Store.Publish(run, absent)
+	result, err := s.Store.PublishScan(run, absent, startSeq)
 	if err != nil {
 		return nil, err
 	}

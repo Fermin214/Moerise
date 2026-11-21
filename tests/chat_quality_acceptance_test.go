@@ -210,6 +210,7 @@ func runChatQuality(t *testing.T, llm moerise.LLMConfig, output, mode string) []
 		h.call(h.memos, "/api/v1/memos/quality-"+note.ID+"?updateMask=state,create_time", "PATCH", h.upstream,
 			map[string]string{"state": note.State, "createTime": "2026-10-20T08:00:00Z"}, 200)
 	}
+	h.sync("full")
 	sourceNames := func() []string {
 		t.Helper()
 		query := url.Values{"pageSize": {"100"}, "filter": {"creator == '" + h.settings.Memos.User + "'"}}

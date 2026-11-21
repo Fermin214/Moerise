@@ -397,7 +397,7 @@ func (s *Store) appendChatText(chatID, turnID, text string) error {
 }
 
 func (s *Store) finishChatTurn(chatID, turnID, status, code string, usage LLMUsage) error {
-	if status != "completed" && status != "failed" && status != "canceled" && status != "interrupted" ||
+	if status != "completed" && status != "truncated" && status != "failed" && status != "canceled" && status != "interrupted" ||
 		(status == "completed" && code != "") {
 		return failure("INVALID_ARGUMENT", "Invalid final chat status", 422, false)
 	}
