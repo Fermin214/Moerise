@@ -41,6 +41,11 @@ class PublishTests(unittest.TestCase):
             smoke = dict(run_id=RUN, status='passed', commit=SHA, api='29', apk_sha256=digest, secure_cookie=True,
                          session_restored_without_login=True,
                          flows={'release-smoke': {'status': 'passed', 'server_assertions': {'created_note_count': 1}}})
+            upgrade_report = result.parent / 'upgrade-smoke/result.json'
+            upgrade_report.parent.mkdir()
+            upgrade_smoke = smoke | dict(flows={'home-smoke': {'status': 'passed'}},
+                upgrade={'from': '0.2.0', 'pending_write_count': 1, 'account': True, 'draft': True,
+                         'keystore_session': True, 'local_database_restored': True})
             with patch.object(publish, 'output', return_value='moerise.minSdk=29\n'):
                 with self.assertRaisesRegex(SystemExit, 'missing'):
                     publish.android_release(root, SHA, RUN)
@@ -51,6 +56,16 @@ class PublishTests(unittest.TestCase):
                     with self.subTest(changes=changes), self.assertRaises(SystemExit):
                         publish.android_release(root, SHA, RUN)
                 result.write_text(json.dumps(smoke))
+                with self.assertRaisesRegex(SystemExit, 'upgrade verification result is missing'):
+                    publish.android_release(root, SHA, RUN)
+                for changes in ({'status': 'failed'}, {'apk_sha256': '0' * 64}, {'commit': 'b' * 40},
+                                {'run_id': '122'}, {'session_restored_without_login': False},
+                                {'upgrade': upgrade_smoke['upgrade'] | {'local_database_restored': False}},
+                                {'upgrade': upgrade_smoke['upgrade'] | {'pending_write_count': 2}}):
+                    upgrade_report.write_text(json.dumps(upgrade_smoke | changes))
+                    with self.subTest(upgrade_changes=changes), self.assertRaises(SystemExit):
+                        publish.android_release(root, SHA, RUN)
+                upgrade_report.write_text(json.dumps(upgrade_smoke))
                 self.assertEqual(publish.android_release(root, SHA, RUN)[0], 'android-v0.1.0')
                 for changes in ({'min_sdk': 26}, {'signed': False}):
                     metadata.write_text(json.dumps(info | changes))
