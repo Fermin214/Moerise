@@ -114,7 +114,7 @@ openssl rand -base64 32  # MOERISE_STATE_ENCRYPTION_KEY
 ### 2. Start Moerise
 
 ```bash
-docker compose pull moerise web layout
+docker compose pull moerise layout
 docker compose up -d
 ```
 
