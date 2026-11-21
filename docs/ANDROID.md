@@ -1,6 +1,6 @@
 # Android 开发
 
-Android 工程位于 `mobile/`，应用模块为 `androidApp`，共享界面、协议与持久化模块为 `shared`。Android 包名为 `io.github.fermin214.moerise`，最低系统版本为 Android 10（API 29），目标和编译 SDK 为 36。应用、共享库、benchmark 和发行检查共用 `mobile/gradle.properties` 的 `moerise.minSdk`。
+Android 工程位于 `mobile/`，应用模块为 `androidApp`，纯 Kotlin 逻辑位于 `core/model`、`core/sync` 和 `core/markdown`。Android 包名为 `io.github.fermin214.moerise`，最低系统版本为 Android 10（API 29），目标和编译 SDK 为 36。应用、benchmark 和发行检查共用 `mobile/gradle.properties` 的 `moerise.minSdk`。
 
 ## 文件与产物
 

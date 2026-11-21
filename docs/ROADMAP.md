@@ -83,10 +83,10 @@ v0.1.0 以 Memos 为笔记权威存储，通过 Moerise Core 读写。本机保�
 
 | 部分 | 方案 |
 | --- | --- |
-| 共享业务 | Kotlin Multiplatform：领域模型、用例、网络协议、本机持久化和页面状态 |
-| 共享界面 | Compose Multiplatform；Android 使用 Compose，页面按手机 Web 的视觉与行为实现 |
+| 业务逻辑 | Android 模块承载用例、网络协议、持久化和页面状态；纯 Kotlin 模块承载模型、同步规则和 Markdown 处理 |
+| 界面 | Jetpack Compose，页面按手机 Web 的视觉与行为实现 |
 | 网络 | Ktor Client；Android 使用 OkHttp 引擎，JSON 使用 kotlinx.serialization |
-| 本机存储 | Room KMP + SQLite；附件使用应用私有目录中的文件 |
+| 本机存储 | Room + 系统 SQLite；附件使用应用私有目录中的文件 |
 | 异步任务 | Kotlin Coroutines 与 Flow，任务随页面、账号和应用生命周期取消 |
 | 凭据 | Android Keystore 保护持久会话 Cookie；密码仅参与单次登录，CSRF Token 仅放内存 |
 | Android 包 | `io.github.fermin214.moerise`，与 Linux 联合发布，`minSdk=29` |
@@ -252,7 +252,7 @@ M2 提供 `note_editor_ready` 性能标记及首个输入校验；M7 记录观�
 
 | 里程碑 | 工作内容 | 交付物与完成条件 |
 | --- | --- | --- |
-| M0：工程与工具链 | 配置用户目录中的 JDK、Android 命令行 SDK，固定稳定依赖矩阵，建立 Android/JVM 共享工程，提取设计资源，验证 Markdown 候选组件 | Linux 干净检出构建 debug APK，纯 Kotlin 与 Android 单元测试实际执行非零测试并使用系统 SQLite；Android 安装后显示主页样式和中英文资源；固定版本目录、Wrapper 摘要和 SDK 清单 |
+| M0：工程与工具链 | 配置用户目录中的 JDK、Android 命令行 SDK，固定稳定依赖矩阵，建立 Android 应用与纯 Kotlin 模块，提取设计资源，验证 Markdown 候选组件 | Linux 干净检出构建 debug APK，纯 Kotlin 与 Android 单元测试实际执行非零测试并使用系统 SQLite；Android 安装后显示主页样式和中英文资源；固定版本目录、Wrapper 摘要和 SDK 清单 |
 | M1：连接与会话 | 地址规范化、capabilities、登录、Cookie 安全持久化、内存 CSRF、退出、401、账号隔离及受保护 API 请求，固定观星快照与重建契约 | 真机连接隔离的 Core + Memos 环境；重启后恢复会话；一次新建后可读回并清理；错误来源、失效 Cookie 和错误 CSRF 按预期处理；观星响应样本与服务端版本对应 |
 | M2：快速记录闭环 | Room、草稿落盘、附件暂存基础、主页编辑器、创建笔记、冻结请求、幂等重试、最近时间线快照与性能标记 | 打开 → 写作 → 保存 → 读回；断网写草稿后恢复；发送后丢响应、进程终止和输入继续修改均不丢已落盘内容、不重复创建；产出首份真机启动基准 |
 | M3：笔记管理与附件 | 时间线分页与刷新、主页 Markdown 阅读、单条原位编辑、归档、恢复、删除、图片上传、附件移除/下载/系统打开 | 真机完成笔记全生命周期；切换编辑先落盘、顶部草稿恢复、保存修订与取消恢复正确；Core 与 Memos 原文和附件一致；来源冲突、文件超限、文件引用冲突、软键盘和旋转恢复均有验证 |
@@ -327,13 +327,12 @@ Android 代码单独使用 `.github/workflows/android-checks.yml`；涉及 Andro
 
 #### 1.12 技术依据
 
-- [Kotlin Multiplatform：共享业务与界面](https://developer.android.com/kotlin/multiplatform)
-- [KMP Android 库插件与模块边界](https://developer.android.com/kotlin/multiplatform/plugin)
-- [Room Kotlin Multiplatform](https://developer.android.com/kotlin/multiplatform/room)
+- [Android 模块化](https://developer.android.com/topic/modularization)
+- [Jetpack Compose](https://developer.android.com/develop/ui/compose)
+- [Room 数据持久化](https://developer.android.com/training/data-storage/room)
 - [Android 命令行构建](https://developer.android.com/build/building-cmdline)
 - [Macrobenchmark 与启动测量](https://developer.android.com/topic/performance/benchmarking/macrobenchmark-overview)
 - [Compose Canvas 与绘图](https://developer.android.com/develop/ui/compose/graphics/draw/overview)
-- [KMP 开发环境与 iOS 构建](https://kotlinlang.org/docs/multiplatform/quickstart.html)
 
 ### 2. 回顾与灵感算法扩展
 - **智能回顾策略**：
