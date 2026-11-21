@@ -7,7 +7,7 @@ import { pathToFileURL } from 'node:url';
 import { mkdir } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { test } from 'node:test';
-import { createWebServer } from '../server.mjs';
+import { createWebServer } from './fixture-server.mjs';
 
 const runtime = process.env.MOERISE_PLAYWRIGHT_MODULE;
 const { [process.env.MOERISE_PLAYWRIGHT_ENGINE || 'chromium']: browserType } = runtime ? await import(pathToFileURL(runtime).href) : await import('playwright');

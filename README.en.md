@@ -50,8 +50,7 @@ Basic notes, reading, keyword filtering, and daily review work without models. S
 
 ```mermaid
 flowchart LR
-    Browser["Web Browser"] -->|"Same-Origin Cookie / API"| Web["Moerise Web Server"]
-    Web -->|"Fixed API Proxy"| Core["Moerise Core Server"]
+    Browser["Web Browser"] -->|"Same-Origin Cookie / API"| Core["Moerise Core with embedded Web"]
     Agent["External Agent / MCP Client"] -->|"Read-Only Bearer Token"| Core
     Feishu["Feishu Platform"] <-->|"Event Callbacks / Delivery"| Core
     Core -->|"Scheduled Delivery"| Telegram["Telegram Platform"]
@@ -68,7 +67,7 @@ flowchart LR
 
 ## Quick Start
 
-The recommended deployment method uses Docker Compose, which includes an official Memos 0.31.x instance, or connects Moerise to an existing Memos deployment. Core and Web use versioned images from GHCR, with AMD64 and ARM64 support.
+The recommended deployment method uses Docker Compose, which includes an official Memos 0.31.x instance, or connects Moerise to an existing Memos deployment. Core with embedded Web uses versioned images from GHCR, with AMD64 and ARM64 support.
 
 ### 1. Launch All-in-One Stack
 
@@ -114,11 +113,11 @@ openssl rand -base64 32  # MOERISE_STATE_ENCRYPTION_KEY
 ### 2. Start Moerise
 
 ```bash
-docker compose pull moerise web layout
+docker compose pull moerise layout
 docker compose up -d
 ```
 
-For source deployments, use `docker compose up -d --build` to build Core, Web, and the layout service together.
+For source deployments, use `docker compose up -d --build` to build Core with embedded Web and the layout service together.
 
 The `.env.example` enables bundled Memos and the layout service through the `memos,stargazing` profiles. To disable stargazing, turn off **Settings → General → Enable stargazing**, remove the `stargazing` profile, and run `docker compose stop layout`. Semantic search and walks remain available. See the [Operations Guide](docs/OPERATIONS.md#观星按需启用) to enable it again.
 

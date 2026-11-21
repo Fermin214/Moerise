@@ -124,22 +124,27 @@ func TestFeishuCallbackAuthenticationAndEncryptedQueue(t *testing.T) {
 		t.Fatal("changed content reused the same message identifier")
 	}
 	var count int
-	if err := store.state.QueryRow("SELECT COUNT(*) FROM channel_events").Scan(&count); err != nil || count != 1 {
+	if err := store.state.QueryRow("SELECT COUNT(*) FROM bot_inbox").Scan(&count); err != nil || count != 1 {
 		t.Fatal("duplicate or foreign event entered the queue")
 	}
 	var sealed []byte
-	if err := store.state.QueryRow("SELECT payload FROM channel_events").Scan(&sealed); err != nil {
+	var writeKey string
+	if err := store.state.QueryRow("SELECT body,write_key FROM bot_inbox").Scan(&sealed, &writeKey); err != nil {
 		t.Fatal(err)
 	}
 	if bytes.Contains(sealed, []byte("private incoming text")) {
 		t.Fatal("incoming private content was stored unencrypted")
 	}
-	data, err := service.unseal("om_private", "ou_owner", sealed)
-	if err != nil || !bytes.Contains(data, []byte("private incoming text")) {
-		t.Fatal("queued event could not be recovered")
+	aead, err := newStateCipher(store.Settings, "bot_inbox")
+	if err != nil {
+		t.Fatal(err)
 	}
-	if _, err := service.unseal("om_other", "ou_owner", sealed); err == nil {
-		t.Fatal("encrypted queue payload was not bound to its message")
+	data, err := aead.Open(nil, sealed[:aead.NonceSize()], sealed[aead.NonceSize():], []byte(writeKey))
+	if err != nil || !bytes.Contains(data, []byte("private incoming text")) {
+		t.Fatal("queued body not recoverable")
+	}
+	if _, err := aead.Open(nil, sealed[:aead.NonceSize()], sealed[aead.NonceSize():], []byte("other")); err == nil {
+		t.Fatal("body not bound to write key")
 	}
 	challenge, _ := json.Marshal(map[string]string{"type": "url_verification", "token": configured(settings.Channel.VerificationToken), "challenge": "setup"})
 	if err := call(encryptedFeishuEvent(settings, challenge), false); err != nil {
@@ -314,22 +319,22 @@ func TestUnknownFeishuReplyIsHeldWithoutRepeatingBusiness(t *testing.T) {
 	if _, _, err := service.Receive(request); err != nil {
 		t.Fatal(err)
 	}
-	if progress, err := service.processOne(context.Background()); err != nil || !progress {
+	if progress, err := processFeishuMessage(context.Background(), service); err != nil || !progress {
 		t.Fatalf("event processing: progress=%v err=%v", progress, err)
 	}
-	if progress, err := notifications.Deliver(context.Background()); err != nil || !progress {
+	if progress, err := processFeishuMessage(context.Background(), service); err != nil || !progress {
 		t.Fatalf("queued reply delivery: progress=%v err=%v", progress, err)
 	}
-	if _, err := store.state.Exec("UPDATE channel_events SET available_at = 0"); err != nil {
+	if _, err := store.state.Exec("UPDATE bot_inbox SET available_at=0"); err != nil {
 		t.Fatal(err)
 	}
-	if progress, err := service.processOne(context.Background()); err != nil || progress || platform.calls != 1 {
+	if progress, err := processFeishuMessage(context.Background(), service); err != nil || progress || platform.calls != 1 {
 		t.Fatal("unknown reply was sent again")
 	}
-	var status, replyStatus string
+	var status string
 	var payload []byte
-	if err := store.state.QueryRow("SELECT status, reply_status, payload FROM channel_events").
-		Scan(&status, &replyStatus, &payload); err != nil || status != "processed" || replyStatus != "unknown" || len(payload) != 0 {
+	if err := store.state.QueryRow("SELECT phase,body FROM bot_inbox").
+		Scan(&status, &payload); err != nil || status != "failed" || len(payload) != 0 {
 		t.Fatal("unknown reply or removal of processed private content was not durable")
 	}
 }
@@ -421,12 +426,12 @@ func TestFeishuPrivateTextRecordsVerbatim(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-		if progress, err := service.processOne(context.Background()); err != nil || !progress {
+		if progress, err := processFeishuMessage(context.Background(), service); err != nil || !progress {
 			t.Fatalf("record %q: progress=%t err=%v", text, progress, err)
 		}
 		deliverFeishuReply(t, service)
 		var name string
-		if err := store.state.QueryRow("SELECT resource_name FROM channel_events WHERE message_id = ?", id).Scan(&name); err != nil {
+		if err := store.state.QueryRow("SELECT resource_name FROM bot_inbox WHERE message_id = ?", id).Scan(&name); err != nil {
 			t.Fatal(err)
 		}
 		if memos[name]["content"] != text || posts != i+1 {
@@ -438,7 +443,7 @@ func TestFeishuPrivateTextRecordsVerbatim(t *testing.T) {
 		if _, _, err := service.Receive(httptest.NewRequest("POST", "/hooks/feishu", bytes.NewReader(body))); err != nil {
 			t.Fatal(err)
 		}
-		if progress, err := service.processOne(context.Background()); err != nil || progress {
+		if progress, err := processFeishuMessage(context.Background(), service); err != nil || progress {
 			t.Fatalf("completed event repeated: %t %v", progress, err)
 		}
 	}
@@ -538,7 +543,11 @@ func (p *capturePlatform) GetMessage(_ context.Context, receipt string) (FeishuS
 }
 func deliverFeishuReply(t *testing.T, service *FeishuService) {
 	t.Helper()
-	if progress, err := service.Notifications.Deliver(context.Background()); err != nil || !progress {
+	progress, err := service.Notifications.Deliver(context.Background())
+	if !progress && err == nil {
+		progress, err = processFeishuMessage(context.Background(), service)
+	}
+	if err != nil || !progress {
 		t.Fatalf("delivery: %v %v", progress, err)
 	}
 }

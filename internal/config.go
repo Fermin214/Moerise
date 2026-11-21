@@ -149,8 +149,9 @@ type Settings struct {
 func DefaultSettings() Settings {
 	embeddingModel := "qwen3.7-text-embedding"
 	return Settings{
-		Memos:    MemosConfig{TimeoutSeconds: 10, PageSize: 0, MaxPages: 10000},
-		Timezone: "Asia/Hong_Kong", StateDir: "/data/state", IndexDir: "/data/index",
+		Memos:               MemosConfig{TimeoutSeconds: 10, PageSize: 0, MaxPages: 10000},
+		TelemetryForwarding: true,
+		Timezone:            "Asia/Hong_Kong", StateDir: "/data/state", IndexDir: "/data/index",
 		Sync:          SyncConfig{60, 21600, 300, 5, 300},
 		Review:        ReviewConfig{Count: 3, MinAgeHours: 72, RecentDays: 7},
 		Notifications: NotificationConfig{Times: []string{"09:00"}},

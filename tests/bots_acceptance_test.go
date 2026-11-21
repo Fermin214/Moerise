@@ -263,7 +263,7 @@ func TestKnownPrivateBotAddressesAcceptance(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		_ = app.RunPrivateBots(runCtx)
+		_ = app.RunChannels(runCtx)
 	}()
 	defer func() { stop(); <-done }()
 	fixture.telegram(31, 1, "private", "Telegram #验收")
@@ -305,7 +305,7 @@ func TestPrivateBotsWithMemosAcceptance(t *testing.T) {
 		done := make(chan struct{})
 		go func() {
 			defer close(done)
-			_ = app.RunPrivateBots(ctx)
+			_ = app.RunChannels(ctx)
 		}()
 		shutdown = func() {
 			cancel()
@@ -472,7 +472,7 @@ func testQQScheduledFailures(t *testing.T, app *moerise.App, fixture *acceptance
 		case "refuse":
 			status = "failed"
 		case "drop":
-			status = "unknown"
+			status = "failed"
 		case "limit":
 			pending, err := app.Notifications.List("pending")
 			if err != nil || len(pending) != 1 || pending[0].AvailableAt <= float64(time.Now().Unix()) {

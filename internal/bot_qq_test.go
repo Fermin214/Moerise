@@ -235,7 +235,7 @@ func TestQQSendChecksTokenReceiptRefusalAndCooldown(t *testing.T) {
 	}
 }
 
-func TestQQSharedSendCooldownSurvivesRestart(t *testing.T) {
+func TestQQSharedSendCooldownAcrossTransports(t *testing.T) {
 	settings := testSettings(t)
 	settings.Channel.QQAppID, settings.Channel.QQAppSecret = new("41009"), new("secret")
 	store := testStore(t, settings)
@@ -269,18 +269,10 @@ func TestQQSharedSendCooldownSurvivesRestart(t *testing.T) {
 	}
 	expire := func() {
 		t.Helper()
-		if _, err := store.state.Exec(`UPDATE notification_rate_limits SET retry_at=0`); err != nil {
-			t.Fatal(err)
-		}
+		clear(store.cooldowns)
 	}
 	reply, scheduled := clients()
 	limited(reply, "message", 1)
-	limited(scheduled, "", 1)
-	if err := store.Close(); err != nil {
-		t.Fatal(err)
-	}
-	store = testStore(t, settings)
-	reply, scheduled = clients()
 	limited(scheduled, "", 1)
 	expire()
 	limited(scheduled, "", 2)

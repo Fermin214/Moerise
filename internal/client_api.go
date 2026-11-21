@@ -461,18 +461,15 @@ func (a *ClientAPI) notifications(w http.ResponseWriter, r *http.Request, identi
 		result, err := a.app.Notifications.Detail(parts[0])
 		return result, 200, err
 	}
-	if len(parts) == 2 && parts[1] == "resolve" && r.Method == http.MethodPost {
-		var body struct {
-			Decision string `json:"decision"`
-			Receipt  string `json:"receipt"`
-		}
-		if err := readClientJSON(w, r, 65536, []string{"decision", "receipt"}, &body); err != nil {
+	if len(parts) == 2 && parts[1] == "retry" && r.Method == http.MethodPost {
+		var body struct{}
+		if err := readClientJSON(w, r, 65536, nil, &body); err != nil {
 			return nil, 0, err
 		}
 		if err := a.app.Sessions.CheckActive(r.Context(), identity); err != nil {
 			return nil, 0, err
 		}
-		result, err := a.app.Notifications.Resolve(r.Context(), parts[0], body.Decision, body.Receipt, identity.User.Name)
+		result, err := a.app.Notifications.Retry(r.Context(), parts[0])
 		return result, 200, err
 	}
 	return nil, 0, failure("NOT_FOUND", "Not Found", 404, false)

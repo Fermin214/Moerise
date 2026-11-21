@@ -2,7 +2,7 @@
 [CmdletBinding()]
 param(
     [string] $SourceRoot = 'C:\Projects\Moerise',
-    [string[]] $Tasks = @(':shared:jvmTest', ':androidApp:lintFixture',
+    [string[]] $Tasks = @(':core:model:test', ':core:sync:test', ':core:markdown:test', ':androidApp:testDebugUnitTest', ':androidApp:lintFixture',
         ':androidApp:assembleFixture', ':androidApp:assembleFixtureAndroidTest'),
     [switch] $Offline,
     [switch] $ValidateOnly

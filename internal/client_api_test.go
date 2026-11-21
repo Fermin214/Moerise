@@ -113,11 +113,11 @@ func TestClientNotificationRecoveryUsesBoundSession(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := api.app.Store.state.Exec("UPDATE notifications SET status = 'unknown' WHERE id = ?", id); err != nil {
+	if _, err := api.app.Store.state.Exec("UPDATE delivery_logs SET status = 'failed' WHERE id = ?", id); err != nil {
 		t.Fatal(err)
 	}
 	path := "/api/app/v1/admin/notifications/" + id
-	for _, route := range []string{"/api/app/v1/admin/notifications?status=unknown", path} {
+	for _, route := range []string{"/api/app/v1/admin/notifications?status=failed", path} {
 		response := clientCall(api, "GET", route, "", cookie, "", "")
 		if response.Code != 200 || !strings.Contains(response.Body.String(), id) {
 			t.Fatalf("recovery read: %d %s", response.Code, response.Body.String())
@@ -128,11 +128,11 @@ func TestClientNotificationRecoveryUsesBoundSession(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if _, err := api.app.Store.state.Exec("UPDATE notifications SET status = 'unknown', created_at = '2099-01-01' WHERE kind = 'reply'"); err != nil {
+	if _, err := api.app.Store.state.Exec("UPDATE delivery_logs SET status = 'failed', created_at = '2099-01-01' WHERE kind = 'reply'"); err != nil {
 		t.Fatal(err)
 	}
 	base := "/api/app/v1/admin/notifications"
-	filtered := clientCall(api, "GET", base+"?kind=review&status=unknown", "", cookie, "", "")
+	filtered := clientCall(api, "GET", base+"?kind=review&status=failed", "", cookie, "", "")
 	var listed struct {
 		Notifications []Notification `json:"notifications"`
 	}
@@ -140,17 +140,29 @@ func TestClientNotificationRecoveryUsesBoundSession(t *testing.T) {
 		len(listed.Notifications) != 1 || listed.Notifications[0].ID != id {
 		t.Fatalf("review hidden by newer replies: %d %s", filtered.Code, filtered.Body.String())
 	}
+	for index := range 110 {
+		if _, err := api.app.Notifications.enqueue("review", "newer-part-"+strconv.Itoa(index), "2026-10-30", nil, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := api.app.Store.state.Exec(`UPDATE delivery_logs SET created_at='2099-01-02' WHERE status='pending'`); err != nil {
+		t.Fatal(err)
+	}
+	visible := clientCall(api, "GET", base+"?kind=review", "", cookie, "", "")
+	if err := json.Unmarshal(visible.Body.Bytes(), &listed); err != nil || visible.Code != 200 || len(listed.Notifications) != 100 || listed.Notifications[0].ID != id {
+		t.Fatalf("failed delivery hidden by newer pending fragments: %d %s", visible.Code, visible.Body.String())
+	}
 	for _, query := range []string{"?kind=other", "?kind=review&kind=reply", "?kind=review&extra=sent"} {
 		if invalid := clientCall(api, "GET", base+query, "", cookie, "", ""); invalid.Code != 422 {
 			t.Fatalf("invalid filter %s returned %d", query, invalid.Code)
 		}
 	}
-	response := clientCall(api, "POST", path+"/resolve", `{"decision":"not_sent","receipt":""}`,
+	response := clientCall(api, "POST", path+"/retry", `{}`,
 		cookie, fixture.settings.Web.PublicOrigin, "")
 	if response.Code != 403 {
 		t.Fatalf("recovery accepted missing CSRF: %d %s", response.Code, response.Body.String())
 	}
-	response = clientCall(api, "POST", path+"/resolve", `{"decision":"not_sent","receipt":""}`,
+	response = clientCall(api, "POST", path+"/retry", `{}`,
 		cookie, fixture.settings.Web.PublicOrigin, identity.CSRFToken)
 	if response.Code != 200 {
 		t.Fatalf("recovery: %d %s", response.Code, response.Body.String())
@@ -159,8 +171,7 @@ func TestClientNotificationRecoveryUsesBoundSession(t *testing.T) {
 	if err := json.Unmarshal(response.Body.Bytes(), &detail); err != nil {
 		t.Fatal(err)
 	}
-	if detail.Notification.Status != "pending" || len(detail.Resolutions) != 1 ||
-		detail.Resolutions[0].ResolvedBy != identity.User.Name {
+	if detail.Notification.Status != "pending" {
 		t.Fatalf("recovery did not record the bound user: %+v", detail)
 	}
 }

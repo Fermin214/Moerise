@@ -128,7 +128,7 @@ func (s *FeishuDelivery) reviewImageKey(ctx context.Context, id string, part rev
 		if err != nil {
 			return "", err
 		}
-		if _, err := s.Store.state.Exec(`UPDATE review_delivery_parts SET image_key = ? WHERE notification_id = ?`,
+		if _, err := s.Store.state.Exec(`UPDATE delivery_logs SET image_key=? WHERE id=?`,
 			key, id); err != nil {
 			return "", err
 		}

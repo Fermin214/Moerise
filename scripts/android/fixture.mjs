@@ -9,7 +9,7 @@ import { mkdir, readFile, writeFile, open, rm } from 'node:fs/promises';
 import { resolve, relative, isAbsolute } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { runProcess } from '../lib/process.mjs';
-import { createWebServer } from '../../web/server.mjs';
+import { createFixtureProxy } from './fixture-proxy.mjs';
 import { tuneFixtureConfig, createModelGate, applyModelPolicy, fixtureInsightReply, observeFixtureApi } from './fixture-policy.mjs';
 import { createMemosThrottle } from './memos-throttle.mjs';
 
@@ -254,7 +254,7 @@ try {
     coreOrigin = `http://127.0.0.1:${corePort}`;
     const log = await open(coreLog, 'w', 0o600);
     const starting = new AbortController();
-    core = spawn(resolve(root, coreExecutable), ['serve', '--config', resolve(root, 'config.json'), '--host', '127.0.0.1', '--port', String(corePort)], {
+    core = spawn(resolve(root, coreExecutable), ['serve', '--config', resolve(root, 'config.json'), '--host', '127.0.0.1', '--port', String(corePort), '--web-dir', resolve(repo, process.env.MOERISE_ANDROID_WEB_DIST || 'web/src')], {
       cwd: repo, env: { ...coreEnv, GOMAXPROCS: '1', ...(stars ? { MOERISE_LAYOUT_URL: layoutOrigin, MOERISE_LAYOUT_CHECK_SECONDS: '2' } : {}) }, stdio: ['ignore', log.fd, log.fd],
     });
     core.once('exit', () => starting.abort());
@@ -273,10 +273,7 @@ try {
   }
   core.once('exit', () => stop.abort());
   await applyModelPolicy(coreOrigin, origin, username, password);
-  web = createWebServer({ coreOrigin, publicOrigin: origin,
-    requestLogger: ({ time, event, method, status, elapsed_ms }) =>
-      console.info(JSON.stringify({ source: 'fixture_web', time, event, method, status, elapsed_ms })),
-    dist: resolve(repo, process.env.MOERISE_ANDROID_WEB_DIST || 'web/src') });
+  web = createFixtureProxy(coreOrigin);
   web.prependListener('request', observeFixtureApi);
   web.listen(webPort, '127.0.0.1'); await once(web, 'listening');
   const fixture = { origin, webPort, username, password, sourceOrigin, memosProxyOrigin, sourceToken: pat, modelStats,

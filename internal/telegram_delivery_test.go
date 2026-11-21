@@ -225,22 +225,20 @@ func TestTelegramFullReviewRateLimitAndChannelRecovery(t *testing.T) {
 	}
 	var delayedID string
 	var available float64
-	if err := store.state.QueryRow(`SELECT id, available_at FROM notifications
+	if err := store.state.QueryRow(`SELECT id, available_at FROM delivery_logs
 		WHERE last_error = 'CHANNEL_RATE_LIMITED'`).Scan(&delayedID, &available); err != nil ||
 		available < nowSeconds()+85 || deliver() {
 		t.Fatalf("Telegram retry_after was not respected: %v", err)
 	}
-	if _, err := store.state.Exec("UPDATE notifications SET available_at = 0 WHERE id = ?", delayedID); err != nil {
+	if _, err := store.state.Exec("UPDATE delivery_logs SET available_at = 0 WHERE id = ?", delayedID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.state.Exec("DELETE FROM notification_rate_limits"); err != nil {
-		t.Fatal(err)
-	}
+	clear(store.cooldowns)
 	fail = "unknown"
 	if !deliver() || deliver() {
 		t.Fatal("unknown part was resent or released its successor")
 	}
-	unknown, err := app.Notifications.List("unknown")
+	unknown, err := app.Notifications.List("failed")
 	if err != nil || len(unknown) != 1 {
 		t.Fatalf("missing unknown part: %v", err)
 	}
@@ -273,9 +271,7 @@ func TestTelegramFullReviewRateLimitAndChannelRecovery(t *testing.T) {
 	if _, err := app.UpdateSettings(t.Context(), update); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := app.Notifications.Resolve(t.Context(), unknown[0].ID, "sent", "unverifiable-receipt", "owner"); errorCode(err) != "CHANNEL_RECEIPT_UNSUPPORTED" {
-		t.Fatalf("Telegram accepted an unqueryable receipt: %v", err)
-	}
+
 	if n, err := app.Notifications.Schedule(t.Context(), at.AddDate(0, 0, 1)); err != nil || n != 1 {
 		t.Fatalf("new channel not scheduled: %d %v", n, err)
 	}
@@ -288,7 +284,7 @@ func TestTelegramFullReviewRateLimitAndChannelRecovery(t *testing.T) {
 		t.Fatal("interrupted Telegram delivery blocked the next scheduled review")
 	}
 	newSlotCalls := webhookCalls
-	if _, err := app.Notifications.Resolve(t.Context(), unknown[0].ID, "not_sent", "", "owner"); err != nil {
+	if _, err := app.Notifications.Retry(t.Context(), unknown[0].ID); err != nil {
 		t.Fatal(err)
 	}
 	for range 100 {
@@ -436,12 +432,10 @@ func TestTelegramLongFooterDelivery(t *testing.T) {
 	}
 	var footerID, tailID, rootID string
 	var footerPosition int
-	if err := store.state.QueryRow(`SELECT notification_id, root_id, position FROM review_delivery_parts
-		WHERE kind = 'footer' ORDER BY position LIMIT 1`).Scan(&footerID, &rootID, &footerPosition); err != nil {
+	if err := store.state.QueryRow(`SELECT id,root_id,part_ordinal FROM delivery_logs WHERE part_kind='footer' ORDER BY part_ordinal LIMIT 1`).Scan(&footerID, &rootID, &footerPosition); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.state.QueryRow(`SELECT notification_id FROM review_delivery_parts
-		WHERE root_id = ? AND position = ?`, rootID, footerPosition+1).Scan(&tailID); err != nil {
+	if err := store.state.QueryRow(`SELECT id FROM delivery_logs WHERE root_id=? AND part_ordinal=?`, rootID, footerPosition+1).Scan(&tailID); err != nil {
 		t.Fatal(err)
 	}
 	deployment, source := store.Settings, reviews.Source
@@ -483,7 +477,7 @@ func TestFeishuWebhookIgnoresOtherChannelFields(t *testing.T) {
 	}
 }
 
-func TestTelegramBotCooldownSurvivesRestart(t *testing.T) {
+func TestTelegramBotCooldownSharedAcrossTransports(t *testing.T) {
 	settings := testSettings(t)
 	settings.Channel = telegramTestChannel()
 	store := testStore(t, settings)
@@ -515,18 +509,8 @@ func TestTelegramBotCooldownSurvivesRestart(t *testing.T) {
 	if _, err := makeDelivery(otherChat).sendReviewText(t.Context(), Notification{}, "new notification"); errorCode(err) != "CHANNEL_RATE_LIMITED" || calls != 1 {
 		t.Fatal("a new notification or token rotation bypassed the bot cooldown")
 	}
-	if err := store.Close(); err != nil {
-		t.Fatal(err)
-	}
-	store = testStore(t, settings)
-	delivery = makeDelivery(settings.Channel)
-	if _, err := delivery.sendReviewText(t.Context(), Notification{}, "after restart"); errorCode(err) != "CHANNEL_RATE_LIMITED" || calls != 1 {
-		t.Fatal("reopening product state lost the bot cooldown")
-	}
 	limited = false
-	if _, err := store.state.Exec("UPDATE notification_rate_limits SET retry_at = 0"); err != nil {
-		t.Fatal(err)
-	}
+	clear(store.cooldowns)
 	if receipt, err := delivery.sendReviewText(t.Context(), Notification{}, "after cooldown"); err != nil || receipt == "" || calls != 2 {
 		t.Fatalf("expired cooldown prevented sending: %v", err)
 	}

@@ -54,9 +54,9 @@ jobs:
               echo "$name=false" >> "$GITHUB_OUTPUT"
             fi
           }
-          core=(internal main.go go.mod go.sum)
+          core=(internal main.go go.mod go.sum ':(top,glob)web/*.go' scripts/testweb)
           release=(scripts/release .github/workflows/{checks,main-smoke,publish}.yml)
-          device=(mobile scripts/android web/server.mjs "${core[@]}")
+          device=(mobile scripts/android web/assets.go "${core[@]}")
           select_check go "${core[@]}" ':(top,glob)*.go' tests services/layout .github/workflows/checks.yml
           select_check web web scripts/lib .github/workflows/checks.yml
           select_check android "${device[@]}" docs/android/{THIRD_PARTY_NOTICES.md,licenses} .github/workflows/{checks,android-checks,android-release}.yml
@@ -81,12 +81,16 @@ jobs:
       - uses: actions/setup-go@4dc6199c7b1a012772edbd06daecab0f50c9053c # v6.1.0
         with:
           go-version: "1.27.x"
+      - uses: actions/setup-node@v6.5.0
+        with:
+          node-version: "24"
+      - run: npm --prefix web run build
       - name: Verify modules and formatting
         if: matrix.suite == 'build'
         shell: bash
         run: |
           go mod verify
-          test -z "$(gofmt -l main.go internal tests)"
+          test -z "$(gofmt -l main.go internal tests web/*.go scripts/testweb)"
       - run: go vet ./...
         if: matrix.suite == 'build'
       - run: go test ./... -count=1
@@ -133,6 +137,9 @@ jobs:
           node-version: "24"
           cache: npm
           cache-dependency-path: web/package-lock.json
+      - uses: actions/setup-go@4dc6199c7b1a012772edbd06daecab0f50c9053c
+        with:
+          go-version: "1.27.x"
       - run: npm --prefix web ci
       - run: npm --prefix web run build
       - run: npm --prefix web test

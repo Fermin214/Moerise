@@ -6,12 +6,11 @@
 
 ## 一、集成方案与系统拓扑
 
-Moerise 由 **Memos、Moerise Core、Moerise Web** 与独立布局服务组成：
+Moerise 由 **Memos、内嵌 Web 的 Moerise Core** 与独立布局服务组成：
 
 ```mermaid
 flowchart LR
-    Browser["用户浏览器"] -->|"同源 HTTPS / Cookie"| Web["Moerise Web (前端服务: 3000)"]
-    Web -->|"内部反向代理 (/api/app/v1)"| Core["Moerise Core (核心服务: 8787)"]
+    Browser["用户浏览器"] -->|"同源 HTTPS / Cookie"| Core["Moerise Core (内嵌网页与 API)"]
     Core -->|"官方 Connect / REST API"| Memos["官方 Memos (底座: 5231)"]
     Core --> State[("state.sqlite3 (业务状态)")]
     Core --> Index[("index.sqlite3 (可重建索引)")]
@@ -20,15 +19,15 @@ flowchart LR
 
 ### 关键设计决定
 
-1. **统一单域名与同源反向代理**：
+1. **统一单域名与同源接口**：
    - 浏览器仅访问 Moerise Web 暴露的对外服务地址（如 `https://notes.example.com`），无需跨域。
-   - Web 服务端内置轻量同源反向代理，将 `/api/app/v1/*` 路径转发至内部 Core 服务，静态资源与 HTML 由 Web 直接分发。
+   - Core 内嵌静态资源与 HTML，直接处理 `/api/app/v1/*`，附件与 SSE 无需经过额外代理。
 2. **多层鉴权凭据隔离**：
    - 浏览器持有 Moerise 颁发的不透明会话 Cookie（`HttpOnly`、`SameSite=Lax`、`Secure`）。
    - Memos 长期管理员 PAT 仅保存在 Core 服务端，不暴露给前端浏览器。
    - 外部自动化与 AI 工具通过独立的只读 Bearer Token 访问 Core 的 `/api/ext/v1` 和 `/mcp`。
 3. **原生模块与职责边界**：
-   - Web 前端使用原生 JavaScript、HTML 和 CSS，没有第三方运行时依赖。浏览器负责输入、呈现、导航与视口；Node Web 负责静态分发和固定代理；身份、来源复查、业务规则和持久状态由 Core 管理。
+   - Web 前端使用原生 JavaScript、HTML 和 CSS，没有第三方运行时依赖。浏览器负责输入、呈现、导航与视口；静态分发、身份、写前作者核验、业务规则和持久状态由 Core 管理。
 
 ---
 
@@ -132,6 +131,8 @@ services:
 
   moerise:
     build: .
+    ports:
+      - "127.0.0.1:3000:8787"
     restart: unless-stopped
     volumes:
       - state-data:/data/state
@@ -150,17 +151,6 @@ services:
     mem_limit: 1g
     cpus: 1.0
 
-  web:
-    build: ./web
-    restart: unless-stopped
-    depends_on:
-      moerise:
-        condition: service_healthy
-    environment:
-      - CORE_ORIGIN=http://moerise:8787
-      - PUBLIC_ORIGIN=${MOERISE_PUBLIC_ORIGIN}
-    ports:
-      - "127.0.0.1:3000:3000"
 ```
 
-Web 容器作为非 root 用户运行，仅对外暴露 3000 端口，前端和核心服务之间通过 Docker 内部网络安全通信。
+Core 容器以非 root 用户运行，默认将回环地址的 3000 端口映射至容器内 8787 端口。

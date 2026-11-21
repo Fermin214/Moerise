@@ -2,6 +2,10 @@ name: Android checks
 on:
   workflow_dispatch:
     inputs:
+      refresh_dependencies:
+        description: Generate dependency checksums and license inventory
+        type: boolean
+        default: false
       mode:
         type: choice
         options: [full, device, build]
@@ -287,6 +291,20 @@ jobs:
         with:
           packages: platform-tools
       - run: sdkmanager 'platforms;android-36' 'build-tools;36.0.0'
+      - name: Refresh dependency inventory
+        if: inputs.refresh_dependencies == true
+        run: |
+          source scripts/android/environment.sh
+          android_gradle --continue --write-verification-metadata sha256 :core:model:test :core:sync:test :core:markdown:test :androidApp:testDebugUnitTest :androidApp:assembleDebug :androidApp:exportReleaseDependencies
+          python3 scripts/android/licenses.py
+      - uses: actions/upload-artifact@v4
+        if: always() && inputs.refresh_dependencies == true
+        with:
+          name: android-dependency-inventory
+          path: |
+            mobile/gradle/verification-metadata.xml
+            docs/android/THIRD_PARTY_NOTICES.md
+            mobile/androidApp/build/reports/release-dependencies.tsv
       - run: >-
           scripts/android/check.sh --continue
           :androidApp:assembleRelease :androidApp:lintRelease
@@ -309,7 +327,8 @@ jobs:
           name: android-check-reports
           include-hidden-files: true
           path: |
-            mobile/shared/build/reports/tests/
+            mobile/androidApp/build/reports/tests/
+            mobile/core/*/build/reports/tests/
             mobile/androidApp/build/reports/lint-results-*.html
             mobile/androidApp/build/outputs/mapping/release/
   api:
@@ -351,4 +370,4 @@ jobs:
         if: always()
         with:
           name: android-api-reports
-          path: mobile/shared/build/reports/tests/
+          path: mobile/androidApp/build/reports/tests/

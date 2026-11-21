@@ -139,9 +139,7 @@ func (a *App) Run(ctx context.Context, server *http.Server) error {
 		workers.Go(func() { done <- outcome{name, run(workerCtx)} })
 	}
 	start("sync", a.Worker.Run)
-	start("notifications", a.Notifications.Run)
-	start("Feishu", a.RunFeishu)
-	start("private bots", a.RunPrivateBots)
+	start("channels", a.RunChannels)
 	start("vector index", a.runVector)
 	start("stars", a.runMap)
 	go func() { done <- outcome{"HTTP", server.ListenAndServe()} }()

@@ -7,7 +7,7 @@ Moerise 采用分层配置与版本化持久设置架构：底层基础设施参
 ## 一、配置分层与优先级
 
 1. **部署环境配置（基础设施）**：
-   - 包括 Memos 根地址、绑定作者账号、Memos PAT、对外公开域名（Core 使用 `MOERISE_PUBLIC_ORIGIN`，Web 使用 `PUBLIC_ORIGIN`）、监听端口、数据目录以及状态加密主密钥（`MOERISE_STATE_ENCRYPTION_KEY`）。
+   - 包括 Memos 根地址、绑定作者账号、Memos PAT、对外公开域名（`MOERISE_PUBLIC_ORIGIN`）、监听端口、数据目录以及状态加密主密钥（`MOERISE_STATE_ENCRYPTION_KEY`）。
    - 通过 `.env` 环境变量或 `config.json` 传入，供 Core 启动时加载。
 2. **产品持久设置（日常偏好与凭据）**：
    - 包括时区、每日回顾频率与时段、观星开关与星系智能命名、模型提供商与 API Key、QQ、飞书和 Telegram 渠道凭据及自定义 AI 提示词。

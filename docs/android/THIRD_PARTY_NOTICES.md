@@ -26,7 +26,7 @@ SQLite 原始引擎属于公有领域，说明见 [licenses/SQLite.txt](licenses
 | `androidx.compose.foundation:foundation-android:1.9.3` | [The Apache Software License, Version 2.0](http://www.apache.org/licenses/LICENSE-2.0.txt) |
 | `androidx.compose.foundation:foundation-layout-android:1.9.3` | [The Apache Software License, Version 2.0](http://www.apache.org/licenses/LICENSE-2.0.txt) |
 | `androidx.compose.material3:material3-android:1.4.0` | [The Apache Software License, Version 2.0](http://www.apache.org/licenses/LICENSE-2.0.txt) |
-| `androidx.compose.material:material-ripple-android:1.9.3` | [The Apache Software License, Version 2.0](http://www.apache.org/licenses/LICENSE-2.0.txt) |
+| `androidx.compose.material:material-ripple-android:1.8.1` | [The Apache Software License, Version 2.0](http://www.apache.org/licenses/LICENSE-2.0.txt) |
 | `androidx.compose.runtime:runtime-android:1.9.3` | [The Apache Software License, Version 2.0](http://www.apache.org/licenses/LICENSE-2.0.txt) |
 | `androidx.compose.runtime:runtime-annotation-android:1.9.3` | [The Apache Software License, Version 2.0](http://www.apache.org/licenses/LICENSE-2.0.txt) |
 | `androidx.compose.runtime:runtime-saveable-android:1.9.3` | [The Apache Software License, Version 2.0](http://www.apache.org/licenses/LICENSE-2.0.txt) |
@@ -61,7 +61,6 @@ SQLite 原始引擎属于公有领域，说明见 [licenses/SQLite.txt](licenses
 | `androidx.savedstate:savedstate-compose-android:1.3.3` | [The Apache Software License, Version 2.0](http://www.apache.org/licenses/LICENSE-2.0.txt) |
 | `androidx.savedstate:savedstate-ktx:1.3.3` | [The Apache Software License, Version 2.0](http://www.apache.org/licenses/LICENSE-2.0.txt) |
 | `androidx.sqlite:sqlite-android:2.6.1` | [The Apache Software License, Version 2.0](http://www.apache.org/licenses/LICENSE-2.0.txt) |
-| `androidx.sqlite:sqlite-bundled-android:2.6.1` | [The Apache Software License, Version 2.0](http://www.apache.org/licenses/LICENSE-2.0.txt) |
 | `androidx.sqlite:sqlite-framework-android:2.6.1` | [The Apache Software License, Version 2.0](http://www.apache.org/licenses/LICENSE-2.0.txt) |
 | `androidx.startup:startup-runtime:1.2.0` | [The Apache Software License, Version 2.0](http://www.apache.org/licenses/LICENSE-2.0.txt) |
 | `androidx.tracing:tracing:1.2.0` | [The Apache Software License, Version 2.0](http://www.apache.org/licenses/LICENSE-2.0.txt) |
@@ -83,7 +82,6 @@ SQLite 原始引擎属于公有领域，说明见 [licenses/SQLite.txt](licenses
 | `io.ktor:ktor-utils-jvm:3.3.1` | [The Apache Software License, Version 2.0](https://www.apache.org/licenses/LICENSE-2.0.txt) |
 | `io.ktor:ktor-websocket-serialization-jvm:3.3.1` | [The Apache Software License, Version 2.0](https://www.apache.org/licenses/LICENSE-2.0.txt) |
 | `io.ktor:ktor-websockets-jvm:3.3.1` | [The Apache Software License, Version 2.0](https://www.apache.org/licenses/LICENSE-2.0.txt) |
-| `org.jetbrains.compose.ui:ui-backhandler-android:1.9.1` | [The Apache Software License, Version 2.0](https://www.apache.org/licenses/LICENSE-2.0.txt) |
 | `org.jetbrains.kotlin:kotlin-stdlib:2.2.20` | [Apache-2.0](http://www.apache.org/licenses/LICENSE-2.0.txt) |
 | `org.jetbrains.kotlinx:kotlinx-collections-immutable-jvm:0.4.0` | [Apache-2.0](https://www.apache.org/licenses/LICENSE-2.0.txt) |
 | `org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2` | [Apache-2.0](https://www.apache.org/licenses/LICENSE-2.0.txt) |

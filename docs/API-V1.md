@@ -154,5 +154,5 @@ Moerise 实现了 Anthropic 提出的 Model Context Protocol (MCP) 标准，使�
 - 创建或编辑结果不明时，保留相同 `Idempotency-Key` 和完整请求体重试；同键不同内容返回冲突。删除要求来源摘要匹配。
 - 聊天创建需 `request_id`；生成需 `request_id`、`version`、`kind`，以及适用的 `content` 和 `language`。同一请求 ID 的重试复用原 turn；保存回复需携带助手消息的 `version`。
 - 模型连接检查需提交设置 `version`；设置修改后先重新读取版本。
-- `GET /api/app/v1/admin/notifications` 可按 `kind`（`review` 或 `reply`）和 `status` 组合筛选。筛选后最多返回 100 条，送达结果不明的记录排在前面。人工确认请求见[通知调度](NOTIFICATIONS.md)。
+- `GET /api/app/v1/admin/notifications` 可按 `kind`（`review` 或 `reply`）和 `status` 组合筛选。筛选后优先返回失败记录，同一状态按创建时间倒序，最多 100 条。状态为 `pending`、`running`、`sent`、`failed`；失败记录通过 `POST /api/app/v1/admin/notifications/{id}/retry` 和空对象请求体重试，见[通知调度](NOTIFICATIONS.md)。
 - 错误响应统一为 `{"error":{"code":"...","message":"...","retryable":false,"request_id":"..."}}`。来源不可用时不返回缓存正文；当日回顾尚未生成时，机器 REST/MCP 返回 `REVIEW_NOT_FOUND`。

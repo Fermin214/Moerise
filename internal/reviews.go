@@ -78,7 +78,7 @@ type reviewQuery interface {
 }
 
 func (s *ReviewService) dailyID(db reviewQuery, instance, user, date string) *sql.Row {
-	return db.QueryRow(`SELECT batch_id FROM review_plans
+	return db.QueryRow(`SELECT id FROM review_batches
         WHERE instance_id = ? AND user_name = ? AND local_date = ?`, instance, user, date)
 }
 
@@ -268,8 +268,8 @@ func (s *ReviewService) loadRange(ctx context.Context, id string, first, count i
 func (s *ReviewService) loadRangeWith(ctx context.Context, id string, first, count int, local bool) (ReviewBatch, error) {
 	instance, user := s.binding()
 	batch := ReviewBatch{Items: []ReviewItem{}}
-	err := s.Store.state.QueryRow(`SELECT b.id, b.local_date, b.timezone, b.created_at, p.settings_version
-		FROM review_batches b JOIN review_plans p ON p.batch_id = b.id
+	err := s.Store.state.QueryRow(`SELECT b.id, b.local_date, b.timezone, b.created_at, b.settings_version
+		FROM review_batches b
 		WHERE b.id = ? AND b.instance_id = ? AND b.user_name = ?`, id, instance, user).
 		Scan(&batch.ID, &batch.Date, &batch.Timezone, &batch.CreatedAt, &batch.SettingsVersion)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -333,4 +333,11 @@ func (s *ReviewService) Get(ctx context.Context, id string) (ReviewBatch, error)
 		return ReviewBatch{}, err
 	}
 	return s.load(ctx, id)
+}
+
+func (s *ReviewService) GetLocal(ctx context.Context, id string) (ReviewBatch, error) {
+	if !uuidPattern.MatchString(id) {
+		return ReviewBatch{}, failure("INVALID_ARGUMENT", "Invalid review batch", 422, false)
+	}
+	return s.loadRangeWith(ctx, id, 0, -1, true)
 }

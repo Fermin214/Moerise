@@ -74,4 +74,5 @@ await Promise.all([...contents].map(async ([name, content]) => {
     writeFile(`${output}/${file}`, body), writeFile(`${output}/${file}.br`, br), writeFile(`${output}/${file}.gz`, gz),
   ]));
 }));
+await writeFile(`${output}/.keep`, '');
 console.log('Web built: web/dist');

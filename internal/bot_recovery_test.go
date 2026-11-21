@@ -4,7 +4,9 @@ import (
 	"context"
 	"database/sql"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
+	"net/http"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -13,6 +15,79 @@ import (
 
 type botReplyProbe struct {
 	peer, message, text string
+}
+
+func TestFeishuRecipientChangeRetiresWorkAndRebinds(t *testing.T) {
+	settings := feishuSettings(t)
+	store := testStore(t, settings)
+	client := fakeClient(settings, func(*http.Request) (int, any, error) {
+		t.Error("retired private message reached Memos")
+		return 500, nil, nil
+	})
+	app := NewApp(settings, store, client)
+	defer app.Close()
+	accept := func(id, peer string) {
+		t.Helper()
+		var event feishuEvent
+		_ = json.Unmarshal(testFeishuEvent(store.Settings, id, peer, "private note"), &event)
+		if _, err := app.Feishu.receiveEvent(event); err != nil {
+			t.Fatal(err)
+		}
+	}
+	accept("old", "ou_owner")
+	if _, err := app.UpdateSettings(t.Context(), settingsChange(store.productVersion, `{"channel":{"user_open_id":"ou_next"}}`)); err != nil {
+		t.Fatal(err)
+	}
+	probe := &botReplyProbe{}
+	if worked, err := app.processBotMessage(t.Context(), "feishu-app", configured(settings.Channel.AppID), probe); err != nil || worked {
+		t.Fatalf("retired private work executed: %v %v", worked, err)
+	}
+	var phase string
+	var body []byte
+	if err := store.state.QueryRow(`SELECT phase,body FROM bot_inbox WHERE message_id='old'`).Scan(&phase, &body); err != nil || phase != "retired" || len(body) != 0 {
+		t.Fatalf("old private work: %s %v", phase, err)
+	}
+	accept("next", "ou_next")
+	peer, _, err := store.botPeer("feishu-app", configured(settings.Channel.AppID))
+	if err != nil || peer != "ou_next" {
+		t.Fatalf("replacement recipient did not bind: %s %v", peer, err)
+	}
+	if _, err := store.state.Exec(`UPDATE bot_inbox SET phase='retired',body=NULL WHERE message_id='next'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := app.UpdateSettings(t.Context(), settingsChange(store.productVersion, `{"channel":{"user_open_id":""}}`)); err != nil {
+		t.Fatal(err)
+	}
+	accept("unconfigured", "ou_third")
+	peer, _, err = store.botPeer("feishu-app", configured(settings.Channel.AppID))
+	if err != nil || peer != "ou_third" {
+		t.Fatalf("clearing recipient kept the old binding: %s %v", peer, err)
+	}
+}
+
+func TestFeishuStartupUsesConfiguredRecipientForMigratedWork(t *testing.T) {
+	settings := feishuSettings(t)
+	store := testStore(t, settings)
+	if _, err := store.state.Exec(`UPDATE bot_bindings SET peer='ou_historical' WHERE kind='feishu-app'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.state.Exec(`INSERT INTO bot_inbox(write_key,instance_id,user_name,kind,bot_id,peer,message_id,msg_index,digest,operation,received_at,message_at,phase,result_kind)
+		VALUES('migrated',?,?,'feishu-app',?,'ou_owner','migrated','event','digest','feishu-legacy',0,0,'reply','help')`, settings.Memos.InstanceID, settings.Memos.User, configured(settings.Channel.AppID)); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.initializeBots(); err != nil {
+		t.Fatal(err)
+	}
+	client := fakeClient(settings, func(*http.Request) (int, any, error) {
+		t.Error("migrated help contacted Memos")
+		return 500, nil, nil
+	})
+	app := NewApp(settings, store, client)
+	defer app.Close()
+	probe := &botReplyProbe{}
+	if worked, err := app.processBotMessage(t.Context(), "feishu-app", configured(settings.Channel.AppID), probe); err != nil || !worked || probe.peer != "ou_owner" {
+		t.Fatalf("configured recipient's migrated task did not run: %v %v %s", worked, err, probe.peer)
+	}
 }
 
 func (probe *botReplyProbe) Send(_ context.Context, peer, message, text string) (string, error) {
@@ -59,6 +134,7 @@ func TestBotReviewKeepsRequestDayAndRechecksSource(t *testing.T) {
 	}
 	deleted := plan.Items[0]
 	delete(notes, deleted.Name)
+	refreshReviewFixture(t, store, notes)
 	step()
 	if probe.peer != "35" || !strings.Contains(probe.text, requested.Format(time.DateOnly)) ||
 		strings.Contains(probe.text, deleted.Note.Content) || !strings.Contains(probe.text, plan.Items[1].Note.Content) {
@@ -117,7 +193,7 @@ func TestQQRestoreAndReplacementRetirePendingWork(t *testing.T) {
 	requireEmpty(store.state, `SELECT COUNT(*) FROM bot_bindings WHERE kind='qq'`)
 	requireEmpty(store.state, `SELECT COUNT(*) FROM bot_cursors WHERE kind='qq'`)
 	requireEmpty(store.state, `SELECT COUNT(*) FROM bot_inbox WHERE phase!='retired' OR body IS NOT NULL`)
-	requireEmpty(store.state, `SELECT COUNT(*) FROM notifications WHERE status!='skipped'`)
+	requireEmpty(store.state, `SELECT COUNT(*) FROM delivery_logs WHERE last_error!='BOT_REPLACED'`)
 	msg.ID, msg.Peer = "new", "new-owner"
 	if err := (botReceiverStore{store}).Accept(t.Context(), "qq", "9102", botCursor{}, &msg); err != nil {
 		t.Fatal(err)
@@ -138,7 +214,7 @@ func TestQQRestoreAndReplacementRetirePendingWork(t *testing.T) {
 	}
 	requireEmpty(restored.state, `SELECT COUNT(*) FROM bot_cursors WHERE kind='qq'`)
 	requireEmpty(restored.state, `SELECT COUNT(*) FROM bot_inbox WHERE phase!='restored' OR body IS NOT NULL`)
-	requireEmpty(restored.state, `SELECT COUNT(*) FROM notifications WHERE status IN ('pending','running')`)
+	requireEmpty(restored.state, `SELECT COUNT(*) FROM delivery_logs WHERE status IN ('pending','running')`)
 	var restoreMillis int64
 	if err := restored.state.QueryRow(`SELECT restored_at FROM bot_restore WHERE instance_id=?`, settings.Memos.InstanceID).Scan(&restoreMillis); err != nil ||
 		time.Since(time.UnixMilli(restoreMillis)) > time.Minute {

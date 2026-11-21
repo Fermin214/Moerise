@@ -48,7 +48,7 @@ flowchart TD
 | `tests/` | 带 `integration` 构建标签的真实 Memos 集成测试 |
 | `tests/testdata/` | 检索问题标注与虚构聊天质量评测数据 |
 | `mobile/androidApp/` | Android 入口、生命周期、平台资源和设备流程；`src/benchmark/` 仅进入性能包 |
-| `mobile/shared/` | 客户端界面、协议、同步与持久化；`jvmMain` 为 Linux 检查提供平台适配 |
+| `mobile/androidApp/`、`mobile/core/` | 原生 Android 界面、平台存储与纯 Kotlin 模型、同步和 Markdown |
 | `mobile/benchmark/` | 独立 Macrobenchmark runner 与 Profile 采集流程 |
 | `mobile/gradle/` | 工具链版本、Wrapper 和依赖完整性校验 |
 | `scripts/android/` | 构建、隔离服务、设备验收、性能与发行入口 |
@@ -85,9 +85,9 @@ Android 文件的版本管理规则见 [Android 开发](ANDROID.md#文件与产�
 | 向量与观星 | `embedding.go` 适配向量协议；`vector_index.go` 发布向量代次；`map_stars.go` 调用 `services/layout/` 并支持可选单次 LLM 命名；`map_stars_store.go` 保存快照；`map.go` 每日 03:00 调度与手动重建；`map_layout.go`、`map_store.go` 提供共享快照类型与索引增量对账 |
 | 每日回顾 | `reviews.go` 选择笔记并读取计划；`review_plans.go` 冻结规则与时段分配；`reviews_api.go` 提供只读查询 |
 | AI 聊天 | `chat_selection.go` 解析所选材料；`chat.go` 编排生成；`chat_store.go` 保存会话和消息；`llm*.go` 适配模型协议与错误；`models_api.go` 提供模型诊断 |
-| 通知与渠道 | `notifications.go` 管理调度、发送尝试和结果确认；`notification_channels.go` 绑定任务接收方；`review_delivery.go` 生成有序回顾分片；`feishu_delivery.go`、`feishu_review_parts.go`、`telegram_delivery.go` 适配平台 |
+| 通知与渠道 | `notifications.go` 管理调度、发送记录和失败重试；`notification_channels.go` 绑定任务接收方；`review_delivery.go` 生成有序回顾分片；`feishu_delivery.go`、`feishu_review_parts.go`、`telegram_delivery.go` 适配平台 |
 | 飞书记录 | `feishu.go` 接收私聊并原样记录；`feishu_crypto.go` 验证回调和加密队列；`feishu_client.go` 处理平台凭据、资源与消息 |
-| 机器人私聊 | `bot_qq_gateway.go` 与 `bot_telegram.go` 接收事件，`bot_inbox.go` 在同一事务绑定地址、去重和提交进度，`bot_runtime.go` 写入私密笔记、查询回顾并确认回执 |
+| 机器人私聊 | `bot_qq_gateway.go` 与 `bot_telegram.go` 接收事件，`bot_inbox.go` 在同一事务绑定地址、去重和提交进度，`bot_runtime.go` 写入私密笔记、查询回顾并保存发送结果；`channel_runtime.go` 统一 QQ、Telegram、飞书应用连接与事件唤醒 |
 
 ---
 
@@ -111,7 +111,7 @@ Android 文件的版本管理规则见 [Android 开发](ANDROID.md#文件与产�
 | `i18n.js`、`en.js` | 语言选择、消息绑定与英语翻译 |
 | `styles.css`、`tokens.css`、`interaction.css`、`shell.css`、`memos.css` | CSS 分层入口、视觉变量、共享交互、主界面与登录样式 |
 | `index.html`、`favicon.svg` | HTML 入口和站点图标 |
-| `web/build.mjs`、`web/server.mjs` | 带内容摘要的静态构建、压缩资源、同源代理与缓存策略 |
+| `web/build.mjs`、`web/assets.go` | 带内容摘要的静态构建、压缩资源、内嵌服务与缓存策略 |
 | `web/MEMOS-LICENSE` | Memos 衍生登录界面代码与样式的许可证 |
 
 ---

@@ -285,6 +285,7 @@ func (s *MapService) prepare(ctx context.Context, now time.Time) (*mapJob, error
 	unlockRuntime := s.Store.lockRuntime()
 	defer unlockRuntime()
 	if !s.Store.Settings.Stargazing.Enabled || !s.Store.Settings.Embedding.Enabled {
+		s.schedule.Store(nil)
 		return nil, nil
 	}
 	key := s.cacheKey()
@@ -317,8 +318,12 @@ func (s *MapService) prepare(ctx context.Context, now time.Time) (*mapJob, error
 		}
 	}
 	status, err := store.VectorStatusContext(ctx)
-	if err != nil || !status.Ready {
+	if err != nil {
 		return nil, err
+	}
+	if !status.Ready {
+		s.schedule.Store(nil)
+		return nil, nil
 	}
 	if sameAlgorithm && token == "" && previous.generation == status.Active.ID && previous.revision == status.ProjectionRevision {
 		s.schedule.Store(&mapSchedule{key, nextMapSchedule(now, store.Settings.Timezone)})
@@ -359,20 +364,24 @@ func (a *App) runMap(ctx context.Context) error {
 		if err := a.Map.Update(ctx); err != nil && ctx.Err() == nil {
 			slog.Warn("stars snapshot failed", "code", errorCode(err))
 		}
-		delay := time.Second
+		var timeout <-chan time.Time
+		var timer *time.Timer
 		if schedule := a.Map.schedule.Load(); schedule != nil {
-			if wait := min(time.Until(schedule.next), time.Minute); wait > time.Second {
-				delay = wait
-			}
+			timer = time.NewTimer(max(time.Until(schedule.next), time.Millisecond))
+			timeout = timer.C
 		}
-		timer := time.NewTimer(delay)
 		select {
 		case <-ctx.Done():
-			timer.Stop()
+			if timer != nil {
+				timer.Stop()
+			}
 			return ctx.Err()
 		case <-a.Map.wake:
+		case <-a.Store.mapWake:
+		case <-timeout:
+		}
+		if timer != nil {
 			timer.Stop()
-		case <-timer.C:
 		}
 	}
 }

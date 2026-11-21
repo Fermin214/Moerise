@@ -2,6 +2,41 @@ package moerise
 
 import "time"
 
+func (s *Store) wakeChannels() {
+	select {
+	case s.channelWake <- struct{}{}:
+	default:
+	}
+}
+
+func (s *Store) wakeBackground() {
+	for _, wake := range []chan struct{}{s.syncWake, s.vectorWake, s.mapWake} {
+		select {
+		case wake <- struct{}{}:
+		default:
+		}
+	}
+	s.wakeChannels()
+}
+
+func (s *Store) providerDelay(key string) time.Duration {
+	s.cooldownMu.Lock()
+	defer s.cooldownMu.Unlock()
+	return max(time.Until(s.cooldowns[key]), 0)
+}
+
+func (s *Store) deferProvider(key string, delay time.Duration) {
+	s.cooldownMu.Lock()
+	defer s.cooldownMu.Unlock()
+	if s.cooldowns == nil {
+		s.cooldowns = map[string]time.Time{}
+	}
+	at := time.Now().Add(delay)
+	if at.After(s.cooldowns[key]) {
+		s.cooldowns[key] = at
+	}
+}
+
 type notificationRetryError struct {
 	error
 	after time.Duration
@@ -92,9 +127,8 @@ func (s *Store) retainNotificationChannels(settings *Settings) error {
 	nextReplyConfig := settings.Channel
 	nextReplyConfig.Kind = "feishu-app"
 	nextReply := s.channelForDelivery(nextReplyConfig)
-	rows, err := s.state.Query(`SELECT DISTINCT kind,channel_key FROM notifications
-		WHERE instance_id = ? AND user_name = ? AND (status IN ('pending','running','unknown')
-			OR status = 'skipped' AND last_error = 'PART_INTERRUPTED')`,
+	rows, err := s.state.Query(`SELECT DISTINCT kind,channel_key FROM delivery_logs
+		WHERE instance_id = ? AND user_name = ? AND status IN ('pending','running','failed')`,
 		s.Settings.Memos.InstanceID, s.Settings.Memos.User)
 	if err != nil {
 		return err

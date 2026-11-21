@@ -112,15 +112,16 @@ func TestFeishuSocketPrivateBindingAndDailyReview(t *testing.T) {
 	send("om_other", "ou_other", "p2p", at)
 	var count int
 	peer, _, err := store.botPeer("feishu-app", "cli_test_app")
-	if err != nil || peer != "ou_owner" || store.state.QueryRow("SELECT COUNT(*) FROM channel_events").Scan(&count) != nil || count != 1 {
+	if err != nil || peer != "ou_owner" || store.state.QueryRow("SELECT COUNT(*) FROM bot_inbox").Scan(&count) != nil || count != 1 {
 		t.Fatalf("bound peer=%s count=%d err=%v", peer, count, err)
 	}
-	if ok, err := app.Feishu.processOne(ctx); !ok || err != nil {
+	if ok, err := processFeishuMessage(ctx, app.Feishu); !ok || err != nil {
 		t.Fatalf("review command: %v", err)
 	}
 	for name := range memos {
 		delete(memos, name)
 	}
+	refreshReviewFixture(t, store, memos)
 	deliverFeishuReply(t, app.Feishu)
 	if len(platform.texts) != 1 || platform.texts[0] != "今天没有可回顾的笔记" {
 		t.Fatalf("private reply returned stale review text: %v", platform.texts)

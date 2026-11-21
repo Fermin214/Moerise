@@ -35,6 +35,12 @@ type Store struct {
 	botStates        sync.Map
 	feishuGeneration uint64
 	qqSendMu         sync.Mutex
+	cooldownMu       sync.Mutex
+	cooldowns        map[string]time.Time
+	channelWake      chan struct{}
+	syncWake         chan struct{}
+	vectorWake       chan struct{}
+	mapWake          chan struct{}
 	projectionBump   atomic.Int64
 }
 
@@ -242,7 +248,8 @@ func NewStore(settings Settings) (*Store, error) {
 		state.Close()
 		return nil, err
 	}
-	store := &Store{Settings: settings, state: state, index: index, background: semaphore.NewWeighted(1)}
+	store := &Store{Settings: settings, state: state, index: index, background: semaphore.NewWeighted(1),
+		channelWake: make(chan struct{}, 1), syncWake: make(chan struct{}, 1), vectorWake: make(chan struct{}, 1), mapWake: make(chan struct{}, 1)}
 	for _, migration := range []struct {
 		db   *sql.DB
 		kind string
@@ -481,6 +488,10 @@ func (s *Store) Enqueue(mode string, immediate bool) (Job, error) {
 	})
 	if err != nil {
 		return Job{}, err
+	}
+	select {
+	case s.syncWake <- struct{}{}:
+	default:
 	}
 	return s.Job(id)
 }
@@ -722,6 +733,7 @@ func (s *Store) Publish(run string, absent map[string]bool) (map[string]any, err
 }
 
 func (s *Store) PublishScan(run string, absent map[string]bool, startSeq int64) (map[string]any, error) {
+	defer s.wakeBackground()
 	memos := []Memo{}
 	changed, removed := 0, 0
 	instance, user := s.Settings.Memos.InstanceID, s.Settings.Memos.User
@@ -797,6 +809,7 @@ func (s *Store) Refresh(name string, memo *Memo) error {
 }
 
 func (s *Store) RefreshContext(ctx context.Context, name string, memo *Memo) error {
+	defer s.wakeBackground()
 	return transactionContext(ctx, s.index, func(tx *sql.Tx) error {
 		if memo == nil {
 			count, err := s.deleteMemoTx(tx, name)
@@ -822,6 +835,7 @@ func (s *Store) advanceProjection(tx *sql.Tx) error {
 }
 
 func (s *Store) Advance(watermark string, full bool) error {
+	defer s.wakeChannels()
 	_, err := s.state.Exec(`UPDATE sync_state SET watermark = ?, last_incremental = ?,
 		last_full = CASE WHEN ? THEN ? ELSE last_full END, source_ok = 1, last_error = NULL,
 		updated_at = ? WHERE instance_id = ?`, watermark, nowText(), full, nowText(), nowText(), s.Settings.Memos.InstanceID)

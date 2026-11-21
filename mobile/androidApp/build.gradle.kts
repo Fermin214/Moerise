@@ -3,6 +3,9 @@ import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
+    alias(libs.plugins.kotlin.serialization)
+    alias(libs.plugins.ksp)
+    alias(libs.plugins.room)
     alias(libs.plugins.compose.compiler)
 }
 android {
@@ -56,6 +59,7 @@ android {
             isShrinkResources = false
         }
     }
+    testOptions.unitTests.isIncludeAndroidResources = true
     testBuildType = "fixture"
     sourceSets.getByName("fixture").res.srcDir("src/debug/res")
     sourceSets.getByName("benchmark").res.srcDir("src/debug/res")
@@ -67,7 +71,23 @@ android {
 }
 kotlin { compilerOptions.jvmTarget.set(JvmTarget.JVM_17) }
 dependencies {
-    implementation(project(":shared"))
+    implementation(project(":core:model"))
+    implementation(project(":core:sync"))
+    implementation(project(":core:markdown"))
+    implementation(libs.androidx.compose.foundation)
+    implementation(libs.androidx.compose.material3)
+    implementation(libs.markdown)
+    implementation(libs.sqlite.framework)
+    implementation(libs.coroutines.core)
+    implementation(libs.serialization.json)
+    implementation(libs.ktor.client.core)
+    implementation(libs.ktor.client.okhttp)
+    ksp(libs.room.compiler)
+    testImplementation(kotlin("test"))
+    testImplementation(libs.ktor.client.mock)
+    testImplementation(libs.mockwebserver)
+    testImplementation(libs.robolectric)
+    testImplementation(libs.androidx.test.core)
     implementation(libs.androidx.activity.compose)
     implementation(libs.androidx.core)
     implementation(libs.androidx.viewmodel)
@@ -103,5 +123,25 @@ tasks.register("exportReleaseDependencies") {
                 "${module.group}:${module.module}:${module.version}\t${it.file.absolutePath}"
             }.distinct().sorted().joinToString("\n", postfix = "\n"))
         }
+    }
+}
+
+room { schemaDirectory("$projectDir/schemas") }
+tasks.withType<Test>().configureEach {
+    maxHeapSize = "512m"
+    jvmArgs("-XX:ActiveProcessorCount=2")
+    systemProperty("robolectric.dependency.repo.url", "https://repo.maven.apache.org/maven2")
+    testLogging.events("passed", "failed", "skipped")
+    if (!name.contains("Integration")) exclude("**/CoreIntegrationTest*", "**/StarMapIntegrationTest*")
+}
+for ((taskName, testClass) in listOf("coreIntegrationTest" to "CoreIntegrationTest", "starsIntegrationTest" to "StarMapIntegrationTest")) {
+    tasks.register<Test>(taskName) {
+        dependsOn("compileDebugUnitTestKotlin")
+        val androidUnitTest = tasks.named<Test>("testDebugUnitTest").get()
+        testClassesDirs = androidUnitTest.testClassesDirs
+        classpath = androidUnitTest.classpath
+        systemProperties(androidUnitTest.systemProperties)
+        include("**/$testClass*")
+        outputs.upToDateWhen { false }
     }
 }

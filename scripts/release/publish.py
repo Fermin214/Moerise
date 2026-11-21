@@ -31,7 +31,7 @@ def linux_release(root, repo):
         raise SystemExit('Linux package versions differ')
     files = [root / f'linux-{arch}/moerise_{value}_linux_{arch}.tar.gz' for arch in ARCHES]
     images = {}
-    for component, suffix in [('core', ''), ('web', '-web'), ('layout', '-layout')]:
+    for component, suffix in [('core', ''), ('layout', '-layout')]:
         image = f'ghcr.io/{repo.lower()}{suffix}'
         refs = []
         for arch in ARCHES:
@@ -67,6 +67,18 @@ def android_release(root, sha, run_id):
             or smoke.get('session_restored_without_login') is not True or flow.get('status') != 'passed'
             or flow.get('server_assertions', {}).get('created_note_count') != 1):
         raise SystemExit('Android APK does not match the successful signed smoke test')
+    upgrade_report = report.parent / 'upgrade-smoke/result.json'
+    if not upgrade_report.is_file():
+        raise SystemExit('Android upgrade verification result is missing')
+    upgrade_smoke = json.loads(upgrade_report.read_text())
+    upgrade = upgrade_smoke.get('upgrade', {})
+    if (any(upgrade_smoke.get(key) != value for key, value in expected_report.items())
+            or str(upgrade_smoke.get('api')) != min_sdk
+            or upgrade_smoke.get('session_restored_without_login') is not True
+            or upgrade_smoke.get('flows', {}).get('upgrade-smoke', {}).get('status') != 'passed'
+            or upgrade.get('from') != '0.2.0' or upgrade.get('pending_write_count') != 1
+            or any(upgrade.get(key) is not True for key in ('account', 'draft', 'keystore_session', 'local_database_restored'))):
+        raise SystemExit('Android APK does not match the successful upgrade test')
     files = [metadata.with_name(base + suffix) for suffix in ('.apk', '.apk.sha256', '.apk.json', '-notices.zip')]
     if files[1].read_text().split() != [digest, apk.name]:
         raise SystemExit('Android APK checksum file does not match the package')

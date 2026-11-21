@@ -8,7 +8,7 @@ import { pathToFileURL } from 'node:url';
 import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { createWebServer } from '../server.mjs';
+import { createWebServer } from './fixture-server.mjs';
 
 const runtime = process.env.MOERISE_PLAYWRIGHT_MODULE;
 const { [process.env.MOERISE_PLAYWRIGHT_ENGINE || 'chromium']: browserType } = runtime ? await import(pathToFileURL(runtime).href) : await import('playwright');
@@ -318,6 +318,7 @@ test('temporary failures retain published points; index states clear them and so
   for (const status of ['waiting', 'building', 'unavailable']) {
     state.status = status;
     await Promise.all([page.waitForResponse(response => new URL(response.url()).pathname.endsWith('/map')), page.locator('#map-field').press('r')]);
+    await ready(page);
     assert.equal(await page.locator('.map-dot').count(), 4);
     assert.equal(await card(page).count(), 1);
   }

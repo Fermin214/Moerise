@@ -6,7 +6,7 @@ SHA-256、签名证书摘要、设备型号、系统/API、ABI、页大小、界
 日志、截图、数据库副本和 trace 放入 `.local/android/`。
 
 Android 0.1.0 首次发行使用新安装数据，Room 版本为 1，
-以完整的 [schema 1](../../mobile/shared/schemas/io.github.fermin214.moerise.data.LocalDatabase/1.json) 建库。
+以完整的 [schema 1](../../mobile/androidApp/schemas/io.github.fermin214.moerise.data.LocalDatabase/1.json) 建库。
 开发期 APK 和数据库不提供兼容迁移，首版设备流程不包含旧开发版覆盖升级。
 同一首版安装内的关闭重开、离线队列和输入恢复仍按下述流程检查。
 GitHub 的恢复流程使用同一签名、递增版本号的两份隔离 APK。第一次安装时打开统计，带着离线笔记队列覆盖安装后，检查欢迎框、统计选择和草稿。

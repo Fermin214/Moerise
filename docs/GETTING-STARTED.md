@@ -50,7 +50,7 @@ openssl rand -base64 32  # MOERISE_STATE_ENCRYPTION_KEY
 5. 启动完整服务：
 
 ```bash
-docker compose pull moerise web
+docker compose pull moerise
 docker compose up -d
 docker compose ps
 curl --fail http://localhost:3000/health/ready
@@ -79,7 +79,7 @@ MOERISE_MEMOS_PUBLIC_URL=https://memos.example.com
 3. 填入作者绑定及独立密钥后启动：
 
 ```bash
-docker compose pull moerise web
+docker compose pull moerise
 docker compose up -d
 ```
 
@@ -97,7 +97,7 @@ docker compose up -d
 
 ## 四、反向代理与 HTTPS
 
-Compose 默认端口绑定回环地址。公网部署时，在 Web 前配置 Nginx、Caddy 或 Traefik 等 HTTPS 反向代理，并设置：
+Compose 默认端口绑定回环地址。公网部署时，在 Core 前配置 Nginx、Caddy 或 Traefik 等 HTTPS 反向代理，并设置：
 
 ```dotenv
 MOERISE_PUBLIC_ORIGIN=https://notes.example.com
@@ -105,7 +105,7 @@ MOERISE_PUBLIC_ORIGIN=https://notes.example.com
 
 `MOERISE_PUBLIC_ORIGIN` 必须与浏览器访问的协议、主机名和端口一致。
 
-将该域名转发至 Web 的 3000 端口。Web 内部代理 `/api/app/v1`；外部机器 REST 与 MCP（`/api/ext/v1`、`/mcp`）按需直接转发至 Core 的 8787 端口。
+将该域名转发至 Core 对外映射的 3000 端口。网页、`/api/app/v1`、外部只读 REST 与 MCP（`/api/ext/v1`、`/mcp`）共用入口；外部接口仍需独立令牌。
 
 ---
 
@@ -136,10 +136,12 @@ Core 根据容器 cgroup 调整内存预算与并发，常用档位见 `deploy/r
 Compose 会在卷名前添加项目名前缀。升级时保持 `COMPOSE_PROJECT_NAME`、Memos 实例标识与状态加密密钥一致。
 
 1. 按[运行与恢复](OPERATIONS.md)备份 Memos 数据、Moerise 产品状态与 `.env`。
-2. 将 `.env` 中的 `MOERISE_IMAGE_TAG` 设为目标版本，拉取镜像并检查就绪状态：
+2. 将 `.env` 中的 `MOERISE_IMAGE_TAG` 设为目标版本。独立 Web 容器部署升级为内嵌 Web 时，将 `MOERISE_PORT` 改为原 `WEB_PORT`（默认 `3000`），将 `MOERISE_BIND_ADDRESS` 设为原 `WEB_BIND_ADDRESS`，删除 `WEB_PORT`、`WEB_BIND_ADDRESS`、`WEB_MEMORY_LIMIT` 和 `WEB_CPU_LIMIT`。保持 `MOERISE_PUBLIC_ORIGIN` 与对外地址一致。
+3. 拉取镜像，删除旧容器并启动服务。`down` 不加 `--volumes`，保留所有命名卷：
 
    ```bash
-   docker compose pull moerise web
+   docker compose pull moerise
+   docker compose down --remove-orphans
    docker compose up -d
    curl --fail http://localhost:3000/health/ready
    ```

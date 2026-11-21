@@ -117,10 +117,10 @@ func TestReviewRecoveryOnlyLatestDueAndKeepsOldQueue(t *testing.T) {
 		t.Fatalf("late queue: %+v %v", items, err)
 	}
 	var clock string
-	if err := store.state.QueryRow(`SELECT clock FROM review_plan_slots WHERE id = ?`, *items[0].SlotID).Scan(&clock); err != nil || clock != "18:00" {
+	if err := store.state.QueryRow(`SELECT clock FROM delivery_logs WHERE slot_id = ?`, *items[0].SlotID).Scan(&clock); err != nil || clock != "18:00" {
 		t.Fatalf("recovered an earlier slot: %s %v", clock, err)
 	}
-	if _, err := store.state.Exec(`UPDATE notifications SET status = 'unknown' WHERE id = ?`, items[0].ID); err != nil {
+	if _, err := store.state.Exec(`UPDATE delivery_logs SET status = 'failed' WHERE id = ?`, items[0].ID); err != nil {
 		t.Fatal(err)
 	}
 	for _, at := range []time.Time{late.Add(time.Hour), late.AddDate(0, 0, 1)} {
@@ -129,7 +129,7 @@ func TestReviewRecoveryOnlyLatestDueAndKeepsOldQueue(t *testing.T) {
 		}
 	}
 	detail, err := service.Detail(items[0].ID)
-	if err != nil || detail.Notification.Status != "unknown" || detail.Notification.SlotID == nil {
+	if err != nil || detail.Notification.Status != "failed" || detail.Notification.SlotID == nil {
 		t.Fatalf("recovery changed an existing unknown task: %+v %v", detail, err)
 	}
 }
@@ -146,7 +146,7 @@ func TestReviewSourceFailureDoesNotFreezeEmptyPlan(t *testing.T) {
 		t.Fatal("source failure produced a plan")
 	}
 	var count int
-	if err := reviews.Store.state.QueryRow(`SELECT COUNT(*) FROM review_plans`).Scan(&count); err != nil || count != 0 {
+	if err := reviews.Store.state.QueryRow(`SELECT COUNT(*) FROM review_batches`).Scan(&count); err != nil || count != 0 {
 		t.Fatalf("source error persisted an empty plan: %d %v", count, err)
 	}
 	client.client.Transport = original
@@ -238,7 +238,7 @@ func TestReviewTextOnlySlotsSkipImagesWithoutReplacement(t *testing.T) {
 		t.Fatalf("channel capability caused another draw: %d %v", selections, err)
 	}
 	var missing int
-	if err := store.state.QueryRow(`SELECT COUNT(*) FROM notifications WHERE slot_id IS NULL`).Scan(&missing); err != nil || missing != 0 {
+	if err := store.state.QueryRow(`SELECT COUNT(*) FROM delivery_logs WHERE slot_id IS NULL`).Scan(&missing); err != nil || missing != 0 {
 		t.Fatalf("delivery parts lost their slot reference: %d %v", missing, err)
 	}
 }

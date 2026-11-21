@@ -552,6 +552,16 @@ func (s *Store) persistSettings(settings Settings) error {
 		if changed, _ := result.RowsAffected(); changed != 1 {
 			return failure("SETTINGS_CONFLICT", "Settings have changed; reload before saving", 409, false)
 		}
+		if configured(s.Settings.Channel.UserOpenID) != configured(settings.Channel.UserOpenID) {
+			instance, user, bot := settings.Memos.InstanceID, settings.Memos.User, s.Settings.Channel.botID("feishu-app")
+			if _, err := tx.Exec(`DELETE FROM bot_bindings WHERE instance_id=? AND user_name=? AND kind='feishu-app' AND bot_id=?`, instance, user, bot); err != nil {
+				return err
+			}
+			if _, err := tx.Exec(`UPDATE bot_inbox SET body=NULL,phase='retired',error_code='CHANNEL_BINDING_CHANGED'
+				WHERE instance_id=? AND user_name=? AND kind='feishu-app' AND bot_id=? AND phase IN ('pending','reply','sending')`, instance, user, bot); err != nil {
+				return err
+			}
+		}
 		if len(retiredKeys) > 0 {
 			instance, user := settings.Memos.InstanceID, settings.Memos.User
 			for _, stmt := range []string{
@@ -564,7 +574,7 @@ func (s *Store) persistSettings(settings Settings) error {
 				}
 			}
 			for key := range retiredKeys {
-				if _, err := tx.Exec(`UPDATE notifications SET status='skipped',last_error='BOT_REPLACED' WHERE instance_id=? AND user_name=? AND channel_key=? AND status IN ('pending','unknown')`, instance, user, key); err != nil {
+				if _, err := tx.Exec(`UPDATE delivery_logs SET status='failed',last_error='BOT_REPLACED' WHERE instance_id=? AND user_name=? AND channel_key=? AND status IN ('pending','running','failed')`, instance, user, key); err != nil {
 					return err
 				}
 			}

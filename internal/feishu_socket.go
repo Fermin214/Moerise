@@ -27,34 +27,6 @@ func (s *Store) socketConfig() feishuSocketConfig {
 	return feishuSocketConfig{configured(channel.AppID), configured(channel.AppSecret), s.feishuGeneration}
 }
 
-func (a *App) runFeishuSocket(ctx context.Context) {
-	var active feishuSocketConfig
-	stop := func() {}
-	defer func() { stop() }()
-	for ctx.Err() == nil {
-		unlock := a.Store.lockRuntime()
-		config := a.Store.socketConfig()
-		unlock()
-		if config != active {
-			stop()
-			active = config
-			stop = func() {}
-			if config.id != "" {
-				socketCtx, cancel := context.WithCancel(ctx)
-				done := make(chan struct{})
-				stop = func() { cancel(); <-done }
-				go func() {
-					defer close(done)
-					a.connectFeishu(socketCtx, config, time.Minute)
-				}()
-			}
-		}
-		if err := runtimePause(ctx, 500*time.Millisecond); err != nil {
-			return
-		}
-	}
-}
-
 func (a *App) connectFeishu(ctx context.Context, config feishuSocketConfig, retryDelay time.Duration, options ...larkws.ClientOption) {
 	handler := dispatcher.NewEventDispatcher("", "").OnCustomizedEvent("im.message.receive_v1", func(ctx context.Context, req *larkevent.EventReq) error {
 		unlock := a.Store.lockRuntime()

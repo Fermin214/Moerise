@@ -29,10 +29,6 @@ func (p *notificationPlatform) Send(_ context.Context, item Notification) (strin
 	return "platform-receipt:" + item.ID, nil
 }
 
-func (p *notificationPlatform) Check(_ context.Context, item Notification, receipt string) (bool, error) {
-	return receipt == "platform-receipt:"+item.ID, nil
-}
-
 func notificationFixture(t *testing.T) (*NotificationService, *notificationPlatform) {
 	t.Helper()
 	reviews, _ := reviewFixture(t, 12)
@@ -154,92 +150,69 @@ func TestDailyReviewWithoutPushAndMultipleSlots(t *testing.T) {
 	}
 }
 
-func TestEmptyReviewSlotsAreSilentAndSourceFailureRetries(t *testing.T) {
+func TestEmptyReviewSlotsAndLocalScheduling(t *testing.T) {
 	reviews, _ := reviewFixture(t, 0)
 	reviews.Store.Settings.Notifications.Enabled = true
 	service := NewNotificationService(reviews.Store, reviews, &notificationPlatform{})
-	ctx := context.Background()
 	at := time.Date(2026, 10, 28, 2, 0, 0, 0, time.UTC)
-	if count, err := service.Schedule(ctx, at); err != nil || count != 0 {
-		t.Fatalf("empty pool: %d %v", count, err)
+	if count, err := service.Schedule(t.Context(), at); err != nil || count != 0 {
+		t.Fatalf("empty: %d %v", count, err)
 	}
-	items, err := service.List("")
-	if err != nil || len(items) != 0 {
-		t.Fatal("empty review created a platform notification")
+	var ordinal int
+	if err := reviews.Store.state.QueryRow(`SELECT scheduled_ordinal FROM review_batches`).Scan(&ordinal); err != nil || ordinal != 0 {
+		t.Fatalf("empty slot: %d %v", ordinal, err)
 	}
-	var slots int
-	if err := reviews.Store.state.QueryRow("SELECT COUNT(*) FROM review_schedule_slots").Scan(&slots); err != nil || slots != 1 {
-		t.Fatalf("empty slot was not marked processed: %d %v", slots, err)
-	}
-	client := reviews.Source.(*MemosClient)
-	client.client.Transport = roundTripFunc(func(*http.Request) (*http.Response, error) {
-		return nil, fmt.Errorf("offline")
+	reviews.Source = fakeClient(reviews.Store.Settings, func(*http.Request) (int, any, error) {
+		t.Fatal("local scheduling contacted source")
+		return 500, nil, nil
 	})
-	if _, err := service.Schedule(ctx, at.AddDate(0, 0, 1)); err == nil {
-		t.Fatal("source failure was treated as an empty pool")
-	}
-	if err := reviews.Store.state.QueryRow("SELECT COUNT(*) FROM review_schedule_slots").Scan(&slots); err != nil || slots != 1 {
-		t.Fatal("failed source lookup consumed the next slot")
+	if count, err := service.Schedule(t.Context(), at.AddDate(0, 0, 1)); err != nil || count != 0 {
+		t.Fatalf("local empty: %d %v", count, err)
 	}
 }
 
-func TestNotificationAttemptsUnknownResolutionAndRestart(t *testing.T) {
+func TestNotificationFailureRetryAndRestart(t *testing.T) {
 	service, platform := notificationFixture(t)
-	ctx := context.Background()
 	at := time.Date(2026, 10, 26, 2, 0, 0, 0, time.UTC)
-	if _, err := service.Schedule(ctx, at); err != nil {
+	if _, err := service.Schedule(t.Context(), at); err != nil {
 		t.Fatal(err)
 	}
 	items, _ := service.List("")
 	id := items[0].ID
-	platform.mode = "rejected"
-	if _, err := service.Deliver(ctx); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := service.Store.state.Exec("UPDATE notifications SET available_at = 0"); err != nil {
-		t.Fatal(err)
-	}
-	platform.mode = "unknown"
-	if _, err := service.Deliver(ctx); err != nil {
-		t.Fatal(err)
-	}
-	detail, err := service.Detail(id)
-	if err != nil || detail.Notification.Status != "unknown" || len(detail.Attempts) != 2 ||
-		detail.Attempts[0].Outcome != "rejected" || detail.Attempts[1].Outcome != "unknown" {
-		t.Fatalf("attempt history lost: %+v %v", detail, err)
-	}
-	if progress, err := service.Deliver(ctx); err != nil || progress || platform.calls != 2 {
-		t.Fatal("unknown outcome was automatically retried")
-	}
-	if _, err := service.Resolve(ctx, id, "sent", "wrong-receipt", "operator"); errorCode(err) != "NOTIFICATION_CONFLICT" {
-		t.Fatal("unrelated receipt marked a notification as sent")
+	for attempt, mode := range []string{"rejected", "unknown"} {
+		platform.mode = mode
+		if worked, err := service.Deliver(t.Context()); err != nil || !worked {
+			t.Fatalf("send: %v", err)
+		}
+		detail, err := service.Detail(id)
+		if err != nil || detail.Notification.Status != "failed" || detail.Notification.Attempts != attempt+1 {
+			t.Fatalf("failed record: %+v %v", detail, err)
+		}
+		if worked, err := service.Deliver(t.Context()); err != nil || worked {
+			t.Fatal("failed send automatically retried")
+		}
+		if _, err := service.Retry(t.Context(), id); err != nil {
+			t.Fatal(err)
+		}
 	}
 	platform.mode = ""
-	if _, err := service.Resolve(ctx, id, "not_sent", "", "operator"); err != nil {
-		t.Fatal(err)
+	if worked, err := service.Deliver(t.Context()); err != nil || !worked || platform.calls != 3 {
+		t.Fatalf("retry: %v", err)
 	}
-	if _, err := service.Deliver(ctx); err != nil || platform.calls != 3 ||
-		platform.uuids[0] != platform.uuids[1] || platform.uuids[2] == platform.uuids[1] {
-		t.Fatal("resolution did not preserve known retries or create a new confirmed attempt")
+	if _, err := service.Retry(t.Context(), id); errorCode(err) != "NOTIFICATION_CONFLICT" {
+		t.Fatalf("sent retry: %v", err)
 	}
-	if _, err := service.Schedule(ctx, at.AddDate(0, 0, 1)); err != nil {
+	if _, err := service.Schedule(t.Context(), at.AddDate(0, 0, 1)); err != nil {
 		t.Fatal(err)
 	}
 	platform.mode = "crash"
-	func() {
-		defer func() { _ = recover() }()
-		_, _ = service.Deliver(ctx)
-	}()
+	func() { defer func() { _ = recover() }(); _, _ = service.Deliver(t.Context()) }()
 	if err := service.recover(); err != nil {
 		t.Fatal(err)
 	}
-	unknown, _ := service.List("unknown")
-	if len(unknown) != 1 || unknown[0].LastError == nil || *unknown[0].LastError != "PROCESS_INTERRUPTED" {
-		t.Fatal("interrupted attempt was blindly returned to pending")
-	}
-	platform.mode = ""
-	if _, err := service.Resolve(ctx, unknown[0].ID, "sent", "platform-receipt:"+unknown[0].ID, "operator"); err != nil {
-		t.Fatal(err)
+	failed, _ := service.List("failed")
+	if len(failed) != 1 || configured(failed[0].LastError) != "PROCESS_INTERRUPTED" {
+		t.Fatalf("restart: %+v", failed)
 	}
 }
 
@@ -263,7 +236,7 @@ func TestRestoredNotificationsRequireOutcomeReview(t *testing.T) {
 	}
 	restored := testStore(t, settings)
 	recovered := NewNotificationService(restored, NewReviewService(restored, service.Reviews.Source), service.Transport)
-	unknown, err := recovered.List("unknown")
+	unknown, err := recovered.List("failed")
 	if err != nil || len(unknown) != 1 || unknown[0].LastError == nil || *unknown[0].LastError != "STATE_RESTORED" {
 		t.Fatalf("restored queue can repeat a later send: %v %v", unknown, err)
 	}
@@ -294,118 +267,90 @@ func TestNotificationUpgradePreservesUncertainFragmentsAndAudit(t *testing.T) {
 		INSERT INTO review_delivery_parts(notification_id,root_id,position,kind,memo_name,source_version)
 		VALUES ('first','first',0,'header','',''),('next','first',1,'text','memos/note','v1');
 		INSERT INTO notification_attempts VALUES ('attempt','first',1,'uuid','start','end','unknown',NULL,'lost');
-		INSERT INTO notification_resolutions VALUES ('resolve','first','not_sent',NULL,'owner','time');`); err != nil {
+		INSERT INTO notification_resolutions VALUES ('resolve','first','not_sent',NULL,'owner','time');
+        INSERT INTO review_batches VALUES('batch','instance','user','2026-11-21','Asia/Shanghai','stamp');
+        INSERT INTO review_plans VALUES('batch','instance','user','2026-11-21',7,'{"review":{"tags":["普通文本","中文","123",null]}}');
+        INSERT INTO review_plan_slots VALUES('slot','batch',0,'09:00',0,3);
+        INSERT INTO review_schedule_slots VALUES('instance','user','destination','Asia/Shanghai','2026-11-21','09:00');
+        INSERT INTO channel_events(message_id,event_id,event_hash,app_id,sender_open_id,payload,status,reply_uuid,available_at,created_at)
+        VALUES('legacy','event','digest','app','peer',x'00112233','processing','reply',0,'2026-11-21T00:00:00Z');`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := db.Exec("INSERT INTO schema_migrations VALUES ('001',?,'stamp')", hashBytes(body)); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := db.Exec(`INSERT INTO channel_events(message_id,event_id,event_hash,app_id,sender_open_id,status,reply_uuid,reply_status,available_at,created_at,last_error)
+		VALUES('restored','restored-event','digest','app','peer','processed','restored-reply','skipped',0,'2026-11-21T00:00:00Z','STATE_RESTORED')`); err != nil {
+		t.Fatal(err)
+	}
 	if err := migrate(db, "state"); err != nil {
 		t.Fatal(err)
 	}
+	var clock, sealedBody string
+	var ordinal int
+	if err := db.QueryRow(`SELECT json_extract(slots_json,'$[0].clock'),scheduled_ordinal FROM review_batches WHERE id='batch'`).Scan(&clock, &ordinal); err != nil || clock != "09:00" || ordinal != 0 {
+		t.Fatalf("frozen plan migration: %v", err)
+	}
+	if err := db.QueryRow(`SELECT hex(body) FROM bot_inbox WHERE message_id='legacy' AND phase='pending' AND operation='feishu-legacy'`).Scan(&sealedBody); err != nil || sealedBody != "00112233" {
+		t.Fatalf("legacy payload: %q %v", sealedBody, err)
+	}
 	var intact bool
-	if err := db.QueryRow(`SELECT EXISTS(SELECT 1 FROM notifications held
-		JOIN review_delivery_parts part ON part.notification_id=held.id
-		JOIN notification_attempts attempt ON attempt.notification_id=part.root_id
-		JOIN notification_resolutions audit ON audit.notification_id=part.root_id
-		WHERE held.status='skipped' AND held.last_error='PART_INTERRUPTED' AND part.memo_name='memos/note'
-			AND attempt.error_code='lost' AND audit.resolved_by='owner')
-		AND NOT EXISTS(SELECT 1 FROM pragma_foreign_key_check)`).Scan(&intact); err != nil || !intact {
-		t.Fatalf("migration damaged delivery history: %v", err)
+	if err := db.QueryRow(`SELECT EXISTS(SELECT 1 FROM delivery_logs WHERE id='first' AND status='failed')
+        AND EXISTS(SELECT 1 FROM delivery_logs WHERE id='next' AND status='pending' AND root_id='first' AND part_ordinal=1 AND memo_name='memos/note' AND available_at=0)
+        AND EXISTS(SELECT 1 FROM bot_inbox WHERE message_id='restored' AND phase='restored' AND body IS NULL)
+        AND NOT EXISTS(SELECT 1 FROM pragma_foreign_key_check)
+        AND NOT EXISTS(SELECT 1 FROM sqlite_master WHERE type='trigger')
+        AND NOT EXISTS(SELECT 1 FROM sqlite_master WHERE name IN ('notifications','notification_attempts','notification_resolutions','channel_events','review_plans','review_plan_slots'))`).Scan(&intact); err != nil || !intact {
+		t.Fatalf("migration: %v", err)
 	}
 }
 
-func TestRestoreHoldsReviewFragmentsUntilResolution(t *testing.T) {
-	for _, test := range []struct{ before, decision string }{{"running", "sent"}, {"unknown", "not_sent"}, {"pending", "not_sent"}} {
-		t.Run(test.before, func(t *testing.T) {
-			queue, platform := notificationFixture(t)
-			store := queue.Store
-			var ids []string
-			for position := range 3 {
-				id, err := queue.enqueue("review", fmt.Sprint(position), "2026-11-18", nil, nil)
-				if err != nil {
-					t.Fatal(err)
-				}
-				ids = append(ids, id)
-				if _, err := store.state.Exec(`INSERT INTO review_delivery_parts
-					(notification_id,root_id,position,kind,memo_name,source_version) VALUES(?,?,?,'text','','')`,
-					id, ids[0], position); err != nil {
-					t.Fatal(err)
-				}
-			}
-			if _, err := store.state.Exec("UPDATE notifications SET status=? WHERE id=?", test.before, ids[0]); err != nil {
-				t.Fatal(err)
-			}
-			if test.before == "unknown" {
-				if _, err := store.state.Exec("UPDATE notifications SET status='skipped', last_error='PART_INTERRUPTED' WHERE id=?", ids[1]); err != nil {
-					t.Fatal(err)
-				}
-			}
-			settings := store.Settings
-			snapshot := filepath.Join(t.TempDir(), "snapshot")
-			if _, err := Backup(settings, snapshot); err != nil {
-				t.Fatal(err)
-			}
-			store.Close()
-			if err := Restore(settings, snapshot, filepath.Join(t.TempDir(), "safety")); err != nil {
-				t.Fatal(err)
-			}
-			restored := testStore(t, settings)
-			queue = NewNotificationService(restored, nil, platform)
-			unknown, err := queue.List("unknown")
-			if err != nil || len(unknown) != 1 || unknown[0].ID != ids[0] {
-				t.Fatalf("restore exposed fragments out of order: %v %v", unknown, err)
-			}
-			if worked, err := queue.Deliver(t.Context()); err != nil || worked {
-				t.Fatalf("restored queue sent before confirmation: %v", err)
-			}
-			if _, err := queue.Resolve(t.Context(), ids[0], test.decision, "", "owner"); err != nil {
-				t.Fatal(err)
-			}
-			first := 0
-			if test.decision == "sent" {
-				first = 1
-			}
-			for _, id := range ids[first:] {
-				worked, err := queue.Deliver(t.Context())
-				detail, detailErr := queue.Detail(id)
-				if !worked || err != nil || detailErr != nil || detail.Notification.Status != "sent" {
-					t.Fatalf("fragment %s did not resume in order: %v %v", id, err, detailErr)
-				}
-			}
-			if platform.calls != 3-first {
-				t.Fatalf("unexpected number of resumed fragments: %d", platform.calls)
-			}
-		})
+func TestRestoreRequiresExplicitRetryForEveryPendingFragment(t *testing.T) {
+	queue, platform := notificationFixture(t)
+	var ids []string
+	for position := range 3 {
+		id, err := queue.enqueue("review", fmt.Sprint(position), "2026-11-18", nil, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, id)
+		if _, err := queue.Store.state.Exec(`UPDATE delivery_logs SET root_id=?,part_ordinal=? WHERE id=?`, ids[0], position, id); err != nil {
+			t.Fatal(err)
+		}
 	}
-}
-
-func TestNotificationReceiptResolutionAndAudit(t *testing.T) {
-	service, platform := notificationFixture(t)
-	ctx := context.Background()
-	if _, err := service.Schedule(ctx, time.Date(2026, 10, 26, 2, 0, 0, 0, time.UTC)); err != nil {
+	snapshot := filepath.Join(t.TempDir(), "snapshot")
+	settings := queue.Store.Settings
+	if _, err := Backup(settings, snapshot); err != nil {
 		t.Fatal(err)
 	}
-	platform.mode = "unknown"
-	if _, err := service.Deliver(ctx); err != nil {
+	queue.Store.Close()
+	if err := Restore(settings, snapshot, filepath.Join(t.TempDir(), "safety")); err != nil {
 		t.Fatal(err)
 	}
-	items, err := service.List("unknown")
-	if err != nil || len(items) == 0 {
-		t.Fatalf("missing unknown notification: %v %v", items, err)
+	restored := testStore(t, settings)
+	queue = NewNotificationService(restored, nil, platform)
+	if worked, err := queue.Deliver(t.Context()); err != nil || worked {
+		t.Fatal("restored send repeated")
 	}
-	id := items[0].ID
-	if _, err := service.List("pending|running"); errorCode(err) != "INVALID_ARGUMENT" {
-		t.Fatalf("invalid filter: %v", err)
+	if _, err := queue.Retry(t.Context(), ids[1]); err != nil {
+		t.Fatal(err)
 	}
-	if _, err := service.Resolve(ctx, id, "sent", "unrelated", "users/owner"); errorCode(err) != "NOTIFICATION_CONFLICT" {
-		t.Fatalf("unrelated receipt: %v", err)
+	if worked, err := queue.Deliver(t.Context()); err != nil || worked {
+		t.Fatal("fragment overtook predecessor")
 	}
-	if _, err := service.Resolve(ctx, id, "not_sent", "unrelated", "users/owner"); errorCode(err) != "INVALID_ARGUMENT" {
-		t.Fatalf("not_sent receipt: %v", err)
+	for _, id := range []string{ids[0], ids[2]} {
+		if _, err := queue.Retry(t.Context(), id); err != nil {
+			t.Fatal(err)
+		}
 	}
-	detail, err := service.Resolve(ctx, id, "sent", fmt.Sprintf("platform-receipt:%s", id), "users/owner")
-	if err != nil || detail.Notification.Status != "sent" || len(detail.Resolutions) != 1 || detail.Resolutions[0].ResolvedBy != "users/owner" {
-		t.Fatalf("receipt/audit: %+v %v", detail, err)
+	for _, id := range ids {
+		worked, err := queue.Deliver(t.Context())
+		detail, e := queue.Detail(id)
+		if err != nil || e != nil || !worked || detail.Notification.Status != "sent" {
+			t.Fatalf("fragment: %+v %v %v", detail, err, e)
+		}
+	}
+	if platform.calls != 3 {
+		t.Fatal("wrong resumed sends")
 	}
 }

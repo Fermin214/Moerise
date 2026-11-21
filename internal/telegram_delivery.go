@@ -3,9 +3,7 @@ package moerise
 import (
 	"bytes"
 	"context"
-	"database/sql"
 	"encoding/json"
-	"errors"
 	"io"
 	"mime/multipart"
 	"net/http"
@@ -39,10 +37,6 @@ func (s *TelegramDelivery) Send(ctx context.Context, item Notification) (string,
 		return "", failure("INVALID_ARGUMENT", "Telegram only supports review notifications", 422, false)
 	}
 	return s.reviewDelivery().sendReviewPart(ctx, item)
-}
-
-func (s *TelegramDelivery) Check(context.Context, Notification, string) (bool, error) {
-	return false, failure("CHANNEL_RECEIPT_UNSUPPORTED", "Telegram outcomes require operator confirmation without a receipt", 422, false)
 }
 
 func (s *TelegramDelivery) reviewDelivery() *reviewDelivery {
@@ -90,15 +84,8 @@ func (s *TelegramDelivery) request(ctx context.Context, method, contentType stri
 	bot, _, _ := strings.Cut(configured(s.config.BotToken), ":")
 	rateKey := hashBytes(canonicalJSON([]string{"telegram", bot}))
 	if s.Store != nil {
-		var retryAt float64
-		err := s.Store.state.QueryRow(`SELECT retry_at FROM notification_rate_limits WHERE provider_key = ?`, rateKey).Scan(&retryAt)
-		if err != nil && !errors.Is(err, sql.ErrNoRows) {
-			return telegramMessage{}, err
-		}
-		if remaining := retryAt - nowSeconds(); remaining > 0 {
-			return telegramMessage{}, &notificationRetryError{
-				error: upstreamError("CHANNEL_RATE_LIMITED", "Telegram rate limit reached"),
-				after: time.Duration(remaining * float64(time.Second))}
+		if remaining := s.Store.providerDelay(rateKey); remaining > 0 {
+			return telegramMessage{}, &notificationRetryError{error: upstreamError("CHANNEL_RATE_LIMITED", "Telegram rate limit reached"), after: remaining}
 		}
 	}
 	unknown := upstreamError("SEND_OUTCOME_UNKNOWN", "Telegram send outcome is unknown")
@@ -135,11 +122,7 @@ func (s *TelegramDelivery) request(ctx context.Context, method, contentType stri
 				after = 60
 			}
 			if s.Store != nil {
-				if _, err := s.Store.state.Exec(`INSERT INTO notification_rate_limits (provider_key, retry_at) VALUES (?, ?)
-					ON CONFLICT(provider_key) DO UPDATE SET retry_at = MAX(retry_at, excluded.retry_at)`,
-					rateKey, nowSeconds()+float64(after)); err != nil {
-					return result.Result, err
-				}
+				s.Store.deferProvider(rateKey, time.Duration(after)*time.Second)
 			}
 			return result.Result, &notificationRetryError{
 				error: upstreamError("CHANNEL_RATE_LIMITED", "Telegram rate limit reached"), after: time.Duration(after) * time.Second}
@@ -279,7 +262,7 @@ func (s *TelegramDelivery) sendReviewImage(ctx context.Context, item Notificatio
 	if err != nil {
 		return "", err
 	}
-	if _, err := s.Store.state.Exec(`UPDATE review_delivery_parts SET image_key = ? WHERE notification_id = ?`,
+	if _, err := s.Store.state.Exec(`UPDATE delivery_logs SET image_key=? WHERE id=?`,
 		message.Document.FileID, item.ID); err != nil {
 		return "", err
 	}

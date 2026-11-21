@@ -16,6 +16,7 @@ import (
 	"time"
 
 	moerise "moerise/internal"
+	"moerise/web"
 )
 
 func main() {
@@ -37,6 +38,7 @@ func run(args []string) error {
 	config := options.String("config", "", "Configuration file (or MOERISE_CONFIG_FILE)")
 	host := options.String("host", "0.0.0.0", "HTTP listen host")
 	port := options.Int("port", 8787, "HTTP listen port")
+	webDir := options.String("web-dir", "", "Web build directory for development")
 	output := options.String("output", "", "New backup directory")
 	source := options.String("source", "", "Backup directory")
 	safety := options.String("safety-backup", "", "New directory for the replaced state")
@@ -104,7 +106,7 @@ func run(args []string) error {
 		}
 		return encode(result)
 	case "serve":
-		return serve(settings, net.JoinHostPort(*host, strconv.Itoa(*port)))
+		return serve(settings, net.JoinHostPort(*host, strconv.Itoa(*port)), *webDir)
 	case "backup":
 		if *output == "" {
 			return errors.New("backup requires --output")
@@ -151,7 +153,7 @@ func run(args []string) error {
 	}
 }
 
-func serve(settings moerise.Settings, address string) error {
+func serve(settings moerise.Settings, address, webDir string) error {
 	resources := moerise.ConfigureRuntime()
 	app, err := moerise.OpenApp(settings)
 	if err != nil {
@@ -161,6 +163,9 @@ func serve(settings moerise.Settings, address string) error {
 	api, err := moerise.NewHandler(app)
 	if err != nil {
 		return err
+	}
+	if settings.Web.Enabled {
+		api = web.Handler(webDir, api)
 	}
 	server := &http.Server{Addr: address, Handler: api, ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout: 30 * time.Second, WriteTimeout: 120 * time.Second, IdleTimeout: 60 * time.Second,

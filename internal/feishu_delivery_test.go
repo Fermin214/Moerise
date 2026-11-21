@@ -68,9 +68,7 @@ func TestFeishuWebhookAcknowledgementAndSignature(t *testing.T) {
 			if test.code == "" && receipt != "webhook:notification-id" || calls != 1 {
 				t.Fatal("Webhook receipt or redirect handling failed")
 			}
-			if _, err := delivery.Check(context.Background(), Notification{}, receipt); errorCode(err) != "CHANNEL_RECEIPT_UNSUPPORTED" {
-				t.Fatal("Webhook ACK was treated as a queryable message receipt")
-			}
+
 		})
 	}
 }
@@ -91,72 +89,38 @@ func (p *deliveryPlatform) GetMessage(context.Context, string) (FeishuSentMessag
 	return p.message, nil
 }
 
-func TestFeishuPushRechecksSourcesAndReceiptIdentity(t *testing.T) {
+func TestFeishuPushReadsLocalProjection(t *testing.T) {
 	reviews, memos := reviewFixture(t, 6)
 	store := reviews.Store
 	store.Settings.Channel = feishuSettings(t).Channel
 	store.Settings.Notifications.Enabled = true
-	ctx := context.Background()
-	batch, err := reviews.Daily(ctx, time.Date(2026, 10, 26, 2, 0, 0, 0, time.UTC))
-	if err != nil {
-		t.Fatal(err)
-	}
-	platform := &reviewDeliveryPlatform{}
-	events := NewFeishuService(store, reviews.Source, NewRecordService(store, reviews.Source), nil)
-	events.Client = platform
-	delivery := newFeishuDelivery(store.Settings.Channel, store, reviews, events)
-	queue := NewNotificationService(store, reviews, delivery)
-	id, err := queue.enqueue("review", "source-recheck", batch.Date, &batch.ID, nil)
+	batch, err := reviews.DailyLocal(t.Context(), time.Date(2026, 10, 26, 2, 0, 0, 0, time.UTC))
 	if err != nil {
 		t.Fatal(err)
 	}
 	edited, deleted := batch.Items[0].Name, batch.Items[1].Name
-	memos[edited]["content"] = "fresh source content"
+	memos[edited]["content"] = "fresh local content"
 	delete(memos, deleted)
-	if sent, err := queue.Deliver(ctx); err != nil || !sent || platform.text != "「今日回顾」" {
-		t.Fatalf("review header: %s %v", platform.text, err)
-	}
-	if sent, err := queue.Deliver(ctx); err != nil || !sent || !strings.Contains(platform.text, "fresh source content") ||
-		strings.Contains(platform.text, deleted) || platform.recipient != "ou_owner" {
-		t.Fatalf("push leaked stale content or used a different identity: %s %v", platform.text, err)
-	}
-	var bodyID string
-	if err := store.state.QueryRow(`SELECT notification_id FROM review_delivery_parts
-		WHERE root_id = ? AND kind = 'text' ORDER BY position LIMIT 1`, id).Scan(&bodyID); err != nil {
+	refreshReviewFixture(t, store, memos)
+	reviews.Source = fakeClient(store.Settings, func(*http.Request) (int, any, error) { t.Fatal("delivery contacted Memos"); return 500, nil, nil })
+	platform := &reviewDeliveryPlatform{}
+	events := NewFeishuService(store, reviews.Source, nil, nil)
+	events.Client = platform
+	queue := NewNotificationService(store, reviews, newFeishuDelivery(store.Settings.Channel, store, reviews, events))
+	if _, err := queue.enqueue("review", "local", batch.Date, &batch.ID, nil); err != nil {
 		t.Fatal(err)
 	}
-	detail, err := queue.Detail(bodyID)
-	if err != nil || detail.Notification.Receipt == nil {
-		t.Fatalf("body receipt: %+v %v", detail, err)
-	}
-	item, receipt := detail.Notification, *detail.Notification.Receipt
-	if found, err := delivery.Check(ctx, item, receipt); err != nil || !found {
-		t.Fatalf("matching platform receipt was rejected: %v", err)
-	}
-	message := platform.messages[receipt]
-	message.SenderID = "cli_foreign"
-	platform.messages[receipt] = message
-	if found, _ := delivery.Check(ctx, item, receipt); found {
-		t.Fatal("a different application's receipt was accepted")
-	}
-	message.SenderID, message.Deleted = "cli_test_app", true
-	platform.messages[receipt] = message
-	if found, _ := delivery.Check(ctx, item, receipt); found {
-		t.Fatal("a deleted platform message was accepted")
-	}
-	platform.text = ""
-	reviews.Source = fakeClient(store.Settings, func(*http.Request) (int, any, error) { return 503, nil, nil })
-	if _, err := delivery.Send(ctx, item); err == nil || platform.text != "" {
-		t.Fatal("source outage sent cached private content")
-	}
-	reviews.Source = fakeClient(store.Settings, func(r *http.Request) (int, any, error) {
-		if strings.HasSuffix(r.URL.Path, "/profile") {
-			return 200, map[string]string{"version": "0.31.0"}, nil
+	for range 30 {
+		worked, err := queue.Deliver(t.Context())
+		if err != nil {
+			t.Fatal(err)
 		}
-		return 200, map[string]any{"user": map[string]string{"name": "users/foreign"}}, nil
-	})
-	if _, err := delivery.Send(ctx, item); err == nil || platform.text != "" {
-		t.Fatal("source identity change sent private content")
+		if !worked {
+			break
+		}
+	}
+	if len(platform.texts) < 2 || !strings.Contains(strings.Join(platform.texts, ""), "fresh local content") || platform.recipient != "ou_owner" {
+		t.Fatalf("local delivery: %+v", platform.texts)
 	}
 }
 
@@ -204,6 +168,7 @@ func TestFeishuReviewFullTextQueueResumeAndUnknown(t *testing.T) {
 		raw["createTime"] = "2020-01-01T00:30:00Z"
 		raw["updateTime"] = "2020-01-01T00:30:00Z"
 	}
+	refreshReviewFixture(t, store, memos)
 	platform := &reviewDeliveryPlatform{}
 	events := NewFeishuService(store, reviews.Source, nil, nil)
 	events.Client = platform
@@ -225,7 +190,7 @@ func TestFeishuReviewFullTextQueueResumeAndUnknown(t *testing.T) {
 	if sent, err := queue.Deliver(ctx); err != nil || !sent {
 		t.Fatalf("unknown part: %v", err)
 	}
-	unknown, _ := queue.List("unknown")
+	unknown, _ := queue.List("failed")
 	if len(unknown) != 1 || len(platform.texts) != 2 {
 		t.Fatalf("unknown part was not isolated: %+v", unknown)
 	}
@@ -237,8 +202,8 @@ func TestFeishuReviewFullTextQueueResumeAndUnknown(t *testing.T) {
 	if sent, err := queue.Deliver(ctx); err != nil || sent || len(platform.texts) != 2 {
 		t.Fatalf("unknown predecessor released later parts: %v", err)
 	}
-	held, err := queue.List("skipped")
-	if err != nil || len(held) == 0 || configured(held[0].LastError) != "PART_INTERRUPTED" {
+	held, err := queue.List("pending")
+	if err != nil || len(held) == 0 {
 		t.Fatalf("remaining fragments not marked interrupted: %+v %v", held, err)
 	}
 	later := &reviewDeliveryPlatform{}
@@ -259,7 +224,7 @@ func TestFeishuReviewFullTextQueueResumeAndUnknown(t *testing.T) {
 		t.Fatal("interrupted slot blocked the next complete review")
 	}
 	events.Client = platform
-	if _, err := queue.Resolve(ctx, unknown[0].ID, "not_sent", "", "test"); err != nil {
+	if _, err := queue.Retry(ctx, unknown[0].ID); err != nil {
 		t.Fatal(err)
 	}
 	for range 100 {
@@ -284,15 +249,11 @@ func TestFeishuReviewFullTextQueueResumeAndUnknown(t *testing.T) {
 		strings.Join(platform.texts[2:len(platform.texts)-1], "") != content {
 		t.Fatal("long note was truncated, repeated or reordered")
 	}
-	seen := map[string]bool{}
-	for _, uuid := range platform.uuids {
-		if seen[uuid] {
-			t.Fatal("a confirmed fragment was sent twice")
-		}
-		seen[uuid] = true
+	if platform.uuids[1] != platform.uuids[2] {
+		t.Fatal("retry changed the platform idempotency key")
 	}
 	var root string
-	if err := store.state.QueryRow(`SELECT root_id FROM review_delivery_parts WHERE notification_id = ?`, id).Scan(&root); err != nil || root != id {
+	if err := store.state.QueryRow(`SELECT root_id FROM delivery_logs WHERE id = ?`, id).Scan(&root); err != nil || root != id {
 		t.Fatalf("missing durable source references: %v", err)
 	}
 	pending, _ := queue.List("pending")
@@ -332,10 +293,10 @@ func TestFeishuReviewEmptyAndSourceOutage(t *testing.T) {
 			} else {
 				clear(memos)
 			}
+			refreshReviewFixture(t, store, memos)
 			detail, _ := queue.Detail(id)
 			receipt, err := transport.Send(ctx, detail.Notification)
-			if scenario == "outage" && err == nil ||
-				scenario != "outage" && (err != nil || receipt != "empty:"+id) || len(platform.texts) != 0 {
+			if err != nil || scenario == "outage" && receipt == "empty:"+id || scenario != "outage" && receipt != "empty:"+id || scenario != "outage" && len(platform.texts) != 0 {
 				t.Fatalf("empty/outage: receipt=%s err=%v calls=%d", receipt, err, len(platform.texts))
 			}
 		})
@@ -415,6 +376,7 @@ func TestFeishuReviewSourceChangeCancelsOldPartsAndContinues(t *testing.T) {
 	for name, raw := range memos {
 		raw["content"] = name + "\n" + strings.Repeat("完整正文🙂\n", 3000)
 	}
+	refreshReviewFixture(t, store, memos)
 	platform := &reviewDeliveryPlatform{}
 	events := NewFeishuService(store, reviews.Source, nil, nil)
 	events.Client = platform
@@ -440,6 +402,7 @@ func TestFeishuReviewSourceChangeCancelsOldPartsAndContinues(t *testing.T) {
 	}
 	changed := batch.Items[0].Name
 	memos[changed]["content"] = "修改后的新正文"
+	refreshReviewFixture(t, store, memos)
 	for range 100 {
 		sent, err := queue.Deliver(ctx)
 		if err != nil {
@@ -464,74 +427,5 @@ func TestFeishuReviewSourceChangeCancelsOldPartsAndContinues(t *testing.T) {
 	pending, _ := queue.List("pending")
 	if len(pending) != 0 {
 		t.Fatalf("source change left %d pending parts", len(pending))
-	}
-}
-
-func TestFeishuReviewReceiptsCannotCrossNotifications(t *testing.T) {
-	reviews, _ := reviewFixture(t, 1)
-	store := reviews.Store
-	store.Settings.Channel = feishuSettings(t).Channel
-	store.Settings.Notifications.Enabled = true
-	platform := &reviewDeliveryPlatform{}
-	events := NewFeishuService(store, reviews.Source, nil, nil)
-	events.Client = platform
-	transport := newFeishuDelivery(store.Settings.Channel, store, reviews, events)
-	queue := NewNotificationService(store, reviews, transport)
-	ctx := context.Background()
-	batch, err := reviews.Daily(ctx, time.Now())
-	if err != nil {
-		t.Fatal(err)
-	}
-	first, err := queue.enqueue("review", "morning", batch.Date, &batch.ID, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for range 10 {
-		sent, err := queue.Deliver(ctx)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if !sent {
-			break
-		}
-	}
-	if pending, err := queue.List("pending"); err != nil || len(pending) != 0 {
-		t.Fatalf("first review still owns pending body or footer parts: %+v %v", pending, err)
-	}
-	sent, err := queue.Detail(first)
-	if err != nil || sent.Notification.Receipt == nil {
-		t.Fatalf("first review receipt: %+v %v", sent, err)
-	}
-	second, err := queue.enqueue("review", "evening", batch.Date, &batch.ID, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	platform.fail = "SEND_OUTCOME_UNKNOWN"
-	if _, err := queue.Deliver(ctx); err != nil {
-		t.Fatal(err)
-	}
-	if unknown, err := queue.List("unknown"); err != nil || len(unknown) != 1 || unknown[0].ID != second {
-		t.Fatalf("unknown outcome targeted a different notification: %+v %v", unknown, err)
-	}
-	if _, err := queue.Resolve(ctx, second, "sent", *sent.Notification.Receipt, "test"); errorCode(err) != "NOTIFICATION_CONFLICT" {
-		t.Fatalf("another notification's receipt was accepted: %v", err)
-	}
-	unknown, _ := queue.Detail(second)
-	valid := platform.messages["om_"+unknown.Notification.PlatformUUID]
-	for _, scenario := range []string{"old", "other-chat"} {
-		message := valid
-		message.ID = "om_unbound"
-		if scenario == "old" {
-			message.CreateTime = time.Now().Add(-time.Minute)
-		} else {
-			message.ChatID = "oc_foreign"
-		}
-		platform.messages[message.ID] = message
-		if _, err := queue.Resolve(ctx, second, "sent", message.ID, "test"); errorCode(err) != "NOTIFICATION_CONFLICT" {
-			t.Fatalf("%s receipt was accepted: %v", scenario, err)
-		}
-	}
-	if _, err := queue.Resolve(ctx, second, "sent", valid.ID, "test"); err != nil {
-		t.Fatalf("the actual receipt was rejected: %v", err)
 	}
 }

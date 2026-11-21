@@ -154,16 +154,15 @@ func TestFeishuFullReviewDeliveryWithRealMemosAcceptance(t *testing.T) {
 		if sent, err := queue.Deliver(ctx); err != nil || !sent {
 			t.Fatalf("initial delivery: %v", err)
 		}
-		unknown, _ := queue.List("unknown")
+		unknown, _ := queue.List("failed")
 		if len(unknown) != 0 {
 			break
 		}
 	}
-	unknown, err := queue.List("unknown")
+	unknown, err := queue.List("failed")
 	if err != nil || len(unknown) != 1 {
 		t.Fatalf("missing isolated unknown fragment: %+v %v", unknown, err)
 	}
-	receipt := "push_" + unknown[0].PlatformUUID
 	if err := store.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -175,7 +174,7 @@ func TestFeishuFullReviewDeliveryWithRealMemosAcceptance(t *testing.T) {
 	if sent, err := queue.Deliver(ctx); err != nil || sent {
 		t.Fatalf("restart sent a fragment behind an unknown predecessor: %v", err)
 	}
-	if _, err := queue.Resolve(ctx, unknown[0].ID, "sent", receipt, "acceptance"); err != nil {
+	if _, err := queue.Retry(ctx, unknown[0].ID); err != nil {
 		t.Fatal(err)
 	}
 	for range 100 {
@@ -213,13 +212,17 @@ func TestFeishuFullReviewDeliveryWithRealMemosAcceptance(t *testing.T) {
 			t.Fatal("uploaded bytes differ from the original Memos image")
 		}
 	}
-	for _, count := range platform.sendCounts {
-		if count != 1 {
+	for uuid, count := range platform.sendCounts {
+		expected := 1
+		if uuid == unknown[0].PlatformUUID {
+			expected = 2
+		}
+		if count != expected {
 			t.Fatal("restart repeated a confirmed platform UUID")
 		}
 	}
 	pending, _ := queue.List("pending")
-	unknown, _ = queue.List("unknown")
+	unknown, _ = queue.List("failed")
 	if len(pending) != 0 || len(unknown) != 0 {
 		t.Fatalf("unfinished delivery: pending=%d unknown=%d", len(pending), len(unknown))
 	}

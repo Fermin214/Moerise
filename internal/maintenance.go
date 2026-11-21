@@ -202,7 +202,18 @@ const (
 func resetRestoredState(db *sql.DB, full bool) error {
 	query := "BEGIN IMMEDIATE;\n" + restoreCoreResetSQL + "\n"
 	if full {
-		query += restoreBotAndDeliveryResetSQL + "\n"
+		var compact bool
+		if err := db.QueryRow(`SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='delivery_logs')`).Scan(&compact); err != nil {
+			return err
+		}
+		if compact {
+			query += `DELETE FROM bot_cursors WHERE kind='qq';
+            INSERT OR REPLACE INTO bot_restore SELECT instance_id,CAST(round(unixepoch('subsec')*1000) AS INTEGER) FROM bindings;
+            UPDATE bot_inbox SET phase='restored',body=NULL,error_code='STATE_RESTORED' WHERE phase IN ('pending','reply','sending');
+            UPDATE delivery_logs SET status='failed',last_error='STATE_RESTORED' WHERE status IN ('pending','running');` + "\n"
+		} else {
+			query += restoreBotAndDeliveryResetSQL + "\n"
+		}
 	}
 	query += "PRAGMA user_version = 0;\nCOMMIT;\nPRAGMA wal_checkpoint(TRUNCATE);\nPRAGMA journal_mode = DELETE;"
 	_, err := db.Exec(query)

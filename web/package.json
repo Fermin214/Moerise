@@ -8,7 +8,6 @@
   },
   "scripts": {
     "build": "node build.mjs",
-    "start": "node server.mjs",
     "test": "node --test test/*.test.mjs",
     "test:browser": "node --test test/browser.mjs test/*-browser.mjs"
   },

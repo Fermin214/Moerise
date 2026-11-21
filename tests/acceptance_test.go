@@ -447,7 +447,7 @@ func TestMemosAcceptance(t *testing.T) {
 	t.Log("PASS source outage and process restart recovery")
 
 	db := h.database("state")
-	if _, err := db.Exec("INSERT INTO notification_rate_limits VALUES (?, 1)", h.settings.Memos.InstanceID); err != nil {
+	if _, err := db.Exec("INSERT INTO bot_restore VALUES (?,1)", h.settings.Memos.InstanceID); err != nil {
 		t.Fatal(err)
 	}
 	db.Close()
@@ -458,7 +458,7 @@ func TestMemosAcceptance(t *testing.T) {
 		t.Fatal("live restore was not blocked")
 	}
 	db = h.database("state")
-	if _, err := db.Exec("UPDATE notification_rate_limits SET retry_at=2"); err != nil {
+	if _, err := db.Exec("UPDATE bot_restore SET restored_at=2"); err != nil {
 		t.Fatal(err)
 	}
 	db.Close()
@@ -468,7 +468,7 @@ func TestMemosAcceptance(t *testing.T) {
 	h.ready()
 	db = h.database("state")
 	var value string
-	if err := db.QueryRow("SELECT CAST(retry_at AS INTEGER) FROM notification_rate_limits").Scan(&value); err != nil {
+	if err := db.QueryRow("SELECT CAST(restored_at AS INTEGER) FROM bot_restore").Scan(&value); err != nil {
 		t.Fatal(err)
 	}
 	db.Close()
@@ -481,11 +481,11 @@ func TestMemosAcceptance(t *testing.T) {
 	h.start()
 	h.ready()
 	db = h.database("state")
-	if err := db.QueryRow("SELECT CAST(retry_at AS INTEGER) FROM notification_rate_limits").Scan(&value); err != nil {
+	if err := db.QueryRow("SELECT CAST(restored_at AS INTEGER) FROM bot_restore").Scan(&value); err != nil {
 		t.Fatal(err)
 	}
 	db.Close()
-	if value != "1" || h.projection()[names[0]] == nil {
+	if value == "1" || value == "2" || h.projection()[names[0]] == nil {
 		t.Fatal("restore did not recover product state")
 	}
 	h.command(true, "healthcheck", "--host", "127.0.0.1", "--port", strconv.Itoa(mustPort(t, h.base)))
