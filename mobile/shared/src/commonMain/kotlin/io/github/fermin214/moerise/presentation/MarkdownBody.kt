@@ -232,21 +232,19 @@ fun MarkdownBody(content: String, modifier: Modifier = Modifier, note: Note? = n
         }
     } }
     val body = MaterialTheme.typography.bodyLarge
-    val typography = remember(body) {
-        val heading = body.copy(fontSize = 18.4.sp, lineHeight = 27.6.sp, fontWeight = FontWeight.Bold)
-        markdownTypography(
-            h1 = heading.copy(fontSize = 21.6.sp, lineHeight = 32.4.sp),
-            h2 = heading, h3 = heading, h4 = heading,
-            h5 = body.copy(fontWeight = FontWeight.Bold),
-            h6 = body.copy(fontWeight = FontWeight.Bold),
-            text = body, paragraph = body, quote = body.copy(color = MoeriseColors.Muted),
-            list = body, ordered = body, bullet = body,
-            code = body.copy(fontFamily = FontFamily.Monospace, fontSize = 13.sp, lineHeight = 20.8.sp),
-            inlineCode = body.copy(fontFamily = FontFamily.Monospace, fontSize = 13.sp),
-            table = body,
-        )
-    }
-    val animations = remember { markdownAnimations(animateTextSize = { this }) }
+    val heading = body.copy(fontSize = 18.4.sp, lineHeight = 27.6.sp, fontWeight = FontWeight.Bold)
+    val typography = markdownTypography(
+        h1 = heading.copy(fontSize = 21.6.sp, lineHeight = 32.4.sp),
+        h2 = heading, h3 = heading, h4 = heading,
+        h5 = body.copy(fontWeight = FontWeight.Bold),
+        h6 = body.copy(fontWeight = FontWeight.Bold),
+        text = body, paragraph = body, quote = body.copy(color = MoeriseColors.Muted),
+        list = body, ordered = body, bullet = body,
+        code = body.copy(fontFamily = FontFamily.Monospace, fontSize = 13.sp, lineHeight = 20.8.sp),
+        inlineCode = body.copy(fontFamily = FontFamily.Monospace, fontSize = 13.sp),
+        table = body,
+    )
+    val animations = markdownAnimations(animateTextSize = { this })
     val components = remember(safeUri) {
         markdownComponents(
             image = { model ->

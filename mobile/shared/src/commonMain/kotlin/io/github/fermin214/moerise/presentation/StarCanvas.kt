@@ -153,7 +153,7 @@ fun StarCanvas(
     val live by rememberUpdatedState(state)
     val placements = remember(labels, state.view, state.fitScale, width, height, density) {
         val view = state.view
-        if (view == null) emptyList() else buildList {
+        if (view == null) emptyList() else buildList<LabelPlacement> {
             val zoom = view.scale / state.fitScale
             var topics = 0
             for (label in labels) {
@@ -248,7 +248,7 @@ fun StarCanvas(
                     while (true) {
                         val event = awaitPointerEvent()
                         if (event.type == PointerEventType.Exit) hovered = null
-                        else event.changes.firstOrNull { it.type == PointerEventType.Mouse && !it.pressed }?.let { hovered = hit(it.position)?.point?.name }
+                        else event.changes.firstOrNull { it.type == PointerType.Mouse && !it.pressed }?.let { hovered = hit(it.position)?.point?.name }
                         if (event.type == PointerEventType.Scroll) {
                             val change = event.changes.firstOrNull() ?: continue
                             val factor = exp((-change.scrollDelta.y * .12f).coerceIn(-1f, 1f).toDouble())
