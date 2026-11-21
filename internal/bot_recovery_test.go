@@ -65,6 +65,31 @@ func TestFeishuRecipientChangeRetiresWorkAndRebinds(t *testing.T) {
 	}
 }
 
+func TestFeishuStartupUsesConfiguredRecipientForMigratedWork(t *testing.T) {
+	settings := feishuSettings(t)
+	store := testStore(t, settings)
+	if _, err := store.state.Exec(`UPDATE bot_bindings SET peer='ou_historical' WHERE kind='feishu-app'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.state.Exec(`INSERT INTO bot_inbox(write_key,instance_id,user_name,kind,bot_id,peer,message_id,msg_index,digest,operation,received_at,message_at,phase,result_kind)
+		VALUES('migrated',?,?,'feishu-app',?,'ou_owner','migrated','event','digest','feishu-legacy',0,0,'reply','help')`, settings.Memos.InstanceID, settings.Memos.User, configured(settings.Channel.AppID)); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.initializeBots(); err != nil {
+		t.Fatal(err)
+	}
+	client := fakeClient(settings, func(*http.Request) (int, any, error) {
+		t.Error("migrated help contacted Memos")
+		return 500, nil, nil
+	})
+	app := NewApp(settings, store, client)
+	defer app.Close()
+	probe := &botReplyProbe{}
+	if worked, err := app.processBotMessage(t.Context(), "feishu-app", configured(settings.Channel.AppID), probe); err != nil || !worked || probe.peer != "ou_owner" {
+		t.Fatalf("configured recipient's migrated task did not run: %v %v %s", worked, err, probe.peer)
+	}
+}
+
 func (probe *botReplyProbe) Send(_ context.Context, peer, message, text string) (string, error) {
 	probe.peer, probe.message, probe.text = peer, message, text
 	return "receipt", nil

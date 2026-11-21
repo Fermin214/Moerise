@@ -130,8 +130,24 @@ func (s *Store) bindBotPeer(tx *sql.Tx, kind, botID, peer string, at time.Time) 
 }
 
 func (s *Store) initializeBots() error {
-	_, err := s.state.Exec(`UPDATE bot_inbox SET phase='failed',error_code='PROCESS_INTERRUPTED' WHERE phase='sending'`)
-	return err
+	return transaction(s.state, func(tx *sql.Tx) error {
+		if _, err := tx.Exec(`UPDATE bot_inbox SET phase='failed',error_code='PROCESS_INTERRUPTED' WHERE phase='sending'`); err != nil {
+			return err
+		}
+		channel := s.Settings.Channel
+		bot, peer := channel.botID("feishu-app"), configured(channel.UserOpenID)
+		if bot == "" || peer == "" {
+			return nil
+		}
+		instance, user := s.Settings.Memos.InstanceID, s.Settings.Memos.User
+		if _, err := tx.Exec(`INSERT INTO bot_bindings VALUES(?,?,?,?,?,?) ON CONFLICT(instance_id,user_name,kind,bot_id)
+			DO UPDATE SET peer=excluded.peer,bound_at=excluded.bound_at WHERE peer!=excluded.peer`, instance, user, "feishu-app", bot, peer, time.Now().UnixMilli()); err != nil {
+			return err
+		}
+		_, err := tx.Exec(`UPDATE bot_inbox SET phase='retired',body=NULL,error_code='CHANNEL_BINDING_CHANGED'
+			WHERE instance_id=? AND user_name=? AND kind='feishu-app' AND bot_id=? AND peer!=? AND phase IN ('pending','reply')`, instance, user, bot, peer)
+		return err
+	})
 }
 
 func (s *Store) channelForDelivery(c ChannelConfig) ChannelConfig {
