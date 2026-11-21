@@ -28,6 +28,9 @@
 .tag-row span { min-width:0; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
 .tag-row em { flex:none; }
 #account { position:absolute; inset:auto 0 0; z-index:2; display:flex; flex-direction:column; gap:2px; padding:8px 4px 4px; border-top:1px solid var(--line); background:var(--paper); transition:transform .16s ease-out; }
+.account-row { display:flex; align-items:center; gap:4px; }
+.account-row #user-menu { flex:1; min-width:0; }
+.account-sync { flex:none; color:var(--muted); }
 .side.account-hidden #account { transform:translateY(100%); pointer-events:none; }
 .side #account:focus-within { transform:none; pointer-events:auto; transition:none; }
 .sidebar-heading #navigation-close { margin-left:auto; }
@@ -265,8 +268,9 @@ button:disabled { cursor:default; opacity:.5; }
 .settings-channel { min-inline-size:0; margin:16px 0 0; padding:0; border:0; }
 .settings-channel legend { padding:0; font-weight:600; }
 .settings-channel p,.settings-channel + p,.settings-row span { overflow-wrap:anywhere; }
-.settings-card:has(#settings-insights-default_prompt) .settings-row { flex-direction:column; align-items:stretch; }
+.settings-row:has(#settings-insights-default_prompt) { flex-direction:column; align-items:stretch; }
 .settings-card #settings-insights-default_prompt { width:100%; }
+.settings-inline-actions { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
 .settings-footer { display:flex; align-items:center; gap:8px; flex-wrap:wrap; padding:4px 0 12px; }
 .settings-footer p { margin:0; flex-basis:100%; }
 .settings-footer > .save { margin-left:auto; }

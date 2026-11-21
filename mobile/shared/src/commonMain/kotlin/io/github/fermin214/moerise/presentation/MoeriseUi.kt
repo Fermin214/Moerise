@@ -1,6 +1,7 @@
 package io.github.fermin214.moerise.presentation
 
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
@@ -9,6 +10,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.relocation.BringIntoViewRequester
 import androidx.compose.foundation.relocation.bringIntoViewRequester
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
@@ -62,7 +64,6 @@ import kotlinx.coroutines.launch
 
 val LocalWebSearchPanel = staticCompositionLocalOf<(@Composable () -> Unit)?> { null }
 val LocalWebSearchOpen = staticCompositionLocalOf { false }
-val LocalWebSyncStatus = staticCompositionLocalOf<SyncStatus?> { null }
 val LocalWebSyncAction = staticCompositionLocalOf<(() -> Unit)?> { null }
 
 @Composable
@@ -219,7 +220,6 @@ fun WebToolbar(
     onSync: (() -> Unit)? = null,
 ) {
     val searchExpanded = LocalWebSearchOpen.current
-    val displayedSyncStatus = syncStatus ?: LocalWebSyncStatus.current
     val syncAction = onSync ?: LocalWebSyncAction.current
     Column(modifier.fillMaxWidth()) {
         Row(Modifier.fillMaxWidth().height(56.dp).padding(horizontal = 8.dp),
@@ -229,7 +229,7 @@ fun WebToolbar(
             }
             Text(title, style = MaterialTheme.typography.titleMedium,
                 modifier = Modifier.weight(1f).padding(start = 8.dp))
-            if (syncAction != null && displayedSyncStatus != null) SyncButton(displayedSyncStatus, strings, syncAction)
+            if (syncAction != null && syncStatus != null && syncStatus != SyncStatus.CONNECTED) SyncButton(syncStatus, strings, syncAction)
             if (onSearch != null) IconButton(onClick = onSearch, modifier = Modifier.size(44.dp).testTag("open_search").semantics {
                 stateDescription = if (searchExpanded) strings.text("已展开", "Expanded") else strings.text("已收起", "Closed")
             }) {
@@ -262,19 +262,22 @@ fun SyncButton(status: SyncStatus, strings: Strings, onClick: () -> Unit) {
 
 @Composable
 fun SyncGlyph(status: SyncStatus, modifier: Modifier = Modifier) {
-    val rotation = if (status == SyncStatus.SYNCING)
-        rememberInfiniteTransition(label = "sync").animateFloat(0f, 360f,
-            animationSpec = infiniteRepeatable(tween(950, easing = LinearEasing)), label = "turn") else null
-    val (mark, tint) = when (status) {
-        SyncStatus.SYNCING -> "↑" to MoeriseColors.Blue
-        SyncStatus.CONNECTED -> "✓" to Color(0xFF51816A)
-        SyncStatus.PENDING -> "·" to Color(0xFFB47724)
-        SyncStatus.ATTENTION -> "!" to Color(0xFFB42318)
-        else -> "−" to MoeriseColors.Muted
+    val pulse = if (status == SyncStatus.SYNCING)
+        rememberInfiniteTransition(label = "sync").animateFloat(0.45f, 1f,
+            animationSpec = infiniteRepeatable(tween(900, easing = LinearEasing)), label = "breath") else null
+    val (icon, tint, dotColor) = when (status) {
+        SyncStatus.SYNCING -> Triple(WebIcon.Sync, MoeriseColors.Blue, MoeriseColors.Blue)
+        SyncStatus.CONNECTED -> Triple(WebIcon.Sync, Color(0xFF51816A), null)
+        SyncStatus.PENDING -> Triple(WebIcon.Sync, MoeriseColors.Blue, MoeriseColors.Blue)
+        SyncStatus.ATTENTION -> Triple(WebIcon.Alert, Color(0xFFB42318), Color(0xFFB42318))
+        SyncStatus.SIGN_IN -> Triple(WebIcon.SignIn, Color(0xFFB47724), Color(0xFFB47724))
+        SyncStatus.OFFLINE -> Triple(WebIcon.CloudOff, Color(0xFFE05246), Color(0xFFE05246))
     }
     Box(modifier.size(20.dp), contentAlignment = androidx.compose.ui.Alignment.Center) {
-        WebIcon(WebIcon.Sync, modifier = Modifier.fillMaxSize().graphicsLayer { rotationZ = rotation?.value ?: 0f }, tint = tint)
-        Text(mark, fontSize = 9.sp, lineHeight = 10.sp, color = tint, modifier = Modifier.clearAndSetSemantics {})
+        WebIcon(icon, modifier = Modifier.fillMaxSize().graphicsLayer { alpha = pulse?.value ?: 1f }, tint = tint)
+        if (dotColor != null && status != SyncStatus.ATTENTION && status != SyncStatus.SIGN_IN) {
+            Box(Modifier.align(androidx.compose.ui.Alignment.TopEnd).size(5.dp).background(dotColor, CircleShape).clearAndSetSemantics {})
+        }
     }
 }
 

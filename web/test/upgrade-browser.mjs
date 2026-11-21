@@ -34,7 +34,7 @@ test('an open page recovers lazy modules after replacing the deployed build', { 
       '/api/app/v1/notes': { notes: [], next_page_token: '' },
       '/api/app/v1/tags': { tags: [] },
       '/api/app/v1/calendar': { days: [], month: url.searchParams.get('month') },
-      '/api/app/v1/map': { status: 'disabled', algorithm: 'pca-fixed-v2', projection_revision: 0,
+      '/api/app/v1/map': { status: 'disabled', algorithm: 'umap-balanced-v1', projection_revision: 0,
         layout_version: '', layout_frame: '', vector_generation: '', points: [] },
     }[url.pathname];
     res.writeHead(data ? 200 : 404, { 'Content-Type': 'application/json' });

@@ -82,7 +82,7 @@ Android 文件的版本管理规则见 [Android 开发](ANDROID.md#文件与产�
 | 客户端适配 | `client_notes.go`、`client_attachments.go`、`client_search.go`、`client_discovery.go`、`client_chat.go`、`client_map.go` 将共享服务接到本人会话接口 |
 | 同步与存储 | `sync.go` 完整分页并发布投影；`store.go`、`store_local.go` 管理双库、绑定、局部查询、变更日志、任务与同步水位；`maintenance.go` 负责自动热备份、手动备份、恢复、回滚与索引重建 |
 | 检索与漫步 | `chunks.go` 分块并保留原文偏移；`search_index.go` 维护 FTS5；`search.go` 混合排序；`related.go` 查找相关笔记；`discovery.go` 选择漫步候选；`discovery_api.go` 适配只读接口 |
-| 向量与观星 | `embedding.go` 适配向量协议；`vector_index.go` 发布向量代次；`map_stars.go` 调用 `services/layout/`；`map_stars_store.go` 保存快照；`map.go` 调度与缓存；`map_layout.go`、`map_store.go` 读取旧 PCA 快照 |
+| 向量与观星 | `embedding.go` 适配向量协议；`vector_index.go` 发布向量代次；`map_stars.go` 调用 `services/layout/` 并支持可选单次 LLM 命名；`map_stars_store.go` 保存快照；`map.go` 每日 03:00 调度与手动重建；`map_layout.go`、`map_store.go` 提供共享快照类型与索引增量对账 |
 | 每日回顾 | `reviews.go` 选择笔记并读取计划；`review_plans.go` 冻结规则与时段分配；`reviews_api.go` 提供只读查询 |
 | AI 聊天 | `chat_selection.go` 解析所选材料；`chat.go` 编排生成；`chat_store.go` 保存会话和消息；`llm*.go` 适配模型协议与错误；`models_api.go` 提供模型诊断 |
 | 通知与渠道 | `notifications.go` 管理调度、发送尝试和结果确认；`notification_channels.go` 绑定任务接收方；`review_delivery.go` 生成有序回顾分片；`feishu_delivery.go`、`feishu_review_parts.go`、`telegram_delivery.go` 适配平台 |
@@ -105,10 +105,9 @@ Android 文件的版本管理规则见 [Android 开发](ANDROID.md#文件与产�
 | `settings.js`、`forms.js` | 按需加载的设置页、字段签名、修改状态与保存 |
 | `insights.js`、`material-picker.js` | 按需加载的洞察页、持久会话、材料分页与选择 |
 | `chat-stream.js`、`stream-markdown.js`、`markdown.js` | SSE 消息解析、流式段落呈现与安全 Markdown 渲染 |
-| `map.js`、`map-stars-scene.js` | 按需加载的观星页、视口、语义点位、键盘与命中网格 |
+| `map.js`、`map-stars-scene.js` | 按需加载的观星页、视口、点位摘要预览与点击命中网格 |
 | `map-star-renderer.js`、`map-render-worker.js`、`map-star-paint.js` | 星图后台绘制、摘要增量更新、ImageBitmap 合成与分批回退 |
 | `map-star-cloud.js`、`map-density-worker.js`、`map-star-density.js` | 密度任务生命周期、Worker 与共享密度算法 |
-| `map-scene.js`、`map-worker.js`、`map-paint.js`、`map-regions.js` | 旧地图快照兼容渲染、区域几何与后台绘制 |
 | `i18n.js`、`en.js` | 语言选择、消息绑定与英语翻译 |
 | `styles.css`、`tokens.css`、`interaction.css`、`shell.css`、`memos.css` | CSS 分层入口、视觉变量、共享交互、主界面与登录样式 |
 | `index.html`、`favicon.svg` | HTML 入口和站点图标 |

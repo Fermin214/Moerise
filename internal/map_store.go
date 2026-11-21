@@ -7,11 +7,22 @@ import (
 	"encoding/json"
 	"errors"
 	"math"
-	"time"
+	"slices"
 )
 
 func mapIndexChanged() error {
 	return failure("MAP_INDEX_CHANGED", "Map index changed; retry after indexing completes", 409, true)
+}
+
+func decodeAttachmentsJSON(raw string) []map[string]any {
+	if raw == "" || raw == "null" || raw == "[]" {
+		return nil
+	}
+	var attachments []map[string]any
+	if json.Unmarshal([]byte(raw), &attachments) != nil {
+		return nil
+	}
+	return attachments
 }
 
 func (s *Store) mapSnapshot(ctx context.Context) (mapSnapshot, error) {
@@ -25,8 +36,11 @@ func (s *Store) mapSnapshot(ctx context.Context) (mapSnapshot, error) {
 			Scan(&snapshot.generation, &snapshot.space, &snapshot.revision); err != nil {
 			return err
 		}
-		rows, err := tx.QueryContext(ctx, `SELECT n.name, n.source_hash, json_extract(m.payload_json, '$.tags'),
-			substr(json_extract(m.payload_json, '$.content'), 1, 2048), c.content_hash, c.vector
+		rows, err := tx.QueryContext(ctx, `SELECT n.name, n.source_hash, m.state, json_extract(m.payload_json, '$.tags'),
+			COALESCE(json_extract(m.payload_json, '$.create_time'), ''),
+			substr(COALESCE(json_extract(m.payload_json, '$.content'), ''), 1, 2048),
+			COALESCE(json_extract(m.payload_json, '$.attachments'), '[]'),
+			c.content_hash, c.vector
 			FROM vector_notes n JOIN vector_generations g ON g.id = n.generation_id
 			JOIN memos m ON m.instance_id = g.instance_id AND m.user_name = g.user_name AND m.name = n.name
 			LEFT JOIN vector_chunks c USING (generation_id, name)
@@ -39,17 +53,23 @@ func (s *Store) mapSnapshot(ctx context.Context) (mapSnapshot, error) {
 		var current *mapDocument
 		seen := map[string]bool{}
 		for rows.Next() {
-			var name, sourceHash string
+			var name, sourceHash, state, createTime, content, attachmentsJSON string
 			var chunkHash sql.NullString
-			var tags, content sql.NullString
+			var tags sql.NullString
 			var data []byte
-			if err := rows.Scan(&name, &sourceHash, &tags, &content, &chunkHash, &data); err != nil {
+			if err := rows.Scan(&name, &sourceHash, &state, &tags, &createTime, &content, &attachmentsJSON, &chunkHash, &data); err != nil {
 				return err
 			}
 			if current == nil || current.name != name {
-				snapshot.documents = append(snapshot.documents, mapDocument{name: name, sourceHash: sourceHash})
+				excerpt := ""
+				if state == "NORMAL" {
+					excerpt = mapPointExcerpt(content, decodeAttachmentsJSON(attachmentsJSON))
+				}
+				snapshot.documents = append(snapshot.documents, mapDocument{
+					name: name, sourceHash: sourceHash, excerpt: excerpt, createTime: createTime,
+				})
 				current = &snapshot.documents[len(snapshot.documents)-1]
-				current.keywords = mapKeywords(content.String)
+				current.keywords = mapKeywords(content)
 				if tags.Valid && tags.String != "null" {
 					if err := json.Unmarshal([]byte(tags.String), &current.tags); err != nil {
 						return err
@@ -97,54 +117,71 @@ func (s *Store) mapSnapshot(ctx context.Context) (mapSnapshot, error) {
 	return snapshot, ctx.Err()
 }
 
-func (s *Store) loadLegacyLayout(ctx context.Context, space string) (*mapLayout, error) {
-	layout := &mapLayout{points: []MapPoint{}}
+func (s *Store) reconcileMapPoints(ctx context.Context, points []MapPoint, sinceRevision int64) ([]MapPoint, int64, bool, error) {
+	if len(points) == 0 {
+		return points, sinceRevision, false, nil
+	}
+	updated := points
+	currentRevision := sinceRevision
+	changed := false
 	err := transactionContext(ctx, s.index, func(tx *sql.Tx) error {
-		var basis, topics, links []byte
-		var generatedAt string
-		err := tx.QueryRowContext(ctx, `SELECT algorithm, version, basis_json, generation_id, projection_revision, generated_at,
-			topics_json, links_json FROM map_layouts
-			WHERE instance_id = ? AND user_name = ? AND space_hash = ? AND algorithm IN ('pca-topics-v3', 'pca-fixed-v2')`,
-			s.Settings.Memos.InstanceID, s.Settings.Memos.User, space).
-			Scan(&layout.algorithm, &layout.version, &basis, &layout.generation, &layout.revision, &generatedAt, &topics, &links)
-		if err != nil {
+		err := tx.QueryRowContext(ctx, `SELECT revision FROM projection_meta WHERE instance_id = ?`,
+			s.Settings.Memos.InstanceID).Scan(&currentRevision)
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil
+		}
+		if err != nil || currentRevision == sinceRevision {
 			return err
 		}
-		layout.generatedAt, err = time.Parse(time.RFC3339Nano, generatedAt)
-		if err != nil {
-			return failure("MAP_LAYOUT_INVALID", "Stored map timestamp is invalid; rebuild the index", 503, false)
+		type liveMemo struct {
+			state, sourceHash, createTime, content, attachments string
 		}
-		if json.Unmarshal(basis, &layout.basis) != nil || !validMapBasis(layout.basis, s.Settings.Embedding.Dimensions) {
-			return failure("MAP_LAYOUT_INVALID", "Stored map layout is invalid; rebuild the index", 503, false)
-		}
-		if json.Unmarshal(topics, &layout.topics) != nil || json.Unmarshal(links, &layout.links) != nil ||
-			layout.topics == nil || layout.links == nil {
-			return failure("MAP_LAYOUT_INVALID", "Stored map topics are invalid; rebuild the index", 503, false)
-		}
-		rows, err := tx.QueryContext(ctx, `SELECT name, source_hash, vector_hash, x, y, semantic, tags_json
-			FROM map_points WHERE instance_id = ? AND user_name = ? ORDER BY name`, s.Settings.Memos.InstanceID, s.Settings.Memos.User)
+		rows, err := tx.QueryContext(ctx, `SELECT name, state, source_hash,
+			COALESCE(json_extract(payload_json, '$.create_time'), ''),
+			substr(COALESCE(json_extract(payload_json, '$.content'), ''), 1, 2048),
+			COALESCE(json_extract(payload_json, '$.attachments'), '[]')
+			FROM memos WHERE instance_id = ? AND user_name = ?`,
+			s.Settings.Memos.InstanceID, s.Settings.Memos.User)
 		if err != nil {
 			return err
 		}
 		defer rows.Close()
+		live := make(map[string]liveMemo, len(points))
 		for rows.Next() {
-			var point MapPoint
-			var tags string
-			if err := rows.Scan(&point.Name, &point.SourceHash, &point.vectorHash, &point.X, &point.Y, &point.Semantic, &tags); err != nil {
+			var name string
+			var item liveMemo
+			if err := rows.Scan(&name, &item.state, &item.sourceHash, &item.createTime, &item.content, &item.attachments); err != nil {
 				return err
 			}
-			if json.Unmarshal([]byte(tags), &point.Tags) != nil || point.Tags == nil {
-				return failure("MAP_LAYOUT_INVALID", "Stored map tags are invalid; rebuild the index", 503, false)
-			}
-			if math.IsNaN(point.X) || math.IsNaN(point.Y) || math.IsInf(point.X, 0) || math.IsInf(point.Y, 0) {
-				return failure("MAP_LAYOUT_INVALID", "Stored map layout is invalid; rebuild the index", 503, false)
-			}
-			layout.points = append(layout.points, point)
+			live[name] = item
 		}
-		return rows.Err()
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		cloned := slices.Clone(points)
+		for i, point := range cloned {
+			item, exists := live[point.Name]
+			if !exists || item.state != "NORMAL" {
+				if point.Excerpt != "" {
+					cloned[i].Excerpt = ""
+					changed = true
+				}
+				continue
+			}
+			if point.SourceHash != item.sourceHash || point.Excerpt == "" {
+				nextExcerpt := mapPointExcerpt(item.content, decodeAttachmentsJSON(item.attachments))
+				if cloned[i].Excerpt != nextExcerpt || cloned[i].CreateTime != item.createTime || cloned[i].SourceHash != item.sourceHash {
+					cloned[i].Excerpt = nextExcerpt
+					cloned[i].CreateTime = item.createTime
+					cloned[i].SourceHash = item.sourceHash
+					changed = true
+				}
+			}
+		}
+		if changed {
+			updated = cloned
+		}
+		return nil
 	})
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, nil
-	}
-	return layout, err
+	return updated, currentRevision, changed, err
 }

@@ -75,14 +75,16 @@ fun SettingsScreen(
                     modifier = Modifier.semantics { heading() },
                 )
                 WebTabs(
-                    listOf(strings.text("通用", "General"), strings.text("回顾", "Review"),
-                        strings.text("模型", "Models"), strings.text("洞察", "Insights"),
-                        strings.text("消息渠道", "Messaging channel"), strings.text("发送记录", "Delivery history"),
-                        strings.text("隐私", "Privacy")),
+                    listOf(
+                        strings.text("通用", "General"),
+                        "AI",
+                        strings.text("回顾与推送", "Review & delivery"),
+                        strings.text("隐私", "Privacy"),
+                    ),
                     tab, { if (!state.busy) tab = it }, tagPrefix = "settings_tab", enabled = !state.busy,
                 )
                 when {
-                    tab == 6 -> PrivacySettings(mobile.privacy, strings)
+                    tab == 3 -> PrivacySettings(mobile.privacy, strings)
                     state.loading -> SettingsHint(strings.text("正在加载设置…", "Loading settings…"))
                     state.snapshot == null -> {
                         state.error?.let { SettingsMessage(settingsMessage(it, strings), error = true) }
@@ -96,7 +98,7 @@ fun SettingsScreen(
                     else -> {
                         when (tab) {
                             0 -> SettingsSection(strings.text("通用", "General")) {
-                                SettingsRow(strings.text("语言", "Language"), separator = false) {
+                                SettingsRow(strings.text("语言", "Language")) {
                                     SettingsSelect(
                                         language.name,
                                         listOf(
@@ -109,8 +111,38 @@ fun SettingsScreen(
                                         tag = "settings_language",
                                     ) { value -> mobile.session.language(UiLanguage.valueOf(value)) }
                                 }
+                                SettingsField(
+                                    controller, state, "timezone", strings.text("时区", "Timezone"),
+                                    hint = strings.text(
+                                        "使用 IANA 名称，例如 Asia/Hong_Kong。",
+                                        "Use an IANA name, such as Europe/London.",
+                                    ),
+                                )
                                 SettingsCheckbox(controller, state, "stargazing.enabled",
                                     strings.text("启用观星", "Enable stargazing"))
+                                SettingsCheckbox(
+                                    controller, state, "stargazing.llm_naming",
+                                    strings.text("星系智能命名", "Name star clusters with AI"),
+                                    hint = strings.text(
+                                        "全量构建时由模型总结星系标题，关闭或超时时回退关键词提取。",
+                                        "Summarize cluster titles with the LLM on full rebuilds; falls back to keywords when off or timed out.",
+                                    ),
+                                )
+                                val mapEnabled = state.values["stargazing.enabled"] == "true" &&
+                                    state.values["embedding.enabled"] == "true"
+                                SettingsRow(
+                                    strings.text("星图更新", "Star map updates"),
+                                    hint = strings.text("每日 03:00 更新", "Updates daily at 03:00"),
+                                    separator = false,
+                                ) {
+                                    SettingsGhost(
+                                        if (state.rebuildingMap) strings.text("正在重新生成星图…", "Rebuilding star map…")
+                                        else strings.text("重新生成星图", "Rebuild star map"),
+                                        controller::rebuildMap,
+                                        enabled = !state.busy && !state.rebuildingMap && !state.conflict && mapEnabled,
+                                        modifier = Modifier.testTag("settings_rebuild_map"),
+                                    )
+                                }
                                 if (preferencesError != null) SettingsMessage(
                                     strings.text(
                                         "语言设置未能保存，请重新选择。",
@@ -118,55 +150,31 @@ fun SettingsScreen(
                                     ), error = true,
                                 )
                             }
-                            1 -> SettingsReview(controller, state, strings)
-                            2 -> SettingsModels(controller, state, strings)
-                            3 -> SettingsSection(strings.text("默认洞察 Prompt", "Default insight prompt")) {
-                                SettingsField(
-                                    controller, state, "insights.default_prompt",
-                                    strings.text("一键洞察使用的 Prompt", "Prompt for Generate insight"),
-                                    multiline = true, minLines = 7,
-                                )
-                                SettingsGhost(
-                                    strings.text("恢复默认", "Restore default"),
-                                    controller::restorePrompt,
-                                    enabled = !state.busy &&
-                                        state.snapshot.settingsText("default_insight_prompt") != null,
-                                    modifier = Modifier.testTag("settings_restore_prompt"),
-                                )
-                            }
-                            4 -> SettingsChannel(controller, state, strings)
-                            5 -> SettingsHistory(controller, state, strings)
-                        }
-                        Column(
-                            Modifier.fillMaxWidth().padding(top = 4.dp, bottom = 12.dp),
-                            verticalArrangement = Arrangement.spacedBy(8.dp),
-                        ) {
-                            val error = if (state.conflict) "SETTINGS_CONFLICT" else state.error
-                            error?.let { SettingsMessage(settingsMessage(it, strings), error = true) }
-                            state.status?.takeIf { it.isNotBlank() }?.let {
-                                SettingsMessage(settingsMessage(it, strings))
-                            }
-                            Row(
-                                Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                            ) {
-                                Box(Modifier.weight(1f)) {
+                            1 -> {
+                                SettingsModels(controller, state, strings)
+                                SettingsSection(strings.text("默认洞察 Prompt", "Default insight prompt")) {
+                                    SettingsField(
+                                        controller, state, "insights.default_prompt",
+                                        strings.text("一键洞察使用的 Prompt", "Prompt for Generate insight"),
+                                        multiline = true, minLines = 7, separator = false,
+                                    )
                                     SettingsGhost(
-                                        strings.text("重新加载设置", "Reload settings"),
-                                        controller::load,
-                                        enabled = !state.busy,
-                                        modifier = Modifier.testTag("settings_reload"),
+                                        strings.text("恢复默认", "Restore default"),
+                                        controller::restorePrompt,
+                                        enabled = !state.busy &&
+                                            state.snapshot.settingsText("default_insight_prompt") != null,
+                                        modifier = Modifier.testTag("settings_restore_prompt"),
                                     )
                                 }
-                                WebAction(
-                                    strings.text("保存设置", "Save settings"),
-                                    controller::save,
-                                    enabled = !state.busy && !state.conflict,
-                                    modifier = Modifier.testTag("settings_save"),
-                                )
+                            }
+                            2 -> {
+                                SettingsReview(controller, state, strings)
+                                SettingsChannel(controller, state, strings)
+                                SettingsSaveBar(controller, state, strings)
+                                SettingsHistory(controller, state, strings)
                             }
                         }
+                        if (tab != 2) SettingsSaveBar(controller, state, strings)
                     }
                 }
             }
@@ -175,15 +183,46 @@ fun SettingsScreen(
 }
 
 @Composable
+private fun SettingsSaveBar(
+    controller: SettingsController,
+    state: SettingsUiState,
+    strings: Strings,
+) {
+    Column(
+        Modifier.fillMaxWidth().padding(top = 4.dp, bottom = 12.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        val error = if (state.conflict) "SETTINGS_CONFLICT" else state.error
+        error?.let { SettingsMessage(settingsMessage(it, strings), error = true) }
+        state.status?.takeIf { it.isNotBlank() }?.let {
+            SettingsMessage(settingsMessage(it, strings))
+        }
+        Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Box(Modifier.weight(1f)) {
+                SettingsGhost(
+                    strings.text("重新加载设置", "Reload settings"),
+                    controller::load,
+                    enabled = !state.busy,
+                    modifier = Modifier.testTag("settings_reload"),
+                )
+            }
+            WebAction(
+                strings.text("保存设置", "Save settings"),
+                controller::save,
+                enabled = !state.busy && !state.conflict,
+                modifier = Modifier.testTag("settings_save"),
+            )
+        }
+    }
+}
+
+@Composable
 private fun SettingsReview(controller: SettingsController, state: SettingsUiState, strings: Strings) {
-    SettingsSection(strings.text("回顾", "Review")) {
-        SettingsField(
-            controller, state, "timezone", strings.text("时区", "Timezone"),
-            hint = strings.text(
-                "使用 IANA 名称，例如 Asia/Hong_Kong。",
-                "Use an IANA name, such as Europe/London.",
-            ),
-        )
+    SettingsSection(strings.text("每日回顾", "Daily review")) {
         SettingsField(
             controller, state, "review.count", strings.text("每次数量（条）", "Notes per review"),
             keyboard = KeyboardType.Number,
@@ -453,6 +492,7 @@ private fun SettingsChannel(controller: SettingsController, state: SettingsUiSta
     SettingsSection(strings.text("消息渠道", "Messaging channel")) {
         if ("channels" in state.checkErrors) SettingsMessage(strings.text("连接状态不可用", "Connection status unavailable"), error = true)
         SettingsSubheading(strings.text("QQ 私聊", "QQ private chat"))
+        SettingsHint(strings.text("支持随时私聊速记与查回顾。", "Supports quick notes and checking reviews in private chat."))
         SettingsField(controller, state, "channel.qq_app_id", "QQ AppID", keyboard = KeyboardType.Ascii)
         SettingsSecret(controller, state, strings, "qq_app_secret", "QQ AppSecret")
         SettingsConnection(channels.settingsObject("qq"), strings)
@@ -846,6 +886,8 @@ private fun settingsMessage(code: String, strings: Strings): String = when (code
         strings.text("没有需要保存的修改。", "No changes to save.")
     "SETTINGS_PROMPT_RESTORED" ->
         strings.text("已恢复默认 Prompt，保存后生效。", "Default prompt restored. Save to apply.")
+    "SETTINGS_MAP_REBUILT" ->
+        strings.text("已请求重新生成星图。", "Star map rebuild requested.")
     "LLM_DISABLED" -> strings.text("请先启用并保存 LLM。", "Enable the LLM and save your settings first.")
     "EMBEDDING_DISABLED" ->
         strings.text("请先启用并保存 Embedding。", "Enable embeddings and save your settings first.")

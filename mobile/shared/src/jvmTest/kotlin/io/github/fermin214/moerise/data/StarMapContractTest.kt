@@ -19,7 +19,7 @@ class StarMapContractTest {
         assertFailsWith<IllegalArgumentException> { ready.copy(links = listOf(StarLink(point.name, "memos/missing", .8))).validate() }
         assertFailsWith<IllegalArgumentException> { ready.copy(topics = listOf(
             StarTopic("topic-0000000000000001", "topic", 0.0, 0.0, listOf("memos/missing")))).validate() }
-        assertEquals("pca-topics-v3", ready.copy(algorithm = "pca-topics-v3", points = listOf(point.copy(stellar = null))).validate().algorithm)
+        assertEquals("MAP_INCOMPATIBLE", assertFailsWith<IllegalArgumentException> { ready.copy(algorithm = "pca-topics-v3", points = listOf(point.copy(stellar = null))).validate() }.message)
         assertEquals("MAP_INCOMPATIBLE", assertFailsWith<IllegalArgumentException> { ready.copy(algorithm = "unknown").validate() }.message)
     }
 

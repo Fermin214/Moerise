@@ -90,7 +90,7 @@ async function startCore() {
   core = spawn(resolve(root, 'moerise'), ['serve', '--config', resolve(root, 'config.json'),
     '--host', '127.0.0.1', '--port', new URL(coreURL).port], {
     cwd: repo, stdio: ['ignore', log.fd, log.fd],
-    env: { ...process.env, MOERISE_LAYOUT_URL: process.env.MOERISE_LAYOUT_URL || 'http://127.0.0.1:8766' },
+    env: { ...process.env, MOERISE_LAYOUT_URL: process.env.MOERISE_LAYOUT_URL || 'http://127.0.0.1:8766', MOERISE_LAYOUT_CHECK_SECONDS: '2' },
   });
   coreExit = once(core, 'exit');
   await wait('Core', async () => { try { await request(coreURL, '/health/ready'); return true; } catch { return false; } }, 30_000);
@@ -226,7 +226,7 @@ try {
     assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
     await page.screenshot({ path: resolve(root, 'stars-mobile.png') });
     await page.getByRole('button', { name: '关闭笔记详情', exact: true }).click();
-    assert.equal(await page.getByRole('button', { name: '重新生成星图', exact: true }).count(), 0);
+    assert.equal(await page.getByRole('button', { name: '重新生成星图', exact: true }).count(), 1);
     assert.equal(browserRebuilds, 0);
   });
   await check('新增真实笔记后旧坐标与星体属性保持', async () => {

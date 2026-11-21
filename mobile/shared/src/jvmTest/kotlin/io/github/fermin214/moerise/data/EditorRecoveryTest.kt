@@ -52,6 +52,7 @@ class EditorRecoveryTest {
             }
         }
         var db = Room.databaseBuilder<LocalDatabase>(name = path).setDriver(driver)
+            .addMigrations(LOCAL_DB_MIGRATION_1_2)
             .setQueryCoroutineContext(Dispatchers.IO).build()
         val requests = mutableListOf<Pair<HttpMethod, String>>()
         val engine = MockEngine { request ->

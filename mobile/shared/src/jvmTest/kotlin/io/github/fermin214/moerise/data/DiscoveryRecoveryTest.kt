@@ -148,4 +148,61 @@ class DiscoveryRecoveryTest {
             scope.cancel(); core.close(); dispatcher.close()
         }
     }
+
+    @Test
+    fun walkPrefetchCachesNextAndCancelsOnEnd() = runBlocking<Unit> {
+        val dispatcher = Executors.newSingleThreadExecutor().asCoroutineDispatcher()
+        val scope = CoroutineScope(SupervisorJob() + dispatcher)
+        val calls = AtomicInteger()
+        val prefetchBStarted = CompletableDeferred<Unit>()
+        val prefetchBReleased = CompletableDeferred<Unit>()
+        val prefetchCStarted = CompletableDeferred<Unit>()
+        val prefetchCReleased = CompletableDeferred<Unit>()
+        val engine = MockEngine { request ->
+            if (request.url.encodedPath.endsWith("/session")) {
+                respond(identity)
+            } else if (request.url.encodedPath.endsWith("/models")) {
+                respond("""{"embedding":{"enabled":true,"configured":true}}""")
+            } else if (request.url.encodedPath.endsWith("/notes")) {
+                respond("""{"notes":[],"next_page_token":""}""")
+            } else {
+                when (calls.incrementAndGet()) {
+                    1 -> respond("""{"mode":"continue","item":{"note":${note("a")}},"path":["memos/a"],"exhausted":false,"warnings":[]}""")
+                    2 -> {
+                        prefetchBStarted.complete(Unit)
+                        prefetchBReleased.await()
+                        respond("""{"mode":"continue","item":{"note":${note("b")}},"path":["memos/a","memos/b"],"exhausted":false,"warnings":[]}""")
+                    }
+                    else -> {
+                        prefetchCStarted.complete(Unit)
+                        prefetchCReleased.await()
+                        respond("""{"mode":"continue","item":{"note":${note("c")}},"path":["memos/a","memos/b","memos/c"],"exhausted":false,"warnings":[]}""")
+                    }
+                }
+            }
+        }
+        val core = CoreClient("https://notes.example", SessionCookies("https://notes.example", MemorySecrets()), engine)
+        try {
+            val walk = WalkController({ core }, { key }, scope, enablePrefetch = true)
+            withContext(dispatcher) { walk.visible(true); walk.start("memos/a") }
+            withTimeout(10_000) { walk.state.first { !it.loading && it.result?.item?.note?.name == "memos/a" } }
+            withTimeout(10_000) { prefetchBStarted.await() }
+            withContext(dispatcher) { walk.next() }
+            prefetchBReleased.complete(Unit)
+            withTimeout(10_000) { walk.state.first { !it.loading && it.result?.item?.note?.name == "memos/b" } }
+            withTimeout(10_000) { prefetchCStarted.await() }
+            assertEquals(3, calls.get())
+            withContext(dispatcher) { walk.end() }
+            prefetchCReleased.complete(Unit)
+            delay(50)
+            assertNull(walk.state.value.result)
+            assertEquals(3, calls.get())
+        } finally {
+            prefetchBReleased.complete(Unit)
+            prefetchCReleased.complete(Unit)
+            scope.cancel()
+            core.close()
+            dispatcher.close()
+        }
+    }
 }

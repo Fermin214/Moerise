@@ -5,16 +5,44 @@ import (
 	"database/sql"
 	"errors"
 	"log/slog"
+	"os"
+	"strconv"
 	"sync/atomic"
 	"time"
 )
 
 const mapRequestTimeout = 55 * time.Second
-const mapSnapshotInterval = time.Minute
+
+func mapCheckIntervalOverride() time.Duration {
+	if raw := os.Getenv("MOERISE_LAYOUT_CHECK_SECONDS"); raw != "" {
+		if seconds, err := strconv.Atoi(raw); err == nil && seconds > 0 {
+			return time.Duration(seconds) * time.Second
+		}
+	}
+	return 0
+}
+
+func nextMapSchedule(reference time.Time, timezone string) time.Time {
+	if interval := mapCheckIntervalOverride(); interval > 0 {
+		return reference.Add(interval)
+	}
+	location, err := time.LoadLocation(timezone)
+	if err != nil || location == nil {
+		location = time.UTC
+	}
+	local := reference.In(location)
+	target := time.Date(local.Year(), local.Month(), local.Day(), 3, 0, 0, 0, location)
+	if !target.After(local) {
+		target = target.AddDate(0, 0, 1)
+	}
+	return target.UTC()
+}
 
 type mapCache struct {
-	key      string
-	response MapResponse
+	key            string
+	projectionBump int64
+	revision       int64
+	response       MapResponse
 }
 
 type mapSchedule struct {
@@ -30,6 +58,7 @@ type mapActivity struct {
 type MapService struct {
 	Store       *Store
 	gate        chan struct{}
+	wake        chan struct{}
 	cache       atomic.Pointer[mapCache]
 	schedule    atomic.Pointer[mapSchedule]
 	lastFailure atomic.Pointer[mapSchedule]
@@ -37,12 +66,25 @@ type MapService struct {
 	epoch       atomic.Uint64
 	workerURL   string
 	scope       string
+	acquireLLM  func() (LLMProvider, func())
 }
 
 func NewMapService(store *Store) *MapService {
-	return &MapService{Store: store, gate: make(chan struct{}, 1),
+	return &MapService{
+		Store: store, gate: make(chan struct{}, 1), wake: make(chan struct{}, 1),
 		workerURL: layoutWorkerURL(),
-		scope:     hashBytes(canonicalJSON([]string{store.Settings.Memos.InstanceID, store.Settings.Memos.User}))}
+		scope:     hashBytes(canonicalJSON([]string{store.Settings.Memos.InstanceID, store.Settings.Memos.User})),
+	}
+}
+
+func (s *MapService) signal() {
+	if s.wake == nil {
+		return
+	}
+	select {
+	case s.wake <- struct{}{}:
+	default:
+	}
 }
 
 func (s *MapService) Reset() {
@@ -51,6 +93,7 @@ func (s *MapService) Reset() {
 	s.schedule.Store(nil)
 	s.lastFailure.Store(nil)
 	s.activity.Store(nil)
+	s.signal()
 }
 
 func (s *MapService) readState(response MapResponse, key string) MapResponse {
@@ -73,15 +116,8 @@ func mapRequestError(ctx context.Context, err error) error {
 }
 
 func (s *MapService) response(layout *mapLayout, space string) MapResponse {
-	algorithm := layout.algorithm
-	var frame string
-	if algorithm == starsAlgorithm {
-		frame = hashBytes(canonicalJSON([]string{s.scope, space, algorithm, layout.frame}))
-	} else {
-		frame = hashBytes(canonicalJSON([]any{s.Store.Settings.Memos.InstanceID,
-			s.Store.Settings.Memos.User, algorithm, space, layout.basis}))
-	}
-	result := MapResponse{Status: "ready", Algorithm: algorithm, LayoutVersion: layout.version,
+	frame := hashBytes(canonicalJSON([]string{s.scope, space, layout.algorithm, layout.frame}))
+	result := MapResponse{Status: "ready", Algorithm: layout.algorithm, LayoutVersion: layout.version,
 		LayoutFrame:      frame,
 		VectorGeneration: layout.generation, ProjectionRevision: layout.revision,
 		GeneratedAt: layout.generatedAt.Format(time.RFC3339Nano), Points: layout.points,
@@ -111,19 +147,40 @@ func (s *MapService) Read(ctx context.Context) (_ MapResponse, result error) {
 		return response, nil
 	}
 	key := s.cacheKey()
+	bump := s.Store.projectionBump.Load()
 	cached := s.cache.Load()
 	if cached != nil && cached.key == key {
-		return s.readState(cached.response, key), ctx.Err()
+		if cached.projectionBump == bump {
+			return s.readState(cached.response, key), ctx.Err()
+		}
+		points, revision, changed, err := s.Store.reconcileMapPoints(ctx, cached.response.Points, cached.revision)
+		if err != nil {
+			return MapResponse{}, err
+		}
+		updated := cached.response
+		if changed {
+			updated.Points = points
+			updated.ProjectionRevision = revision
+		}
+		s.cache.CompareAndSwap(cached, &mapCache{key: key, projectionBump: bump, revision: revision, response: updated})
+		return s.readState(updated, key), ctx.Err()
 	}
 	space := embeddingSpace(s.Store.Settings.Embedding)
-	layout, _, err := s.Store.loadPublishedLayout(ctx, space)
+	layout, _, err := s.Store.loadStars(ctx, space)
 	if err != nil {
 		return MapResponse{}, err
 	}
 	if layout != nil && !layout.generatedAt.IsZero() {
+		points, revision, changed, err := s.Store.reconcileMapPoints(ctx, layout.points, layout.revision)
+		if err != nil {
+			return MapResponse{}, err
+		}
+		if changed {
+			layout.points = points
+			layout.revision = revision
+		}
 		response = s.response(layout, space)
-		// A cold read must not overwrite a snapshot published concurrently.
-		s.cache.CompareAndSwap(cached, &mapCache{key: key, response: response})
+		s.cache.CompareAndSwap(cached, &mapCache{key: key, projectionBump: bump, revision: revision, response: response})
 		return s.readState(response, key), ctx.Err()
 	}
 	status, err := s.Store.VectorStatusContext(ctx)
@@ -165,6 +222,9 @@ func (s *MapService) update(ctx context.Context, now time.Time) error {
 	if job == nil {
 		return ctx.Err()
 	}
+	if job.releaseLLM != nil {
+		defer job.releaseLLM()
+	}
 	previous := job.previous
 	if job.token != "" {
 		previous = nil
@@ -181,6 +241,9 @@ func (s *MapService) update(ctx context.Context, now time.Time) error {
 		return err
 	}
 	slog.Info("stars layout computed", "points", len(layout.points), "elapsed", time.Since(started))
+	if previous == nil && job.llm != nil {
+		nameStarClusters(ctx, job.snapshot, layout, job.llm)
+	}
 	unlockRuntime := s.Store.lockRuntime()
 	defer unlockRuntime()
 	if !s.Store.Settings.Stargazing.Enabled || !s.Store.Settings.Embedding.Enabled || job.key != s.cacheKey() {
@@ -199,28 +262,23 @@ func (s *MapService) update(ctx context.Context, now time.Time) error {
 	if err := job.store.publishStars(ctx, job.snapshot, layout); err != nil {
 		return err
 	}
-	s.cache.Store(&mapCache{job.key, s.response(layout, job.snapshot.space)})
+	bump := s.Store.projectionBump.Load()
+	s.cache.Store(&mapCache{key: job.key, projectionBump: bump, revision: job.snapshot.revision, response: s.response(layout, job.snapshot.space)})
 	s.lastFailure.Store(nil)
 	s.activity.Store(nil)
-	s.schedule.Store(&mapSchedule{job.key, now.Add(mapSnapshotInterval)})
+	s.schedule.Store(&mapSchedule{job.key, nextMapSchedule(now, s.Store.Settings.Timezone)})
 	slog.Info("stars snapshot published", "points", len(layout.points), "revision", job.snapshot.revision)
 	return ctx.Err()
 }
 
 type mapJob struct {
-	store    *Store
-	key      string
-	snapshot mapSnapshot
-	previous *mapLayout
-	token    string
-}
-
-func (store *Store) loadPublishedLayout(ctx context.Context, space string) (*mapLayout, string, error) {
-	layout, token, err := store.loadStars(ctx, space)
-	if err == nil && layout == nil {
-		layout, err = store.loadLegacyLayout(ctx, space)
-	}
-	return layout, token, err
+	store      *Store
+	key        string
+	snapshot   mapSnapshot
+	previous   *mapLayout
+	token      string
+	llm        LLMProvider
+	releaseLLM func()
 }
 
 func (s *MapService) prepare(ctx context.Context, now time.Time) (*mapJob, error) {
@@ -239,18 +297,21 @@ func (s *MapService) prepare(ctx context.Context, now time.Time) (*mapJob, error
 		return nil, err
 	}
 	defer unlock()
-	// An immutable settings view can be used while the runtime changes providers.
 	store := &Store{Settings: s.Store.Settings, state: s.Store.state, index: s.Store.index,
 		indexRO: s.Store.indexRO, background: s.Store.background}
 	space := embeddingSpace(store.Settings.Embedding)
-	previous, token, err := store.loadPublishedLayout(ctx, space)
+	previous, token, err := store.loadStars(ctx, space)
 	if err != nil {
 		return nil, err
 	}
 	sameAlgorithm := previous != nil && previous.algorithm == starsAlgorithm
 	if previous != nil && !previous.generatedAt.IsZero() {
-		s.cache.Store(&mapCache{key, s.response(previous, space)})
-		if due := previous.generatedAt.Add(mapSnapshotInterval); sameAlgorithm && token == "" && now.Before(due) {
+		bump := s.Store.projectionBump.Load()
+		existing := s.cache.Load()
+		if existing == nil || existing.key != key || existing.projectionBump != bump {
+			s.cache.Store(&mapCache{key: key, projectionBump: -1, revision: previous.revision, response: s.response(previous, space)})
+		}
+		if due := nextMapSchedule(previous.generatedAt, store.Settings.Timezone); sameAlgorithm && token == "" && now.Before(due) {
 			s.schedule.Store(&mapSchedule{key, due})
 			return nil, ctx.Err()
 		}
@@ -260,7 +321,7 @@ func (s *MapService) prepare(ctx context.Context, now time.Time) (*mapJob, error
 		return nil, err
 	}
 	if sameAlgorithm && token == "" && previous.generation == status.Active.ID && previous.revision == status.ProjectionRevision {
-		s.schedule.Store(&mapSchedule{key, now.Add(mapSnapshotInterval)})
+		s.schedule.Store(&mapSchedule{key, nextMapSchedule(now, store.Settings.Timezone)})
 		return nil, ctx.Err()
 	}
 	snapshot, err := store.mapSnapshot(ctx)
@@ -270,7 +331,12 @@ func (s *MapService) prepare(ctx context.Context, now time.Time) (*mapJob, error
 	if err != nil {
 		return nil, err
 	}
-	return &mapJob{store, key, snapshot, previous, token}, nil
+	var llm LLMProvider
+	var releaseLLM func()
+	if (previous == nil || token != "") && store.Settings.LLM.Enabled && store.Settings.Stargazing.LLMNaming && s.acquireLLM != nil {
+		llm, releaseLLM = s.acquireLLM()
+	}
+	return &mapJob{store, key, snapshot, previous, token, llm, releaseLLM}, nil
 }
 
 func (s *MapService) Rebuild(ctx context.Context) error {
@@ -284,6 +350,7 @@ func (s *MapService) Rebuild(ctx context.Context) error {
 		return err
 	}
 	s.schedule.Store(nil)
+	s.signal()
 	return nil
 }
 
@@ -292,8 +359,20 @@ func (a *App) runMap(ctx context.Context) error {
 		if err := a.Map.Update(ctx); err != nil && ctx.Err() == nil {
 			slog.Warn("stars snapshot failed", "code", errorCode(err))
 		}
-		if err := runtimePause(ctx, time.Second); err != nil {
-			return err
+		delay := time.Second
+		if schedule := a.Map.schedule.Load(); schedule != nil {
+			if wait := min(time.Until(schedule.next), time.Minute); wait > time.Second {
+				delay = wait
+			}
+		}
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-a.Map.wake:
+			timer.Stop()
+		case <-timer.C:
 		}
 	}
 }

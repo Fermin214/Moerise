@@ -347,7 +347,7 @@ try {
   await check('共享设置修改与恢复默认 Prompt，原历史保持', async () => {
     await page.locator('.side a[href="/settings"]').click();
     await page.locator('#settings-page[aria-busy="false"]').waitFor();
-    await page.locator('#settings-tab-insights').click();
+    await page.locator('#settings-tab-ai').click();
     await page.locator('[name="insights.default_prompt"]').fill('新的真实聊天 Prompt');
     await page.getByRole('button', { name: '保存设置', exact: true }).click();
     await page.getByRole('status').filter({ hasText: '设置已保存' }).waitFor();
@@ -363,7 +363,7 @@ try {
     assert.equal(current.turns.at(-1).prompt, '新的真实聊天 Prompt');
     await page.locator('.side a[href="/settings"]').click();
     await page.locator('#settings-page[aria-busy="false"]').waitFor();
-    await page.locator('#settings-tab-insights').click();
+    await page.locator('#settings-tab-ai').click();
     const settings = await api('GET', '/settings');
     await page.getByRole('button', { name: '恢复默认', exact: true }).click();
     assert.equal(await page.locator('[name="insights.default_prompt"]').inputValue(), settings.default_insight_prompt);

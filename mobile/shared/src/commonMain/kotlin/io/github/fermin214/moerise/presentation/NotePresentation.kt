@@ -68,6 +68,39 @@ fun localNotePresentation(content: String): NotePresentation {
     return notePresentation(content, tags.toList())
 }
 
+fun initialEditorSelection(content: String): Int {
+    if ('#' !in content) return content.length
+    val protected = protectedTagOffsets(content)
+    val spans = mutableListOf<IntRange>()
+    var offset = 0
+    while (offset < content.length) {
+        if (content[offset] != '#' || protected[offset] || escapedHash(content, offset) ||
+            offset > 0 && !tagBoundary(content[offset - 1], before = true)) {
+            offset++
+            continue
+        }
+        val start = offset + 1
+        var end = start
+        while (end < content.length && content[end] != '#' &&
+            !tagBoundary(content[end], before = false) && !protected[end]) end++
+        if (end > start && (end == content.length || tagBoundary(content[end], before = false))) {
+            spans += offset until end
+        }
+        offset = maxOf(end, start)
+    }
+    if (spans.isEmpty()) return content.length
+    var cursor = content.length
+    while (cursor > 0 && content[cursor - 1].isWhitespace()) cursor--
+    var trailing = false
+    for (span in spans.asReversed()) {
+        if (span.last + 1 != cursor) break
+        trailing = true
+        cursor = span.first
+        while (cursor > 0 && content[cursor - 1].isWhitespace()) cursor--
+    }
+    return if (trailing && cursor > 0) cursor else content.length
+}
+
 private fun protectedTagOffsets(content: String): BooleanArray {
     val protected = BooleanArray(content.length)
     fun protect(node: ASTNode) {

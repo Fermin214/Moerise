@@ -10,13 +10,22 @@
 .privacy-links,.privacy-switch { display:flex; align-items:center; gap:16px; flex-wrap:wrap; }
 .privacy-switch { justify-content:space-between; font-weight:600; min-height:44px; }
 .privacy-switch input { width:1.3rem; height:1.3rem; accent-color:var(--focus); }
-#sync-status { position:fixed; z-index:4; right:max(16px,env(safe-area-inset-right)); top:max(12px,env(safe-area-inset-top)); display:inline-flex; align-items:center; justify-content:center; color:var(--focus); background:var(--paper); border-radius:50%; pointer-events:none; }
+#sync-status { position:fixed; z-index:4; right:max(16px,env(safe-area-inset-right)); top:max(12px,env(safe-area-inset-top)); display:inline-flex; align-items:center; justify-content:center; width:28px; height:28px; color:var(--focus); background:var(--paper); border-radius:50%; pointer-events:none; }
 #sync-status[hidden] { display:none; }
-#sync-status small { position:absolute; inset:0; display:grid; place-items:center; font-size:9px; }
+#sync-status .sync-dot { position:absolute; right:2px; top:2px; width:7px; height:7px; border-radius:50%; background:transparent; }
+#sync-status[data-sync="offline"] .sync-dot,#sync-status[data-sync="failure"] .sync-dot,#sync-status[data-sync="conflict"] .sync-dot,#sync-status[data-sync="unknown"] .sync-dot { background:#E86A5D; }
+#sync-status[data-sync="offline"],#sync-status[data-sync="failure"],#sync-status[data-sync="conflict"],#sync-status[data-sync="unknown"] { color:var(--muted); }
 @media (prefers-reduced-motion:no-preference) {
-  #sync-status[data-sync="transfer"] svg { animation:sync-turn 1s linear infinite; }
+  #sync-status[data-sync="transfer"] svg { animation:sync-pulse 1.4s ease-in-out infinite; }
 }
-@keyframes sync-turn { to { transform:rotate(360deg); } }
+@media (prefers-reduced-motion:reduce) {
+  #sync-status[data-sync="transfer"] .sync-dot { background:var(--focus); }
+}
+@keyframes sync-pulse { 50% { opacity:.38; } }
+.chat-jump { display:flex; justify-content:center; }
+.chat-jump[hidden] { display:none; }
+.btn.chat-latest { width:36px; height:36px; border-radius:50%; background:#fff; border:1px solid var(--line); box-shadow:0 4px 12px rgba(31,35,40,.08); color:var(--ink); }
+.btn.chat-latest:hover { background:var(--surface-muted,#F0F4F9); }
 .composer:has(textarea:focus-visible),.insight-input:has(input:focus-visible) {
   outline:2px solid var(--focus);
   outline-offset:2px;

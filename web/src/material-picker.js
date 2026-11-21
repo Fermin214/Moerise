@@ -8,7 +8,7 @@ export const materialSize = note => note.characters ?? [...(note.content || '')]
 const date = (year, month, day) => `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
 const nextDate = value => new Date(Date.parse(`${value}T12:00:00Z`) + 86400000).toISOString().slice(0, 10);
 
-export function createMaterialPicker({ parent, selected, today, sessionRequest, readTags, readCalendar, modern,
+export function createMaterialPicker({ parent, selected, today, sessionRequest, readTags, readCalendar,
   characterLimit, existing, previous, changedNames = [], onLimit, onSubmit, onFailure, onClose, onDirtyChange }) {
   const choices = new Map(selected), automatic = new Set(previous?.automatic), omitted = new Set(previous?.omitted);
   const initial = new Map(selected), candidates = new Map(), rows = new Map(), tokens = new Set();
@@ -75,12 +75,11 @@ export function createMaterialPicker({ parent, selected, today, sessionRequest, 
     setText(dateEntry, range ? range.split('/').filter(Boolean).join(' – ') : l("选择日期"));
     dialog.classList.toggle('calendar-open', calendarOpen); datePane.hidden = !calendarOpen;
     const hasMatches = candidates.size > 0 || !complete;
-    select.hidden = !modern || !!batch || !hasMatches || (complete && inList === candidates.size);
-    clear.hidden = !modern || !!batch || !hasMatches || (!inList && (complete || !choices.size));
+    select.hidden = !!batch || !hasMatches || (complete && inList === candidates.size);
+    clear.hidden = !!batch || !hasMatches || (!inList && (complete || !choices.size));
     stop.hidden = !batch; tools.hidden = selectedView || calendarOpen || (select.hidden && clear.hidden && stop.hidden);
     setText(status, batch ? l("正在统计") : loading && !candidates.size ? l("正在加载笔记…") :
-      !modern && !selectedView ? l("升级 Core 后可批量选择和合并标签。") :
-        !(selectedView ? choices.size : candidates.size) && complete ? l("没有笔记") : '');
+      !(selectedView ? choices.size : candidates.size) && complete ? l("没有笔记") : '');
     status.hidden = !status.textContent;
     more.hidden = selectedView || calendarOpen || blocked || complete || (!failed && !next);
     more.disabled = loading || busy; setText(more, failed ? l("重试") : l("加载更多"));
@@ -140,7 +139,7 @@ export function createMaterialPicker({ parent, selected, today, sessionRequest, 
     manual.clear(); failed = false; showError(''); onDirtyChange();
   }
   function beginBatch(mode, resume = false) {
-    if (!modern || busy) return;
+    if (busy) return;
     if (batch) abandonBatch();
     baseline = new Map(choices); baseAuto = new Set(automatic); baseOmitted = new Set(omitted); manual.clear();
     operation = tab === 'date' && range ? 'material_date' : tab === 'tag' && tags.size ? 'material_tags' : 'material_manual';
@@ -171,8 +170,7 @@ export function createMaterialPicker({ parent, selected, today, sessionRequest, 
     if (!alive || loading || busy || complete || blocked || selectedView && !batch) return;
     const ticket = sequence, request = controller = new AbortController();
     loading = true; failed = false; showError(''); controls();
-    const query = new URLSearchParams({ page_size: '100' });
-    if (modern) { query.set('format', 'compact'); query.set('tag_match', 'any'); }
+    const query = new URLSearchParams({ page_size: '100', format: 'compact', tag_match: 'any' });
     if (tab === 'date' && range) {
       const [from, through] = range.split('/'); query.set('from', from); query.set('until', nextDate(through || from));
     }
@@ -224,7 +222,7 @@ export function createMaterialPicker({ parent, selected, today, sessionRequest, 
       const chip = button(value || l("全部"), `pbtn${pressed ? ' on' : ''}`, () => {
         abandonBatch();
         if (!value) tags.clear(); else if (tags.has(value)) tags.delete(value);
-        else { if (!modern) tags.clear(); tags.add(value); }
+        else tags.add(value);
         resetList(); drawTags(); controls(); load();
       });
       chip.setAttribute('aria-pressed', String(pressed)); filters.append(chip);
@@ -275,7 +273,7 @@ export function createMaterialPicker({ parent, selected, today, sessionRequest, 
       abandonBatch();
       if (!same) { for (const name of automatic) choices.delete(name); automatic.clear(); omitted.clear(); }
       range = newRange; calendarOpen = false; resetList(); controls();
-      if (modern) beginBatch('date', true); else load();
+      beginBatch('date', true);
       dateEntry.focus(); onDirtyChange();
     });
     apply.disabled = !start;

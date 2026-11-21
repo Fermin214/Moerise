@@ -4,23 +4,20 @@ import hashlib
 import math
 from collections import Counter
 
-import numpy as np
-from sklearn.cluster import HDBSCAN
-from sklearn.neighbors import NearestNeighbors
-from umap import UMAP
-
 
 def digest(value):
     return hashlib.sha256(value.encode()).hexdigest()
 
 
 def neighborhoods(matrix):
+    import numpy as np
+    from sklearn.neighbors import NearestNeighbors
+
     count = len(matrix)
     if not count:
         return np.empty((0, 0), dtype=int), np.empty((0, 0))
     distance, indices = NearestNeighbors(n_neighbors=min(8, count), metric="cosine",
                                         algorithm="brute").fit(matrix).kneighbors(matrix)
-    # Remove the query by identity; equal vectors can appear before the query.
     rows, scores = [], []
     for i, (row, values) in enumerate(zip(indices, distance)):
         keep = row != i
@@ -29,17 +26,123 @@ def neighborhoods(matrix):
     return np.asarray(rows), np.asarray(scores)
 
 
-def theme_label(documents, members, fallback):
-    tags = Counter(tag for i in members for tag in (documents[i].get("tags") or []))
-    terms = Counter(word for i in members for word in (documents[i].get("keywords") or []))
-    selected = sorted(tags, key=lambda tag: (-tags[tag], tag))[:2]
-    if selected:
-        return " / ".join(selected)[:100]
-    selected = sorted(terms, key=lambda word: (-terms[word], word))[:2]
-    return " · ".join(selected)[:100] if selected else fallback
+def _doc_features(document):
+    tags = {}
+    for raw in document.get("tags") or ():
+        text = str(raw).strip()
+        if text:
+            tags.setdefault(text.casefold(), text)
+    terms = {}
+    for raw in document.get("keywords") or ():
+        text = str(raw).strip()
+        if text:
+            terms.setdefault(text.casefold(), text)
+    return tags, terms
+
+
+def _pick_distinctive(candidates):
+    selected = []
+    for _, _, _, is_tag, label in candidates:
+        norm = label.casefold()
+        if any(norm in item[0] or item[0] in norm for item in selected):
+            continue
+        selected.append((norm, is_tag, label))
+        if len(selected) == 2:
+            break
+    if not selected:
+        return ""
+    sep = " / " if all(item[1] for item in selected) else " · "
+    return sep.join(item[2] for item in selected)[:100]
+
+
+def theme_label(documents, members, fallback, scope=None, class_members=None):
+    scope_list = list(range(len(documents))) if scope is None else list(dict.fromkeys(scope))
+    scope_set = set(scope_list)
+    target = [i for i in dict.fromkeys(members) if i in scope_set]
+    scope_size = len(scope_list)
+    cluster_size = len(target)
+    if not scope_size or not cluster_size:
+        return fallback
+    target_set = set(target)
+    features = {i: _doc_features(documents[i]) for i in scope_list}
+    df = Counter()
+    in_tags = Counter()
+    in_terms = Counter()
+    display_tag = {}
+    display_term = {}
+    for i in scope_list:
+        tags, terms = features[i]
+        for norm in tags.keys() | terms.keys():
+            df[norm] += 1
+        if i in target_set:
+            for norm, text in tags.items():
+                in_tags[norm] += 1
+                display_tag.setdefault(norm, text)
+            for norm, text in terms.items():
+                in_terms[norm] += 1
+                display_term.setdefault(norm, text)
+    classes = [target]
+    assigned = set(target)
+    for cls in class_members or ():
+        extra = [i for i in cls if i in scope_set and i not in assigned]
+        if extra:
+            classes.append(extra)
+            assigned.update(extra)
+    remainder = [i for i in scope_list if i not in assigned]
+    if remainder:
+        classes.append(remainder)
+    cf = Counter()
+    class_totals = []
+    for cls in classes:
+        total = 0
+        for i in cls:
+            tags, terms = features[i]
+            tokens = tags.keys() | terms.keys()
+            total += len(tokens)
+            for norm in tokens:
+                cf[norm] += 1
+        class_totals.append(total)
+    avg_tokens = sum(class_totals) / max(1, len(classes))
+    outside_size = scope_size - cluster_size
+    log_denom = max(1.0, math.log(scope_size + 1.0))
+    scored = []
+    fallback_candidates = []
+    for norm in in_tags.keys() | in_terms.keys():
+        in_count = len([1 for i in target if norm in features[i][0] or norm in features[i][1]])
+        if not in_count:
+            continue
+        is_tag = in_tags[norm] > 0 and norm in display_tag
+        label = display_tag[norm] if is_tag else display_term[norm]
+        tf = in_count / cluster_size
+        global_df = df[norm]
+        out_count = global_df - in_count
+        ubiquitous = (outside_size > 0 and global_df / scope_size >= 0.6 and
+                      (out_count / outside_size) * 1.15 >= tf)
+        if not ubiquitous and not (len(classes) >= 2 and global_df / scope_size >= 0.85):
+            ctfidf = tf * math.log(1.0 + avg_tokens / max(1.0, cf[norm]))
+            corpus_idf = max(0.0, math.log((scope_size + 1.0) / (global_df + 0.5))) / log_denom
+            score = ctfidf * corpus_idf * (1.25 if is_tag else 1.0)
+            if score > 0:
+                scored.append((score, in_count, len(label), is_tag, label))
+        if global_df / scope_size < 0.85 or len(classes) == 1:
+            fallback_candidates.append((tf, in_count, len(label), is_tag, label))
+    scored.sort(key=lambda item: (-item[0], -item[1], -item[2], item[4]))
+    picked = _pick_distinctive(scored)
+    if picked:
+        return picked
+    if len(classes) == 1:
+        fallback_candidates.sort(key=lambda item: (-item[0], -item[1], -item[2], item[4]))
+        picked = _pick_distinctive(fallback_candidates)
+        if picked:
+            return picked
+    return fallback
 
 
 def cluster(matrix, nearest):
+    import numpy as np
+    from sklearn.cluster import HDBSCAN
+    from umap import UMAP
+
     count = len(matrix)
     labels = np.full(count, -1, dtype=int)
     if count < 16 or np.max(np.std(matrix, axis=0)) < 1e-7:
@@ -62,6 +165,9 @@ def cluster(matrix, nearest):
 
 
 def describe(matrix, documents, coordinates, previous=None):
+    import numpy as np
+    from sklearn.cluster import HDBSCAN
+
     count = len(matrix)
     nearest, similarities = neighborhoods(matrix)
     names = {document["name"]: i for i, document in enumerate(documents)}
@@ -81,7 +187,6 @@ def describe(matrix, documents, coordinates, previous=None):
         for group in groups:
             center = matrix[group["members"]].mean(axis=0)
             centers.append(center / max(1e-12, np.linalg.norm(center)))
-        # Preserve independent notes; classify only new or changed vectors.
         for i, document in enumerate(documents):
             if document.get("unchanged") or not centers:
                 continue
@@ -101,6 +206,7 @@ def describe(matrix, documents, coordinates, previous=None):
                            "members": members})
         remap = {label: i for i, label in enumerate(sorted(set(labels) - {-1}))}
         labels = np.asarray([remap.get(int(label), -1) for label in labels])
+    theme_classes = [np.flatnonzero(labels == group_index).tolist() for group_index in range(len(groups))]
     themes, attributes = [], []
     centrality = np.zeros(count)
     cores = set()
@@ -113,7 +219,9 @@ def describe(matrix, documents, coordinates, previous=None):
         centrality[members] = np.argsort(np.argsort(scores, kind="stable"), kind="stable") / max(1, len(members) - 1)
         cores.add(int(members[np.argmax(scores)]))
         position = coordinates[members].mean(axis=0)
-        theme = {"id": group["id"], "label": group.get("label") or theme_label(documents, members, "未命名主题"),
+        member_list = members.tolist()
+        theme = {"id": group["id"], "label": group.get("label") or theme_label(
+                     documents, member_list, "未命名主题", class_members=theme_classes),
                  "x": float(position[0]), "y": float(position[1]),
                  "members": [documents[i]["name"] for i in members]}
         districts = []
@@ -128,11 +236,14 @@ def describe(matrix, documents, coordinates, previous=None):
         elif manifold is not None and len(members) >= 32:
             children = HDBSCAN(min_cluster_size=max(5, min(12, len(members) // 9)),
                                min_samples=3, cluster_selection_method="leaf", n_jobs=2).fit_predict(manifold[members])
-            for child in sorted(set(children) - {-1}):
+            child_ids = sorted(set(children) - {-1})
+            district_classes = [members[children == child].tolist() for child in child_ids]
+            for child in child_ids:
                 local = members[children == child]
                 at = coordinates[local].mean(axis=0)
                 districts.append({"id": "district-" + digest(documents[int(local[0])]["name"])[:16],
-                                  "label": theme_label(documents, local, theme["label"]),
+                                  "label": theme_label(documents, local.tolist(), theme["label"],
+                                                       scope=member_list, class_members=district_classes),
                                   "x": float(at[0]), "y": float(at[1]),
                                   "members": [documents[i]["name"] for i in local]})
         if districts:

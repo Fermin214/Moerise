@@ -31,6 +31,14 @@ data class ChatCapabilities(@SerialName("material_selection") val materialSelect
     @SerialName("save_selection") val saveSelection: Boolean = false)
 
 @Serializable
+data class AttachmentReceipt(
+    val name: String,
+    val position: Int,
+    @SerialName("content_sha256") val contentSha256: String,
+    @SerialName("receipt_digest") val receiptDigest: String,
+)
+
+@Serializable
 data class Note(
     @SerialName("instance_id") val instanceId: String,
     val name: String,
@@ -41,10 +49,21 @@ data class Note(
     @SerialName("update_time") val updateTime: String = "",
     val tags: List<String> = emptyList(),
     val attachments: List<JsonObject> = emptyList(),
+    @SerialName("attachment_receipts") val attachmentReceipts: List<AttachmentReceipt> = emptyList(),
 )
 
 @Serializable
 data class NotePage(val notes: List<Note>, @SerialName("next_page_token") val nextPageToken: String = "")
+
+@Serializable
+data class SyncNotesResponse(
+    val mode: String,
+    val items: List<Note> = emptyList(),
+    val deleted: List<String> = emptyList(),
+    @SerialName("next_cursor") val nextCursor: String = "",
+    @SerialName("has_more") val hasMore: Boolean = false,
+    @SerialName("sync_generation") val syncGeneration: String = "",
+)
 
 @Serializable
 data class ApiError(val code: String, val message: String = "", val retryable: Boolean = false,

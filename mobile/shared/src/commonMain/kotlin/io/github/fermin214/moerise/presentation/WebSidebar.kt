@@ -29,7 +29,7 @@ fun WebSidebar(
     onClose: () -> Unit, onNavigate: (String) -> Unit,
     onMonth: (String) -> Unit, onDate: (String) -> Unit, onTag: (String) -> Unit,
     onArchive: () -> Unit, onLogout: () -> Unit, onRemoveAccount: () -> Unit, selectedTags: Set<String> = emptySet(), selectedDate: String = "",
-    today: String = "", stargazingEnabled: Boolean = true,
+    today: String = "", stargazingEnabled: Boolean = true, onSync: () -> Unit = {},
 ) {
     val scroll = rememberScrollState()
     var accountMenu by remember { mutableStateOf(false) }
@@ -82,26 +82,31 @@ fun WebSidebar(
                 Column(Modifier.padding(top = 8.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                     SidebarEntry(strings.text("设置", "Settings"), WebIcon.Settings, page == "settings",
                         Modifier.testTag("nav_settings")) { onNavigate("settings") }
-                    Box {
-                    Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).testTag("account_menu")
-                        .clickable(role = Role.Button) { accountMenu = !accountMenu }
-                        .heightIn(min = 44.dp).padding(horizontal = 10.dp),
-                        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                        WebIcon(WebIcon.User)
-                        Text(userName.removePrefix("users/"), fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.weight(1f))
-                        WebIcon(WebIcon.More, strings.text("用户菜单", "Account menu"), Modifier.size(16.dp))
-                    }
-                    DropdownMenu(accountMenu, onDismissRequest = { accountMenu = false },
-                        modifier = Modifier.platformTestTags()) {
-                        DropdownMenuItem(text = { Text(strings.text("归档笔记", "Archived notes")) },
-                            onClick = { accountMenu = false; onArchive() }, modifier = Modifier.testTag("nav_archive"))
-                        DropdownMenuItem(text = { Text(strings.text("退出登录", "Sign out")) },
-                            onClick = { accountMenu = false; onLogout() }, modifier = Modifier.testTag("account_logout"))
-                        DropdownMenuItem(text = { Text(strings.text("删除本机账号数据", "Delete local account data"),
-                            color = MaterialTheme.colorScheme.error) }, onClick = { accountMenu = false; onRemoveAccount() },
-                            modifier = Modifier.testTag("account_remove"))
-                    }
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        Box(Modifier.weight(1f)) {
+                            Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).testTag("account_menu")
+                                .clickable(role = Role.Button) { accountMenu = !accountMenu }
+                                .heightIn(min = 44.dp).padding(horizontal = 10.dp),
+                                verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                                WebIcon(WebIcon.User)
+                                Text(userName.removePrefix("users/"), fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.weight(1f))
+                                WebIcon(WebIcon.More, strings.text("用户菜单", "Account menu"), Modifier.size(16.dp))
+                            }
+                            DropdownMenu(accountMenu, onDismissRequest = { accountMenu = false },
+                                modifier = Modifier.platformTestTags()) {
+                                DropdownMenuItem(text = { Text(strings.text("归档笔记", "Archived notes")) },
+                                    onClick = { accountMenu = false; onArchive() }, modifier = Modifier.testTag("nav_archive"))
+                                DropdownMenuItem(text = { Text(strings.text("退出登录", "Sign out")) },
+                                    onClick = { accountMenu = false; onLogout() }, modifier = Modifier.testTag("account_logout"))
+                                DropdownMenuItem(text = { Text(strings.text("删除本机账号数据", "Delete local account data"),
+                                    color = MaterialTheme.colorScheme.error) }, onClick = { accountMenu = false; onRemoveAccount() },
+                                    modifier = Modifier.testTag("account_remove"))
+                            }
+                        }
+                        IconButton(onClick = onSync, modifier = Modifier.size(44.dp).testTag("sidebar_sync")) {
+                            WebIcon(WebIcon.Sync, strings.text("立即同步", "Sync now"), Modifier.size(18.dp))
+                        }
                     }
                 }
             }

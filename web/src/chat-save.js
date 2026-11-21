@@ -12,14 +12,12 @@ export function forgetChatSave(owner, chatID) {
   try { sessionStorage.removeItem(storageKeyFor(owner, chatID)); } catch {}
 }
 
-export function openChatSave({ parent, owner, chat, modern, sessionRequest, onSaved, onFailure, onClose }) {
+export function openChatSave({ parent, owner, chat, sessionRequest, onSaved, onFailure, onClose }) {
   const storageKey = storageKeyFor(owner, chat.id);
   const picked = new Set(), entries = [], rows = [];
   let alive = true, busy = false, frozen, confirmation = false, exceeded = false;
   try { frozen = JSON.parse(sessionStorage.getItem(storageKey)); } catch {}
-  const requiresUpgrade = !!frozen && !modern;
   function forget(body) {
-    if (!modern) return;
     try {
       if (JSON.parse(sessionStorage.getItem(storageKey))?.operation_key === body.operation_key) sessionStorage.removeItem(storageKey);
     } catch {}
@@ -42,8 +40,7 @@ export function openChatSave({ parent, owner, chat, modern, sessionRequest, onSa
       if (role === 'user' && turn.kind !== 'question') continue;
       const message = turn[role], stopped = role === 'assistant' && (message.status === 'canceled' || message.status === 'truncated');
       const ok = !!message.content && (role === 'user' || message.status === 'completed' || stopped);
-      const enabled = ok && (modern || role === 'assistant' && message.status === 'completed');
-      const entry = { request_id: turn.request_id, role, message, stopped, enabled, id: key(turn.request_id, role) };
+      const entry = { request_id: turn.request_id, role, message, stopped, enabled: ok, id: key(turn.request_id, role) };
       entries.push(entry);
       const row = el('label', 'ent save-choice'), check = el('input'); check.type = 'checkbox';
       const label = el('span'), state = role === 'user' || message.status === 'completed' ? l("已完成") :
@@ -52,7 +49,6 @@ export function openChatSave({ parent, owner, chat, modern, sessionRequest, onSa
         el('span', '', [...message.content || ''].slice(0, 140).join('')));
       row.append(check, label); list.append(row); rows.push(check);
       check.addEventListener('change', () => {
-        if (!modern) picked.clear();
         if (check.checked) picked.add(entry.id); else picked.delete(entry.id);
         confirmation = false; refresh();
       });
@@ -78,10 +74,10 @@ export function openChatSave({ parent, owner, chat, modern, sessionRequest, onSa
     }
     setText(status, l("{0} 条消息 · {1} 字节", { 0: selected.length, 1: size }));
     const message = size > 65536 ? l("正文超过 65,536 字节，请减少消息。") : confirmation ?
-      l("包含已停止的回答，内容不完整。仍要保存吗？") : !modern ? l("升级 Core 后可合并消息、保存提问和已停止的回答。") : '';
+      l("包含已停止的回答，内容不完整。仍要保存吗？") : '';
     setText(warning, message); warning.hidden = !message;
     setText(save, busy ? l("正在保存…") : frozen ? l("重试保存") : confirmation ? l("确认保存") : l("保存为笔记"));
-    save.disabled = busy || requiresUpgrade || (!frozen && (!selected.length || size > 65536));
+    save.disabled = busy || (!frozen && (!selected.length || size > 65536));
     close.disabled = busy;
   }
   async function submit() {
@@ -90,17 +86,14 @@ export function openChatSave({ parent, owner, chat, modern, sessionRequest, onSa
     if (!frozen && selected.some(entry => entry.stopped) && !confirmation) { confirmation = true; refresh(); return; }
     const body = frozen || { operation_key: crypto.randomUUID(), language: locale(), confirm_incomplete: confirmation,
       messages: selected.map(entry => ({ request_id: entry.request_id, role: entry.role, version: entry.message.version })) };
-    if (modern) {
-      try { sessionStorage.setItem(storageKey, JSON.stringify(body)); }
-      catch {
-        setText(warning, l("浏览器无法暂存操作，请允许此站点使用会话存储后重试。")); warning.hidden = false;
-        return;
-      }
+    try { sessionStorage.setItem(storageKey, JSON.stringify(body)); }
+    catch {
+      setText(warning, l("浏览器无法暂存操作，请允许此站点使用会话存储后重试。")); warning.hidden = false;
+      return;
     }
     busy = true; refresh();
     try {
-      const note = modern ? await sessionRequest(`/chats/${chat.id}/save-selection`, { method: 'POST', body }) :
-        await sessionRequest(`/chats/${chat.id}/messages/${body.messages[0].request_id}/save`, { method: 'POST', body: { version: body.messages[0].version } });
+      const note = await sessionRequest(`/chats/${chat.id}/save-selection`, { method: 'POST', body });
       if (!note?.name) throw Object.assign(new Error(), { code: 'NOTE_SAVE_UNCONFIRMED' });
       forget(body);
       recordSave(selected, 'success');

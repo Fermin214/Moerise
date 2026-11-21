@@ -35,10 +35,7 @@ class StarMapController(
     private var polling: Job? = null
     private var readerJob: Job? = null
     private var readerGeneration = 0L
-    private var excerptJob: Job? = null
-    private var excerptGeneration = 0L
     private var desired = emptyList<String>()
-    private val excerptCache = linkedMapOf<String, Pair<String, String>>()
     private var width = 0.0
     private var height = 0.0
     private var firstDrawVersion = ""
@@ -50,12 +47,14 @@ class StarMapController(
         val active = core() ?: return
         if (visible || state.value.snapshot != null) return
         val started = epochMillis()
-        val cached = repository().readSnapshot(owner, "map")
+        val cached = repository().readCachedSnapshot(owner, "map") ?: repository().readSnapshot(owner, "map")?.let {
+            CachedSnapshotEntity(owner, "map", it.body, it.fetchedAt)
+        }
         val body = cached?.body ?: active.boundedMap() ?: return
         val snapshot = withContext(Dispatchers.Default) { CoreJson.decodeFromString<StarMap>(body).validate() }
         if (!visible && snapshot.readable && owner == account() && active === core()) {
             mutable.update { it.copy(snapshot = snapshot, status = snapshot.status) }
-            if (cached == null) repository().putSnapshot(SnapshotEntity(owner, "map", body, epochMillis()))
+            if (cached == null) repository().putCachedSnapshot(owner, "map", body, epochMillis())
             privacy?.record("stars", started = started, source = "prefetch")
         }
     }
@@ -75,11 +74,11 @@ class StarMapController(
             mutable.update { it.copy(loading = false, posting = false, reading = false) }
         }
     }
-    fun clear() { visible(false); key = null; excerptCache.clear(); mutable.value = StarMapState(); firstDrawVersion = "" }
+    fun clear() { visible(false); key = null; mutable.value = StarMapState(); firstDrawVersion = "" }
     suspend fun stopForRemoval() {
         visible(false)
-        listOfNotNull(readJob, postJob, polling, readerJob, excerptJob).forEach { it.join() }
-        key = null; excerptCache.clear(); mutable.value = StarMapState(); firstDrawVersion = ""
+        listOfNotNull(readJob, postJob, polling, readerJob).forEach { it.join() }
+        key = null; mutable.value = StarMapState(); firstDrawVersion = ""
     }
     fun tab(value: Int) { if (value != 0) cancelExcerpts(); mutable.update { it.copy(tab = value) } }
     fun unplaced() { mutable.update { it.copy(unplacedOnly = !it.unplacedOnly) } }
@@ -139,11 +138,14 @@ class StarMapController(
             try {
                 previous?.join(); postJob?.join()
                 if (key != account) {
-                    if (state.value.snapshot == null) repository().readSnapshot(account, "map")?.let { cached ->
-                        val snapshot = withContext(Dispatchers.Default) { CoreJson.decodeFromString<StarMap>(cached.body).validate() }
-                        if (current(stamp, account, active) && snapshot.readable) {
-                            mutable.update { it.copy(snapshot = snapshot, status = snapshot.status) }
-                            fit()
+                    if (state.value.snapshot == null) {
+                        val cachedBody = repository().readCachedSnapshot(account, "map")?.body ?: repository().readSnapshot(account, "map")?.body
+                        cachedBody?.let { body ->
+                            val snapshot = withContext(Dispatchers.Default) { CoreJson.decodeFromString<StarMap>(body).validate() }
+                            if (current(stamp, account, active) && snapshot.readable) {
+                                mutable.update { it.copy(snapshot = snapshot, status = snapshot.status) }
+                                fit()
+                            }
                         }
                     }
                     val rebuild = repository().feature(account, "map-rebuild")?.let { CoreJson.decodeFromString<MapRebuild>(it) }
@@ -160,30 +162,49 @@ class StarMapController(
                 }
                 if (!current(stamp, account, active)) return@launch
                 metric("parse_ms", (epochMillis() - receivedAt).coerceAtLeast(0))
-                if (map.readable && response.length <= 512 * 1024)
-                    repository().putSnapshot(SnapshotEntity(account, "map", response, receivedAt))
+                if (map.readable && response.length <= 8 * 1024 * 1024)
+                    repository().putCachedSnapshot(account, "map", response, receivedAt)
                 if (!current(stamp, account, active)) return@launch
                 val previousMap = state.value.snapshot
                 val frameChanged = previousMap?.layoutFrame != map.layoutFrame
                 val selected = state.value.selected
                 val point = map.points.firstOrNull { it.name == selected }
                 val oldPoint = previousMap?.points?.firstOrNull { it.name == selected }
+                val excerptCleared = oldPoint != null && oldPoint.excerpt.isNotBlank() && (point == null || point.excerpt.isBlank())
+                val readerInvalidated = point?.sourceHash != oldPoint?.sourceHash || excerptCleared
+                val previousPoints = previousMap?.points?.associateBy { it.name }.orEmpty()
+                val pointChanges = previousMap == null || map.points.size != previousMap.points.size ||
+                    map.points.any { item ->
+                        val prior = previousPoints[item.name]
+                        prior == null || prior.sourceHash != item.sourceHash || prior.excerpt != item.excerpt || prior.createTime != item.createTime
+                    }
                 val snapshot = when {
                     map.readable && map.layoutVersion == previousMap?.layoutVersion -> previousMap.copy(
-                        status = map.status, updateState = map.updateState, generatedAt = map.generatedAt)
+                        status = map.status,
+                        updateState = map.updateState,
+                        generatedAt = map.generatedAt,
+                        projectionRevision = map.projectionRevision,
+                        points = if (pointChanges) map.points else previousMap.points,
+                    )
                     map.readable -> map
                     map.status == "disabled" -> null
                     else -> previousMap
                 }
-                if (snapshot?.layoutVersion != previousMap?.layoutVersion) cancelExcerpts()
-                val hashes = snapshot?.points?.associate { it.name to it.sourceHash }.orEmpty()
-                excerptCache.keys.toList().filter { excerptCache[it]?.first != hashes[it] }.forEach { excerptCache.remove(it) }
+                if (snapshot?.layoutVersion != previousMap?.layoutVersion || pointChanges) cancelExcerpts()
                 mutable.update { it.copy(snapshot = snapshot, status = map.status, disabledReason = map.disabledReason,
                     loading = false, compatible = true,
                     view = if (map.readable && frameChanged) null else it.view,
-                    selected = if (map.readable && point == null || map.status == "disabled") null else it.selected,
-                    reader = if (map.readable && point?.sourceHash != oldPoint?.sourceHash || map.status == "disabled") null else it.reader,
-                    excerpts = if (snapshot?.layoutVersion != previousMap?.layoutVersion) emptyMap() else it.excerpts) }
+                    selected = if (map.readable && (point == null || excerptCleared) || map.status == "disabled") null else it.selected,
+                    reader = if (map.readable && readerInvalidated || map.status == "disabled") null else it.reader,
+                    excerpts = if (snapshot?.layoutVersion != previousMap?.layoutVersion) {
+                        emptyMap()
+                    } else if (pointChanges) {
+                        it.excerpts.filterKeys { name ->
+                            val prev = previousPoints[name]
+                            val nextPoint = map.points.firstOrNull { p -> p.name == name }
+                            prev != null && nextPoint != null && prev.sourceHash == nextPoint.sourceHash && prev.excerpt == nextPoint.excerpt
+                        }
+                    } else it.excerpts) }
                 if (state.value.selected == null) closeReader()
                 else if (map.readable && point?.sourceHash != oldPoint?.sourceHash) select(state.value.selected!!)
                 if (state.value.view == null) fit()
@@ -286,40 +307,24 @@ class StarMapController(
             }
         }
     }
-    fun cancelExcerpts() { ++excerptGeneration; excerptJob?.cancel(); desired = emptyList() }
+    fun cancelExcerpts() { desired = emptyList() }
     fun excerpts(names: List<String>) {
         val requested = names.distinct().take(10)
         if (!visible || requested == desired) return
         cancelExcerpts(); desired = requested
-        val active = core() ?: return
-        val account = account() ?: return
-        val stamp = epoch
-        val ticket = excerptGeneration
-        val points = state.value.snapshot?.points?.associateBy { it.name } ?: return
-        excerptJob = scope.launch {
-            val result = mutableMapOf<String, String>()
-            for (name in requested) {
-                val point = points[name] ?: continue
-                excerptCache[name]?.takeIf { it.first == point.sourceHash }?.let { result[name] = it.second }
-                if (name in result) continue
-                state.value.reader?.takeIf { it.name == name && it.sourceHash == point.sourceHash }?.let {
-                    result[name] = mapExcerpt(it)
-                }
-                if (name in result) continue
-                try {
-                    metric("excerpt_request", 1)
-                    val note = CoreJson.decodeFromString<Note>(active.api(HttpMethod.Get, "/notes/${name.removePrefix("memos/")}"))
-                    require(note.instanceId == account.split('\u0000')[1] && note.name == name) { "ACCOUNT_CHANGED" }
-                    if (ticket != excerptGeneration || !current(stamp, account, active)) return@launch
-                    if (note.sourceHash == point.sourceHash && state.value.snapshot?.points?.firstOrNull { it.name == name }?.sourceHash == point.sourceHash) {
-                        result[name] = mapExcerpt(note)
-                        excerptCache[name] = point.sourceHash to result.getValue(name)
-                        while (excerptCache.size > 32) excerptCache.remove(excerptCache.keys.first())
-                    }
-                } catch (error: Exception) { if (error is CancellationException) throw error }
-            }
-            if (ticket == excerptGeneration && current(stamp, account, active)) mutable.update { it.copy(excerpts = result) }
+        val points = state.value.snapshot?.points ?: return
+        val wanted = requested.toHashSet()
+        val matched = HashMap<String, StarPoint>(wanted.size)
+        for (point in points) {
+            if (point.name in wanted) matched[point.name] = point
         }
+        val result = buildMap {
+            for (name in requested) {
+                val text = matched[name]?.excerpt.orEmpty()
+                if (text.isNotBlank()) put(name, text)
+            }
+        }
+        mutable.update { it.copy(excerpts = result) }
     }
     fun drawn(duration: Long) {
         metric("draw_ms", duration)
@@ -331,22 +336,4 @@ class StarMapController(
         }
     }
     private fun metric(kind: String, value: Long) { mutableMetrics.tryEmit(MapMetric(kind, value, state.value.snapshot?.layoutVersion.orEmpty())) }
-}
-
-private fun mapExcerpt(note: Note): String {
-    val text = note.content
-        .replace(Regex("!\\[[^\\]]*\\]\\([^)]*\\)"), "")
-        .replace(Regex("\\[([^\\]]*)\\]\\([^)]*\\)"), "$1")
-        .replace(Regex("[#*`>]"), "")
-        .replace(Regex("[\\s\\u00A0\\u1680\\u2000-\\u200A\\u2028\\u2029\\u202F\\u205F\\u3000\\uFEFF]+"), " ")
-        .trim()
-    var index = 0
-    var characters = 0
-    while (index < text.length && characters < 100) {
-        index += if (text[index].isHighSurrogate() && index + 1 < text.length && text[index + 1].isLowSurrogate()) 2 else 1
-        characters++
-    }
-    return text.substring(0, index).ifEmpty {
-        note.attachments.firstOrNull()?.get("filename")?.jsonPrimitive?.contentOrNull.orEmpty()
-    }
 }

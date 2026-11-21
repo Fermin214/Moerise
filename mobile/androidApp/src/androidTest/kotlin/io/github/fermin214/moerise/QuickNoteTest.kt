@@ -184,13 +184,12 @@ class QuickNoteTest {
             state.notes.any { it.name == target && it.content == content }
         }
         compose.onNodeWithTag("note_card_$target").assertIsDisplayed()
-        compose.clickTag("sync_notes")
+        compose.clickTag("open_menu")
+        compose.clickTag("sidebar_sync")
         waitTimeline("手动同步开始", CORE_REQUEST_TIMEOUT_MILLIS + 5_000) { mobile.sync.state.value.status == SyncStatus.SYNCING }
-        waitTimeline("同步后的列表刷新", CORE_REQUEST_TIMEOUT_MILLIS + 5_000) {
-            mobile.sync.state.value.status == SyncStatus.CONNECTED && it.loading && !it.loadingMore
-        }
-        waitTimeline("同步后的两页笔记", 2 * CORE_REQUEST_TIMEOUT_MILLIS + 5_000) { state ->
-            state.fresh && !state.loading && state.notes.getOrNull(29)?.let { it.name == target && it.content == content } == true
+        waitTimeline("同步完成与两页笔记", 2 * CORE_REQUEST_TIMEOUT_MILLIS + 5_000) { state ->
+            mobile.sync.state.value.status == SyncStatus.CONNECTED && state.fresh && !state.loading && !state.loadingMore &&
+                state.notes.getOrNull(29)?.let { it.name == target && it.content == content } == true
         }
         compose.onNodeWithTag("note_card_$target").assertIsDisplayed()
         val restored = compose.onNodeWithTag(anchor).assertIsDisplayed().fetchSemanticsNode().boundsInRoot.top
@@ -347,9 +346,8 @@ class QuickNoteTest {
         compose.clickTag("map_fullscreen")
         compose.clickTag("map_fullscreen")
         compose.navigate("settings")
-        for (index in 0..4) compose.clickTag("settings_tab_$index")
-        compose.onNode(hasText("隐私") or hasText("Privacy")).performScrollTo().performClick()
-        compose.onNodeWithTag("privacy_share").assertIsOff()
+        for (index in 0..3) compose.clickTag("settings_tab_$index")
+        compose.onNodeWithTag("privacy_share").performScrollTo().assertIsOff()
         compose.waitUntil(20_000) { compose.model().mobile.privacy.state.value.allowed == false }
         compose.onNodeWithTag("privacy_share").assertIsNotEnabled()
         compose.navigate("home")

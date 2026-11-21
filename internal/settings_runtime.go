@@ -138,7 +138,8 @@ func (a *App) prepareRuntime(settings Settings) (*runtimeReplacements, error) {
 }
 
 func (a *App) installRuntime(settings Settings, replacements *runtimeReplacements) {
-	if (replacements.embeddingChanged || a.Store.Settings.Stargazing != settings.Stargazing) && a.Map != nil {
+	if (replacements.embeddingChanged || a.Store.Settings.Stargazing.Enabled != settings.Stargazing.Enabled ||
+		a.Store.Settings.Timezone != settings.Timezone) && a.Map != nil {
 		a.Map.Reset()
 	}
 	oldChannel := a.Store.Settings.Channel

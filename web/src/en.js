@@ -468,5 +468,19 @@ export const english = {
   "Embedding 请求过于频繁，请稍后重试。": "Too many embedding requests. Please try again later.",
   "搜索超出资源预算，请缩小范围后重试。": "Search exceeded a resource limit. Narrow the search and try again.",
   "搜索来源已变化，请刷新搜索结果。": "Search sources changed. Refresh the results.",
-  "请求未能完成，请稍后重试。": "The request could not be completed. Please try again later."
+  "请求未能完成，请稍后重试。": "The request could not be completed. Please try again later.",
+  "AI": "AI",
+  "回顾与推送": "Review & Delivery",
+  "每日回顾": "Daily review",
+  "最近发送记录": "Recent deliveries",
+  "星系智能命名": "Smart cluster naming",
+  "全量构建时由模型总结星系标题，关闭或超时时回退关键词提取。": "Summarize cluster titles with the LLM on full rebuilds; falls back to keywords when off or timed out.",
+  "星图更新": "Star map updates",
+  "每日 03:00 更新": "Updates daily at 03:00",
+  "已请求重新生成星图。": "Star map regeneration requested.",
+  "支持随时私聊速记与查回顾。": "Supports quick notes and review queries in private chat.",
+  "留空使用本人私聊（支持随时速记与查回顾），也可填写群或频道的 Chat ID。": "Leave blank for your private chat (supports quick notes and review queries), or enter a group or channel Chat ID.",
+  "私人应用可留空以绑定首个私聊，支持随时私聊速记与查回顾。多人应用请指定用户。": "Leave blank to bind the first private chat (supports quick notes and review queries). Specify a user for shared apps.",
+  "同步笔记": "Sync notes",
+  "附件笔记": "Attachment note"
 };

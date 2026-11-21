@@ -1,5 +1,6 @@
 package io.github.fermin214.moerise.presentation
 
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.BorderStroke
@@ -36,6 +37,7 @@ import com.mikepenz.markdown.compose.elements.MarkdownImage
 import com.mikepenz.markdown.m3.Markdown
 import com.mikepenz.markdown.m3.markdownTypography
 import com.mikepenz.markdown.model.*
+import com.mikepenz.markdown.model.State as MdState
 import com.mikepenz.markdown.utils.getUnescapedTextInNode
 import io.github.fermin214.moerise.data.CoreClient
 import io.github.fermin214.moerise.domain.Note
@@ -48,6 +50,8 @@ import org.intellij.markdown.MarkdownElementTypes
 import org.intellij.markdown.MarkdownTokenTypes
 import org.intellij.markdown.IElementType
 import org.intellij.markdown.ast.ASTNode
+import org.intellij.markdown.flavours.gfm.GFMFlavourDescriptor
+import org.intellij.markdown.parser.MarkdownParser
 
 private fun ASTNode.findChildOfTypeRecursive(type: IElementType): ASTNode? =
     children.firstOrNull { it.type == type } ?: children.firstNotNullOfOrNull { it.findChildOfTypeRecursive(type) }
@@ -99,12 +103,91 @@ fun managedAttachment(note: Note?, link: String): JsonObject? {
     }
 }
 
+internal fun splitMarkdownBlocks(content: String): List<String> {
+    if (content.isBlank()) return emptyList()
+    val lines = content.replace("\r\n", "\n").split('\n')
+    val blocks = mutableListOf<String>()
+    val current = mutableListOf<String>()
+    var fenceChar: Char? = null
+    var fenceLen = 0
+    for (index in lines.indices) {
+        val line = lines[index]
+        val trimmed = line.dropWhile { it == ' ' }
+        val indent = line.length - trimmed.length
+        if (indent <= 3 && trimmed.isNotEmpty()) {
+            val ch = trimmed[0]
+            if (ch == '`' || ch == '~') {
+                var run = 0
+                while (run < trimmed.length && trimmed[run] == ch) run++
+                if (run >= 3) {
+                    if (fenceChar == null) {
+                        if (ch == '~' || !trimmed.substring(run).contains('`')) {
+                            fenceChar = ch
+                            fenceLen = run
+                        }
+                    } else if (fenceChar == ch && run >= fenceLen && trimmed.substring(run).isBlank()) {
+                        fenceChar = null
+                        fenceLen = 0
+                    }
+                }
+            }
+        }
+        if (fenceChar == null && line.isBlank()) {
+            var next = index + 1
+            while (next < lines.size && lines[next].isBlank()) next++
+            val nextLine = if (next < lines.size) lines[next] else null
+            val continuation = nextLine != null && (nextLine.startsWith("  ") || nextLine.startsWith("\t"))
+            if (continuation && current.isNotEmpty()) {
+                current.add(line)
+            } else if (current.isNotEmpty()) {
+                blocks.add(current.joinToString("\n"))
+                current.clear()
+            }
+        } else {
+            current.add(line)
+        }
+    }
+    if (current.isNotEmpty()) blocks.add(current.joinToString("\n"))
+    return blocks
+}
+
+private val referenceDefRegex = Regex("""^\s{0,3}\[[^\]\n]+\]:""", RegexOption.MULTILINE)
+
+internal fun extractReferenceDefinitions(content: String, parser: MarkdownParser = MarkdownParser(GFMFlavourDescriptor())): Map<String, String?> {
+    if (content.isBlank()) return emptyMap()
+    val result = linkedMapOf<String, String?>()
+    fun walk(node: ASTNode) {
+        if (node.type == MarkdownElementTypes.LINK_DEFINITION) {
+            val label = node.children.firstOrNull { it.type == MarkdownElementTypes.LINK_LABEL }?.getUnescapedTextInNode(content)
+            val destination = node.children.firstOrNull { it.type == MarkdownElementTypes.LINK_DESTINATION }?.getUnescapedTextInNode(content)
+            if (label != null) result[label] = destination
+        } else {
+            node.children.forEach(::walk)
+        }
+    }
+    walk(parser.buildMarkdownTreeFromString(content))
+    return result
+}
+
 @Composable
 fun MarkdownBody(content: String, modifier: Modifier = Modifier, note: Note? = null, core: CoreClient? = null) {
+    val blocks = remember(content) { splitMarkdownBlocks(content) }
+    if (blocks.isEmpty()) return
+    val flavour = remember { GFMFlavourDescriptor() }
+    val parser = remember(flavour) { MarkdownParser(flavour) }
+    val defBlocks = remember(blocks) { blocks.filter { referenceDefRegex.containsMatchIn(it) }.joinToString("\n\n") }
+    val refHandler = remember(defBlocks, parser) {
+        ReferenceLinkHandlerImpl().apply {
+            if (defBlocks.isNotEmpty()) {
+                extractReferenceDefinitions(defBlocks, parser).forEach { (label, destination) -> store(label, destination) }
+            }
+        }
+    }
     val platformUri = LocalUriHandler.current
     val safeUri = remember(platformUri) { object : UriHandler {
         override fun openUri(uri: String) { if (externalLink(uri)) runCatching { platformUri.openUri(uri) } }
     } }
+    val latestNote by rememberUpdatedState(note)
     val transformer = remember(note, core) { object : ImageTransformer {
         @Composable override fun intrinsicSize(painter: Painter): Size = Size(1600f, 900f)
         @Composable override fun transform(link: String): ImageData? {
@@ -148,33 +231,85 @@ fun MarkdownBody(content: String, modifier: Modifier = Modifier, note: Note? = n
             else -> false
         }
     } }
-    CompositionLocalProvider(LocalUriHandler provides safeUri) {
-        val body = MaterialTheme.typography.bodyLarge
+    val body = MaterialTheme.typography.bodyLarge
+    val typography = remember(body) {
         val heading = body.copy(fontSize = 18.4.sp, lineHeight = 27.6.sp, fontWeight = FontWeight.Bold)
-        Markdown(
-            content = content, modifier = modifier, imageTransformer = transformer, annotator = annotator,
-            typography = markdownTypography(
-                h1 = heading.copy(fontSize = 21.6.sp, lineHeight = 32.4.sp),
-                h2 = heading, h3 = heading, h4 = heading,
-                h5 = body.copy(fontWeight = FontWeight.Bold),
-                h6 = body.copy(fontWeight = FontWeight.Bold),
-                text = body, paragraph = body, quote = body.copy(color = MoeriseColors.Muted),
-                list = body, ordered = body, bullet = body,
-                code = body.copy(fontFamily = FontFamily.Monospace, fontSize = 13.sp, lineHeight = 20.8.sp),
-                inlineCode = body.copy(fontFamily = FontFamily.Monospace, fontSize = 13.sp),
-                table = body,
-            ),
-            components = markdownComponents(
-                image = { model ->
-                    val link = model.node.findChildOfTypeRecursive(MarkdownElementTypes.LINK_DESTINATION)?.getUnescapedTextInNode(model.content)
-                    if (link != null && managedAttachment(note, link) != null) MarkdownImage(model.content, model.node)
-                    else if (link != null && externalLink(link)) TextButton(onClick = { safeUri.openUri(link) }) { Text(link) }
-                    else Text(model.node.getUnescapedTextInNode(model.content))
-                },
-                custom = { type, model ->
-                    if ("HTML" in type.name) Text(model.node.getUnescapedTextInNode(model.content), Modifier.fillMaxWidth())
-                },
-            ),
+        markdownTypography(
+            h1 = heading.copy(fontSize = 21.6.sp, lineHeight = 32.4.sp),
+            h2 = heading, h3 = heading, h4 = heading,
+            h5 = body.copy(fontWeight = FontWeight.Bold),
+            h6 = body.copy(fontWeight = FontWeight.Bold),
+            text = body, paragraph = body, quote = body.copy(color = MoeriseColors.Muted),
+            list = body, ordered = body, bullet = body,
+            code = body.copy(fontFamily = FontFamily.Monospace, fontSize = 13.sp, lineHeight = 20.8.sp),
+            inlineCode = body.copy(fontFamily = FontFamily.Monospace, fontSize = 13.sp),
+            table = body,
         )
+    }
+    val animations = remember { markdownAnimations(animateTextSize = { this }) }
+    val components = remember(safeUri) {
+        markdownComponents(
+            image = { model ->
+                val link = model.node.findChildOfTypeRecursive(MarkdownElementTypes.LINK_DESTINATION)?.getUnescapedTextInNode(model.content)
+                if (link != null && managedAttachment(latestNote, link) != null) MarkdownImage(model.content, model.node)
+                else if (link != null && externalLink(link)) TextButton(onClick = { safeUri.openUri(link) }) { Text(link) }
+                else Text(model.node.getUnescapedTextInNode(model.content))
+            },
+            custom = { type, model ->
+                if ("HTML" in type.name) Text(model.node.getUnescapedTextInNode(model.content), Modifier.fillMaxWidth())
+            },
+        )
+    }
+    CompositionLocalProvider(LocalUriHandler provides safeUri) {
+        Column(modifier, verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            for (index in 0 until blocks.lastIndex) {
+                val block = blocks[index]
+                key(defBlocks, index) {
+                    val markdownState = rememberMarkdownState(
+                        content = block,
+                        flavour = flavour,
+                        parser = parser,
+                        referenceLinkHandler = refHandler,
+                        immediate = true,
+                    )
+                    Markdown(
+                        markdownState = markdownState,
+                        modifier = Modifier.fillMaxWidth(),
+                        imageTransformer = transformer,
+                        annotator = annotator,
+                        typography = typography,
+                        components = components,
+                        animations = animations,
+                    )
+                }
+            }
+            val tail = blocks.last()
+            key(defBlocks, blocks.lastIndex) {
+                val tailState = rememberMarkdownState(
+                    content = tail,
+                    flavour = flavour,
+                    parser = parser,
+                    referenceLinkHandler = refHandler,
+                )
+                val parsed by tailState.state.collectAsState()
+                var retained by remember { mutableStateOf<MdState.Success?>(null) }
+                if (retained != null && !tail.startsWith(retained!!.content.take(minOf(8, retained!!.content.length)))) {
+                    retained = null
+                }
+                if (parsed is MdState.Success) {
+                    retained = parsed as MdState.Success
+                }
+                val rendered = parsed as? MdState.Success ?: retained ?: parsed
+                Markdown(
+                    state = rendered,
+                    modifier = Modifier.fillMaxWidth(),
+                    imageTransformer = transformer,
+                    annotator = annotator,
+                    typography = typography,
+                    components = components,
+                    animations = animations,
+                )
+            }
+        }
     }
 }

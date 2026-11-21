@@ -1,5 +1,6 @@
 package io.github.fermin214.moerise.data
 
+import io.github.fermin214.moerise.domain.AttachmentReceipt
 import io.github.fermin214.moerise.domain.Note
 import io.github.fermin214.moerise.presentation.expectedSubmittedResult
 import io.ktor.client.engine.mock.*
@@ -118,5 +119,54 @@ class AttachmentRecoveryTest {
             assertFailsWith<IllegalArgumentException> { files.stage("file.txt", "text/plain; charset=utf-8", bytes) }
             assertFailsWith<IllegalArgumentException> { files.stage("empty", "text/plain", byteArrayOf()) }
         } finally { db.close(); folder.deleteRecursively() }
+    }
+
+    @Test
+    fun expectedSubmittedResultVerifiesReceiptsWithoutDownloadingAttachment() = runBlocking<Unit> {
+        val folder = Files.createTempDirectory("moerise-receipt-verify-").toFile()
+        val db = jvmDatabase(folder.resolve("data.sqlite3").absolutePath)
+        val key = "https://notes.example\u0000one\u0000users/owner"
+        val files = AttachmentFiles(folder.resolve("files").absolutePath)
+        val bytes = "receipt bytes".encodeToByteArray()
+        var downloadCount = 0
+        val engine = MockEngine { request ->
+            if (request.url.encodedPath.endsWith("/session")) {
+                respond("""{"instance_id":"one","user":{"name":"users/owner"},"timezone":"UTC","expires_at":"2027-01-01T00:00:00Z","csrf_token":"token"}""")
+            } else {
+                downloadCount++
+                respond(bytes, headers = headersOf(HttpHeaders.ContentLength, bytes.size.toString()))
+            }
+        }
+        try {
+            val staged = files.stage("doc.txt", "text/plain", bytes)
+            val draft = DraftEntity("draft-r", key, "A", 1, attachmentsJson = CoreJson.encodeToString(AttachmentEdits(listOf(staged))))
+            val frozen = NoteRepository(db, files).prepare(draft)
+            val item = buildJsonObject {
+                put("name", "attachments/r1")
+                put("filename", "doc.txt")
+                put("type", "text/plain")
+                put("size", bytes.size)
+                put("content_url", "/api/app/v1/notes/one/attachments/r1/content")
+            }
+            val payload = "[${JsonPrimitive(frozen.idempotencyKey)}, 0, ${JsonPrimitive("attachments/r1")}, ${JsonPrimitive(staged.sha256)}]"
+            val validDigest = sha256(payload.encodeToByteArray())
+            val remote = Note(
+                "one", "memos/r1", "A", "NORMAL", "hash",
+                attachments = listOf(item),
+                attachmentReceipts = listOf(AttachmentReceipt("attachments/r1", 0, staged.sha256, validDigest)),
+            )
+            CoreClient("https://notes.example", SessionCookies("https://notes.example", MemorySecrets()), engine).use { core ->
+                assertTrue(expectedSubmittedResult(draft, frozen, remote, core))
+                assertEquals(0, downloadCount)
+                val tampered = remote.copy(
+                    attachmentReceipts = listOf(AttachmentReceipt("attachments/r1", 0, staged.sha256, "bad-digest")),
+                )
+                assertFalse(expectedSubmittedResult(draft, frozen, tampered, core))
+                assertEquals(0, downloadCount)
+            }
+        } finally {
+            db.close()
+            folder.deleteRecursively()
+        }
     }
 }

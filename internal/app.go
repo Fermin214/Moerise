@@ -47,6 +47,7 @@ func NewApp(settings Settings, store *Store, source Source) *App {
 	a.Search = NewSearchService(store, source, nil)
 	a.Chat = NewChatService(store, a.Notes, a.Records, nil)
 	a.Map = NewMapService(store)
+	a.Map.acquireLLM = a.Chat.acquireProvider
 	a.Notifications = NewNotificationService(store, a.Reviews, nil)
 	a.Feishu = NewFeishuService(store, source, a.Records, a.Notifications)
 	a.Notifications.resetTransport(store.deliveryChannel(), a.Feishu)

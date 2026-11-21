@@ -322,39 +322,68 @@ class SettingsController(
         job.start()
     }
 
+    fun rebuildMap() {
+        if (!editable() || state.value.rebuildingMap) return
+        val active = client ?: return
+        val key = owner ?: return
+        val stamp = generation
+        mutable.update { it.copy(rebuildingMap = true, error = null, status = null) }
+        scope.launch {
+            try {
+                active.api(HttpMethod.Post, "/map/rebuild", "{}")
+                if (owns(stamp, active, key)) mutable.update { it.copy(status = "SETTINGS_MAP_REBUILT") }
+            } catch (error: Exception) {
+                if (error is CancellationException) throw error
+                if (owns(stamp, active, key)) mutable.update { it.copy(error = errorCode(error)) }
+            } finally {
+                if (owns(stamp, active, key)) mutable.update { it.copy(rebuildingMap = false) }
+            }
+        }
+    }
+
     private fun poll(stamp: Long, active: CoreClient, key: String) {
         polling?.cancel()
+        if (settingsTab == 3) return
         polling = scope.launch(start = CoroutineStart.LAZY) {
             while (owns(stamp, active, key) && !state.value.conflict) {
-                val target = when (settingsTab) {
-                    1, 4 -> "channels"
-                    5 -> "history"
-                    else -> "models"
-                }
-                try {
-                    val version = state.value.snapshot?.let { SettingsForm.version(it, positive = false) } ?: return@launch
-                    if (target == "channels") {
+                if (settingsTab == 2) {
+                    try {
+                        val version = state.value.snapshot?.let { SettingsForm.version(it, positive = false) } ?: return@launch
                         val response = read(active.api(HttpMethod.Get, "/settings"))
                         if (!owns(stamp, active, key)) return@launch
                         if (!versionMatches(response, version)) { conflict(); return@launch }
                         mutable.update { live -> live.copy(snapshot = live.snapshot?.let {
                             JsonObject(it + ("channel_status" to SettingsForm.channelStatus(response)))
-                        }, checkErrors = live.checkErrors - target) }
-                    } else if (target == "history") {
+                        }, checkErrors = live.checkErrors - "channels") }
+                    } catch (error: Exception) {
+                        if (error is CancellationException) throw error
+                        if (!owns(stamp, active, key)) return@launch
+                        if (error is CoreException && error.detail.code == "SETTINGS_CONFLICT") { conflict(); return@launch }
+                        mutable.update { it.copy(checkErrors = it.checkErrors + ("channels" to errorCode(error))) }
+                    }
+                    try {
                         refreshHistory(stamp, active, key)
-                        mutable.update { it.copy(checkErrors = it.checkErrors - target) }
-                    } else {
+                        mutable.update { it.copy(checkErrors = it.checkErrors - "history") }
+                    } catch (error: Exception) {
+                        if (error is CancellationException) throw error
+                        if (!owns(stamp, active, key)) return@launch
+                        mutable.update { it.copy(checkErrors = it.checkErrors + ("history" to errorCode(error))) }
+                    }
+                } else if (settingsTab in 0..1) {
+                    val target = "models"
+                    try {
+                        val version = state.value.snapshot?.let { SettingsForm.version(it, positive = false) } ?: return@launch
                         val models = read(active.api(HttpMethod.Get, "/models"))
                         if (!owns(stamp, active, key)) return@launch
                         if (!versionMatches(models, version)) { conflict(); return@launch }
                         require(SettingsForm.modelGroups.all { models[it] is JsonObject }) { "MODEL_STATUS_PROTOCOL" }
                         mutable.update { it.copy(models = models, checkErrors = it.checkErrors - target) }
+                    } catch (error: Exception) {
+                        if (error is CancellationException) throw error
+                        if (!owns(stamp, active, key)) return@launch
+                        if (error is CoreException && error.detail.code == "SETTINGS_CONFLICT") { conflict(); return@launch }
+                        mutable.update { it.copy(checkErrors = it.checkErrors + (target to errorCode(error))) }
                     }
-                } catch (error: Exception) {
-                    if (error is CancellationException) throw error
-                    if (!owns(stamp, active, key)) return@launch
-                    if (error is CoreException && error.detail.code == "SETTINGS_CONFLICT") { conflict(); return@launch }
-                    mutable.update { it.copy(checkErrors = it.checkErrors + (target to errorCode(error))) }
                 }
                 delay(5000)
             }

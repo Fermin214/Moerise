@@ -93,7 +93,8 @@ type EmbeddingConfig struct {
 }
 
 type StargazingConfig struct {
-	Enabled bool `json:"enabled"`
+	Enabled   bool `json:"enabled"`
+	LLMNaming bool `json:"llm_naming"`
 }
 
 type ChannelConfig struct {
@@ -155,7 +156,7 @@ func DefaultSettings() Settings {
 		Notifications: NotificationConfig{Times: []string{"09:00"}},
 		Embedding: EmbeddingConfig{Provider: "bailian", Protocol: "dashscope", Model: &embeddingModel,
 			Dimensions: 1024, BatchSize: 20, TimeoutSeconds: 30, MaxConcurrency: 2, MaxRetries: 2},
-		Stargazing: StargazingConfig{Enabled: true},
+		Stargazing: StargazingConfig{Enabled: true, LLMNaming: true},
 		LLM: LLMConfig{Protocol: "openai-compatible", TimeoutSeconds: 90, MaxConcurrency: 2,
 			MaxRetries: 2, MaxOutputTokens: 2048},
 		Channel:  ChannelConfig{Kind: "none"},

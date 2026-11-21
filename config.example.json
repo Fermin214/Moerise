@@ -54,7 +54,8 @@
     "query_instruction": null
   },
   "stargazing": {
-    "enabled": true
+    "enabled": true,
+    "llm_naming": true
   },
   "llm": {
     "enabled": false,

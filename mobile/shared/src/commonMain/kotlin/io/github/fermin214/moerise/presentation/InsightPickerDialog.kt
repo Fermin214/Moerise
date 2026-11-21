@@ -72,9 +72,7 @@ internal fun InsightPickerDialog(insights: InsightController, state: InsightStat
                             label = { Text("#${tag.tag}") }, modifier = Modifier.testTag("chat_picker_tag_${tag.tag}"))
                     }
                 }
-                if (!picker.compact) Text(strings.text("可逐条勾选。升级 Core 后可批量选择和合并标签。", "Select notes individually. Upgrade Core for bulk selection and combined tags."),
-                    fontSize = 12.sp, color = MoeriseColors.Muted)
-                if (picker.compact && picker.candidates.isNotEmpty() && picker.batch.isEmpty()) {
+                if (picker.candidates.isNotEmpty() && picker.batch.isEmpty()) {
                     val matching = picker.candidates.count { it.name in selected }
                     FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                         if (!picker.exhausted || matching < picker.candidates.size)
@@ -202,7 +200,6 @@ private fun PickerCalendar(picker: InsightPickerState, from: String, through: St
                                 ?: strings.text("数量未知", "Count unknown"))
                             selected = edge || within
                         }, contentAlignment = Alignment.Center) {
-                        if (within) Spacer(Modifier.align(Alignment.BottomCenter).fillMaxWidth().height(2.dp).background(MoeriseColors.Blue))
                         Text(day.toString(), fontSize = 13.sp)
                     }
                 }

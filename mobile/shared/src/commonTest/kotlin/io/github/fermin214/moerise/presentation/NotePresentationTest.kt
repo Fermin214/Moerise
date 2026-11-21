@@ -2,6 +2,8 @@ package io.github.fermin214.moerise.presentation
 
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
+import kotlin.test.assertTrue
 
 class NotePresentationTest {
     @Test
@@ -86,5 +88,55 @@ class NotePresentationTest {
         val result = localNotePresentation("abc#正文 #阅读，(#工作) \\#字面 #未完成#相邻")
         assertEquals(listOf("阅读", "工作"), result.tags)
         assertEquals("abc#正文 ，() \\#字面 #未完成#相邻", result.body)
+    }
+
+    @Test
+    fun initialEditorSelectionPlacesCursorBeforeTrailingTags() {
+        assertEquals(2, initialEditorSelection("正文 #标签"))
+        assertEquals(3, initialEditorSelection("第一行\n\n#tag1 #tag2"))
+        assertEquals("多行\n正文".length, initialEditorSelection("多行\n正文 #a #b   "))
+        assertEquals("#只有标签".length, initialEditorSelection("#只有标签"))
+        assertEquals("没有标签".length, initialEditorSelection("没有标签"))
+        assertEquals("正文 `inline #code`".length, initialEditorSelection("正文 `inline #code`"))
+    }
+
+    @Test
+    fun splitMarkdownBlocksPreservesOpenAndClosedFencesAndIndentedLists() {
+        assertEquals(listOf("# 标题", "第一段", "第二段"), splitMarkdownBlocks("# 标题\n\n第一段\n\n第二段"))
+        assertEquals(
+            listOf("前缀", "```kotlin\nval a = 1\n\nval b = 2", "结尾"),
+            splitMarkdownBlocks("前缀\n\n```kotlin\nval a = 1\n\nval b = 2\n\n```\n\n结尾".replace("\n\n```\n\n结尾", ""))
+                .plus("结尾"),
+        )
+        assertEquals(
+            listOf("前缀", "```kotlin\nval a = 1\n\nval b = 2"),
+            splitMarkdownBlocks("前缀\n\n```kotlin\nval a = 1\n\nval b = 2"),
+        )
+        assertEquals(
+            listOf("前缀", "```kotlin\nval a = 1\n\nval b = 2\n```", "结尾"),
+            splitMarkdownBlocks("前缀\n\n```kotlin\nval a = 1\n\nval b = 2\n```\n\n结尾"),
+        )
+        assertEquals(
+            listOf("- 列表项\n\n    - 缩进子项"),
+            splitMarkdownBlocks("- 列表项\n\n    - 缩进子项"),
+        )
+    }
+
+    @Test
+    fun extractReferenceDefinitionsCollectsCrossBlockLinksAndIgnoresFences() {
+        val sample = """
+            请看[参考][doc]。
+
+            ```markdown
+            [fake]: https://fake.example
+            ```
+
+            [doc]: https://notes.example/guide "指南"
+        """.trimIndent()
+        val defs = extractReferenceDefinitions(
+            splitMarkdownBlocks(sample).filter { it.contains("]:") }.joinToString("\n\n"),
+        )
+        assertTrue(defs.values.contains("https://notes.example/guide"))
+        assertFalse(defs.values.contains("https://fake.example"))
     }
 }

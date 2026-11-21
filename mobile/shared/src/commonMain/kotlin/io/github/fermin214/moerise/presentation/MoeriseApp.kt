@@ -36,7 +36,9 @@ import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import io.github.fermin214.moerise.data.*
@@ -221,7 +223,6 @@ fun MoeriseApp(mobile: MobileController, onEditorReady: () -> Unit = {}) {
     MoeriseTheme {
         WelcomeDialog(mobile.privacy, strings)
         CompositionLocalProvider(
-            LocalWebSyncStatus provides sync.status,
             LocalWebSyncAction provides { if (sync.status == SyncStatus.SIGN_IN) navigate("connect") else mobile.synchronize() },
             LocalWebSearchOpen provides searchOpen, LocalWebSearchPanel provides {
             if (searchOpen) WebSearchPanel(query, strings, onChange = mobile.search::change,
@@ -241,7 +242,8 @@ fun MoeriseApp(mobile: MobileController, onEditorReady: () -> Unit = {}) {
                         onLogout = { scope.launch { drawer.close() }; mobile.logout() },
                         onRemoveAccount = { scope.launch { drawer.close() }; confirmRemoval = true }, selectedTags = query.tags,
                         selectedDate = query.date, today = serviceToday(connection.profile?.timezone ?: "UTC"),
-                        stargazingEnabled = connection.profile?.stargazingEnabled != false)
+                        stargazingEnabled = connection.profile?.stargazingEnabled != false,
+                        onSync = { scope.launch { drawer.close() }; if (sync.status == SyncStatus.SIGN_IN) navigate("connect") else mobile.synchronize() })
                 }
             }) {
                 Surface(Modifier.fillMaxSize().platformTestTags().webNavigationGesture(
@@ -298,35 +300,40 @@ fun MoeriseApp(mobile: MobileController, onEditorReady: () -> Unit = {}) {
                                         }
                                     }
                                     items(entries, key = { it.key }) { entry ->
-                                        when (entry) {
-                                            is TimelineEntry.Local -> {
-                                                val local = entry.draft
-                                                val controller = editorsByKey[local.id]
-                                                if (controller != null) renderEditor(local.id, controller)
-                                                else QueuedNoteCard(local, strings, connection.profile!!.timezone, local.createdAt) {
-                                                    mobile.openDraft(local.id) {
-                                                        if (mobile.getNoteEditor(local.id)?.state?.value?.draft?.conflictJson != null) conflictKey = local.id
-                                                    }
-                                                }
-                                            }
-                                            is TimelineEntry.Remote -> {
-                                                val note = entry.note
-                                                val noteAction = if (actions.name == note.name &&
-                                                    (actions.busy || actions.pendingAction || actions.error != null)) actions
-                                                    else homeNote.takeIf { it.name == note.name } ?: NoteDetailState()
-                                                val controller = editorsByKey[note.name].takeIf { page == "home" }
-                                                if (controller != null) renderEditor(note.name, controller)
-                                                else WebNoteCard(note, connection.profile!!.timezone, strings, session.core,
-                                                    onEdit = { editNote(note) },
-                                                    onState = { mobile.changeNoteState(note) }, onDelete = { mobile.deleteNote(note) },
-                                                    onWalk = { startWalk(note) }, onInsight = { startInsight(note) }, online = connection.connected,
-                                                    busy = noteAction.busy,
-                                                    pendingAction = noteAction.pendingAction,
-                                                    deleteUnknown = noteAction.deleteUnknown,
-                                                    onCheckDeletion = { mobile.checkNoteDeletion(note.name) }, error = noteAction.error,
-                                                    onTag = { showFilter(query.copy(tags = query.tags + it)) })
-                                            }
+                                        val noteId = when (entry) {
+                                            is TimelineEntry.Local -> entry.draft.id
+                                            is TimelineEntry.Remote -> entry.note.name
                                         }
+                                        val remote = (entry as? TimelineEntry.Remote)?.note
+                                        val noteAction = if (remote != null) {
+                                            if (actions.name == remote.name && (actions.busy || actions.pendingAction || actions.error != null)) actions
+                                            else homeNote.takeIf { it.name == remote.name } ?: NoteDetailState()
+                                        } else NoteDetailState()
+                                        val controller = editorsByKey[noteId].takeIf { entry is TimelineEntry.Local || page == "home" }
+                                        if (controller != null) renderEditor(noteId, controller)
+                                        else TimelineNoteCard(
+                                            entry = entry,
+                                            timezone = connection.profile!!.timezone,
+                                            strings = strings,
+                                            core = session.core,
+                                            onTag = { showFilter(query.copy(tags = query.tags + it)) },
+                                            onOpenLocal = { local ->
+                                                mobile.openDraft(local.id) {
+                                                    if (mobile.getNoteEditor(local.id)?.state?.value?.draft?.conflictJson != null) conflictKey = local.id
+                                                }
+                                            },
+                                            onEdit = { editNote(it) },
+                                            onState = { mobile.changeNoteState(it) },
+                                            onDelete = { mobile.deleteNote(it) },
+                                            onWalk = { startWalk(it) },
+                                            onInsight = { startInsight(it) },
+                                            online = connection.connected,
+                                            busy = noteAction.busy,
+                                            error = noteAction.error,
+                                            pendingAction = noteAction.pendingAction,
+                                            deleteUnknown = noteAction.deleteUnknown,
+                                            onCheckDeletion = { mobile.checkNoteDeletion(it.name) },
+                                        )
                                     }
                                     items(orphanEditors, key = { "editor:$it" }) { id -> noteEditors[id]?.let { renderEditor(id, it) } }
                                     item {
@@ -403,6 +410,15 @@ private fun HomeEditor(
     val baseline = remember(draft.baselineJson) {
         draft.baselineJson?.let { runCatching { CoreJson.decodeFromString<Note>(it) }.getOrNull() }
     }
+    var field by remember(draft.id) {
+        mutableStateOf(TextFieldValue(draft.content, TextRange(initialEditorSelection(draft.content))))
+    }
+    LaunchedEffect(draft.content) {
+        if (field.text != draft.content) {
+            field = if (draft.content.isEmpty()) TextFieldValue("", TextRange.Zero)
+            else field.copy(text = draft.content, selection = TextRange(initialEditorSelection(draft.content).coerceIn(0, draft.content.length)))
+        }
+    }
     val canSave = !state.busy && !state.importing && draft.conflictJson == null &&
         (draft.content.isNotBlank() || edits.staged.isNotEmpty() ||
             baseline?.attachments?.any { it["name"]?.jsonPrimitive?.content !in edits.removed } == true || state.pending != null)
@@ -412,7 +428,10 @@ private fun HomeEditor(
         Column(Modifier.padding(start = 20.dp, top = 14.dp, end = 20.dp, bottom = 8.dp),
             verticalArrangement = Arrangement.spacedBy(2.dp)) {
             BasicTextField(
-                value = draft.content, onValueChange = controller::change,
+                value = field, onValueChange = { next ->
+                    field = next
+                    if (next.text != draft.content) controller.change(next.text)
+                },
                 modifier = Modifier.fillMaxWidth().heightIn(min = 96.dp, max = 320.dp)
                     .verticalScroll(rememberScrollState()).testTag(editorTag).onPreviewKeyEvent {
                         if (it.type == KeyEventType.KeyDown && it.key == Key.Escape && onCancel != null) {

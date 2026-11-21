@@ -112,24 +112,29 @@ func (s *ChatService) swapProvider(next LLMProvider) {
 	old.retire()
 }
 
-func (s *ChatService) acquireRuntime() (Settings, int64, LLMProvider, func()) {
-	unlockRuntime := s.Store.lockRuntime()
-	defer unlockRuntime()
-	config := s.Store.Settings
-	settingsVersion := s.Store.productVersion
+func (s *ChatService) acquireProvider() (LLMProvider, func()) {
 	s.mu.Lock()
 	provider := s.Provider
 	cohort := s.cohort
 	s.mu.Unlock()
 	cohort.retain()
 	released := false
-	return config, settingsVersion, provider, func() {
+	return provider, func() {
 		if released {
 			return
 		}
 		released = true
 		cohort.release()
 	}
+}
+
+func (s *ChatService) acquireRuntime() (Settings, int64, LLMProvider, func()) {
+	unlockRuntime := s.Store.lockRuntime()
+	defer unlockRuntime()
+	config := s.Store.Settings
+	settingsVersion := s.Store.productVersion
+	provider, release := s.acquireProvider()
+	return config, settingsVersion, provider, release
 }
 
 func (s *ChatService) lock(ctx context.Context) (func(), error) {

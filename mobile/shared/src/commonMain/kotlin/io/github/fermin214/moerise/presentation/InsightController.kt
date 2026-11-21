@@ -18,7 +18,7 @@ data class InsightState(
     val busy: Boolean = false, val streaming: Boolean = false,
     val error: String? = null,
     val conflicted: Boolean = false, val stopping: Boolean = false, val deleting: Boolean = false,
-    val capabilities: ChatCapabilities = ChatCapabilities(), val starting: String = "",
+    val capabilities: ChatCapabilities = ChatCapabilities(materialSelection = true, saveSelection = true), val starting: String = "",
     val confirmed: List<ChatTurn> = emptyList(), val failedGeneration: Boolean = false,
     val saving: Boolean = false, val pendingSave: ChatSaveIntent? = null, val saveError: String? = null,
     val savedOperation: String = "",
@@ -105,11 +105,13 @@ class InsightController(
                 key = account
                 mutable.update { it.copy(recovery = recovery) }
             }
-            val capabilities = active.lastCapabilities ?: active.capabilities()
             val pendingSave = repository().feature(account, "insight-save")?.takeIf { it.isNotBlank() }
                 ?.let { CoreJson.decodeFromString<ChatSaveIntent>(it) }
+            val cachedHistory = if (state.value.history.isEmpty()) repository().readCachedSnapshot(account, "chats")
+                ?.let { runCatching { CoreJson.decodeFromString<ChatPage>(it.body).chats }.getOrNull() }.orEmpty() else state.value.history
             checkActive(stamp, account)
-            mutable.update { it.copy(capabilities = capabilities.chat, pendingSave = pendingSave) }
+            mutable.update { it.copy(capabilities = ChatCapabilities(materialSelection = true, saveSelection = true),
+                pendingSave = pendingSave, history = cachedHistory) }
             if (state.value.recovery.chatId != null) readChat(active, account, stamp)
             else loadHistory(active, account, stamp, append = false)
         }
@@ -270,13 +272,15 @@ class InsightController(
         historyRead.withLock {
         if (!append && historyOwner == account && epochMillis() - historyLoaded in 0..60_000) return
         val cursor = if (append) state.value.historyNext.takeIf { it.isNotBlank() } ?: return else ""
-        val page = CoreJson.decodeFromString<ChatPage>(active.api(HttpMethod.Get,
-            "/chats?page_size=20" + if (cursor.isNotEmpty()) "&page_token=${cursor.encodeURLQueryComponent(encodeFull = true)}" else ""))
+        val body = active.api(HttpMethod.Get,
+            "/chats?page_size=20" + if (cursor.isNotEmpty()) "&page_token=${cursor.encodeURLQueryComponent(encodeFull = true)}" else "")
+        val page = CoreJson.decodeFromString<ChatPage>(body)
         checkActive(stamp, account)
         if (!append) historyCursors.clear()
         historyCursors += cursor
         require(page.chats.all { chatId(it.id).isNotBlank() } &&
             (page.nextPageToken.isEmpty() || page.nextPageToken !in historyCursors)) { "CHAT_PROTOCOL" }
+        if (!append) repository().putCachedSnapshot(account, "chats", body)
         historyOwner = account; historyLoaded = epochMillis()
         mutable.update { it.copy(history = (if (append) it.history + page.chats else page.chats).distinctBy { c -> c.id },
             historyNext = page.nextPageToken) }
@@ -305,7 +309,7 @@ class InsightController(
         if (state.value.locked || picker.state.value.visible) return
         execute { active, account, stamp ->
             val recovery = state.value.recovery
-            picker.open(account, serviceMonth(timezone()), recovery.dateGroup, state.value.capabilities.materialSelection)
+            picker.open(account, serviceMonth(timezone()), recovery.dateGroup, true)
             picker.ready(if (recovery.candidates.map { it.name } == recovery.selected) recovery.candidates
                 else resolve(active, account, stamp, enforceBudget = false).notes.map { it.candidate() })
         }
@@ -389,7 +393,7 @@ class InsightController(
         }
         require(!state.value.conflicted) { "CHAT_CONFLICT" }
         require(!state.value.running) { "CHAT_BUSY" }
-        val expected = selected?.takeIf { state.value.capabilities.materialSelection }?.map { it.reference() }
+        val expected = selected?.map { it.reference() }
         val checked = if (expected != null)
             ChatMaterials(emptyList(), expected, selected.orEmpty().sumOf { it.characters }, 20_000)
         else if (state.value.recovery.creation == null)
@@ -399,7 +403,7 @@ class InsightController(
         var current = state.value.chat
         if (current == null && (names.isNotEmpty() || state.value.recovery.creation != null)) {
             val input = state.value.recovery.creation ?: ChatCreate(newLocalId(), if (language() == "en") "Insights" else "洞察", names,
-                expected ?: checked?.materials?.takeIf { state.value.capabilities.materialSelection })
+                expected ?: checked?.materials)
             record(account, state.value.recovery.copy(creation = input), stamp)
             val response = try { active.api(HttpMethod.Post, "/chats", buildJsonObject {
                 put("request_id", input.requestId); put("title", input.title)
@@ -422,7 +426,7 @@ class InsightController(
         if (current != null && current.materials != materials.materials) {
             val mutation = ChatMutation("PATCH", "/chats/${chatId(current.id)}", buildJsonObject {
                 put("version", current.version); put("title", current.title)
-                putSelection(names, expected ?: materials.materials.takeIf { state.value.capabilities.materialSelection })
+                putSelection(names, expected ?: materials.materials)
             }.toString())
             require(state.value.recovery.mutation == null) { "CHAT_OUTCOME_UNKNOWN" }
             record(account, state.value.recovery.copy(mutation = mutation), stamp)
@@ -478,6 +482,7 @@ class InsightController(
         var latest = state.value.recovery
         var lastPublish = 0L
         var lastDisk = epochMillis()
+        var pendingSave: Job? = null
         var firstText = false
         try {
             active.chatStream(input.chatId, input.input) { event ->
@@ -504,11 +509,17 @@ class InsightController(
                         starting = "", recovery = it.recovery.copy(partial = next)) }
                     lastPublish = now
                 }
-                if (event.type == "complete" || now - lastDisk >= 1000) {
+                if (event.type == "complete") {
+                    pendingSave?.cancelAndJoin()
                     record(account, latest, stamp)
                     lastDisk = now
+                } else if (now - lastDisk >= 1000 && pendingSave?.isActive != true) {
+                    val snapshot = latest
+                    lastDisk = now
+                    pendingSave = scope.launch { runCatching { persist(account, snapshot, ++diskRevision) } }
                 }
             }
+            pendingSave?.cancelAndJoin()
             // Only a parser-validated complete frame reaches this point.
             latest = latest.copy(generation = null, partial = mergePartial(latest.partial, partial),
                 question = if (input.input.kind == "question" && latest.question == input.input.content) "" else latest.question)
@@ -519,6 +530,7 @@ class InsightController(
             if (!firstText && account == this.account()) privacy?.record("insight", usageResult(failure), started, error = failure)
             throw failure
         } finally {
+            pendingSave?.cancel()
             if (partial != null) {
                 val recovery = latest.copy(partial = mergePartial(latest.partial, partial))
                 val revision = ++diskRevision
@@ -632,11 +644,6 @@ class InsightController(
         val choices = selectableMessages(snapshot.confirmed).filter { it.eligible && it.ref in messages }
         if (choices.isEmpty() || choices.size != messages.size || choices.any { it.status == "canceled" } && !incomplete) return
         if (selectionBody(choices, language() == "en").encodeToByteArray().size > 65_536) return
-        if (!snapshot.capabilities.saveSelection) {
-            val choice = choices.singleOrNull()?.takeIf { it.ref.role == "assistant" && it.status == "completed" } ?: return
-            snapshot.confirmed.firstOrNull { it.requestId == choice.ref.requestId }?.let(::save)
-            return
-        }
         submitSave(ChatSaveIntent(chat.id, ChatSaveSelection(newLocalId(), language(), messages, incomplete)))
     }
 
@@ -660,6 +667,7 @@ class InsightController(
                     CoreJson.encodeToString(intent.input))
                 val note = CoreJson.decodeFromString<Note>(body)
                 require(validName(note.name) && note.instanceId == owner.split('\u0000')[1]) { "ACCOUNT_CHANGED" }
+                repository().recordLocalNote(owner, note)
                 repository().putFeature(owner, "insight-save", "")
                 if (account() == owner) {
                     onSaved(owner, note)

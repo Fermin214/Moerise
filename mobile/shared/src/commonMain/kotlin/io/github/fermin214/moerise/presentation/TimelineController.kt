@@ -53,11 +53,43 @@ class TimelineController(
     }
 
     suspend fun readCache() {
-        if (filter != "NORMAL") return
         val account = key ?: return
         val stamp = accountGeneration
-        val cached = repository().datedSnapshot(account) ?: return
+        val repo = repository()
+        if (repo.isNotesSynced(account)) {
+            val (local, hasMore) = repo.localNotesPage(account, filter, 20 * pageCount, 0)
+            if (stamp == accountGeneration) applyNotes(local, if (hasMore) "local:${local.size}" else "", stamp)
+            return
+        }
+        if (filter != "NORMAL") return
+        val cached = repo.datedSnapshot(account) ?: return
         if (stamp == accountGeneration && !state.value.fresh) mutable.update { it.copy(notes = cached.first.notes, snapshotAt = cached.second) }
+    }
+
+    suspend fun reloadLocal() {
+        val account = key ?: return
+        val repo = repository()
+        if (!repo.isNotesSynced(account)) return
+        val stamp = generation
+        val (local, hasMore) = repo.localNotesPage(account, filter, 20 * pageCount, 0)
+        if (stamp == generation && account == key) {
+            applyNotes(local, if (hasMore) "local:${local.size}" else "", stamp)
+        }
+    }
+
+    private fun applyNotes(loaded: List<Note>, next: String, expectedGen: Long) {
+        if (expectedGen != generation && expectedGen != accountGeneration) return
+        val previous = state.value
+        val byName = previous.notes.associateBy { it.name }
+        val notes = loaded.map { note -> byName[note.name]?.takeIf { it == note } ?: note }
+        val unchanged = notes == previous.notes && next == previous.nextPageToken
+        mutable.value = previous.copy(
+            notes = if (unchanged) previous.notes else notes,
+            nextPageToken = next,
+            fresh = true,
+            error = null,
+            snapshotAt = if (unchanged && previous.snapshotAt != 0L) previous.snapshotAt else epochMillis(),
+        )
     }
 
     fun hideAccountData() {
@@ -71,16 +103,44 @@ class TimelineController(
 
     private fun load(append: Boolean, userInitiated: Boolean) {
         val account = key ?: return
-        val active = core() ?: return
         val token = if (append) state.value.nextPageToken.takeIf { it.isNotBlank() } ?: return else ""
+        val active = core()
+        if (active == null && !(append && token.startsWith("local:"))) return
         if (state.value.loading && (!userInitiated || !state.value.loadingMore)) return
         val stamp = ++generation
         request?.cancel()
+        if (append && token.startsWith("local:")) {
+            mutable.update { it.copy(loading = true, error = null, loadingMore = true) }
+            request = scope.launch {
+                try {
+                    val repo = repository()
+                    val offset = token.removePrefix("local:").toIntOrNull() ?: 0
+                    val (moreNotes, hasMore) = repo.localNotesPage(account, filter, 20, offset)
+                    if (stamp != generation || account != key) return@launch
+                    val combined = (state.value.notes + moreNotes).distinctBy { it.name }
+                    pageCount++
+                    applyNotes(combined, if (hasMore) "local:${combined.size}" else "", stamp)
+                } catch (error: Exception) {
+                    if (error is CancellationException) throw error
+                    if (stamp == generation) mutable.update { it.copy(error = errorCode(error)) }
+                } finally {
+                    if (stamp == generation) mutable.update { it.copy(loading = false, loadingMore = false) }
+                }
+            }
+            return
+        }
         mutable.update { it.copy(loading = true, error = null, loadingMore = append,
             refreshing = !append && (userInitiated || it.refreshing)) }
         request = scope.launch {
             try {
                 val repo = repository()
+                if (!append && repo.isNotesSynced(account)) {
+                    if (userInitiated && active != null) repo.syncNotes(account, active)
+                    val (local, hasMore) = repo.localNotesPage(account, filter, 20 * pageCount, 0)
+                    if (stamp == generation && account == key) applyNotes(local, if (hasMore) "local:${local.size}" else "", stamp)
+                    return@launch
+                }
+                val client = active ?: return@launch
                 if (filter == "NORMAL" && repo.hasPendingCreation(account)) return@launch
                 val rows = mutableListOf<Note>()
                 val seen = if (append) cursors.toMutableSet() else mutableSetOf()
@@ -90,7 +150,7 @@ class TimelineController(
                 val oldNames = state.value.notes.mapTo(mutableSetOf()) { it.name }
                 var added = 0
                 do {
-                    val body = active.api(HttpMethod.Get,
+                    val body = client.api(HttpMethod.Get,
                         "/notes?state=$filter&order=created_desc&page_size=20" +
                             if (next.isEmpty()) "" else "&page_token=${next.encodeURLQueryComponent(encodeFull = true)}")
                     val page = withContext(Dispatchers.Default) { CoreJson.decodeFromString<NotePage>(body) }

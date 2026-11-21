@@ -13,6 +13,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"golang.org/x/sync/semaphore"
@@ -34,6 +35,7 @@ type Store struct {
 	botStates        sync.Map
 	feishuGeneration uint64
 	qqSendMu         sync.Mutex
+	projectionBump   atomic.Int64
 }
 
 func (s *Store) indexReader() *sql.DB {
@@ -813,6 +815,9 @@ func (s *Store) RefreshContext(ctx context.Context, name string, memo *Memo) err
 
 func (s *Store) advanceProjection(tx *sql.Tx) error {
 	_, err := tx.Exec("UPDATE projection_meta SET revision = revision + 1 WHERE instance_id = ?", s.Settings.Memos.InstanceID)
+	if err == nil {
+		s.projectionBump.Add(1)
+	}
 	return err
 }
 

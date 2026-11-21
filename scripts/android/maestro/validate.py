@@ -150,7 +150,7 @@ def source_ids():
     for identifier in ("open_menu", "open_search", "search_query", "search_close", "sync_notes"):
         add("MoeriseUi.kt", identifier)
     add("MoeriseUi.kt", "search_query_empty", '"search_query_empty"')
-    for identifier in ("account_menu", "nav_settings", "nav_archive", "sidebar_account"):
+    for identifier in ("account_menu", "nav_settings", "nav_archive", "sidebar_account", "sidebar_sync"):
         add("WebSidebar.kt", identifier)
     for target in ("home", "review", "walk", "insights", "map"):
         add("WebSidebar.kt", "nav_" + target, 'testTag("nav_$target")')
@@ -161,7 +161,7 @@ def source_ids():
     add("SettingsScreen.kt", "settings_channel_qq_app_id", '"channel.qq_app_id", "QQ AppID"')
     add("SettingsScreen.kt", "settings_secret_qq_app_secret_action", 'tag = "settings_secret_${name}_action"')
     add("SettingsScreen.kt", "settings_save")
-    for index in range(6):
+    for index in range(4):
         add("SettingsScreen.kt", f"settings_tab_{index}", 'tagPrefix = "settings_tab"')
     for identifier in ("server_origin", "server_username", "server_password"):
         add("ConnectionScreen.kt", identifier, f'"{identifier}", !state.busy')
@@ -319,14 +319,14 @@ def commands(items, flow, refs, inline=False, hook=False, focused=None, ime_guar
                     "Scrolling requires a bounded element search without coordinates")
             selector(value["element"])
             if value["direction"] in {"LEFT", "RIGHT"}:
-                require(value["element"].get("id") in {f"settings_tab_{index}" for index in range(6)},
+                require(value["element"].get("id") in {f"settings_tab_{index}" for index in range(4)},
                         "Horizontal scrolling is limited to the settings tab strip")
             focused = None
         elif kind == "swipe":
             require(keys == {"from", "direction", "duration"} and
                     value["direction"] in {"LEFT", "RIGHT"} and value["duration"] == 400 and
                     isinstance(value["from"], dict) and set(value["from"]) == {"id"} and
-                    value["from"]["id"] in {f"settings_tab_{index}" for index in range(6)},
+                    value["from"]["id"] in {f"settings_tab_{index}" for index in range(4)},
                     "Swipe requires a settings tab origin and a bounded horizontal gesture")
             focused, selected_all = None, False
         elif kind == "takeScreenshot":
