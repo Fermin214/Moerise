@@ -227,7 +227,9 @@ try {
     }
     const list = await api('GET', '/notes?query=balcony'); assert.equal(list.notes.length, 1);
     await page.goto(`${url}/settings`); await page.locator('#username').fill(username); await page.locator('#password').fill(password);
-    await page.locator('#login').click(); await page.locator('#settings-tab-models').click();
+    await page.locator('#login').click();
+    await page.getByRole('button', { name: '进入 Moerise', exact: true }).click();
+    await page.locator('#settings-tab-models').click();
     await page.locator('#settings-index-status').filter({ hasText: '已关闭' }).waitFor();
     assert.equal((await models()).llm.enabled, false);
     await request(url, '/api/app/v1/models', {}, 401);
@@ -272,12 +274,15 @@ try {
     await page.locator('#settings-embedding-check-result').filter({ hasText: '连接正常' }).waitFor();
   });
   await check('增量编辑复用未变片段与通用语义查询', async () => {
+    const beforeRev = (await readyIndex()).projection_revision;
     const notes = (await api('GET', '/notes')).notes, note = notes.find(note => note.content === 'note balcony herbs');
     await api('PATCH', `/notes/${note.name.split('/')[1]}`, { content: 'note balcony herbs edited', source_hash: note.source_hash });
     await wait('增量代次', async () => {
-      const state = await models(); return state.index_status === 'ready' && state.vector_index.active.id !== initialID;
+      const state = await models();
+      return state.index_status === 'ready' && state.vector_index.active.id === initialID &&
+        state.vector_index.active.projection_revision > beforeRev;
     });
-    initialID = (await readyIndex()).id; assert.equal(fixture.successes.size, 6);
+    assert.equal(fixture.successes.size, 6);
     const result = (await request(coreURL, '/api/ext/v1/search', { method: 'POST',
       headers: { Authorization: `Bearer ${machineKey}` }, body: { query: 'herbs', mode: 'hybrid' } })).value;
     assert.equal(result.semantic.used, true);
@@ -336,6 +341,7 @@ try {
     assert.equal((await api('GET', '/notes?query=disabling')).notes.length, 1);
     assert.deepEqual(fixture.violations, []); assert.deepEqual(evidence.pageErrors, []); assert.deepEqual(evidence.sourceFailures, []);
     await api('DELETE', '/session', undefined, 204); await api('GET', '/models', undefined, 401);
+    await page.locator('#navigation-toggle').click();
     await page.locator('#user-menu').click(); await page.locator('#logout').click();
     await page.locator('#login-form').waitFor({ state: 'visible' });
   });

@@ -239,7 +239,7 @@ try {
     config.state_dir = '/data/state'; config.index_dir = '/data/index'; config.cursor_secret = randomBytes(32).toString('hex');
     config.access_tokens = [{ name: 'acceptance', token: machineKey,
       scopes: ['notes:read', 'sync:read'] }];
-    config.sync = { ...config.sync, poll_seconds: 60, full_seconds: 300, retry_seconds: 3 };
+    config.sync = { ...config.sync, poll_seconds: 1, full_seconds: 5, retry_seconds: 3 };
     config.notifications.enabled = false; config.embedding.enabled = false;
     config.llm = { ...config.llm, enabled: true, base_url: `http://host.docker.internal:${mock.address().port}/v1`,
       api_key: modelKey, model: 'chat-fixture', max_retries: 0 };
@@ -255,6 +255,7 @@ try {
     web.listen(webPort, '127.0.0.1'); await once(web, 'listening');
     await wait('Core', async () => { try { await request(coreURL, '/health/ready'); return true; } catch { return false; } });
     await api('POST', '/session', { username, password });
+    await wait('初始材料同步', async () => (await api('GET', '/notes')).notes.length >= 3);
     assert.equal((await api('GET', '/models')).embedding.enabled, false);
     await request(url, '/api/app/v1/chats', {}, 401);
     await request(url, '/api/app/v1/chats', { headers: { Authorization: `Bearer ${machineKey}` } }, 403);
@@ -414,6 +415,10 @@ try {
     const calls = evidence.llmCalls;
     fixtures[0] = await sourceAPI('PATCH', `/${fixtures[0].name}?updateMask=content`,
       { content: '研究材料：明确变更的完整来源。 #原始标签 #共同标签' });
+    await wait('同步变更材料', async () => {
+      const note = await api('GET', `/notes/${fixtures[0].name.split('/')[1]}`);
+      return note.content === fixtures[0].content;
+    });
     await page.reload(); await readyChat();
     await page.locator('[data-chat="warning"]').filter({ hasText: '所选材料已修改' }).waitFor();
     assert.equal(await send().isDisabled(), true);
@@ -421,6 +426,10 @@ try {
     assert.equal(await page.locator('.insight-assistant').count(), 6);
     fixtures[0] = await sourceAPI('PATCH', `/${fixtures[0].name}?updateMask=content`,
       { content: '研究材料：再次修改已勾选材料，确认时读取完整新正文。 😀 #原始标签 #共同标签' });
+    await wait('同步二次变更材料', async () => {
+      const note = await api('GET', `/notes/${fixtures[0].name.split('/')[1]}`);
+      return note.content === fixtures[0].content;
+    });
     await openMaterials();
     await dialog().getByRole('button', { name: '重新选择', exact: true }).click();
     assert.equal(await page.locator('.insight-choice input:checked').count(), fixtures.length);
@@ -431,6 +440,10 @@ try {
     const material = JSON.parse(model.requests.at(-1)[1].content.replace('本轮明确选定的全部笔记材料：\n', ''));
     assert.equal(material.find(item => item.name === fixtures[0].name).content, fixtures[0].content);
     await sourceAPI('DELETE', `/${fixtures[1].name}`);
+    await wait('同步删除材料', async () => {
+      const res = await fetch(`${url}/api/app/v1/notes/${fixtures[1].name.split('/')[1]}`, { headers: { Cookie: cookie } });
+      return res.status === 404;
+    });
     await page.reload(); await readyChat();
     await page.locator('[data-chat="warning"]').filter({ hasText: '删除或无法访问' }).waitFor();
     assert.equal(await page.locator('.insight-assistant').count(), 7);

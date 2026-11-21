@@ -185,7 +185,7 @@ python3 scripts/performance/evaluate-search.py --config .local/config.json --cre
 
 ## 七、开发与提交规范
 
-1. **接口规范同步**：当修改 `internal/models.go` 或 `internal/client_models.go` 时，必须同步更新 `internal/openapi.json` 以及 [API 文档](API-V1.md)。
+1. **接口规范同步**：当修改 `internal/models.go` 或 `internal/client_models.go` 或路由时，同步更新 `internal/openapi_gen.go` 生成规则以及 [API 文档](API-V1.md)。
 2. **数据库迁移规范**：涉及 SQLite 数据表结构变动时，必须在 `internal/migrations/` 中新增编号递增的 SQL 迁移文件，**严禁修改已发布的旧迁移文件**。
 3. **敏感信息隔离**：测试用例、脚本与文档中严禁硬编码真实的私有密钥、生产 Token 或包含用户私人数据的笔记原文。
 

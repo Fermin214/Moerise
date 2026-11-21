@@ -34,7 +34,7 @@ export async function readChatStream(response, onEvent) {
     if (event?.type !== kind ||
         (kind === 'delta' && (typeof event.text !== 'string' || !event.text)) ||
         (kind !== 'delta' && (!event.turn?.id || !event.turn.assistant || !event.turn.user)) ||
-        (kind === 'complete' && event.turn.assistant.status !== 'completed')) throw streamFailure('CHAT_PROTOCOL');
+        (kind === 'complete' && event.turn.assistant.status !== 'completed' && event.turn.assistant.status !== 'truncated')) throw streamFailure('CHAT_PROTOCOL');
     await onEvent(event);
     complete = kind === 'complete';
   };

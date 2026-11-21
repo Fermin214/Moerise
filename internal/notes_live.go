@@ -24,6 +24,87 @@ func (s *NoteService) liveContext() []string {
 	return []string{s.Settings.Memos.InstanceID, strings.TrimRight(s.Settings.Memos.BaseURL, "/"), s.Settings.Memos.User}
 }
 
+func (s *NoteService) ListLocal(ctx context.Context, args NoteList) (NotePage, error) {
+	result := NotePage{Notes: []Note{}}
+	args, err := normalizeLiveList(args)
+	if err != nil {
+		return result, err
+	}
+	filter, err := s.liveFilter(args)
+	if err != nil {
+		return result, err
+	}
+	boundFilters := []any{args.Query, args.Tags, args.Date}
+	if args.Date != "" {
+		boundFilters = append(boundFilters, s.Settings.Timezone)
+	}
+	binding := hashBytes(canonicalJSON(boundFilters))
+	var after *[2]string
+	if args.PageToken != "" {
+		var cursor liveListCursor
+		if s.readCursor(args.PageToken, &cursor) != nil || cursor.Kind != "live-v1" ||
+			!slices.Equal(cursor.Context, s.liveContext()) || cursor.State != args.State ||
+			cursor.Order != args.Order || cursor.Token == "" || cursor.Filter != binding {
+			return result, failure("INVALID_PAGE_TOKEN", "Page token is invalid or expired", 422, false)
+		}
+		parts := strings.SplitN(cursor.Token, "\x00", 2)
+		if len(parts) != 2 || !memoPattern.MatchString(parts[1]) {
+			return result, failure("INVALID_PAGE_TOKEN", "Page token is invalid or expired", 422, false)
+		}
+		if _, err := time.Parse(time.RFC3339Nano, parts[0]); err != nil {
+			return result, failure("INVALID_PAGE_TOKEN", "Page token is invalid or expired", 422, false)
+		}
+		key := [2]string{parts[0], parts[1]}
+		after = &key
+	}
+	memos, err := s.Store.ListLocalMemos(ctx, []string{args.State}, filter, after, args.PageSize+1)
+	if err != nil {
+		return result, err
+	}
+	hasMore := len(memos) > args.PageSize
+	if hasMore {
+		memos = memos[:args.PageSize]
+	}
+	for _, memo := range memos {
+		result.Notes = append(result.Notes, memo.Note(s.Settings))
+	}
+	if hasMore && len(memos) > 0 {
+		last := memos[len(memos)-1]
+		result.NextPageToken = s.signCursor(liveListCursor{
+			Kind: "live-v1", Context: s.liveContext(), State: args.State, Order: args.Order,
+			Token: last.CreateTime + "\x00" + last.Name, Filter: binding,
+		})
+	}
+	return result, nil
+}
+
+func (s *NoteService) TagsLocal(ctx context.Context, state string) ([]TagCount, error) {
+	args, err := normalizeLiveList(NoteList{State: state})
+	if err != nil {
+		return nil, err
+	}
+	return s.Store.TagsLocal(ctx, args.State)
+}
+
+func (s *NoteService) CalendarLocal(ctx context.Context, state, month string) ([]DayCount, error) {
+	args, err := normalizeLiveList(NoteList{State: state})
+	if err != nil {
+		return nil, err
+	}
+	date, err := time.Parse("2006-01", month)
+	if err != nil || date.Year() < 1 || date.Format("2006-01") != month {
+		return nil, failure("INVALID_ARGUMENT", "Invalid calendar month", 422, false)
+	}
+	location, err := time.LoadLocation(s.Settings.Timezone)
+	if err != nil {
+		return nil, failure("INVALID_CONFIGURATION", "Invalid product timezone", 500, false)
+	}
+	firstDay := time.Date(date.Year(), date.Month(), 1, 0, 0, 0, 0, time.UTC)
+	from := productDayStart(firstDay, location)
+	until := productDayStart(firstDay.AddDate(0, 1, 0), location)
+	return s.Store.CalendarLocal(ctx, args.State, from, until, location)
+}
+
 func (s *NoteService) ListLive(ctx context.Context, args NoteList) (NotePage, error) {
 	result := NotePage{Notes: []Note{}}
 	args, err := normalizeLiveList(args)

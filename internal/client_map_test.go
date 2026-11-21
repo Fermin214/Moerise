@@ -143,9 +143,14 @@ func TestClientMapAuthenticationAndSourceShareDeadline(t *testing.T) {
 		})
 	}
 	started := time.Now()
+	cached := clientCall(api, "GET", "/api/app/v1/map", "", cookie, "", "")
+	if cached.Code != 200 || len(deadlines) != 0 {
+		t.Fatalf("warm map read unexpectedly called upstream: %d %s %v", cached.Code, cached.Body, deadlines)
+	}
+	api.app.Sessions.ClearCache()
 	response := clientCall(api, "GET", "/api/app/v1/map", "", cookie, "", "")
-	if response.Code != 200 || len(deadlines) < 3 {
-		t.Fatalf("map did not authenticate snapshot access: %d %s %v", response.Code, response.Body, deadlines)
+	if response.Code != 200 || len(deadlines) < 2 {
+		t.Fatalf("uncached map auth did not use bounded deadline: %d %s %v", response.Code, response.Body, deadlines)
 	}
 	for _, deadline := range deadlines {
 		if !deadline.Equal(deadlines[0]) || deadline.Before(started) || deadline.After(started.Add(mapRequestTimeout+100*time.Millisecond)) {
@@ -162,6 +167,7 @@ func TestClientMapDeadlineCoversAuthenticationAndLocks(t *testing.T) {
 			unlock := func() {}
 			switch stage {
 			case "authentication":
+				api.app.Sessions.ClearCache()
 				api.app.Sessions.auth.client.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
 					<-r.Context().Done()
 					return nil, r.Context().Err()
@@ -170,6 +176,7 @@ func TestClientMapDeadlineCoversAuthenticationAndLocks(t *testing.T) {
 				api.app.runtimeMu.Lock()
 				unlock = api.app.runtimeMu.Unlock
 			case "session_lock":
+				api.app.Sessions.ClearCache()
 				hash, _ := sessionHash(cookie.Value)
 				var err error
 				unlock, err = api.app.Sessions.lock(t.Context(), hash)

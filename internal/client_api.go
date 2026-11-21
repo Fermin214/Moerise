@@ -108,7 +108,7 @@ func (a *ClientAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		defer a.app.runtimeMu.RUnlock()
-	} else if r.URL.Path != "/api/app/v1/settings" || r.Method != http.MethodPatch {
+	} else if !isChatStream(r) && (r.URL.Path != "/api/app/v1/settings" || r.Method != http.MethodPatch) {
 		a.app.runtimeMu.RLock()
 		defer a.app.runtimeMu.RUnlock()
 	}
@@ -123,6 +123,12 @@ func (a *ClientAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		err = liveListRequestError(r.Context(), err)
 	}
 	if err != nil {
+		if a.app != nil && a.app.Sessions != nil && !(r.URL.Path == "/api/app/v1/session" && r.Method == http.MethodPost) {
+			switch errorCode(err) {
+			case "UPSTREAM_AUTH", "IDENTITY_MISMATCH", "ACCOUNT_NOT_BOUND":
+				a.app.Sessions.EvictAllAndCancel()
+			}
+		}
 		writeClientError(w, err, id)
 	} else if status == -1 {
 		return
@@ -269,7 +275,7 @@ func (a *ClientAPI) route(w http.ResponseWriter, r *http.Request) (any, int, err
 	if len(r.Header.Values("Authorization")) != 0 {
 		return nil, 0, failure("FORBIDDEN", "Client requests require a browser session", 403, false)
 	}
-	if r.URL.RawQuery != "" && !(slices.Contains([]string{"/api/app/v1/notes", "/api/app/v1/tags", "/api/app/v1/calendar", "/api/app/v1/chats", "/api/app/v1/chat-materials"}, r.URL.Path) && r.Method == http.MethodGet) &&
+	if r.URL.RawQuery != "" && !(slices.Contains([]string{"/api/app/v1/notes", "/api/app/v1/sync/notes", "/api/app/v1/tags", "/api/app/v1/calendar", "/api/app/v1/chats", "/api/app/v1/chat-materials"}, r.URL.Path) && r.Method == http.MethodGet) &&
 		!(r.URL.Path == "/api/app/v1/admin/notifications" && r.Method == http.MethodGet) {
 		return nil, 0, failure("INVALID_ARGUMENT", "Unexpected query parameters", 422, false)
 	}
@@ -285,7 +291,8 @@ func (a *ClientAPI) route(w http.ResponseWriter, r *http.Request) (any, int, err
 		}
 		return map[string]any{"login_methods": []string{"password"}, "notes": "ready",
 			"version": Version, "telemetry": map[string]any{"schema": 1, "allowed": telemetryEnabled(a.app.Store.Settings)},
-			"chat": map[string]bool{"material_selection": true, "save_selection": true}}, 200, nil
+			"chat": map[string]bool{"material_selection": true, "save_selection": true},
+			"sync": map[string]bool{"notes": true}}, 200, nil
 	}
 	if path == "/api/app/v1/session" && method == http.MethodPost {
 		var body ClientLogin
@@ -369,6 +376,8 @@ func (a *ClientAPI) route(w http.ResponseWriter, r *http.Request) (any, int, err
 		return a.searchRoute(w, r)
 	case "/api/app/v1/reviews/daily", "/api/app/v1/walks/start", "/api/app/v1/walks/next":
 		return a.discoveryRoute(w, r)
+	case "/api/app/v1/sync/notes":
+		return a.syncNotesRoute(w, r)
 	case "/api/app/v1/notes":
 		if method == http.MethodGet {
 			query, err := url.ParseQuery(r.URL.RawQuery)
@@ -379,7 +388,7 @@ func (a *ClientAPI) route(w http.ResponseWriter, r *http.Request) (any, int, err
 			if err != nil {
 				return nil, 0, err
 			}
-			result, err := a.app.Notes.ListLive(r.Context(), args)
+			result, err := a.app.Notes.ListLocal(r.Context(), args)
 			for i := range result.Notes {
 				result.Notes[i] = clientNote(result.Notes[i])
 			}
@@ -411,10 +420,10 @@ func (a *ClientAPI) route(w http.ResponseWriter, r *http.Request) (any, int, err
 			}
 		}
 		if path == "/api/app/v1/tags" {
-			tags, err := a.app.Notes.Tags(r.Context(), query.Get("state"))
+			tags, err := a.app.Notes.TagsLocal(r.Context(), query.Get("state"))
 			return map[string]any{"tags": tags}, 200, err
 		}
-		days, err := a.app.Notes.Calendar(r.Context(), query.Get("state"), query.Get("month"))
+		days, err := a.app.Notes.CalendarLocal(r.Context(), query.Get("state"), query.Get("month"))
 		return map[string]any{"month": query.Get("month"), "days": days}, 200, err
 	default:
 		if path == "/api/app/v1/chats" || strings.HasPrefix(path, "/api/app/v1/chats/") ||

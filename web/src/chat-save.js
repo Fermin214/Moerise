@@ -40,14 +40,14 @@ export function openChatSave({ parent, owner, chat, modern, sessionRequest, onSa
   for (const turn of chat.turns) {
     for (const role of ['user', 'assistant']) {
       if (role === 'user' && turn.kind !== 'question') continue;
-      const message = turn[role], stopped = role === 'assistant' && message.status === 'canceled';
+      const message = turn[role], stopped = role === 'assistant' && (message.status === 'canceled' || message.status === 'truncated');
       const ok = !!message.content && (role === 'user' || message.status === 'completed' || stopped);
       const enabled = ok && (modern || role === 'assistant' && message.status === 'completed');
       const entry = { request_id: turn.request_id, role, message, stopped, enabled, id: key(turn.request_id, role) };
       entries.push(entry);
       const row = el('label', 'ent save-choice'), check = el('input'); check.type = 'checkbox';
       const label = el('span'), state = role === 'user' || message.status === 'completed' ? l("已完成") :
-        stopped ? l("已停止（内容不完整）") : message.status === 'running' ? l("正在生成") : l("未完成");
+        message.status === 'truncated' ? l("已截断（内容不完整）") : stopped ? l("已停止（内容不完整）") : message.status === 'running' ? l("正在生成") : l("未完成");
       label.append(el('b', '', role === 'user' ? l("我") : 'Moerise'), el('small', 'sub', state),
         el('span', '', [...message.content || ''].slice(0, 140).join('')));
       row.append(check, label); list.append(row); rows.push(check);

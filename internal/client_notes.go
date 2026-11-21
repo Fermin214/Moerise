@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -83,7 +84,7 @@ func (a *ClientAPI) noteRoute(w http.ResponseWriter, r *http.Request) (any, int,
 	name := "memos/" + parts[0]
 	switch r.Method {
 	case http.MethodGet:
-		note, err := a.app.Notes.Get(r.Context(), name)
+		note, err := a.app.Notes.GetLocal(r.Context(), name)
 		return clientNote(note), 200, err
 	case http.MethodPatch:
 		var body UpdateNote
@@ -106,4 +107,31 @@ func (a *ClientAPI) noteRoute(w http.ResponseWriter, r *http.Request) (any, int,
 		return nil, http.StatusNoContent, nil
 	}
 	return nil, 0, failure("METHOD_NOT_ALLOWED", "Method Not Allowed", 405, false)
+}
+
+func (a *ClientAPI) syncNotesRoute(w http.ResponseWriter, r *http.Request) (any, int, error) {
+	if r.Method != http.MethodGet {
+		return nil, 0, failure("METHOD_NOT_ALLOWED", "Method Not Allowed", 405, false)
+	}
+	query, err := url.ParseQuery(r.URL.RawQuery)
+	if err != nil {
+		return nil, 0, failure("INVALID_ARGUMENT", "Invalid sync parameters", 422, false)
+	}
+	for key, values := range query {
+		if len(values) != 1 || (key != "cursor" && key != "limit") {
+			return nil, 0, failure("INVALID_ARGUMENT", "Invalid sync parameters", 422, false)
+		}
+	}
+	limit := 0
+	if query.Has("limit") {
+		limit, err = strconv.Atoi(query.Get("limit"))
+		if err != nil || limit < 1 || limit > 200 {
+			return nil, 0, failure("INVALID_ARGUMENT", "Invalid sync limit", 422, false)
+		}
+	}
+	result, err := a.app.Notes.SyncNotes(r.Context(), query.Get("cursor"), limit)
+	for i := range result.Items {
+		result.Items[i] = clientNote(result.Items[i])
+	}
+	return result, 200, err
 }

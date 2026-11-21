@@ -43,6 +43,11 @@ test('explicit stream errors restore the terminal snapshot and preserve the erro
 test('completed request replays need no delta and preflight JSON keeps session errors', async () => {
   await readChatStream(response([event('message', { type: 'message', turn: turn('completed') }),
     event('complete', { type: 'complete', turn: turn('completed') })]), () => {});
+  const truncated = [];
+  await readChatStream(response([event('message', { type: 'message', turn: turn('running') }),
+    event('complete', { type: 'complete', turn: turn('truncated') })]), value => truncated.push(value));
+  assert.equal(truncated.at(-1)?.type, 'complete');
+  assert.equal(truncated.at(-1)?.turn.assistant.status, 'truncated');
   await assert.rejects(readChatStream(new Response(JSON.stringify({
     error: { code: 'SESSION_UNAUTHORIZED', message: '登录已失效。' },
   }), { status: 401 }), () => {}), { code: 'SESSION_UNAUTHORIZED', status: 401 });

@@ -39,8 +39,9 @@ type searchVector struct {
 }
 
 type searchMatrix struct {
-	id      string
-	entries []searchVector
+	id       string
+	revision int64
+	entries  []searchVector
 }
 
 type SearchService struct {
@@ -117,66 +118,73 @@ func (s *SearchService) vectors(ctx context.Context) (*searchMatrix, error) {
 	}
 	defer s.mu.Unlock()
 	var matrix *searchMatrix
-	err := transactionContext(ctx, s.Store.index, func(tx *sql.Tx) error {
-		var id string
-		err := tx.QueryRowContext(ctx, `SELECT g.id FROM vector_generations g JOIN projection_meta p USING (instance_id)
-			WHERE g.instance_id = ? AND g.user_name = ? AND g.status = 'active'
-			AND g.space_hash = ? AND g.projection_revision = p.revision`,
-			s.Store.Settings.Memos.InstanceID, s.Store.Settings.Memos.User,
-			embeddingSpace(s.Store.Settings.Embedding)).Scan(&id)
-		if err != nil {
-			return err
-		}
-		if s.matrix != nil && s.matrix.id == id {
-			matrix = s.matrix
-			return nil
-		}
-		// 加载新代次时，已无请求使用的旧缓存可以回收。
-		s.matrix = nil
-		matrix = &searchMatrix{id: id}
-		rows, err := tx.QueryContext(ctx, `SELECT c.name, n.source_hash, c.ordinal,
-			c.byte_start, c.byte_end, c.line_start, c.line_end, c.content, c.vector, m.payload_json
-			FROM vector_chunks c JOIN vector_notes n USING (generation_id, name)
-			JOIN vector_generations g ON g.id = c.generation_id
-			JOIN memos m ON m.instance_id = g.instance_id AND m.user_name = g.user_name AND m.name = c.name
-			WHERE c.generation_id = ? ORDER BY c.name, c.ordinal`, id)
-		if err != nil {
-			return err
-		}
-		defer rows.Close()
-		for rows.Next() {
-			var entry searchVector
-			var data, payload []byte
-			item := &entry.candidate
-			if err := rows.Scan(&item.name, &item.sourceHash, &item.chunk.Ordinal, &item.chunk.ByteStart,
-				&item.chunk.ByteEnd, &item.chunk.LineStart, &item.chunk.LineEnd, &item.chunk.Content, &data, &payload); err != nil {
-				return err
-			}
-			memo, err := decodeMemo(payload)
-			if err != nil {
-				return err
-			}
-			if memo.Creator != s.Store.Settings.Memos.User {
-				continue
-			}
-			if len(data) != 4*s.Store.Settings.Embedding.Dimensions {
-				return failure("EMBEDDING_PROTOCOL", "Invalid stored search vector", 503, false)
-			}
-			entry.vector = make([]float32, len(data)/4)
-			for i := range entry.vector {
-				entry.vector[i] = math.Float32frombits(binary.LittleEndian.Uint32(data[i*4:]))
-			}
-			entry.norm = vectorNorm(entry.vector)
-			if entry.norm == 0 {
-				return failure("EMBEDDING_PROTOCOL", "Invalid stored search vector", 503, false)
-			}
-			entry.state, entry.tags = memo.State, memo.Tags
-			entry.createTime = memo.CreateTime
-			matrix.entries = append(matrix.entries, entry)
-		}
-		return rows.Err()
-	})
+	tx, err := s.Store.indexReader().BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	var id string
+	var projRev int64
+	err = tx.QueryRowContext(ctx, `SELECT g.id, p.revision FROM vector_generations g JOIN projection_meta p USING (instance_id)
+		WHERE g.instance_id = ? AND g.user_name = ? AND g.status = 'active'
+		AND g.space_hash = ? AND g.projection_revision = p.revision`,
+		s.Store.Settings.Memos.InstanceID, s.Store.Settings.Memos.User,
+		embeddingSpace(s.Store.Settings.Embedding)).Scan(&id, &projRev)
+	if err != nil {
+		s.matrix = nil
+		return nil, err
+	}
+	if s.matrix != nil && s.matrix.id == id && s.matrix.revision == projRev {
+		return s.matrix, nil
+	}
+	s.matrix = nil
+	matrix = &searchMatrix{id: id, revision: projRev}
+	rows, err := tx.QueryContext(ctx, `SELECT c.name, n.source_hash, c.ordinal,
+		c.byte_start, c.byte_end, c.line_start, c.line_end, c.content, c.vector, m.payload_json
+		FROM vector_chunks c JOIN vector_notes n USING (generation_id, name)
+		JOIN vector_generations g ON g.id = c.generation_id
+		JOIN memos m ON m.instance_id = g.instance_id AND m.user_name = g.user_name AND m.name = c.name
+		WHERE c.generation_id = ? ORDER BY c.name, c.ordinal`, id)
+	if err != nil {
+		s.matrix = nil
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var entry searchVector
+		var data, payload []byte
+		item := &entry.candidate
+		if err := rows.Scan(&item.name, &item.sourceHash, &item.chunk.Ordinal, &item.chunk.ByteStart,
+			&item.chunk.ByteEnd, &item.chunk.LineStart, &item.chunk.LineEnd, &item.chunk.Content, &data, &payload); err != nil {
+			s.matrix = nil
+			return nil, err
+		}
+		memo, err := decodeMemo(payload)
+		if err != nil {
+			s.matrix = nil
+			return nil, err
+		}
+		if memo.Creator != s.Store.Settings.Memos.User {
+			continue
+		}
+		if len(data) != 4*s.Store.Settings.Embedding.Dimensions {
+			s.matrix = nil
+			return nil, failure("EMBEDDING_PROTOCOL", "Invalid stored search vector", 503, false)
+		}
+		entry.vector = make([]float32, len(data)/4)
+		for i := range entry.vector {
+			entry.vector[i] = math.Float32frombits(binary.LittleEndian.Uint32(data[i*4:]))
+		}
+		entry.norm = vectorNorm(entry.vector)
+		if entry.norm == 0 {
+			s.matrix = nil
+			return nil, failure("EMBEDDING_PROTOCOL", "Invalid stored search vector", 503, false)
+		}
+		entry.state, entry.tags = memo.State, memo.Tags
+		entry.createTime = memo.CreateTime
+		matrix.entries = append(matrix.entries, entry)
+	}
+	if err := rows.Err(); err != nil {
 		s.matrix = nil
 		return nil, err
 	}
@@ -418,16 +426,20 @@ func (s *SearchService) Search(ctx context.Context, request SearchRequest) (Sear
 }
 
 func (s *SearchService) rankedCandidates(ctx context.Context, request SearchRequest) ([]searchCandidate, string, SearchSemantic, error) {
+	return s.rankedCandidatesLimit(ctx, request, 100)
+}
+
+func (s *SearchService) rankedCandidatesLimit(ctx context.Context, request SearchRequest, limit int) ([]searchCandidate, string, SearchSemantic, error) {
 	mode := request.Mode
 	semanticState := SearchSemantic{Reason: "KEYWORD_MODE"}
 	var keywords, tags, semantic []searchCandidate
 	var err error
 	if request.Mode != "semantic" {
-		keywords, err = s.Store.lexicalCandidates(ctx, request, false)
+		keywords, err = s.Store.lexicalCandidatesWithLimit(ctx, request, false, limit)
 		if err != nil {
 			return nil, mode, semanticState, err
 		}
-		tags, err = s.Store.lexicalCandidates(ctx, request, true)
+		tags, err = s.Store.lexicalCandidatesWithLimit(ctx, request, true, limit)
 		if err != nil {
 			return nil, mode, semanticState, err
 		}

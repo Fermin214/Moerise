@@ -75,12 +75,12 @@ Android 文件的版本管理规则见 [Android 开发](ANDROID.md#文件与产�
 | --- | --- |
 | 应用与配置 | `app.go` 装配与关闭；`config.go`、`config_environment.go` 校验部署配置；`resources.go` 识别 CPU/内存并计算后台预算 |
 | 接口与权限 | `api.go`、`external_policy.go` 管理外部只读白名单；`client_api.go` 管理本人会话路由；`mcp.go` 暴露只读工具 |
-| 数据契约 | `models.go`、`client_models.go`、`chat_models.go` 定义请求与响应；`openapi.go` 嵌入 `openapi.json` 和文档页 `docs.html` |
+| 数据契约 | `models.go`、`client_models.go`、`chat_models.go` 定义请求与响应；`openapi_gen.go` 与 `openapi.go` 由 Go DTO 生成 OpenAPI 规范并嵌入 `docs.html` |
 | Memos 适配 | `memos.go` 处理官方 API 与数据规范化；`memos_live.go` 处理实时分页与筛选；`memos_stats.go` 聚合标签和日历；`memos_auth.go` 适配官方登录 |
 | 会话与设置 | `sessions.go` 管理加密会话与 CSRF。`App.startup` 保存启动时确定的 Web、Memos 和机器令牌配置。`settings_api.go` 接收产品设置，`settings.go` 加密持久化，`settings_runtime.go` 在写入成功后更新 `Store.Settings` 并替换受影响的服务 |
 | 笔记与附件 | `notes.go`、`notes_live.go` 读取原文和时间线；`records.go` 处理创建幂等；`notes_mutations.go` 处理编辑、归档和删除；`attachments.go` 管理附件写入 |
 | 客户端适配 | `client_notes.go`、`client_attachments.go`、`client_search.go`、`client_discovery.go`、`client_chat.go`、`client_map.go` 将共享服务接到本人会话接口 |
-| 同步与存储 | `sync.go` 完整分页并发布投影；`store.go` 管理双库、绑定、任务与同步水位；`maintenance.go` 负责备份、恢复和索引重建 |
+| 同步与存储 | `sync.go` 完整分页并发布投影；`store.go`、`store_local.go` 管理双库、绑定、局部查询、变更日志、任务与同步水位；`maintenance.go` 负责自动热备份、手动备份、恢复、回滚与索引重建 |
 | 检索与漫步 | `chunks.go` 分块并保留原文偏移；`search_index.go` 维护 FTS5；`search.go` 混合排序；`related.go` 查找相关笔记；`discovery.go` 选择漫步候选；`discovery_api.go` 适配只读接口 |
 | 向量与观星 | `embedding.go` 适配向量协议；`vector_index.go` 发布向量代次；`map_stars.go` 调用 `services/layout/`；`map_stars_store.go` 保存快照；`map.go` 调度与缓存；`map_layout.go`、`map_store.go` 读取旧 PCA 快照 |
 | 每日回顾 | `reviews.go` 选择笔记并读取计划；`review_plans.go` 冻结规则与时段分配；`reviews_api.go` 提供只读查询 |
@@ -121,7 +121,7 @@ Android 文件的版本管理规则见 [Android 开发](ANDROID.md#文件与产�
 
 | 改动 | 关联入口 |
 | --- | --- |
-| 请求、响应或权限 | 路由、Go 模型、`openapi.json`、[API 文档](API-V1.md)和相应接口测试 |
+| 请求、响应或权限 | 路由、Go 模型、`openapi_gen.go`、[API 文档](API-V1.md)和相应接口测试 |
 | 部署或产品设置 | `config*.go`、`settings*.go`、配置模板、前端设置页与[运行指南](OPERATIONS.md) |
 | 数据表结构 | 新增编号 SQL、对应读写、备份恢复与集成测试 |
 | 同步、原文或附件 | Memos 适配、`sync.go`、笔记服务和真实 Memos 集成测试 |

@@ -506,7 +506,16 @@ func (s *NoteService) Update(ctx context.Context, name, key string, input Update
 		if err := s.Verify(ctx); err != nil {
 			return Note{}, err
 		}
-		return memo.Note(s.Settings), nil
+		records := NewRecordService(s.Store, s.Source)
+		receipts, err := buildReplayAttachmentReceipts(func(pos int) (string, bool, error) {
+			return records.existingAttachmentName(writeKey, pos)
+		}, key, files, memo.Attachments)
+		if err != nil {
+			return Note{}, err
+		}
+		note := memo.Note(s.Settings)
+		note.AttachmentReceipts = receipts
+		return note, nil
 	}
 	if saved != "" {
 		if err := s.checkAttachmentRemoval(ctx, memo, input); err != nil {
@@ -577,10 +586,18 @@ func (s *NoteService) Update(ctx context.Context, name, key string, input Update
 	if err := s.Verify(ctx); err != nil {
 		return Note{}, err
 	}
+	receipts, err := buildAttachmentReceipts(func(pos int) (string, error) {
+		return records.attachmentName(writeKey, pos)
+	}, key, files, memo.Attachments)
+	if err != nil {
+		return Note{}, err
+	}
 	if err := s.saveMutation(writeKey, journal, "succeeded"); err != nil {
 		return Note{}, err
 	}
-	return memo.Note(s.Settings), nil
+	note := memo.Note(s.Settings)
+	note.AttachmentReceipts = receipts
+	return note, nil
 }
 
 func (s *NoteService) Delete(ctx context.Context, name, sourceHash string) error {

@@ -2,7 +2,9 @@ package moerise
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/url"
@@ -159,4 +161,62 @@ func (s *RecordService) attach(ctx context.Context, key string, memo *Memo, file
 		}
 	}
 	return fresh, nil
+}
+
+func (s *RecordService) existingAttachmentName(key string, position int) (string, bool, error) {
+	settings := s.Store.Settings
+	var name string
+	err := s.Store.state.QueryRow(`SELECT attachment_name FROM attachment_writes
+		WHERE instance_id = ? AND user_name = ? AND idempotency_key = ? AND position = ?`,
+		settings.Memos.InstanceID, settings.Memos.User, key, position).Scan(&name)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", false, nil
+	}
+	return name, err == nil, err
+}
+
+func buildAttachmentReceipts(resolveName func(int) (string, error), idempotencyKey string, files []CreateAttachment, linked []map[string]any) ([]AttachmentReceipt, error) {
+	return buildReplayAttachmentReceipts(func(pos int) (string, bool, error) {
+		name, err := resolveName(pos)
+		return name, true, err
+	}, idempotencyKey, files, linked)
+}
+
+func buildReplayAttachmentReceipts(resolveName func(int) (string, bool, error), idempotencyKey string, files []CreateAttachment, linked []map[string]any) ([]AttachmentReceipt, error) {
+	if len(files) == 0 {
+		return nil, nil
+	}
+	present := make(map[string]bool, len(linked))
+	for _, item := range linked {
+		if name, _ := item["name"].(string); name != "" {
+			present[name] = true
+		}
+	}
+	receipts := make([]AttachmentReceipt, 0, len(files))
+	for position, file := range files {
+		name, ok, err := resolveName(position)
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
+			if position < len(linked) {
+				if legacy, _ := linked[position]["name"].(string); legacy != "" && present[legacy] {
+					name = legacy
+					ok = true
+				}
+			}
+		}
+		if !ok || !present[name] {
+			return nil, upstreamError("UPSTREAM_PROTOCOL", "Memos did not link the uploaded attachment")
+		}
+		contentSHA := hashBytes(file.Content)
+		digest := hashBytes(canonicalJSON([]any{idempotencyKey, position, name, contentSHA}))
+		receipts = append(receipts, AttachmentReceipt{
+			Name:          name,
+			Position:      position,
+			ContentSHA256: contentSHA,
+			ReceiptDigest: digest,
+		})
+	}
+	return receipts, nil
 }

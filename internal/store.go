@@ -10,8 +10,10 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
+	"time"
 
 	"golang.org/x/sync/semaphore"
 	_ "modernc.org/sqlite"
@@ -24,6 +26,7 @@ type Store struct {
 	Settings         Settings
 	state            *sql.DB
 	index            *sql.DB
+	indexRO          *sql.DB
 	reviewMu         sync.Mutex
 	background       *semaphore.Weighted
 	productVersion   int64
@@ -31,6 +34,13 @@ type Store struct {
 	botStates        sync.Map
 	feishuGeneration uint64
 	qqSendMu         sync.Mutex
+}
+
+func (s *Store) indexReader() *sql.DB {
+	if s.indexRO != nil {
+		return s.indexRO
+	}
+	return s.index
 }
 
 // 同步、向量构建和地图生成按等待顺序共用后台名额，交互读取独立执行。
@@ -41,7 +51,7 @@ func (s *Store) lockBackground(ctx context.Context) (func(), error) {
 	return func() { s.background.Release(1) }, nil
 }
 
-func openDB(path string, readonly bool) (*sql.DB, error) {
+func openDBWithOptions(path, syncMode string, readonly, immutable bool, maxConns int) (*sql.DB, error) {
 	absolute, err := filepath.Abs(path)
 	if err != nil {
 		return nil, err
@@ -54,11 +64,14 @@ func openDB(path string, readonly bool) (*sql.DB, error) {
 	options := url.Values{}
 	if readonly {
 		options.Set("mode", "ro")
-		options.Set("immutable", "1")
+		options.Add("_pragma", "busy_timeout(15000)")
+		if immutable {
+			options.Set("immutable", "1")
+		}
 	} else {
 		options.Add("_pragma", "foreign_keys(1)")
 		options.Add("_pragma", "busy_timeout(15000)")
-		options.Add("_pragma", "synchronous(FULL)")
+		options.Add("_pragma", "synchronous("+syncMode+")")
 		options.Set("_txlock", "immediate")
 	}
 	address.RawQuery = options.Encode()
@@ -66,8 +79,8 @@ func openDB(path string, readonly bool) (*sql.DB, error) {
 	if err != nil {
 		return nil, err
 	}
-	db.SetMaxOpenConns(1)
-	db.SetMaxIdleConns(1)
+	db.SetMaxOpenConns(maxConns)
+	db.SetMaxIdleConns(maxConns)
 	if err := db.Ping(); err != nil {
 		db.Close()
 		return nil, err
@@ -75,9 +88,55 @@ func openDB(path string, readonly bool) (*sql.DB, error) {
 	return db, nil
 }
 
+func openDB(path string, readonly bool) (*sql.DB, error) {
+	return openDBWithOptions(path, "FULL", readonly, readonly, 1)
+}
+
+func openIndexDB(path string) (*sql.DB, error) {
+	return openDBWithOptions(path, "NORMAL", false, false, 1)
+}
+
+func openIndexReadPool(path string) (*sql.DB, error) {
+	conns := max(4, runtime.GOMAXPROCS(0))
+	return openDBWithOptions(path, "", true, false, conns)
+}
+
 func migrationSQL(kind, version string) ([]byte, error) {
 	data, err := migrations.ReadFile("migrations/" + kind + "/" + version + ".sql")
 	return []byte(strings.ReplaceAll(string(data), "\r\n", "\n")), err
+}
+
+func inspectMigrations(db *sql.DB, kind string) ([]string, map[string]string, map[string]string, error) {
+	entries, err := migrations.ReadDir("migrations/" + kind)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	versions, known := []string{}, map[string]string{}
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".sql") {
+			continue
+		}
+		version := strings.TrimSuffix(entry.Name(), ".sql")
+		body, err := migrationSQL(kind, version)
+		if err != nil {
+			return nil, nil, nil, err
+		}
+		versions = append(versions, version)
+		known[version] = hashBytes(body)
+	}
+	applied, err := appliedMigrations(db)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	for version, checksum := range applied {
+		if known[version] == "" {
+			return nil, nil, nil, fmt.Errorf("%s database requires a newer Moerise version", kind)
+		}
+		if known[version] != checksum {
+			return nil, nil, nil, fmt.Errorf("changed %s migration: %s", kind, version)
+		}
+	}
+	return versions, known, applied, nil
 }
 
 func migrate(db *sql.DB, kind string) error {
@@ -86,37 +145,12 @@ func migrate(db *sql.DB, kind string) error {
 		(version TEXT PRIMARY KEY, checksum TEXT NOT NULL, applied_at TEXT NOT NULL)`); err != nil {
 		return err
 	}
-	entries, err := migrations.ReadDir("migrations/" + kind)
+	versions, known, applied, err := inspectMigrations(db, kind)
 	if err != nil {
 		return err
 	}
-	known := map[string]string{}
-	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".sql") {
-			continue
-		}
-		version := strings.TrimSuffix(entry.Name(), ".sql")
-		body, err := migrationSQL(kind, version)
-		if err != nil {
-			return err
-		}
-		known[version] = hashBytes(body)
-	}
-	applied, err := appliedMigrations(db)
-	if err != nil {
-		return err
-	}
-	for version, checksum := range applied {
-		if known[version] == "" {
-			return fmt.Errorf("%s database requires a newer Moerise version", kind)
-		}
-		if known[version] != checksum {
-			return fmt.Errorf("changed %s migration: %s", kind, version)
-		}
-	}
-	for _, entry := range entries {
-		version := strings.TrimSuffix(entry.Name(), ".sql")
-		if known[version] == "" || applied[version] != "" {
+	for _, version := range versions {
+		if applied[version] != "" {
 			continue
 		}
 		body, _ := migrationSQL(kind, version)
@@ -183,11 +217,25 @@ func NewStore(settings Settings) (*Store, error) {
 	if os.SameFile(stateInfo, indexInfo) {
 		return nil, errors.New("state and index directories must be separate")
 	}
-	state, err := openDB(filepath.Join(settings.StateDir, "state.sqlite3"), false)
+	statePath := filepath.Join(settings.StateDir, "state.sqlite3")
+	existingState := false
+	if _, err := os.Stat(statePath); err == nil {
+		existingState = true
+	} else if !os.IsNotExist(err) {
+		return nil, err
+	}
+	state, err := openDB(statePath, false)
 	if err != nil {
 		return nil, err
 	}
-	index, err := openDB(filepath.Join(settings.IndexDir, "index.sqlite3"), false)
+	if existingState {
+		if err := maybeAutoBackupState(state, settings); err != nil {
+			state.Close()
+			return nil, err
+		}
+	}
+	indexPath := filepath.Join(settings.IndexDir, "index.sqlite3")
+	index, err := openIndexDB(indexPath)
 	if err != nil {
 		state.Close()
 		return nil, err
@@ -202,6 +250,12 @@ func NewStore(settings Settings) (*Store, error) {
 			return nil, err
 		}
 	}
+	indexRO, err := openIndexReadPool(indexPath)
+	if err != nil {
+		store.Close()
+		return nil, err
+	}
+	store.indexRO = indexRO
 	if err := store.bind(); err != nil {
 		store.Close()
 		return nil, err
@@ -221,7 +275,19 @@ func NewStore(settings Settings) (*Store, error) {
 	return store, nil
 }
 
-func (s *Store) Close() error { return errors.Join(s.state.Close(), s.index.Close()) }
+func (s *Store) Close() error {
+	var errs []error
+	if s.indexRO != nil {
+		errs = append(errs, s.indexRO.Close())
+	}
+	if s.index != nil {
+		errs = append(errs, s.index.Close())
+	}
+	if s.state != nil {
+		errs = append(errs, s.state.Close())
+	}
+	return errors.Join(errs...)
+}
 
 func (s *Store) bind() error {
 	instance, user := s.Settings.Memos.InstanceID, s.Settings.Memos.User
@@ -285,7 +351,7 @@ func (s *Store) bind() error {
 		if _, err := tx.Exec("DELETE FROM scan_memos"); err != nil {
 			return err
 		}
-		_, err := tx.Exec("INSERT OR IGNORE INTO projection_meta (instance_id, generation) VALUES (?, ?)", instance, newID())
+		_, err := tx.Exec("INSERT OR IGNORE INTO projection_meta (instance_id, generation, sync_generation) VALUES (?, ?, ?)", instance, newID(), newID())
 		return err
 	}); err != nil {
 		return err
@@ -331,7 +397,7 @@ func (s *Store) Status() (SyncStatus, error) {
 	if err != nil {
 		return result, err
 	}
-	rows, err = s.index.Query("SELECT state, COUNT(*) FROM memos WHERE instance_id = ? AND user_name = ? GROUP BY state", result.InstanceID, s.Settings.Memos.User)
+	rows, err = s.indexReader().Query("SELECT state, COUNT(*) FROM memos WHERE instance_id = ? AND user_name = ? GROUP BY state", result.InstanceID, s.Settings.Memos.User)
 	if err != nil {
 		return result, err
 	}
@@ -370,8 +436,21 @@ func (s *Store) SourceHealthContext(ctx context.Context, ok bool, code, version 
 
 func (s *Store) Generation() (string, error) {
 	var result string
-	err := s.index.QueryRow("SELECT generation FROM projection_meta WHERE instance_id = ?", s.Settings.Memos.InstanceID).Scan(&result)
+	err := s.indexReader().QueryRow("SELECT generation FROM projection_meta WHERE instance_id = ?", s.Settings.Memos.InstanceID).Scan(&result)
 	return result, err
+}
+
+func (s *Store) SyncGeneration() (string, error) {
+	var result string
+	err := s.indexReader().QueryRow("SELECT sync_generation FROM projection_meta WHERE instance_id = ?", s.Settings.Memos.InstanceID).Scan(&result)
+	return result, err
+}
+
+func (s *Store) MaxChangeSeq() (int64, error) {
+	var seq int64
+	err := s.indexReader().QueryRow("SELECT COALESCE(MAX(seq), 0) FROM memo_changes WHERE instance_id = ? AND user_name = ?",
+		s.Settings.Memos.InstanceID, s.Settings.Memos.User).Scan(&seq)
+	return seq, err
 }
 
 func (s *Store) Enqueue(mode string, immediate bool) (Job, error) {
@@ -519,10 +598,33 @@ func namesQuery(db *sql.DB, query string, args ...any) (map[string]bool, error) 
 	return result, rows.Err()
 }
 func (s *Store) Names() (map[string]bool, error) {
-	return namesQuery(s.index, "SELECT name FROM memos WHERE instance_id = ? AND user_name = ?", s.Settings.Memos.InstanceID, s.Settings.Memos.User)
+	return namesQuery(s.indexReader(), "SELECT name FROM memos WHERE instance_id = ? AND user_name = ?", s.Settings.Memos.InstanceID, s.Settings.Memos.User)
 }
 func (s *Store) StagedNames(run string) (map[string]bool, error) {
-	return namesQuery(s.index, "SELECT name FROM scan_memos WHERE run_id = ?", run)
+	return namesQuery(s.indexReader(), "SELECT name FROM scan_memos WHERE run_id = ?", run)
+}
+
+func syncMemoTags(tx *sql.Tx, instance, user, name string, tags []string) error {
+	if _, err := tx.Exec("DELETE FROM memo_tags WHERE instance_id = ? AND user_name = ? AND memo_name = ?", instance, user, name); err != nil {
+		return err
+	}
+	seen := map[string]bool{}
+	for _, tag := range tags {
+		if tag == "" || seen[tag] {
+			continue
+		}
+		seen[tag] = true
+		if _, err := tx.Exec("INSERT INTO memo_tags (instance_id, user_name, memo_name, tag) VALUES (?, ?, ?, ?)", instance, user, name, tag); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func recordMemoChange(tx *sql.Tx, instance, user, name string, deleted int) error {
+	_, err := tx.Exec("INSERT INTO memo_changes (instance_id, user_name, name, deleted, updated_at) VALUES (?, ?, ?, ?, ?)",
+		instance, user, name, deleted, nowText())
+	return err
 }
 
 func (s *Store) put(tx *sql.Tx, memo Memo) (int, error) {
@@ -530,24 +632,97 @@ func (s *Store) put(tx *sql.Tx, memo Memo) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	result, err := tx.Exec(`INSERT INTO memos VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-		ON CONFLICT(instance_id, user_name, name) DO UPDATE SET state = excluded.state,
-		update_time = excluded.update_time, source_hash = excluded.source_hash, content_hash = excluded.content_hash,
-		payload_json = excluded.payload_json, observed_at = excluded.observed_at WHERE memos.source_hash != excluded.source_hash`,
-		s.Settings.Memos.InstanceID, s.Settings.Memos.User, memo.Name, memo.State, memo.UpdateTime, memo.SourceHash, memo.ContentHash, string(payload), nowText())
+	instance, user := s.Settings.Memos.InstanceID, s.Settings.Memos.User
+	result, err := tx.Exec(`INSERT INTO memos
+		(instance_id, user_name, name, state, update_time, source_hash, content_hash, payload_json, observed_at, create_time, content)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(instance_id, user_name, name) DO UPDATE SET
+			state = excluded.state,
+			update_time = excluded.update_time,
+			source_hash = excluded.source_hash,
+			content_hash = excluded.content_hash,
+			payload_json = excluded.payload_json,
+			observed_at = excluded.observed_at,
+			create_time = excluded.create_time,
+			content = excluded.content
+		WHERE memos.source_hash != excluded.source_hash`,
+		instance, user, memo.Name, memo.State, memo.UpdateTime, memo.SourceHash, memo.ContentHash, string(payload), nowText(), memo.CreateTime, memo.Content)
 	if err != nil {
 		return 0, err
 	}
 	count, err := result.RowsAffected()
-	if err == nil && count > 0 {
-		err = replaceSearchMemo(tx, s.Settings, memo)
+	if err != nil || count == 0 {
+		return 0, err
 	}
-	return int(count), err
+	if err := syncMemoTags(tx, instance, user, memo.Name, memo.Tags); err != nil {
+		return 0, err
+	}
+	if err := replaceSearchMemo(tx, s.Settings, memo); err != nil {
+		return 0, err
+	}
+	if err := recordMemoChange(tx, instance, user, memo.Name, 0); err != nil {
+		return 0, err
+	}
+	return int(count), nil
+}
+
+func (s *Store) deleteMemoTx(tx *sql.Tx, name string) (int, error) {
+	instance, user := s.Settings.Memos.InstanceID, s.Settings.Memos.User
+	result, err := tx.Exec("DELETE FROM memos WHERE instance_id = ? AND user_name = ? AND name = ?", instance, user, name)
+	if err != nil {
+		return 0, err
+	}
+	count, err := result.RowsAffected()
+	if err != nil || count == 0 {
+		return 0, err
+	}
+	if err := recordMemoChange(tx, instance, user, name, 1); err != nil {
+		return 0, err
+	}
+	return int(count), nil
+}
+
+func scanWriteConflict(tx *sql.Tx, instance, user string, memo Memo, startSeq int64) (bool, error) {
+	if startSeq < 0 {
+		return false, nil
+	}
+	var deleted int
+	err := tx.QueryRow(`SELECT deleted FROM memo_changes
+		WHERE instance_id = ? AND user_name = ? AND name = ? AND seq > ?
+		ORDER BY seq DESC LIMIT 1`, instance, user, memo.Name, startSeq).Scan(&deleted)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if deleted == 1 {
+		return true, nil
+	}
+	var existingUpdate string
+	err = tx.QueryRow("SELECT update_time FROM memos WHERE instance_id = ? AND user_name = ? AND name = ?", instance, user, memo.Name).Scan(&existingUpdate)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	existingTime, errA := time.Parse(time.RFC3339Nano, existingUpdate)
+	scannedTime, errB := time.Parse(time.RFC3339Nano, memo.UpdateTime)
+	if errA == nil && errB == nil {
+		return !scannedTime.After(existingTime), nil
+	}
+	return memo.UpdateTime <= existingUpdate, nil
 }
 
 func (s *Store) Publish(run string, absent map[string]bool) (map[string]any, error) {
+	return s.PublishScan(run, absent, -1)
+}
+
+func (s *Store) PublishScan(run string, absent map[string]bool, startSeq int64) (map[string]any, error) {
 	memos := []Memo{}
-	changed := 0
+	changed, removed := 0, 0
+	instance, user := s.Settings.Memos.InstanceID, s.Settings.Memos.User
 	err := transaction(s.index, func(tx *sql.Tx) error {
 		rows, err := tx.Query("SELECT payload_json FROM scan_memos WHERE run_id = ?", run)
 		if err != nil {
@@ -572,6 +747,13 @@ func (s *Store) Publish(run string, absent map[string]bool) (map[string]any, err
 			return err
 		}
 		for _, memo := range memos {
+			skip, err := scanWriteConflict(tx, instance, user, memo, startSeq)
+			if err != nil {
+				return err
+			}
+			if skip {
+				continue
+			}
 			count, err := s.put(tx, memo)
 			if err != nil {
 				return err
@@ -579,11 +761,25 @@ func (s *Store) Publish(run string, absent map[string]bool) (map[string]any, err
 			changed += count
 		}
 		for name := range absent {
-			if _, err := tx.Exec("DELETE FROM memos WHERE instance_id = ? AND user_name = ? AND name = ?", s.Settings.Memos.InstanceID, s.Settings.Memos.User, name); err != nil {
+			if startSeq >= 0 {
+				var deleted int
+				err := tx.QueryRow(`SELECT deleted FROM memo_changes
+					WHERE instance_id = ? AND user_name = ? AND name = ? AND seq > ?
+					ORDER BY seq DESC LIMIT 1`, instance, user, name, startSeq).Scan(&deleted)
+				if err == nil && deleted == 0 {
+					continue
+				}
+				if err != nil && !errors.Is(err, sql.ErrNoRows) {
+					return err
+				}
+			}
+			count, err := s.deleteMemoTx(tx, name)
+			if err != nil {
 				return err
 			}
+			removed += count
 		}
-		if changed > 0 || len(absent) > 0 {
+		if changed > 0 || removed > 0 {
 			if err := s.advanceProjection(tx); err != nil {
 				return err
 			}
@@ -591,7 +787,7 @@ func (s *Store) Publish(run string, absent map[string]bool) (map[string]any, err
 		_, err = tx.Exec("DELETE FROM scan_memos WHERE run_id = ?", run)
 		return err
 	})
-	return map[string]any{"observed": len(memos), "changed": changed, "removed": len(absent)}, err
+	return map[string]any{"observed": len(memos), "changed": changed, "removed": removed}, err
 }
 
 func (s *Store) Refresh(name string, memo *Memo) error {
@@ -601,11 +797,7 @@ func (s *Store) Refresh(name string, memo *Memo) error {
 func (s *Store) RefreshContext(ctx context.Context, name string, memo *Memo) error {
 	return transactionContext(ctx, s.index, func(tx *sql.Tx) error {
 		if memo == nil {
-			result, err := tx.Exec("DELETE FROM memos WHERE instance_id = ? AND user_name = ? AND name = ?", s.Settings.Memos.InstanceID, s.Settings.Memos.User, name)
-			if err != nil {
-				return err
-			}
-			count, err := result.RowsAffected()
+			count, err := s.deleteMemoTx(tx, name)
 			if err != nil || count == 0 {
 				return err
 			}
@@ -643,7 +835,7 @@ func (s *Store) Page(state string, size int, cursor []string) ([]Memo, error) {
 		args = append(args, cursor[0], cursor[1])
 	}
 	args = append(args, size)
-	rows, err := s.index.Query("SELECT payload_json FROM memos WHERE "+where+" ORDER BY update_time DESC, name DESC LIMIT ?", args...)
+	rows, err := s.indexReader().Query("SELECT payload_json FROM memos WHERE "+where+" ORDER BY update_time DESC, name DESC LIMIT ?", args...)
 	if err != nil {
 		return nil, err
 	}

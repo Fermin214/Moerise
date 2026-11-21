@@ -36,8 +36,9 @@ type ProductSettings struct {
 	Channel       ChannelConfig      `json:"channel"`
 	Insights      InsightsConfig     `json:"insights"`
 
-	Daily                *dailySettings           `json:"daily,omitempty"`
-	NotificationChannels map[string]ChannelConfig `json:"notification_channels,omitempty"`
+	Daily                *dailySettings             `json:"daily,omitempty"`
+	NotificationChannels map[string]ChannelConfig   `json:"notification_channels,omitempty"`
+	extras               map[string]json.RawMessage `json:"-"`
 }
 
 type dailySettings struct {
@@ -79,7 +80,7 @@ type SettingsView struct {
 }
 
 func productSettings(s Settings) ProductSettings {
-	return ProductSettings{s.Timezone, s.Review, s.Notifications, s.Embedding, s.Stargazing, s.LLM, s.Channel, s.Insights, s.daily, s.notificationChannels}
+	return ProductSettings{s.Timezone, s.Review, s.Notifications, s.Embedding, s.Stargazing, s.LLM, s.Channel, s.Insights, s.daily, s.notificationChannels, cloneRawMap(s.productExtras)}
 }
 
 func (p ProductSettings) apply(s Settings) Settings {
@@ -88,7 +89,127 @@ func (p ProductSettings) apply(s Settings) Settings {
 	s.Stargazing = p.Stargazing
 	s.daily = p.Daily
 	s.notificationChannels = p.NotificationChannels
+	s.productExtras = cloneRawMap(p.extras)
 	return s
+}
+
+var productExtraSectionKeys = map[string]bool{
+	"review": true, "notifications": true, "embedding": true,
+	"stargazing": true, "llm": true, "channel": true, "insights": true, "daily": true,
+}
+
+func cloneRawMap(source map[string]json.RawMessage) map[string]json.RawMessage {
+	if len(source) == 0 {
+		return nil
+	}
+	cloned := make(map[string]json.RawMessage, len(source))
+	for key, raw := range source {
+		cloned[key] = bytes.Clone(raw)
+	}
+	return cloned
+}
+
+func extractProductExtras(plain []byte, product ProductSettings) map[string]json.RawMessage {
+	var rawMap map[string]json.RawMessage
+	if json.Unmarshal(plain, &rawMap) != nil || len(rawMap) == 0 {
+		return nil
+	}
+	knownBytes, err := json.Marshal(product)
+	if err != nil {
+		return nil
+	}
+	var knownMap map[string]json.RawMessage
+	if json.Unmarshal(knownBytes, &knownMap) != nil {
+		return nil
+	}
+	extras := map[string]json.RawMessage{}
+	for key, rawValue := range rawMap {
+		knownValue, exists := knownMap[key]
+		if !exists {
+			extras[key] = bytes.Clone(rawValue)
+			continue
+		}
+		if productExtraSectionKeys[key] {
+			if child := subtractObjectExtras(rawValue, knownValue); child != nil {
+				extras[key] = child
+			}
+		}
+	}
+	if len(extras) == 0 {
+		return nil
+	}
+	return extras
+}
+
+func subtractObjectExtras(rawValue, knownValue json.RawMessage) json.RawMessage {
+	var rawObj, knownObj map[string]json.RawMessage
+	if json.Unmarshal(rawValue, &rawObj) != nil || json.Unmarshal(knownValue, &knownObj) != nil || rawObj == nil || knownObj == nil {
+		return nil
+	}
+	diff := map[string]json.RawMessage{}
+	for key, rawChild := range rawObj {
+		knownChild, exists := knownObj[key]
+		if !exists {
+			diff[key] = bytes.Clone(rawChild)
+			continue
+		}
+		if nested := subtractObjectExtras(rawChild, knownChild); nested != nil {
+			diff[key] = nested
+		}
+	}
+	if len(diff) == 0 {
+		return nil
+	}
+	encoded, err := json.Marshal(diff)
+	if err != nil {
+		return nil
+	}
+	return encoded
+}
+
+func mergeProductExtras(body []byte, extras map[string]json.RawMessage) ([]byte, error) {
+	if len(extras) == 0 {
+		return body, nil
+	}
+	var target map[string]json.RawMessage
+	if err := json.Unmarshal(body, &target); err != nil {
+		return nil, err
+	}
+	for key, rawExtra := range extras {
+		baseValue, exists := target[key]
+		if !exists {
+			target[key] = bytes.Clone(rawExtra)
+			continue
+		}
+		if productExtraSectionKeys[key] {
+			if merged := mergeObjectExtras(baseValue, rawExtra); merged != nil {
+				target[key] = merged
+			}
+		}
+	}
+	return json.Marshal(target)
+}
+
+func mergeObjectExtras(baseValue, extraValue json.RawMessage) json.RawMessage {
+	var baseObj, extraObj map[string]json.RawMessage
+	if json.Unmarshal(baseValue, &baseObj) != nil || json.Unmarshal(extraValue, &extraObj) != nil || baseObj == nil || extraObj == nil {
+		return nil
+	}
+	for key, rawExtra := range extraObj {
+		baseChild, exists := baseObj[key]
+		if !exists {
+			baseObj[key] = bytes.Clone(rawExtra)
+			continue
+		}
+		if merged := mergeObjectExtras(baseChild, rawExtra); merged != nil {
+			baseObj[key] = merged
+		}
+	}
+	encoded, err := json.Marshal(baseObj)
+	if err != nil {
+		return nil
+	}
+	return encoded
 }
 
 func newStateCipher(settings Settings, purpose string) (cipher.AEAD, error) {
@@ -120,6 +241,10 @@ func encryptProduct(settings Settings, version int64) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	body, err = mergeProductExtras(body, settings.productExtras)
+	if err != nil {
+		return nil, err
+	}
 	nonce := make([]byte, aead.NonceSize())
 	if _, err := rand.Read(nonce); err != nil {
 		return nil, err
@@ -141,10 +266,11 @@ func decryptProduct(settings Settings, version int64, body []byte) (Settings, er
 		return settings, bad
 	}
 	product := ProductSettings{Stargazing: StargazingConfig{Enabled: true}}
-	if strictJSON(bytes.NewReader(plain), &product) != nil {
+	if tolerantJSON(bytes.NewReader(plain), &product) != nil {
 		return settings, bad
 	}
 	product.normalizeDeliveryChannels()
+	product.extras = extractProductExtras(plain, product)
 	return product.apply(settings), nil
 }
 
@@ -348,10 +474,12 @@ func (s *Store) prepareSettings(update SettingsUpdate) (Settings, error) {
 	if err != nil {
 		return s.Settings, err
 	}
+	extras := product.extras
 	product = ProductSettings{}
 	if err := json.Unmarshal(original, &product); err != nil {
 		return s.Settings, err
 	}
+	product.extras = extras
 	view := publicProduct(product)
 	if err := mergeSettings(view, update.Settings); err != nil {
 		return s.Settings, err

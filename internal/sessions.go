@@ -17,6 +17,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"golang.org/x/sync/singleflight"
 )
 
 type SessionUser struct {
@@ -35,6 +37,7 @@ type SessionIdentity struct {
 	sessionHash string
 	binding     string
 	revision    int64
+	authEpoch   uint64
 }
 
 type sessionRow struct {
@@ -54,6 +57,13 @@ type sessionLock struct {
 	refs int
 }
 
+const defaultSessionCacheTTL = 5 * time.Minute
+
+type cachedSession struct {
+	identity *SessionIdentity
+	expires  time.Time
+}
+
 type sessionRequest struct {
 	cancel context.CancelFunc
 }
@@ -65,17 +75,22 @@ type SessionService struct {
 	auth     *memosAuthClient
 	aead     cipher.AEAD
 	binding  string
+	cacheTTL time.Duration
 
-	mu        sync.Mutex
-	locks     map[string]*sessionLock
-	access    map[string]sessionAccess
-	active    map[string]map[*sessionRequest]struct{}
-	nextClean time.Time
-	closed    bool
-	ctx       context.Context
-	cancel    context.CancelFunc
-	pending   sync.WaitGroup
-	closeOnce sync.Once
+	mu           sync.Mutex
+	locks        map[string]*sessionLock
+	access       map[string]sessionAccess
+	sessions     map[string]cachedSession
+	refreshGroup singleflight.Group
+	active       map[string]map[*sessionRequest]struct{}
+	revokeGen    uint64
+	evictEpoch   uint64
+	nextClean    time.Time
+	closed       bool
+	ctx          context.Context
+	cancel       context.CancelFunc
+	pending      sync.WaitGroup
+	closeOnce    sync.Once
 }
 
 func stateEncryptionKey(value string) ([]byte, error) {
@@ -216,8 +231,10 @@ func NewSessionService(store *Store, source Source) (*SessionService, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &SessionService{
 		store: store, source: source, settings: settings, auth: newMemosAuthClient(settings.Memos),
-		aead: aead, binding: sessionBinding(settings.Memos), locks: map[string]*sessionLock{},
-		access: map[string]sessionAccess{}, active: map[string]map[*sessionRequest]struct{}{}, ctx: ctx, cancel: cancel,
+		aead: aead, binding: sessionBinding(settings.Memos), cacheTTL: defaultSessionCacheTTL,
+		locks: map[string]*sessionLock{}, access: map[string]sessionAccess{},
+		sessions: map[string]cachedSession{}, active: map[string]map[*sessionRequest]struct{}{},
+		evictEpoch: 1, ctx: ctx, cancel: cancel,
 	}, nil
 }
 
@@ -265,26 +282,124 @@ func (s *SessionService) lock(ctx context.Context, hash string) (func(), error) 
 	}
 }
 
+func cloneIdentity(identity *SessionIdentity) *SessionIdentity {
+	if identity == nil {
+		return nil
+	}
+	cloned := *identity
+	return &cloned
+}
+
+func (s *SessionService) cachedIdentity(hash string) (*SessionIdentity, bool) {
+	now := time.Now()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return nil, false
+	}
+	entry, ok := s.sessions[hash]
+	if !ok || !now.Before(entry.expires) || entry.identity == nil ||
+		entry.identity.binding != s.binding || !entry.identity.ExpiresAt.After(now) ||
+		(entry.identity.authEpoch != 0 && entry.identity.authEpoch != s.evictEpoch) {
+		delete(s.sessions, hash)
+		return nil, false
+	}
+	access, ok := s.access[hash]
+	if !ok || access.token == "" || !access.expires.After(now.Add(30*time.Second)) {
+		delete(s.sessions, hash)
+		return nil, false
+	}
+	return cloneIdentity(entry.identity), true
+}
+
+func (s *SessionService) epochs() (uint64, uint64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.revokeGen, s.evictEpoch
+}
+
+func (s *SessionService) storeSessionCache(hash string, identity *SessionIdentity, credentials memosCredentials, checkEpoch bool, revGen, evEpoch uint64) {
+	var until time.Time
+	hasIdentity := identity != nil && credentials.access != ""
+	if hasIdentity {
+		now := time.Now()
+		ttl := s.cacheTTL
+		if ttl <= 0 {
+			ttl = defaultSessionCacheTTL
+		}
+		until = now.Add(ttl)
+		if accessLimit := credentials.accessExpires.Add(-30 * time.Second); accessLimit.Before(until) {
+			until = accessLimit
+		}
+		if identity.ExpiresAt.Before(until) {
+			until = identity.ExpiresAt
+		}
+		hasIdentity = until.After(now)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed || (checkEpoch && (s.revokeGen != revGen || s.evictEpoch != evEpoch)) {
+		return
+	}
+	if credentials.access == "" {
+		delete(s.access, hash)
+	} else {
+		if len(s.access) >= 1024 {
+			for key := range s.access {
+				delete(s.access, key)
+				break
+			}
+		}
+		s.access[hash] = sessionAccess{credentials.access, credentials.accessExpires}
+	}
+	if !hasIdentity {
+		return
+	}
+	identity.authEpoch = s.evictEpoch
+	if len(s.sessions) >= 1024 {
+		for key := range s.sessions {
+			delete(s.sessions, key)
+			break
+		}
+	}
+	s.sessions[hash] = cachedSession{cloneIdentity(identity), until}
+}
+
+func (s *SessionService) ClearCache() {
+	s.mu.Lock()
+	clear(s.sessions)
+	clear(s.access)
+	s.mu.Unlock()
+}
+
+func (s *SessionService) ExpireCache() {
+	s.mu.Lock()
+	clear(s.sessions)
+	s.mu.Unlock()
+}
+
+func (s *SessionService) EvictAllAndCancel() {
+	s.mu.Lock()
+	s.evictEpoch++
+	clear(s.sessions)
+	clear(s.access)
+	var requests []*sessionRequest
+	for hash, active := range s.active {
+		for req := range active {
+			requests = append(requests, req)
+		}
+		delete(s.active, hash)
+	}
+	s.mu.Unlock()
+	for _, req := range requests {
+		req.cancel()
+	}
+}
+
 func (s *SessionService) cached(hash string) sessionAccess {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.access[hash]
-}
-
-func (s *SessionService) cache(hash string, credentials memosCredentials) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if credentials.access == "" {
-		delete(s.access, hash)
-		return
-	}
-	if len(s.access) >= 1024 {
-		for key := range s.access {
-			delete(s.access, key)
-			break
-		}
-	}
-	s.access[hash] = sessionAccess{credentials.access, credentials.accessExpires}
 }
 
 func rawSessionID() (string, error) {
@@ -355,10 +470,13 @@ func (s *SessionService) revoke(hash string) error {
 		return sessionUnavailable()
 	}
 	s.mu.Lock()
+	s.revokeGen++
 	delete(s.access, hash)
+	delete(s.sessions, hash)
 	requests := s.active[hash]
 	delete(s.active, hash)
 	s.mu.Unlock()
+	s.refreshGroup.Forget(hash)
 	for request := range requests {
 		request.cancel()
 	}
@@ -417,6 +535,10 @@ func (s *SessionService) public(row sessionRow, user SessionUser) *SessionIdenti
 
 func (s *SessionService) checkSource(ctx context.Context) error {
 	if _, err := s.source.Identity(ctx); err != nil {
+		if code := errorCode(err); code == "UPSTREAM_AUTH" || code == "IDENTITY_MISMATCH" {
+			s.EvictAllAndCancel()
+			return err
+		}
 		return upstreamError("UPSTREAM_AUTH_UNAVAILABLE", "The configured Memos source is unavailable")
 	}
 	return nil
@@ -489,13 +611,15 @@ func (s *SessionService) Login(ctx context.Context, username, password string) (
 	if err != nil {
 		return "", nil, sessionUnavailable()
 	}
-	s.cache(hash, credentials)
+	identity := s.public(row, user)
+	s.storeSessionCache(hash, identity, credentials, false, 0, 0)
 	persisted = true
-	return rawID, s.public(row, user), nil
+	return rawID, identity, nil
 }
 
 func (s *SessionService) rejected(hash string, err error) error {
-	if errorCode(err) == "SESSION_UNAUTHORIZED" || errorCode(err) == "ACCOUNT_NOT_BOUND" {
+	code := errorCode(err)
+	if code == "SESSION_UNAUTHORIZED" || code == "ACCOUNT_NOT_BOUND" || code == "IDENTITY_MISMATCH" {
 		if revokeErr := s.revoke(hash); revokeErr != nil {
 			return revokeErr
 		}
@@ -514,77 +638,101 @@ func (s *SessionService) Authenticate(ctx context.Context, rawID string) (*Sessi
 		return nil, err
 	}
 	s.clean(ctx)
-	unlock, err := s.lock(ctx, hash)
-	if err != nil {
-		return nil, err
+	if identity, ok := s.cachedIdentity(hash); ok {
+		return identity, nil
 	}
-	defer unlock()
-	row, err := s.load(ctx, hash)
-	if err != nil {
-		return nil, err
-	}
-	credentials, err := s.decrypt(row)
-	if err != nil {
-		return nil, s.rejected(hash, err)
-	}
-	if !credentials.accessExpires.After(time.Now().Add(30 * time.Second)) {
-		refreshed, err := s.auth.refresh(ctx, credentials)
+	ch := s.refreshGroup.DoChan(hash, func() (any, error) {
+		if identity, ok := s.cachedIdentity(hash); ok {
+			return identity, nil
+		}
+		timeout := max(30*time.Second, time.Duration(s.settings.Memos.TimeoutSeconds*float64(time.Second))*3)
+		sfCtx, sfCancel := context.WithTimeout(s.ctx, timeout)
+		if deadline, ok := ctx.Deadline(); ok && time.Until(deadline) > timeout {
+			sfCancel()
+			sfCtx, sfCancel = context.WithDeadline(s.ctx, deadline)
+		}
+		defer sfCancel()
+		unlock, err := s.lock(sfCtx, hash)
 		if err != nil {
-			// 成功响应若格式异常，旧刷新凭据可能已被消耗，需重新登录。
-			if errorCode(err) == "UPSTREAM_PROTOCOL" {
-				if revokeErr := s.revoke(hash); revokeErr != nil {
-					return nil, revokeErr
-				}
-			}
+			return nil, err
+		}
+		defer unlock()
+		if identity, ok := s.cachedIdentity(hash); ok {
+			return identity, nil
+		}
+		revGen, evEpoch := s.epochs()
+		row, err := s.load(sfCtx, hash)
+		if err != nil {
+			return nil, err
+		}
+		credentials, err := s.decrypt(row)
+		if err != nil {
 			return nil, s.rejected(hash, err)
 		}
-		// 浏览器 Cookie 只在登录时设置，续期不能延长该次登录的有效期。
-		expires := min(row.expires, refreshed.refreshExpires.Unix())
-		ciphertext, err := s.encrypt(row, refreshed)
-		if err == nil {
-			var result sql.Result
-			result, err = s.store.state.ExecContext(ctx, `UPDATE client_sessions SET refresh_ciphertext = ?,
-				refresh_expires_at = ?, updated_at = ?, revision = revision + 1
-				WHERE session_hash = ? AND revision = ? AND source_binding_hash = ?`,
-				ciphertext, expires, nowText(), hash, row.revision, s.binding)
+		if !credentials.accessExpires.After(time.Now().Add(30 * time.Second)) {
+			refreshed, err := s.auth.refresh(sfCtx, credentials)
+			if err != nil {
+				if errorCode(err) == "UPSTREAM_PROTOCOL" {
+					if revokeErr := s.revoke(hash); revokeErr != nil {
+						return nil, revokeErr
+					}
+				}
+				return nil, s.rejected(hash, err)
+			}
+			expires := min(row.expires, refreshed.refreshExpires.Unix())
+			ciphertext, err := s.encrypt(row, refreshed)
 			if err == nil {
-				var count int64
-				count, err = result.RowsAffected()
-				if err == nil && count != 1 {
-					err = sessionUnauthorized()
+				var result sql.Result
+				result, err = s.store.state.ExecContext(sfCtx, `UPDATE client_sessions SET refresh_ciphertext = ?,
+					refresh_expires_at = ?, updated_at = ?, revision = revision + 1
+					WHERE session_hash = ? AND revision = ? AND source_binding_hash = ?`,
+					ciphertext, expires, nowText(), hash, row.revision, s.binding)
+				if err == nil {
+					var count int64
+					count, err = result.RowsAffected()
+					if err == nil && count != 1 {
+						err = sessionUnauthorized()
+					}
 				}
 			}
+			if err != nil {
+				revokeErr := s.revoke(hash)
+				s.cleanupCredentials(refreshed)
+				if revokeErr != nil {
+					return nil, revokeErr
+				}
+				if errorCode(err) == "SESSION_UNAUTHORIZED" {
+					return nil, err
+				}
+				return nil, sessionUnavailable()
+			}
+			row.expires, row.revision = expires, row.revision+1
+			credentials = refreshed
 		}
+		user, err := s.auth.identity(sfCtx, credentials)
 		if err != nil {
-			revokeErr := s.revoke(hash)
-			s.cleanupCredentials(refreshed)
-			if revokeErr != nil {
-				return nil, revokeErr
-			}
-			if errorCode(err) == "SESSION_UNAUTHORIZED" {
-				return nil, err
-			}
-			return nil, sessionUnavailable()
+			return nil, s.rejected(hash, err)
 		}
-		row.expires, row.revision = expires, row.revision+1
-		credentials = refreshed
-		s.cache(hash, credentials)
+		if user.Name != row.user {
+			return nil, s.rejected(hash, accountNotBound())
+		}
+		if err := s.checkSource(sfCtx); err != nil {
+			return nil, s.rejected(hash, err)
+		}
+		identity := s.public(row, user)
+		identity.authEpoch = evEpoch
+		s.storeSessionCache(hash, identity, credentials, true, revGen, evEpoch)
+		return identity, nil
+	})
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case result := <-ch:
+		if result.Err != nil {
+			return nil, result.Err
+		}
+		return cloneIdentity(result.Val.(*SessionIdentity)), nil
 	}
-	user, err := s.auth.identity(ctx, credentials)
-	if err != nil {
-		return nil, s.rejected(hash, err)
-	}
-	if user.Name != row.user {
-		return nil, s.rejected(hash, accountNotBound())
-	}
-	if err := s.checkSource(ctx); err != nil {
-		return nil, err
-	}
-	identity := s.public(row, user)
-	if err := s.checkActive(ctx, identity); err != nil {
-		return nil, err
-	}
-	return identity, nil
 }
 
 func (s *SessionService) checkActive(ctx context.Context, identity *SessionIdentity) error {
@@ -610,11 +758,6 @@ func (s *SessionService) CheckActive(ctx context.Context, identity *SessionIdent
 	if identity == nil {
 		return sessionUnauthorized()
 	}
-	unlock, err := s.lock(ctx, identity.sessionHash)
-	if err != nil {
-		return err
-	}
-	defer unlock()
 	return s.checkActive(ctx, identity)
 }
 
@@ -628,37 +771,63 @@ func (s *SessionService) BindRequest(ctx context.Context, identity *SessionIdent
 		return nil, nil, sessionUnauthorized()
 	}
 	hash := identity.sessionHash
-	unlock, err := s.lock(ctx, hash)
-	if err != nil {
-		done()
-		return nil, nil, err
-	}
-	defer unlock()
-	if err := s.checkActive(ctx, identity); err != nil {
-		done()
-		return nil, nil, err
-	}
-	ctx, cancel := context.WithCancel(ctx)
-	request := &sessionRequest{cancel}
-	s.mu.Lock()
-	if s.active[hash] == nil {
-		s.active[hash] = map[*sessionRequest]struct{}{}
-	}
-	s.active[hash][request] = struct{}{}
-	s.mu.Unlock()
-	var once sync.Once
-	return ctx, func() {
-		once.Do(func() {
-			s.mu.Lock()
-			delete(s.active[hash], request)
-			if len(s.active[hash]) == 0 {
-				delete(s.active, hash)
-			}
+	for {
+		s.mu.Lock()
+		if s.closed {
+			s.mu.Unlock()
+			done()
+			return nil, nil, sessionUnavailable()
+		}
+		if identity.authEpoch != 0 && identity.authEpoch != s.evictEpoch {
+			s.mu.Unlock()
+			done()
+			return nil, nil, sessionUnauthorized()
+		}
+		revGen, evEpoch := s.revokeGen, s.evictEpoch
+		s.mu.Unlock()
+		if err := s.checkActive(ctx, identity); err != nil {
+			done()
+			return nil, nil, err
+		}
+		reqCtx, cancel := context.WithCancel(ctx)
+		request := &sessionRequest{cancel}
+		s.mu.Lock()
+		if s.closed {
 			s.mu.Unlock()
 			cancel()
 			done()
-		})
-	}, nil
+			return nil, nil, sessionUnavailable()
+		}
+		if s.evictEpoch != evEpoch || (identity.authEpoch != 0 && identity.authEpoch != s.evictEpoch) {
+			s.mu.Unlock()
+			cancel()
+			done()
+			return nil, nil, sessionUnauthorized()
+		}
+		if s.revokeGen != revGen {
+			s.mu.Unlock()
+			cancel()
+			continue
+		}
+		if s.active[hash] == nil {
+			s.active[hash] = map[*sessionRequest]struct{}{}
+		}
+		s.active[hash][request] = struct{}{}
+		s.mu.Unlock()
+		var once sync.Once
+		return reqCtx, func() {
+			once.Do(func() {
+				s.mu.Lock()
+				delete(s.active[hash], request)
+				if len(s.active[hash]) == 0 {
+					delete(s.active, hash)
+				}
+				s.mu.Unlock()
+				cancel()
+				done()
+			})
+		}, nil
+	}
 }
 
 func (s *SessionService) LocalIdentity(ctx context.Context, rawID string) (*SessionIdentity, error) {
@@ -671,11 +840,6 @@ func (s *SessionService) LocalIdentity(ctx context.Context, rawID string) (*Sess
 	if err != nil {
 		return nil, err
 	}
-	unlock, err := s.lock(ctx, hash)
-	if err != nil {
-		return nil, err
-	}
-	defer unlock()
 	row, err := s.load(ctx, hash)
 	if err != nil {
 		return nil, err
@@ -726,6 +890,7 @@ func (s *SessionService) Close() {
 		s.auth.client.CloseIdleConnections()
 		s.mu.Lock()
 		clear(s.access)
+		clear(s.sessions)
 		s.mu.Unlock()
 	})
 }

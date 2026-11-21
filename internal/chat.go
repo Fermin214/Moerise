@@ -34,6 +34,48 @@ type chatSourceChanges struct {
 
 func (err *chatSourceChanges) Unwrap() error { return err.error }
 
+type providerCohort struct {
+	mu      sync.Mutex
+	refs    int
+	retired bool
+	closeFn func()
+}
+
+func (c *providerCohort) retain() {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	c.refs++
+	c.mu.Unlock()
+}
+
+func (c *providerCohort) release() {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	c.refs--
+	shouldClose := c.refs == 0 && c.retired
+	c.mu.Unlock()
+	if shouldClose && c.closeFn != nil {
+		c.closeFn()
+	}
+}
+
+func (c *providerCohort) retire() {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	c.retired = true
+	shouldClose := c.refs == 0
+	c.mu.Unlock()
+	if shouldClose && c.closeFn != nil {
+		c.closeFn()
+	}
+}
+
 type ChatService struct {
 	Store    *Store
 	Notes    *NoteService
@@ -43,13 +85,51 @@ type ChatService struct {
 	gate    chan struct{}
 	mu      sync.Mutex
 	running map[string]chatRunning
+	cohort  *providerCohort
 	pending sync.WaitGroup
 	closed  bool
 }
 
 func NewChatService(store *Store, notes *NoteService, records *RecordService, provider LLMProvider) *ChatService {
+	var cohort *providerCohort
+	if provider != nil {
+		cohort = &providerCohort{closeFn: provider.Close}
+	}
 	return &ChatService{Store: store, Notes: notes, Records: records, Provider: provider,
-		gate: make(chan struct{}, 1), running: map[string]chatRunning{}}
+		gate: make(chan struct{}, 1), running: map[string]chatRunning{}, cohort: cohort}
+}
+
+func (s *ChatService) swapProvider(next LLMProvider) {
+	var nextCohort *providerCohort
+	if next != nil {
+		nextCohort = &providerCohort{closeFn: next.Close}
+	}
+	s.mu.Lock()
+	old := s.cohort
+	s.Provider = next
+	s.cohort = nextCohort
+	s.mu.Unlock()
+	old.retire()
+}
+
+func (s *ChatService) acquireRuntime() (Settings, int64, LLMProvider, func()) {
+	unlockRuntime := s.Store.lockRuntime()
+	defer unlockRuntime()
+	config := s.Store.Settings
+	settingsVersion := s.Store.productVersion
+	s.mu.Lock()
+	provider := s.Provider
+	cohort := s.cohort
+	s.mu.Unlock()
+	cohort.retain()
+	released := false
+	return config, settingsVersion, provider, func() {
+		if released {
+			return
+		}
+		released = true
+		cohort.release()
+	}
 }
 
 func (s *ChatService) lock(ctx context.Context) (func(), error) {
@@ -98,12 +178,9 @@ func (s *ChatService) Materials(ctx context.Context, names []string, expected []
 		}
 		seen[name] = true
 	}
-	if err := s.Notes.Verify(ctx); err != nil {
-		return result, err
-	}
 	var changed, missing []string
 	for i, name := range names {
-		memo, err := s.Notes.fresh(ctx, name)
+		memo, err := s.Store.GetMemoLocal(ctx, name)
 		if err != nil {
 			return result, err
 		}
@@ -118,9 +195,6 @@ func (s *ChatService) Materials(ctx context.Context, names []string, expected []
 		result.Notes = append(result.Notes, memo.Note(s.Notes.Settings))
 		result.Materials = append(result.Materials, ChatMaterial{name, memo.SourceHash})
 		result.Characters += utf8.RuneCountInString(memo.Content)
-	}
-	if err := s.Notes.Verify(ctx); err != nil {
-		return result, err
 	}
 	if len(missing) != 0 {
 		return ChatMaterials{}, &chatSourceChanges{failure("SOURCE_NOT_FOUND", "Selected memo is unavailable: "+missing[0], 404, false), append(changed, missing...)}
@@ -353,6 +427,8 @@ func emitChat(emit func(ChatEvent) error, event ChatEvent) error {
 	return nil
 }
 
+var chatPersistInterval = 2500 * time.Millisecond
+
 func (s *ChatService) Generate(ctx context.Context, chatID string, input ChatGenerate, emit func(ChatEvent) error) (ChatTurn, error) {
 	if err := validateChatGenerate(input); err != nil {
 		return ChatTurn{}, err
@@ -366,16 +442,19 @@ func (s *ChatService) Generate(ctx context.Context, chatID string, input ChatGen
 			unlock()
 		}
 	}()
-	if turn, found, err := s.Store.replayChatTurn(chatID, input); err != nil || found {
-		if err != nil {
-			return turn, err
+	unlockRuntime := s.Store.lockRuntime()
+	turn, found, replayErr := s.Store.replayChatTurn(chatID, input)
+	unlockRuntime()
+	if replayErr != nil || found {
+		if replayErr != nil {
+			return turn, replayErr
 		}
 		unlock()
 		unlock = nil
 		if err := emitChat(emit, ChatEvent{Type: "message", Turn: &turn}); err != nil {
 			return turn, err
 		}
-		if turn.Assistant.Status == "completed" {
+		if turn.Assistant.Status == "completed" || turn.Assistant.Status == "truncated" {
 			return turn, emitChat(emit, ChatEvent{Type: "complete", Turn: &turn})
 		}
 		if turn.Assistant.Status == "running" {
@@ -383,9 +462,14 @@ func (s *ChatService) Generate(ctx context.Context, chatID string, input ChatGen
 		}
 		return turn, failure(turn.Assistant.ErrorCode, "Previous chat request did not complete; use a new request_id to generate again", 409, false)
 	}
-	chat, err := s.Store.chat(chatID)
-	if err != nil {
-		return ChatTurn{}, err
+	config, settingsVersion, provider, releaseProvider := s.acquireRuntime()
+	defer releaseProvider()
+
+	unlockRuntime = s.Store.lockRuntime()
+	chat, chatErr := s.Store.chat(chatID)
+	unlockRuntime()
+	if chatErr != nil {
+		return ChatTurn{}, chatErr
 	}
 	if chat.Version != input.Version {
 		return ChatTurn{}, chatConflict()
@@ -393,13 +477,14 @@ func (s *ChatService) Generate(ctx context.Context, chatID string, input ChatGen
 	if s.active(chatID) {
 		return ChatTurn{}, chatBusy()
 	}
-	config := s.Store.Settings
-	if !config.LLM.Enabled || s.Provider == nil {
+	if !config.LLM.Enabled || provider == nil {
 		return ChatTurn{}, failure("LLM_DISABLED", "LLM is disabled", 503, false)
 	}
-	materials, err := s.Materials(ctx, materialNames(chat.Materials), chat.Materials)
-	if err != nil {
-		return ChatTurn{}, err
+	unlockRuntime = s.Store.lockRuntime()
+	materials, matErr := s.Materials(ctx, materialNames(chat.Materials), chat.Materials)
+	unlockRuntime()
+	if matErr != nil {
+		return ChatTurn{}, matErr
 	}
 	prompt := config.Insights.DefaultPrompt
 	if input.Language == "en" && prompt == DefaultInsightPrompt {
@@ -421,7 +506,9 @@ func (s *ChatService) Generate(ctx context.Context, chatID string, input ChatGen
 	if err := ctx.Err(); err != nil {
 		return ChatTurn{}, err
 	}
-	turn, created, err := s.Store.reserveChatTurn(chatID, input, s.Store.productVersion, prompt, configured(config.LLM.Model))
+	unlockRuntime = s.Store.lockRuntime()
+	turn, created, err := s.Store.reserveChatTurn(chatID, input, settingsVersion, prompt, configured(config.LLM.Model))
+	unlockRuntime()
 	if err != nil || !created {
 		return turn, err
 	}
@@ -431,7 +518,10 @@ func (s *ChatService) Generate(ctx context.Context, chatID string, input ChatGen
 	if s.closed {
 		s.mu.Unlock()
 		err := failure("CHAT_INTERRUPTED", "Chat service is shutting down", 503, true)
-		if saveErr := s.Store.finishChatTurn(chatID, turn.ID, "interrupted", "CHAT_INTERRUPTED", LLMUsage{}); saveErr != nil {
+		unlockRuntime = s.Store.lockRuntime()
+		saveErr := s.Store.finishChatTurn(chatID, turn.ID, "interrupted", "CHAT_INTERRUPTED", LLMUsage{})
+		unlockRuntime()
+		if saveErr != nil {
 			return turn, saveErr
 		}
 		return turn, err
@@ -449,10 +539,54 @@ func (s *ChatService) Generate(ctx context.Context, chatID string, input ChatGen
 		s.mu.Unlock()
 		s.pending.Done()
 	}()
+	var output, dbBuffer strings.Builder
+	var persistMu sync.Mutex
+	persist := func() error {
+		persistMu.Lock()
+		defer persistMu.Unlock()
+		if dbBuffer.Len() == 0 {
+			return nil
+		}
+		chunk := dbBuffer.String()
+		unlockRuntime := s.Store.lockRuntime()
+		err := s.Store.appendChatText(chatID, turn.ID, chunk)
+		unlockRuntime()
+		if err != nil {
+			return err
+		}
+		dbBuffer.Reset()
+		return nil
+	}
+	flushDone := make(chan struct{})
+	stopFlush := make(chan struct{})
+	var flushOnce sync.Once
+	stopFlusher := func() {
+		flushOnce.Do(func() {
+			close(stopFlush)
+			<-flushDone
+		})
+	}
+	go func() {
+		defer close(flushDone)
+		ticker := time.NewTicker(chatPersistInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-stopFlush:
+				return
+			case <-ticker.C:
+				_ = persist()
+			}
+		}
+	}()
 	finalized := false
 	defer func() {
+		stopFlusher()
 		if !finalized {
+			_ = persist()
+			unlockRuntime := s.Store.lockRuntime()
 			_ = s.Store.finishChatTurn(chatID, turn.ID, "interrupted", "CHAT_INTERRUPTED", LLMUsage{})
+			unlockRuntime()
 		}
 	}()
 	var consumerErr error
@@ -464,26 +598,9 @@ func (s *ChatService) Generate(ctx context.Context, chatID string, input ChatGen
 		return err
 	}
 	err = deliver(ChatEvent{Type: "message", Turn: &turn})
-	var output, buffer strings.Builder
-	lastFlush := time.Time{}
-	flush := func(publish bool) error {
-		if buffer.Len() == 0 {
-			return nil
-		}
-		text := buffer.String()
-		if err := s.Store.appendChatText(chatID, turn.ID, text); err != nil {
-			return err
-		}
-		buffer.Reset()
-		lastFlush = time.Now()
-		if publish {
-			return deliver(ChatEvent{Type: "delta", Text: text})
-		}
-		return nil
-	}
 	result := LLMResult{}
 	if err == nil {
-		result, err = s.Provider.Generate(generationCtx, messages, func(text string) error {
+		result, err = provider.Generate(generationCtx, messages, func(text string) error {
 			if generationCtx.Err() != nil {
 				return generationCtx.Err()
 			}
@@ -493,30 +610,31 @@ func (s *ChatService) Generate(ctx context.Context, chatID string, input ChatGen
 			if len(text) > llmOutputBytes-output.Len() {
 				return failure("LLM_OUTPUT_LIMIT", "Chat output exceeds the text limit", 422, false)
 			}
-			if output.Len() == 0 {
-				if _, err := s.Materials(generationCtx, materialNames(chat.Materials), chat.Materials); err != nil {
-					return err
-				}
-			}
 			output.WriteString(text)
-			buffer.WriteString(text)
-			if lastFlush.IsZero() || buffer.Len() >= 512 || time.Since(lastFlush) >= 100*time.Millisecond {
-				return flush(true)
-			}
-			return nil
+			persistMu.Lock()
+			dbBuffer.WriteString(text)
+			persistMu.Unlock()
+			return deliver(ChatEvent{Type: "delta", Text: text})
 		})
 	}
-	if flushErr := flush(err == nil && generationCtx.Err() == nil); flushErr != nil {
-		err = flushErr
-	}
-	if err == nil && (output.Len() == 0 || result.Content != output.String() ||
-		(result.FinishReason != "stop" && result.FinishReason != "end_turn")) {
-		err = failure("LLM_PROTOCOL", "Chat stream did not complete correctly", 502, false)
-	}
-	if err == nil {
-		_, err = s.Materials(generationCtx, materialNames(chat.Materials), chat.Materials)
+	stopFlusher()
+	if persistErr := persist(); persistErr != nil && err == nil {
+		err = persistErr
 	}
 	status, code := "completed", ""
+	if err == nil {
+		switch {
+		case output.Len() == 0 || result.Content != output.String():
+			err = failure("LLM_PROTOCOL", "Chat stream did not complete correctly", 502, false)
+		case result.FinishReason == "stop" || result.FinishReason == "end_turn":
+		case result.FinishReason == "length" && strings.TrimSpace(output.String()) != "":
+			status, code = "truncated", "LLM_OUTPUT_LIMIT"
+		case result.FinishReason == "length":
+			err = llmFinishError("length")
+		default:
+			err = failure("LLM_PROTOCOL", "Chat stream did not complete correctly", 502, false)
+		}
+	}
 	if cause := context.Cause(generationCtx); cause != nil {
 		err = cause
 		status, code = "interrupted", "CHAT_INTERRUPTED"
@@ -531,11 +649,16 @@ func (s *ChatService) Generate(ctx context.Context, chatID string, input ChatGen
 			code = "CHAT_FAILED"
 		}
 	}
-	if saveErr := s.Store.finishChatTurn(chatID, turn.ID, status, code, result.Usage); saveErr != nil {
+	unlockRuntime = s.Store.lockRuntime()
+	saveErr := s.Store.finishChatTurn(chatID, turn.ID, status, code, result.Usage)
+	unlockRuntime()
+	if saveErr != nil {
 		return turn, saveErr
 	}
 	finalized = true
+	unlockRuntime = s.Store.lockRuntime()
 	turn, readErr := s.Store.chatTurn(chatID, input.RequestID)
+	unlockRuntime()
 	if readErr != nil {
 		return turn, readErr
 	}

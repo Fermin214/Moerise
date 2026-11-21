@@ -5,8 +5,7 @@ import (
 	"encoding/json"
 )
 
-//go:embed openapi.json
-var openAPIJSON []byte
+var openAPIJSON = buildOpenAPISpec()
 
 //go:embed docs.html
 var docsHTML []byte

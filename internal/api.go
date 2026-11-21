@@ -106,6 +106,9 @@ func (a *API) route(writer http.ResponseWriter, request *http.Request) (any, int
 		return a.Feishu.Receive(request)
 	}
 	if path == "/mcp" {
+		if len(a.startup.AccessTokens) == 0 {
+			return nil, 0, failure("NOT_FOUND", "External access is disabled", 404, false)
+		}
 		if _, err := a.authenticate(request, ""); err != nil {
 			return nil, 0, err
 		}
@@ -113,6 +116,9 @@ func (a *API) route(writer http.ResponseWriter, request *http.Request) (any, int
 		return nil, 0, nil
 	}
 	if path == "/api/ext/v1" || strings.HasPrefix(path, "/api/ext/v1/") {
+		if len(a.startup.AccessTokens) == 0 {
+			return nil, 0, failure("NOT_FOUND", "External access is disabled", 404, false)
+		}
 		if _, err := a.authenticate(request, ""); err != nil {
 			return nil, 0, err
 		}

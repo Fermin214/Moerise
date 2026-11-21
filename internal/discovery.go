@@ -13,7 +13,7 @@ func (s *SearchService) randomWalkCandidates(ctx context.Context, request WalkRe
 	for _, name := range path {
 		visited[name] = true
 	}
-	rows, err := s.Store.index.QueryContext(ctx, `SELECT name, source_hash FROM memos
+	rows, err := s.Store.indexReader().QueryContext(ctx, `SELECT name, source_hash FROM memos
 		WHERE instance_id = ? AND user_name = ? AND (? OR state = 'NORMAL') ORDER BY name`,
 		s.Store.Settings.Memos.InstanceID, s.Store.Settings.Memos.User, request.IncludeArchived)
 	if err != nil {
@@ -59,7 +59,11 @@ func normalizeWalk(request WalkRequest) (WalkRequest, error) {
 }
 
 func (s *SearchService) Walk(ctx context.Context, request WalkRequest) (WalkResponse, error) {
-	return s.walk(ctx, request, rand.IntN)
+	return s.walkWith(ctx, request, rand.IntN, false)
+}
+
+func (s *SearchService) WalkLocal(ctx context.Context, request WalkRequest) (WalkResponse, error) {
+	return s.walkWith(ctx, request, rand.IntN, true)
 }
 
 func (s *SearchService) walkIndexReady(ctx context.Context) error {
@@ -73,9 +77,17 @@ func (s *SearchService) walkIndexReady(ctx context.Context) error {
 	return err
 }
 
-func (s *SearchService) StartWalk(ctx context.Context, name string) (result WalkResponse, err error) {
+func (s *SearchService) StartWalk(ctx context.Context, name string) (WalkResponse, error) {
+	return s.startWalkWith(ctx, name, false)
+}
+
+func (s *SearchService) StartWalkLocal(ctx context.Context, name string) (WalkResponse, error) {
+	return s.startWalkWith(ctx, name, true)
+}
+
+func (s *SearchService) startWalkWith(ctx context.Context, name string, local bool) (result WalkResponse, err error) {
 	if name == "" {
-		return s.Walk(ctx, WalkRequest{Mode: "random"})
+		return s.walkWith(ctx, WalkRequest{Mode: "random"}, rand.IntN, local)
 	}
 	ctx, cancel := context.WithTimeout(ctx, 90*time.Second)
 	defer cancel()
@@ -87,10 +99,13 @@ func (s *SearchService) StartWalk(ctx context.Context, name string) (result Walk
 	if !memoPattern.MatchString(name) {
 		return result, failure("INVALID_ARGUMENT", "Invalid discovery starting memo name", 422, false)
 	}
-	if err := s.verify(ctx); err != nil {
+	loadMemo := s.liveSearchMemo
+	if local {
+		loadMemo = s.Store.GetMemoLocal
+	} else if err := s.verify(ctx); err != nil {
 		return result, err
 	}
-	seed, err := s.liveSearchMemo(ctx, name)
+	seed, err := loadMemo(ctx, name)
 	if err != nil {
 		return result, err
 	}
@@ -103,7 +118,11 @@ func (s *SearchService) StartWalk(ctx context.Context, name string) (result Walk
 	if err := s.walkIndexReady(ctx); err != nil {
 		return result, err
 	}
-	fresh, err := s.liveSearchMemo(ctx, name)
+	if local {
+		return WalkResponse{Mode: "continue", Item: &SearchHit{Note: seed.Note(s.Store.Settings), Matches: []SearchMatch{}},
+			Path: []string{name}, Warnings: []string{}}, nil
+	}
+	fresh, err := loadMemo(ctx, name)
 	if err != nil {
 		return result, err
 	}
@@ -121,7 +140,11 @@ func (s *SearchService) StartWalk(ctx context.Context, name string) (result Walk
 }
 
 // Inject the draw per call so tests can check every eligible note without shared random state.
-func (s *SearchService) walk(ctx context.Context, request WalkRequest, intN func(int) int) (result WalkResponse, err error) {
+func (s *SearchService) walk(ctx context.Context, request WalkRequest, intN func(int) int) (WalkResponse, error) {
+	return s.walkWith(ctx, request, intN, false)
+}
+
+func (s *SearchService) walkWith(ctx context.Context, request WalkRequest, intN func(int) int, local bool) (result WalkResponse, err error) {
 	ctx, cancel := context.WithTimeout(ctx, 90*time.Second)
 	defer cancel()
 	defer func() {
@@ -137,12 +160,15 @@ func (s *SearchService) walk(ctx context.Context, request WalkRequest, intN func
 	if request.Name != "" && !slices.Contains(result.Path, request.Name) {
 		result.Path = append(result.Path, request.Name)
 	}
-	if err := s.verify(ctx); err != nil {
+	loadMemo := s.liveSearchMemo
+	if local {
+		loadMemo = s.Store.GetMemoLocal
+	} else if err := s.verify(ctx); err != nil {
 		return result, err
 	}
 	var seed *Memo
 	if request.Name != "" {
-		seed, err = s.liveSearchMemo(ctx, request.Name)
+		seed, err = loadMemo(ctx, request.Name)
 		if err != nil {
 			return result, err
 		}
@@ -206,7 +232,7 @@ func (s *SearchService) walk(ctx context.Context, request WalkRequest, intN func
 		candidate := eligible[slot]
 		eligible[slot] = eligible[len(eligible)-1]
 		eligible = eligible[:len(eligible)-1]
-		memo, err := s.liveSearchMemo(ctx, candidate.name)
+		memo, err := loadMemo(ctx, candidate.name)
 		if err != nil {
 			return WalkResponse{}, err
 		}
@@ -232,20 +258,22 @@ func (s *SearchService) walk(ctx context.Context, request WalkRequest, intN func
 		result.Item = &hit
 		break
 	}
-	if seed != nil {
-		fresh, err := s.liveSearchMemo(ctx, seed.Name)
-		if err != nil {
+	if !local {
+		if seed != nil {
+			fresh, err := loadMemo(ctx, seed.Name)
+			if err != nil {
+				return WalkResponse{}, err
+			}
+			if fresh == nil {
+				return WalkResponse{}, failure("SOURCE_NOT_FOUND", "Source memo is unavailable", 404, false)
+			}
+			if fresh.SourceHash != seed.SourceHash {
+				return WalkResponse{}, failure("SOURCE_CHANGED", "Source memo changed during discovery; retry the request", 409, true)
+			}
+		}
+		if err := s.verify(ctx); err != nil {
 			return WalkResponse{}, err
 		}
-		if fresh == nil {
-			return WalkResponse{}, failure("SOURCE_NOT_FOUND", "Source memo is unavailable", 404, false)
-		}
-		if fresh.SourceHash != seed.SourceHash {
-			return WalkResponse{}, failure("SOURCE_CHANGED", "Source memo changed during discovery; retry the request", 409, true)
-		}
-	}
-	if err := s.verify(ctx); err != nil {
-		return WalkResponse{}, err
 	}
 	if err := ctx.Err(); err != nil {
 		return WalkResponse{}, err

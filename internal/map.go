@@ -241,7 +241,7 @@ func (s *MapService) prepare(ctx context.Context, now time.Time) (*mapJob, error
 	defer unlock()
 	// An immutable settings view can be used while the runtime changes providers.
 	store := &Store{Settings: s.Store.Settings, state: s.Store.state, index: s.Store.index,
-		background: s.Store.background}
+		indexRO: s.Store.indexRO, background: s.Store.background}
 	space := embeddingSpace(store.Settings.Embedding)
 	previous, token, err := store.loadPublishedLayout(ctx, space)
 	if err != nil {

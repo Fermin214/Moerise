@@ -142,6 +142,7 @@ type Settings struct {
 
 	daily                *dailySettings
 	notificationChannels map[string]ChannelConfig
+	productExtras        map[string]json.RawMessage
 }
 
 func DefaultSettings() Settings {
@@ -163,6 +164,14 @@ func DefaultSettings() Settings {
 }
 
 func strictJSON(reader io.Reader, target any) error {
+	return decodeJSON(reader, target, false)
+}
+
+func tolerantJSON(reader io.Reader, target any) error {
+	return decodeJSON(reader, target, true)
+}
+
+func decodeJSON(reader io.Reader, target any, allowUnknown bool) error {
 	data, err := io.ReadAll(reader)
 	if err != nil {
 		return err
@@ -175,7 +184,9 @@ func strictJSON(reader io.Reader, target any) error {
 		return err
 	}
 	decoder := json.NewDecoder(bytes.NewReader(data))
-	decoder.DisallowUnknownFields()
+	if !allowUnknown {
+		decoder.DisallowUnknownFields()
+	}
 	decoder.UseNumber()
 	if err := decoder.Decode(target); err != nil {
 		return err
@@ -300,7 +311,7 @@ func (s *Settings) Validate() error {
 		s.Memos.MaxPages < 1 || s.Memos.MaxPages > 100000 {
 		return bad("memos limits")
 	}
-	if len(s.AccessTokens) == 0 || len(s.CursorSecret) < 32 {
+	if len(s.CursorSecret) < 32 {
 		return bad("access credentials")
 	}
 	names, tokens := map[string]bool{}, map[string]bool{}

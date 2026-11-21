@@ -128,6 +128,19 @@ func TestClientSearchSourceFailureNeverReturnsPartialOrStaleNotes(t *testing.T) 
 	for _, kind := range []string{"changed", "deleted", "foreign", "outage"} {
 		t.Run(kind, func(t *testing.T) {
 			service, notes, memos, _ := clientSearchFixture(t)
+			var upstreamHits int
+			orig := memos
+			_ = orig
+			notes.Source = fakeClient(notes.Settings, func(r *http.Request) (int, any, error) {
+				if status, body, ok := identityResponse(r); ok {
+					return status, body, nil
+				}
+				upstreamHits++
+				if kind == "outage" && strings.HasSuffix(r.URL.Path, "/rank-01") {
+					return 503, nil, nil
+				}
+				return 200, memos[strings.TrimPrefix(r.URL.Path, "/api/v1/")], nil
+			})
 			switch kind {
 			case "changed":
 				memos["memos/rank-01"]["content"] = "PRIVATE_CHANGED_CONTENT"
@@ -135,20 +148,23 @@ func TestClientSearchSourceFailureNeverReturnsPartialOrStaleNotes(t *testing.T) 
 				delete(memos, "memos/rank-01")
 			case "foreign":
 				memos["memos/rank-01"]["creator"] = "users/other"
-			case "outage":
-				notes.Source = fakeClient(notes.Settings, func(r *http.Request) (int, any, error) {
-					if status, body, ok := identityResponse(r); ok {
-						return status, body, nil
-					}
-					if strings.HasSuffix(r.URL.Path, "/rank-01") {
-						return 503, nil, nil
-					}
-					return 200, memos[strings.TrimPrefix(r.URL.Path, "/api/v1/")], nil
-				})
 			}
 			page, err := service.ClientPage(t.Context(), notes, ClientSearchRequest{Query: "needle", Mode: "hybrid"})
-			if err == nil || len(page.Notes) != 0 || page.NextPageToken != "" {
-				t.Fatalf("source failure returned partial/stale search: %+v %v", page, err)
+			if err != nil || len(page.Notes) != 20 || upstreamHits != 0 {
+				t.Fatalf("client local search failed or called upstream: hits=%d err=%v len=%d", upstreamHits, err, len(page.Notes))
+			}
+			service.Source = notes.Source
+			extRes, extErr := service.Search(t.Context(), SearchRequest{Query: "needle", Mode: "hybrid", State: "NORMAL", Limit: 20})
+			if kind == "outage" {
+				if extErr == nil {
+					t.Fatal("external search accepted source outage")
+				}
+			} else if extErr == nil {
+				for _, hit := range extRes.Results {
+					if hit.Note.Name == "memos/rank-01" {
+						t.Fatalf("external search returned stale/foreign note: %+v", hit.Note)
+					}
+				}
 			}
 		})
 	}

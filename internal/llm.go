@@ -371,7 +371,7 @@ func readLLMJSON(reader io.Reader) (LLMResult, error) {
 		llmPresent(choice.Failure) {
 		return LLMResult{}, llmProtocolError()
 	}
-	if *choice.FinishReason != "stop" {
+	if *choice.FinishReason != "stop" && *choice.FinishReason != "length" {
 		return LLMResult{}, llmFinishError(*choice.FinishReason)
 	}
 	content := *choice.Message.Content
@@ -379,9 +379,12 @@ func readLLMJSON(reader io.Reader) (LLMResult, error) {
 		return LLMResult{}, failure("LLM_OUTPUT_LIMIT", "LLM output exceeds the byte limit", 503, false)
 	}
 	if strings.TrimSpace(content) == "" {
+		if *choice.FinishReason == "length" {
+			return LLMResult{}, llmFinishError("length")
+		}
 		return LLMResult{}, llmProtocolError()
 	}
-	result := LLMResult{Content: content, Model: response.Model, FinishReason: "stop"}
+	result := LLMResult{Content: content, Model: response.Model, FinishReason: *choice.FinishReason}
 	if response.Usage != nil {
 		result.Usage, err = response.Usage.usage()
 		if err != nil {
@@ -406,7 +409,13 @@ func readLLMStream(ctx context.Context, reader io.Reader, callback func(string) 
 		}
 		data := bytes.TrimSuffix(event, []byte("\n"))
 		if bytes.Equal(data, []byte("[DONE]")) {
-			if !stopped || strings.TrimSpace(content.String()) == "" {
+			if !stopped {
+				return false, llmProtocolError()
+			}
+			if strings.TrimSpace(content.String()) == "" {
+				if result.FinishReason == "length" {
+					return false, llmFinishError("length")
+				}
 				return false, llmProtocolError()
 			}
 			return true, nil
@@ -449,10 +458,10 @@ func readLLMStream(ctx context.Context, reader io.Reader, callback func(string) 
 			return false, llmProtocolError()
 		}
 		if choice.FinishReason != nil && *choice.FinishReason != "" {
-			if *choice.FinishReason != "stop" {
+			if *choice.FinishReason != "stop" && *choice.FinishReason != "length" {
 				return false, llmFinishError(*choice.FinishReason)
 			}
-			stopped, result.FinishReason = true, "stop"
+			stopped, result.FinishReason = true, *choice.FinishReason
 		}
 		if choice.Delta.Content != nil && *choice.Delta.Content != "" {
 			text := *choice.Delta.Content
@@ -488,6 +497,12 @@ func readLLMStream(ctx context.Context, reader io.Reader, callback func(string) 
 				return LLMResult{}, delivered, err
 			}
 			if done {
+				if strings.TrimSpace(content.String()) == "" {
+					if result.FinishReason == "length" {
+						return LLMResult{}, delivered, llmFinishError("length")
+					}
+					return LLMResult{}, delivered, llmProtocolError()
+				}
 				result.Content = content.String()
 				return result, delivered, nil
 			}
@@ -524,6 +539,15 @@ func readLLMStream(ctx context.Context, reader io.Reader, callback func(string) 
 		return LLMResult{}, delivered, err
 	}
 	if !done {
+		if result.FinishReason == "length" && strings.TrimSpace(content.String()) == "" {
+			return LLMResult{}, delivered, llmFinishError("length")
+		}
+		return LLMResult{}, delivered, llmProtocolError()
+	}
+	if strings.TrimSpace(content.String()) == "" {
+		if result.FinishReason == "length" {
+			return LLMResult{}, delivered, llmFinishError("length")
+		}
 		return LLMResult{}, delivered, llmProtocolError()
 	}
 	result.Content = content.String()

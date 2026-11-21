@@ -129,6 +129,7 @@ func TestClientMemosAcceptance(t *testing.T) {
 	h.stop()
 	h.settings.Web = moerise.WebConfig{Enabled: true, PublicOrigin: h.base,
 		StateEncryptionKey: randomStateKey()}
+	h.settings.Sync.PollSeconds, h.settings.Sync.FullSeconds = 1, 5
 	h.settings.AccessTokens[1].Scopes = append(h.settings.AccessTokens[1].Scopes,
 		"reviews:read")
 	data, _ := json.Marshal(h.settings)
@@ -168,6 +169,9 @@ func TestClientMemosAcceptance(t *testing.T) {
 		}
 		h.call(h.memos, "/api/v1/memos/"+id+"?updateMask="+mask, "PATCH", h.upstream, patch, 200)
 	}
+	wait(t, "initial memos synced", func() bool {
+		return len(c.all()) == 5
+	})
 	notes := c.all()
 	names := []string{}
 	for _, note := range notes {
@@ -179,6 +183,10 @@ func TestClientMemosAcceptance(t *testing.T) {
 	}
 	h.call(h.memos, "/api/v1/memos/older?updateMask=content", "PATCH", h.upstream,
 		map[string]string{"content": "old note edited now"}, 200)
+	wait(t, "edited older memo synced", func() bool {
+		notes = c.all()
+		return len(notes) > 0 && notes[len(notes)-1]["content"] == "old note edited now"
+	})
 	notes = c.all()
 	if notes[len(notes)-1]["name"] != "memos/older" || notes[len(notes)-1]["content"] != "old note edited now" {
 		t.Fatal("editing a pinned old memo changed creation order or returned stale content")
@@ -199,7 +207,10 @@ func TestClientMemosAcceptance(t *testing.T) {
 		t.Fatal("Memos did not retain the exact original body")
 	}
 	unavailable.Store(true)
-	c.call("GET", "/api/app/v1/notes", nil, 503)
+	offlineNotes := c.call("GET", "/api/app/v1/notes", nil, 200)
+	if len(offlineNotes["notes"].([]any)) != 6 {
+		t.Fatalf("offline local read did not serve cached notes: %+v", offlineNotes)
+	}
 	unavailable.Store(false)
 	c.call("GET", "/api/app/v1/session", nil, 200)
 	h.stop()
@@ -213,9 +224,9 @@ func TestClientMemosAcceptance(t *testing.T) {
 	h.command(true, "rebuild-index")
 	h.start()
 	c.call("GET", "/api/app/v1/session", nil, 200)
-	if len(c.all()) != 6 {
-		t.Fatal("live list depended on a rebuilt index")
-	}
+	wait(t, "rebuilt index synced", func() bool {
+		return len(c.all()) == 6
+	})
 	for _, path := range []string{"/api/ext/v1/notes", "/api/ext/v1/sync", "/api/ext/v1/reviews/daily",
 		"/api/ext/v1/chats", "/api/ext/v1/chats/example/messages",
 		"/api/ext/v1/notifications/id/resolve"} {

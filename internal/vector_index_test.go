@@ -159,8 +159,11 @@ func TestVectorIndexConcurrentProjectionAndCancellation(t *testing.T) {
 		t.Fatal(err)
 	}
 	building, _ := store.VectorStatus()
-	if published, err := service.publish(building.Building.ID); err != nil || published {
-		t.Fatalf("stale snapshot published: %v", err)
+	if building.Building != nil || building.Active == nil || building.Active.ID != active.Active.ID {
+		t.Fatalf("unexpected rebuild for same vector space: %+v", building)
+	}
+	if building.Active.ProjectionRevision != active.Active.ProjectionRevision {
+		t.Fatalf("stale revision published early: %+v", building.Active)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	provider.after = cancel
@@ -168,13 +171,13 @@ func TestVectorIndexConcurrentProjectionAndCancellation(t *testing.T) {
 		t.Fatalf("cancellation lost: %v", err)
 	}
 	cancelled, _ := store.VectorStatus()
-	if cancelled.Active.ID != active.Active.ID || cancelled.Building.CompletedChunks != 4 {
-		t.Fatal("cancelled model batch was saved or published")
+	if cancelled.Active.ID != active.Active.ID || cancelled.Active.ProjectionRevision != active.Active.ProjectionRevision {
+		t.Fatal("cancelled incremental batch changed active generation")
 	}
 	provider.after = nil
-	finishIndex(t, service)
-	if !slices.Contains(provider.texts, "second revision") {
-		t.Fatal("latest projection was not indexed")
+	updated := finishIndex(t, service)
+	if updated.Active.ID != active.Active.ID || !slices.Contains(provider.texts, "second revision") {
+		t.Fatalf("latest projection was not incrementally indexed: active=%+v texts=%v", updated.Active, provider.texts)
 	}
 }
 

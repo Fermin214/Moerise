@@ -254,16 +254,17 @@ func TestClientMapMemosAcceptance(t *testing.T) {
 		if snapshot := acceptanceMap(t, c); !reflect.DeepEqual(first, snapshot) {
 			t.Fatal("source list fault changed published snapshot")
 		}
-		c.call("GET", "/api/app/v1/notes/"+strings.TrimPrefix(faultName.Load().(string), "memos/"), nil, 503)
+		c.call("GET", "/api/app/v1/notes/"+strings.TrimPrefix(faultName.Load().(string), "memos/"), nil, 200)
 	}
 	faultStatus.Store(0)
 	faultName.Store("")
 	h.call(h.memos, "/api/v1/"+notes[2]["name"].(string)+"?updateMask=content", "PATCH", h.upstream, map[string]string{"content": "reading changed subject #原生"}, 200)
+	h.call(h.memos, "/api/v1/"+notes[4]["name"].(string), "DELETE", h.upstream, nil, 200)
+	h.sync("full")
 	detail := c.call("GET", clientNotePath(notes[2]), nil, 200)
 	if detail["content"] != "reading changed subject #原生" || detail["source_hash"] == initial[notes[2]["name"].(string)].SourceHash {
-		t.Fatal("snapshot reader did not fetch latest original")
+		t.Fatal("snapshot reader did not reflect synced original")
 	}
-	h.call(h.memos, "/api/v1/"+notes[4]["name"].(string), "DELETE", h.upstream, nil, 200)
 	c.call("GET", clientNotePath(notes[4]), nil, 404)
 	c.key = "map-added"
 	added := c.call("POST", "/api/app/v1/notes", map[string]string{"content": "balcony herbs new observation"}, 201)
@@ -299,7 +300,11 @@ func TestClientMapMemosAcceptance(t *testing.T) {
 		}
 	}
 	docker(t, "stop", h.container)
-	c.call("GET", "/api/app/v1/map", nil, 503)
+	if offlineMap := acceptanceMap(t, c); !reflect.DeepEqual(offlineMap, incremental) {
+		t.Fatal("local map read failed during Memos outage")
+	}
+	c.key = "map-offline-write"
+	c.call("POST", "/api/app/v1/notes", map[string]string{"content": "offline"}, 503)
 	docker(t, "start", h.container)
 	h.sync("full")
 	h.ready()

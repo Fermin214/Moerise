@@ -34,11 +34,12 @@ Moerise 服务端提供两组 RESTful API 以及一个 Model Context Protocol (M
 
 | 方法 | 路径 | 功能说明 |
 | --- | --- | --- |
-| `GET` | `/api/app/v1/notes` | 分页拉取时间线笔记，支持按标签、日期、归档状态筛选，按创建时间倒序。 |
-| `GET` | `/api/app/v1/notes/{memo_id}` | 获取单篇笔记最新详细内容与附件列表。 |
-| `POST` | `/api/app/v1/notes` | 创建笔记，接收正文与附件，强制要求 `Idempotency-Key` 请求头。 |
-| `PATCH` | `/api/app/v1/notes/{memo_id}` | 编辑笔记正文、更新标签、归档或恢复笔记，要求 `Idempotency-Key`。 |
-| `DELETE` | `/api/app/v1/notes/{memo_id}` | 删除指定笔记，JSON 请求体需携带 `source_hash`。 |
+| `GET` | `/api/app/v1/notes` | 从本地索引分页拉取时间线笔记，支持按标签、日期、归档状态筛选，按创建时间倒序。 |
+| `GET` | `/api/app/v1/notes/{memo_id}` | 读取本地同步的单篇笔记详细内容与附件列表。 |
+| `GET` | `/api/app/v1/sync/notes` | 按固定同步游标与日志序增量同步本地笔记变更与删除墓碑（支持 `full` / `delta` / `reset` 模式）。 |
+| `POST` | `/api/app/v1/notes` | 创建笔记，接收正文与附件，强制要求 `Idempotency-Key` 请求头；直写 Memos 并即时落库索引，返回轻量化 `attachment_receipts` 摘要回执。 |
+| `PATCH` | `/api/app/v1/notes/{memo_id}` | 编辑笔记正文、更新标签、归档或恢复笔记，要求 `Idempotency-Key`；直写 Memos 后即时刷新本地索引与变更日志。 |
+| `DELETE` | `/api/app/v1/notes/{memo_id}` | 删除指定笔记，JSON 请求体需携带 `source_hash`；直写 Memos 并写入删除墓碑。 |
 | `GET` | `/api/app/v1/tags` | 获取所有使用中的 `#标签` 及其关联笔记统计计数。 |
 | `GET` | `/api/app/v1/calendar` | 获取指定月份每天的笔记数量分布。 |
 | `GET`, `HEAD` | `/api/app/v1/notes/{memo_id}/attachments/{attachment_id}/content` | 受保护的媒体附件内容流，支持分段 Range 请求。 |
@@ -47,13 +48,13 @@ Moerise 服务端提供两组 RESTful API 以及一个 Model Context Protocol (M
 
 | 方法 | 路径 | 功能说明 |
 | --- | --- | --- |
-| `POST` | `/api/app/v1/search` | 默认 `keyword`，按创建时间返回 Memos 实时筛选结果；`semantic` 与 `hybrid` 使用索引召回，按相关度分页。 |
+| `POST` | `/api/app/v1/search` | 基于本地索引执行检索；`keyword` 走 FTS5 分词与标签交集，`semantic` 与 `hybrid` 使用向量索引融合召回并按相关度分页。 |
 | `POST` | `/api/app/v1/walks/start` | 启动一次随机漫步，可指定起始笔记或由系统随机挑选起点。 |
 | `POST` | `/api/app/v1/walks/next` | 提交走过的路径，基于语义关联抽取未访问过的下一篇漫步笔记。 |
 | `GET` | `/api/app/v1/map` | 读取观星快照，包含完整点集 `points`、语义主题 `topics` 和笔记关联 `links`；主题可包含语义子主题 `districts`。 |
 | `POST` | `/api/app/v1/map/rebuild` | 排队重新生成星图与主题，返回 `202 {"status":"queued"}`；要求本人会话、同源与 CSRF 校验。 |
 
-观星使用均衡 UMAP，普通变化按一分钟间隔合并，未变笔记复用坐标。`stellar` 定义可复现的星体属性；`layout_frame` 标识坐标框架，主动重建或更换向量空间时变化；更新期间 `update_state` 可为 `building` 或 `unavailable`，已发布快照继续可读。笔记原文通过笔记接口实时读取。字段定义见 [OpenAPI](../internal/openapi.json)，布局说明见[观星](STARGAZING.md)。
+观星使用均衡 UMAP，普通变化按一分钟间隔合并，未变笔记复用坐标。`stellar` 定义可复现的星体属性；`layout_frame` 标识坐标框架，主动重建或更换向量空间时变化；更新期间 `update_state` 可为 `building` 或 `unavailable`，已发布快照继续可读。字段定义由 [OpenAPI 生成器](../internal/openapi_gen.go) 产出并经 `/openapi.json` 提供，布局说明见[观星](STARGAZING.md)。
 
 `stargazing.enabled=false` 时，读取返回 `status: disabled`、`disabled_reason: stargazing` 和空点集；重建返回 `409 STARGAZING_DISABLED`。Embedding 关闭时对应 `disabled_reason: embedding` 与 `409 EMBEDDING_DISABLED`。关闭不删除已发布快照或向量。
 
@@ -98,7 +99,7 @@ Moerise 服务端提供两组 RESTful API 以及一个 Model Context Protocol (M
 }
 ```
 
-提问取自 `kind=question` 的用户原文。回复可选 `completed`，或在 `confirm_incomplete=true` 时选已持久化的 `canceled` 版本。选一条时原样写入，多条按轮次排序，同轮先提问后回答，以本地化的 Markdown 角色标签分段。合成结果最多 65,536 个 UTF-8 字节。保存响应为笔记对象。超时可查询后用同一操作键重试，同键更换选集返回 `409 IDEMPOTENCY_CONFLICT`。
+提问取自 `kind=question` 的用户原文。回复默认选择 `completed`，或在 `confirm_incomplete=true` 时允许纳入已持久化的 `truncated`（输出达到 token 上限而截断）与 `canceled` 版本。选一条时原样写入，多条按轮次排序，同轮先提问后回答，以本地化的 Markdown 角色标签分段。合成结果最多 65,536 个 UTF-8 字节。保存响应为笔记对象。超时可查询后用同一操作键重试，同键更换选集返回 `409 IDEMPOTENCY_CONFLICT`。
 
 ### 6. 系统设置与诊断
 
@@ -114,7 +115,7 @@ Moerise 服务端提供两组 RESTful API 以及一个 Model Context Protocol (M
 
 ## 二、外部开放接口 (`/api/ext/v1`)
 
-外部接口供自动化脚本使用，使用 HTTP 请求头 `Authorization: Bearer <MOERISE_ACCESS_TOKEN>` 鉴权。外部接口受限于只读白名单：
+外部接口供自动化脚本使用，使用 HTTP 请求头 `Authorization: Bearer <MOERISE_ACCESS_TOKEN>` 鉴权。未配置 `access_tokens` 时，`/api/ext/v1` 与 `/mcp` 自动关闭并返回 404；启用时受限于只读白名单：
 
 | 方法 | 路径 | 所需 Scope | 功能说明 |
 | --- | --- | --- | --- |
