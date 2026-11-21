@@ -318,6 +318,7 @@ test('temporary failures retain published points; index states clear them and so
   for (const status of ['waiting', 'building', 'unavailable']) {
     state.status = status;
     await Promise.all([page.waitForResponse(response => new URL(response.url()).pathname.endsWith('/map')), page.locator('#map-field').press('r')]);
+    await ready(page);
     assert.equal(await page.locator('.map-dot').count(), 4);
     assert.equal(await card(page).count(), 1);
   }

@@ -472,7 +472,7 @@ func testQQScheduledFailures(t *testing.T, app *moerise.App, fixture *acceptance
 		case "refuse":
 			status = "failed"
 		case "drop":
-			status = "unknown"
+			status = "failed"
 		case "limit":
 			pending, err := app.Notifications.List("pending")
 			if err != nil || len(pending) != 1 || pending[0].AvailableAt <= float64(time.Now().Unix()) {
