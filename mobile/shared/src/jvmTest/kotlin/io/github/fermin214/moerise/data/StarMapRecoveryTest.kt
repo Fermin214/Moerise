@@ -116,6 +116,7 @@ class StarMapRecoveryTest {
         val noteCalls = AtomicInteger()
         val engine = MockEngine { request ->
             when (request.url.encodedPath.removePrefix("/api/app/v1")) {
+                "/session" -> respond("""{"instance_id":"one","user":{"name":"users/owner"},"timezone":"UTC","expires_at":"2027-01-01T00:00:00Z","csrf_token":"token"}""")
                 "/map" -> respond(CoreJson.encodeToString(remote.get()))
                 "/notes/fixture" -> {
                     noteCalls.incrementAndGet()
