@@ -50,7 +50,7 @@ openssl rand -base64 32  # MOERISE_STATE_ENCRYPTION_KEY
 5. 启动完整服务：
 
 ```bash
-docker compose pull moerise web
+docker compose pull moerise
 docker compose up -d
 docker compose ps
 curl --fail http://localhost:3000/health/ready
@@ -79,7 +79,7 @@ MOERISE_MEMOS_PUBLIC_URL=https://memos.example.com
 3. 填入作者绑定及独立密钥后启动：
 
 ```bash
-docker compose pull moerise web
+docker compose pull moerise
 docker compose up -d
 ```
 
@@ -139,7 +139,7 @@ Compose 会在卷名前添加项目名前缀。升级时保持 `COMPOSE_PROJECT_
 2. 将 `.env` 中的 `MOERISE_IMAGE_TAG` 设为目标版本，拉取镜像并检查就绪状态：
 
    ```bash
-   docker compose pull moerise web
+   docker compose pull moerise
    docker compose up -d
    curl --fail http://localhost:3000/health/ready
    ```
