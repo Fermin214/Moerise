@@ -9,7 +9,7 @@ import { runProcess } from '../lib/process.mjs';
 
 assert.equal(process.argv.length, 3, 'node scripts/acceptance/check-telemetry.mjs <receiver-binary>');
 const binary = resolve(process.argv[2]);
-const root = resolve('.local', `telemetry-acceptance-${randomBytes(8).toString('hex')}`);
+const root = resolve('.local/tmp', `telemetry-acceptance-${randomBytes(8).toString('hex')}`);
 await mkdir(root, { recursive: true, mode: 0o700 });
 const listener = createServer();
 await new Promise(resolve => listener.listen(0, '127.0.0.1', resolve));
@@ -54,5 +54,6 @@ try {
     await new Promise(resolve => { receiver.once('exit', resolve); receiver.kill(); });
   }
   for (const suffix of ['', '-wal', '-shm', '-journal']) await rm(database + suffix, { force: true });
+  if (succeeded) await rm(root, { recursive: true, force: true });
   if (!succeeded) await writeFile(resolve(root, 'result.json'), JSON.stringify({ receiver: 'failed' }) + '\n');
 }

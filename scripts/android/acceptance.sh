@@ -6,7 +6,7 @@ android_fixture_connection="${MOERISE_ANDROID_FIXTURE:?设置 MOERISE_ANDROID_FI
 test -f "$android_fixture_connection"
 android_device="${ANDROID_SERIAL:?设置 ANDROID_SERIAL 为用于验收的设备}"
 if [[ ! "$android_device" =~ ^emulator-[0-9]+$ ]]; then
-    echo "安装和清空数据只用于隔离模拟器；真机使用 scripts/android/phone.ps1。" >&2
+    echo "安装和清空数据只用于隔离模拟器；真机使用 scripts/android/phone-session.py。" >&2
     exit 1
 fi
 android_acceptance_ui_text="$(python3 -c 'import json; print("\n".join(json.load(open("scripts/android/maestro/catalog.json"))["groups"]))')"
@@ -22,14 +22,6 @@ if [[ -n "${MOERISE_ANDROID_TEST_CLASS:-}" ]]; then
     android_acceptance_suite=diagnostic
 fi
 case "$android_acceptance_suite" in
-    ui)
-        android_acceptance_groups=("${android_acceptance_ui[@]}") ;;
-    all)
-        android_acceptance_groups=("${android_acceptance_ui[@]}" "${android_acceptance_specialists[@]}")
-        android_acceptance_needs_tests=1 ;;
-    lifecycle|ime|recovery|stars)
-        android_acceptance_groups=("$android_acceptance_suite")
-        android_acceptance_needs_tests=1 ;;
     diagnostic)
         IFS=',' read -r -a android_acceptance_groups <<< "${MOERISE_ANDROID_TEST_CLASS:?手动诊断需要显式类或方法}"
         for android_acceptance_class in "${android_acceptance_groups[@]}"; do
@@ -40,16 +32,20 @@ case "$android_acceptance_suite" in
         done
         android_acceptance_needs_tests=1 ;;
     *)
-        if [[ " ${android_acceptance_ui[*]} " != *" $android_acceptance_suite "* ]]; then
-            echo "未知设备检查组：$android_acceptance_suite" >&2
-            exit 1
-        fi
-        android_acceptance_groups=("$android_acceptance_suite") ;;
+        android_acceptance_selected="$(python3 scripts/android/device-suites.py "$android_acceptance_suite")"
+        mapfile -t android_acceptance_groups <<< "$android_acceptance_selected"
+        for android_acceptance_group in "${android_acceptance_groups[@]}"; do
+            if [[ " ${android_acceptance_specialists[*]} " == *" $android_acceptance_group "* ]]; then
+                android_acceptance_needs_tests=1
+            fi
+        done ;;
 esac
-if [[ "$android_acceptance_suite" == all || "$android_acceptance_needs_tests" == 0 ]]; then
+for android_acceptance_group in "${android_acceptance_groups[@]}"; do
+if [[ " ${android_acceptance_ui[*]} " == *" $android_acceptance_group "* ]]; then
     test -f scripts/android/maestro-run.py
     command -v maestro >/dev/null
 fi
+done
 adb -s "$android_device" get-state >/dev/null
 if [[ "${MOERISE_ANDROID_SKIP_BUILD:-0}" != 1 ]]; then
     android_acceptance_cpu="${MOERISE_ANDROID_CPU:-$(python3 -c 'import os; print(min(os.sched_getaffinity(0)))')}"
@@ -80,7 +76,7 @@ cleanup_android_device_fixture() {
 }
 trap cleanup_android_device_fixture EXIT
 adb -s "$android_device" reverse "tcp:$android_fixture_port" "tcp:$android_fixture_port"
-adb -s "$android_device" install -r -t mobile/androidApp/build/outputs/apk/fixture/androidApp-fixture.apk
+adb -s "$android_device" install -r -d -t mobile/androidApp/build/outputs/apk/fixture/androidApp-fixture.apk
 if [[ "$android_acceptance_needs_tests" == 1 ]]; then
     adb -s "$android_device" install -r -t mobile/androidApp/build/outputs/apk/androidTest/fixture/androidApp-fixture-androidTest.apk
 fi
@@ -88,6 +84,9 @@ adb -s "$android_device" shell pm clear io.github.fermin214.moerise.fixture >/de
 run_android_instrumentation() {
     local android_class="$1" android_log="$2" android_visual="${3:-false}" android_privacy_upgrade=false
     if [[ -n "${MOERISE_ANDROID_UPGRADE_APK:-}" ]]; then android_privacy_upgrade=true; fi
+    for android_driver in dev.mobile.maestro dev.mobile.maestro.test; do
+        timeout 30s adb -s "$android_device" shell am force-stop "$android_driver" || return 1
+    done
     # 只把登录字段传入设备，Memos 来源令牌留在主机。
     if ! python3 - "$android_fixture_connection" <<'PY' | adb -s "$android_device" shell 'cat > /data/local/tmp/moerise-android-fixture.json'
 import json, sys
@@ -180,6 +179,7 @@ PY
     if [[ "$android_acceptance_status" != passed ]]; then android_acceptance_failed=1; fi
     printf '%s\t%s\t%s\n' "$android_acceptance_group" "$android_acceptance_status" \
         "$((SECONDS - android_acceptance_started))" >> .local/android/device-results.tsv
+    if [[ "$android_acceptance_status" == environment_blocked ]]; then break; fi
 done
 if [[ "$(wc -l < .local/android/device-results.tsv)" -lt 2 ]]; then
     echo '设备流程没有执行测试' >&2

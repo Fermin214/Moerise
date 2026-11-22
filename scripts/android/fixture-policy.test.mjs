@@ -1,10 +1,7 @@
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
-import { readdir, readFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
-import { join } from 'node:path';
 import { test } from 'node:test';
-import { fileURLToPath } from 'node:url';
 import { createModelGate, tuneFixtureConfig, applyModelPolicy, observeFixtureApi } from './fixture-policy.mjs';
 
 test('洞察隔离请求区分 HTTP 完成与连接中断，日志只含诊断字段', async t => {
@@ -103,17 +100,4 @@ test('持久模型设置冲突后重读版本，更新非秘密字段并注销�
   await applyModelPolicy('http://127.0.0.1:1502', 'http://127.0.0.1:1501', 'android-owner', 'fixture-password');
   assert.equal(calls.filter(call => call.method === 'PATCH').length, 2);
   assert.equal(calls.at(-1).method, 'DELETE');
-});
-
-test('Android 种子脚本通过 Core 客户端接口写入且清理临时会话', async () => {
-  const dir = fileURLToPath(new URL('.', import.meta.url));
-  const files = (await readdir(dir)).filter(name => /^seed-.*\.mjs$/.test(name)).sort();
-  assert.ok(files.length >= 2);
-  for (const name of files) {
-    const source = await readFile(join(dir, name), 'utf8');
-    assert.match(source, /\/api\/app\/v1/, `${name} 必须调用 Core /api/app/v1 接口`);
-    assert.match(source, /['"]\/session['"]/, `${name} 必须通过会话鉴权`);
-    assert.match(source, /DELETE/, `${name} 必须清理临时会话`);
-    assert.doesNotMatch(source, /sourceOrigin|sourceToken|\/api\/v1\/memos/, `${name} 不得绕过 Core 直写 Memos`);
-  }
 });

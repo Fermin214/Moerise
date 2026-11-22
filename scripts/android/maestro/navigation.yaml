@@ -66,15 +66,22 @@ onFlowComplete:
     label: Select QQ private chat
 - scrollUntilVisible:
     element:
-      id: settings_save
+      text: 发送记录|Delivery history
     direction: DOWN
     timeout: 15000
-    centerElement: true
-    label: Find the settings save button
+    centerElement: false
+    label: Bring save controls above the system navigation bar
 - tapOn:
     id: settings_save
     enabled: true
     label: Save the QQ review destination
+- scrollUntilVisible:
+    element:
+      text: 设置已保存。|Settings saved\.|设置服务繁忙，请稍后重新保存。|The settings service is busy\. Please save again later\.
+    direction: DOWN
+    timeout: 15000
+    centerElement: false
+    label: Find the result after the saved form reflows
 - extendedWaitUntil:
     visible:
       text: 设置已保存。|Settings saved\.|设置服务繁忙，请稍后重新保存。|The settings service is busy\. Please save again later\.

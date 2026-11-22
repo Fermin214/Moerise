@@ -1,0 +1,20 @@
+{
+  "records": [
+    "editing",
+    "search",
+    "actions",
+    "attachments",
+    "home",
+    "lifecycle",
+    "ime",
+    "recovery"
+  ],
+  "insights": [
+    "insights"
+  ],
+  "explore": [
+    "navigation",
+    "language",
+    "stars"
+  ]
+}

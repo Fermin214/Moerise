@@ -5,18 +5,14 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"reflect"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
-	"syscall"
 	"testing"
 	"time"
 )
@@ -619,7 +615,7 @@ func seedV020StateDB(settings Settings) error {
 	return err
 }
 
-func runPhase1AutoBackupAndRollback(t *testing.T, v020Bin string) {
+func runPhase1AutoBackupAndRollback(t *testing.T) {
 	t.Helper()
 	root := t.TempDir()
 	settings := testSettings(t)
@@ -640,43 +636,7 @@ func runPhase1AutoBackupAndRollback(t *testing.T, v020Bin string) {
 		t.Fatal(err)
 	}
 
-	bootV020 := func() {
-		ln, err := net.Listen("tcp", "127.0.0.1:0")
-		if err != nil {
-			t.Fatal(err)
-		}
-		port := ln.Addr().(*net.TCPAddr).Port
-		_ = ln.Close()
-		cmd := exec.Command(v020Bin, "serve", "--config", cfgPath, "--host", "127.0.0.1", "--port", strconv.Itoa(port))
-		var stderr strings.Builder
-		cmd.Stderr = &stderr
-		if err := cmd.Start(); err != nil {
-			t.Fatal(err)
-		}
-		client := &http.Client{Timeout: time.Second}
-		ready := false
-		deadline := time.Now().Add(5 * time.Second)
-		for time.Now().Before(deadline) {
-			resp, err := client.Get("http://127.0.0.1:" + strconv.Itoa(port) + "/health/live")
-			if err == nil {
-				_ = resp.Body.Close()
-				if resp.StatusCode == 200 {
-					ready = true
-					break
-				}
-			}
-			time.Sleep(25 * time.Millisecond)
-		}
-		_ = cmd.Process.Signal(syscall.SIGTERM)
-		waitErr := cmd.Wait()
-		if !ready {
-			t.Fatalf("v0.2.0 binary did not become live (%v): %s", waitErr, stderr.String())
-		}
-	}
-
-	if v020Bin != "" {
-		bootV020()
-	} else if err := seedV020StateDB(settings); err != nil {
+	if err := seedV020StateDB(settings); err != nil {
 		t.Fatal(err)
 	}
 
@@ -767,43 +727,18 @@ func runPhase1AutoBackupAndRollback(t *testing.T, v020Bin string) {
 		t.Fatalf("state integrity check after rollback failed: %v", err)
 	}
 
-	if v020Bin != "" {
-		bootV020()
-		v020PostRollback := filepath.Join(root, "v020-after-rollback")
-		verifyCmd := exec.Command(v020Bin, "backup", "--config", cfgPath, "--output", v020PostRollback)
-		if out, err := verifyCmd.CombinedOutput(); err != nil {
-			t.Fatalf("real v0.2.0 binary rejected rolled-back state.sqlite3: %v %s", err, out)
-		}
-		var manifest Manifest
-		manifestRaw, err := os.ReadFile(filepath.Join(v020PostRollback, "manifest.json"))
-		if err != nil || json.Unmarshal(manifestRaw, &manifest) != nil || manifest.InstanceID != settings.Memos.InstanceID {
-			t.Fatalf("invalid v0.2.0 manifest after rollback: %s %v", manifestRaw, err)
-		}
+	reupgraded, err := NewStore(settings)
+	if err != nil {
+		t.Fatalf("upgrade after rollback failed: %v", err)
+	}
+	defer reupgraded.Close()
+	if err := checkDatabase(filepath.Join(settings.StateDir, "state.sqlite3")); err != nil {
+		t.Fatalf("reupgraded state integrity: %v", err)
 	}
 }
 
-func TestPhase1AutoBackupRotationAndRealV020Rollback(t *testing.T) {
-	runPhase1AutoBackupAndRollback(t, "")
-	if exec.Command("git", "-C", "..", "cat-file", "-e", "d8cd810^{commit}").Run() != nil {
-		return
-	}
-	root := t.TempDir()
-	v020Dir := filepath.Join(root, "v020")
-	if err := os.MkdirAll(v020Dir, 0755); err != nil {
-		t.Fatal(err)
-	}
-	archiveCmd := exec.Command("sh", "-c", "git archive d8cd810 | tar -x -C "+v020Dir)
-	archiveCmd.Dir = filepath.Join("..")
-	if out, err := archiveCmd.CombinedOutput(); err != nil {
-		t.Fatalf("git archive d8cd810: %v %s", err, out)
-	}
-	v020Bin := filepath.Join(root, "moerise-v0.2.0")
-	buildCmd := exec.Command("go", "build", "-buildvcs=false", "-o", v020Bin, ".")
-	buildCmd.Dir = v020Dir
-	if out, err := buildCmd.CombinedOutput(); err != nil {
-		t.Fatalf("build v0.2.0: %v %s", err, out)
-	}
-	runPhase1AutoBackupAndRollback(t, v020Bin)
+func TestAutoBackupRotationAndRollback(t *testing.T) {
+	runPhase1AutoBackupAndRollback(t)
 }
 
 type phase1ClosableLLM struct {

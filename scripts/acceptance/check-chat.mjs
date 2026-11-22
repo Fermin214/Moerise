@@ -152,10 +152,14 @@ try {
   await mkdir(root, { recursive: true });
   await check('编译 Linux Core 与正式 Web', async () => {
     await runProcess(process.execPath, ['web/build.mjs'], { cwd: repo, signal: cancellation.signal });
-    containers.add(`${name}-build`);
-    await docker(['run', ...dockerUser, '--name', `${name}-build`, '--mount', `type=bind,source=${repo},target=/src`, '-w', '/src',
-      '-e', 'GOMODCACHE=/src/.local/gomodcache', '-e', 'GOCACHE=/src/.local/linux-gocache',
-      'golang:1.27.3-bookworm', 'go', 'build', '-o', `/src/.local/${basename(root)}/moerise`, '.'], false, 600_000);
+    if (process.platform === 'linux') {
+      await runProcess('go', ['build', '-o', resolve(root, 'moerise'), '.'], { cwd: repo, signal: cancellation.signal, timeout: 600_000 });
+    } else {
+      containers.add(`${name}-build`);
+      await docker(['run', ...dockerUser, '--name', `${name}-build`, '--mount', `type=bind,source=${repo},target=/src`, '-w', '/src',
+        '-e', 'GOMODCACHE=/src/.local/gomodcache', '-e', 'GOCACHE=/src/.local/linux-gocache',
+        'golang:1.27.3-bookworm', 'go', 'build', '-o', `/src/.local/${basename(root)}/moerise`, '.'], false, 600_000);
+    }
   });
   const sourcePort = await port(), corePort = await port();
   sourceURL = `http://127.0.0.1:${sourcePort}`; coreURL = `http://127.0.0.1:${corePort}`; url = coreURL;

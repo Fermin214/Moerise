@@ -36,7 +36,7 @@ func TestReceiverAggregateExpiryAndWeeklyReport(t *testing.T) {
 			t.Fatal(response.Code)
 		}
 	}
-	for _, offset := range []int{-90, -89, -7, -6, 0} {
+	for _, offset := range []int{-30, -29, -7, -6, 0} {
 		day = today.AddDate(0, 0, offset)
 		send()
 	}
@@ -50,7 +50,7 @@ func TestReceiverAggregateExpiryAndWeeklyReport(t *testing.T) {
 	var earliest string
 	var rows int
 	if err := receiver.db.QueryRow("SELECT min(day),count(*) FROM daily_totals").Scan(&earliest, &rows); err != nil ||
-		earliest != today.AddDate(0, 0, -89).Format(time.DateOnly) || rows != 6 {
+		earliest != today.AddDate(0, 0, -29).Format(time.DateOnly) || rows != 6 {
 		t.Fatalf("retention: %s %d %v", earliest, rows, err)
 	}
 	var output bytes.Buffer

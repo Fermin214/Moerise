@@ -153,7 +153,7 @@ function toggle(onChange) {
 function information(parent) {
   parent.append(el('p', '', l("Moerise 项目维护者接收按日汇总的计数，用于改善功能、等待时间和可靠性。")),
     el('p', '', l("字段示例：Web、客户端版本、Core 版本、浏览器大版本、保存成功、耗时小于 1 秒、用户操作、3 次。")),
-    el('p', '', l("本机最多缓存 48 小时，每 24 小时最多发送一次。接收端保留 90 天的日汇总。关闭后清除未发送的计数。")));
+    el('p', '', l("本机最多缓存 48 小时，每 24 小时最多发送一次。接收端保留 30 天的日汇总。关闭后清除未发送的计数。")));
 }
 function preview() {
   const modal = createModal({ parent: document.body, className: 'card privacy-dialog', label: l("诊断摘要") });

@@ -69,8 +69,8 @@ private fun PrivacyDetails(strings: Strings) {
         "Moerise 项目维护者使用每日汇总比较功能使用次数、等待时间和故障。字段包括客户端和 Core 版本、Android 大版本、操作、结果及耗时档，例如「关键词搜索 · 成功 · 1 秒以内」。",
         "Moerise maintainers use daily totals to compare feature use, waits and failures. Fields include client and Core versions, Android API level, operation, result and duration range, such as “keyword search · success · under 1 s”."))
     Text(strings.text(
-        "本机汇总最多保留 48 小时，每 24 小时最多经本人 Core 发送一次。项目接收端保留每日汇总 90 天。关闭开关会丢弃未发批次。",
-        "This device keeps totals for up to 48 hours and sends at most one batch per 24 hours through your Core. Project daily totals expire after 90 days. Turning sharing off discards unsent counts."))
+        "本机汇总最多保留 48 小时，每 24 小时最多经本人 Core 发送一次。项目接收端保留每日汇总 30 天。关闭开关会丢弃未发批次。",
+        "This device keeps totals for up to 48 hours and sends at most one batch per 24 hours through your Core. Project daily totals expire after 30 days. Turning sharing off discards unsent counts."))
 }
 
 @Composable

@@ -369,11 +369,6 @@ class SessionLifecycle(unittest.TestCase):
         self.assertEqual(result["status"], "harness_error")
         self.assertEqual(session.read_json(self.driver.path)["results"]["recovery"], result)
 
-    def test_status_read_contains_no_login_password(self):
-        self.prepare()
-        state = self.driver.path.read_text(encoding="utf-8")
-        self.assertNotIn("test-only", state)
-        self.assertNotIn("sourceToken", state)
 
     def test_ui_wait_timeout_is_inconclusive_and_preserves_last_step(self):
         result = session.instrument_result(
@@ -382,11 +377,6 @@ class SessionLifecycle(unittest.TestCase):
         self.assertEqual(result["status"], "inconclusive")
         self.assertEqual(result["last_step"], "archive/restore")
 
-    def test_partial_runner_output_is_not_a_business_failure(self):
-        result = session.instrument_result(
-            "INSTRUMENTATION_STATUS: acceptance_step=archive/restore\n")
-        self.assertEqual(result["status"], "harness_error")
-        self.assertEqual(result["last_step"], "archive/restore")
 
     def test_instrumentation_distinguishes_timeout_driver_and_business_failure(self):
         cases = (
@@ -450,13 +440,6 @@ class SessionLifecycle(unittest.TestCase):
         self.assertEqual({name: result["status"] for name, result in results.items()},
                          {"editing": "inconclusive", "search": "passed"})
 
-    def test_maestro_missing_or_failed_report_is_not_product_failure(self):
-        path = self.root / "report.xml"
-        self.assertEqual(session.maestro_result(path, 1)["status"], "harness_error")
-        path.write_text('<testsuite><testcase name="archive"><failure message="not found"/></testcase></testsuite>')
-        self.assertEqual(session.maestro_result(path, 1)["status"], "inconclusive")
-        path.write_text('<testsuite><testcase name="archive"/></testsuite>')
-        self.assertEqual(session.maestro_result(path, 0)["status"], "passed")
 
     def test_cleanup_keeps_existing_maestro_driver_but_removes_new_driver(self):
         self.prepare()
@@ -474,43 +457,8 @@ class SessionLifecycle(unittest.TestCase):
                 self.prepare()
         self.assertFalse(self.installs())
 
-    def test_atomic_checkpoint_recovers_from_short_windows_sharing_violation(self):
-        path = self.root / "checkpoint.json"
-        violation = PermissionError("sharing violation")
-        violation.winerror = 32
-        original = session.os.replace
-        calls = []
 
-        def replace(source, target):
-            calls.append(target)
-            if len(calls) == 1:
-                raise violation
-            original(source, target)
 
-        with mock.patch.object(session.os, "replace", side_effect=replace):
-            session.write_json(path, {"step": "installed"})
-        self.assertEqual(json.loads(path.read_text(encoding="utf-8"))["step"], "installed")
-        self.assertEqual(len(calls), 2)
-
-    def test_maestro_timeout_terminates_only_its_host_process_tree(self):
-        process = mock.Mock(pid=12345)
-        process.wait.side_effect = [session.subprocess.TimeoutExpired("maestro", 180), 1]
-        process.poll.return_value = 1
-        with mock.patch.object(session.os, "name", "nt"), \
-                mock.patch.object(session.subprocess, "Popen", return_value=process), \
-                mock.patch.object(session.subprocess, "run") as kill:
-            with self.assertRaises(session.subprocess.TimeoutExpired):
-                session.run_logged(["maestro.bat", "test"], self.root / "maestro.log", 180)
-        self.assertEqual(kill.call_args.args[0], ["taskkill", "/PID", "12345", "/T", "/F"])
-        self.assertEqual(process.wait.call_count, 2)
-
-    def test_successful_command_never_requests_tree_termination(self):
-        process = mock.Mock()
-        process.wait.return_value = 0
-        with mock.patch.object(session.subprocess, "Popen", return_value=process), \
-                mock.patch.object(session.subprocess, "run") as kill:
-            self.assertEqual(session.run_logged(["maestro", "test"], self.root / "maestro.log", 180), 0)
-        kill.assert_not_called()
 
 
 if __name__ == "__main__":

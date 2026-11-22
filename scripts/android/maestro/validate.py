@@ -67,7 +67,7 @@ LITERAL_TEXT = {
     "关键词|Keyword", "混合|Hybrid", TIMESTAMP_TEXT,
     "Select all|Select All|全选",
     "回顾|Review", "漫步|Walk", "观星|Stargazing",
-    "QQ 私聊|QQ private chat", "设置已保存。|Settings saved\\.",
+    "QQ 私聊|QQ private chat", "发送记录|Delivery history", "设置已保存。|Settings saved\\.",
     r"设置服务繁忙，请稍后重新保存。|The settings service is busy\. Please save again later\.",
     r"设置已保存。|Settings saved\.|设置服务繁忙，请稍后重新保存。|The settings service is busy\. Please save again later\.",
     r"今天没有可回顾的旧笔记。|No old notes to review today\.",

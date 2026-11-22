@@ -176,7 +176,7 @@ export function createMapPage({ request, handleFailure, validNote, renderNote, i
   function dismissReader() {
     if (history.state?.mapReader) history.back();
   }
-  let reopenAfterFullscreen = null;
+  let reopenAfterFullscreen = null, nativeFullscreenActive = false;
   window.addEventListener('popstate', () => {
     if (location.pathname !== '/map' || history.state?.webKey !== pageKey) return;
     applyFullscreen();
@@ -266,10 +266,15 @@ export function createMapPage({ request, handleFailure, validNote, renderNote, i
     const active = !!history.state?.mapFullscreen;
     root.classList.toggle('map-fullscreen', active);
     fullscreen.setAttribute('aria-pressed', String(active));
-    if (!active && document.fullscreenElement === root) document.exitFullscreen().catch(() => {});
+    if (!active && document.fullscreenElement === root) {
+      nativeFullscreenActive = false;
+      document.exitFullscreen().catch(() => { nativeFullscreenActive = !!document.fullscreenElement; });
+    }
   }
   document.addEventListener('fullscreenchange', () => {
-    if (alive && !document.fullscreenElement && history.state?.mapFullscreen) history.back();
+    const wasFullscreen = nativeFullscreenActive;
+    nativeFullscreenActive = !!document.fullscreenElement;
+    if (alive && wasFullscreen && !nativeFullscreenActive && history.state?.mapFullscreen) history.back();
   }, { signal: lifecycle.signal });
   const retry = node('button', 'btn map-retry', l("重试"));
   retry.hidden = true; retry.addEventListener('click', () => load(false)); root.append(retry);

@@ -13,7 +13,7 @@ export const english = {
   "统计说明": "About statistics",
   "Moerise 项目维护者接收按日汇总的计数，用于改善功能、等待时间和可靠性。": "Moerise maintainers receive daily counts to improve features, response times, and reliability.",
   "字段示例：Web、客户端版本、Core 版本、浏览器大版本、保存成功、耗时小于 1 秒、用户操作、3 次。": "Example fields: Web, client version, Core version, browser major version, successful save, under 1 second, user action, count of 3.",
-  "本机最多缓存 48 小时，每 24 小时最多发送一次。接收端保留 90 天的日汇总。关闭后清除未发送的计数。": "Counts stay on this device for up to 48 hours. It sends at most once every 24 hours. Daily totals are kept for 90 days. Turning sharing off clears unsent counts.",
+  "本机最多缓存 48 小时，每 24 小时最多发送一次。接收端保留 30 天的日汇总。关闭后清除未发送的计数。": "Counts stay on this device for up to 48 hours. It sends at most once every 24 hours. Daily totals are kept for 30 days. Turning sharing off clears unsent counts.",
   "诊断摘要": "Diagnostic summary",
   "预览诊断摘要": "Preview diagnostic summary",
   "复制诊断摘要": "Copy diagnostic summary",

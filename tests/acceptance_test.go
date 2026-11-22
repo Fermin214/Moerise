@@ -259,6 +259,11 @@ func newHarness(t *testing.T) *harness {
 
 func newHarnessWithUpstream(t *testing.T, decorate func(string) string) *harness {
 	t.Helper()
+	return newHarnessWithBinary(t, decorate, "")
+}
+
+func newHarnessWithBinary(t *testing.T, decorate func(string) string, binary string) *harness {
+	t.Helper()
 	root := t.TempDir()
 	name := "moerise-acceptance-" + randomToken()[:12]
 	memosListener, err := net.Listen("tcp", "127.0.0.1:0")
@@ -288,12 +293,23 @@ func newHarnessWithUpstream(t *testing.T, decorate func(string) string) *harness
 	s.Memos.User, s.Memos.Token, s.Memos.PageSize = user, pat, 2
 	s.StateDir, s.IndexDir = filepath.Join(root, "state"), filepath.Join(root, "index")
 	s.Sync.PollSeconds, s.Sync.FullSeconds = 60, 300
+	if binary != "" {
+		s.Sync.PollSeconds, s.Sync.FullSeconds = 1, 5
+	}
 	h.reader, h.operator = randomToken(), randomToken()
 	s.AccessTokens = []moerise.AccessToken{{Name: "reader", Token: h.reader, Scopes: []string{"notes:read"}}, {Name: "operator", Token: h.operator, Scopes: []string{"notes:read", "sync:read"}}}
 	s.CursorSecret = randomToken()
 	h.settings, h.upstream = s, pat
 	h.config = filepath.Join(root, "config.json")
 	data, _ := json.Marshal(s)
+	if binary != "" {
+		var config map[string]any
+		if err := json.Unmarshal(data, &config); err != nil {
+			t.Fatal(err)
+		}
+		delete(config["stargazing"].(map[string]any), "llm_naming")
+		data, _ = json.Marshal(config)
+	}
 	if err := os.WriteFile(h.config, data, 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -307,15 +323,9 @@ func newHarnessWithUpstream(t *testing.T, decorate func(string) string) *harness
 	if runtime.GOOS == "windows" {
 		executable += ".exe"
 	}
-	h.binary = filepath.Join(root, executable)
-	goTool := filepath.Join(runtime.GOROOT(), "bin", "go")
-	if runtime.GOOS == "windows" {
-		goTool += ".exe"
-	}
-	build := exec.Command(goTool, "build", "-o", h.binary, ".")
-	build.Dir = ".."
-	if output, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("build: %v %s", err, output)
+	h.binary = binary
+	if h.binary == "" {
+		h.binary = buildHarnessBinary(t, filepath.Join(root, executable))
 	}
 	h.log, err = os.Create(filepath.Join(root, "service.log"))
 	if err != nil {
@@ -336,6 +346,20 @@ func newHarnessWithUpstream(t *testing.T, decorate func(string) string) *harness
 	h.start()
 	h.ready()
 	return h
+}
+
+func buildHarnessBinary(t *testing.T, output string) string {
+	t.Helper()
+	goTool := filepath.Join(runtime.GOROOT(), "bin", "go")
+	if runtime.GOOS == "windows" {
+		goTool += ".exe"
+	}
+	build := exec.Command(goTool, "build", "-o", output, ".")
+	build.Dir = ".."
+	if output, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build: %v %s", err, output)
+	}
+	return output
 }
 
 func TestMemosAcceptance(t *testing.T) {

@@ -11,7 +11,7 @@ on:
         default: full
       suite:
         type: choice
-        options: [all, ui, editing, search, actions, insights, navigation, attachments, language, home, lifecycle, ime, recovery, stars]
+        options: [all, records, insights, explore, ui, editing, search, actions, navigation, attachments, language, home, lifecycle, ime, recovery, stars]
         default: all
       fixture_run:
         description: Reuse fixture APKs from this workflow run
@@ -35,7 +35,6 @@ jobs:
       web: ${{ steps.scope.outputs.web }}
       android: ${{ steps.scope.outputs.android }}
       linux_release: ${{ steps.scope.outputs.linux_release }}
-      apk_release: ${{ steps.scope.outputs.apk_release }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -54,7 +53,7 @@ jobs:
               echo "$name=false" >> "$GITHUB_OUTPUT"
             fi
           }
-          core=(internal main.go go.mod go.sum ':(top,glob)web/*.go' scripts/testweb)
+          core=(internal main.go go.mod go.sum ':(top,glob)web/*.go' scripts/testweb cmd/moerise-telemetry)
           release=(scripts/release .github/workflows/{checks,main-smoke,publish}.yml)
           device=(mobile scripts/android web/assets.go "${core[@]}")
           select_check go "${core[@]}" ':(top,glob)*.go' tests services/layout .github/workflows/checks.yml
@@ -63,10 +62,8 @@ jobs:
           select_check linux_release "${release[@]}" "${core[@]}" web services/layout \
             Dockerfile .dockerignore .env.example config.example.json LICENSE \
             docs/{OPERATIONS,STARGAZING}.md .github/workflows/release.yml
-          select_check apk_release "${release[@]}" "${device[@]}" docs/android/{INSTALL.md,THIRD_PARTY_NOTICES.md,licenses} \
-            LICENSE .github/workflows/android-release.yml
       - name: Check release guards
-        if: steps.scope.outputs.linux_release == 'true' || steps.scope.outputs.apk_release == 'true'
+        if: steps.scope.outputs.linux_release == 'true' || steps.scope.outputs.android == 'true'
         run: python3 -B -m unittest discover -s scripts/release -p 'test_*.py'
   go-suites:
     needs: scope
@@ -114,7 +111,15 @@ jobs:
             -p 127.0.0.1:8766:8766 moerise-layout:checks
       - name: Run Memos acceptance scenarios
         if: matrix.suite == 'integration'
-        run: go test -tags=integration ./tests -v -count=1
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/v020"
+          gh release download v0.2.0 --pattern moerise_0.2.0_linux_amd64.tar.gz --dir "$RUNNER_TEMP/v020"
+          tar -xzf "$RUNNER_TEMP/v020/moerise_0.2.0_linux_amd64.tar.gz" -C "$RUNNER_TEMP/v020"
+          export MOERISE_V020_BINARY="$RUNNER_TEMP/v020/moerise_0.2.0_linux_amd64/moerise"
+          test -x "$MOERISE_V020_BINARY"
+          go test -tags=integration ./tests -v -count=1
   go:
     needs: [scope, go-suites]
     if: ${{ always() && github.event_name == 'pull_request' }}
@@ -166,16 +171,10 @@ jobs:
     permissions:
       contents: read
     uses: ./.github/workflows/release.yml
-  apk-preview:
-    needs: scope
-    if: needs.scope.outputs.apk_release == 'true'
-    permissions:
-      contents: read
-    uses: ./.github/workflows/android-release.yml
   pr-gate:
     name: PR gate
     if: ${{ always() && github.event_name == 'pull_request' }}
-    needs: [scope, go, web, android-pr, linux-preview, apk-preview]
+    needs: [scope, go, web, android-pr, linux-preview]
     runs-on: ubuntu-24.04
     env:
       SCOPE_RESULT: ${{ needs.scope.result }}
@@ -186,8 +185,6 @@ jobs:
       ANDROID_RESULT: ${{ needs.android-pr.result }}
       LINUX_REQUIRED: ${{ needs.scope.outputs.linux_release }}
       LINUX_RESULT: ${{ needs.linux-preview.result }}
-      APK_REQUIRED: ${{ needs.scope.outputs.apk_release }}
-      APK_RESULT: ${{ needs.apk-preview.result }}
     steps:
       - name: Require all applicable checks
         shell: bash
@@ -200,7 +197,6 @@ jobs:
           require_applicable Web "$WEB_REQUIRED" "$WEB_RESULT"
           require_applicable Android "$ANDROID_REQUIRED" "$ANDROID_RESULT"
           require_applicable Linux "$LINUX_REQUIRED" "$LINUX_RESULT"
-          require_applicable APK "$APK_REQUIRED" "$APK_RESULT"
   android-device:
     if: github.event_name == 'workflow_dispatch' && inputs.mode == 'android-device'
     permissions:
