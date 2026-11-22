@@ -16,8 +16,11 @@ data class InsightState(
 ) {
     val running get() = chat?.turns?.any { it.assistant.status == "running" } == true
     val canStop get() = streaming || running || recovery.partial?.assistant?.status == "running"
+    val canLeaveGeneration get() = recovery.generation?.let { pending ->
+        chat?.turns?.firstOrNull { it.requestId == pending.input.requestId }?.assistant?.status in setOf("failed", "interrupted", "completed", "canceled")
+    } ?: true
     val locked get() = busy || running || conflicted || stopping || deleting ||
-        recovery.generation != null || recovery.mutation != null || recovery.creation != null
+        !canLeaveGeneration || recovery.mutation != null || recovery.creation != null
     val canDelete get() = chat != null && pendingSave == null && !saving && !stopping && !deleting &&
         (recovery.mutation?.method in setOf(null, "DELETE")) &&
         recovery.creation == null && (!busy || streaming || running)

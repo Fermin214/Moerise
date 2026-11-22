@@ -103,6 +103,10 @@ class InsightRecoveryTest {
             withTimeout(10_000) { controller.state.first { !it.busy && it.chat?.turns?.lastOrNull()?.assistant?.status == "interrupted" } }
             assertTrue(gets.get() > 0)
             assertEquals(1, generationBodies.size)
+            assertFalse(controller.state.value.busy)
+            assertFalse(controller.state.value.streaming)
+            assertFalse(controller.state.value.running)
+            assertFalse(controller.state.value.locked)
             withContext(dispatcher) { controller.retryGeneration() }
             withTimeout(10_000) { controller.state.first { !it.busy && it.recovery.generation == null } }
             assertEquals(2, generationBodies.size)

@@ -261,7 +261,7 @@ class InsightController(
 
     fun open(id: String) = execute { active, account, stamp ->
         require(state.value.pendingSave == null && !state.value.saving) { "CHAT_OUTCOME_UNKNOWN" }
-        require(!state.value.running && state.value.recovery.generation == null &&
+        require(!state.value.running && state.value.canLeaveGeneration &&
             state.value.recovery.mutation == null && state.value.recovery.creation == null) { "CHAT_BUSY" }
         picker.discard()
         record(account, InsightRecovery(chatId = chatId(id)), stamp)
@@ -270,7 +270,7 @@ class InsightController(
     }
     fun newChat() = execute { _, account, stamp ->
         require(state.value.pendingSave == null && !state.value.saving) { "CHAT_OUTCOME_UNKNOWN" }
-        require(!state.value.running && state.value.recovery.generation == null &&
+        require(!state.value.running && state.value.canLeaveGeneration &&
             state.value.recovery.mutation == null && state.value.recovery.creation == null) { "CHAT_BUSY" }
         picker.discard()
         record(account, InsightRecovery(), stamp)
@@ -358,7 +358,8 @@ class InsightController(
     private suspend fun persistSelection(active: CoreClient, account: String, stamp: Long,
         names: List<String> = state.value.recovery.selected, selected: List<MaterialCandidate>? = null): ChatMaterials {
         require(!state.value.conflicted) { "CHAT_CONFLICT" }
-        require(state.value.recovery.generation == null && !state.value.running) { "CHAT_BUSY" }
+        require(state.value.canLeaveGeneration && !state.value.running) { "CHAT_BUSY" }
+        if (state.value.recovery.generation != null) record(account, state.value.recovery.copy(generation = null), stamp)
         if (state.value.recovery.mutation != null) {
             require(state.value.recovery.mutation!!.method == "PATCH") { "CHAT_OUTCOME_UNKNOWN" }
             reconcileMutation(active, account, stamp)
@@ -425,7 +426,8 @@ class InsightController(
         mutable.update { it.copy(starting = kind, failedGeneration = false) }
         execute { active, account, stamp ->
             require(!picker.state.value.visible) { "CHAT_BUSY" }
-            require(state.value.recovery.generation == null && !state.value.running) { "CHAT_BUSY" }
+            require(state.value.canLeaveGeneration && !state.value.running) { "CHAT_BUSY" }
+            if (state.value.recovery.generation != null) record(account, state.value.recovery.copy(generation = null), stamp)
             require(kind == "insight" || kind == "question" && state.value.recovery.question.isNotBlank()) { "INVALID_ARGUMENT" }
             require(state.value.recovery.selected.isNotEmpty()) { "CHAT_MATERIAL_REQUIRED" }
             if (state.value.chat == null) persistSelection(active, account, stamp)
@@ -500,6 +502,17 @@ class InsightController(
             latest = state.value.recovery
         } catch (failure: Exception) {
             if (!firstText && account == this.account()) privacy?.record("insight", usageResult(failure), started, error = failure)
+            if (failure !is CancellationException) {
+                pendingSave?.cancelAndJoin()
+                record(account, latest, stamp)
+                try {
+                    readChat(active, account, stamp, loadMaterials = false)
+                    latest = state.value.recovery
+                    partial = latest.partial
+                } catch (recoveryError: Exception) {
+                    if (recoveryError is CancellationException) throw recoveryError
+                }
+            }
             throw failure
         } finally {
             pendingSave?.cancel()

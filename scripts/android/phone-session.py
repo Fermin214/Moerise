@@ -20,7 +20,7 @@ import urllib.error
 import urllib.request
 from maestro_runner import (
     DRIVERS, MaestroRunner, catalog, flow_digest, input_method_checkpoint,
-    junit_result as maestro_result, restore_input_method,
+    junit_result as maestro_result, restore_input_method, FixtureAPI, FixtureError,
 )
 
 APP = "io.github.fermin214.moerise.fixture"
@@ -194,6 +194,16 @@ class PhoneSession:
         self.path = self.directory / "session.json"
         self.state = read_json(self.path) if self.path.exists() else None
         self.output.mkdir(parents=True, exist_ok=True)
+        self.record_video = False
+        self.maestro = shutil.which("maestro") or shutil.which("maestro.bat") or "maestro"
+
+    @property
+    def app(self):
+        return self.state.get("app", APP) if self.state else APP
+
+    @property
+    def release(self):
+        return self.app == APP.removesuffix(".fixture")
 
     def save(self):
         self.state["updated_at"] = now()
@@ -226,6 +236,10 @@ class PhoneSession:
 
     def connection(self):
         data = read_json(self.state["fixture"])
+        if self.release:
+            FixtureAPI(data, trusted_https=True, test_origin=self.state["test_origin"],
+                       allow_production=self.state.get("allow_production", False))
+            return data
         origin = urllib.parse.urlsplit(data["origin"])
         if (origin.scheme != "http" or origin.hostname not in ("localhost", "127.0.0.1", "::1")
                 or origin.path not in ("", "/") or origin.query or origin.fragment or origin.username
@@ -238,6 +252,8 @@ class PhoneSession:
 
     def connect(self):
         self.connection()
+        if self.release:
+            return
         mapping = f"tcp:{self.state['port']}"
         for line in self.adb.run("reverse", "--list").splitlines():
             parts = line.split()
@@ -348,7 +364,7 @@ class PhoneSession:
         return {"status": "ready", "session": str(self.directory), "manual": "Moerise Fixture"}
 
     def verify_artifacts(self, specialists=False):
-        required = (APP, RUNNER_APP) if specialists else (APP,)
+        required = (APP, RUNNER_APP) if specialists else (self.app,)
         for package in required:
             if package not in self.state["artifacts"]:
                 raise CommandError("prepare_required", "专项测试需要先执行 prepare -Specialists")
@@ -433,6 +449,8 @@ class PhoneSession:
         return identity.hexdigest()
 
     def run(self, groups, retry=False):
+        if self.release:
+            return self.run_release(groups, retry)
         self.require_ready()
         self.verify_artifacts(specialists=any(group in (*CASES, "recovery") for group in groups))
         self.connect()
@@ -527,8 +545,8 @@ class PhoneSession:
         self.require_ready()
         self.verify_artifacts()
         self.connect()
-        self.adb.run("shell", "am", "start", "-W", "-n", ACTIVITY)
-        return {"status": "manual_ready", "app": "Moerise Fixture", "connection": "USB",
+        self.adb.run("shell", "am", "start", "-W", "-n", self.app + "/io.github.fermin214.moerise.MainActivity")
+        return {"status": "manual_ready", "app": self.app, "connection": "USB",
                 "session": str(self.directory), "cleanup": "显式 cleanup 才卸载"}
 
     def record(self, group, outcome, note):
@@ -537,6 +555,8 @@ class PhoneSession:
         self.state.setdefault("manual_results", {})[group] = {
             "kind": "manual", "status": outcome, "note": note, "recorded_at": now()}
         self.save()
+        if self.release:
+            self.summary()
         return self.state["manual_results"][group]
 
     def remember_maestro(self, result):
@@ -555,6 +575,8 @@ class PhoneSession:
             self.state["files"].append(remote)
 
     def ui(self, flow, executable=None, note_name=None, retry=False, preparing=False):
+        if self.release:
+            raise ValueError("正式包真机使用 accept 或 run --group")
         self.require_ready(preparing=preparing)
         self.verify_artifacts()
         key = "maestro:" + flow
@@ -576,7 +598,186 @@ class PhoneSession:
         self.save()
         return result
 
-    def cleanup(self):
+    def prepare_release(self, apk, fixture, test_origin, confirmed=False, allow_production=False,
+                        install=False, clear_data=False, uninstall=False):
+        if self.adb.serial.startswith("emulator-"):
+            raise ValueError("正式包模拟器使用 release-smoke.py；此入口只接收真机")
+        if not confirmed:
+            raise ValueError("先人工完成装包、首次系统确认，并确认 App 已退出生产账号，再传 --confirm-ready")
+        data = read_json(fixture)
+        FixtureAPI(data, trusted_https=True, test_origin=test_origin, allow_production=allow_production)
+        if urllib.parse.urlsplit(data["origin"]).scheme != "https":
+            raise ValueError("正式包真机需要独立 HTTPS 测试服务")
+        app = APP.removesuffix(".fixture")
+        artifact = {"path": str(Path(apk).resolve()), "sha256": digest(apk)}
+        if self.state and self.state.get("status") == "cleaned":
+            raise ValueError("会话已清理；使用独立会话目录")
+        if self.state and (self.state.get("app") != app or self.state["serial"] != self.adb.serial or
+                           self.state["artifacts"].get(app) != artifact or
+                           self.state.get("test_origin") != test_origin or
+                           self.state.get("fixture") != str(Path(fixture).resolve())):
+            raise ValueError("设备、APK 或服务已改变；使用独立会话")
+        if self.adb.run("get-state").strip() != "device":
+            raise CommandError("device_unavailable", "手机尚未连接")
+        if proxy_enabled(self.network()):
+            raise CommandError("proxy_present", "手机存在全局代理")
+        if uninstall and not install:
+            raise ValueError("卸载后需要显式 --install 重新安装")
+        if self.state is None:
+            self.directory.mkdir(parents=True, exist_ok=True)
+            self.state = {"schema": 1, "app": app, "mode": "release-phone", "serial": self.adb.serial,
+                "commit": self.commit, "fixture": str(Path(fixture).resolve()), "test_origin": test_origin,
+                "allow_production": allow_production, "port": urllib.parse.urlsplit(test_origin).port,
+                "created_at": now(), "status": "preparing", "artifacts": {app: artifact}, "results": {},
+                "files": [], "reverse_preexisting": True}
+            self.save()
+        if uninstall and self.package_paths(app):
+            self.adb.run("uninstall", app, timeout=90)
+        if install:
+            self.adb.run("install", "-r", str(Path(apk).resolve()), timeout=120)
+        if self.package_hash(app) != artifact["sha256"]:
+            raise CommandError("installed_hash_mismatch", "先人工安装指定 APK，或显式传 --install")
+        if clear_data:
+            self.adb.run("shell", "pm", "clear", app)
+        if uninstall or install or clear_data:
+            self.state["results"] = {}
+        self.state["status"] = "ready"
+        self.save()
+
+    def device_checkpoint(self):
+        return {"wifi_on": self.adb.run("shell", "settings", "get", "global", "wifi_on").strip(),
+                "mobile_data": self.adb.run("shell", "settings", "get", "global", "mobile_data").strip(),
+                "stay_on_while_plugged_in": self.adb.run("shell", "settings", "get", "global", "stay_on_while_plugged_in").strip(),
+                "screen_off_timeout": self.adb.run("shell", "settings", "get", "system", "screen_off_timeout").strip()}
+
+    def restore_checkpoint(self):
+        saved = self.state.get("device_before")
+        errors = []
+        if not saved:
+            return errors
+        for key, value in saved.items():
+            try:
+                namespace = "system" if key == "screen_off_timeout" else "global"
+                current = self.adb.run("shell", "settings", "get", namespace, key).strip()
+                if current == value:
+                    continue
+                if key in ("wifi_on", "mobile_data"):
+                    if value not in ("0", "1"):
+                        raise ValueError("原网络状态无效")
+                    self.adb.run("shell", "svc", "wifi" if key == "wifi_on" else "data",
+                                 "enable" if value == "1" else "disable")
+                elif value == "null":
+                    self.adb.run("shell", "settings", "delete", namespace, key)
+                elif value.isdigit():
+                    self.adb.run("shell", "settings", "put", namespace, key, value)
+                else:
+                    raise ValueError("原亮屏设置无效")
+                if self.adb.run("shell", "settings", "get", namespace, key).strip() != value:
+                    raise RuntimeError("设备状态恢复读回不一致")
+            except (CommandError, OSError, ValueError, RuntimeError):
+                errors.append(key)
+        if not errors:
+            self.state.pop("device_before", None)
+        self.save()
+        return errors
+
+    def summary(self):
+        categories = {"failed": "product", "harness_error": "tool", "environment_blocked": "environment",
+                      "inconclusive": "unconfirmed", "passed": "none", "reused_pass": "none"}
+        rows = []
+        for group, result in self.state["results"].items():
+            flows = result.get("flows", {group: result})
+            for flow, item in flows.items():
+                rows.append({"module": group, "flow": flow, "status": item["status"],
+                    "category": categories.get(item["status"], "unconfirmed"),
+                    "cause": item.get("cause"), "screenshots": item.get("screenshots", []),
+                    "recordings": item.get("recordings", []), "log": item.get("log"),
+                    "last_step": item.get("last_step")})
+        report = {"mode": "release-phone", "app": self.app, "apk": self.state["artifacts"][self.app],
+                  "serial": self.adb.serial, "items": rows,
+                  "cleanup_errors": self.state.get("cleanup_errors", []),
+                  "manual_results": self.state.get("manual_results", {}),
+                  "visual_review": "集中复核关键截图和录像中的日历、图标、流式残影及布局"}
+        write_json(self.directory / "report.json", report)
+        lines = ["# Android 正式包真机验收", "", "| 模块 | 场景 | 状态 | 分类 | 证据 |", "| --- | --- | --- | --- | --- |"]
+        for row in rows:
+            paths = [*row["screenshots"], *row["recordings"], *([row["log"]] if row["log"] else [])]
+            links = " · ".join("[" + Path(path).name + "](" + Path(path).resolve().as_uri() + ")" for path in paths)
+            lines.append(f"| {row['module']} | {row['flow']} | {row['status']} | {row['category']} | {links} |")
+        for group, item in report["manual_results"].items():
+            lines.append(f"| {group} | manual | {item['status']} | manual | {item['note'].replace('|', '/').replace(chr(10), ' ')} |")
+        lines.extend(["", report["visual_review"], "", "设备恢复错误：" + ", ".join(report["cleanup_errors"])])
+        (self.directory / "report.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+        return report
+
+    def run_release(self, groups, retry=False):
+        if any(group not in UI_GROUPS for group in groups):
+            raise ValueError("正式包使用 catalog 中的 UI 模块；instrumentation 仅用于 fixture")
+        self.require_ready()
+        self.verify_artifacts()
+        errors = self.restore_checkpoint()
+        if errors:
+            raise CommandError("device_restore_failed", ", ".join(errors))
+        self.state["device_before"] = self.device_checkpoint()
+        self.state["maestro_preexisting"] = {package: bool(self.package_paths(package)) for package in DRIVERS}
+        self.save()
+        outcome, pending = {}, []
+        try:
+            runner = MaestroRunner(self.repo, self.adb, self.state["fixture"], self.output / "maestro",
+                self.maestro, release=True, phone=True,
+                test_origin=self.state["test_origin"], allow_production=self.state.get("allow_production", False), record=self.record_video)
+            for group in groups:
+                previous = self.state["results"].get(group)
+                if previous and previous["status"] == "passed" and not retry and previous.get("flow_sha256") == self.execution_digest(group):
+                    outcome[group] = {**previous, "status": "reused_pass"}
+                else:
+                    pending.append(group)
+            flows = list(dict.fromkeys(flow for group in pending for flow in runner.catalog["groups"][group]))
+            def checkpoint(flow, result):
+                self.remember_maestro(result)
+                for group in pending:
+                    if flow not in runner.catalog["groups"][group]:
+                        continue
+                    saved = self.state["results"].setdefault(group, {"status": "inconclusive", "flows": {}})
+                    saved["flows"][flow] = result
+                    saved["status"] = "inconclusive"
+                    saved.pop("flow_sha256", None)
+                self.save()
+            results = runner.run_batch(flows, on_result=checkpoint) if flows else {}
+            for group in pending:
+                selected = {flow: results[flow] for flow in runner.catalog["groups"][group]}
+                for result in selected.values():
+                    self.remember_maestro(result)
+                status = next((item["status"] for item in selected.values() if item["status"] != "passed"), "passed")
+                outcome[group] = {"status": status, "flows": selected, "flow_sha256": self.execution_digest(group)}
+                self.state["results"][group] = outcome[group]
+            self.save()
+        finally:
+            self.state["cleanup_errors"] = self.restore_checkpoint()
+            operations = [("input_restore", self.restore_device_input)]
+            for package in reversed(DRIVERS):
+                operations.append(("driver_stop", lambda package=package: self.adb.run("shell", "am", "force-stop", package)))
+                if not self.state.get("maestro_preexisting", {}).get(package, True):
+                    operations.append(("driver_remove", lambda package=package: self.adb.run("uninstall", package, timeout=90)))
+            operations.append(("app_stop", lambda: self.adb.run("shell", "am", "force-stop", self.app)))
+            try:
+                existing = self.adb.run("forward", "--list", check=False).splitlines()
+            except (CommandError, OSError):
+                existing = []
+                self.state["cleanup_errors"].append("forward_readback")
+            for mapping, target in self.state.get("maestro_forward_bindings", {}).items():
+                if f"{self.adb.serial} {mapping} {target}" in existing:
+                    operations.append(("forward_remove", lambda mapping=mapping: self.adb.run("forward", "--remove", mapping)))
+            for label, operation in operations:
+                try:
+                    operation()
+                except (CommandError, OSError):
+                    self.state["cleanup_errors"].append(label)
+            self.save()
+            self.summary()
+        return outcome
+
+    def cleanup(self, uninstall=False):
         if not self.state:
             raise ValueError("会话不存在")
         if self.state["serial"] != self.adb.serial:
@@ -586,9 +787,10 @@ class PhoneSession:
         if self.adb.run("get-state").strip() != "device":
             raise CommandError("device_unavailable", "手机尚未连接")
         self.restore_device_input()
+        restore_errors = self.restore_checkpoint() if self.release else []
         results = {}
-        for package in self.state["artifacts"]:
-            if package not in APK_PATHS:
+        for package in self.state["artifacts"] if uninstall else ():
+            if package not in (*APK_PATHS, APP.removesuffix(".fixture")):
                 continue
             if self.package_paths(package):
                 text = self.adb.run("uninstall", package, timeout=90)
@@ -610,29 +812,38 @@ class PhoneSession:
             if re.fullmatch(r"/sdcard/Download/moerise-maestro-[a-f0-9]{32}\.txt", remote):
                 self.adb.run("shell", "rm", "-f", remote)
         mapping = f"tcp:{self.state['port']}"
-        if not self.state["reverse_preexisting"]:
+        if not self.release and not self.state["reverse_preexisting"]:
             lines = self.adb.run("reverse", "--list").splitlines()
             if any(line.split()[-2:] == [mapping, mapping] for line in lines):
                 self.adb.run("reverse", "--remove", mapping)
         network = self.network()
         baseline = self.state.get("network_before", network)
         changed = [key for key in NETWORK_KEYS if network.get(key) != baseline.get(key)]
-        self.state["cleanup"] = {"packages_removed": results, "network_changed": changed,
+        self.state["cleanup"] = {"packages_removed": results, "network_changed": changed, "restore_errors": restore_errors,
                                  "finished_at": now()}
-        self.state["status"] = "cleaned" if all(results.values()) and not changed else "cleanup_attention"
+        self.state["status"] = "cleaned" if all(results.values()) and not changed and not restore_errors else "cleanup_attention"
         self.save()
         return self.state["cleanup"]
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("prepare", "run", "ui", "manual", "status", "record", "cleanup"))
+    parser.add_argument("action", choices=("prepare", "accept", "run", "ui", "manual", "status", "record", "cleanup"))
     parser.add_argument("--repo", default=str(Path(__file__).resolve().parents[2]))
     parser.add_argument("--session", required=True)
     parser.add_argument("--output")
     parser.add_argument("--commit")
     parser.add_argument("--adb", default="adb")
     parser.add_argument("--serial", default=os.environ.get("ANDROID_SERIAL"))
+    parser.add_argument("--release", action="store_true")
+    parser.add_argument("--apk", type=Path)
+    parser.add_argument("--test-origin")
+    parser.add_argument("--confirm-ready", action="store_true")
+    parser.add_argument("--allow-production", action="store_true")
+    parser.add_argument("--record", action="store_true")
+    parser.add_argument("--install", action="store_true")
+    parser.add_argument("--clear-data", action="store_true")
+    parser.add_argument("--uninstall", action="store_true")
     parser.add_argument("--manifest")
     parser.add_argument("--fixture")
     parser.add_argument("--specialists", action="store_true")
@@ -648,6 +859,10 @@ def main():
         datetime.now(timezone.utc).strftime(args.action + '-%Y%m%dT%H%M%S.%fZ'))
     args.commit = args.commit or subprocess.check_output(
         ['git', '-C', args.repo, 'rev-parse', 'HEAD'], text=True).strip()
+    if args.release and not args.serial:
+        parser.error("--release 必须显式指定 --serial")
+    if args.action == "accept" and not args.release:
+        parser.error("accept 需要 --release")
     if not args.serial:
         state = Path(args.session) / 'session.json'
         if state.exists():
@@ -659,8 +874,22 @@ def main():
                 parser.error('传入唯一真机的 --serial')
             args.serial = ready[0]
     session = PhoneSession(args.repo, args.session, args.output, Adb(args.adb, args.serial), args.commit)
+    session.maestro = args.maestro
+    session.record_video = args.record
     try:
-        if args.action == "prepare":
+        if session.release and not args.release:
+            parser.error("正式包会话需要显式 --release")
+        if args.release and session.state and not session.release:
+            parser.error("fixture 会话不能使用 --release；选择独立目录")
+        if args.action == "accept":
+            if not args.apk or not args.fixture or not args.test_origin:
+                parser.error("accept 需要 --apk、--fixture 和 --test-origin")
+            session.prepare_release(args.apk, args.fixture, args.test_origin, args.confirm_ready,
+                                    args.allow_production, args.install, args.clear_data, args.uninstall)
+            result = session.run(args.group or list(DEFAULT_UI_GROUPS), args.retry)
+        elif args.action == "prepare":
+            if args.release:
+                parser.error("正式包真机使用 accept")
             if not args.manifest or not args.fixture:
                 parser.error("prepare 需要 --manifest 和 --fixture")
             result = session.prepare(args.manifest, args.fixture, args.specialists)
@@ -677,18 +906,20 @@ def main():
             if not args.flow:
                 parser.error("ui 需要 --flow")
             result = session.ui(args.flow, args.maestro, args.note_name, args.retry)
+        elif args.action == "cleanup":
+            result = session.cleanup(uninstall=args.uninstall)
         else:
             result = getattr(session, args.action)()
         print(json.dumps(result, ensure_ascii=False, indent=2))
-        if args.action == "run" and any(
-                value.get("status") not in ("passed", "reused_pass") for value in result.values()):
+        if args.action in ("run", "accept") and (session.state.get("cleanup_errors") or any(
+                value.get("status") not in ("passed", "reused_pass") for value in result.values())):
             return 1
         if args.action == "ui" and result["status"] not in ("passed", "reused_pass"):
             return 1
         if args.action == "cleanup" and session.state["status"] != "cleaned":
             return 1
         return 0
-    except (CommandError, ValueError, OSError) as error:
+    except (CommandError, FixtureError, ValueError, OSError) as error:
         report = {"status": "environment_blocked" if isinstance(error, CommandError) else "harness_error",
                   "cause": getattr(error, "code", type(error).__name__), "message": str(error)}
         write_json(Path(args.output) / "session-error.json", report)

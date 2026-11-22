@@ -44,3 +44,16 @@ onFlowComplete:
       id: note_editor_empty
     timeout: 15000
     label: Wait for the editor to clear
+- tapOn:
+    id: open_search
+    enabled: true
+    label: Open search in the minified release
+- extendedWaitUntil:
+    visible:
+      id: search_query
+    timeout: 15000
+    label: Require release search semantics
+- tapOn:
+    id: search_close
+    enabled: true
+    label: Close release search

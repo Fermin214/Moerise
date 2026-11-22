@@ -93,7 +93,7 @@ GitHub Actions 的 Android 检查通过 `android/ci-device-check.sh` 启动隔�
 | `environment.ps1` | 解析 JDK、共享 SDK/Gradle 缓存及 Go/Docker CLI；`-ResolveOnly` 只定义解析函数 |
 | `build.ps1` | 串行 Gradle 任务、统一 JVM 参数和构建日志；支持 `-Offline`、`-ValidateOnly` |
 | `phone.ps1` | 持久真机会话：目标 APK 复用、Maestro 默认回归、按需专项、人工接管与显式清理 |
-| `phone-session.py` | 会话身份、设备 APK 摘要、步骤日志、失败分类与结果持久化 |
+| `phone-session.py` | fixture 会话与 `accept --release` 正式包真机入口；设备/APK 绑定、连续模块、补测、统一报告和设备恢复，详见 [Maestro](android/maestro/README.md#windows-正式包真机入口) |
 | `maestro_runner.py`、`maestro-run.py` | 共用 UI 执行、独立测试数据、服务端后验、JUnit 与脱敏产物 |
 | `maestro/` | 登录、编辑、搜索、归档删除、洞察、导航、附件和语言流程及静态校验 |
 | `acceptance.ps1` | 动态设备选择、隔离包安装、登录/笔记/输入法；`-Recovery` 增加离线和后台自动同步；`-SkipBuild` 复用 APK |

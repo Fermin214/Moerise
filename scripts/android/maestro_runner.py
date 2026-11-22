@@ -57,14 +57,18 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 
 
 class FixtureAPI:
-    def __init__(self, connection, trusted_https=False):
+    def __init__(self, connection, trusted_https=False, test_origin=None, allow_production=False):
         self.connection = connection
         origin = urllib.parse.urlsplit(connection["origin"])
+        explicit = test_origin is not None
+        if explicit and (connection["origin"].rstrip("/") != test_origin.rstrip("/") or
+                         connection.get("environment") != "test" and not allow_production):
+            raise ValueError("显式地址必须匹配连接档案，且档案必须声明 environment=test")
         if (origin.scheme not in (("http", "https") if trusted_https else ("http",))
-                or origin.hostname not in ("127.0.0.1", "localhost", "::1")
+                or not origin.hostname or (not explicit and origin.hostname not in ("127.0.0.1", "localhost", "::1"))
                 or origin.path not in ("", "/") or origin.query or origin.fragment
-                or origin.username or origin.password or not origin.port
-                or connection.get("username") != "android-owner" or not connection.get("password")):
+                or origin.username or origin.password or (not explicit and not origin.port)
+                or (not explicit and connection.get("username") != "android-owner") or not connection.get("password")):
             raise ValueError("Maestro 仅连接回环隔离服务与 android-owner 测试账号")
         self.origin = connection["origin"].rstrip("/")
         self.csrf = ""
@@ -137,6 +141,25 @@ class FixtureAPI:
                 raise ValueError("隔离笔记分页游标重复")
             seen.add(token)
         raise ValueError("隔离笔记分页超过上限")
+
+
+def fresh_ui_dump(adb, output, timeout=15):
+    output = Path(output)
+    output.unlink(missing_ok=True)
+    remote = "/sdcard/moerise-ui-" + uuid.uuid4().hex + ".xml"
+    try:
+        for package in reversed(DRIVERS):
+            adb.run("shell", "am", "force-stop", package)
+        adb.run("shell", "rm", "-f", remote)
+        adb.run("shell", "uiautomator", "dump", remote, timeout=timeout)
+        xml = adb.run("shell", "cat", remote)
+        if ET.fromstring(xml).tag != "hierarchy":
+            raise ValueError("UI 层级根节点无效")
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(xml, encoding="utf-8")
+        return xml
+    finally:
+        adb.run("shell", "rm", "-f", remote, check=False)
 
 
 def junit_result(path, returncode):
@@ -268,14 +291,20 @@ def last_failed_step(directory):
 
 
 class MaestroRunner:
-    def __init__(self, root, adb, fixture, output, executable="maestro", release=False):
+    def __init__(self, root, adb, fixture, output, executable="maestro", release=False,
+                 phone=False, test_origin=None, allow_production=False, record=False):
         self.root, self.adb, self.output = Path(root), adb, Path(output)
         self.connection = json.loads(Path(fixture).read_text(encoding="utf-8-sig"))
-        if release and (not adb.serial.startswith("emulator-") or
+        if phone and (not release or adb.serial.startswith("emulator-") or test_origin is None):
+            raise ValueError("正式包真机需要 --release、真机序列号与显式测试地址")
+        if release and (not phone and not adb.serial.startswith("emulator-") or
                         urllib.parse.urlsplit(self.connection["origin"]).scheme != "https"):
             raise ValueError("发行包自动检查需要隔离模拟器与可信 HTTPS")
         self.app = APP.removesuffix(".fixture") if release else APP
-        self.api = FixtureAPI(self.connection, trusted_https=release)
+        self.api = FixtureAPI(self.connection, trusted_https=release, test_origin=test_origin,
+                              allow_production=allow_production)
+        self.phone = phone
+        self.record = record
         self.executable = executable
         self.catalog = catalog(self.root)
         self.remote_file = None
@@ -399,7 +428,36 @@ class MaestroRunner:
                 # Only read back pending results; never repeat a create, save or delete action.
                 time.sleep(.5)
 
-    def run_flow(self, flow, note_name=None):
+    @contextmanager
+    def recording(self, directory):
+        if not self.record:
+            yield
+            return
+        if self.adb.run("shell", "pidof", "screenrecord", check=False).strip():
+            raise RuntimeError("设备已有录像进程；先结束该录像或省略 --record")
+        remote = "/sdcard/moerise-recording-" + uuid.uuid4().hex + ".mp4"
+        command = [self.adb.executable, "-s", self.adb.serial, "shell", "screenrecord", "--time-limit", "180", remote]
+        with (directory / "recording.log").open("wb") as log:
+            process = subprocess.Popen(command, stdout=log, stderr=subprocess.STDOUT)
+            try:
+                yield
+            finally:
+                if process.poll() is None:
+                    try:
+                        pid = self.adb.run("shell", "pidof", "screenrecord", check=False).strip()
+                        if re.fullmatch(r"[0-9]+", pid):
+                            self.adb.run("shell", "kill", "-2", pid)
+                        process.wait(timeout=10)
+                    finally:
+                        if process.poll() is None:
+                            process.kill()
+                            process.wait(timeout=5)
+                try:
+                    self.adb.run("pull", remote, str(directory / "recording.mp4"), timeout=60)
+                finally:
+                    self.adb.run("shell", "rm", "-f", remote)
+
+    def run_flow(self, flow, note_name=None, prepared=None, deferred=False):
         if flow not in self.catalog["flows"]:
             raise ValueError("未知 Maestro 场景")
         entry = self.catalog["flows"][flow]
@@ -418,8 +476,9 @@ class MaestroRunner:
             (directory / "validation.log").write_bytes(validation.stdout + validation.stderr)
             if validation.returncode:
                 raise ValueError("Maestro 流程静态校验失败")
-            self.api.login()
-            if flow == "navigation":
+            if not deferred:
+                self.api.login()
+            if flow == "navigation" and not deferred:
                 configuration = self.api.request("GET", "/api/app/v1/settings")
                 channel = configuration["settings"]["channel"]
                 if channel.get("qq_app_id") or configuration["secrets"]["qq_app_secret"]["configured"]:
@@ -433,7 +492,7 @@ class MaestroRunner:
                     "settings": {"channel": {"kind": "none", "qq_app_id": "100000019"}, "notifications": {"enabled": False}},
                     "secrets": {"qq_app_secret": {"action": "replace", "value": uuid.uuid4().hex}},
                 })
-            values, remote = self.prepare_data(flow, entry, note_name)
+            values, remote = prepared if prepared is not None else self.prepare_data(flow, entry, note_name)
             parameters = {key: value for key, value in values.items() if key != "ATTACHMENT_SHA256"}
             write_result(directory / "test-data.json", parameters)
             before = set(self.adb.run("forward", "--list").splitlines())
@@ -462,10 +521,12 @@ class MaestroRunner:
             for key, value in parameters.items():
                 args.extend(["-e", key + "=" + value])
             args.append(str(self.root / "scripts/android/maestro" / entry["file"]))
-            with preserve_input_method(self.adb, input_method_checkpoint(self.root, self.adb.serial)):
+            with preserve_input_method(self.adb, input_method_checkpoint(self.root, self.adb.serial)), self.recording(directory):
                 code = execute(args, result["log"], entry["timeout_seconds"], environment)
             result.update(junit_result(result["report"], code))
-            if result["status"] == "passed":
+            if deferred:
+                pass
+            elif result["status"] == "passed":
                 result["server_assertions"] = self.wait_verify(flow, values)
             elif flow in ("editing", "actions", "archive", "attachments", "insights"):
                 try:
@@ -513,10 +574,30 @@ class MaestroRunner:
                     result["cleanup_errors"].append("channel_settings_restore")
                 except Exception:
                     result["cleanup_errors"].append("channel_settings_restore")
-            try:
-                self.api.close()
-            except Exception:
-                result["cleanup_errors"].append("host_session_logout")
+            if not deferred:
+                try:
+                    self.api.close()
+                except Exception:
+                    result["cleanup_errors"].append("host_session_logout")
+            if before is not None:
+                for package in reversed(DRIVERS):
+                    try:
+                        self.adb.run("shell", "am", "force-stop", package)
+                    except Exception:
+                        result["cleanup_errors"].append("driver_stop")
+                for line in result.get("added_forwards", []):
+                    parts = line.split()
+                    if len(parts) == 3 and parts[0] == self.adb.serial:
+                        try:
+                            self.adb.run("forward", "--remove", parts[1])
+                        except Exception:
+                            result["cleanup_errors"].append("forward_remove")
+                try:
+                    fresh_ui_dump(self.adb, directory / "window.xml")
+                except Exception as error:
+                    result["collection_error"] = type(error).__name__
+            result["screenshots"] = [str(path) for path in directory.rglob("*.png")]
+            result["recordings"] = [str(path) for path in directory.rglob("*.mp4")]
             if result["cleanup_errors"] and result["status"] == "passed":
                 result.update(status="harness_error", cause="cleanup_error")
             password = self.connection["password"]
@@ -532,6 +613,86 @@ class MaestroRunner:
             result["finished_at"] = datetime.now(timezone.utc).isoformat()
             write_result(directory / "result.json", result)
         return result
+
+    def run_batch(self, flows, on_result=None):
+        prepared, results, channel_fixture, cleanup_errors = {}, {}, None, []
+        try:
+            self.api.login()
+            if "navigation" in flows:
+                configuration = self.api.request("GET", "/api/app/v1/settings")
+                channel = configuration["settings"]["channel"]
+                if channel.get("qq_app_id") or configuration["secrets"]["qq_app_secret"]["configured"]:
+                    raise ValueError("导航场景需要未配置 QQ 的隔离服务")
+                channel_fixture = {
+                    "channel": {"kind": channel["kind"], "qq_app_id": ""},
+                    "notifications": {"enabled": configuration["settings"]["notifications"]["enabled"]},
+                }
+                self.api.request("PATCH", "/api/app/v1/settings", {
+                    "version": configuration["version"],
+                    "settings": {"channel": {"kind": "none", "qq_app_id": "100000019"}, "notifications": {"enabled": False}},
+                    "secrets": {"qq_app_secret": {"action": "replace", "value": uuid.uuid4().hex}},
+                })
+            for flow in flows:
+                try:
+                    prepared[flow] = self.prepare_data(flow, self.catalog["flows"][flow])
+                except (FixtureError, OSError, ValueError, RuntimeError) as error:
+                    results[flow] = {"status": "environment_blocked" if isinstance(error, FixtureError) else "harness_error",
+                                     "cause": "data_preparation", "error_type": type(error).__name__}
+            for flow in flows:
+                if flow not in results:
+                    results[flow] = self.run_flow(flow, prepared=prepared[flow], deferred=True)
+                if on_result:
+                    on_result(flow, results[flow])
+            for flow, result in results.items():
+                if flow not in prepared:
+                    continue
+                try:
+                    observed = self.wait_verify(flow, prepared[flow][0])
+                    result["server_assertions"] = observed
+                except AssertionError as error:
+                    result["server_observation"] = {"status": "not_satisfied", "assertion": str(error)}
+                    if result["status"] == "passed":
+                        result.update(status="failed", cause="server_assertion", assertion=str(error))
+                except FixtureError as error:
+                    result["server_observation"] = {"status": "environment_blocked", "http_status": error.status}
+                    if result["status"] == "passed":
+                        result.update(status="environment_blocked", cause="fixture_request", http_status=error.status)
+                except (ValueError, KeyError, TypeError) as error:
+                    result.update(status="harness_error", cause="server_response", error_type=type(error).__name__)
+        except (FixtureError, OSError, ValueError, RuntimeError) as error:
+            for flow in flows:
+                results.setdefault(flow, {"status": "environment_blocked" if isinstance(error, FixtureError) else "harness_error",
+                                          "cause": "batch_preparation", "error_type": type(error).__name__})
+        finally:
+            for values, remote in prepared.values():
+                if remote:
+                    try:
+                        self.adb.run("shell", "rm", "-f", remote)
+                    except Exception:
+                        cleanup_errors.append("test_file_remove")
+            if channel_fixture is not None:
+                try:
+                    configuration = self.api.request("GET", "/api/app/v1/settings")
+                    if configuration["settings"]["channel"].get("qq_app_id") == "100000019":
+                        self.api.request("PATCH", "/api/app/v1/settings", {
+                            "version": configuration["version"], "settings": channel_fixture,
+                            "secrets": {"qq_app_secret": {"action": "clear"}},
+                        })
+                except Exception:
+                    cleanup_errors.append("channel_settings_restore")
+            try:
+                self.api.close()
+            except Exception:
+                cleanup_errors.append("host_session_logout")
+            for flow, result in results.items():
+                result.setdefault("cleanup_errors", []).extend(cleanup_errors)
+                if result["cleanup_errors"] and result["status"] == "passed":
+                    result.update(status="harness_error", cause="cleanup_error")
+                write_result(self.output / flow / "result.json", result)
+                if on_result:
+                    on_result(flow, result)
+            write_result(self.output / "results.json", results)
+        return results
 
     def run_group(self, group):
         flows = self.catalog["groups"][group]

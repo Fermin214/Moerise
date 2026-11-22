@@ -272,6 +272,8 @@ class NoteRepository(private val db: LocalDatabase, private val files: Attachmen
         reset || upserts.isNotEmpty() || deletions.isNotEmpty()
     }
 
+    suspend fun localWalkNote(key: String, visited: List<String>): Note? = db.dao().walkNote(key, visited)?.toNote()
+
     suspend fun localNote(key: String, name: String): Note? = db.dao().note(key, name)?.toNote()
 
     suspend fun localNotesPage(key: String, state: String, limit: Int, offset: Int): Pair<List<Note>, Boolean> {

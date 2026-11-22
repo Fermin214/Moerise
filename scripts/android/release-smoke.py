@@ -12,7 +12,7 @@ import time
 import urllib.request
 import xml.etree.ElementTree as ET
 
-from maestro_runner import DRIVERS, MaestroRunner, ROOT, write_result
+from maestro_runner import DRIVERS, MaestroRunner, ROOT, write_result, fresh_ui_dump
 
 
 def command_failure(error):
@@ -29,10 +29,7 @@ def require_restored_session(adb, app, output, command_error):
     errors = []
     while time.monotonic() < deadline:
         try:
-            adb.run("shell", "uiautomator", "dump", "/sdcard/moerise-upgrade-session.xml", timeout=15)
-            xml = adb.run("shell", "cat", "/sdcard/moerise-upgrade-session.xml")
-            output.parent.mkdir(parents=True, exist_ok=True)
-            output.write_text(xml, encoding="utf-8")
+            xml = fresh_ui_dump(adb, output)
             ids = {node.get("resource-id", "").rsplit(":id/", 1)[-1]
                    for node in ET.fromstring(xml).iter("node")}
         except (command_error, ET.ParseError) as error:
@@ -132,11 +129,7 @@ def main():
             if remaining <= 0:
                 raise RuntimeError("应用重开后未恢复登录")
             try:
-                adb.run("shell", "rm", "-f", "/sdcard/moerise-release-reopen.xml")
-                adb.run("shell", "uiautomator", "dump", "/sdcard/moerise-release-reopen.xml",
-                        timeout=min(10, remaining))
-                xml = adb.run("shell", "cat", "/sdcard/moerise-release-reopen.xml")
-                (args.output / "reopened-window.xml").write_text(xml, encoding="utf-8")
+                xml = fresh_ui_dump(adb, args.output / "reopened-window.xml", timeout=min(10, remaining))
                 ids = {node.get("resource-id", "").rsplit(":id/", 1)[-1]
                        for node in ET.fromstring(xml).iter("node")}
                 if "open_menu" in ids and ids.isdisjoint({"server_login", "welcome_enter"}):

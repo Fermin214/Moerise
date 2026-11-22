@@ -136,6 +136,77 @@ class MaestroExecutionTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             runner.FixtureAPI(connection, trusted_https=True)
 
+    def test_release_phone_requires_explicit_test_environment_and_matching_origin(self):
+        connection = json.loads(self.connection.read_text())
+        connection.update(origin="https://phone-test.example", environment="test")
+        self.connection.write_text(json.dumps(connection))
+        self.adb.serial = "real-phone"
+        engine = runner.MaestroRunner(runner.ROOT, self.adb, self.connection, self.output / "phone",
+                                      release=True, phone=True, test_origin=connection["origin"])
+        self.assertEqual(engine.app, "io.github.fermin214.moerise")
+        with self.assertRaises(ValueError):
+            runner.MaestroRunner(runner.ROOT, self.adb, self.connection, self.output / "phone",
+                                release=True, phone=True, test_origin="https://other.example")
+        connection.pop("environment")
+        with self.assertRaises(ValueError):
+            runner.FixtureAPI(connection, trusted_https=True, test_origin=connection["origin"])
+        runner.FixtureAPI(connection, trusted_https=True, test_origin=connection["origin"], allow_production=True)
+
+    def test_dump_killed_does_not_read_stale_remote_or_local_xml(self):
+        output = self.output / "window.xml"
+        output.write_text('<hierarchy><node resource-id="open_search"/></hierarchy>')
+        def killed(*args, **kwargs):
+            if args[:3] == ("shell", "uiautomator", "dump"):
+                raise RuntimeError("137 Killed")
+            return ""
+        with mock.patch.object(self.adb, "run", side_effect=killed) as adb:
+            with self.assertRaisesRegex(RuntimeError, "137"):
+                runner.fresh_ui_dump(self.adb, output)
+        self.assertFalse(output.exists())
+        calls = [call.args for call in adb.call_args_list]
+        self.assertFalse(any(call[:2] == ("shell", "cat") for call in calls))
+        dump = next(index for index, call in enumerate(calls) if call[:3] == ("shell", "uiautomator", "dump"))
+        for package in runner.DRIVERS:
+            self.assertIn(("shell", "am", "force-stop", package), calls[:dump])
+        self.assertTrue(calls[-1][3].endswith(".xml"))
+
+    def test_dump_uses_unique_paths_and_rejects_invalid_xml(self):
+        output = self.output / "window.xml"
+        def dump(*args, **kwargs):
+            self.adb.calls.append(args)
+            return '<hierarchy><node resource-id="open_search"/></hierarchy>' if args[:2] == ("shell", "cat") else ""
+        with mock.patch.object(self.adb, "run", side_effect=dump):
+            runner.fresh_ui_dump(self.adb, output)
+            runner.fresh_ui_dump(self.adb, output)
+        paths = [call[3] for call in self.adb.calls if call[:3] == ("shell", "uiautomator", "dump")]
+        self.assertEqual(len(set(paths)), 2)
+        with mock.patch.object(self.adb, "run", return_value="invalid"):
+            with self.assertRaises(runner.ET.ParseError):
+                runner.fresh_ui_dump(self.adb, output)
+        self.assertFalse(output.exists())
+
+    def test_batch_prepares_all_data_before_ui_and_verifies_after_independent_failures(self):
+        events = []
+        flows = ["editing", "search"]
+        def prepare(flow, entry):
+            events.append("prepare:" + flow)
+            return {"flow": flow}, None
+        def execute(flow, **kwargs):
+            self.assertTrue(kwargs["deferred"])
+            events.append("ui:" + flow)
+            return {"status": "harness_error" if flow == "editing" else "passed"}
+        def verify(flow, values):
+            events.append("verify:" + flow)
+            return {}
+        with mock.patch.object(self.engine, "prepare_data", side_effect=prepare), \
+                mock.patch.object(self.engine, "run_flow", side_effect=execute), \
+                mock.patch.object(self.engine, "wait_verify", side_effect=verify):
+            result = self.engine.run_batch(flows)
+        self.assertEqual(events, ["prepare:editing", "prepare:search", "ui:editing", "ui:search", "verify:editing", "verify:search"])
+        self.assertEqual(result["editing"]["status"], "harness_error")
+        self.assertEqual(result["search"]["status"], "passed")
+        self.engine.api.close.assert_called_once()
+
     def test_unreported_or_failed_maestro_flow_cannot_pass(self):
         report = self.output / "report.xml"
         self.assertEqual(runner.junit_result(report, 0)["status"], "harness_error")

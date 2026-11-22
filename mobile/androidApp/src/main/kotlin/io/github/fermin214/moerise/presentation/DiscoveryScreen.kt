@@ -100,7 +100,7 @@ fun DiscoveryScreen(page: String, mobile: MobileController, strings: Strings, re
                                 }
                             }
                         } else {
-                            if (walk.embeddingEnabled == false) {
+                            if (!walk.offline && walk.embeddingEnabled == false) {
                                 DiscoveryMessage(strings.text("请在设置中启用 Embedding，再开始漫步。", "Enable embeddings in Settings before starting a walk."))
                                 TextButton(onClick = onSettings, modifier = Modifier.testTag("walk_settings")) {
                                     Text(strings.text("打开设置", "Open Settings"))
@@ -133,7 +133,7 @@ fun DiscoveryScreen(page: String, mobile: MobileController, strings: Strings, re
                                 }
                             } else if (result?.exhausted != true) {
                                 BoxWithConstraints(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
-                                    val startEnabled = connection.connected && !loading && walk.embeddingEnabled == true
+                                    val startEnabled = !loading && (walk.offline && walk.floaters.isNotEmpty() || connection.connected && walk.embeddingEnabled == true)
                                     walk.floaters.forEachIndexed { index, note ->
                                         WalkFloater(note, index, strings, startEnabled, { mobile.walk.start(note.name) },
                                             Modifier.align(when (index) {
@@ -226,7 +226,7 @@ fun DiscoveryScreen(page: String, mobile: MobileController, strings: Strings, re
                                 border = BorderStroke(1.dp, Color(0xFFD5E1F7))) { Text(strings.text("停止", "Stop")) }
                             if (walk.result?.item != null && walk.result?.exhausted == false) WebAction(
                                 strings.text(if (loading) "翻找中…" else "继续漫步", if (loading) "Looking…" else "Continue walk"),
-                                onClick = mobile.walk::next, enabled = connection.connected && !loading && walk.embeddingEnabled == true,
+                                onClick = mobile.walk::next, enabled = !loading && (walk.offline && walk.floaters.isNotEmpty() || connection.connected && walk.embeddingEnabled == true),
                                 modifier = Modifier.testTag("walk_next"),
                             )
                         }

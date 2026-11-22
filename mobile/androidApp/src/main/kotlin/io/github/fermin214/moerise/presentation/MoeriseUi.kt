@@ -221,7 +221,7 @@ fun WebToolbar(
 ) {
     val searchExpanded = LocalWebSearchOpen.current
     val syncAction = onSync ?: LocalWebSyncAction.current
-    Column(modifier.fillMaxWidth()) {
+    Column(modifier.fillMaxWidth().platformTestTags()) {
         Row(Modifier.fillMaxWidth().height(56.dp).padding(horizontal = 8.dp),
             verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
             IconButton(onClick = onMenu, modifier = Modifier.size(44.dp).testTag("open_menu")) {

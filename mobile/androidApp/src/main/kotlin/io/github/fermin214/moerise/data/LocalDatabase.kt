@@ -159,6 +159,8 @@ interface LocalDao {
     @Query("SELECT * FROM notes WHERE accountKey = :key AND name = :name LIMIT 1") suspend fun note(key: String, name: String): NoteEntity?
     @Query("SELECT * FROM notes WHERE accountKey = :key AND state = :state ORDER BY createTime DESC, name DESC LIMIT :limit OFFSET :offset")
     suspend fun notesPage(key: String, state: String, limit: Int, offset: Int): List<NoteEntity>
+    @Query("SELECT * FROM notes WHERE accountKey = :key AND state = 'NORMAL' AND name NOT IN (:visited) ORDER BY RANDOM() LIMIT 1")
+    suspend fun walkNote(key: String, visited: List<String>): NoteEntity?
     @Query("SELECT COUNT(*) FROM notes WHERE accountKey = :key AND state = :state") suspend fun countNotes(key: String, state: String): Int
     @Query("SELECT * FROM notes WHERE accountKey = :key AND (:state = 'ALL' OR state = :state) ORDER BY createTime DESC, name DESC")
     suspend fun notesByState(key: String, state: String): List<NoteEntity>
