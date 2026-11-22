@@ -719,7 +719,10 @@ class PhoneSession:
         if errors:
             raise CommandError("device_restore_failed", ", ".join(errors))
         self.state["device_before"] = self.device_checkpoint()
-        self.state["maestro_preexisting"] = {package: bool(self.package_paths(package)) for package in DRIVERS}
+        if not self.state.get("resources_pending"):
+            self.state["maestro_preexisting"] = {package: bool(self.package_paths(package)) for package in DRIVERS}
+            self.state["forwards_before"] = self.adb.run("forward", "--list").splitlines()
+        self.state["resources_pending"] = True
         self.save()
         outcome, pending = {}, []
         try:
@@ -765,6 +768,10 @@ class PhoneSession:
             except (CommandError, OSError):
                 existing = []
                 self.state["cleanup_errors"].append("forward_readback")
+            for line in set(existing) - set(self.state.get("forwards_before", existing)):
+                parts = line.split()
+                if len(parts) == 3 and parts[0] == self.adb.serial:
+                    self.state.setdefault("maestro_forward_bindings", {})[parts[1]] = parts[2]
             for mapping, target in self.state.get("maestro_forward_bindings", {}).items():
                 if f"{self.adb.serial} {mapping} {target}" in existing:
                     operations.append(("forward_remove", lambda mapping=mapping: self.adb.run("forward", "--remove", mapping)))
@@ -773,6 +780,8 @@ class PhoneSession:
                     operation()
                 except (CommandError, OSError):
                     self.state["cleanup_errors"].append(label)
+            if not self.state["cleanup_errors"]:
+                self.state.pop("resources_pending", None)
             self.save()
             self.summary()
         return outcome

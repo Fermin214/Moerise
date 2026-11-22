@@ -203,6 +203,26 @@ class SessionLifecycle(unittest.TestCase):
         self.assertNotIn("device_before", self.driver.state)
         self.assertTrue((self.driver.directory / "report.json").exists())
 
+    def test_release_resume_keeps_new_driver_ownership_and_recovers_unrecorded_forward(self):
+        apk = self.release_ready()
+        self.driver.state.update(resources_pending=True, maestro_preexisting={package: False for package in session.DRIVERS}, forwards_before=[])
+        self.adb.installed.update({package: b"new driver" for package in session.DRIVERS})
+        original = self.adb.run
+        def adb(*args, **kwargs):
+            if args == ("forward", "--list"):
+                return self.adb.serial + " tcp:7001 tcp:7002\n"
+            return original(*args, **kwargs)
+        engine = mock.Mock(catalog={"groups": {"search": ["search"]}})
+        engine.run_batch.return_value = {"search": {"status": "passed"}}
+        with mock.patch.object(self.driver, "package_hash", return_value=session.digest(apk)), \
+                mock.patch.object(self.adb, "run", side_effect=adb), \
+                mock.patch.object(session, "MaestroRunner", return_value=engine):
+            self.driver.run(["search"])
+        for package in session.DRIVERS:
+            self.assertNotIn(package, self.adb.installed)
+        self.assertIn(("forward", "--remove", "tcp:7001"), self.adb.calls)
+        self.assertNotIn("resources_pending", self.driver.state)
+
     def test_retry_after_install_confirmation_does_not_reinstall_completed_app(self):
         self.adb.fail_runner_install = True
         with self.assertRaisesRegex(session.CommandError, "手机确认"):

@@ -305,9 +305,12 @@ class MaestroRunner:
                               allow_production=allow_production)
         self.phone = phone
         self.record = record
+        self.batch_preparing = False
         self.executable = executable
         self.catalog = catalog(self.root)
         self.remote_file = None
+        self.channel_fixture = None
+        self.conflict_fixture = None
         self.output.mkdir(parents=True, exist_ok=True)
 
     def prepare_data(self, flow, entry, note_name=None):
@@ -334,6 +337,8 @@ class MaestroRunner:
                 note = self.api.create(values["NOTE_TEXT"], "maestro-seed-" + marker)
             peer = self.api.create(values["PEER_NOTE_TEXT"], "maestro-peer-" + marker)
             values.update(NOTE_NAME=note["name"], PEER_NOTE_NAME=peer["name"])
+        if self.phone and self.batch_preparing:
+            self.remember_drafts(values)
         if flow == "attachments":
             data = f"Moerise attachment {marker}\n".encode()
             local = self.output / values["ATTACHMENT_NAME"]
@@ -442,26 +447,30 @@ class MaestroRunner:
             try:
                 yield
             finally:
-                if process.poll() is None:
-                    try:
-                        pid = self.adb.run("shell", "pidof", "screenrecord", check=False).strip()
-                        if re.fullmatch(r"[0-9]+", pid):
-                            self.adb.run("shell", "kill", "-2", pid)
-                        process.wait(timeout=10)
-                    finally:
-                        if process.poll() is None:
-                            process.kill()
-                            process.wait(timeout=5)
                 try:
-                    self.adb.run("pull", remote, str(directory / "recording.mp4"), timeout=60)
+                    if process.poll() is None:
+                        try:
+                            pid = self.adb.run("shell", "pidof", "screenrecord", check=False).strip()
+                            if re.fullmatch(r"[0-9]+", pid):
+                                self.adb.run("shell", "kill", "-2", pid)
+                            process.wait(timeout=10)
+                        finally:
+                            if process.poll() is None:
+                                process.kill()
+                                process.wait(timeout=5)
                 finally:
-                    self.adb.run("shell", "rm", "-f", remote)
+                    try:
+                        self.adb.run("pull", remote, str(directory / "recording.mp4"), timeout=60)
+                    finally:
+                        self.adb.run("shell", "rm", "-f", remote)
 
     def run_flow(self, flow, note_name=None, prepared=None, deferred=False):
         if flow not in self.catalog["flows"]:
             raise ValueError("未知 Maestro 场景")
         entry = self.catalog["flows"][flow]
         directory = self.output / flow
+        if directory.exists():
+            directory = self.output / (flow + "-" + uuid.uuid4().hex[:8])
         directory.mkdir(parents=True, exist_ok=False)
         result = {"kind": "maestro", "flow": flow, "status": "harness_error",
                   "log": str(directory / "console.log"), "report": str(directory / "report.xml"),
@@ -479,19 +488,7 @@ class MaestroRunner:
             if not deferred:
                 self.api.login()
             if flow == "navigation" and not deferred:
-                configuration = self.api.request("GET", "/api/app/v1/settings")
-                channel = configuration["settings"]["channel"]
-                if channel.get("qq_app_id") or configuration["secrets"]["qq_app_secret"]["configured"]:
-                    raise ValueError("导航场景需要未配置 QQ 的隔离服务")
-                channel_fixture = {
-                    "channel": {"kind": channel["kind"], "qq_app_id": ""},
-                    "notifications": {"enabled": configuration["settings"]["notifications"]["enabled"]},
-                }
-                self.api.request("PATCH", "/api/app/v1/settings", {
-                    "version": configuration["version"],
-                    "settings": {"channel": {"kind": "none", "qq_app_id": "100000019"}, "notifications": {"enabled": False}},
-                    "secrets": {"qq_app_secret": {"action": "replace", "value": uuid.uuid4().hex}},
-                })
+                channel_fixture = self.prepare_channel()
             values, remote = prepared if prepared is not None else self.prepare_data(flow, entry, note_name)
             parameters = {key: value for key, value in values.items() if key != "ATTACHMENT_SHA256"}
             write_result(directory / "test-data.json", parameters)
@@ -561,14 +558,9 @@ class MaestroRunner:
                         self.adb.run("forward", "--list").splitlines()) - before)
                 except Exception:
                     result["cleanup_errors"].append("forward_readback")
-            if channel_fixture is not None:
+            if not deferred and (channel_fixture is not None or self.channel_fixture is not None):
                 try:
-                    configuration = self.api.request("GET", "/api/app/v1/settings")
-                    if configuration["settings"]["channel"].get("qq_app_id") == "100000019":
-                        self.api.request("PATCH", "/api/app/v1/settings", {
-                            "version": configuration["version"], "settings": channel_fixture,
-                            "secrets": {"qq_app_secret": {"action": "clear"}},
-                        })
+                    self.restore_channel(channel_fixture or self.channel_fixture)
                 except FixtureError as error:
                     result["channel_restore_error"] = {"http_status": error.status, "error_code": error.code}
                     result["cleanup_errors"].append("channel_settings_restore")
@@ -614,33 +606,127 @@ class MaestroRunner:
             write_result(directory / "result.json", result)
         return result
 
+    def draft_checkpoint(self):
+        identity = hashlib.sha256((self.adb.serial + "\0" + self.connection["origin"]).encode()).hexdigest()[:16]
+        return self.root / ".local/android" / ("maestro-drafts-" + identity + ".json")
+
+    def remember_drafts(self, values):
+        path = self.draft_checkpoint()
+        saved = json.loads(path.read_text(encoding="utf-8")) if path.exists() else []
+        for key in ("DRAFT_TEXT", "NEW_NOTE_TEXT", "ATTACHMENT_NOTE_TEXT"):
+            if values[key] not in saved:
+                saved.append(values[key])
+        write_result(path, saved)
+
+    def recover_drafts(self):
+        path = self.draft_checkpoint()
+        if not path.exists():
+            return []
+        saved = json.loads(path.read_text(encoding="utf-8"))
+        if not saved:
+            path.unlink()
+            return []
+        if any(not re.fullmatch(r"Maestro (?:draft|created|file) [a-f0-9]{32}", text) for text in saved):
+            raise ValueError("测试草稿检查点无效")
+        values = {"APP_ID": self.app, "SCREENSHOT_PREFIX": "recover-draft", "DRAFT_TEXT": saved[0],
+                  "INPUT_SUFFIX": "." if self.adb.serial.startswith("emulator-") else UNICODE_INPUT_SUFFIX}
+        self.adb.run("shell", "am", "force-stop", self.app)
+        result = self.run_flow("recover-draft", prepared=(values, None), deferred=True)
+        if result["status"] != "passed":
+            return [result]
+        xml = fresh_ui_dump(self.adb, self.output / "draft-window.xml")
+        editors = [node for node in ET.fromstring(xml).iter("node")
+                   if node.get("resource-id", "").rsplit(":id/", 1)[-1] == "note_editor"]
+        if len(editors) != 1:
+            return [{"status": "harness_error", "cause": "composer_not_observed"}]
+        text = editors[0].get("text", "")
+        if text:
+            if text not in saved:
+                return [{"status": "environment_blocked", "cause": "unknown_draft_preserved"}]
+            values["DRAFT_TEXT"] = text
+            result = self.run_flow("recover-draft", prepared=(values, None), deferred=True)
+            if result["status"] != "passed":
+                return [result]
+        path.unlink()
+        return [result]
+
+    def prepare_conflict(self):
+        marker = uuid.uuid4().hex
+        original = self.api.create("Maestro conflict " + marker, "maestro-conflict-" + marker)
+        path = "/api/app/v1/notes/" + original["name"].split("/")[1]
+        changed = self.api.request("PATCH", path, {"source_hash": original["source_hash"],
+            "content": "Maestro remote conflict " + marker}, "maestro-conflict-update-" + marker)
+        self.conflict_fixture = {"original": original, "changed": changed}
+        write_result(self.output / "conflict.json", self.conflict_fixture)
+
+    def verify_conflict(self):
+        fixture = self.conflict_fixture
+        if fixture is None:
+            return {}
+        original, changed = fixture["original"], fixture["changed"]
+        path = "/api/app/v1/notes/" + original["name"].split("/")[1]
+        try:
+            self.api.request("PATCH", path, {"source_hash": original["source_hash"], "content": original["content"]},
+                             "maestro-stale-" + uuid.uuid4().hex)
+        except FixtureError as error:
+            assert (error.status, error.code) == (409, "SOURCE_CHANGED"), "stale_source_error"
+        else:
+            raise AssertionError("stale_source_accepted")
+        assert self.api.note(changed["name"])["content"] == changed["content"], "conflict_overwrote_remote"
+        return {"stale_source_rejected": True, "remote_content_preserved": True, "fixture": str(self.output / "conflict.json")}
+
     def run_batch(self, flows, on_result=None):
         prepared, results, channel_fixture, cleanup_errors = {}, {}, None, []
         try:
             self.api.login()
+            if self.phone and flows:
+                probe = self.prepare_data("test-source", self.catalog["flows"]["test-source"])
+                preflight = self.run_flow("test-source", prepared=probe, deferred=True)
+                write_result(self.output / "test-source-result.json", preflight)
+                if preflight["status"] != "passed":
+                    for flow in flows:
+                        results[flow] = {**preflight, "status": "environment_blocked", "cause": "phone_test_source_unverified"}
+                    return results
+            if self.phone:
+                recovery = self.recover_drafts()
+                if any(item["status"] != "passed" for item in recovery):
+                    for flow in flows:
+                        results[flow] = {"status": "environment_blocked", "cause": "test_draft_recovery", "recovery": recovery}
+                    return results
             if "navigation" in flows:
-                configuration = self.api.request("GET", "/api/app/v1/settings")
-                channel = configuration["settings"]["channel"]
-                if channel.get("qq_app_id") or configuration["secrets"]["qq_app_secret"]["configured"]:
-                    raise ValueError("导航场景需要未配置 QQ 的隔离服务")
-                channel_fixture = {
-                    "channel": {"kind": channel["kind"], "qq_app_id": ""},
-                    "notifications": {"enabled": configuration["settings"]["notifications"]["enabled"]},
-                }
-                self.api.request("PATCH", "/api/app/v1/settings", {
-                    "version": configuration["version"],
-                    "settings": {"channel": {"kind": "none", "qq_app_id": "100000019"}, "notifications": {"enabled": False}},
-                    "secrets": {"qq_app_secret": {"action": "replace", "value": uuid.uuid4().hex}},
-                })
+                try:
+                    channel_fixture = self.prepare_channel()
+                except (FixtureError, ValueError, KeyError) as error:
+                    results["navigation"] = {"status": "environment_blocked" if isinstance(error, FixtureError) else "harness_error",
+                                             "cause": "channel_preparation", "error_type": type(error).__name__}
+            if "editing" in flows:
+                try:
+                    self.prepare_conflict()
+                except (FixtureError, ValueError, KeyError) as error:
+                    results["editing"] = {"status": "environment_blocked" if isinstance(error, FixtureError) else "harness_error",
+                                          "cause": "conflict_preparation", "error_type": type(error).__name__}
+            self.batch_preparing = True
             for flow in flows:
+                if flow in results:
+                    continue
                 try:
                     prepared[flow] = self.prepare_data(flow, self.catalog["flows"][flow])
                 except (FixtureError, OSError, ValueError, RuntimeError) as error:
                     results[flow] = {"status": "environment_blocked" if isinstance(error, FixtureError) else "harness_error",
                                      "cause": "data_preparation", "error_type": type(error).__name__}
+            self.batch_preparing = False
             for flow in flows:
                 if flow not in results:
+                    if self.phone:
+                        self.remember_drafts(prepared[flow][0])
+                        self.adb.run("shell", "am", "force-stop", self.app)
                     results[flow] = self.run_flow(flow, prepared=prepared[flow], deferred=True)
+                    if self.phone:
+                        recovery = self.recover_drafts()
+                        if any(item["status"] != "passed" for item in recovery):
+                            results[flow]["draft_recovery"] = recovery
+                            if results[flow]["status"] == "passed":
+                                results[flow].update(status="inconclusive", cause="test_draft_recovery")
                 if on_result:
                     on_result(flow, results[flow])
             for flow, result in results.items():
@@ -648,6 +734,8 @@ class MaestroRunner:
                     continue
                 try:
                     observed = self.wait_verify(flow, prepared[flow][0])
+                    if flow == "editing":
+                        observed["conflict"] = self.verify_conflict()
                     result["server_assertions"] = observed
                 except AssertionError as error:
                     result["server_observation"] = {"status": "not_satisfied", "assertion": str(error)}
@@ -664,20 +752,16 @@ class MaestroRunner:
                 results.setdefault(flow, {"status": "environment_blocked" if isinstance(error, FixtureError) else "harness_error",
                                           "cause": "batch_preparation", "error_type": type(error).__name__})
         finally:
+            self.batch_preparing = False
             for values, remote in prepared.values():
                 if remote:
                     try:
                         self.adb.run("shell", "rm", "-f", remote)
                     except Exception:
                         cleanup_errors.append("test_file_remove")
-            if channel_fixture is not None:
+            if channel_fixture is not None or self.channel_fixture is not None:
                 try:
-                    configuration = self.api.request("GET", "/api/app/v1/settings")
-                    if configuration["settings"]["channel"].get("qq_app_id") == "100000019":
-                        self.api.request("PATCH", "/api/app/v1/settings", {
-                            "version": configuration["version"], "settings": channel_fixture,
-                            "secrets": {"qq_app_secret": {"action": "clear"}},
-                        })
+                    self.restore_channel(channel_fixture or self.channel_fixture)
                 except Exception:
                     cleanup_errors.append("channel_settings_restore")
             try:
@@ -693,6 +777,41 @@ class MaestroRunner:
                     on_result(flow, result)
             write_result(self.output / "results.json", results)
         return results
+
+    def channel_checkpoint(self):
+        identity = hashlib.sha256(self.connection["origin"].encode()).hexdigest()[:16]
+        return self.root / ".local/android" / ("maestro-channel-" + identity + ".json")
+
+    def prepare_channel(self):
+        checkpoint = self.channel_checkpoint()
+        if checkpoint.exists():
+            self.channel_fixture = json.loads(checkpoint.read_text(encoding="utf-8"))
+            self.restore_channel(self.channel_fixture)
+        configuration = self.api.request("GET", "/api/app/v1/settings")
+        channel = configuration["settings"]["channel"]
+        if channel.get("qq_app_id") or configuration["secrets"]["qq_app_secret"]["configured"]:
+            raise ValueError("导航场景需要未配置 QQ 的隔离服务")
+        saved = {"channel": {"kind": channel["kind"], "qq_app_id": ""},
+                 "notifications": {"enabled": configuration["settings"]["notifications"]["enabled"]}}
+        self.channel_fixture = saved
+        write_result(checkpoint, saved)
+        self.api.request("PATCH", "/api/app/v1/settings", {
+            "version": configuration["version"],
+            "settings": {"channel": {"kind": "none", "qq_app_id": "100000019"}, "notifications": {"enabled": False}},
+            "secrets": {"qq_app_secret": {"action": "replace", "value": uuid.uuid4().hex}},
+        })
+        return saved
+
+    def restore_channel(self, saved):
+        configuration = self.api.request("GET", "/api/app/v1/settings")
+        if configuration["settings"]["channel"].get("qq_app_id") == "100000019":
+            self.api.request("PATCH", "/api/app/v1/settings", {
+                "version": configuration["version"], "settings": saved,
+                "secrets": {"qq_app_secret": {"action": "clear"}},
+            })
+
+        self.channel_checkpoint().unlink(missing_ok=True)
+        self.channel_fixture = None
 
     def run_group(self, group):
         flows = self.catalog["groups"][group]

@@ -204,13 +204,13 @@ class InsightController(
         // Durable server results replace local stream previews; reading never starts model generation.
         record(account, saved.copy(
             selected = selected, selectionInitialized = true,
-            generation = if (resolved?.assistant?.status in setOf("completed", "canceled")) null else pending,
+            generation = if (resolved?.assistant?.status in setOf("completed", "canceled", "truncated")) null else pending,
             partial = partial,
             question = if (resolved?.assistant?.status == "completed" && pending?.input?.let {
                 it.kind == "question" && saved.question == it.content
             } == true) "" else saved.question,
         ), stamp)
-        if (resolved?.assistant?.status in setOf("failed", "canceled", "interrupted"))
+        if (resolved?.assistant?.status in setOf("failed", "canceled", "interrupted", "truncated"))
             mutable.update { it.copy(error = resolved!!.assistant.errorCode.ifBlank { "CHAT_INTERRUPTED" }) }
         if (loadMaterials && saved.candidates.map { it.reference() } != chat.materials) {
             val materials = resolve(active, account, stamp, selected, enforceBudget = false)
@@ -224,7 +224,7 @@ class InsightController(
     private fun mergePartial(local: ChatTurn?, remote: ChatTurn?): ChatTurn? {
         if (remote == null) return local
         if (local == null || local.requestId != remote.requestId) return remote
-        val content = if (remote.assistant.status !in setOf("completed", "canceled") &&
+        val content = if (remote.assistant.status !in setOf("completed", "canceled", "truncated") &&
             local.assistant.content.startsWith(remote.assistant.content) &&
             local.assistant.content.length > remote.assistant.content.length) local.assistant.content
         else remote.assistant.content
@@ -627,7 +627,7 @@ class InsightController(
         val chat = snapshot.chat ?: return
         if (snapshot.pendingSave != null || snapshot.saving || snapshot.deleting) return
         val choices = selectableMessages(snapshot.confirmed).filter { it.eligible && it.ref in messages }
-        if (choices.isEmpty() || choices.size != messages.size || choices.any { it.status == "canceled" } && !incomplete) return
+        if (choices.isEmpty() || choices.size != messages.size || choices.any { it.status in setOf("canceled", "truncated") } && !incomplete) return
         if (selectionBody(choices, language() == "en").encodeToByteArray().size > 65_536) return
         submitSave(ChatSaveIntent(chat.id, ChatSaveSelection(newLocalId(), language(), messages, incomplete)))
     }
@@ -803,7 +803,7 @@ class InsightController(
             chat.materials.all { validName(it.name) && it.sourceHash.isNotBlank() } &&
             chat.turns.all { it.id.isNotBlank() && it.requestId.isNotBlank() && it.kind in setOf("insight", "question") &&
                 it.user.role == "user" && it.assistant.role == "assistant" && it.user.version > 0 && it.assistant.version > 0 &&
-                it.assistant.status in setOf("running", "completed", "failed", "canceled", "interrupted") }) { "CHAT_PROTOCOL" }
+                it.assistant.status in setOf("running", "completed", "failed", "canceled", "interrupted", "truncated") }) { "CHAT_PROTOCOL" }
     }
     private fun validName(name: String) = Regex("^memos/[A-Za-z0-9_-]+$").matches(name)
     private fun chatId(id: String): String {

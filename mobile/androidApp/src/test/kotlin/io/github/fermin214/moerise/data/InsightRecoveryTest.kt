@@ -20,6 +20,23 @@ import kotlinx.coroutines.flow.first
 @Config(manifest = Config.NONE, sdk = [29])
 class InsightRecoveryTest {
     @Test
+    fun terminalGenerationUnlocksMenusAndUnknownOrRunningResultsRemainLocked() {
+        val input = ChatGenerate("request", 1, "insight", "", "zh-CN")
+        val recovery = InsightRecovery(generation = ChatGeneration("chat", input))
+        val turn = ChatTurn("turn", "request", "insight", ChatMessage("u", "user", "", 1, "completed"),
+            ChatMessage("a", "assistant", "部分", 1, "interrupted"))
+        for (status in listOf("interrupted", "failed", "canceled", "completed", "truncated")) {
+            val state = InsightState(recovery = recovery,
+                chat = ChatSession("chat", "洞察", 1, emptyList(), listOf(turn.copy(assistant = turn.assistant.copy(status = status)))))
+            assertFalse(state.locked)
+            assertTrue(state.canLeaveGeneration)
+        }
+        assertTrue(InsightState(recovery = recovery, failedGeneration = true).locked)
+        assertTrue(InsightState(recovery = recovery,
+            chat = ChatSession("chat", "洞察", 1, emptyList(), listOf(turn.copy(assistant = turn.assistant.copy(status = "running"))))).locked)
+    }
+
+    @Test
     fun lostCreationAndInterruptedGenerationPersistAcrossRoomReopenWithoutAutomaticModelCall() = runBlocking<Unit> {
         val folder = Files.createTempDirectory("moerise-insights-").toFile()
         val dispatcher = Executors.newSingleThreadExecutor().asCoroutineDispatcher()

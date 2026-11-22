@@ -1,0 +1,24 @@
+appId: ${APP_ID}
+name: Clear only a persisted exact test draft
+onFlowComplete:
+- takeScreenshot:
+    path: ${SCREENSHOT_PREFIX}-recover-draft
+    label: Capture the composer recovery outcome
+---
+- runFlow:
+    file: subflows/home.yaml
+    label: Return to the verified test account home
+- runFlow:
+    when:
+      visible:
+        id: note_editor
+        text: \Q${DRAFT_TEXT}\E
+    commands:
+    - assertVisible:
+        id: note_editor
+        text: \Q${DRAFT_TEXT}\E
+        label: Require the persisted exact test marker
+    - runFlow:
+        file: subflows/clear-draft.yaml
+        label: Remove only the matching test draft
+    label: Preserve every draft that does not exactly match the recorded marker
