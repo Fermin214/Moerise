@@ -398,7 +398,25 @@ test('each map history entry restores its own viewport and reader on back, reloa
 });
 
 test('fullscreen browser back closes the reader first and keyboard activation replaces the open note', async t => {
-  const { page, state, url } = await fixture(t); await login(page, url); await ready(page);
+  const { page, state, url } = await fixture(t);
+  await page.addInitScript(() => {
+    const addListener = document.addEventListener.bind(document);
+    document.addEventListener = (name, callback, options) => {
+      if (name !== 'fullscreenchange') return addListener(name, callback, options);
+      addListener(name, event => {
+        if (document.fullscreenElement) callback(event);
+        else {
+          window.__mapFullscreenExit = new Promise(resolve => {
+            setTimeout(() => {
+              callback(event);
+              requestAnimationFrame(() => requestAnimationFrame(resolve));
+            }, 100);
+          });
+        }
+      }, options);
+    };
+  });
+  await login(page, url); await ready(page);
   const full = page.getByRole('button', { name: '全屏预览' });
   await full.click(); await page.waitForFunction(() => !!document.fullscreenElement);
   await marker(page, 2).dblclick(); await page.locator('.map-note[data-name="memos/n2"]').waitFor();
@@ -413,7 +431,10 @@ test('fullscreen browser back closes the reader first and keyboard activation re
   assert.equal(await full.getAttribute('aria-pressed'), 'true');
   await page.goBack(); await page.waitForFunction(() => !document.fullscreenElement);
   assert.equal(await full.getAttribute('aria-pressed'), 'false');
-  await page.goForward(); await page.goForward(); await page.locator('.map-note[data-name="memos/n2"]').waitFor();
+  await page.waitForFunction(() => !!window.__mapFullscreenExit);
+  await page.goForward(); await page.goForward();
+  await page.evaluate(() => window.__mapFullscreenExit);
+  await page.locator('.map-note[data-name="memos/n2"]').waitFor();
   assert.equal(await full.getAttribute('aria-pressed'), 'true');
 });
 
