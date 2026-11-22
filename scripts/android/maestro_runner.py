@@ -619,6 +619,12 @@ class MaestroRunner:
         write_result(path, saved)
 
     def recover_drafts(self):
+        try:
+            return self.read_and_recover_drafts()
+        except (RuntimeError, OSError, ValueError, ET.ParseError) as error:
+            return [{"status": "harness_error", "cause": "draft_ui_collection", "error_type": type(error).__name__}]
+
+    def read_and_recover_drafts(self):
         path = self.draft_checkpoint()
         if not path.exists():
             return []

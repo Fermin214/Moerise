@@ -291,6 +291,18 @@ class MaestroExecutionTest(unittest.TestCase):
         self.assertEqual(result[0]["cause"], "unknown_draft_preserved")
         self.assertTrue(checkpoint.exists())
 
+    def test_draft_dump_failure_keeps_checkpoint_and_does_not_escape_batch(self):
+        checkpoint = self.output / "drafts.json"
+        checkpoint.write_text(json.dumps(["Maestro draft " + "a" * 32]))
+        for error in (RuntimeError("137"), runner.ET.ParseError("bad xml")):
+            with self.subTest(error=type(error).__name__), \
+                    mock.patch.object(self.engine, "draft_checkpoint", return_value=checkpoint), \
+                    mock.patch.object(self.engine, "run_flow", return_value={"status": "passed"}), \
+                    mock.patch.object(runner, "fresh_ui_dump", side_effect=error):
+                result = self.engine.recover_drafts()
+            self.assertEqual(result[0]["cause"], "draft_ui_collection")
+            self.assertTrue(checkpoint.exists())
+
     def test_unreported_or_failed_maestro_flow_cannot_pass(self):
         report = self.output / "report.xml"
         self.assertEqual(runner.junit_result(report, 0)["status"], "harness_error")
