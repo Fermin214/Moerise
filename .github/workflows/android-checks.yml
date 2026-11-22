@@ -112,7 +112,7 @@ jobs:
           path: &gradle-home |
             ~/.gradle/caches
             ~/.gradle/wrapper
-          key: &gradle-key ${{ runner.os }}-android-gradle-${{ hashFiles('mobile/**/*.gradle.kts', 'mobile/gradle.properties', 'mobile/gradle/libs.versions.toml', 'mobile/gradle/verification-metadata.xml', 'mobile/gradle/wrapper/gradle-wrapper.properties') }}
+          key: &gradle-key ${{ runner.os }}-android-gradle-${{ hashFiles('mobile/**/*.gradle.kts', 'mobile/gradle.properties', 'mobile/gradle/libs.versions.toml', 'mobile/gradle/verification-metadata.xml', 'mobile/gradle/wrapper/gradle-wrapper.properties') }}-${{ hashFiles('mobile/**/src/**') }}
           restore-keys: &gradle-prefix |
             ${{ runner.os }}-android-gradle-
             setup-java-${{ runner.os }}-x64-gradle-${{ hashFiles('mobile/**/*.gradle.kts', 'mobile/gradle.properties', 'mobile/gradle/libs.versions.toml', 'mobile/gradle/verification-metadata.xml', 'mobile/gradle/wrapper/gradle-wrapper.properties') }}
@@ -320,7 +320,7 @@ jobs:
             mobile/androidApp/build/outputs/mapping/release/
   api:
     name: Core API
-    needs: core
+    needs: [core, android]
     if: inputs.mode != 'device'
     runs-on: ubuntu-24.04
     timeout-minutes: 25

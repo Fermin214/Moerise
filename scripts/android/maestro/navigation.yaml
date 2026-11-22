@@ -69,7 +69,7 @@ onFlowComplete:
       id: settings_save
     direction: DOWN
     timeout: 15000
-    centerElement: true
+    centerElement: false
     label: Find the settings save button
 - tapOn:
     id: settings_save
