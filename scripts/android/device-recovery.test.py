@@ -237,7 +237,7 @@ class RecoveryEvidenceTest(unittest.TestCase):
                          "--output", str(output)]
             opener = Mock()
             opener.open.side_effect = fake_open
-            with patch("sys.argv", arguments), patch.object(recovery, "assert_queue"), \
+            with patch("sys.argv", arguments), \
                     patch.object(recovery.uuid, "uuid4", return_value=uuid.UUID(MARKER)), \
                     patch.object(recovery.subprocess, "run", side_effect=fake_process), \
                     patch.object(recovery.urllib.request, "build_opener", return_value=opener), \
@@ -303,14 +303,6 @@ class RecoveryEvidenceTest(unittest.TestCase):
                 self.assertEqual(report["failure"]["reason"], reason)
                 self.assertNotIn("prepare", report["stages"])
 
-    def test_windows_queue_accepts_child_output_and_rejects_other_directory(self):
-        root = recovery.SOURCE_ROOT / ".local/android/synthetic-lock"
-        process = subprocess.CompletedProcess([], 0, str(root) + "\n", "")
-        with patch.object(recovery, "os", SimpleNamespace(name="nt", environ=recovery.os.environ)), \
-                patch.object(recovery.subprocess, "run", return_value=process):
-            recovery.assert_queue(recovery.SOURCE_ROOT, root / "device-recovery")
-            with self.assertRaisesRegex(ValueError, "目录内"):
-                recovery.assert_queue(recovery.SOURCE_ROOT, root.with_name("unrelated"))
 
     def test_background_timeout_counts_do_not_include_note_text(self):
         report, _, _, _ = self.run_host_flow(archive_error=True, remote_timeout=True)

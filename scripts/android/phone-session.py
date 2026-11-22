@@ -43,7 +43,7 @@ NETWORK_KEYS = (
     "private_dns_mode", "private_dns_specifier",
 )
 UI_GROUPS = tuple(catalog()["groups"])
-DEFAULT_UI_GROUPS = ("editing", "search", "actions", "insights", "navigation", "attachments", "language", "home")
+DEFAULT_UI_GROUPS = UI_GROUPS
 FLOWS = tuple(catalog()["flows"])
 
 
@@ -627,12 +627,12 @@ class PhoneSession:
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("action", choices=("prepare", "run", "ui", "manual", "status", "record", "cleanup"))
-    parser.add_argument("--repo", required=True)
+    parser.add_argument("--repo", default=str(Path(__file__).resolve().parents[2]))
     parser.add_argument("--session", required=True)
-    parser.add_argument("--output", required=True)
-    parser.add_argument("--commit", required=True)
-    parser.add_argument("--adb", required=True)
-    parser.add_argument("--serial", required=True)
+    parser.add_argument("--output")
+    parser.add_argument("--commit")
+    parser.add_argument("--adb", default="adb")
+    parser.add_argument("--serial", default=os.environ.get("ANDROID_SERIAL"))
     parser.add_argument("--manifest")
     parser.add_argument("--fixture")
     parser.add_argument("--specialists", action="store_true")
@@ -644,6 +644,20 @@ def main():
     parser.add_argument("--note-name")
     parser.add_argument("--maestro", default=shutil.which("maestro") or shutil.which("maestro.bat") or "maestro")
     args = parser.parse_args()
+    args.output = args.output or str(Path(args.session) / 'output' /
+        datetime.now(timezone.utc).strftime(args.action + '-%Y%m%dT%H%M%S.%fZ'))
+    args.commit = args.commit or subprocess.check_output(
+        ['git', '-C', args.repo, 'rev-parse', 'HEAD'], text=True).strip()
+    if not args.serial:
+        state = Path(args.session) / 'session.json'
+        if state.exists():
+            args.serial = read_json(state)['serial']
+        else:
+            devices = subprocess.check_output([args.adb, 'devices'], text=True)
+            ready = re.findall(r'^([^\s]+)\s+device$', devices, re.M)
+            if len(ready) != 1:
+                parser.error('传入唯一真机的 --serial')
+            args.serial = ready[0]
     session = PhoneSession(args.repo, args.session, args.output, Adb(args.adb, args.serial), args.commit)
     try:
         if args.action == "prepare":

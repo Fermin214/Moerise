@@ -29,17 +29,16 @@ npm --prefix web test
 
 1. 复制 `config.example.json` 到 `.local/config.json`。
 2. 配置独立测试 Memos，将数据目录设为 `.local/state` 与 `.local/index`。
-3. 启用 `web.enabled`，设置 `web.public_origin`，生成独立的 32 字节 Base64 状态加密密钥。
-4. 启动 Core 与 Web：
+3. 启用 `web.enabled`，将 `web.public_origin` 设为 `http://localhost:3000`，生成独立的 32 字节 Base64 状态加密密钥。
+4. 构建 Web 并启动 Core：
 
 ```bash
 go run . check-config
-go run . serve --host 127.0.0.1
 npm --prefix web run build
-npm --prefix web start
+go run . serve --host 127.0.0.1 --port 3000 --web-dir web/dist
 ```
 
-Core 默认监听 8787，Web 默认监听 3000。Web 的 `PUBLIC_ORIGIN` 必须匹配 Core 的 `web.public_origin`。`CORE_ORIGIN` 指定固定上游，默认 `http://127.0.0.1:8787`。Web 提供 `web/dist` 产物，源码修改后需重新构建。完整流程见[开发指南](docs/DEVELOPMENT.md)。
+访问 `http://localhost:3000`。Core 同时提供 API 和 `web/dist` 静态文件，源码修改后需重新构建 Web。完整流程见[开发指南](docs/DEVELOPMENT.md)。
 
 ---
 
@@ -65,7 +64,8 @@ Core 默认监听 8787，Web 默认监听 3000。Web 的 `PUBLIC_ORIGIN` 必须�
 2. **双库边界**：`state.sqlite3` 保存需要备份的设置、聊天与回顾等产品状态；`index.sqlite3` 必须可以从 Memos 重建。
 3. **数据库迁移**：结构变化新增编号 SQL 文件，保持已应用迁移不变。
 4. **外部只读**：机器 REST/MCP 严格只读；笔记写入由本人会话客户端与内部专用记录服务提供。
-5. **代码注释**。手写源码和测试默认不加解释性注释。用命名表达意图，用行为测试固定容易破坏的约束。禁止用注释解释临时绕路、吞错或重复重试。只保留工具指令、必需的许可声明，以及代码和测试都无法交代的外部协议限制。
+
+源码与测试约定见[开发指引](AGENTS.md#实现与文档)。
 
 ---
 
@@ -75,7 +75,7 @@ Core 默认监听 8787，Web 默认监听 3000。Web 的 `PUBLIC_ORIGIN` 必须�
 
 ```bash
 go vet ./...
-gofmt -l main.go internal tests
+gofmt -l main.go internal tests web/*.go scripts/testweb
 go test ./...
 npm --prefix web run build
 npm --prefix web test

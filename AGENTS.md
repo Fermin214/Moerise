@@ -1,10 +1,10 @@
 # Moerise 开发指引
 
-Moerise 是基于 Memos 的单用户自托管笔记系统。`internal/` 是按业务前缀组织的单个 Go 包，使用 SQLite；`web/` 使用原生 JavaScript、HTML 和 CSS，Node.js 提供构建、静态服务与同源代理。工具链版本以 [go.mod](go.mod) 和 [web/package.json](web/package.json) 为准。
+Moerise 是基于 Memos 的单用户自托管笔记系统。`internal/` 是按业务前缀组织的单个 Go 包，使用 SQLite；`web/` 使用原生 JavaScript、HTML 和 CSS，由 Node.js 构建、Go 内嵌提供服务。工具链版本以 [go.mod](go.mod) 和 [web/package.json](web/package.json) 为准。
 
 ## 按任务定位
 
-只读取任务涉及的代码和文档。模块职责与源码入口集中在[代码导览](docs/CODEBASE.md)，环境准备与启动命令见[开发指南](docs/DEVELOPMENT.md)。
+模块职责与源码入口见[代码导览](docs/CODEBASE.md)，环境准备与启动命令见[开发指南](docs/DEVELOPMENT.md)。
 
 | 任务 | 入口 |
 | --- | --- |
@@ -25,11 +25,11 @@ Moerise 是基于 Memos 的单用户自托管笔记系统。`internal/` 是按�
 - `state.sqlite3` 保存需备份的产品状态，包括设置、会话、聊天与回顾计划；`index.sqlite3` 保存可重建的检索、向量和地图索引。重建索引保留产品状态。
 - 正常与归档笔记的全部分页成功后，才能发布投影并推进同步水位。
 - `internal/migrations/state/`、`internal/migrations/index/` 分别管理双库迁移，按编号和摘要记账。结构变化新增迁移，保持已应用 SQL 不变。
-- 地图使用后台快照，点选详情读取实时原文。业务规则放在共享服务中，客户端与外部路由负责协议和权限。
+- 地图使用后台快照，点选详情读取本地笔记投影。业务规则放在共享服务中，客户端与外部路由负责协议和权限。
 
 ## 实现与文档
 
-- 手写代码默认不加解释性注释，例外见[贡献指南的开发约定](CONTRIBUTING.md#开发约定)。
+- 手写源码和测试默认不加解释性注释。用命名表达意图，用行为测试固定容易破坏的约束。禁止用注释解释临时绕路、吞错或重复重试。只保留工具指令、必需的许可声明，以及代码和测试都无法交代的外部协议限制。
 - 接口变化一起检查对应路由、`internal/*models.go`、`internal/openapi_gen.go`、接口文档及多端调用方（`web/src/`、`mobile/`、`tests/`、`scripts/acceptance/`、`scripts/android/seed-*.mjs`）。
 - 状态、认证与同步边界及快照恢复改动，须齐步排查全部错误出口与同类重置入口，复用共享淘汰与恢复屏障；数据库迁移以包含非 JSON、中文和空字段的真实存量行验证。
 - Go 阻塞通道、流与锁资源在 `t.Cleanup` 中释放；定向 `-race` 运行显式指定 `-timeout`（如 `120s`），依赖 Git 历史的测试须保证在 `fetch-depth: 1` 浅克隆下仍执行核心断言。
@@ -40,11 +40,11 @@ Moerise 是基于 Memos 的单用户自托管笔记系统。`internal/` 是按�
 
 ## 验证入口
 
-所有命令从仓库根目录执行。优先运行覆盖改动的现有测试，下表列出各范围的完整验证入口：
+所有命令从仓库根目录执行：
 
 | 改动范围 | 验证入口 |
 | --- | --- |
-| Go 业务与接口 | `go test ./...`、`go test -race -timeout=25m -count=1 ./...`、`go vet ./...`、`gofmt -l main.go internal tests` |
+| Go 业务与接口 | `go test ./...`、`go test -race -timeout=30m -count=1 ./...`、`go vet ./...`、`gofmt -l main.go internal tests web/*.go scripts/testweb` |
 | Web 逻辑、样式与构建 | `npm --prefix web run build`、`npm --prefix web test` |
 | Web 界面与交互 | `npm --prefix web run test:browser` |
 | 共用脚本与策略 | `node --test scripts/lib/*.test.mjs scripts/android/fixture-policy.test.mjs` |
@@ -52,7 +52,3 @@ Moerise 是基于 Memos 的单用户自托管笔记系统。`internal/` 是按�
 | Compose、Core、Web 联合验收 | `node scripts/acceptance/check-compose.mjs --browser`，其他功能脚本见[脚本说明](scripts/README.md) |
 
 Web 依赖通过 `npm --prefix web ci` 安装。浏览器流程需要 Playwright 浏览器；真实 Memos 集成与联合验收需要 Docker。具体功能的联合验收脚本及参数见[脚本说明](scripts/README.md)。
-
-界面改动检查桌面和手机视口的导航、触控、内容间距、溢出与键盘焦点，同时覆盖简体中文和英语。
-
-完成改动前，用对应流程检查最终行为、关键边界和文档一致性。只有已有端到端流程无法可靠覆盖关键不变量、边界或失败路径时，才增加少量专项测试。复用未受改动影响的验证结果，仅在新改动、失败或剩余风险需要时扩大或重复检查。纯文档修改检查事实、链接和差异即可。

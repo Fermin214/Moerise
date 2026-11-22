@@ -55,7 +55,7 @@ func OpenReceiver(path string) (*Receiver, error) {
 func (r *Receiver) Close() error { return r.db.Close() }
 
 func (r *Receiver) expire(ctx context.Context) error {
-	first := r.now().UTC().AddDate(0, 0, -89).Format(time.DateOnly)
+	first := r.now().UTC().AddDate(0, 0, -29).Format(time.DateOnly)
 	_, err := r.db.ExecContext(ctx, `DELETE FROM daily_totals WHERE day < ?`, first)
 	return err
 }

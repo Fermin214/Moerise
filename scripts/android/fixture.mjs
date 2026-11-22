@@ -60,7 +60,7 @@ if (corpusPath) {
   if (prior?.corpus) assert.deepEqual(corpusMetadata, prior.corpus, 'resume 必须复用相同语料和向量');
 }
 let core, web, model, control, memosProxy, containerStarted = false, layoutStarted = false, layoutOrigin;
-let dispose = false, lifecycle, ownsInstance = false;
+let dispose = process.env.MOERISE_ANDROID_FIXTURE_DISPOSE_ON_EXIT === '1', lifecycle, ownsInstance = false;
 const layoutName = `${name}-layout`;
 const stop = new AbortController();
 for (const signal of ['SIGINT', 'SIGTERM']) process.once(signal, () => stop.abort());

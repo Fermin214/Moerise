@@ -17,7 +17,7 @@ import uuid
 
 PACKAGE = "io.github.fermin214.moerise.fixture"
 RUNNER = PACKAGE + ".test/androidx.test.runner.AndroidJUnitRunner"
-SOURCE_ROOT = Path(r"C:\Projects\Moerise")
+SOURCE_ROOT = Path(__file__).resolve().parents[2]
 
 
 def error_details(error):
@@ -160,23 +160,6 @@ def wait_persisted(command, report, checkpoint, saved, unfinished, *, timeout=20
     raise AssertionError(f"SQLite/WAL 辅助检查 {checkpoint}：等待后成功读取的快照缺少" + "；".join(absent))
 
 
-def assert_queue(source_root, output):
-    if os.name != "nt":
-        return
-    if Path(source_root).resolve() != SOURCE_ROOT.resolve():
-        raise ValueError("SourceRoot 必须为 C:\\Projects\\Moerise")
-    environment = dict(os.environ)
-    environment["MOERISE_RECOVERY_LOCK_CHECK"] = str(Path(__file__).with_name("device-lock.ps1").resolve())
-    check = subprocess.run([
-        "pwsh", "-NoProfile", "-Command",
-        ". $env:MOERISE_RECOVERY_LOCK_CHECK; "
-        "$record = Assert-MoeriseDeviceLock 'C:\\Projects\\Moerise'; $record.output_root",
-    ], env=environment, capture_output=True, text=True)
-    if check.returncode:
-        raise RuntimeError("需要主仓库 with-device-lock.ps1 的持锁进程执行")
-    if not Path(output).resolve().is_relative_to(Path(check.stdout.strip()).resolve()):
-        raise ValueError("结果目录必须位于设备锁记录的目录内")
-
 
 def main():
     parser = argparse.ArgumentParser()
@@ -186,7 +169,6 @@ def main():
     parser.add_argument("--source-root", default=str(SOURCE_ROOT))
     parser.add_argument("--output", required=True)
     args = parser.parse_args()
-    assert_queue(args.source_root, args.output)
     if not re.fullmatch(r"[A-Za-z0-9_.:-]+", args.serial):
         raise ValueError("设备序列号无效")
     fixture = json.loads(Path(args.fixture).read_text(encoding="utf-8-sig"))
