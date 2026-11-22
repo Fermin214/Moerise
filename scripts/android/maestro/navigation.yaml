@@ -66,11 +66,11 @@ onFlowComplete:
     label: Select QQ private chat
 - scrollUntilVisible:
     element:
-      id: settings_save
+      text: 发送记录|Delivery history
     direction: DOWN
     timeout: 15000
     centerElement: false
-    label: Find the settings save button
+    label: Bring save controls above the system navigation bar
 - tapOn:
     id: settings_save
     enabled: true
