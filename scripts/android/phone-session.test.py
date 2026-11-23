@@ -724,6 +724,8 @@ class FixedWindowsEntry(unittest.TestCase):
     def telemetry_csv(self):
         path = self.root / "telemetry.csv"
         path.write_text("week_ending_utc,platform,client_version,sample_count\n", encoding="utf-8")
+        captured = time.time() - 2
+        os.utime(path, (captured, captured))
         return path
 
     def test_verify_record_from_card_cleanup_and_new_session(self):
@@ -764,7 +766,8 @@ class FixedWindowsEntry(unittest.TestCase):
             self.events.append(text.split(" · ", 1)[0])
             return str(self.telemetry_csv()) if text.startswith("telemetry-before-launch") else "y"
         with mock.patch.object(self.adb, "run", side_effect=device), mock.patch.object(session, "ask", side_effect=reply):
-            self.assertEqual(self.verify("--install", "--check", "home")[0], 0)
+            code, report = self.verify("--install", "--check", "home")
+            self.assertEqual(code, 0, report)
         self.assertEqual(self.events, ["upgrade-before", "install", "telemetry-before-launch", "test-source"])
 
     def test_baseline_status_identity_fingerprint_and_pending_readback(self):

@@ -170,7 +170,7 @@ def prelaunch_evidence(paths, launch, *, window_missed=False):
         path = Path(filename)
         try:
             captured = datetime.fromtimestamp(path.stat().st_mtime, timezone.utc)
-            if path.suffix.lower() == ".csv" and captured < cutoff:
+            if path.suffix.lower() == ".csv" and (captured < cutoff if launch else captured <= cutoff):
                 with path.open(encoding="utf-8-sig", newline="") as stream:
                     header = next(csv.reader(stream), [])
                 if {"week_ending_utc", "platform", "client_version", "sample_count"} <= set(header):
