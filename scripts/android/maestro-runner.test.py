@@ -205,7 +205,7 @@ class MaestroExecutionTest(unittest.TestCase):
             self.assertEqual(result["preparation_step"], "session_login")
             self.assertEqual(result["request"], {"method": "POST", "path": "/api/app/v1/session"})
             self.assertEqual((result["http_status"], result["error_code"]), (403, "CLOUDFLARE_1010"))
-            self.assertEqual(json.loads((self.engine.output / flow / "result.json").read_text()), result)
+            self.assertEqual(json.loads((self.engine.output / flow / "result.json").read_text(encoding="utf-8")), result)
         prepare.assert_not_called()
         execute.assert_not_called()
         self.assertEqual(self.adb.calls, [])
@@ -226,7 +226,7 @@ class MaestroExecutionTest(unittest.TestCase):
             result = self.engine.run_batch(["search"])["search"]
         self.assertEqual(result["preparation_step"], "search.data_preparation")
         self.assertEqual(result["error_message"], "invalid [redacted] [redacted] [redacted]")
-        serialized = (self.engine.output / "search/result.json").read_text()
+        serialized = (self.engine.output / "search/result.json").read_text(encoding="utf-8")
         self.assertNotIn("isolated-password-value", serialized)
         self.assertNotIn("isolated-token-value", serialized)
 
