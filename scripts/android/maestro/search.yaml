@@ -99,6 +99,15 @@ onFlowComplete:
 - pressKey:
     key: Enter
     label: Submit search through the focused IME search field
+- scrollUntilVisible:
+    element:
+      text: \Q${NOTE_TEXT}\E
+      childOf:
+        id: note_card_${NOTE_NAME}
+    direction: DOWN
+    timeout: 65000
+    centerElement: false
+    label: Bring the matching note body into view without closing search
 - extendedWaitUntil:
     visible:
       id: note_card_${NOTE_NAME}
@@ -243,10 +252,12 @@ onFlowComplete:
 - pressKey:
     key: Enter
     label: Submit search through the focused IME search field
-- extendedWaitUntil:
-    visible:
+- scrollUntilVisible:
+    element:
       id: note_card_${NOTE_NAME}
+    direction: DOWN
     timeout: 65000
+    centerElement: false
     label: Require the target keyword result before changing mode
 - tapOn:
     text: 关键词|Keyword
@@ -342,15 +353,19 @@ onFlowComplete:
       id: search_query_empty
     timeout: 15000
     label: Wait for the expected UI state
-- extendedWaitUntil:
-    visible:
-      id: note_card_${PEER_NOTE_NAME}
-    timeout: 65000
-    label: Wait for the expected UI state
-- extendedWaitUntil:
-    visible:
+- scrollUntilVisible:
+    element:
       id: note_card_${NOTE_NAME}
+    direction: DOWN
     timeout: 65000
+    centerElement: false
+    label: Wait for the expected UI state
+- scrollUntilVisible:
+    element:
+      id: note_card_${PEER_NOTE_NAME}
+    direction: DOWN
+    timeout: 65000
+    centerElement: false
     label: Wait for the expected UI state
 - tapOn:
     id: search_close
