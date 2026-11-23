@@ -3,12 +3,15 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 import base64
 import hashlib
+import http.client
 import http.cookiejar
 import json
 import os
 from pathlib import Path
 import re
 import signal
+import socket
+import ssl
 import subprocess
 import sys
 import time
@@ -24,6 +27,7 @@ ACTIVITY = APP + "/io.github.fermin214.moerise.MainActivity"
 DRIVERS = ("dev.mobile.maestro", "dev.mobile.maestro.test")
 MAESTRO_IME = DRIVERS[0] + "/.input.MaestroInputMethodService"
 UNICODE_INPUT_SUFFIX = "。"
+USER_AGENT = "Moerise-Android-Acceptance/1.0"
 
 
 def catalog(root=ROOT):
@@ -46,9 +50,49 @@ def flow_digest(root, flow):
 
 
 class FixtureError(RuntimeError):
-    def __init__(self, status, code):
-        super().__init__(f"隔离服务请求失败：HTTP {status} / {code}")
+    def __init__(self, status, code, *, method=None, path=None, reason=None):
+        self.request = {"method": method, "path": path.partition("?")[0]} if method and path else None
+        target = f"{method} {self.request['path']}；" if self.request else ""
+        super().__init__(f"隔离服务请求失败：{target}HTTP {status} / {code}" + (f"；{reason}" if reason else ""))
         self.status, self.code = status, code
+
+    def details(self):
+        result = {"http_status": self.status, "error_code": self.code, "error_message": str(self)}
+        if self.request:
+            result["request"] = self.request
+        return result
+
+
+def response_error(data, headers):
+    try:
+        error = json.loads(data).get("error", {})
+        code = error.get("code", "")
+        if isinstance(code, str) and re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,63}", code):
+            return code, None
+    except (ValueError, AttributeError):
+        pass
+    if "cloudflare" in headers.get("Server", "").lower():
+        match = re.search(rb"\berror\s+code\s*:?\s*(1[0-9]{3,4})\b", data, re.I)
+        if match:
+            return "CLOUDFLARE_" + match[1].decode("ascii"), "Cloudflare 拒绝了该客户端请求"
+        if headers.get("cf-mitigated") == "challenge":
+            return "CLOUDFLARE_CHALLENGE", "Cloudflare 要求交互验证"
+    return "request_failed", "服务未返回可识别的 JSON 错误；响应正文已省略"
+
+
+def connection_error(error):
+    reason = error.reason if isinstance(error, urllib.error.URLError) else error
+    if isinstance(reason, ssl.SSLCertVerificationError):
+        return "TLS 证书校验失败"
+    if isinstance(reason, TimeoutError):
+        return "请求超时"
+    if isinstance(reason, socket.gaierror):
+        return "域名解析失败"
+    if isinstance(reason, ConnectionRefusedError):
+        return "连接被拒绝"
+    if isinstance(reason, http.client.HTTPException):
+        return "服务响应不完整或连接已中断"
+    return "无法建立或读取服务连接"
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -79,7 +123,8 @@ class FixtureAPI:
     def request(self, method, path, body=None, key=None, binary=False):
         if not path.startswith("/api/app/v1/") or "://" in path or ".." in path:
             raise ValueError("隔离请求必须使用客户端 API 路径")
-        headers = {"Origin": self.origin}
+        headers = {"Origin": self.origin, "User-Agent": USER_AGENT,
+                   "Accept": "*/*" if binary else "application/json"}
         if self.csrf:
             headers["X-CSRF-Token"] = self.csrf
         if key:
@@ -92,22 +137,26 @@ class FixtureAPI:
             try:
                 with self.opener.open(request, timeout=65) as response:
                     data = response.read()
-                    return data if binary else (json.loads(data) if data else None)
+                    if binary or not data:
+                        return data if binary else None
+                    try:
+                        return json.loads(data)
+                    except ValueError:
+                        raise FixtureError(response.status, "invalid_json", method=method, path=path,
+                                           reason="服务未返回有效 JSON；响应正文已省略") from None
             except urllib.error.HTTPError as error:
-                code = "request_failed"
-                try:
-                    code = json.loads(error.read()).get("error", {}).get("code", code)
-                except (ValueError, AttributeError):
-                    pass
+                with error:
+                    code, reason = response_error(error.read(8192), error.headers)
                 settings_busy = (method == "PATCH" and path == "/api/app/v1/settings"
                                  and error.code == 503 and code == "SETTINGS_BUSY")
                 if error.code in (429, 503) and attempt < 2 and (method == "GET" or key or settings_busy):
                     retry_after = error.headers.get("Retry-After", "1")
                     time.sleep(min(5, max(1, int(retry_after) if retry_after.isdigit() else 1)))
                     continue
-                raise FixtureError(error.code, code) from None
-            except (OSError, urllib.error.URLError):
-                raise FixtureError(0, "unreachable") from None
+                raise FixtureError(error.code, code, method=method, path=path, reason=reason) from None
+            except (OSError, urllib.error.URLError, http.client.HTTPException) as error:
+                raise FixtureError(0, "unreachable", method=method, path=path,
+                                   reason=connection_error(error)) from None
 
     def login(self):
         result = self.request("POST", "/api/app/v1/session", {
@@ -312,6 +361,23 @@ class MaestroRunner:
         self.channel_fixture = None
         self.conflict_fixture = None
         self.output.mkdir(parents=True, exist_ok=True)
+
+    def failure_details(self, error, step=None):
+        details = {"error_type": type(error).__name__, "error_message": str(error)}
+        if step:
+            details["preparation_step"] = step
+        if isinstance(error, FixtureError):
+            details.update(error.details())
+        secrets = [self.connection.get(key) for key in ("username", "password", "sourceToken")]
+        if isinstance(self.api.csrf, str):
+            secrets.append(self.api.csrf)
+        for key, value in details.items():
+            if isinstance(value, str):
+                for secret in secrets:
+                    if secret:
+                        value = value.replace(secret, "[redacted]")
+                details[key] = value
+        return details
 
     def prepare_data(self, flow, entry, note_name=None):
         marker = uuid.uuid4().hex
@@ -538,11 +604,13 @@ class MaestroRunner:
             result.update(status="inconclusive", cause="maestro_host_timeout")
         except FixtureError as error:
             result.update(status="environment_blocked", cause="fixture_request",
-                          http_status=error.status, error_code=error.code)
+                          **self.failure_details(error))
         except AssertionError as error:
             result.update(status="failed", cause="server_assertion", assertion=str(error))
         except (OSError, ValueError, KeyError, RuntimeError) as error:
-            result.update(status="harness_error", cause=type(error).__name__, harness_message=str(error))
+            details = self.failure_details(error)
+            result.update(status="harness_error", cause=type(error).__name__,
+                          harness_message=details["error_message"], **details)
         finally:
             result["cleanup_errors"] = []
             remote = remote or self.remote_file
@@ -683,34 +751,40 @@ class MaestroRunner:
 
     def run_batch(self, flows, on_result=None):
         prepared, results, channel_fixture, cleanup_errors = {}, {}, None, []
+        step = "session_login"
         try:
             self.api.login()
             if self.phone and flows:
+                step = "test_source_data"
                 probe = self.prepare_data("test-source", self.catalog["flows"]["test-source"])
+                step = "test_source_ui"
                 preflight = self.run_flow("test-source", prepared=probe, deferred=True)
                 write_result(self.output / "test-source-result.json", preflight)
                 if preflight["status"] != "passed":
                     for flow in flows:
-                        results[flow] = {**preflight, "status": "environment_blocked", "cause": "phone_test_source_unverified"}
+                        results[flow] = {**preflight, "status": "environment_blocked",
+                                         "cause": "phone_test_source_unverified", "preparation_step": step}
                     return results
             if self.phone:
+                step = "draft_recovery"
                 recovery = self.recover_drafts()
                 if any(item["status"] != "passed" for item in recovery):
                     for flow in flows:
-                        results[flow] = {"status": "environment_blocked", "cause": "test_draft_recovery", "recovery": recovery}
+                        results[flow] = {"status": "environment_blocked", "cause": "test_draft_recovery",
+                                         "preparation_step": step, "recovery": recovery}
                     return results
             if "navigation" in flows:
                 try:
                     channel_fixture = self.prepare_channel()
                 except (FixtureError, ValueError, KeyError) as error:
                     results["navigation"] = {"status": "environment_blocked" if isinstance(error, FixtureError) else "harness_error",
-                                             "cause": "channel_preparation", "error_type": type(error).__name__}
+                                             "cause": "channel_preparation", **self.failure_details(error, "channel_preparation")}
             if "editing" in flows:
                 try:
                     self.prepare_conflict()
                 except (FixtureError, ValueError, KeyError) as error:
                     results["editing"] = {"status": "environment_blocked" if isinstance(error, FixtureError) else "harness_error",
-                                          "cause": "conflict_preparation", "error_type": type(error).__name__}
+                                          "cause": "conflict_preparation", **self.failure_details(error, "conflict_preparation")}
             self.batch_preparing = True
             for flow in flows:
                 if flow in results:
@@ -719,10 +793,11 @@ class MaestroRunner:
                     prepared[flow] = self.prepare_data(flow, self.catalog["flows"][flow])
                 except (FixtureError, OSError, ValueError, RuntimeError) as error:
                     results[flow] = {"status": "environment_blocked" if isinstance(error, FixtureError) else "harness_error",
-                                     "cause": "data_preparation", "error_type": type(error).__name__}
+                                     "cause": "data_preparation", **self.failure_details(error, flow + ".data_preparation")}
             self.batch_preparing = False
             for flow in flows:
                 if flow not in results:
+                    step = flow + ".ui"
                     if self.phone:
                         self.remember_drafts(prepared[flow][0])
                         self.adb.run("shell", "am", "force-stop", self.app)
@@ -748,15 +823,15 @@ class MaestroRunner:
                     if result["status"] == "passed":
                         result.update(status="failed", cause="server_assertion", assertion=str(error))
                 except FixtureError as error:
-                    result["server_observation"] = {"status": "environment_blocked", "http_status": error.status}
+                    result["server_observation"] = {"status": "environment_blocked", **self.failure_details(error)}
                     if result["status"] == "passed":
-                        result.update(status="environment_blocked", cause="fixture_request", http_status=error.status)
+                        result.update(status="environment_blocked", cause="fixture_request", **self.failure_details(error))
                 except (ValueError, KeyError, TypeError) as error:
                     result.update(status="harness_error", cause="server_response", error_type=type(error).__name__)
         except (FixtureError, OSError, ValueError, RuntimeError) as error:
             for flow in flows:
                 results.setdefault(flow, {"status": "environment_blocked" if isinstance(error, FixtureError) else "harness_error",
-                                          "cause": "batch_preparation", "error_type": type(error).__name__})
+                                          "cause": "batch_preparation", **self.failure_details(error, step)})
         finally:
             self.batch_preparing = False
             for values, remote in prepared.values():

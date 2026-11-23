@@ -203,6 +203,65 @@ class SessionLifecycle(unittest.TestCase):
         self.assertNotIn("device_before", self.driver.state)
         self.assertTrue((self.driver.directory / "report.json").exists())
 
+    def test_release_preparation_failure_does_not_uninstall_absent_drivers(self):
+        apk = self.release_ready()
+        original = self.adb.run
+        def adb(*args, **kwargs):
+            if args[0] == "uninstall" and args[1] not in self.adb.installed:
+                raise session.CommandError("adb_error", "package not installed")
+            return original(*args, **kwargs)
+        engine = mock.Mock(catalog={"groups": {"search": ["search"]}})
+        failure = {"status": "environment_blocked", "cause": "batch_preparation",
+                   "preparation_step": "session_login", **session.FixtureError(
+                       403, "CLOUDFLARE_1010", method="POST", path="/api/app/v1/session").details()}
+        engine.run_batch.return_value = {"search": failure}
+        with mock.patch.object(self.driver, "package_hash", return_value=session.digest(apk)), \
+                mock.patch.object(self.adb, "run", side_effect=adb), \
+                mock.patch.object(session, "MaestroRunner", return_value=engine):
+            result = self.driver.run(["search"])
+        self.assertEqual(result["search"]["status"], "environment_blocked")
+        self.assertEqual(self.driver.state["cleanup_errors"], [])
+        self.assertNotIn("resources_pending", self.driver.state)
+        self.assertFalse(any(call[0] == "uninstall" for call in self.adb.calls))
+        report = session.read_json(self.driver.directory / "report.json")
+        self.assertEqual(report["items"][0]["request"], {"method": "POST", "path": "/api/app/v1/session"})
+        markdown = (self.driver.directory / "report.md").read_text(encoding="utf-8")
+        for text in ["session_login", "POST /api/app/v1/session", "403", "CLOUDFLARE_1010"]:
+            self.assertIn(text, markdown)
+
+    def test_release_driver_removal_failure_keeps_resource_checkpoint(self):
+        apk = self.release_ready()
+        engine = mock.Mock(catalog={"groups": {"search": ["search"]}})
+        def batch(*args, **kwargs):
+            self.adb.installed[session.DRIVERS[0]] = b"new-driver"
+            return {"search": {"status": "passed"}}
+        engine.run_batch.side_effect = batch
+        original = self.adb.run
+        def adb(*args, **kwargs):
+            if args[:2] == ("uninstall", session.DRIVERS[0]):
+                raise session.CommandError("adb_error", "package manager unavailable")
+            return original(*args, **kwargs)
+        with mock.patch.object(self.driver, "package_hash", return_value=session.digest(apk)), \
+                mock.patch.object(self.adb, "run", side_effect=adb), \
+                mock.patch.object(session, "MaestroRunner", return_value=engine):
+            self.driver.run(["search"])
+        self.assertEqual(self.driver.state["cleanup_errors"], ["driver_remove"])
+        self.assertTrue(self.driver.state["resources_pending"])
+        self.assertIn(session.DRIVERS[0], self.adb.installed)
+
+    def test_driver_removal_requires_success_and_absent_package_readback(self):
+        package = session.DRIVERS[0]
+        self.adb.installed[package] = b"new-driver"
+        original = self.adb.run
+        for text in ["Failure [DELETE_FAILED_INTERNAL_ERROR]", "Success\n"]:
+            with self.subTest(output=text):
+                def adb(*args, **kwargs):
+                    return text if args[:2] == ("uninstall", package) else original(*args, **kwargs)
+                with mock.patch.object(self.adb, "run", side_effect=adb):
+                    with self.assertRaises(session.CommandError) as caught:
+                        self.driver.remove_package(package)
+                self.assertEqual(caught.exception.code, "cleanup_failed")
+
     def test_release_resume_keeps_new_driver_ownership_and_recovers_unrecorded_forward(self):
         apk = self.release_ready()
         self.driver.state.update(resources_pending=True, maestro_preexisting={package: False for package in session.DRIVERS}, forwards_before=[])

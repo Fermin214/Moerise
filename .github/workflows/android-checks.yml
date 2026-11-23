@@ -61,6 +61,15 @@ jobs:
         with:
           name: android-fixture-core
           path: ${{ runner.temp }}/moerise
+  windows-acceptance:
+    name: Windows acceptance host
+    runs-on: windows-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - run: python -m pip install --disable-pip-version-check -r scripts/android/maestro/requirements.txt
+      - run: python -B scripts/android/maestro-runner.test.py
+      - run: python -B scripts/android/phone-session.test.py
   fixture:
     if: inputs.mode != 'build'
     runs-on: ubuntu-24.04

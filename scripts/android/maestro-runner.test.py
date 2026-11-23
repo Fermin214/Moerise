@@ -1,6 +1,7 @@
 """Host checks for Maestro isolation, failure evidence and server assertions."""
 import base64
 import hashlib
+import io
 import json
 from pathlib import Path
 import tempfile
@@ -8,6 +9,78 @@ import unittest
 from unittest import mock
 
 import maestro_runner as runner
+
+
+class FixtureRequestTest(unittest.TestCase):
+    def setUp(self):
+        self.api = runner.FixtureAPI({
+            "origin": "https://acceptance.example", "environment": "test",
+            "username": "test-owner", "password": "private-password"},
+            trusted_https=True, test_origin="https://acceptance.example")
+
+    def response(self, data, status=200):
+        response = mock.MagicMock()
+        response.__enter__.return_value = response
+        response.read.return_value = data
+        response.status = status
+        return response
+
+    def test_login_and_authenticated_requests_identify_the_acceptance_client(self):
+        with mock.patch.object(self.api.opener, "open", side_effect=[
+                self.response(b'{"csrf_token":"private-csrf"}'), self.response(b'{"notes":[]}')]) as request:
+            self.api.login()
+            self.api.request("GET", "/api/app/v1/notes")
+        for call in request.call_args_list:
+            self.assertEqual(call.args[0].get_header("User-agent"), runner.USER_AGENT)
+            self.assertEqual(call.args[0].get_header("Accept"), "application/json")
+        self.assertEqual(request.call_args.args[0].get_header("X-csrf-token"), "private-csrf")
+
+    def test_cloudflare_rejection_reports_only_safe_request_details(self):
+        error = runner.urllib.error.HTTPError(
+            "https://acceptance.example/api/app/v1/session", 403, "Forbidden",
+            {"Server": "cloudflare"}, io.BytesIO(b"error code: 1010\nprivate-password"))
+        with mock.patch.object(self.api.opener, "open", side_effect=error):
+            with self.assertRaises(runner.FixtureError) as caught:
+                self.api.request("POST", "/api/app/v1/session?password=private-password", {})
+        details = caught.exception.details()
+        self.assertEqual(details["error_code"], "CLOUDFLARE_1010")
+        self.assertEqual(details["http_status"], 403)
+        self.assertEqual(details["request"], {"method": "POST", "path": "/api/app/v1/session"})
+        self.assertNotIn("private-password", json.dumps(details))
+        self.assertTrue(error.fp.closed)
+
+    def test_core_error_keeps_its_code_without_echoing_response_secrets(self):
+        error = runner.urllib.error.HTTPError(
+            self.api.origin, 401, "Unauthorized", {"Content-Type": "application/json"},
+            io.BytesIO(b'{"error":{"code":"AUTH_FAILED","message":"private-password"}}'))
+        with mock.patch.object(self.api.opener, "open", side_effect=error):
+            with self.assertRaises(runner.FixtureError) as caught:
+                self.api.login()
+        self.assertEqual(caught.exception.code, "AUTH_FAILED")
+        self.assertNotIn("private-password", str(caught.exception))
+
+    def test_network_errors_explain_the_failure_without_echoing_the_url(self):
+        cases = [
+            (runner.ssl.SSLCertVerificationError("private-password"), "TLS 证书校验失败"),
+            (TimeoutError("private-password"), "请求超时"),
+            (runner.socket.gaierror("private-password"), "域名解析失败"),
+            (runner.http.client.IncompleteRead(b"private-password"), "服务响应不完整或连接已中断"),
+        ]
+        for reason, expected in cases:
+            with self.subTest(reason=type(reason).__name__):
+                with mock.patch.object(self.api.opener, "open", side_effect=runner.urllib.error.URLError(reason)):
+                    with self.assertRaises(runner.FixtureError) as caught:
+                        self.api.login()
+                self.assertIn(expected, str(caught.exception))
+                self.assertNotIn("private-password", str(caught.exception))
+                self.assertEqual(caught.exception.details()["request"]["path"], "/api/app/v1/session")
+
+    def test_non_json_success_is_a_reportable_fixture_error(self):
+        with mock.patch.object(self.api.opener, "open", return_value=self.response(b"<html>private-password</html>")):
+            with self.assertRaises(runner.FixtureError) as caught:
+                self.api.login()
+        self.assertEqual(caught.exception.code, "invalid_json")
+        self.assertNotIn("private-password", str(caught.exception))
 
 
 class FakeAdb:
@@ -119,6 +192,43 @@ class MaestroExecutionTest(unittest.TestCase):
         self.assertEqual(result["status"], "environment_blocked")
         self.assertEqual(self.adb.calls, [])
         execute.assert_not_called()
+
+    def test_batch_login_failure_reports_request_and_stage_for_all_modules(self):
+        self.engine.phone = True
+        self.engine.api.login.side_effect = runner.FixtureError(
+            403, "CLOUDFLARE_1010", method="POST", path="/api/app/v1/session")
+        flows = [flow for group in self.engine.catalog["groups"].values() for flow in group]
+        with mock.patch.object(self.engine, "prepare_data") as prepare, \
+                mock.patch.object(self.engine, "run_flow") as execute:
+            results = self.engine.run_batch(flows)
+        for flow, result in results.items():
+            self.assertEqual(result["preparation_step"], "session_login")
+            self.assertEqual(result["request"], {"method": "POST", "path": "/api/app/v1/session"})
+            self.assertEqual((result["http_status"], result["error_code"]), (403, "CLOUDFLARE_1010"))
+            self.assertEqual(json.loads((self.engine.output / flow / "result.json").read_text()), result)
+        prepare.assert_not_called()
+        execute.assert_not_called()
+        self.assertEqual(self.adb.calls, [])
+
+    def test_batch_source_preparation_failure_is_distinguished_from_login(self):
+        self.engine.phone = True
+        with mock.patch.object(self.engine, "prepare_data", side_effect=runner.FixtureError(
+                503, "UPSTREAM_UNAVAILABLE", method="POST", path="/api/app/v1/notes")), \
+                mock.patch.object(self.engine, "run_flow") as execute:
+            result = self.engine.run_batch(["search"])["search"]
+        self.assertEqual(result["preparation_step"], "test_source_data")
+        self.assertEqual(result["request"]["path"], "/api/app/v1/notes")
+        execute.assert_not_called()
+
+    def test_preparation_error_messages_redact_credentials_before_writing_reports(self):
+        with mock.patch.object(self.engine, "prepare_data", side_effect=ValueError(
+                "invalid isolated-password-value isolated-token-value android-owner")):
+            result = self.engine.run_batch(["search"])["search"]
+        self.assertEqual(result["preparation_step"], "search.data_preparation")
+        self.assertEqual(result["error_message"], "invalid [redacted] [redacted] [redacted]")
+        serialized = (self.engine.output / "search/result.json").read_text()
+        self.assertNotIn("isolated-password-value", serialized)
+        self.assertNotIn("isolated-token-value", serialized)
 
     def test_release_mode_requires_emulator_and_trusted_loopback_https(self):
         connection = json.loads(self.connection.read_text())

@@ -134,7 +134,11 @@ python -B scripts/android/phone-session.py run --release --serial $device `
 
 会话目录的 `report.json`、`report.md` 汇总所有模块的状态、产品／工具／环境／待确认分类、首错步骤以及截图、录像和日志路径。UI 断言失败归为待确认，服务端业务断言失败归为产品问题。视觉项集中复核关键截图；可选 `--record` 为每个执行的场景保存最长 180 秒录像，设备已有其他录像时拒绝启动该场景。
 
+服务请求使用 `Moerise-Android-Acceptance/1.0` 标识验收客户端。准备失败时，报告保留 `preparation_step`、请求方法与不含查询参数的路径、HTTP 状态和服务错误码；登录失败标记为 `session_login`，测试来源笔记准备失败标记为 `test_source_data`。Cloudflare 的非 JSON `error code: 1010` 记录为 `CLOUDFLARE_1010`。响应正文、请求正文、Cookie 和 CSRF 值不写入错误详情，网络错误区分证书校验、解析失败和超时。
+
 每场景结束停止 Maestro 驱动、移除本次新增的 forward，再用唯一远端路径采集 UI XML。采集前删除本地旧文件；dump 失败、退出 137 或 XML 无效时不读历史文件，报告记录采集错误。整批结束恢复原输入法及其启用状态、Wi-Fi、移动数据和亮屏设置，移除本次安装的驱动并停止验收 App；恢复错误写入报告并令命令失败。中断后可再次执行同一会话，先恢复设备检查点再继续补测。
+
+驱动卸载先检查安装状态；尚未安装或已经移除时直接完成清理。已安装驱动要求卸载返回 `Success` 且读回确认包已消失，真实卸载失败保留资源检查点。执行 `cleanup` 后，会话已关闭；再次验收使用新的 `--session` 目录，APK 与连接档案可以沿用。
 
 ```powershell
 python -B scripts/android/phone-session.py cleanup --release --serial $device --session .local/phone/session

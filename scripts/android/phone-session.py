@@ -692,20 +692,24 @@ class PhoneSession:
                     "category": categories.get(item["status"], "unconfirmed"),
                     "cause": item.get("cause"), "screenshots": item.get("screenshots", []),
                     "recordings": item.get("recordings", []), "log": item.get("log"),
-                    "last_step": item.get("last_step")})
+                    "last_step": item.get("last_step"),
+                    **{key: item[key] for key in ("preparation_step", "request", "http_status", "error_code",
+                                                  "error_type", "error_message") if key in item}})
         report = {"mode": "release-phone", "app": self.app, "apk": self.state["artifacts"][self.app],
                   "serial": self.adb.serial, "items": rows,
                   "cleanup_errors": self.state.get("cleanup_errors", []),
                   "manual_results": self.state.get("manual_results", {}),
                   "visual_review": "集中复核关键截图和录像中的日历、图标、流式残影及布局"}
         write_json(self.directory / "report.json", report)
-        lines = ["# Android 正式包真机验收", "", "| 模块 | 场景 | 状态 | 分类 | 证据 |", "| --- | --- | --- | --- | --- |"]
+        lines = ["# Android 正式包真机验收", "", "| 模块 | 场景 | 状态 | 分类 | 失败步骤与原因 | 证据 |", "| --- | --- | --- | --- | --- | --- |"]
         for row in rows:
             paths = [*row["screenshots"], *row["recordings"], *([row["log"]] if row["log"] else [])]
             links = " · ".join("[" + Path(path).name + "](" + Path(path).resolve().as_uri() + ")" for path in paths)
-            lines.append(f"| {row['module']} | {row['flow']} | {row['status']} | {row['category']} | {links} |")
+            failure = " · ".join(str(row[key]) for key in ("preparation_step", "error_message") if row.get(key))
+            failure = failure.replace("|", "/").replace("\n", " ").replace("\r", " ")
+            lines.append(f"| {row['module']} | {row['flow']} | {row['status']} | {row['category']} | {failure} | {links} |")
         for group, item in report["manual_results"].items():
-            lines.append(f"| {group} | manual | {item['status']} | manual | {item['note'].replace('|', '/').replace(chr(10), ' ')} |")
+            lines.append(f"| {group} | manual | {item['status']} | manual | {item['note'].replace('|', '/').replace(chr(10), ' ')} | |")
         lines.extend(["", report["visual_review"], "", "设备恢复错误：" + ", ".join(report["cleanup_errors"])])
         (self.directory / "report.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
         return report
@@ -761,7 +765,7 @@ class PhoneSession:
             for package in reversed(DRIVERS):
                 operations.append(("driver_stop", lambda package=package: self.adb.run("shell", "am", "force-stop", package)))
                 if not self.state.get("maestro_preexisting", {}).get(package, True):
-                    operations.append(("driver_remove", lambda package=package: self.adb.run("uninstall", package, timeout=90)))
+                    operations.append(("driver_remove", lambda package=package: self.remove_package(package)))
             operations.append(("app_stop", lambda: self.adb.run("shell", "am", "force-stop", self.app)))
             try:
                 existing = self.adb.run("forward", "--list", check=False).splitlines()
@@ -786,6 +790,15 @@ class PhoneSession:
             self.summary()
         return outcome
 
+    def remove_package(self, package):
+        if self.package_paths(package):
+            text = self.adb.run("uninstall", package, timeout=90)
+            if not re.search(r"^Success\s*$", text, re.M):
+                raise CommandError("cleanup_failed", "卸载没有返回 Success")
+            if self.package_paths(package):
+                raise CommandError("cleanup_failed", "卸载后安装包仍存在")
+        return True
+
     def cleanup(self, uninstall=False):
         if not self.state:
             raise ValueError("会话不存在")
@@ -801,17 +814,11 @@ class PhoneSession:
         for package in self.state["artifacts"] if uninstall else ():
             if package not in (*APK_PATHS, APP.removesuffix(".fixture")):
                 continue
-            if self.package_paths(package):
-                text = self.adb.run("uninstall", package, timeout=90)
-                if not re.search(r"^Success\s*$", text, re.M):
-                    raise CommandError("cleanup_failed", "卸载没有返回 Success")
-            results[package] = not bool(self.package_paths(package))
+            results[package] = self.remove_package(package)
         self.adb.run("shell", "rm", "-f", CREDENTIAL)
         for package, preexisting in self.state.get("maestro_preexisting", {}).items():
             if package in DRIVERS and not preexisting:
-                if self.package_paths(package):
-                    self.adb.run("uninstall", package, timeout=90)
-                results[package] = not bool(self.package_paths(package))
+                results[package] = self.remove_package(package)
         if self.state.get("maestro_forwards"):
             existing = self.adb.run("forward", "--list").splitlines()
             for mapping, target in self.state.get("maestro_forward_bindings", {}).items():
