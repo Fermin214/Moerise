@@ -6,12 +6,15 @@ import json
 import os
 from pathlib import Path
 import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
 import time
 import unittest
 from unittest import mock
+
+import maestro_runner
 
 SPEC = importlib.util.spec_from_file_location("phone_session", Path(__file__).with_name("phone-session.py"))
 session = importlib.util.module_from_spec(SPEC)
@@ -75,6 +78,9 @@ class SessionLifecycle(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory(prefix="phone-harness-test-", dir=output)
         self.root = Path(self.tmp.name)
         self.repo = self.root / "repo"
+        registry = self.repo / "scripts/android/phone-checks.json"
+        registry.parent.mkdir(parents=True)
+        shutil.copyfile(Path(__file__).with_name("phone-checks.json"), registry)
         common = mock.patch.object(session, "common_repo", return_value=self.repo)
         common.start()
         self.addCleanup(common.stop)
@@ -174,19 +180,31 @@ class SessionLifecycle(unittest.TestCase):
         apk = self.release_ready()
         engine = mock.Mock()
         engine.catalog = {"groups": {"editing": ["editing"], "search": ["search"], "home": ["home-smoke"]}}
-        results = {"editing": {"status": "harness_error", "cause": "driver", "screenshots": ["key.png"], "recordings": ["key.mp4"]},
-                   "search": {"status": "passed"}}
-        engine.run_batch.return_value = results
+        attempted = []
+        def batch(flows, on_result, select):
+            results = {}
+            for flow in flows:
+                result = select(flow, engine)
+                if result is None:
+                    status = "harness_error" if flow == "editing" and not attempted else "passed"
+                    attempted.append(flow)
+                    result = {"status": status, "ui_status": status, "attempted": True,
+                              "server_verification": "passed" if flow in session.SERVER_FLOWS else "not_applicable",
+                              "flow_sha256": self.driver.execution_digest(flow)}
+                on_result(flow, result)
+                results[flow] = result
+            return results
+        engine.run_batch.side_effect = batch
         with mock.patch.object(self.driver, "package_hash", return_value=session.digest(apk)), \
                 mock.patch.object(session, "MaestroRunner", return_value=engine):
             first = self.driver.run(["editing", "search"])
             self.assertEqual(list(first), ["editing", "search"])
-            engine.run_batch.return_value = {"editing": {"status": "passed"}, "home-smoke": {"status": "passed"}}
             self.driver.run(["editing", "search", "home"])
-        self.assertEqual(engine.run_batch.call_args.args[0], ["editing", "home-smoke"])
+        self.assertEqual(attempted, ["editing", "search", "editing", "home-smoke"])
         report = session.read_json(self.driver.directory / "report.json")
         self.assertEqual(len(report["items"]), 3)
-        self.assertTrue(all(row["status"] == "passed" for row in report["items"]))
+        self.assertEqual({row["flow"]: row["status"] for row in report["items"]},
+                         {"editing": "passed", "search": "reused_pass", "home-smoke": "passed"})
         self.assertTrue((self.driver.directory / "report.md").exists())
         self.assertFalse(any(call[:3] == ("shell", "pm", "clear") for call in self.adb.calls))
 
@@ -205,6 +223,7 @@ class SessionLifecycle(unittest.TestCase):
                 return ""
             return original(*args, **kwargs)
         def fail(*args, **kwargs):
+            engine.on_phone_access()
             settings.update(wifi_on="0", mobile_data="0", stay_on_while_plugged_in="3", screen_off_timeout="1800000")
             raise ValueError("batch failure")
         engine = mock.Mock(catalog={"groups": {"search": ["search"]}})
@@ -248,6 +267,7 @@ class SessionLifecycle(unittest.TestCase):
         apk = self.release_ready()
         engine = mock.Mock(catalog={"groups": {"search": ["search"]}})
         def batch(*args, **kwargs):
+            engine.on_phone_access()
             self.adb.installed[session.DRIVERS[0]] = b"new-driver"
             return {"search": {"status": "passed"}}
         engine.run_batch.side_effect = batch
@@ -381,7 +401,6 @@ class SessionLifecycle(unittest.TestCase):
     def test_unrelated_runner_change_does_not_invalidate_flow_pass(self):
         self.prepare()
         script = self.repo / "scripts/android/maestro_runner.py"
-        script.parent.mkdir(parents=True)
         script.write_text("# original\n", encoding="utf-8")
         self.driver.run(["editing"])
         script.write_text("# changed\n", encoding="utf-8")
@@ -654,6 +673,7 @@ class FixedWindowsEntry(unittest.TestCase):
                                            "sessions_root": "sessions", "confirm_ready": True})
         self.sessions = self.root / "sessions"
         self.engine = mock.Mock(batch_cleanup_errors=[])
+        self.engine.catalog = session.catalog(self.repo)
         self.engine.run_batch.side_effect = self.batch
         self.executed = []
         self.events = []
@@ -673,14 +693,17 @@ class FixedWindowsEntry(unittest.TestCase):
             self.addCleanup(patcher.stop)
 
     def batch(self, flows, on_result, select, **kwargs):
-        self.events.append("test-source")
-        self.engine.on_app_launch()
-        if self.interrupt:
-            self.interrupt()
-        results = {}
+        results, started = {}, False
         for flow in flows:
             result = select(flow, self.engine)
             if result is None:
+                if not started:
+                    self.engine.on_phone_access()
+                    self.events.append("test-source")
+                    self.engine.on_app_launch(session.now())
+                    if self.interrupt:
+                        self.interrupt()
+                    started = True
                 self.executed.append(flow)
                 result = {"status": "passed", "ui_status": "passed", "manual_status": "not_applicable",
                           "server_verification": "passed" if flow in session.SERVER_FLOWS else "not_applicable",
@@ -746,7 +769,7 @@ class FixedWindowsEntry(unittest.TestCase):
         code, result = self.verify("--non-interactive", "--check", "home")
         self.assertEqual(code, 1)
         self.assertEqual(result["error"]["cause"], "pre_launch_evidence_pending")
-        self.engine.run_batch.assert_not_called()
+        self.assertEqual(self.events, [])
         evidence = self.telemetry_csv()
         with mock.patch.object(session, "ask", side_effect=lambda *_: self.events.append("pre_launch") or str(evidence)):
             self.assertEqual(self.verify("--check", "home")[0], 0)
@@ -819,7 +842,7 @@ class FixedWindowsEntry(unittest.TestCase):
         self.assertEqual(self.rows()["editing"]["status"], "reused_pass")
         self.assertEqual(self.rows()["search"]["existing_status"], "passed")
         self.assertEqual(self.rows()["search"]["not_run_reason"], "stopped_at_boundary")
-        self.assertEqual(session.read_json(self.active() / "session.json")["check_results"]["search"]["status"], "passed")
+        self.assertEqual(session.read_json(self.active() / "session.json")["flow_results"]["search"]["status"], "passed")
 
     def test_run_bound_stop_and_ctrl_c_do_not_stop_next_run(self):
         args = ("--non-interactive", "--already-launched", "--check", "editing", "--check", "search")
@@ -891,6 +914,138 @@ class FixedWindowsEntry(unittest.TestCase):
         self.assertNotIn("maestro_preexisting", session.read_json(original / "session.json"))
         self.assertFalse(owner.exists())
 
+    def test_verify_recovers_legacy_worktree_session_without_an_owner_index(self):
+        other = self.root / "old-worktree"
+        directory = other / ".local/phone/session"
+        legacy = session.PhoneSession(self.repo, directory, directory, self.adb, "old")
+        session.create_release_state(legacy, {"path": str(self.apk), "sha256": session.digest(self.apk)},
+                                     self.fixture, self.origin, False)
+        legacy.state.update(resources_pending=True, maestro_preexisting={session.DRIVERS[0]: False},
+                            forwards_before=[])
+        legacy.save()
+        self.adb.installed[session.DRIVERS[0]] = b"legacy-driver"
+        self.assertFalse(session.device_resource_owner(self.repo, self.adb.serial).exists())
+        mock_engine = self.engine
+        def batch(*args, **kwargs):
+            self.assertNotIn(session.DRIVERS[0], self.adb.installed)
+            result = self.batch(*args, **kwargs)
+            self.assertFalse(session.read_json(self.active() / "session.json")["maestro_preexisting"][session.DRIVERS[0]])
+            return result
+        mock_engine.run_batch.side_effect = batch
+        with mock.patch.object(session, "worktree_roots", return_value=[self.root, other]):
+            self.assertEqual(self.verify("--non-interactive", "--already-launched", "--check", "home")[0], 0)
+        self.assertFalse(session.read_json(legacy.path).get("resources_pending"))
+
+    def test_verify_and_run_share_the_latest_flow_after_cross_entry_retry(self):
+        args = ("--non-interactive", "--already-launched", "--check", "search")
+        self.assertEqual(self.verify(*args)[0], 0)
+        active = str(self.active())
+        self.assertEqual(self.cli("run", "--release", "--session", active, "--group", "search")[0], 0)
+        self.assertEqual(self.executed, ["search"])
+        self.flow_results["search"] = {"status": "failed", "ui_status": "passed", "server_verification": "failed"}
+        self.assertEqual(self.cli("run", "--release", "--session", active, "--group", "search", "--retry")[0], 1)
+        self.flow_results.clear()
+        self.assertEqual(self.verify(*args)[0], 0)
+        self.assertEqual(self.rows()["search"]["status"], "passed")
+        self.assertEqual(self.executed, ["search", "search", "search"])
+
+    def test_real_batch_resumes_logged_in_phone_and_accounts_for_confirmed_first_start(self):
+        identity = {"instance_id": "fixture-instance", "user": {"name": "users/owner", "display_name": "Test Owner"}}
+        api = mock.Mock(csrf="", **{"login.return_value": identity})
+        state = {"screen": "welcome", "airplane_mode_on": "0", "wifi_on": "1", "fail_start": True}
+        device = self.adb.run
+        flows = []
+
+        def run_adb(*args, **kwargs):
+            if args[:4] == ("shell", "settings", "get", "global") and args[4] in ("airplane_mode_on", "wifi_on"):
+                return state[args[4]]
+            if args[:4] == ("shell", "cmd", "connectivity", "airplane-mode"):
+                state["airplane_mode_on"] = str(int(args[4] == "enable"))
+                return ""
+            if args[:3] == ("shell", "svc", "wifi"):
+                state["wifi_on"] = str(int(args[3] == "enable"))
+                return ""
+            if args == ("shell", "dumpsys", "connectivity"):
+                return "Active default network: none\nCurrent Networks:\n\nStatus for known UIDs:\n"
+            if args[:3] == ("shell", "am", "start"):
+                if state["fail_start"]:
+                    return "Status: timeout\n"
+                flows.append(("start", state["airplane_mode_on"]))
+                return f"Status: ok\nActivity: {self.app}/.MainActivity\n"
+            return device(*args, **kwargs)
+
+        def dump(*args, **kwargs):
+            self.assertEqual(state["airplane_mode_on"], "1")
+            tags = {"welcome": ["welcome_enter"], "blank": ["server_login", "server_origin_empty"],
+                    "signed-in": ["open_menu"]}[state["screen"]]
+            return "<hierarchy>" + "".join(f'<node package="{self.app}" resource-id="{tag}"/>' for tag in tags) + "</hierarchy>"
+
+        def execute(engine, flow, prepared=None, deferred=False):
+            values = prepared[0]
+            flows.append((flow, state["airplane_mode_on"]))
+            if flow == "test-source-welcome":
+                self.assertEqual(state["screen"], "welcome")
+                state["screen"] = "blank"
+            if flow == "test-source":
+                self.assertEqual(state["screen"], "blank")
+                self.assertIn("test-source", values["NOTE_TEXT"])
+                state.update(screen="signed-in", note_name=values["NOTE_NAME"], note_text=values["NOTE_TEXT"])
+            if flow == "test-source-resume":
+                self.assertEqual((values["NOTE_NAME"], values["NOTE_TEXT"]), (state["note_name"], state["note_text"]))
+            return {"status": "passed", "flow_sha256": session.flow_digest(self.repo, flow)}
+
+        def engine(*args, **kwargs):
+            real = maestro_runner.MaestroRunner(*args, **kwargs)
+            real.api = api
+            return real
+
+        api.create.side_effect = lambda text, key: {"name": "memos/" + key}
+        args = ("--non-interactive", "--check", "language", "--check", "home")
+        with mock.patch.object(session, "MaestroRunner", side_effect=engine), \
+                mock.patch.object(self.adb, "run", side_effect=run_adb), \
+                mock.patch.object(maestro_runner, "fresh_ui_dump", side_effect=dump), \
+                mock.patch.object(maestro_runner.MaestroRunner, "run_flow", autospec=True, side_effect=execute), \
+                mock.patch.object(maestro_runner.MaestroRunner, "recover_editor_state", return_value=[]), \
+                mock.patch.object(maestro_runner, "common_repo", return_value=self.root), \
+                mock.patch.object(maestro_runner, "worktree_roots", return_value=[self.root]):
+            first_csv = self.telemetry_csv()
+            with mock.patch.object(session, "ask", return_value=str(first_csv)):
+                self.assertEqual(self.verify(*args)[0], 1)
+            metadata = self.active() / "session.json"
+            pending = session.read_json(metadata)
+            self.assertIn("last_app_launch_attempt_at", pending)
+            self.assertFalse(session.first_launch(pending))
+            self.assertEqual(flows, [])
+
+            csv = self.root / "recorded-after-failed-start.csv"
+            csv.write_bytes(first_csv.read_bytes())
+            self.assertEqual(self.cli("record", "--release", "--session", str(self.active()),
+                                      "--check", "telemetry-before-launch", "--outcome", "passed",
+                                      "--evidence", str(csv))[0], 0)
+            self.assertGreater(session.read_json(metadata)["manual_results"]["telemetry-before-launch"]["evidence_captured_at"],
+                               pending["last_app_launch_attempt_at"])
+            state["fail_start"] = False
+            self.assertEqual(self.verify(*args, "--stop-after", "home")[0], 2)
+            stopped = session.read_json(metadata)
+            self.assertTrue(session.first_launch(stopped))
+            self.assertEqual(stopped["source_receipt"]["instance_id"], identity["instance_id"])
+            self.assertEqual(flows, [("start", "1"), ("test-source-welcome", "1"), ("test-source", "0"),
+                                     ("home-smoke", "0")])
+
+            profile = session.read_json(self.profile)
+            profile.pop("confirm_ready")
+            session.write_json(self.profile, profile)
+            flows.clear()
+            self.assertEqual(self.verify(*args)[0], 0)
+            self.assertEqual(flows, [("start", "1"), ("test-source-resume", "1"), ("start", "0"), ("language", "0")])
+            self.assertEqual(self.rows()["home"]["status"], "reused_pass")
+            self.assertEqual(self.rows()["language"]["status"], "passed")
+            flows.clear()
+            api.reset_mock()
+            self.assertEqual(self.verify(*args)[0], 0)
+            self.assertEqual(flows, [])
+            api.login.assert_not_called()
+
     def test_old_release_cleanup_leaves_drivers_owned_by_a_later_task(self):
         self.assertEqual(self.verify("--non-interactive", "--already-launched", "--check", "home")[0], 0)
         metadata = self.active() / "session.json"
@@ -909,7 +1064,7 @@ class FixedWindowsEntry(unittest.TestCase):
         self.assertEqual(self.rows()["search"]["status"], "reused_baseline")
         self.flow_results["search"] = {"status": "failed", "ui_status": "failed"}
         self.assertEqual(self.verify(*args, "--retry")[0], 1)
-        self.assertEqual(session.read_json(self.active() / "session.json")["check_results"]["search"]["status"], "failed")
+        self.assertEqual(session.read_json(self.active() / "session.json")["flow_results"]["search"]["status"], "failed")
         self.flow_results.clear()
         self.assertEqual(self.verify(*args)[0], 0)
         self.assertEqual(self.executed, ["search", "search"])

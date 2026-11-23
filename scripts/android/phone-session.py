@@ -672,8 +672,7 @@ class PhoneSession:
                 runner = MaestroRunner(self.repo, self.adb, self.state["fixture"], self.output / "maestro",
                     self.maestro, release=True, phone=True, test_origin=self.state["test_origin"],
                     allow_production=self.state.get("allow_production", False))
-                runner.on_app_launch = self.mark_app_launch
-                runner.phone_isolation = self.isolate_source
+                self.configure_phone_runner(runner)
                 result = runner.probe_phone_offline()
                 if result["status"] != "passed":
                     raise CommandError(result["cause"], "先退出已登录账号并停在空白登录页")
@@ -695,24 +694,21 @@ class PhoneSession:
             "kind": "manual", "status": outcome, "note": note, "recorded_at": now(),
             "evidence_paths": [str(Path(path).resolve()) for path in evidence]}
         if before_launch and outcome == "passed":
-            observed = self.state.get("app_launch_attempted")
-            window_missed = bool(observed or self.state.get("app_launch_time_unknown"))
+            launch = first_launch(self.state)
+            observed = launch if isinstance(launch, str) else None
             if first_launch_at:
                 reported = datetime.fromisoformat(first_launch_at)
                 if reported.tzinfo is None or reported > datetime.now(timezone.utc) or (
                         observed and reported > datetime.fromisoformat(observed)):
                     raise ValueError("--first-launch-at 必须是早于已记录启动时间的带时区时间")
                 observed = reported.isoformat()
-            cutoff = observed if first_launch_at or self.state.get("app_launch_time_verified") else None
-            captured = prelaunch_evidence(result["evidence_paths"], cutoff,
-                                          window_missed=window_missed)
+            captured = prelaunch_evidence(result["evidence_paths"], observed, window_missed=bool(launch))
             if not captured:
                 raise CommandError("pre_launch_evidence_required",
                     "传入首次启动前的遥测 CSV：--evidence <文件>；若入口未观测首启，另给出 --first-launch-at <带时区时间>")
             result["evidence_captured_at"] = captured
             if first_launch_at:
-                self.state["app_launch_attempted"] = observed
-                self.state["app_launch_time_verified"] = True
+                self.state["first_app_launch_at"] = observed
                 self.state.pop("app_launch_time_unknown", None)
         if before_launch and outcome == "inconclusive":
             result["note"] = note or existing.get("note") or "缺少首次启动前的遥测 CSV"
@@ -800,6 +796,8 @@ class PhoneSession:
             self.adb.run("shell", "pm", "clear", app)
         if uninstall or install or clear_data:
             self.state["results"] = {}
+            for key in ("flow_results", "check_results", "source_receipt"):
+                self.state.pop(key, None)
         self.state["status"] = "ready"
         self.save()
 
@@ -997,14 +995,22 @@ class PhoneSession:
 
     def previous_check(self, item):
         name, flow = item["id"], item.get("flow")
+        latest = self.state.get("flow_results", {}).get(flow)
+        if latest is not None:
+            return latest
         previous = self.state.get("check_results", {}).get(name)
-        if previous is not None or not flow:
+        if not flow:
             return previous or {}
+        candidates = [previous] if previous else []
         for group, record in self.state["results"].items():
             candidate = record.get("flows", {group: record}).get(flow)
             if candidate:
-                return candidate
-        return {}
+                candidates.append(candidate)
+        return max(candidates, key=lambda result: result.get("started_at", ""), default={})
+
+    def save_flow_result(self, flow, result):
+        if result.get("attempted") or result["status"] in ("passed", "reused_baseline"):
+            self.state.setdefault("flow_results", {})[flow] = result
 
     def baseline_records(self, path):
         if not path:
@@ -1042,10 +1048,10 @@ class PhoneSession:
             if (item["kind"] != "auto" and (not legacy or name == "editing-keyboard")
                     and name in imported and record["manual_status"] == "passed"):
                 if item["phase"] == "pre_launch":
-                    observed = self.state.get("app_launch_attempted")
-                    cutoff = observed if self.state.get("app_launch_time_verified") else None
+                    launch = first_launch(self.state)
+                    cutoff = launch if isinstance(launch, str) else None
                     captured = prelaunch_evidence(evidence, cutoff,
-                                                  window_missed=bool(observed or self.state.get("app_launch_time_unknown")))
+                                                  window_missed=bool(launch))
                     if not captured:
                         continue
                     value["evidence_captured_at"] = captured
@@ -1081,6 +1087,7 @@ class PhoneSession:
                         or not all(re.fullmatch(r"memos/[A-Za-z0-9_-]+", values.get(key, ""))
                                    for key in ("NOTE_NAME", "PEER_NOTE_NAME"))):
                     return None
+                runner.login_batch()
                 observed = runner.verify(flow, values)
                 if observed:
                     result.update(server_verification="passed", server_assertions=observed)
@@ -1169,14 +1176,21 @@ class PhoneSession:
         write_atomic(self.directory / "manual-cards.md", "\n".join(cards) + "\n")
         return report
 
-    def run_checks(self, items, baseline, args, run_id, prompt):
+    def configure_phone_runner(self, runner):
+        runner.on_app_launch = self.mark_app_launch
+        runner.on_app_launch_attempt = self.mark_app_launch_attempt
+        runner.on_source_verified = self.mark_source_verified
+        runner.source_receipt = self.state.get("source_receipt")
+        runner.phone_isolation = self.isolate_source
+
+    def run_checks(self, items, baseline, args, run_id, prompt, before_phone):
         runner = MaestroRunner(self.repo, self.adb, self.state["fixture"], self.output / "maestro",
             self.maestro, release=True, phone=True, test_origin=self.state["test_origin"],
             allow_production=self.state["allow_production"], record=self.record_video)
         runner.fail_marker = args.fail_marker
-        runner.on_app_launch = self.mark_app_launch
+        self.configure_phone_runner(runner)
         runner.on_test_file = self.mark_test_file
-        runner.phone_isolation = self.isolate_source
+        runner.on_phone_access = before_phone
         by_flow = {item["flow"]: item for item in items}
         view = self.state["coverage"]
         marker = self.directory / "STOP_AFTER_CURRENT"
@@ -1201,8 +1215,7 @@ class PhoneSession:
             self.remember_maestro(result)
             view["results"][name] = result
             attempted = result.get("attempted", False)
-            if attempted or result["status"] in ("passed", "reused_baseline"):
-                self.state.setdefault("check_results", {})[name] = result
+            self.save_flow_result(flow, result)
             self.save()
             completed = result.get("cause") != "interrupted" and (attempted or result["status"] in REUSABLE)
             requested = marker.exists() and marker.read_text(encoding="utf-8-sig").strip() == run_id
@@ -1217,14 +1230,22 @@ class PhoneSession:
             return runner.run_batch(flows, on_result=checkpoint, select=select,
                 clean_editor={flow for flow, item in by_flow.items() if item["requires_clean_editor"]},
                 on_source_blocked=lambda: prompt(
-                    "若 App 尚有登录账号，先断开手机网络再退出。停在空白登录页并恢复测试网络后，输入 y 重试一次。"))
+                    "若离线账号核验失败，保持设备断网并退出账号，停在空白登录页后恢复测试网络。输入 y 重试一次。"))
         finally:
             self.state["batch_cleanup_errors"] = getattr(runner, "batch_cleanup_errors", [])
 
-    def mark_app_launch(self):
-        if not (self.state.get("app_launch_attempted") or self.state.get("app_launch_time_unknown")):
-            self.state["app_launch_attempted"] = now()
-            self.state["app_launch_time_verified"] = True
+    def mark_source_verified(self, receipt):
+        self.state["source_receipt"] = receipt
+        self.save()
+
+    def mark_app_launch_attempt(self, attempted):
+        if not first_launch(self.state):
+            self.state["last_app_launch_attempt_at"] = attempted
+            self.save()
+
+    def mark_app_launch(self, attempted):
+        if not first_launch(self.state):
+            self.state["first_app_launch_at"] = attempted
             self.save()
 
     def mark_test_file(self, path):
@@ -1237,46 +1258,54 @@ class PhoneSession:
             raise ValueError("正式包使用 catalog 中的 UI 模块；instrumentation 仅用于 fixture")
         self.require_ready()
         self.verify_artifacts()
-        self.capture_resources()
-        outcome, pending = {}, []
+        outcome = {}
         runner = None
+        self.state["cleanup_errors"] = []
         try:
             runner = MaestroRunner(self.repo, self.adb, self.state["fixture"], self.output / "maestro",
                 self.maestro, release=True, phone=True,
                 test_origin=self.state["test_origin"], allow_production=self.state.get("allow_production", False), record=self.record_video)
-            runner.phone_isolation = self.isolate_source
-            runner.on_app_launch = self.mark_app_launch
-            for group in groups:
-                previous = self.state["results"].get(group)
-                if previous and previous["status"] == "passed" and not retry and previous.get("flow_sha256") == self.execution_digest(group):
-                    outcome[group] = {**previous, "status": "reused_pass"}
-                else:
-                    pending.append(group)
-            flows = list(dict.fromkeys(flow for group in pending for flow in runner.catalog["groups"][group]))
+            self.configure_phone_runner(runner)
+            runner.on_phone_access = self.capture_resources
+            flows = list(dict.fromkeys(flow for group in groups for flow in runner.catalog["groups"][group]))
+            by_flow = {item["flow"]: item for item in phone_checks(self.repo).values() if item.get("flow")}
+            for flow in flows:
+                previous = self.previous_check(by_flow.get(flow, {"id": flow, "flow": flow}))
+                if previous:
+                    self.state.setdefault("flow_results", {}).setdefault(flow, previous)
+
+            def select(flow, _engine):
+                previous = self.state.get("flow_results", {}).get(flow, {})
+                if not retry and compatible_pass(previous, flow, self.execution_digest(flow)):
+                    return {**previous, "status": "reused_pass"}
+                return None
+
             def checkpoint(flow, result):
                 self.remember_maestro(result)
-                for group in pending:
-                    if flow not in runner.catalog["groups"][group]:
-                        continue
-                    saved = self.state["results"].setdefault(group, {"status": "inconclusive", "flows": {}})
-                    saved["flows"][flow] = result
-                    saved["status"] = "inconclusive"
-                    saved.pop("flow_sha256", None)
+                self.save_flow_result(flow, result)
+                for group in groups:
+                    if flow in runner.catalog["groups"][group]:
+                        saved = self.state["results"].setdefault(group, {"flows": {}})
+                        saved["flows"][flow] = result
+                        saved["status"] = "inconclusive"
+                        saved.pop("flow_sha256", None)
                 self.save()
-            results = runner.run_batch(flows, on_result=checkpoint) if flows else {}
-            for group in pending:
+
+            results = runner.run_batch(flows, on_result=checkpoint, select=select) if flows else {}
+            for group in groups:
                 selected = {flow: results[flow] for flow in runner.catalog["groups"][group] if flow in results}
-                for result in selected.values():
-                    self.remember_maestro(result)
                 complete = len(selected) == len(runner.catalog["groups"][group])
-                status = next((item["status"] for item in selected.values() if item["status"] != "passed"),
+                status = next((item["status"] for item in selected.values() if item["status"] not in REUSABLE),
                               "passed" if complete else "inconclusive")
                 outcome[group] = {"status": status, "flows": selected, "flow_sha256": self.execution_digest(group)}
                 self.state["results"][group] = outcome[group]
+                if complete and all(item["status"] == "reused_pass" for item in selected.values()):
+                    outcome[group] = {**outcome[group], "status": "reused_pass"}
             self.save()
         finally:
             batch_errors = getattr(runner, "batch_cleanup_errors", [])
-            self.restore_resources()
+            if self.owns_resources:
+                self.restore_resources()
             if isinstance(batch_errors, list):
                 self.state["cleanup_errors"].extend(batch_errors)
             self.save()
@@ -1385,8 +1414,11 @@ def active_directory(root):
 
 
 def session_history(repo, root):
-    roots = {root, *(tree / ".local/phone/sessions" for tree in worktree_roots(repo))}
-    return sorted({metadata for folder in roots for metadata in folder.glob("session-*/session.json")})
+    worktrees = [tree / ".local/phone" for tree in worktree_roots(repo)]
+    roots = {root, *(tree / "sessions" for tree in worktrees)}
+    legacy = (tree / "session/session.json" for tree in worktrees)
+    return sorted({metadata for folder in roots for metadata in folder.glob("session-*/session.json")}
+                  | {metadata for metadata in legacy if metadata.is_file()})
 
 
 def device_resource_owner(repo, serial):
@@ -1456,6 +1488,8 @@ def select_session(args, adb, artifact):
 
 
 def first_launch(state):
+    if state.get("first_app_launch_at"):
+        return state["first_app_launch_at"]
     observed = state.get("app_launch_attempted")
     if state.get("app_launch_time_verified"):
         return observed
@@ -1531,30 +1565,34 @@ def verify(args, adb):
     view = {"run_id": run_id, "status": "running", "selected": [item["id"] for item in selected], "results": {}}
     session.state["coverage"] = view
     session.state["active_run_id"] = run_id
+    session.state["cleanup_errors"] = []
     session.state.pop("batch_cleanup_errors", None)
     session.save()
     interactive = sys.stdin.isatty() and not args.non_interactive
     prompt = lambda text: ask(interactive, text)
-    capture_attempted = False
     code = 1
+
+    def before_phone():
+        if not (args.confirm_ready or session.state.get("source_receipt") or (interactive and prompt(
+                f"若有未核验的登录账号，先在设备断网退出，停在空白登录页并恢复测试网络。"
+                f"入口将仅登录 {args.test_origin}。确认后输入 y。").lower() == "y")):
+            raise CommandError("test_account_confirmation_pending", "确认测试账号与来源后使用 --confirm-ready")
+        missed = first_launch(session.state)
+        complete_phase(session, checks, "pre_launch", prompt, missed=missed)
+        session.capture_resources()
+
     try:
-        if past_launch and not session.state.get("app_launch_attempted"):
+        if past_launch and not first_launch(session.state):
             if past_launch is True:
                 session.state["app_launch_time_unknown"] = True
             else:
-                session.state["app_launch_attempted"] = past_launch
-                session.state["app_launch_time_verified"] = True
-        confirmed = args.confirm_ready or (interactive and prompt(
-            f"若有已登录账号，先在设备断网退出，停在空白登录页并恢复测试网络。"
-            f"入口将仅登录 {args.test_origin}。确认后输入 y。").lower() == "y")
-        if not confirmed:
-            raise CommandError("test_account_confirmation_pending", "确认测试账号与来源后使用 --confirm-ready")
+                session.state["first_app_launch_at"] = past_launch
         if adb.run("get-state").strip() != "device":
             raise CommandError("device_unavailable", "手机尚未连接")
         if proxy_enabled(session.network()):
             raise CommandError("proxy_present", "手机存在全局代理")
         installed = session.package_hash(session.app)
-        if args.already_launched and installed == artifact["sha256"] and not session.state.get("app_launch_attempted"):
+        if args.already_launched and installed == artifact["sha256"] and not first_launch(session.state):
             session.state["app_launch_time_unknown"] = True
         baseline = session.baseline_records(args.baseline)
         install = bool(args.install and installed != artifact["sha256"])
@@ -1580,13 +1618,10 @@ def verify(args, adb):
             session.prepare_release(args.apk, args.fixture, args.test_origin, confirmed=True,
                                     allow_production=args.allow_production, install=current != artifact["sha256"],
                                     artifact=artifact, installed=current)
-        if auto or any(item["phase"] == "pre_launch" for item in selected):
-            missed = session.state.get("app_launch_attempted") or session.state.get("app_launch_time_unknown")
-            complete_phase(session, checks, "pre_launch", prompt, missed=missed)
+        if any(item["phase"] == "pre_launch" for item in selected):
+            complete_phase(session, checks, "pre_launch", prompt, missed=first_launch(session.state))
         if auto:
-            capture_attempted = True
-            session.capture_resources()
-            results = session.run_checks(auto, baseline, args, run_id, lambda text: prompt(text).lower() == "y")
+            results = session.run_checks(auto, baseline, args, run_id, lambda text: prompt(text).lower() == "y", before_phone)
             incomplete = len(results) != len(auto) and not view.get("stopped")
             code = int(bool(incomplete) or any(result["status"] not in REUSABLE and result.get("cause") != "capability_missing"
                                               for result in results.values()))
@@ -1599,7 +1634,7 @@ def verify(args, adb):
         if isinstance(error, FixtureError):
             view["error"].update(error.details())
     finally:
-        if capture_attempted and session.owns_resources:
+        if session.owns_resources:
             session.restore_resources()
         session.state.setdefault("cleanup_errors", []).extend(session.state.pop("batch_cleanup_errors", []))
         if session.state["cleanup_errors"]:

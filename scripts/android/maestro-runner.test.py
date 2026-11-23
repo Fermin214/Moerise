@@ -563,12 +563,16 @@ class MaestroExecutionTest(unittest.TestCase):
         steps = list(runner.yaml.safe_load_all(source))[1]
         sync = next(index for index, step in enumerate(steps)
                     if step.get("tapOn", {}).get("id") == "sidebar_sync")
-        guard = next(index for index, step in enumerate(steps)
+        home = next(index for index, step in enumerate(steps)
+                    if step.get("runFlow", {}).get("file") == "subflows/test-source-home.yaml")
+        self.assertLess(home, sync)
+        home_steps = list(runner.yaml.safe_load_all(
+            (maestro / "subflows/test-source-home.yaml").read_text(encoding="utf-8")))[1]
+        guard = next(index for index, step in enumerate(home_steps)
                      if step.get("runFlow", {}).get("when", {}).get("notVisible", {}).get("id") == "account_menu")
-        reset = next(index for index, step in enumerate(steps)
+        reset = next(index for index, step in enumerate(home_steps)
                      if step.get("tapOn", {}).get("id") == "nav_home")
         self.assertLess(guard, reset)
-        self.assertLess(reset, sync)
         self.assertEqual(next(step["scrollUntilVisible"]["direction"] for step in steps if "scrollUntilVisible" in step), "UP")
         self.assertFalse(any(step.get("assertVisible", {}).get("id") == "note_editor" for step in steps))
         for name in ("ensure-login.yaml", "open-menu.yaml"):
@@ -588,9 +592,9 @@ class MaestroExecutionTest(unittest.TestCase):
         self.assertEqual(prepare.call_count, 1)
 
     def test_source_probe_navigates_home_even_when_archive_or_query_uses_home_tag(self):
-        source = runner.ROOT / "scripts/android/maestro/test-source.yaml"
+        source = runner.ROOT / "scripts/android/maestro/subflows/test-source-home.yaml"
         steps = list(runner.yaml.safe_load_all(source.read_text(encoding="utf-8")))[1]
-        taps = [step["tapOn"]["id"] for step in steps if "tapOn" in step]
+        taps = [step["tapOn"]["id"] for step in steps if "tapOn" in step] + ["sidebar_sync"]
         for start in ("archive", "filtered-home"):
             with self.subTest(start=start):
                 page = start
@@ -625,12 +629,32 @@ class MaestroExecutionTest(unittest.TestCase):
                    f'<node package="{self.engine.app}" resource-id="account_menu" text="{name}"/></hierarchy>')
             with self.subTest(account=name), mock.patch.object(self.engine, "prepare_data") as prepare, \
                     mock.patch.object(runner, "fresh_ui_dump", return_value=xml), \
+                    mock.patch.object(self.engine, "start_app") as start, \
                     mock.patch.object(self.engine, "run_flow") as execute:
                 result = self.engine.run_batch(["search"])["search"]
                 self.assertEqual(result["preparation_step"], "phone_offline_identity")
                 self.assertEqual(result["probe_cause"], "selected_account_present")
                 execute.assert_not_called()
                 prepare.assert_not_called()
+                start.assert_called_once()
+
+    def test_matching_host_receipt_cannot_reconnect_a_same_named_phone_without_cached_note(self):
+        self.engine.phone = True
+        self.engine.phone_isolation = nullcontext
+        identity = {"instance_id": "test-instance", "user": {"name": "users/owner", "display_name": "Same Name"}}
+        self.engine.api.login.return_value = identity
+        self.engine.source_receipt = {**self.engine.source_identity(identity), "note_name": "memos/probe",
+                                      "note_text": "Maestro test-source " + "a" * 32}
+        xml = f'<hierarchy><node package="{self.engine.app}" resource-id="open_menu"/></hierarchy>'
+        with mock.patch.object(runner, "fresh_ui_dump", return_value=xml), \
+                mock.patch.object(self.engine, "start_app") as start, \
+                mock.patch.object(self.engine, "run_flow", return_value={"status": "inconclusive"}) as execute, \
+                mock.patch.object(self.engine, "prepare_data") as prepare:
+            result = self.engine.run_batch(["search"])["search"]
+        self.assertEqual(result["probe_cause"], "cached_test_source_unverified")
+        start.assert_called_once()
+        prepare.assert_not_called()
+        self.assertEqual(execute.call_args.args, ("test-source-resume",))
 
     def test_offline_probe_requires_a_blank_form_from_the_target_app(self):
         self.engine.phone_isolation = nullcontext

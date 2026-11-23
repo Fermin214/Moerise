@@ -36,6 +36,7 @@ FLOW_CONTRACT_VERSIONS = {
     "insights-disconnect": 1, "language": 1, "login": 1, "navigation": 1,
     "navigation-review": 1, "navigation-walk": 1, "navigation-map": 1, "navigation-settings": 1,
     "recover-draft": 1, "editor-home": 1, "release-smoke": 1, "search": 1, "test-source": 2,
+    "test-source-resume": 1, "test-source-welcome": 1,
     "upgrade-smoke": 1,
 }
 SERVER_FLOWS = CHANNEL_FLOWS | {
@@ -449,8 +450,13 @@ class MaestroRunner:
         self.record = record
         self.fail_marker = None
         self.on_app_launch = None
+        self.on_app_launch_attempt = None
         self.on_test_file = None
         self.phone_isolation = None
+        self.on_phone_access = None
+        self.source_receipt = None
+        self.on_source_verified = None
+        self.batch_identity = None
         self.executable = executable
         self.catalog = catalog(self.root)
         self.remote_file = None
@@ -685,8 +691,6 @@ class MaestroRunner:
                 "shell", "pm", "path", package, check=False).strip()) for package in DRIVERS}
             # Complete the first Activity launch before attaching the instrumentation driver.
             stage, deadline = "activity_launch", 60
-            if self.on_app_launch:
-                self.on_app_launch()
             self.start_app()
             environment = dict(os.environ)
             environment.update({
@@ -931,10 +935,22 @@ class MaestroRunner:
             self.channel_fixture = json.loads(path.read_text(encoding="utf-8"))
             self.restore_channel(self.channel_fixture)
 
+    def login_batch(self, on_source_blocked=None):
+        if self.batch_identity is None:
+            try:
+                self.batch_identity = self.api.login() or {}
+            except FixtureError:
+                if not on_source_blocked or not on_source_blocked():
+                    raise
+                self.batch_identity = self.api.login() or {}
+        return self.batch_identity
+
     def run_batch(self, flows, on_result=None, select=None, clean_editor=None, on_source_blocked=None):
         results = {}
         self.batch_cleanup_errors = []
+        self.batch_identity = None
         step = "session_login"
+        phone_ready, editor_error = False, None
 
         def checkpoint(flow, result):
             result.setdefault("ui_status", result["status"])
@@ -947,47 +963,45 @@ class MaestroRunner:
             return on_result(flow, result) if on_result else False
 
         try:
-            try:
-                identity = self.api.login()
-            except FixtureError:
-                if not on_source_blocked or not on_source_blocked():
-                    raise
-                identity = self.api.login()
-            step = "channel_recovery"
-            self.restore_pending_channel()
-            if self.phone and flows:
-                step = "phone_offline_identity"
-                preflight = self.probe_phone_offline()
-                retried = False
-                if preflight["status"] != "passed" and on_source_blocked and on_source_blocked():
-                    preflight = self.probe_phone_offline()
-                    retried = True
-                if preflight["status"] != "passed":
-                    return self.block_unverified_phone(flows, results, checkpoint, preflight, step)
-                step = "test_source_data"
-                probe = self.prepare_data("test-source", self.catalog["flows"]["test-source"])
-                user = identity.get("user", {}) if isinstance(identity, dict) else {}
-                account = (user.get("display_name", "").strip() or user.get("name", "")).removeprefix("users/")
-                if account:
-                    probe[0]["EXPECTED_ACCOUNT"] = account
-                step = "test_source_ui"
-                preflight = self.run_flow("test-source", prepared=probe, deferred=True)
-                if preflight["status"] != "passed" and not retried and on_source_blocked and on_source_blocked():
-                    step = "phone_offline_identity"
-                    preflight = self.probe_phone_offline()
-                    if preflight["status"] != "passed":
-                        return self.block_unverified_phone(flows, results, checkpoint, preflight, step)
-                    step = "test_source_ui"
-                    preflight = self.run_flow("test-source", prepared=probe, deferred=True)
-                write_result(self.output / "test-source-result.json", preflight)
-                if preflight["status"] != "passed":
-                    return self.block_unverified_phone(flows, results, checkpoint, preflight, step)
-            recovery = self.recover_editor_state() if self.phone and flows else []
-            editor_error = next((item for item in recovery if item["status"] != "passed"), None)
-            if recovery:
-                write_result(self.output / "editor-recovery.json", recovery)
+            if not self.phone or self.channel_checkpoint().exists():
+                self.login_batch(on_source_blocked)
+                step = "channel_recovery"
+                self.restore_pending_channel()
             for flow in flows:
+                step = "session_login"
                 result = select(flow, self) if select else None
+                if result is None and self.phone and not phone_ready:
+                    if self.on_phone_access:
+                        step = "phone_access"
+                        self.on_phone_access()
+                    step = "session_login"
+                    identity = self.login_batch(on_source_blocked)
+                    for attempt in range(2):
+                        step = "phone_offline_identity"
+                        preflight = self.probe_phone_offline(self.resume_values(identity))
+                        if preflight["status"] == "passed":
+                            if preflight.get("resumed"):
+                                self.start_app()
+                            else:
+                                step = "test_source_data"
+                                probe = self.prepare_data("test-source", self.catalog["flows"]["test-source"])
+                                probe[0]["EXPECTED_ACCOUNT"] = self.display_account(identity)
+                                step = "test_source_ui"
+                                preflight = self.run_flow("test-source", prepared=probe, deferred=True)
+                                write_result(self.output / "test-source-result.json", preflight)
+                                if preflight["status"] == "passed" and self.on_source_verified:
+                                    self.on_source_verified({**self.source_identity(identity),
+                                        "note_name": probe[0]["NOTE_NAME"], "note_text": probe[0]["NOTE_TEXT"]})
+                        if preflight["status"] == "passed":
+                            break
+                        if attempt or not on_source_blocked or not on_source_blocked():
+                            return self.block_unverified_phone((name for name in flows if name not in results),
+                                                               results, checkpoint, preflight, step)
+                    phone_ready = True
+                    recovery = self.recover_editor_state()
+                    editor_error = next((item for item in recovery if item["status"] != "passed"), None)
+                    if recovery:
+                        write_result(self.output / "editor-recovery.json", recovery)
                 requires_clean = clean_editor is None or flow in clean_editor
                 if result is None and editor_error and requires_clean:
                     result = {"status": "skipped", "ui_status": "not_run", "cause": editor_error["cause"],
@@ -1052,6 +1066,8 @@ class MaestroRunner:
                 if "channel_settings_restore" in result["cleanup_errors"]:
                     break
         except (FixtureError, OSError, ValueError, RuntimeError, KeyError, subprocess.SubprocessError) as error:
+            if step == "phone_access":
+                raise
             blocked = isinstance(error, FixtureError) or (step == "phone_offline_identity" and getattr(error, "code", None))
             for flow in flows:
                 if flow not in results:
@@ -1063,26 +1079,56 @@ class MaestroRunner:
                     self.restore_channel(self.channel_fixture)
                 except Exception:
                     self.batch_cleanup_errors.append("channel_settings_restore")
-            try:
-                self.api.close()
-            except Exception:
-                self.batch_cleanup_errors.append("host_session_logout")
+            if self.batch_identity is not None:
+                try:
+                    self.api.close()
+                except Exception:
+                    self.batch_cleanup_errors.append("host_session_logout")
             write_result(self.output / "results.json", results)
         return results
 
-    def probe_phone_offline(self):
+    def source_identity(self, identity):
+        return {"origin": normalized_origin(self.connection["origin"]), "instance_id": identity.get("instance_id"),
+                "user": identity.get("user", {}).get("name")}
+
+    def display_account(self, identity):
+        user = identity.get("user", {})
+        return (user.get("display_name", "").strip() or user.get("name", "")).removeprefix("users/")
+
+    def resume_values(self, identity):
+        receipt = self.source_receipt or {}
+        source = self.source_identity(identity)
+        if (not source["instance_id"] or not source["user"]
+                or any(receipt.get(key) != value for key, value in source.items())):
+            return None
+        return {"APP_ID": self.app, "SCREENSHOT_PREFIX": "test-source-resume", "INPUT_SUFFIX": UNICODE_INPUT_SUFFIX,
+                "NOTE_NAME": receipt["note_name"], "NOTE_TEXT": receipt["note_text"], "QUERY_TEXT": receipt["note_text"],
+                "EXPECTED_ACCOUNT": self.display_account(identity)}
+
+    def probe_phone_offline(self, resume=None):
         if self.phone_isolation is None:
             raise ValueError("正式包真机需要离线账号探针")
         with self.phone_isolation():
-            if self.on_app_launch:
-                self.on_app_launch()
             self.start_app()
             artifact = self.output / "source-offline-window.xml"
             try:
-                xml = fresh_ui_dump(self.adb, artifact, stop_drivers=False)
-                tags = {node.get("resource-id", "").split(":id/", 1)[-1]
-                        for node in ET.fromstring(xml).iter("node") if node.get("package") == self.app}
+                def visible_tags():
+                    xml = fresh_ui_dump(self.adb, artifact, stop_drivers=False)
+                    return {node.get("resource-id", "").split(":id/", 1)[-1]
+                            for node in ET.fromstring(xml).iter("node") if node.get("package") == self.app}
+                tags = visible_tags()
+                if "welcome_enter" in tags:
+                    welcome = self.run_flow("test-source-welcome",
+                        prepared=({"APP_ID": self.app, "SCREENSHOT_PREFIX": "test-source-welcome"}, None), deferred=True)
+                    if welcome["status"] != "passed":
+                        return welcome
+                    tags = visible_tags()
                 if "open_menu" in tags:
+                    if resume:
+                        result = self.run_flow("test-source-resume", prepared=(resume, None), deferred=True)
+                        if result["status"] == "passed":
+                            return {**result, "resumed": True}
+                        return {**result, "cause": "cached_test_source_unverified"}
                     return {"status": "environment_blocked", "cause": "selected_account_present"}
                 if {"server_login", "server_origin_empty"} <= tags and "welcome_enter" not in tags:
                     return {"status": "passed"}
@@ -1093,11 +1139,21 @@ class MaestroRunner:
             return {"status": "environment_blocked", "cause": "empty_login_form_not_observed"}
 
     def start_app(self):
-        self.adb.run("shell", "am", "start", "-W", "-n",
-                     self.app + "/io.github.fermin214.moerise.MainActivity", timeout=60)
+        attempted = datetime.now(timezone.utc).isoformat()
+        if self.on_app_launch_attempt:
+            self.on_app_launch_attempt(attempted)
+        activity = self.app + "/io.github.fermin214.moerise.MainActivity"
+        output = self.adb.run("shell", "am", "start", "-W", "-n", activity, timeout=60)
+        if self.phone:
+            shown = re.search(r"(?m)^Activity:\s+(\S+)\s*$", output)
+            actual = shown[1].replace("/.", "/" + self.app + ".", 1) if shown else None
+            if not re.search(r"(?m)^Status:\s+ok\s*$", output) or actual != activity:
+                raise RuntimeError("未能确认目标 Activity 已启动")
+        if self.on_app_launch:
+            self.on_app_launch(attempted)
 
     def block_unverified_phone(self, flows, results, checkpoint, preflight, step):
-        for flow in flows:
+        for flow in list(flows):
             checkpoint(flow, {**preflight, "status": "environment_blocked", "ui_status": "not_run",
                               "server_verification": "pending", "cause": "phone_test_source_unverified",
                               "preparation_step": step, "log": None, "probe_log": preflight.get("log"),

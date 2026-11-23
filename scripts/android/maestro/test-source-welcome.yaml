@@ -1,0 +1,23 @@
+appId: ${APP_ID}
+name: Continue from the welcome screen with statistics disabled
+onFlowComplete:
+- takeScreenshot:
+    path: ${SCREENSHOT_PREFIX}-complete
+    label: Capture the offline welcome result
+---
+- assertVisible:
+    id: welcome_enter
+    label: Require the welcome screen
+- assertVisible:
+    id: privacy_share
+    checked: false
+    label: Confirm statistics are disabled
+- tapOn:
+    id: welcome_enter
+    enabled: true
+    label: Continue with statistics disabled
+- extendedWaitUntil:
+    visible:
+      id: server_origin_empty
+    timeout: 15000
+    label: Wait for the empty login form

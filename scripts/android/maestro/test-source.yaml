@@ -15,28 +15,8 @@ onFlowComplete:
     file: subflows/ensure-login.yaml
     label: Sign into the designated test service
 - runFlow:
-    file: subflows/open-menu.yaml
-    label: Open the navigation drawer without syncing
-- runFlow:
-    when:
-      notVisible:
-        id: account_menu
-        text: \Q${EXPECTED_ACCOUNT}\E
-    commands:
-    - assertNotVisible:
-        id: account_menu
-        text: \Q${EXPECTED_ACCOUNT}\E
-        label: Check whether the account row exposes a separate text node
-    - assertVisible:
-        text: \Q${EXPECTED_ACCOUNT}\E
-        childOf:
-          id: account_menu
-        label: Require the verified server account before any sync
-    label: Match the test account even if the text is a child node
-- tapOn:
-    id: nav_home
-    enabled: true
-    label: Reset archive and search filters in the verified account
+    file: subflows/test-source-home.yaml
+    label: Confirm account and return to unfiltered home
 - runFlow:
     file: subflows/open-menu.yaml
     label: Reopen navigation before syncing from home

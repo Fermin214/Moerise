@@ -100,6 +100,16 @@
       "timeout_seconds": 120,
       "seed_notes": true
     },
+    "test-source-resume": {
+      "file": "test-source-resume.yaml",
+      "timeout_seconds": 120,
+      "seed_notes": false
+    },
+    "test-source-welcome": {
+      "file": "test-source-welcome.yaml",
+      "timeout_seconds": 60,
+      "seed_notes": false
+    },
     "recover-draft": {
       "file": "recover-draft.yaml",
       "timeout_seconds": 120,

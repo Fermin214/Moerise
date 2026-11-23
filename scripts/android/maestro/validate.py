@@ -410,7 +410,7 @@ def commands(items, flow, refs, inline=False, hook=False, focused=None, ime_guar
                 "server_password": None,
             }
             require(keys == {"key"} and value["key"] == "Enter" and
-                    (flow == "search.yaml" and focused == "search_query" or
+                    (flow in ("search.yaml", "test-source-resume.yaml") and focused == "search_query" or
                      flow == "subflows/ensure-login.yaml" and focused in login_next),
                     "Enter requires the focused search field or a login form field")
             focused = login_next[focused] if flow == "subflows/ensure-login.yaml" else None
