@@ -18,6 +18,17 @@ class ChatStreamTest {
         "event: $kind${newline}data: ${CoreJson.encodeToString(value)}$newline$newline"
 
     @Test
+    fun truncatedCompletionPreservesBodyAndTerminatesTheStream() = runBlocking<Unit> {
+        val events = mutableListOf<ChatEvent>()
+        val parser = ChatStreamParser("request") { events += it }
+        parser.feed((frame("message", ChatEvent("message", turn("running", ""))) +
+            frame("complete", ChatEvent("complete", turn("truncated", "截断正文🌌")))).encodeToByteArray())
+        parser.finish()
+        assertEquals("truncated", events.last().turn!!.assistant.status)
+        assertEquals("截断正文🌌", events.last().turn!!.assistant.content)
+    }
+
+    @Test
     fun singleByteChunksKeepUtf8CrLfAndMultilineFrames() = runBlocking<Unit> {
         val events = mutableListOf<ChatEvent>()
         val parser = ChatStreamParser("request") { events += it }

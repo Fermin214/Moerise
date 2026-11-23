@@ -37,13 +37,13 @@ class MobileController(
         session.state.value.profile?.timezone ?: "UTC"
     }
     val review = ReviewController({ session.core }, { session.state.value.profile?.accountKey }, scope, privacy, repository)
-    val walk = WalkController({ session.core }, { session.state.value.profile?.accountKey }, scope, privacy, repository, enablePrefetch = true)
+    val walk = WalkController({ session.core }, { session.state.value.profile?.accountKey }, scope, privacy, repository, enablePrefetch = true, online = { session.state.value.connected })
     val insights = InsightController(repository, { session.core }, { session.state.value.profile?.accountKey }, scope,
         { Strings(session.language.value).text("zh-CN", "en") },
         timezone = { session.state.value.profile?.timezone ?: "UTC" }, filters = filterReads, privacy = privacy) { key, note ->
         filterReads.changed(null, note); timeline.onSaved(key, note)
     }
-    val stars = StarMapController(repository, { session.core }, { session.state.value.profile?.accountKey }, scope, privacy)
+    val stars = StarMapController(repository, { session.core }, { session.state.value.profile?.accountKey }, scope, privacy, online = { session.state.value.connected })
     val settings = SettingsController({ session.core }, { session.state.value.profile?.accountKey }, scope)
     val homeNote = NoteDetailController(repository, { session.state.value.profile?.accountKey }, { session.core }, scope, ::noteChanged)
     val noteActions = NoteDetailController(repository, { session.state.value.profile?.accountKey }, { session.core }, scope, ::noteChanged)
@@ -108,11 +108,14 @@ class MobileController(
         updateDiscovery()
     }
     private fun updateDiscovery() {
-        val connected = session.state.value.connected && inForeground && !clearing.value
-        review.visible(connected && visiblePage == "review")
-        walk.visible(connected && visiblePage == "walk")
+        val available = session.state.value.profile != null && !session.state.value.needsLogin && inForeground && !clearing.value
+        val connected = available && session.state.value.connected
+        review.visible(available && visiblePage == "review")
+        walk.connectivityChanged()
+        walk.visible(available && visiblePage == "walk")
         insights.visible(connected && visiblePage == "insights")
-        stars.visible(connected && visiblePage == "map" && session.state.value.profile?.stargazingEnabled != false)
+        stars.connectivityChanged()
+        stars.visible(available && visiblePage == "map" && session.state.value.profile?.stargazingEnabled != false)
     }
 
     init {

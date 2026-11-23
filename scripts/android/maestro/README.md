@@ -104,3 +104,40 @@ python -B scripts/android/maestro/validate.py --flow editing --parameters-json $
 截图使用 `${SCREENSHOT_PREFIX}`，报告、日志和截图保存到 Git 忽略的独立结果目录，只包含隔离账号数据。设备失联或进程终止时完成截图可能无法产生，因此还需保留 Maestro 已有调试产物。归档中途失败的笔记可能仍在归档中，由运行器根据实际状态进行独立清理。
 
 主机解析和静态策略检查证明定义符合语法与接口约定；真机交互、输入法、厂商选择器及网络时序由真机执行记录证明。中文组合输入、生命周期及其他不适合迁移的专项继续使用 instrumentation。
+
+## Windows 正式包真机入口
+
+三种模式使用各自的包和设备边界：`phone-session.py prepare/run` 使用 `.fixture` 包；`release-smoke.py` 使用隔离模拟器上的正式包与可信 HTTPS；`phone-session.py accept --release` 使用 USB 真机上的 `io.github.fermin214.moerise`。正式包与 fixture 使用同一套源码 testTag，工具栏直接导出资源标识；release 冒烟在 R8 压缩后点击 `open_search` 并检查 `search_query`。
+
+开跑前人工安装指定 APK、处理系统安装确认和首次系统弹窗，将 App 退出生产账号并切换到独立测试服务。`--confirm-ready` 表示这些步骤已完成。默认不安装、不卸载、不清数据。`--install` 才覆盖安装；`--uninstall --install` 才先卸载；`--clear-data` 才清数据。安装被系统取消时，处理确认后重跑同一入口。
+
+连接档案沿用 `origin`、`username`、`password` 字段，并增加 `"environment": "test"`。正式包地址必须是 HTTPS，`--test-origin` 必须与档案地址一致；省略测试环境声明会拒绝连接，只有显式 `--allow-production` 才允许该例外。档案只保存于 Git 忽略的私有目录。
+
+从仓库根目录在 PowerShell 执行：
+
+```powershell
+$device = (adb devices | Select-String '^\S+\s+device$' | Select-Object -First 1).ToString().Split("`t")[0]
+$origin = (Get-Content .local/phone/connection.json -Raw | ConvertFrom-Json).origin
+python -B scripts/android/phone-session.py accept --release --serial $device `
+  --apk .local/phone/moerise-android.apk --fixture .local/phone/connection.json `
+  --test-origin $origin --confirm-ready --session .local/phone/session --record
+```
+
+入口先通过只读 UI 流程核对独立服务上新建的唯一笔记标记，防止已登录生产账号被当成测试来源；核对失败时停止业务写入并标记环境阻塞。之后按 catalog 的八个既有分组连续执行；`--group search --group editing` 可缩小范围。所有服务端笔记及设置准备集中在 UI 批次之前，后验集中在批次之后；失败保留实际证据，后续独立模块继续执行。精确测试草稿标记持久化到设备与来源绑定的检查点；每场景之后及补测开始时，通过既有清理子流程仅删除完全匹配的测试草稿，其他草稿保留并单独报告。渠道准备在 PATCH 前持久保存恢复检查点，响应丢失后按服务端测试标记恢复原设置。共享服务无法登录时各模块标记环境阻塞。`editing` 批次在开跑前额外准备一条来源已变化的专用冲突笔记，并保存 `conflict.json`；批次结束用旧 `source_hash` 发起写入，核对 `409 SOURCE_CHANGED` 与远端正文保留。手机上的人工冲突处理结果可通过 `record` 记录，不在普通 UI 步骤间注入临时服务端操作。
+
+同一会话、APK 和脚本未变化时，重跑自动跳过已通过模块，仅补测失败或缺失项；`--retry` 强制重跑所选模块。也可只执行：
+
+```powershell
+python -B scripts/android/phone-session.py run --release --serial $device `
+  --session .local/phone/session --group search --group editing
+```
+
+会话目录的 `report.json`、`report.md` 汇总所有模块的状态、产品／工具／环境／待确认分类、首错步骤以及截图、录像和日志路径。UI 断言失败归为待确认，服务端业务断言失败归为产品问题。视觉项集中复核关键截图；可选 `--record` 为每个执行的场景保存最长 180 秒录像，设备已有其他录像时拒绝启动该场景。
+
+每场景结束停止 Maestro 驱动、移除本次新增的 forward，再用唯一远端路径采集 UI XML。采集前删除本地旧文件；dump 失败、退出 137 或 XML 无效时不读历史文件，报告记录采集错误。整批结束恢复原输入法及其启用状态、Wi-Fi、移动数据和亮屏设置，移除本次安装的驱动并停止验收 App；恢复错误写入报告并令命令失败。中断后可再次执行同一会话，先恢复设备检查点再继续补测。
+
+```powershell
+python -B scripts/android/phone-session.py cleanup --release --serial $device --session .local/phone/session
+```
+
+清理默认保留 App 与账号数据；需要卸载时显式添加 `--uninstall`。既有 USB 映射和预装驱动保留，清理范围限于该会话创建的资源。

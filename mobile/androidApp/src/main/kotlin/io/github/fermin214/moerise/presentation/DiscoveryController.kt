@@ -134,6 +134,7 @@ data class WalkState(
     val error: String? = null, val retry: WalkRequest? = null,
     val embeddingEnabled: Boolean? = null, val embeddingConfigured: Boolean? = null,
     val configurationLoading: Boolean = false, val configurationError: String? = null,
+    val offline: Boolean = false,
     val floaters: List<Note> = emptyList(), val floatersLoading: Boolean = false, val floaterError: String? = null,
 )
 
@@ -142,6 +143,7 @@ class WalkController(
     private val privacy: PrivacyController? = null,
     private val repository: (suspend () -> NoteRepository)? = null,
     private val enablePrefetch: Boolean = false,
+    private val online: () -> Boolean = { true },
 ) {
     private val mutable = MutableStateFlow(WalkState())
     val state = mutable.asStateFlow()
@@ -179,7 +181,8 @@ class WalkController(
     fun start(name: String = "") {
         val input = WalkRequest(start = true, name = name)
         cancelPrefetch()
-        if (state.value.embeddingEnabled == null) { pendingStart = input; loadConfiguration() } else send(input)
+        if (!online()) send(input)
+        else if (state.value.embeddingEnabled == null) { pendingStart = input; loadConfiguration() } else send(input)
     }
     fun next() {
         val result = state.value.result ?: return
@@ -207,6 +210,13 @@ class WalkController(
     fun retry() { cancelPrefetch(); state.value.retry?.let(::send) }
     fun retryConfiguration() = loadConfiguration()
     fun retryFloaters() = loadFloaters()
+    fun connectivityChanged() {
+        if (state.value.offline == !online()) return
+        mutable.update { it.copy(offline = !online()) }
+        cancelPrefetch()
+        if (visible && online()) loadConfiguration()
+    }
+
     fun configurationChanged() {
         mutable.update { it.copy(embeddingEnabled = null, embeddingConfigured = null) }
         if (visible) loadConfiguration()
@@ -220,7 +230,7 @@ class WalkController(
     }
 
     private fun loadConfiguration() {
-        if (!visible) return
+        if (!visible || !online()) return
         val active = core() ?: return
         val key = account() ?: return
         val stamp = ++configurationGeneration
@@ -248,16 +258,17 @@ class WalkController(
         val key = account() ?: return
         val stamp = ++floaterGeneration
         floaterJob?.cancel()
-        mutable.update { it.copy(floatersLoading = repository == null, floaterError = null) }
+        mutable.update { it.copy(floatersLoading = repository == null, floaterError = null, offline = !online()) }
         floaterJob = scope.launch {
             try {
                 val repo = repository?.invoke()
-                if (repo != null && repo.isNotesSynced(key)) {
+                if (repo != null) {
                     val local = repo.localNotesPage(key, "NORMAL", 6, 0).first
                     if (stamp == floaterGeneration && key == account())
                         mutable.update { it.copy(floaters = local, floatersLoading = false) }
-                    return@launch
+                    if (local.isNotEmpty() || repo.isNotesSynced(key) || !online()) return@launch
                 }
+                if (!online()) return@launch
                 val active = core() ?: return@launch
                 mutable.update { it.copy(floatersLoading = true) }
                 val page = CoreJson.decodeFromString<io.github.fermin214.moerise.domain.NotePage>(
@@ -287,7 +298,7 @@ class WalkController(
     }
 
     private fun schedulePrefetch(current: WalkResult, key: String, active: CoreClient, stamp: Long) {
-        if (!enablePrefetch || current.exhausted || current.item == null || !visible) return
+        if (!online() || !enablePrefetch || current.exhausted || current.item == null || !visible) return
         val input = WalkRequest(false, current.item.note.name, current.path)
         val pStamp = ++prefetchGeneration
         prefetchJob?.cancel()
@@ -311,8 +322,8 @@ class WalkController(
     }
 
     private fun send(input: WalkRequest) {
-        if (!visible || state.value.loading || state.value.embeddingEnabled != true) return
-        val active = core() ?: return
+        if (!visible || state.value.loading || online() && state.value.embeddingEnabled != true) return
+        val active = core()
         val key = account() ?: return
         val stamp = ++generation
         val started = epochMillis()
@@ -320,6 +331,19 @@ class WalkController(
         request = scope.launch {
             try {
                 require(input.name.isEmpty() || noteResource.matches(input.name)) { "INVALID_ARGUMENT" }
+                if (!online()) {
+                    val repo = repository?.invoke() ?: throw IllegalArgumentException("NOTE_NOT_FOUND")
+                    val prior = if (input.start) emptyList() else input.path
+                    val note = if (input.start && input.name.isNotEmpty()) repo.localNote(key, input.name)?.takeIf { it.state == "NORMAL" }
+                        else repo.localWalkNote(key, prior)
+                    if (stamp != generation || key != account()) return@launch
+                    val result = WalkResult("random", note?.let(::WalkHit), prior + listOfNotNull(note?.name), note == null, emptyList())
+                    mutable.update { it.copy(result = if (note == null && !input.start) result.copy(item = it.result?.item) else result,
+                        previous = if (input.start) null else if (note == null) it.previous else it.result?.item?.note,
+                        loading = false, retry = null) }
+                    return@launch
+                }
+                val client = active ?: throw IllegalArgumentException("SESSION_REQUIRED")
                 val pendingPrefetch = if (!input.start) prefetchJob else null
                 if (pendingPrefetch?.isActive == true) {
                     pendingPrefetch.join()
@@ -335,12 +359,12 @@ class WalkController(
                             previous.copy(result = displayed, previous = if (buffered.item == null) previous.previous
                                 else previous.result?.item?.note, loading = false, retry = null)
                         }
-                        currentResult?.let { schedulePrefetch(it, key, active, stamp) }
+                        currentResult?.let { schedulePrefetch(it, key, client, stamp) }
                         return@launch
                     }
                 }
                 cancelPrefetch()
-                val response = active.api(HttpMethod.Post, if (input.start) "/walks/start" else "/walks/next", input.body())
+                val response = client.api(HttpMethod.Post, if (input.start) "/walks/start" else "/walks/next", input.body())
                 val result = validateWalkResult(
                     withContext(Dispatchers.Default) { CoreJson.decodeFromString<WalkResult>(response) },
                     if (input.start) emptyList() else input.path, input, key,
@@ -359,7 +383,7 @@ class WalkController(
                         previous.copy(result = displayed, previous = if (result.item == null) previous.previous
                             else if (input.start) null else previous.result?.item?.note, loading = false, retry = null)
                     }
-                    currentResult?.let { schedulePrefetch(it, key, active, stamp) }
+                    currentResult?.let { schedulePrefetch(it, key, client, stamp) }
                 }
             } catch (error: Exception) {
                 if (key == account()) privacy?.record("walk", usageResult(error), started, error = error)

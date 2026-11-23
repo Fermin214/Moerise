@@ -204,13 +204,13 @@ class InsightController(
         // Durable server results replace local stream previews; reading never starts model generation.
         record(account, saved.copy(
             selected = selected, selectionInitialized = true,
-            generation = if (resolved?.assistant?.status in setOf("completed", "canceled")) null else pending,
+            generation = if (resolved?.assistant?.status in setOf("completed", "canceled", "truncated")) null else pending,
             partial = partial,
             question = if (resolved?.assistant?.status == "completed" && pending?.input?.let {
                 it.kind == "question" && saved.question == it.content
             } == true) "" else saved.question,
         ), stamp)
-        if (resolved?.assistant?.status in setOf("failed", "canceled", "interrupted"))
+        if (resolved?.assistant?.status in setOf("failed", "canceled", "interrupted", "truncated"))
             mutable.update { it.copy(error = resolved!!.assistant.errorCode.ifBlank { "CHAT_INTERRUPTED" }) }
         if (loadMaterials && saved.candidates.map { it.reference() } != chat.materials) {
             val materials = resolve(active, account, stamp, selected, enforceBudget = false)
@@ -224,7 +224,7 @@ class InsightController(
     private fun mergePartial(local: ChatTurn?, remote: ChatTurn?): ChatTurn? {
         if (remote == null) return local
         if (local == null || local.requestId != remote.requestId) return remote
-        val content = if (remote.assistant.status !in setOf("completed", "canceled") &&
+        val content = if (remote.assistant.status !in setOf("completed", "canceled", "truncated") &&
             local.assistant.content.startsWith(remote.assistant.content) &&
             local.assistant.content.length > remote.assistant.content.length) local.assistant.content
         else remote.assistant.content
@@ -261,7 +261,7 @@ class InsightController(
 
     fun open(id: String) = execute { active, account, stamp ->
         require(state.value.pendingSave == null && !state.value.saving) { "CHAT_OUTCOME_UNKNOWN" }
-        require(!state.value.running && state.value.recovery.generation == null &&
+        require(!state.value.running && state.value.canLeaveGeneration &&
             state.value.recovery.mutation == null && state.value.recovery.creation == null) { "CHAT_BUSY" }
         picker.discard()
         record(account, InsightRecovery(chatId = chatId(id)), stamp)
@@ -270,7 +270,7 @@ class InsightController(
     }
     fun newChat() = execute { _, account, stamp ->
         require(state.value.pendingSave == null && !state.value.saving) { "CHAT_OUTCOME_UNKNOWN" }
-        require(!state.value.running && state.value.recovery.generation == null &&
+        require(!state.value.running && state.value.canLeaveGeneration &&
             state.value.recovery.mutation == null && state.value.recovery.creation == null) { "CHAT_BUSY" }
         picker.discard()
         record(account, InsightRecovery(), stamp)
@@ -358,7 +358,8 @@ class InsightController(
     private suspend fun persistSelection(active: CoreClient, account: String, stamp: Long,
         names: List<String> = state.value.recovery.selected, selected: List<MaterialCandidate>? = null): ChatMaterials {
         require(!state.value.conflicted) { "CHAT_CONFLICT" }
-        require(state.value.recovery.generation == null && !state.value.running) { "CHAT_BUSY" }
+        require(state.value.canLeaveGeneration && !state.value.running) { "CHAT_BUSY" }
+        if (state.value.recovery.generation != null) record(account, state.value.recovery.copy(generation = null), stamp)
         if (state.value.recovery.mutation != null) {
             require(state.value.recovery.mutation!!.method == "PATCH") { "CHAT_OUTCOME_UNKNOWN" }
             reconcileMutation(active, account, stamp)
@@ -425,7 +426,8 @@ class InsightController(
         mutable.update { it.copy(starting = kind, failedGeneration = false) }
         execute { active, account, stamp ->
             require(!picker.state.value.visible) { "CHAT_BUSY" }
-            require(state.value.recovery.generation == null && !state.value.running) { "CHAT_BUSY" }
+            require(state.value.canLeaveGeneration && !state.value.running) { "CHAT_BUSY" }
+            if (state.value.recovery.generation != null) record(account, state.value.recovery.copy(generation = null), stamp)
             require(kind == "insight" || kind == "question" && state.value.recovery.question.isNotBlank()) { "INVALID_ARGUMENT" }
             require(state.value.recovery.selected.isNotEmpty()) { "CHAT_MATERIAL_REQUIRED" }
             if (state.value.chat == null) persistSelection(active, account, stamp)
@@ -500,6 +502,17 @@ class InsightController(
             latest = state.value.recovery
         } catch (failure: Exception) {
             if (!firstText && account == this.account()) privacy?.record("insight", usageResult(failure), started, error = failure)
+            if (failure !is CancellationException) {
+                pendingSave?.cancelAndJoin()
+                record(account, latest, stamp)
+                try {
+                    readChat(active, account, stamp, loadMaterials = false)
+                    latest = state.value.recovery
+                    partial = latest.partial
+                } catch (recoveryError: Exception) {
+                    if (recoveryError is CancellationException) throw recoveryError
+                }
+            }
             throw failure
         } finally {
             pendingSave?.cancel()
@@ -614,7 +627,7 @@ class InsightController(
         val chat = snapshot.chat ?: return
         if (snapshot.pendingSave != null || snapshot.saving || snapshot.deleting) return
         val choices = selectableMessages(snapshot.confirmed).filter { it.eligible && it.ref in messages }
-        if (choices.isEmpty() || choices.size != messages.size || choices.any { it.status == "canceled" } && !incomplete) return
+        if (choices.isEmpty() || choices.size != messages.size || choices.any { it.status in setOf("canceled", "truncated") } && !incomplete) return
         if (selectionBody(choices, language() == "en").encodeToByteArray().size > 65_536) return
         submitSave(ChatSaveIntent(chat.id, ChatSaveSelection(newLocalId(), language(), messages, incomplete)))
     }
@@ -790,7 +803,7 @@ class InsightController(
             chat.materials.all { validName(it.name) && it.sourceHash.isNotBlank() } &&
             chat.turns.all { it.id.isNotBlank() && it.requestId.isNotBlank() && it.kind in setOf("insight", "question") &&
                 it.user.role == "user" && it.assistant.role == "assistant" && it.user.version > 0 && it.assistant.version > 0 &&
-                it.assistant.status in setOf("running", "completed", "failed", "canceled", "interrupted") }) { "CHAT_PROTOCOL" }
+                it.assistant.status in setOf("running", "completed", "failed", "canceled", "interrupted", "truncated") }) { "CHAT_PROTOCOL" }
     }
     private fun validName(name: String) = Regex("^memos/[A-Za-z0-9_-]+$").matches(name)
     private fun chatId(id: String): String {

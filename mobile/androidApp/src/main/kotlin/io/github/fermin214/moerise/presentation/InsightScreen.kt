@@ -241,7 +241,7 @@ private fun InsightTurn(turn: ChatTurn, strings: Strings) {
     UserMessage(if (turn.kind == "question") turn.user.content else strings.text("一键洞察", "Generate insights"))
     if (turn.assistant.content.isEmpty() && turn.assistant.status == "running") ReplyWaiting(strings)
     else SelectionContainer { MarkdownBody(turn.assistant.content, Modifier.testTag("chat_reply_${turn.assistant.status}")) }
-    if (turn.assistant.status in setOf("failed", "canceled", "interrupted") && turn.assistant.content.isNotEmpty()) {
+    if (turn.assistant.status in setOf("failed", "canceled", "interrupted", "truncated") && turn.assistant.content.isNotEmpty()) {
         val clipboard = LocalClipboardManager.current
         TextButton({ clipboard.setText(AnnotatedString(turn.assistant.content)) }) {
             Text(strings.text("复制已收到的内容", "Copy received text"))
@@ -291,7 +291,7 @@ private fun InsightSaveDialog(controller: InsightController, state: InsightState
         else choices.lastOrNull { it.eligible && it.ref.role == "assistant" && it.status == "completed" }?.let { add(it.ref) }
     } }
     val selected = choices.filter { it.ref in chosen && it.eligible }
-    val incomplete = selected.any { it.status == "canceled" }
+    val incomplete = selected.any { it.status in setOf("canceled", "truncated") }
     val bytes = selectionBody(selected, strings.text("zh", "en") == "en").encodeToByteArray().size
     var confirming by remember { mutableStateOf(false) }
     LaunchedEffect(state.savedOperation) { if (savedBefore != state.savedOperation) close() }
@@ -306,7 +306,7 @@ private fun InsightSaveDialog(controller: InsightController, state: InsightState
                         val role = if (item.ref.role == "assistant") "Moerise" else strings.text("我", "Me")
                         val status = when (item.status) {
                             "completed" -> strings.text("已完成", "Complete")
-                            "canceled" -> strings.text("已停止（内容不完整）", "Stopped (incomplete)")
+                            "canceled", "truncated" -> strings.text("内容不完整", "Incomplete")
                             "running" -> strings.text("正在生成", "Generating")
                             else -> strings.text("未完成", "Incomplete")
                         }

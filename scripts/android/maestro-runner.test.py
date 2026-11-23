@@ -136,6 +136,173 @@ class MaestroExecutionTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             runner.FixtureAPI(connection, trusted_https=True)
 
+    def test_release_phone_requires_explicit_test_environment_and_matching_origin(self):
+        connection = json.loads(self.connection.read_text())
+        connection.update(origin="https://phone-test.example", environment="test")
+        self.connection.write_text(json.dumps(connection))
+        self.adb.serial = "real-phone"
+        engine = runner.MaestroRunner(runner.ROOT, self.adb, self.connection, self.output / "phone",
+                                      release=True, phone=True, test_origin=connection["origin"])
+        self.assertEqual(engine.app, "io.github.fermin214.moerise")
+        with self.assertRaises(ValueError):
+            runner.MaestroRunner(runner.ROOT, self.adb, self.connection, self.output / "phone",
+                                release=True, phone=True, test_origin="https://other.example")
+        connection.pop("environment")
+        with self.assertRaises(ValueError):
+            runner.FixtureAPI(connection, trusted_https=True, test_origin=connection["origin"])
+        runner.FixtureAPI(connection, trusted_https=True, test_origin=connection["origin"], allow_production=True)
+
+    def test_dump_killed_does_not_read_stale_remote_or_local_xml(self):
+        output = self.output / "window.xml"
+        output.write_text('<hierarchy><node resource-id="open_search"/></hierarchy>')
+        def killed(*args, **kwargs):
+            if args[:3] == ("shell", "uiautomator", "dump"):
+                raise RuntimeError("137 Killed")
+            return ""
+        with mock.patch.object(self.adb, "run", side_effect=killed) as adb:
+            with self.assertRaisesRegex(RuntimeError, "137"):
+                runner.fresh_ui_dump(self.adb, output)
+        self.assertFalse(output.exists())
+        calls = [call.args for call in adb.call_args_list]
+        self.assertFalse(any(call[:2] == ("shell", "cat") for call in calls))
+        dump = next(index for index, call in enumerate(calls) if call[:3] == ("shell", "uiautomator", "dump"))
+        for package in runner.DRIVERS:
+            self.assertIn(("shell", "am", "force-stop", package), calls[:dump])
+        self.assertTrue(calls[-1][3].endswith(".xml"))
+
+    def test_dump_uses_unique_paths_and_rejects_invalid_xml(self):
+        output = self.output / "window.xml"
+        def dump(*args, **kwargs):
+            self.adb.calls.append(args)
+            return '<hierarchy><node resource-id="open_search"/></hierarchy>' if args[:2] == ("shell", "cat") else ""
+        with mock.patch.object(self.adb, "run", side_effect=dump):
+            runner.fresh_ui_dump(self.adb, output)
+            runner.fresh_ui_dump(self.adb, output)
+        paths = [call[3] for call in self.adb.calls if call[:3] == ("shell", "uiautomator", "dump")]
+        self.assertEqual(len(set(paths)), 2)
+        with mock.patch.object(self.adb, "run", return_value="invalid"):
+            with self.assertRaises(runner.ET.ParseError):
+                runner.fresh_ui_dump(self.adb, output)
+        self.assertFalse(output.exists())
+
+    def test_batch_prepares_all_data_before_ui_and_verifies_after_independent_failures(self):
+        events = []
+        flows = ["editing", "search"]
+        def prepare(flow, entry):
+            events.append("prepare:" + flow)
+            return {"flow": flow}, None
+        def execute(flow, **kwargs):
+            self.assertTrue(kwargs["deferred"])
+            events.append("ui:" + flow)
+            return {"status": "harness_error" if flow == "editing" else "passed"}
+        def verify(flow, values):
+            events.append("verify:" + flow)
+            return {}
+        with mock.patch.object(self.engine, "prepare_conflict"), \
+                mock.patch.object(self.engine, "prepare_data", side_effect=prepare), \
+                mock.patch.object(self.engine, "run_flow", side_effect=execute), \
+                mock.patch.object(self.engine, "wait_verify", side_effect=verify):
+            result = self.engine.run_batch(flows)
+        self.assertEqual(events, ["prepare:editing", "prepare:search", "ui:editing", "ui:search", "verify:editing", "verify:search"])
+        self.assertEqual(result["editing"]["status"], "harness_error")
+        self.assertEqual(result["search"]["status"], "passed")
+        self.engine.api.close.assert_called_once()
+
+    def test_navigation_precondition_failure_does_not_block_other_modules(self):
+        with mock.patch.object(self.engine, "prepare_channel", side_effect=ValueError("configured")), \
+                mock.patch.object(self.engine, "prepare_data", return_value=({}, None)), \
+                mock.patch.object(self.engine, "run_flow", return_value={"status": "passed"}) as execute, \
+                mock.patch.object(self.engine, "wait_verify", return_value={}):
+            result = self.engine.run_batch(["navigation", "search"])
+        self.assertEqual(result["navigation"]["status"], "harness_error")
+        self.assertEqual(result["search"]["status"], "passed")
+        self.assertEqual(execute.call_args.args[0], "search")
+
+    def test_conflict_postcheck_requires_stale_source_rejection_and_remote_preservation(self):
+        self.engine.conflict_fixture = {"original": {"name": "memos/conflict", "source_hash": "old", "content": "old"},
+                                        "changed": {"name": "memos/conflict", "source_hash": "new", "content": "new"}}
+        self.engine.api.request.side_effect = runner.FixtureError(409, "SOURCE_CHANGED")
+        self.engine.api.note.return_value = self.engine.conflict_fixture["changed"]
+        self.assertTrue(self.engine.verify_conflict()["stale_source_rejected"])
+        self.engine.api.request.side_effect = None
+        with self.assertRaisesRegex(AssertionError, "stale_source_accepted"):
+            self.engine.verify_conflict()
+
+    def test_phone_source_preflight_failure_stops_business_writes(self):
+        self.engine.phone = True
+        with mock.patch.object(self.engine, "prepare_data", return_value=({}, None)) as prepare, \
+                mock.patch.object(self.engine, "run_flow", return_value={"status": "inconclusive"}) as execute, \
+                mock.patch.object(self.engine, "prepare_channel") as channel:
+            result = self.engine.run_batch(["editing", "navigation"])
+        self.assertEqual(prepare.call_args.args[0], "test-source")
+        self.assertEqual(execute.call_count, 1)
+        channel.assert_not_called()
+        self.assertTrue(all(item["cause"] == "phone_test_source_unverified" for item in result.values()))
+        self.assertTrue(all(item["status"] == "environment_blocked" for item in result.values()))
+
+    def test_recording_timeout_still_pulls_and_removes_remote_file(self):
+        self.engine.record = True
+        self.adb.executable = "fake-adb"
+        process = mock.Mock()
+        process.poll.return_value = None
+        process.wait.side_effect = [runner.subprocess.TimeoutExpired("screenrecord", 10), 0]
+        with mock.patch.object(runner.subprocess, "Popen", return_value=process):
+            with self.assertRaises(runner.subprocess.TimeoutExpired):
+                with self.engine.recording(self.output):
+                    pass
+        self.assertTrue(any(call[0] == "pull" and call[1].endswith(".mp4") for call in self.adb.calls))
+        self.assertTrue(any(call[:3] == ("shell", "rm", "-f") and call[3].endswith(".mp4") for call in self.adb.calls))
+        process.kill.assert_called_once()
+
+    def test_channel_lost_patch_response_retains_checkpoint_and_restores(self):
+        checkpoint = self.output / "channel.json"
+        initial = {"version": 1, "settings": {"channel": {"kind": "none", "qq_app_id": ""},
+                                               "notifications": {"enabled": True}},
+                   "secrets": {"qq_app_secret": {"configured": False}}}
+        mutated = {"version": 2, "settings": {"channel": {"kind": "none", "qq_app_id": "100000019"}}}
+        self.engine.api.request.side_effect = [initial, runner.FixtureError(0, "unreachable"), mutated, {}]
+        with mock.patch.object(self.engine, "channel_checkpoint", return_value=checkpoint):
+            with self.assertRaises(runner.FixtureError):
+                self.engine.prepare_channel()
+            self.assertTrue(checkpoint.exists())
+            self.assertIsNotNone(self.engine.channel_fixture)
+            self.engine.restore_channel(self.engine.channel_fixture)
+        self.assertFalse(checkpoint.exists())
+        self.assertEqual(self.engine.api.request.call_args.args[2]["settings"]["notifications"], {"enabled": True})
+
+    def test_known_draft_recovery_clears_only_exact_recorded_content(self):
+        checkpoint = self.output / "drafts.json"
+        marker = "Maestro draft " + "a" * 32
+        checkpoint.write_text(json.dumps([marker]))
+        xml = '<hierarchy><node resource-id="note_editor" text="' + marker + '"/></hierarchy>'
+        with mock.patch.object(self.engine, "draft_checkpoint", return_value=checkpoint), \
+                mock.patch.object(self.engine, "run_flow", return_value={"status": "passed"}) as run, \
+                mock.patch.object(runner, "fresh_ui_dump", return_value=xml):
+            self.engine.recover_drafts()
+        self.assertEqual(run.call_count, 2)
+        self.assertEqual(run.call_args.kwargs["prepared"][0]["DRAFT_TEXT"], marker)
+        self.assertFalse(checkpoint.exists())
+        checkpoint.write_text(json.dumps([marker]))
+        with mock.patch.object(self.engine, "draft_checkpoint", return_value=checkpoint), \
+                mock.patch.object(self.engine, "run_flow", return_value={"status": "passed"}) as run, \
+                mock.patch.object(runner, "fresh_ui_dump", return_value=xml.replace(marker, "personal draft")):
+            result = self.engine.recover_drafts()
+        self.assertEqual(run.call_count, 1)
+        self.assertEqual(result[0]["cause"], "unknown_draft_preserved")
+        self.assertTrue(checkpoint.exists())
+
+    def test_draft_dump_failure_keeps_checkpoint_and_does_not_escape_batch(self):
+        checkpoint = self.output / "drafts.json"
+        checkpoint.write_text(json.dumps(["Maestro draft " + "a" * 32]))
+        for error in (RuntimeError("137"), runner.ET.ParseError("bad xml")):
+            with self.subTest(error=type(error).__name__), \
+                    mock.patch.object(self.engine, "draft_checkpoint", return_value=checkpoint), \
+                    mock.patch.object(self.engine, "run_flow", return_value={"status": "passed"}), \
+                    mock.patch.object(runner, "fresh_ui_dump", side_effect=error):
+                result = self.engine.recover_drafts()
+            self.assertEqual(result[0]["cause"], "draft_ui_collection")
+            self.assertTrue(checkpoint.exists())
+
     def test_unreported_or_failed_maestro_flow_cannot_pass(self):
         report = self.output / "report.xml"
         self.assertEqual(runner.junit_result(report, 0)["status"], "harness_error")

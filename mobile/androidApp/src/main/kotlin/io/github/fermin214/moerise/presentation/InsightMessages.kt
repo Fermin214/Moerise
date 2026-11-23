@@ -9,7 +9,7 @@ internal fun selectableMessages(turns: List<ChatTurn>): List<SelectableMessage> 
         if (turn.kind == "question") add(SelectableMessage(ChatMessageRef(turn.requestId, "user", turn.user.version),
             turn.user.content, turn.user.status, turn.user.content.isNotBlank()))
         add(SelectableMessage(ChatMessageRef(turn.requestId, "assistant", turn.assistant.version), turn.assistant.content,
-            turn.assistant.status, turn.assistant.content.isNotBlank() && turn.assistant.status in setOf("completed", "canceled")))
+            turn.assistant.status, turn.assistant.content.isNotBlank() && turn.assistant.status in setOf("completed", "canceled", "truncated")))
     }
 }
 

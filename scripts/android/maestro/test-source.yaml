@@ -1,0 +1,22 @@
+appId: ${APP_ID}
+name: Verify the phone reads the dedicated test service before mutations
+onFlowComplete:
+- takeScreenshot:
+    path: ${SCREENSHOT_PREFIX}-test-source
+    label: Capture the service identity probe
+---
+- runFlow:
+    file: subflows/home.yaml
+    label: Sign into the test service or read the existing account
+- scrollUntilVisible:
+    element:
+      id: note_card_${NOTE_NAME}
+    direction: DOWN
+    timeout: 65000
+    centerElement: true
+    label: Locate the unique note prepared on the test service
+- assertVisible:
+    text: \Q${NOTE_TEXT}\E
+    childOf:
+      id: note_card_${NOTE_NAME}
+    label: Verify the exact test service marker before any UI writes

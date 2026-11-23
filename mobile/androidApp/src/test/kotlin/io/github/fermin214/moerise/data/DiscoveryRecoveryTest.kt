@@ -23,6 +23,71 @@ class DiscoveryRecoveryTest {
     private fun note(name: String) = """{"instance_id":"one","name":"memos/$name","content":"$name","state":"NORMAL","source_hash":"hash-$name"}"""
 
     @Test
+    fun offlineColdWalkReadsSixRoomPreviewsAndVisitsEveryLocalNoteOnce() = runBlocking<Unit> {
+        val folder = java.nio.file.Files.createTempDirectory("offline-walk-").toFile()
+        val path = folder.resolve("data.sqlite3").absolutePath
+        var db = testDatabase(path)
+        var repo = NoteRepository(db)
+        val dispatcher = Executors.newSingleThreadExecutor().asCoroutineDispatcher()
+        val scope = CoroutineScope(SupervisorJob() + dispatcher)
+        try {
+            for (index in 1..8) repo.recordLocalNote(key, CoreJson.decodeFromString(note("note$index")))
+            repo.recordLocalNote("other-account", CoreJson.decodeFromString(note("foreign")))
+            db.close()
+            db = testDatabase(path)
+            repo = NoteRepository(db)
+            val walk = WalkController({ null }, { key }, scope, repository = { repo }, online = { false })
+            withContext(dispatcher) { walk.visible(true) }
+            withTimeout(10_000) { walk.state.first { it.floaters.size == 6 } }
+            assertTrue(walk.state.value.offline)
+            withContext(dispatcher) { walk.start(walk.state.value.floaters.first().name) }
+            withTimeout(10_000) { walk.state.first { it.result?.path?.size == 1 } }
+            for (count in 2..8) {
+                withContext(dispatcher) { walk.next() }
+                withTimeout(10_000) { walk.state.first { it.result?.path?.size == count } }
+            }
+            withContext(dispatcher) { walk.next() }
+            withTimeout(10_000) { walk.state.first { it.result?.exhausted == true } }
+            assertEquals(8, walk.state.value.result!!.path.distinct().size)
+            assertFalse("memos/foreign" in walk.state.value.result!!.path)
+            withContext(dispatcher) { walk.clear() }
+            assertTrue(walk.state.value.floaters.isEmpty())
+        } finally {
+            scope.coroutineContext[Job]!!.cancelAndJoin(); db.close(); dispatcher.close(); folder.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun restoredOfflineAccountActivatesWalkAndStarsFromMobileNavigation() = runBlocking<Unit> {
+        val folder = java.nio.file.Files.createTempDirectory("offline-discovery-").toFile()
+        val db = testDatabase(folder.resolve("data.sqlite3").absolutePath)
+        val repo = NoteRepository(db)
+        val dispatcher = Executors.newSingleThreadExecutor().asCoroutineDispatcher()
+        val scope = CoroutineScope(SupervisorJob() + dispatcher)
+        val secrets = MemorySecrets()
+        val profile = ConnectionProfile("http://127.0.0.1:1", "http://127.0.0.1:1\u0000one\u0000users/owner", "one", "users/owner", "Owner", "UTC")
+        secrets.write("selected-profile", CoreJson.encodeToString(profile))
+        val body = javaClass.getResourceAsStream("/contracts/map/ready.json")!!.bufferedReader().use { it.readText() }
+        for (index in 1..6) repo.recordLocalNote(profile.accountKey, CoreJson.decodeFromString(note("note$index")))
+        repo.putCachedSnapshot(profile.accountKey, "map", body)
+        val session = SessionController(secrets, true, scope)
+        try {
+            val mobile = MobileController(session, { repo }, scope)
+            withTimeout(10_000) { session.state.first { !it.loading && it.profile != null } }
+            assertFalse(session.state.value.connected)
+            withContext(dispatcher) { mobile.page("walk") }
+            withTimeout(10_000) { mobile.walk.state.first { it.floaters.size == 6 } }
+            withContext(dispatcher) { mobile.page("map"); mobile.stars.size(800.0, 600.0) }
+            withTimeout(10_000) { mobile.stars.state.first { it.snapshot != null } }
+            assertEquals(1, mobile.stars.state.value.snapshot!!.points.size)
+            withContext(dispatcher) { mobile.page("home") }
+        } finally {
+            withContext(dispatcher) { session.close() }
+            scope.coroutineContext[Job]!!.cancelAndJoin(); db.close(); dispatcher.close(); folder.deleteRecursively()
+        }
+    }
+
+    @Test
     fun noteTimestampUsesTheServiceTimeZone() {
         val instant = "2026-11-14T20:00:00Z"
         for (english in listOf(true, false)) {

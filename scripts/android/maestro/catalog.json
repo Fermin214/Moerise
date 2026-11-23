@@ -69,6 +69,16 @@
       "file": "attachment-cancel.yaml",
       "timeout_seconds": 120,
       "seed_notes": false
+    },
+    "test-source": {
+      "file": "test-source.yaml",
+      "timeout_seconds": 120,
+      "seed_notes": true
+    },
+    "recover-draft": {
+      "file": "recover-draft.yaml",
+      "timeout_seconds": 120,
+      "seed_notes": false
     }
   },
   "groups": {

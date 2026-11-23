@@ -80,7 +80,7 @@ class ChatStreamParser(private val requestId: String, private val onEvent: suspe
         else {
             val turn = event.turn ?: throw IllegalArgumentException("CHAT_PROTOCOL")
             validateTurn(turn)
-            protocol(kind != "complete" || turn.assistant.status == "completed")
+            protocol(kind != "complete" || turn.assistant.status in setOf("completed", "truncated"))
             started = true
         }
         onEvent(event)

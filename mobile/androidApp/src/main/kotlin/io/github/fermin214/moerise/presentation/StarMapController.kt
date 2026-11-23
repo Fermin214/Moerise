@@ -22,6 +22,7 @@ class StarMapController(
     private val repository: suspend () -> NoteRepository, private val core: () -> CoreClient?,
     private val account: () -> String?, private val scope: CoroutineScope,
     private val privacy: PrivacyController? = null,
+    private val online: () -> Boolean = { true },
 ) {
     private val mutable = MutableStateFlow(StarMapState())
     val state = mutable.asStateFlow()
@@ -41,6 +42,7 @@ class StarMapController(
     private var firstDrawVersion = ""
     private var receivedAt = 0L
     private var openedAt: Long? = null
+    private var wasOnline = online()
 
     suspend fun prefetch() {
         val owner = account() ?: return
@@ -57,6 +59,13 @@ class StarMapController(
             if (cached == null) repository().putCachedSnapshot(owner, "map", body, epochMillis())
             privacy?.record("stars", started = started, source = "prefetch")
         }
+    }
+
+    fun connectivityChanged() {
+        val changed = wasOnline != online()
+        wasOnline = online()
+        if (!wasOnline) polling?.cancel()
+        else if (changed && visible) refresh()
     }
 
     fun visible(value: Boolean) {
@@ -123,12 +132,12 @@ class StarMapController(
         hitStar(map.points, view, width, height, x, y, radius)?.let(::select)
     }
 
-    private fun current(stamp: Long, account: String, active: CoreClient) =
+    private fun current(stamp: Long, account: String, active: CoreClient?) =
         stamp == epoch && visible && account == this.account() && active === core()
 
     fun refresh() {
         if (!visible || state.value.loading || state.value.posting) return
-        val active = core() ?: return
+        val active = core()
         val account = account() ?: return
         val stamp = epoch
         val previous = readJob
@@ -152,6 +161,10 @@ class StarMapController(
                     if (!current(stamp, account, active)) return@launch
                     key = account
                     mutable.update { it.copy(rebuild = rebuild) }
+                }
+                if (!online() || active == null) {
+                    if (current(stamp, account, active)) mutable.update { it.copy(loading = false) }
+                    return@launch
                 }
                 val response = active.api(HttpMethod.Get, "/map")
                 receivedAt = epochMillis()
@@ -233,7 +246,7 @@ class StarMapController(
 
     private fun schedulePoll() {
         polling?.cancel()
-        if (!visible || !state.value.compatible) return
+        if (!visible || !online() || !state.value.compatible) return
         val state = state.value
         val waiting = state.status in setOf("waiting", "building") || state.snapshot?.updateState == "building" ||
             state.rebuild?.state in setOf("unknown", "observing")
@@ -286,7 +299,7 @@ class StarMapController(
     }
     fun select(name: String) {
         val point = state.value.snapshot?.points?.firstOrNull { it.name == name } ?: return
-        val active = core() ?: return
+        val active = core()
         val account = account() ?: return
         if (!visible) return
         val stamp = epoch
@@ -295,6 +308,16 @@ class StarMapController(
         mutable.update { it.copy(selected = name, reader = null, reading = true, readerError = null) }
         readerJob = scope.launch {
             try {
+                val local = repository().localNote(account, name)?.takeIf {
+                    it.state == "NORMAL" && it.sourceHash == point.sourceHash
+                }
+                if (local != null && ticket == readerGeneration && current(stamp, account, active))
+                    mutable.update { it.copy(reader = local, reading = false) }
+                if (!online() || active == null) {
+                    if (ticket == readerGeneration && current(stamp, account, active))
+                        mutable.update { it.copy(reading = false, readerError = if (it.reader == null) "NOTE_NOT_FOUND" else null) }
+                    return@launch
+                }
                 val note = CoreJson.decodeFromString<Note>(active.api(HttpMethod.Get, "/notes/${name.removePrefix("memos/")}"))
                 require(note.instanceId == account.split('\u0000')[1] && note.name == name) { "ACCOUNT_CHANGED" }
                 if (ticket == readerGeneration && current(stamp, account, active) &&
@@ -303,7 +326,7 @@ class StarMapController(
             } catch (error: Exception) {
                 if (error is CancellationException) throw error
                 if (ticket == readerGeneration && current(stamp, account, active))
-                    mutable.update { it.copy(reading = false, readerError = errorCode(error)) }
+                    mutable.update { it.copy(reading = false, readerError = if (it.reader == null) errorCode(error) else null) }
             }
         }
     }

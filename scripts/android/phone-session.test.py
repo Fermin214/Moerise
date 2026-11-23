@@ -31,7 +31,7 @@ class FakeAdb:
         if args == ("get-state",):
             return "device"
         if args[:4] == ("shell", "settings", "get", "global"):
-            return self.network[args[4]]
+            return self.network.get(args[4], "null")
         if args[:3] == ("shell", "pm", "path"):
             return "package:/test/" + args[3] + ".apk\r\n" if args[3] in self.installed else ""
         if args[0] == "pull":
@@ -125,6 +125,103 @@ class SessionLifecycle(unittest.TestCase):
         self.assertFalse(any(call[:3] == ("shell", "pm", "clear") for call in self.adb.calls))
         self.assertFalse(any(call[:3] in (("shell", "settings", "put"),
                                          ("shell", "settings", "delete")) for call in self.adb.calls))
+
+    def release_ready(self):
+        app = session.APP.removesuffix(".fixture")
+        apk = self.root / "release.apk"
+        apk.write_bytes(b"release-apk")
+        self.adb.installed[app] = apk.read_bytes()
+        session.write_json(self.fixture, {"origin": "https://phone-test.example", "environment": "test",
+                                        "username": "phone-owner", "password": "test-only"})
+        with mock.patch.object(self.driver, "package_hash", return_value=session.digest(apk)):
+            self.driver.prepare_release(apk, self.fixture, "https://phone-test.example", confirmed=True)
+        return apk
+
+    def test_release_prepare_defaults_to_no_install_clear_or_uninstall(self):
+        self.release_ready()
+        self.assertEqual(self.driver.app, "io.github.fermin214.moerise")
+        self.assertFalse(any(call[0] in ("install", "uninstall") or call[:3] == ("shell", "pm", "clear") for call in self.adb.calls))
+        self.assertEqual(self.ui_calls, [])
+        self.assertEqual(self.driver.state["mode"], "release-phone")
+
+    def test_release_prepare_requires_human_confirmation_before_device_operations(self):
+        with self.assertRaisesRegex(ValueError, "人工"):
+            self.driver.prepare_release(self.root / "missing.apk", self.fixture, "https://phone-test.example")
+        self.assertEqual(self.adb.calls, [])
+
+    def test_cleanup_default_preserves_app_and_explicit_uninstall_removes_it(self):
+        self.prepare()
+        self.driver.cleanup()
+        self.assertIn(session.APP, self.adb.installed)
+        self.assertFalse(any(call[0] == "uninstall" for call in self.adb.calls))
+
+    def test_release_batch_resumes_only_failed_or_missing_modules_and_summarizes_all(self):
+        apk = self.release_ready()
+        engine = mock.Mock()
+        engine.catalog = {"groups": {"editing": ["editing"], "search": ["search"], "home": ["home-smoke"]}}
+        results = {"editing": {"status": "harness_error", "cause": "driver", "screenshots": ["key.png"], "recordings": ["key.mp4"]},
+                   "search": {"status": "passed"}}
+        engine.run_batch.return_value = results
+        with mock.patch.object(self.driver, "package_hash", return_value=session.digest(apk)), \
+                mock.patch.object(session, "MaestroRunner", return_value=engine):
+            first = self.driver.run(["editing", "search"])
+            self.assertEqual(list(first), ["editing", "search"])
+            engine.run_batch.return_value = {"editing": {"status": "passed"}, "home-smoke": {"status": "passed"}}
+            self.driver.run(["editing", "search", "home"])
+        self.assertEqual(engine.run_batch.call_args.args[0], ["editing", "home-smoke"])
+        report = session.read_json(self.driver.directory / "report.json")
+        self.assertEqual(len(report["items"]), 3)
+        self.assertTrue(all(row["status"] == "passed" for row in report["items"]))
+        self.assertTrue((self.driver.directory / "report.md").exists())
+        self.assertFalse(any(call[:3] == ("shell", "pm", "clear") for call in self.adb.calls))
+
+    def test_release_restores_network_and_screen_settings_even_when_batch_raises(self):
+        apk = self.release_ready()
+        settings = {"wifi_on": "1", "mobile_data": "1", "stay_on_while_plugged_in": "0", "screen_off_timeout": "60000"}
+        original = self.adb.run
+        def adb(*args, **kwargs):
+            if args[:3] == ("shell", "settings", "get") and args[4] in settings:
+                return settings[args[4]]
+            if args[:2] == ("shell", "svc"):
+                settings["wifi_on" if args[2] == "wifi" else "mobile_data"] = "1" if args[3] == "enable" else "0"
+                return ""
+            if args[:3] == ("shell", "settings", "put"):
+                settings[args[4]] = args[5]
+                return ""
+            return original(*args, **kwargs)
+        def fail(*args, **kwargs):
+            settings.update(wifi_on="0", mobile_data="0", stay_on_while_plugged_in="3", screen_off_timeout="1800000")
+            raise ValueError("batch failure")
+        engine = mock.Mock(catalog={"groups": {"search": ["search"]}})
+        engine.run_batch.side_effect = fail
+        with mock.patch.object(self.driver, "package_hash", return_value=session.digest(apk)), \
+                mock.patch.object(self.adb, "run", side_effect=adb), \
+                mock.patch.object(session, "MaestroRunner", return_value=engine):
+            with self.assertRaisesRegex(ValueError, "batch failure"):
+                self.driver.run(["search"])
+        self.assertEqual(settings, {"wifi_on": "1", "mobile_data": "1", "stay_on_while_plugged_in": "0", "screen_off_timeout": "60000"})
+        self.assertNotIn("device_before", self.driver.state)
+        self.assertTrue((self.driver.directory / "report.json").exists())
+
+    def test_release_resume_keeps_new_driver_ownership_and_recovers_unrecorded_forward(self):
+        apk = self.release_ready()
+        self.driver.state.update(resources_pending=True, maestro_preexisting={package: False for package in session.DRIVERS}, forwards_before=[])
+        self.adb.installed.update({package: b"new driver" for package in session.DRIVERS})
+        original = self.adb.run
+        def adb(*args, **kwargs):
+            if args == ("forward", "--list"):
+                return self.adb.serial + " tcp:7001 tcp:7002\n"
+            return original(*args, **kwargs)
+        engine = mock.Mock(catalog={"groups": {"search": ["search"]}})
+        engine.run_batch.return_value = {"search": {"status": "passed"}}
+        with mock.patch.object(self.driver, "package_hash", return_value=session.digest(apk)), \
+                mock.patch.object(self.adb, "run", side_effect=adb), \
+                mock.patch.object(session, "MaestroRunner", return_value=engine):
+            self.driver.run(["search"])
+        for package in session.DRIVERS:
+            self.assertNotIn(package, self.adb.installed)
+        self.assertIn(("forward", "--remove", "tcp:7001"), self.adb.calls)
+        self.assertNotIn("resources_pending", self.driver.state)
 
     def test_retry_after_install_confirmation_does_not_reinstall_completed_app(self):
         self.adb.fail_runner_install = True

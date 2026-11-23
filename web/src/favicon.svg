@@ -1,27 +1,13 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
   <defs>
-    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0%" stop-color="#2563EB"/>
-      <stop offset="100%" stop-color="#133587"/>
+    <linearGradient id="bg" x1="0.08" y1="0.06" x2="0.92" y2="0.94">
+      <stop offset="0%" stop-color="#2474FA"/>
+      <stop offset="55%" stop-color="#1E5ADC"/>
+      <stop offset="100%" stop-color="#183EB9"/>
     </linearGradient>
-    <mask id="sphere-gap">
-      <rect width="128" height="128" fill="#FFF"/>
-      <g transform="rotate(-28 64 66)">
-        <path d="M21 66a43 13.5 0 0 0 86 0" fill="none" stroke="#000" stroke-width="14.5" stroke-linecap="round"/>
-      </g>
-    </mask>
-    <mask id="ring-back">
-      <rect width="128" height="128" fill="#FFF"/>
-      <circle cx="64" cy="66" r="28" fill="#000"/>
-    </mask>
   </defs>
   <rect width="128" height="128" rx="28" fill="url(#bg)"/>
-  <g transform="rotate(-28 64 66)">
-    <path d="M21 66a43 13.5 0 0 1 86 0" fill="none" stroke="#FFF" stroke-width="7.5" stroke-linecap="round" mask="url(#ring-back)"/>
-  </g>
-  <circle cx="64" cy="66" r="23" fill="#FFF" mask="url(#sphere-gap)"/>
-  <g transform="rotate(-28 64 66)">
-    <path d="M21 66a43 13.5 0 0 0 86 0" fill="none" stroke="#FFF" stroke-width="7.5" stroke-linecap="round"/>
-  </g>
-  <circle cx="98" cy="29" r="5.5" fill="#FFF"/>
+  <path fill="#FFFFFF" d="M28.5 80.0A39.5 39.5 0 0 1 84.1 29.9C88.5 28.6 92.8 27.9 96.4 27.8C96.2 29.6 96.2 31.4 96.5 33.1C93.2 32.0 89.8 31.7 86.9 32.3A39.5 39.5 0 0 1 94.8 39.4C86.6 56.6 62.2 78.2 28.5 80.0Z"/>
+  <path fill="#FFFFFF" d="M25.0 65.1C17.4 73.5 13.0 82.6 13.4 88.8C13.8 95.3 20.8 98.4 33.4 96.4C35.8 96.0 38.0 95.6 39.8 95.3A39.5 39.5 0 0 0 103.5 63.1C93.4 73.6 80.6 82.0 64.9 87.3C84.5 78.6 102.9 62.6 110.5 41.6C106.4 41.8 102.6 40.7 99.8 38.7C95.6 54.4 77.2 71.8 55.2 79.8C36.2 86.7 22.8 87.0 21.3 81.1C20.5 78.1 21.9 73.6 25.3 69.2Z"/>
+  <circle cx="107.9" cy="29.8" r="6.9" fill="#FFFFFF"/>
 </svg>

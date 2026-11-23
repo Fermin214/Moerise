@@ -20,6 +20,37 @@ import kotlinx.coroutines.flow.first
 @Config(manifest = Config.NONE, sdk = [29])
 class StarMapRecoveryTest {
     @Test
+    fun offlineReopenRestoresRoomSnapshotAndReadsMatchingLocalNote() = runBlocking<Unit> {
+        val folder = Files.createTempDirectory("offline-stars-").toFile()
+        val path = folder.resolve("data.sqlite3").absolutePath
+        var db = testDatabase(path)
+        var repo = NoteRepository(db)
+        val dispatcher = Executors.newSingleThreadExecutor().asCoroutineDispatcher()
+        val scope = CoroutineScope(SupervisorJob() + dispatcher)
+        val key = "https://notes.example\u0000one\u0000users/owner"
+        val body = javaClass.getResourceAsStream("/contracts/map/ready.json")!!.bufferedReader().use { it.readText() }
+        val map = CoreJson.decodeFromString<StarMap>(body)
+        try {
+            repo.putCachedSnapshot(key, "map", CoreJson.encodeToString(map))
+            repo.recordLocalNote(key, Note("one", "memos/fixture", "离线正文", "NORMAL", map.points.single().sourceHash))
+            db.close()
+            db = testDatabase(path); repo = NoteRepository(db)
+            val stars = StarMapController({ repo }, { null }, { key }, scope, online = { false })
+            withContext(dispatcher) { stars.size(800.0, 600.0); stars.visible(true) }
+            withTimeout(10_000) { stars.state.first { it.snapshot != null && !it.loading } }
+            assertEquals(map.points, stars.state.value.snapshot!!.points)
+            assertNotNull(stars.state.value.view)
+            withContext(dispatcher) { stars.select("memos/fixture") }
+            withTimeout(10_000) { stars.state.first { !it.reading && it.reader != null } }
+            assertEquals("离线正文", stars.state.value.reader!!.content)
+            withContext(dispatcher) { stars.clear() }
+            assertNull(stars.state.value.snapshot)
+        } finally {
+            scope.coroutineContext[Job]!!.cancelAndJoin(); db.close(); dispatcher.close(); folder.deleteRecursively()
+        }
+    }
+
+    @Test
     fun lostRebuildResponseIsObservedAfterReopenAndLateReaderCannotReplaceNewHash() = runBlocking<Unit> {
         val folder = Files.createTempDirectory("moerise-stars-").toFile()
         val path = folder.resolve("data.sqlite3").absolutePath
