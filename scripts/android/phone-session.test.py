@@ -3,6 +3,7 @@ from contextlib import nullcontext, redirect_stdout
 import importlib.util
 import io
 import json
+import os
 from pathlib import Path
 import shlex
 import subprocess
@@ -74,6 +75,15 @@ class SessionLifecycle(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory(prefix="phone-harness-test-", dir=output)
         self.root = Path(self.tmp.name)
         self.repo = self.root / "repo"
+        common = mock.patch.object(session, "common_repo", return_value=self.repo)
+        common.start()
+        self.addCleanup(common.stop)
+        trees = mock.patch.object(session, "worktree_roots", return_value=[self.repo])
+        trees.start()
+        self.addCleanup(trees.stop)
+        restore_ime = mock.patch.object(session, "input_method_checkpoint", return_value=self.root / "ime.json")
+        restore_ime.start()
+        self.addCleanup(restore_ime.stop)
         artifacts = []
         for index, path in enumerate(session.APK_PATHS.values()):
             target = self.repo / path
@@ -649,11 +659,15 @@ class FixedWindowsEntry(unittest.TestCase):
         self.events = []
         self.interrupt = None
         self.on_flow = None
+        self.flow_results = {}
         for patcher in (
             mock.patch.object(session, "Adb", return_value=self.adb),
             mock.patch.object(session, "MaestroRunner", return_value=self.engine),
             mock.patch.object(session, "discover_serial", return_value=self.adb.serial),
             mock.patch.object(session, "device_lock", return_value=nullcontext()),
+            mock.patch.object(session, "common_repo", return_value=self.root),
+            mock.patch.object(session, "worktree_roots", return_value=[self.root]),
+            mock.patch.object(session, "input_method_checkpoint", return_value=self.root / "ime.json"),
         ):
             patcher.start()
             self.addCleanup(patcher.stop)
@@ -670,7 +684,8 @@ class FixedWindowsEntry(unittest.TestCase):
                 self.executed.append(flow)
                 result = {"status": "passed", "ui_status": "passed", "manual_status": "not_applicable",
                           "server_verification": "passed" if flow in session.SERVER_FLOWS else "not_applicable",
-                          "flow_sha256": session.flow_digest(self.repo, flow)}
+                          "flow_sha256": session.flow_digest(self.repo, flow), "attempted": True,
+                          **self.flow_results.get(flow, {})}
             results[flow] = result
             if self.on_flow:
                 self.on_flow(flow)
@@ -706,6 +721,11 @@ class FixedWindowsEntry(unittest.TestCase):
                 "manual_status": "not_applicable", "evidence_paths": [path.name],
                 "flow_sha256": session.flow_digest(self.repo, flow), **override}
 
+    def telemetry_csv(self):
+        path = self.root / "telemetry.csv"
+        path.write_text("week_ending_utc,platform,client_version,sample_count\n", encoding="utf-8")
+        return path
+
     def test_verify_record_from_card_cleanup_and_new_session(self):
         code, first = self.verify("--non-interactive", "--already-launched", "--check", "home")
         self.assertEqual(code, 0, first)
@@ -725,7 +745,8 @@ class FixedWindowsEntry(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertEqual(result["error"]["cause"], "pre_launch_evidence_pending")
         self.engine.run_batch.assert_not_called()
-        with mock.patch.object(session, "ask", side_effect=lambda *_: self.events.append("pre_launch") or "y"):
+        evidence = self.telemetry_csv()
+        with mock.patch.object(session, "ask", side_effect=lambda *_: self.events.append("pre_launch") or str(evidence)):
             self.assertEqual(self.verify("--check", "home")[0], 0)
         self.assertEqual(self.events, ["pre_launch", "test-source"])
         self.assertEqual(self.rows()["telemetry-before-launch"]["manual_status"], "passed")
@@ -741,7 +762,7 @@ class FixedWindowsEntry(unittest.TestCase):
             return original(*args, **kwargs)
         def reply(interactive, text):
             self.events.append(text.split(" · ", 1)[0])
-            return "y"
+            return str(self.telemetry_csv()) if text.startswith("telemetry-before-launch") else "y"
         with mock.patch.object(self.adb, "run", side_effect=device), mock.patch.object(session, "ask", side_effect=reply):
             self.assertEqual(self.verify("--install", "--check", "home")[0], 0)
         self.assertEqual(self.events, ["upgrade-before", "install", "telemetry-before-launch", "test-source"])
@@ -843,6 +864,144 @@ class FixedWindowsEntry(unittest.TestCase):
         self.assertEqual(self.verify("--non-interactive", "--already-launched", "--check", "insights-disconnect")[0], 0)
         self.assertEqual(self.executed, [])
         self.assertEqual(self.rows()["insights-disconnect"]["cause"], "capability_missing")
+
+    def test_device_owner_survives_switches_and_a_second_worktree_session_root(self):
+        args = ("--non-interactive", "--already-launched", "--check", "home")
+        self.assertEqual(self.verify(*args)[0], 0)
+        original = self.active()
+        state = session.read_json(original / "session.json")
+        state.update(resources_pending=True, maestro_preexisting={session.DRIVERS[0]: False}, forwards_before=[])
+        session.write_json(original / "session.json", state)
+        owner = session.device_resource_owner(self.repo, self.adb.serial)
+        session.write_json(owner, {"serial": self.adb.serial, "session": str(original / "session.json")})
+        self.adb.installed[session.DRIVERS[0]] = b"first-device-installed-driver"
+        device_b = FakeAdb(self.repo)
+        device_b.serial = "another-device"
+        device_b.installed[self.app] = self.apk.read_bytes()
+        with mock.patch.object(session, "Adb", return_value=device_b):
+            self.assertEqual(self.verify(*args)[0], 0)
+        self.assertTrue(owner.exists())
+        self.assertNotEqual(self.active(), original)
+        different_root = self.root / "second-worktree-sessions"
+        self.assertEqual(self.verify(*args, "--sessions-root", str(different_root))[0], 0)
+        self.assertNotIn(session.DRIVERS[0], self.adb.installed)
+        self.assertNotIn("maestro_preexisting", session.read_json(original / "session.json"))
+        self.assertFalse(owner.exists())
+
+    def test_old_release_cleanup_leaves_drivers_owned_by_a_later_task(self):
+        self.assertEqual(self.verify("--non-interactive", "--already-launched", "--check", "home")[0], 0)
+        metadata = self.active() / "session.json"
+        state = session.read_json(metadata)
+        self.assertNotIn("maestro_preexisting", state)
+        state["maestro_preexisting"] = {session.DRIVERS[0]: False}
+        session.write_json(metadata, state)
+        self.adb.installed[session.DRIVERS[0]] = b"installed-by-later-task"
+        self.assertEqual(self.cli("cleanup", "--release", "--session", str(self.active()))[0], 0)
+        self.assertEqual(self.adb.installed[session.DRIVERS[0]], b"installed-by-later-task")
+
+    def test_retry_failure_replaces_pass_and_does_not_fall_back_to_baseline(self):
+        baseline = self.record_baseline({"search": self.evidence("search")})
+        args = ("--non-interactive", "--already-launched", "--check", "search", "--baseline", baseline)
+        self.assertEqual(self.verify(*args)[0], 0)
+        self.assertEqual(self.rows()["search"]["status"], "reused_baseline")
+        self.flow_results["search"] = {"status": "failed", "ui_status": "failed"}
+        self.assertEqual(self.verify(*args, "--retry")[0], 1)
+        self.assertEqual(session.read_json(self.active() / "session.json")["check_results"]["search"]["status"], "failed")
+        self.flow_results.clear()
+        self.assertEqual(self.verify(*args)[0], 0)
+        self.assertEqual(self.executed, ["search", "search"])
+        self.assertEqual(self.rows()["search"]["status"], "passed")
+
+    def test_preparation_failure_ends_stop_boundary_for_both_requests(self):
+        args = ("--non-interactive", "--already-launched", "--check", "editing", "--check", "search")
+        self.flow_results["editing"] = {"status": "environment_blocked", "ui_status": "not_run", "cause": "data_preparation"}
+        for marker in (False, True):
+            with self.subTest(marker=marker):
+                self.executed.clear()
+                self.on_flow = (lambda _: session.request_stop(self.active())) if marker else None
+                stop = () if marker else ("--stop-after", "editing")
+                self.assertEqual(self.verify(*args, *stop)[0], 1)
+                self.assertEqual(self.executed, ["editing"])
+                self.assertEqual(self.rows()["search"]["not_run_reason"], "stopped_at_boundary")
+
+    def test_missed_launch_card_preserves_reason_and_requires_earlier_csv(self):
+        self.assertEqual(self.verify("--non-interactive", "--already-launched", "--check", "home")[0], 0)
+        text = (self.active() / "manual-cards.md").read_text(encoding="utf-8")
+        command = next(line for line in text.splitlines() if "--check telemetry-before-launch " in line)
+        self.assertIn("--outcome inconclusive", command)
+        self.assertEqual(self.cli(*shlex.split(command)[3:])[0], 0)
+        row = self.rows()["telemetry-before-launch"]
+        self.assertEqual(row["manual_status"], "inconclusive")
+        self.assertIn("错过", row["cause"])
+        args = ("record", "--release", "--session", str(self.active()), "--check", "telemetry-before-launch", "--outcome", "passed")
+        self.assertEqual(self.cli(*args)[0], 1)
+        evidence = self.telemetry_csv()
+        first_launch = session.datetime.fromtimestamp(time.time() - 120, session.timezone.utc)
+        launch = first_launch.timestamp()
+        self.assertEqual(self.cli(*args, "--evidence", str(evidence))[0], 1)
+        args = (*args, "--first-launch-at", first_launch.isoformat())
+        os.utime(evidence, (launch + 60, launch + 60))
+        self.assertEqual(self.cli(*args, "--evidence", str(evidence))[0], 1)
+        os.utime(evidence, (launch - 60, launch - 60))
+        self.assertEqual(self.cli(*args, "--evidence", str(evidence))[0], 0)
+        self.assertEqual(self.rows()["telemetry-before-launch"]["manual_status"], "passed")
+
+    def test_offline_probe_confirms_no_network_and_force_stops_before_restoring_radios(self):
+        self.assertEqual(self.verify("--non-interactive", "--already-launched", "--check", "home")[0], 0)
+        phone = session.PhoneSession(self.repo, self.active(), self.active(), self.adb, "test")
+        original = self.adb.run
+        settings = {"airplane_mode_on": "0", "wifi_on": "1"}
+        events = []
+        def device(*args, **kwargs):
+            if args[:4] == ("shell", "settings", "get", "global") and args[4] in settings:
+                return settings[args[4]]
+            if args[:4] == ("shell", "cmd", "connectivity", "airplane-mode"):
+                settings["airplane_mode_on"] = str(int(args[4] == "enable"))
+                events.append("airplane:" + settings["airplane_mode_on"])
+                return ""
+            if args[:3] == ("shell", "svc", "wifi"):
+                settings["wifi_on"] = str(int(args[3] == "enable"))
+                events.append("wifi:" + settings["wifi_on"])
+                return ""
+            if args == ("shell", "dumpsys", "connectivity"):
+                events.append("network-checked")
+                return "Active default network: none\n\nCurrent Networks:\n\nStatus for known UIDs:\n"
+            if args[:3] == ("shell", "am", "force-stop"):
+                events.append("force-stop")
+            return original(*args, **kwargs)
+        with mock.patch.object(self.adb, "run", side_effect=device):
+            with phone.isolate_source():
+                self.assertEqual(settings, {"airplane_mode_on": "1", "wifi_on": "0"})
+                events.append("offline-app-start")
+        self.assertEqual(events, ["airplane:1", "wifi:0", "network-checked", "force-stop",
+                                  "offline-app-start", "force-stop", "airplane:0", "wifi:1"])
+        self.assertNotIn("source_network_before", phone.state)
+
+    def test_offline_probe_does_not_start_app_when_ethernet_remains(self):
+        self.assertEqual(self.verify("--non-interactive", "--already-launched", "--check", "home")[0], 0)
+        phone = session.PhoneSession(self.repo, self.active(), self.active(), self.adb, "test")
+        self.adb.network.update(airplane_mode_on="1", wifi_on="0")
+        device = self.adb.run
+        def connected(*args, **kwargs):
+            if args == ("shell", "dumpsys", "connectivity"):
+                return ("Active default network: none\nCurrent Networks:\n"
+                        "  NetworkAgentInfo{network{100} Transports: ETHERNET}\n\nStatus for known UIDs:\n")
+            return device(*args, **kwargs)
+        with mock.patch.object(self.adb, "run", side_effect=connected), \
+                mock.patch.object(session.time, "monotonic", side_effect=[0, 13]):
+            with self.assertRaises(session.CommandError) as caught, phone.isolate_source():
+                self.fail("隔离未确认时不得启动 App")
+        self.assertEqual(caught.exception.code, "source_network_not_isolated")
+
+    def test_interrupted_channel_cleanup_error_is_in_top_level_report(self):
+        def interrupt():
+            self.engine.batch_cleanup_errors = ["channel_settings_restore"]
+            raise KeyboardInterrupt
+        self.interrupt = interrupt
+        code, report = self.verify("--non-interactive", "--already-launched", "--check", "navigation-settings")
+        self.assertEqual(code, 1)
+        self.assertEqual(report["status"], "interrupted")
+        self.assertEqual(report["cleanup_errors"], ["channel_settings_restore"])
 
 
 class SharedDeviceLock(unittest.TestCase):

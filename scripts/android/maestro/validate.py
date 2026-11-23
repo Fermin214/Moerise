@@ -62,6 +62,7 @@ UNION_IDS = {
     "note_editor|" + PROVIDER + "action_menu_select",
     PROVIDER + "toolbar|" + XIAOMI + "pick_container",
     "note_editor|note_editor_memos/[A-Za-z0-9_-]+",
+    "note_card_${NOTE_NAME}|note_editor|note_editor_memos/[A-Za-z0-9_-]+",
 }
 LITERAL_TEXT = {
     "^$", "在主页查看|View on home", "简体中文", "English", "跟随系统|Follow system",

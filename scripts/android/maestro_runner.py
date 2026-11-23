@@ -35,7 +35,8 @@ FLOW_CONTRACT_VERSIONS = {
     "editing": 1, "home-smoke": 1, "insights": 1, "insights-material": 1,
     "insights-disconnect": 1, "language": 1, "login": 1, "navigation": 1,
     "navigation-review": 1, "navigation-walk": 1, "navigation-map": 1, "navigation-settings": 1,
-    "recover-draft": 1, "editor-home": 1, "release-smoke": 1, "search": 1, "test-source": 1, "upgrade-smoke": 1,
+    "recover-draft": 1, "editor-home": 1, "release-smoke": 1, "search": 1, "test-source": 2,
+    "upgrade-smoke": 1,
 }
 SERVER_FLOWS = CHANNEL_FLOWS | {
     "editing", "release-smoke", "actions", "archive", "attachments", "insights", "insights-disconnect",
@@ -44,6 +45,45 @@ SERVER_FLOWS = CHANNEL_FLOWS | {
 
 def catalog(root=ROOT):
     return json.loads((Path(root) / "scripts/android/maestro/catalog.json").read_text(encoding="utf-8"))
+
+
+def git(root, *args):
+    return subprocess.check_output(["git", "-C", str(root), *args], encoding="utf-8").strip()
+
+
+def common_repo(root):
+    return Path(git(root, "rev-parse", "--path-format=absolute", "--git-common-dir")).parent
+
+
+def worktree_roots(root):
+    return [Path(field.removeprefix("worktree ")) for field in git(root, "worktree", "list", "--porcelain", "-z").split("\0")
+            if field.startswith("worktree ")]
+
+
+def shared_checkpoint(root, name, legacy_names=()):
+    primary = common_repo(root)
+    common = primary / ".local/android" / name
+    candidates = {tree / ".local/android" / basename for tree in {primary, *worktree_roots(root)}
+                  for basename in (name, *legacy_names)} - {common}
+    existing = [path for path in sorted(candidates) if path.is_file()]
+    if existing:
+        if common.exists() or len(existing) > 1:
+            raise ValueError(f"恢复检查点重复：{name}；保留所有记录")
+        common.parent.mkdir(parents=True, exist_ok=True)
+        os.replace(existing[0], common)
+    return common
+
+
+def normalized_origin(value):
+    origin = urllib.parse.urlsplit(value)
+    host = origin.hostname
+    if not host:
+        raise ValueError("测试服务地址缺少主机名")
+    if ":" in host:
+        host = f"[{host}]"
+    port = origin.port
+    suffix = f":{port}" if port and port != {"http": 80, "https": 443}.get(origin.scheme) else ""
+    return f"{origin.scheme}://{host}{suffix}"
 
 
 def write_result(path, value):
@@ -225,13 +265,14 @@ class FixtureAPI:
         raise ValueError("隔离笔记分页超过上限")
 
 
-def fresh_ui_dump(adb, output, timeout=15):
+def fresh_ui_dump(adb, output, timeout=15, stop_drivers=True):
     output = Path(output)
     output.unlink(missing_ok=True)
     remote = "/sdcard/moerise-ui-" + uuid.uuid4().hex + ".xml"
     try:
-        for package in reversed(DRIVERS):
-            adb.run("shell", "am", "force-stop", package)
+        if stop_drivers:
+            for package in reversed(DRIVERS):
+                adb.run("shell", "am", "force-stop", package)
         adb.run("shell", "rm", "-f", remote)
         adb.run("shell", "uiautomator", "dump", remote, timeout=timeout)
         xml = adb.run("shell", "cat", remote)
@@ -293,7 +334,7 @@ def active_input_method(adb):
 
 def input_method_checkpoint(root, serial):
     key = hashlib.sha256(serial.encode()).hexdigest()[:16]
-    return Path(root) / ".local/android" / ("maestro-ime-" + key + ".json")
+    return shared_checkpoint(root, "maestro-ime-" + key + ".json")
 
 
 def restore_input_method(adb, checkpoint):
@@ -409,6 +450,7 @@ class MaestroRunner:
         self.fail_marker = None
         self.on_app_launch = None
         self.on_test_file = None
+        self.phone_isolation = None
         self.executable = executable
         self.catalog = catalog(self.root)
         self.remote_file = None
@@ -422,6 +464,8 @@ class MaestroRunner:
             details["preparation_step"] = step
         if isinstance(error, FixtureError):
             details.update(error.details())
+        elif getattr(error, "code", None):
+            details["error_code"] = error.code
         secrets = [self.connection.get(key) for key in ("username", "password", "sourceToken")]
         if isinstance(self.api.csrf, str):
             secrets.append(self.api.csrf)
@@ -643,8 +687,7 @@ class MaestroRunner:
             stage, deadline = "activity_launch", 60
             if self.on_app_launch:
                 self.on_app_launch()
-            self.adb.run("shell", "am", "start", "-W", "-n",
-                         self.app + "/io.github.fermin214.moerise.MainActivity", timeout=60)
+            self.start_app()
             environment = dict(os.environ)
             environment.update({
                 "MAESTRO_FIXTURE_ORIGIN": self.connection["origin"],
@@ -667,7 +710,8 @@ class MaestroRunner:
                 args.extend(["-e", key + "=" + value])
             args.append(str(self.root / "scripts/android/maestro" / entry["file"]))
             stage, deadline = "maestro_execution", entry["timeout_seconds"]
-            with preserve_input_method(self.adb, input_method_checkpoint(self.root, self.adb.serial)), self.recording(directory):
+            ime = input_method_checkpoint(self.root, self.adb.serial) if not self.adb.serial.startswith("emulator-") else None
+            with preserve_input_method(self.adb, ime), self.recording(directory):
                 code = execute(args, result["log"], entry["timeout_seconds"], environment)
             result.update(junit_result(result["report"], code))
             result["ui_status"] = result["status"]
@@ -754,8 +798,7 @@ class MaestroRunner:
         return result
 
     def draft_checkpoint(self):
-        identity = hashlib.sha256((self.adb.serial + "\0" + self.connection["origin"]).encode()).hexdigest()[:16]
-        return self.root / ".local/android" / ("maestro-drafts-" + identity + ".json")
+        return self.source_checkpoint("drafts", self.adb.serial + "\0")
 
     def editor_checkpoint(self):
         path = self.draft_checkpoint()
@@ -910,7 +953,17 @@ class MaestroRunner:
                 if not on_source_blocked or not on_source_blocked():
                     raise
                 identity = self.api.login()
+            step = "channel_recovery"
+            self.restore_pending_channel()
             if self.phone and flows:
+                step = "phone_offline_identity"
+                preflight = self.probe_phone_offline()
+                retried = False
+                if preflight["status"] != "passed" and on_source_blocked and on_source_blocked():
+                    preflight = self.probe_phone_offline()
+                    retried = True
+                if preflight["status"] != "passed":
+                    return self.block_unverified_phone(flows, results, checkpoint, preflight, step)
                 step = "test_source_data"
                 probe = self.prepare_data("test-source", self.catalog["flows"]["test-source"])
                 user = identity.get("user", {}) if isinstance(identity, dict) else {}
@@ -919,17 +972,16 @@ class MaestroRunner:
                     probe[0]["EXPECTED_ACCOUNT"] = account
                 step = "test_source_ui"
                 preflight = self.run_flow("test-source", prepared=probe, deferred=True)
-                if preflight["status"] != "passed" and on_source_blocked and on_source_blocked():
+                if preflight["status"] != "passed" and not retried and on_source_blocked and on_source_blocked():
+                    step = "phone_offline_identity"
+                    preflight = self.probe_phone_offline()
+                    if preflight["status"] != "passed":
+                        return self.block_unverified_phone(flows, results, checkpoint, preflight, step)
+                    step = "test_source_ui"
                     preflight = self.run_flow("test-source", prepared=probe, deferred=True)
                 write_result(self.output / "test-source-result.json", preflight)
                 if preflight["status"] != "passed":
-                    for flow in flows:
-                        checkpoint(flow, {**preflight, "status": "environment_blocked", "ui_status": "not_run",
-                                          "server_verification": "pending", "cause": "phone_test_source_unverified",
-                                          "preparation_step": step, "log": None, "probe_log": preflight.get("log")})
-                    return results
-            step = "channel_recovery"
-            self.restore_pending_channel()
+                    return self.block_unverified_phone(flows, results, checkpoint, preflight, step)
             recovery = self.recover_editor_state() if self.phone and flows else []
             editor_error = next((item for item in recovery if item["status"] != "passed"), None)
             if recovery:
@@ -978,8 +1030,8 @@ class MaestroRunner:
                               "ui_status": "not_run", "cause": step.split(".")[-1], **self.failure_details(error, step)}
                 except KeyboardInterrupt:
                     partial = getattr(self, "interrupted_result", None)
-                    checkpoint(flow, partial or {"status": "inconclusive", "ui_status": "not_run", "cause": "interrupted",
-                                                  "preparation_step": step})
+                    checkpoint(flow, {**(partial or {"status": "inconclusive", "ui_status": "not_run",
+                                                    "cause": "interrupted", "preparation_step": step}), "attempted": True})
                     raise
                 finally:
                     if remote or self.remote_file:
@@ -995,14 +1047,15 @@ class MaestroRunner:
                 result.setdefault("cleanup_errors", []).extend(cleanup_errors)
                 if result["cleanup_errors"] and result["status"] == "passed":
                     result.update(status="harness_error", cause="cleanup_error")
-                if checkpoint(flow, result):
+                if checkpoint(flow, {**result, "attempted": True}):
                     break
                 if "channel_settings_restore" in result["cleanup_errors"]:
                     break
-        except (FixtureError, OSError, ValueError, RuntimeError, KeyError) as error:
+        except (FixtureError, OSError, ValueError, RuntimeError, KeyError, subprocess.SubprocessError) as error:
+            blocked = isinstance(error, FixtureError) or (step == "phone_offline_identity" and getattr(error, "code", None))
             for flow in flows:
                 if flow not in results:
-                    checkpoint(flow, {"status": "environment_blocked" if isinstance(error, FixtureError) else "harness_error",
+                    checkpoint(flow, {"status": "environment_blocked" if blocked else "harness_error",
                                       "ui_status": "not_run", "cause": "batch_preparation", **self.failure_details(error, step)})
         finally:
             if self.channel_fixture is not None:
@@ -1017,9 +1070,53 @@ class MaestroRunner:
             write_result(self.output / "results.json", results)
         return results
 
+    def probe_phone_offline(self):
+        if self.phone_isolation is None:
+            raise ValueError("正式包真机需要离线账号探针")
+        with self.phone_isolation():
+            if self.on_app_launch:
+                self.on_app_launch()
+            self.start_app()
+            artifact = self.output / "source-offline-window.xml"
+            try:
+                xml = fresh_ui_dump(self.adb, artifact, stop_drivers=False)
+                tags = {node.get("resource-id", "").split(":id/", 1)[-1]
+                        for node in ET.fromstring(xml).iter("node") if node.get("package") == self.app}
+                if "open_menu" in tags:
+                    return {"status": "environment_blocked", "cause": "selected_account_present"}
+                if {"server_login", "server_origin_empty"} <= tags and "welcome_enter" not in tags:
+                    return {"status": "passed"}
+            except (RuntimeError, OSError, ValueError, ET.ParseError):
+                pass
+            finally:
+                artifact.unlink(missing_ok=True)
+            return {"status": "environment_blocked", "cause": "empty_login_form_not_observed"}
+
+    def start_app(self):
+        self.adb.run("shell", "am", "start", "-W", "-n",
+                     self.app + "/io.github.fermin214.moerise.MainActivity", timeout=60)
+
+    def block_unverified_phone(self, flows, results, checkpoint, preflight, step):
+        for flow in flows:
+            checkpoint(flow, {**preflight, "status": "environment_blocked", "ui_status": "not_run",
+                              "server_verification": "pending", "cause": "phone_test_source_unverified",
+                              "preparation_step": step, "log": None, "probe_log": preflight.get("log"),
+                              "probe_cause": preflight.get("cause")})
+        return results
+
+    def source_checkpoint(self, kind, prefix=""):
+        raw = self.connection["origin"]
+        canonical = normalized_origin(raw)
+        default_port = 443 if canonical.startswith("https:") else 80
+        explicit_default = f"{canonical}:{default_port}" if urllib.parse.urlsplit(canonical).port is None else canonical
+        def filename(origin):
+            key = hashlib.sha256((prefix + origin).encode()).hexdigest()[:16]
+            return f"maestro-{kind}-{key}.json"
+        aliases = {raw, raw.rstrip("/"), canonical + "/", explicit_default, explicit_default + "/"} - {canonical}
+        return shared_checkpoint(self.root, filename(canonical), tuple(map(filename, aliases)))
+
     def channel_checkpoint(self):
-        identity = hashlib.sha256(self.connection["origin"].encode()).hexdigest()[:16]
-        return self.root / ".local/android" / ("maestro-channel-" + identity + ".json")
+        return self.source_checkpoint("channel")
 
     def prepare_channel(self):
         checkpoint = self.channel_checkpoint()

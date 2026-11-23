@@ -2,6 +2,7 @@
 """Persistent USB device acceptance; installation, checks and cleanup are separate actions."""
 import argparse
 from contextlib import contextmanager
+import csv
 from datetime import datetime, timezone
 import hashlib
 import io
@@ -21,7 +22,7 @@ import urllib.error
 import urllib.request
 import uuid
 from maestro_runner import (
-    DRIVERS, SERVER_FLOWS, MaestroRunner, catalog, flow_digest, input_method_checkpoint,
+    DRIVERS, SERVER_FLOWS, MaestroRunner, catalog, common_repo, flow_digest, git, input_method_checkpoint, worktree_roots,
     junit_result as maestro_result, restore_input_method, FixtureAPI, FixtureError,
 )
 
@@ -91,14 +92,6 @@ def read_json(path):
     return json.loads(Path(path).read_text(encoding="utf-8-sig"))
 
 
-def git(repo, *args):
-    return subprocess.check_output(["git", "-C", str(repo), *args], encoding="utf-8").strip()
-
-
-def common_repo(repo):
-    return Path(git(repo, "rev-parse", "--path-format=absolute", "--git-common-dir")).parent
-
-
 @contextmanager
 def lock_handle(path):
     if os.name == "nt":
@@ -165,6 +158,31 @@ def compatible_pass(item, flow, fingerprint):
     return (item.get("status") in REUSABLE and item.get("ui_status") == "passed"
             and item.get("server_verification") == expected and item.get("flow_sha256") == fingerprint
             and not item.get("cleanup_errors"))
+
+
+def prelaunch_evidence(paths, launch, *, window_missed=False):
+    if window_missed and not launch:
+        return None
+    cutoff = datetime.fromisoformat(launch) if launch else datetime.now(timezone.utc)
+    if cutoff.tzinfo is None or cutoff > datetime.now(timezone.utc):
+        return None
+    for filename in paths:
+        path = Path(filename)
+        try:
+            captured = datetime.fromtimestamp(path.stat().st_mtime, timezone.utc)
+            if path.suffix.lower() == ".csv" and captured < cutoff:
+                with path.open(encoding="utf-8-sig", newline="") as stream:
+                    header = next(csv.reader(stream), [])
+                if {"week_ending_utc", "platform", "client_version", "sample_count"} <= set(header):
+                    return captured.isoformat()
+        except (OSError, UnicodeError, csv.Error):
+            continue
+    return None
+
+
+def setting_matches(key, actual, expected):
+    return actual == expected or (key == "wifi_on" and any(actual in pair and expected in pair
+                                                          for pair in (("0", "3"), ("1", "2"))))
 
 
 def artifact_links(paths):
@@ -315,8 +333,9 @@ class PhoneSession:
 
     def restore_device_input(self):
         try:
-            restore_input_method(self.adb, input_method_checkpoint(self.repo, self.adb.serial))
-        except RuntimeError as error:
+            if not self.adb.serial.startswith("emulator-"):
+                restore_input_method(self.adb, input_method_checkpoint(self.repo, self.adb.serial))
+        except (RuntimeError, ValueError) as error:
             raise CommandError("ime_restore_failed", str(error)) from error
 
     def require_ready(self, preparing=False):
@@ -647,20 +666,63 @@ class PhoneSession:
         self.require_ready()
         self.verify_artifacts()
         self.connect()
+        if self.release:
+            self.capture_resources()
+            try:
+                runner = MaestroRunner(self.repo, self.adb, self.state["fixture"], self.output / "maestro",
+                    self.maestro, release=True, phone=True, test_origin=self.state["test_origin"],
+                    allow_production=self.state.get("allow_production", False))
+                runner.on_app_launch = self.mark_app_launch
+                runner.phone_isolation = self.isolate_source
+                result = runner.probe_phone_offline()
+                if result["status"] != "passed":
+                    raise CommandError(result["cause"], "先退出已登录账号并停在空白登录页")
+            finally:
+                if self.restore_resources():
+                    raise CommandError("device_restore_failed", ", ".join(self.state["cleanup_errors"]))
         self.adb.run("shell", "am", "start", "-W", "-n", self.app + "/io.github.fermin214.moerise.MainActivity")
         return {"status": "manual_ready", "app": self.app, "connection": "USB",
                 "session": str(self.directory), "cleanup": "显式 cleanup 才卸载"}
 
-    def record(self, group, outcome, note, evidence=()):
+    def record(self, group, outcome, note, evidence=(), first_launch_at=None, refresh_report=True):
         if not self.state or self.state.get("status") == "cleaned":
             raise ValueError("会话不存在或已清理")
-        self.state.setdefault("manual_results", {})[group] = {
+        item = phone_checks(self.repo).get(group) if self.release else None
+        before_launch = item and item["phase"] == "pre_launch"
+        manual = self.state.setdefault("manual_results", {})
+        existing = manual.get(group, {})
+        result = {
             "kind": "manual", "status": outcome, "note": note, "recorded_at": now(),
             "evidence_paths": [str(Path(path).resolve()) for path in evidence]}
+        if before_launch and outcome == "passed":
+            observed = self.state.get("app_launch_attempted")
+            window_missed = bool(observed or self.state.get("app_launch_time_unknown"))
+            if first_launch_at:
+                reported = datetime.fromisoformat(first_launch_at)
+                if reported.tzinfo is None or reported > datetime.now(timezone.utc) or (
+                        observed and reported > datetime.fromisoformat(observed)):
+                    raise ValueError("--first-launch-at 必须是早于已记录启动时间的带时区时间")
+                observed = reported.isoformat()
+            cutoff = observed if first_launch_at or self.state.get("app_launch_time_verified") else None
+            captured = prelaunch_evidence(result["evidence_paths"], cutoff,
+                                          window_missed=window_missed)
+            if not captured:
+                raise CommandError("pre_launch_evidence_required",
+                    "传入首次启动前的遥测 CSV：--evidence <文件>；若入口未观测首启，另给出 --first-launch-at <带时区时间>")
+            result["evidence_captured_at"] = captured
+            if first_launch_at:
+                self.state["app_launch_attempted"] = observed
+                self.state["app_launch_time_verified"] = True
+                self.state.pop("app_launch_time_unknown", None)
+        if before_launch and outcome == "inconclusive":
+            result["note"] = note or existing.get("note") or "缺少首次启动前的遥测 CSV"
+            if existing.get("window_missed"):
+                result["window_missed"] = True
+        manual[group] = result
         self.save()
-        if self.release:
+        if self.release and refresh_report:
             self.coverage_report() if self.state.get("coverage") else self.summary()
-        return self.state["manual_results"][group]
+        return result
 
     def remember_maestro(self, result):
         original = self.state.setdefault("maestro_preexisting", {})
@@ -747,39 +809,96 @@ class PhoneSession:
                 "stay_on_while_plugged_in": self.adb.run("shell", "settings", "get", "global", "stay_on_while_plugged_in").strip(),
                 "screen_off_timeout": self.adb.run("shell", "settings", "get", "system", "screen_off_timeout").strip()}
 
-    def restore_checkpoint(self):
-        saved = self.state.get("device_before")
+    def restore_settings(self, saved):
         errors = []
-        if not saved:
-            return errors
         for key, value in saved.items():
             try:
                 namespace = "system" if key == "screen_off_timeout" else "global"
                 current = self.adb.run("shell", "settings", "get", namespace, key).strip()
-                if current == value:
+                if setting_matches(key, current, value):
                     continue
                 if key in ("wifi_on", "mobile_data"):
-                    if value not in ("0", "1"):
+                    if value not in (("0", "1", "2", "3") if key == "wifi_on" else ("0", "1")):
                         raise ValueError("原网络状态无效")
                     self.adb.run("shell", "svc", "wifi" if key == "wifi_on" else "data",
-                                 "enable" if value == "1" else "disable")
+                                 "enable" if value in ("1", "2") else "disable")
+                elif key == "airplane_mode_on" and value in ("0", "1"):
+                    self.adb.run("shell", "cmd", "connectivity", "airplane-mode", "enable" if value == "1" else "disable")
                 elif value == "null":
                     self.adb.run("shell", "settings", "delete", namespace, key)
                 elif value.isdigit():
                     self.adb.run("shell", "settings", "put", namespace, key, value)
                 else:
                     raise ValueError("原亮屏设置无效")
-                if self.adb.run("shell", "settings", "get", namespace, key).strip() != value:
+                actual = self.adb.run("shell", "settings", "get", namespace, key).strip()
+                until = time.monotonic() + (5 if key in ("wifi_on", "airplane_mode_on") else 0)
+                while not setting_matches(key, actual, value) and time.monotonic() < until:
+                    time.sleep(.2)
+                    actual = self.adb.run("shell", "settings", "get", namespace, key).strip()
+                if not setting_matches(key, actual, value):
                     raise RuntimeError("设备状态恢复读回不一致")
             except (CommandError, OSError, ValueError, RuntimeError):
                 errors.append(key)
+        return errors
+
+    def restore_checkpoint(self):
+        errors = self.restore_settings(self.state.get("device_before", {}))
         if not errors:
             self.state.pop("device_before", None)
         self.save()
         return errors
 
+    def restore_source_network(self):
+        saved = self.state.get("source_network_before")
+        if not saved:
+            return []
+        try:
+            self.adb.run("shell", "am", "force-stop", self.app)
+        except (CommandError, OSError):
+            return ["source_app_stop"]
+        errors = self.restore_settings(saved)
+        if not errors:
+            self.state.pop("source_network_before", None)
+        self.save()
+        return errors
+
+    @contextmanager
+    def isolate_source(self):
+        if ":" in self.adb.serial or "_adb-tls-" in self.adb.serial:
+            raise CommandError("usb_required", "离线来源探针需要 USB ADB")
+        if self.adb.run("reverse", "--list").strip():
+            raise CommandError("source_network_not_isolated", "设备存在 USB 反向转发；关闭转发后再运行来源探针")
+        airplane = self.adb.run("shell", "settings", "get", "global", "airplane_mode_on").strip()
+        wifi = self.adb.run("shell", "settings", "get", "global", "wifi_on").strip()
+        if airplane not in ("0", "1") or wifi not in ("0", "1", "2", "3"):
+            raise CommandError("network_state_unknown", "无法读取并恢复设备的飞行模式与 Wi-Fi 状态")
+        self.state["source_network_before"] = {"airplane_mode_on": airplane, "wifi_on": wifi}
+        self.save()
+        try:
+            self.adb.run("shell", "cmd", "connectivity", "airplane-mode", "enable")
+            self.adb.run("shell", "svc", "wifi", "disable")
+            until = time.monotonic() + 12
+            while True:
+                mode = self.adb.run("shell", "settings", "get", "global", "airplane_mode_on").strip()
+                networks = self.adb.run("shell", "dumpsys", "connectivity")
+                current = re.search(r"^([ \t]*)Current Networks:[ \t]*\r?\n(.*?)(?=^\1\S|\Z)", networks, re.S | re.M)
+                if (mode == "1" and current and not current[2].strip()
+                        and re.search(r"(?m)^\s*Active default network:\s*none\s*$", networks)):
+                    break
+                if time.monotonic() >= until:
+                    raise CommandError("source_network_not_isolated", "设备仍有网络连接或无法确认离线；断开有线网与其它设备网络")
+                time.sleep(.3)
+            self.adb.run("shell", "am", "force-stop", self.app)
+            yield
+        finally:
+            errors = self.restore_source_network()
+            if errors:
+                raise CommandError("source_network_restore_failed", ", ".join(errors))
+
     def restore_resources(self):
-        errors = self.restore_checkpoint()
+        errors = self.restore_source_network()
+        if not errors:
+            errors = self.restore_checkpoint()
         operations = [("input_restore", self.restore_device_input)]
         if self.state.get("resources_pending"):
             for package in reversed(DRIVERS):
@@ -807,19 +926,36 @@ class PhoneSession:
             except (CommandError, OSError):
                 errors.append(label)
         if not errors:
-            for field in ("resources_pending", "forwards_before", "maestro_forwards", "maestro_forward_bindings"):
+            for field in ("resources_pending", "forwards_before", "maestro_preexisting", "maestro_forwards", "maestro_forward_bindings"):
                 self.state.pop(field, None)
             self.state["files"] = []
         self.state["cleanup_errors"] = errors
         self.save()
+        if not errors:
+            owner = self.resource_owner
+            if owner.exists() and Path(read_json(owner)["session"]) == self.path.resolve():
+                owner.unlink()
         return errors
 
+    @property
+    def resource_owner(self):
+        return device_resource_owner(self.repo, self.adb.serial)
+
+    @property
+    def owns_resources(self):
+        return any(self.state.get(key) for key in ("resources_pending", "device_before", "source_network_before"))
+
     def capture_resources(self):
-        if (self.state.get("resources_pending") or self.state.get("device_before")) and self.restore_resources():
-            raise CommandError("device_restore_failed", ", ".join(self.state["cleanup_errors"]))
+        if self.owns_resources:
+            self.save()
+        roots = session_history(self.repo, self.directory.parent)
+        recover_device_sessions(self.repo, self.adb, self.commit, [self.path, *roots])
         self.state["device_before"] = self.device_checkpoint()
         self.state["maestro_preexisting"] = {package: bool(self.package_paths(package)) for package in DRIVERS}
         self.state["forwards_before"] = self.adb.run("forward", "--list").splitlines()
+        owner = self.resource_owner
+        owner.parent.mkdir(parents=True, exist_ok=True)
+        write_json(owner, {"serial": self.adb.serial, "session": str(self.path.resolve())})
         self.state["resources_pending"] = True
         self.save()
 
@@ -902,8 +1038,19 @@ class PhoneSession:
                 imported[name] = value
             if (item["kind"] != "auto" and (not legacy or name == "editing-keyboard")
                     and name in imported and record["manual_status"] == "passed"):
+                if item["phase"] == "pre_launch":
+                    observed = self.state.get("app_launch_attempted")
+                    cutoff = observed if self.state.get("app_launch_time_verified") else None
+                    captured = prelaunch_evidence(evidence, cutoff,
+                                                  window_missed=bool(observed or self.state.get("app_launch_time_unknown")))
+                    if not captured:
+                        continue
+                    value["evidence_captured_at"] = captured
                 local = self.state.setdefault("manual_results", {})
-                local.setdefault(name, {**value, "status": "passed", "reuse": "reused_baseline"})
+                current = local.get(name, {})
+                if current.get("status") != "passed" or (
+                        item["phase"] == "pre_launch" and not current.get("evidence_captured_at")):
+                    local[name] = {**value, "status": "passed", "reuse": "reused_baseline"}
         self.save()
         return imported
 
@@ -953,6 +1100,8 @@ class PhoneSession:
             result = selected or previous
             human = manual.get(name, {})
             manual_status = human.get("status", "not_applicable" if automatic else "pending")
+            if item["phase"] == "pre_launch" and manual_status == "passed" and not human.get("evidence_captured_at"):
+                manual_status = "inconclusive"
             if not human and item["phase"] == "pre_install" and view.get("install_needed") is False:
                 manual_status = "not_applicable"
             status = (result.get("status", "not_run") if selected else "not_run") if automatic else manual_status
@@ -973,7 +1122,7 @@ class PhoneSession:
                                       else "not_selected_or_interrupted") if automatic and not selected else None,
                    "last_step": result.get("last_step"), "evidence_paths": list(dict.fromkeys(paths)),
                    **{key: result[key] for key in ("preparation_step", "request", "http_status", "error_code",
-                                                   "error_type", "error_message") if key in result}}
+                                                   "error_type", "error_message", "probe_cause") if key in result}}
             rows.append(row)
             if automatic or manual_status in ("passed", "not_applicable"):
                 continue
@@ -983,11 +1132,13 @@ class PhoneSession:
                                    *self.previous_check(auto).get("recordings", []),
                                    *self.previous_check(auto).get("evidence_paths", []))]
             quoted = str(self.directory).replace("'", "''")
+            outcome = "inconclusive" if item["phase"] == "pre_launch" else "passed"
             command = (f"python -B scripts/android/phone-session.py record --release --session '{quoted}' "
-                       f"--check {name} --outcome passed")
+                       f"--check {name} --outcome {outcome}")
             cards.extend([f"## {name} · {item['phase']}", "", card["start_state"], "",
                           *(f"{index}. {step}" for index, step in enumerate(card["steps"], 1)), "",
-                          f"通过条件　{card['pass_criteria']}", f"证据　{card['evidence_hint']}", "",
+                          f"通过条件　{card['pass_criteria']}", f"证据　{card['evidence_hint']}",
+                          *([f"取证状态　{human['note']}"] if human.get("window_missed") else []), "",
                           artifact_links([*paths, *linked]), "", "```powershell", command, "```", ""])
         report = {"app": self.app, "apk": self.state["artifacts"][self.app], "serial": self.adb.serial,
                   "test_origin": self.state["test_origin"], "run_id": view.get("run_id"),
@@ -1006,7 +1157,8 @@ class PhoneSession:
             values = [row["id"], ", ".join(map(str, row["handoff_items"])), row["module"],
                       row["kind"], row["ui_status"], row["server_verification"], row["manual_status"],
                       " · ".join(filter(None, (row["status"], row["reuse"], row["existing_status"]))),
-                      " · ".join(filter(None, (row["category"], row["not_run_reason"], row["cause"], row.get("error_message")))),
+                      " · ".join(filter(None, (row["category"], row["not_run_reason"], row["cause"],
+                                               row.get("probe_cause"), row.get("error_message")))),
                       " · ".join(filter(None, (step.get("source"), step.get("kind"), step.get("label") or step.get("stage")))),
                       artifact_links(row["evidence_paths"])]
             title.append("| " + " | ".join(map(markdown, values)) + " |")
@@ -1021,6 +1173,7 @@ class PhoneSession:
         runner.fail_marker = args.fail_marker
         runner.on_app_launch = self.mark_app_launch
         runner.on_test_file = self.mark_test_file
+        runner.phone_isolation = self.isolate_source
         by_flow = {item["flow"]: item for item in items}
         view = self.state["coverage"]
         marker = self.directory / "STOP_AFTER_CURRENT"
@@ -1035,6 +1188,8 @@ class PhoneSession:
                 previous = self.previous_check(item)
                 if compatible_pass(previous, flow, fingerprint):
                     return {**previous, "status": "reused_pass"}
+                if previous.get("attempted"):
+                    return None
                 return self.baseline_pass(name, flow, baseline.get(name, {}), fingerprint, engine)
             return None
 
@@ -1042,14 +1197,11 @@ class PhoneSession:
             name = by_flow[flow]["id"]
             self.remember_maestro(result)
             view["results"][name] = result
-            previous = self.previous_check(by_flow[flow])
-            fingerprint = self.execution_digest(flow)
-            if result["status"] not in ("reused_pass", "skipped") and (
-                    result["status"] in REUSABLE or not compatible_pass(previous, flow, fingerprint)):
+            attempted = result.get("attempted", False)
+            if attempted or result["status"] in ("passed", "reused_baseline"):
                 self.state.setdefault("check_results", {})[name] = result
             self.save()
-            completed = result.get("cause") != "interrupted" and (
-                result.get("ui_status") != "not_run" or result["status"] in REUSABLE)
+            completed = result.get("cause") != "interrupted" and (attempted or result["status"] in REUSABLE)
             requested = marker.exists() and marker.read_text(encoding="utf-8-sig").strip() == run_id
             if completed and (args.stop_after in (name, flow) or requested):
                 view["stopped"] = name
@@ -1058,15 +1210,18 @@ class PhoneSession:
             return False
 
         flows = list(by_flow)
-        results = runner.run_batch(flows, on_result=checkpoint, select=select,
-            clean_editor={flow for flow, item in by_flow.items() if item["requires_clean_editor"]},
-            on_source_blocked=lambda: prompt("连接测试网络并在 App 核对测试账号与来源，完成后输入 y 重试一次。"))
-        self.state["batch_cleanup_errors"] = runner.batch_cleanup_errors
-        return results
+        try:
+            return runner.run_batch(flows, on_result=checkpoint, select=select,
+                clean_editor={flow for flow, item in by_flow.items() if item["requires_clean_editor"]},
+                on_source_blocked=lambda: prompt(
+                    "若 App 尚有登录账号，先断开手机网络再退出。停在空白登录页并恢复测试网络后，输入 y 重试一次。"))
+        finally:
+            self.state["batch_cleanup_errors"] = getattr(runner, "batch_cleanup_errors", [])
 
     def mark_app_launch(self):
-        if not self.state.get("app_launch_attempted"):
+        if not (self.state.get("app_launch_attempted") or self.state.get("app_launch_time_unknown")):
             self.state["app_launch_attempted"] = now()
+            self.state["app_launch_time_verified"] = True
             self.save()
 
     def mark_test_file(self, path):
@@ -1081,11 +1236,13 @@ class PhoneSession:
         self.verify_artifacts()
         self.capture_resources()
         outcome, pending = {}, []
-        batch_errors = []
+        runner = None
         try:
             runner = MaestroRunner(self.repo, self.adb, self.state["fixture"], self.output / "maestro",
                 self.maestro, release=True, phone=True,
                 test_origin=self.state["test_origin"], allow_production=self.state.get("allow_production", False), record=self.record_video)
+            runner.phone_isolation = self.isolate_source
+            runner.on_app_launch = self.mark_app_launch
             for group in groups:
                 previous = self.state["results"].get(group)
                 if previous and previous["status"] == "passed" and not retry and previous.get("flow_sha256") == self.execution_digest(group):
@@ -1104,7 +1261,6 @@ class PhoneSession:
                     saved.pop("flow_sha256", None)
                 self.save()
             results = runner.run_batch(flows, on_result=checkpoint) if flows else {}
-            batch_errors = getattr(runner, "batch_cleanup_errors", [])
             for group in pending:
                 selected = {flow: results[flow] for flow in runner.catalog["groups"][group] if flow in results}
                 for result in selected.values():
@@ -1116,6 +1272,7 @@ class PhoneSession:
                 self.state["results"][group] = outcome[group]
             self.save()
         finally:
+            batch_errors = getattr(runner, "batch_cleanup_errors", [])
             self.restore_resources()
             if isinstance(batch_errors, list):
                 self.state["cleanup_errors"].extend(batch_errors)
@@ -1141,29 +1298,30 @@ class PhoneSession:
             return self.state["cleanup"]
         if self.adb.run("get-state").strip() != "device":
             raise CommandError("device_unavailable", "手机尚未连接")
-        if self.release and (self.state.get("resources_pending") or self.state.get("device_before")):
+        if self.release and self.owns_resources:
             errors = self.restore_resources()
             if errors:
                 raise CommandError("device_restore_failed", ", ".join(errors))
-        self.restore_device_input()
-        restore_errors = self.restore_checkpoint() if self.release else []
+        if not self.release:
+            self.restore_device_input()
         results = {}
         for package in self.state["artifacts"] if uninstall else ():
             if package not in (*APK_PATHS, APP.removesuffix(".fixture")):
                 continue
             results[package] = self.remove_package(package)
-        self.adb.run("shell", "rm", "-f", CREDENTIAL)
-        for package, preexisting in self.state.get("maestro_preexisting", {}).items():
-            if package in DRIVERS and not preexisting:
-                results[package] = self.remove_package(package)
-        if self.state.get("maestro_forwards"):
-            existing = self.adb.run("forward", "--list").splitlines()
-            for mapping, target in self.state.get("maestro_forward_bindings", {}).items():
-                if f"{self.adb.serial} {mapping} {target}" in existing:
-                    self.adb.run("forward", "--remove", mapping)
-        for remote in self.state.get("files", []):
-            if re.fullmatch(r"/sdcard/Download/moerise-maestro-[a-f0-9]{32}\.txt", remote):
-                self.adb.run("shell", "rm", "-f", remote)
+        if not self.release:
+            self.adb.run("shell", "rm", "-f", CREDENTIAL)
+            for package, preexisting in self.state.get("maestro_preexisting", {}).items():
+                if package in DRIVERS and not preexisting:
+                    results[package] = self.remove_package(package)
+            if self.state.get("maestro_forwards"):
+                existing = self.adb.run("forward", "--list").splitlines()
+                for mapping, target in self.state.get("maestro_forward_bindings", {}).items():
+                    if f"{self.adb.serial} {mapping} {target}" in existing:
+                        self.adb.run("forward", "--remove", mapping)
+            for remote in self.state.get("files", []):
+                if re.fullmatch(r"/sdcard/Download/moerise-maestro-[a-f0-9]{32}\.txt", remote):
+                    self.adb.run("shell", "rm", "-f", remote)
         mapping = f"tcp:{self.state['port']}"
         if not self.release and not self.state["reverse_preexisting"]:
             lines = self.adb.run("reverse", "--list").splitlines()
@@ -1172,9 +1330,9 @@ class PhoneSession:
         network = self.network()
         baseline = self.state.get("network_before", network)
         changed = [key for key in NETWORK_KEYS if network.get(key) != baseline.get(key)]
-        self.state["cleanup"] = {"packages_removed": results, "network_changed": changed, "restore_errors": restore_errors,
+        self.state["cleanup"] = {"packages_removed": results, "network_changed": changed, "restore_errors": [],
                                  "finished_at": now()}
-        self.state["status"] = "cleaned" if all(results.values()) and not changed and not restore_errors else "cleanup_attention"
+        self.state["status"] = "cleaned" if all(results.values()) and not changed else "cleanup_attention"
         self.save()
         return self.state["cleanup"]
 
@@ -1223,24 +1381,35 @@ def active_directory(root):
     return root / name
 
 
-def select_session(args, adb, artifact):
-    root = args.sessions_root
-    root.mkdir(parents=True, exist_ok=True)
-    directory = active_directory(root)
-    previous = read_json(directory / "session.json") if directory else {}
-    app = APP.removesuffix(".fixture")
-    same_device = previous.get("serial") == adb.serial
-    same_apk = previous.get("artifacts", {}).get(app, {}).get("sha256") == artifact["sha256"]
-    matching = (same_device and same_apk and previous.get("test_origin") == args.test_origin
-                and previous.get("fixture") == str(Path(args.fixture).resolve()) and previous.get("status") != "cleaned")
-    past_launch = same_device and same_apk and bool(previous.get("app_launch_attempted"))
-    if matching:
-        session = PhoneSession(args.repo, directory, Path(args.output or directory), adb, args.commit)
-        session.state["artifacts"][app] = artifact
-        session.state["allow_production"] = args.allow_production
-        return session, past_launch
-    if same_device and (previous.get("resources_pending") or previous.get("device_before")):
-        old = PhoneSession(args.repo, directory, directory, adb, args.commit)
+def session_history(repo, root):
+    roots = {root, *(tree / ".local/phone/sessions" for tree in worktree_roots(repo))}
+    return sorted({metadata for folder in roots for metadata in folder.glob("session-*/session.json")})
+
+
+def device_resource_owner(repo, serial):
+    key = hashlib.sha256(serial.encode()).hexdigest()[:16]
+    return common_repo(repo) / ".local/android" / f"phone-resources-{key}.json"
+
+
+def recover_device_sessions(repo, adb, commit, paths):
+    owner = device_resource_owner(repo, adb.serial)
+    indexed = None
+    if owner.exists():
+        entry = read_json(owner)
+        indexed = Path(entry["session"])
+        if entry["serial"] != adb.serial or not indexed.is_file():
+            raise CommandError("previous_session_missing", "设备存在未归还的资源记录；先恢复对应的会话档案")
+    for path in dict.fromkeys(path.resolve() for path in ([indexed] if indexed else []) + list(paths)):
+        state = read_json(path)
+        if state.get("serial") != adb.serial:
+            if indexed and path == indexed.resolve():
+                raise CommandError("previous_session_mismatch", "设备资源记录与会话序列号不一致")
+            continue
+        if not any(state.get(key) for key in ("resources_pending", "device_before", "source_network_before")):
+            if indexed and path == indexed.resolve():
+                owner.unlink(missing_ok=True)
+            continue
+        old = PhoneSession(repo, path.parent, path.parent, adb, commit)
         errors = old.restore_resources()
         if old.state.get("coverage"):
             old.coverage_report()
@@ -1248,18 +1417,46 @@ def select_session(args, adb, artifact):
             old.summary()
         if errors:
             raise CommandError("previous_session_restore_failed", ", ".join(errors))
+
+
+def select_session(args, adb, artifact):
+    root = args.sessions_root
+    root.mkdir(parents=True, exist_ok=True)
+    directory = active_directory(root)
+    paths = session_history(args.repo, root)
+    recover_device_sessions(args.repo, adb, args.commit, paths)
+    previous = read_json(directory / "session.json") if directory else {}
+    app = APP.removesuffix(".fixture")
+    same_device = previous.get("serial") == adb.serial
+    same_apk = previous.get("artifacts", {}).get(app, {}).get("sha256") == artifact["sha256"]
+    matching = (same_device and same_apk and previous.get("test_origin") == args.test_origin
+                and previous.get("fixture") == str(Path(args.fixture).resolve()) and previous.get("status") != "cleaned")
+    past_launch = first_launch(previous) if same_device and same_apk else None
+    if matching:
+        session = PhoneSession(args.repo, directory, Path(args.output or directory), adb, args.commit)
+        session.state["artifacts"][app] = artifact
+        session.state["allow_production"] = args.allow_production
+        return session, past_launch
     directory = root / datetime.now(timezone.utc).strftime("session-%Y%m%dT%H%M%S.%fZ")
     session = PhoneSession(args.repo, directory, Path(args.output or directory), adb, args.commit)
     create_release_state(session, artifact, args.fixture, args.test_origin, args.allow_production)
     if not past_launch:
-        for metadata in root.glob("session-*/session.json"):
+        for metadata in paths:
             history = read_json(metadata)
-            if (history.get("serial") == adb.serial and history.get("app_launch_attempted")
+            launched = first_launch(history)
+            if (history.get("serial") == adb.serial and launched
                     and history.get("artifacts", {}).get(app, {}).get("sha256") == artifact["sha256"]):
-                past_launch = True
+                past_launch = launched
                 break
     write_json(root / "active-session.json", {"session": directory.name})
     return session, past_launch
+
+
+def first_launch(state):
+    observed = state.get("app_launch_attempted")
+    if state.get("app_launch_time_verified"):
+        return observed
+    return bool(observed or state.get("app_launch_time_unknown"))
 
 
 def ask(interactive, text):
@@ -1278,23 +1475,28 @@ def complete_phase(session, checks, phase, prompt, missed=False):
             continue
         name = item["id"]
         manual = session.state.setdefault("manual_results", {})
-        if manual.get(name, {}).get("status") == "passed":
+        previous = manual.get(name, {})
+        if previous.get("status") == "passed" and (phase != "pre_launch" or previous.get("evidence_captured_at")):
             continue
         if missed:
-            manual[name] = {"status": "inconclusive", "note": "此 APK 已启动，首次启动前的取证窗口已错过"}
+            manual[name] = {"status": "inconclusive", "window_missed": True,
+                            "note": previous.get("note") if previous.get("window_missed") else
+                            "此 APK 已启动，首次启动前的取证窗口已错过"}
             session.save()
             continue
         card = item["manual_card"]
+        instruction = ("输入遥测 CSV 路径；如果已启动，输入 launched。" if phase == "pre_launch"
+                       else "采证后输入证据文件路径，或输入 y 确认已采证。")
         reply = prompt(f"{name} · {card['start_state']}\n" + "\n".join(card["steps"]) +
-                       f"\n{card['pass_criteria']}\n{card['evidence_hint']}\n"
-                       "采证后输入证据文件路径，或输入 y 确认已采证。首次启动已发生可输入 launched。")
+                       f"\n{card['pass_criteria']}\n{card['evidence_hint']}\n{instruction}")
         if phase == "pre_launch" and reply == "launched":
-            manual[name] = {"status": "inconclusive", "note": "机主确认首次启动已发生，缺少启动前证据"}
-            session.mark_app_launch()
-        elif reply.lower() == "y":
+            manual[name] = {"status": "inconclusive", "window_missed": True,
+                            "note": "机主确认首次启动已发生，缺少启动前证据"}
+            session.state["app_launch_time_unknown"] = True
+        elif phase != "pre_launch" and reply.lower() == "y":
             manual[name] = {"status": "passed", "note": "机主确认已采证", "recorded_at": now()}
         elif reply and Path(reply.strip('"')).is_file():
-            manual[name] = {"status": "passed", "evidence_paths": [str(Path(reply.strip('"')).resolve())], "recorded_at": now()}
+            session.record(name, "passed", "", (reply.strip('"'),), refresh_report=False)
         else:
             raise CommandError(phase + "_evidence_pending", f"完成 {name} 取证并回填后续跑")
         session.save()
@@ -1333,11 +1535,15 @@ def verify(args, adb):
     capture_attempted = False
     code = 1
     try:
-        baseline = session.baseline_records(args.baseline)
-        if (session.state.get("resources_pending") or session.state.get("device_before")) and session.restore_resources():
-            raise CommandError("device_restore_failed", ", ".join(session.state["cleanup_errors"]))
+        if past_launch and not session.state.get("app_launch_attempted"):
+            if past_launch is True:
+                session.state["app_launch_time_unknown"] = True
+            else:
+                session.state["app_launch_attempted"] = past_launch
+                session.state["app_launch_time_verified"] = True
         confirmed = args.confirm_ready or (interactive and prompt(
-            f"请确认 App 已退出生产账号，并登录或准备登录 {args.test_origin}。确认后输入 y。").lower() == "y")
+            f"若有已登录账号，先在设备断网退出，停在空白登录页并恢复测试网络。"
+            f"入口将仅登录 {args.test_origin}。确认后输入 y。").lower() == "y")
         if not confirmed:
             raise CommandError("test_account_confirmation_pending", "确认测试账号与来源后使用 --confirm-ready")
         if adb.run("get-state").strip() != "device":
@@ -1345,6 +1551,9 @@ def verify(args, adb):
         if proxy_enabled(session.network()):
             raise CommandError("proxy_present", "手机存在全局代理")
         installed = session.package_hash(session.app)
+        if args.already_launched and installed == artifact["sha256"] and not session.state.get("app_launch_attempted"):
+            session.state["app_launch_time_unknown"] = True
+        baseline = session.baseline_records(args.baseline)
         install = bool(args.install and installed != artifact["sha256"])
         view["install_needed"] = installed != artifact["sha256"]
         if view["install_needed"] and not install:
@@ -1369,9 +1578,7 @@ def verify(args, adb):
                                     allow_production=args.allow_production, install=current != artifact["sha256"],
                                     artifact=artifact, installed=current)
         if auto or any(item["phase"] == "pre_launch" for item in selected):
-            missed = (args.already_launched and not install) or past_launch or session.state.get("app_launch_attempted")
-            if missed:
-                session.mark_app_launch()
+            missed = session.state.get("app_launch_attempted") or session.state.get("app_launch_time_unknown")
             complete_phase(session, checks, "pre_launch", prompt, missed=missed)
         if auto:
             capture_attempted = True
@@ -1389,7 +1596,7 @@ def verify(args, adb):
         if isinstance(error, FixtureError):
             view["error"].update(error.details())
     finally:
-        if capture_attempted and (session.state.get("resources_pending") or session.state.get("device_before")):
+        if capture_attempted and session.owns_resources:
             session.restore_resources()
         session.state.setdefault("cleanup_errors", []).extend(session.state.pop("batch_cleanup_errors", []))
         if session.state["cleanup_errors"]:
@@ -1445,6 +1652,7 @@ def main():
     parser.add_argument("--outcome", choices=("passed", "failed", "inconclusive", "not_applicable", "environment_blocked"))
     parser.add_argument("--note", default="")
     parser.add_argument("--evidence", action="append", default=[])
+    parser.add_argument("--first-launch-at")
     parser.add_argument("--flow", choices=FLOWS)
     parser.add_argument("--note-name")
     parser.add_argument("--maestro")
@@ -1526,7 +1734,7 @@ def dispatch(args):
             groups = args.group or list(DEFAULT_UI_GROUPS)
             result = session.run(groups, args.retry)
         elif args.action == "record":
-            result = session.record((args.check or args.group)[0], args.outcome, args.note, args.evidence)
+            result = session.record((args.check or args.group)[0], args.outcome, args.note, args.evidence, args.first_launch_at)
         elif args.action == "ui":
             if not args.flow:
                 raise ValueError("ui 需要 --flow")

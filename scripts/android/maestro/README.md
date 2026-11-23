@@ -131,9 +131,9 @@ Python、ADB 和 Maestro 应可从同一终端运行。安装 Python 依赖使�
 
 档案中的相对路径以档案目录解析，命令行路径从当前目录解析，命令行参数优先。会话默认保存到 `.local/phone/sessions`。连接档案包含 `origin`、`username`、`password` 和 `"environment": "test"`，正式包使用 HTTPS 测试源。`test_origin` 省略时取档案的 `origin`，指定时必须匹配。多台在线真机时用 `--serial` 选定设备。
 
-开始前在设备退出生产账号，准备登录独立测试源。在交互终端确认，或以 `--confirm-ready` 声明已核对。已装包摘要不符时，机主授权覆盖安装后在设备上及时确认。覆盖安装先采集旧态。首次启动前独立采集遥测 CSV，即使 APK 已手动装好也一样。已启动的设备用 `--already-launched` 记录错过窗口。`--non-interactive` 在需要人工操作时保存报告并退出，可用操作卡回填再续跑。
+每次开始前，已有登录账号时先在设备断网退出，停在空白登录页后恢复测试网络。使用 USB ADB，在交互终端确认，或以 `--confirm-ready` 声明已核对。已装包摘要不符时，机主授权覆盖安装后在设备上及时确认。覆盖安装先采集旧态。首次启动前独立采集遥测 CSV，即使 APK 已手动装好也一样。已启动的设备用 `--already-launched` 记录错过窗口。`--non-interactive` 在需要人工操作时保存报告并退出，可用操作卡回填再续跑。启动前证据需要提供保留原始文件时间的遥测 CSV；入口未观察到首启时，补录通过还要用 `--first-launch-at` 提供实际首启的带时区时间，CSV 须早于该时间。
 
-来源探针先核对侧栏账号，再同步并从主页读取唯一测试笔记。每项依次准备独立数据、运行界面、恢复编辑态、执行服务端后验并落盘。已登记的测试行内编辑或完全匹配的草稿最多恢复一次；未知草稿保留，需要干净编辑态的后续项标记跳过。QA 渠道恢复检查点与测试来源绑定，下次执行任意模块前先恢复。编辑冲突探针读回 `409 SOURCE_CHANGED` 与远端正文。
+来源探针先通过飞行模式和 Wi-Fi 关闭隔离设备，确认无活跃网络后启动 App 并核对空白登录页。入口在恢复设备网络前停止 App。通过离线检查后，仅登录档案指定的 HTTPS 测试源，再核对侧栏账号、切回主页重置搜索和归档状态、同步并读取唯一测试笔记。每项依次准备独立数据、运行界面、恢复编辑态、执行服务端后验并落盘。已登记的测试行内编辑或完全匹配的草稿最多恢复一次；未知草稿保留，需要干净编辑态的后续项标记跳过。测试渠道恢复检查点以规范化来源索引，下次执行任意模块前先恢复。编辑冲突探针读回 `409 SOURCE_CHANGED` 与远端正文。
 
 重复执行固定入口会续跑同一设备、APK、连接档案与测试源对应的活动会话。成功的 UI、服务端后验与流指纹都有效时复用该项；`--check` 可重复指定检查 ID，`--retry` 强制重跑所选项。`--baseline` 或档案的 `baseline` 字段可导入已有证据。基线 JSON 包含 `apk_sha256`、`serial`、`test_origin` 和以检查 ID 为键的 `checks` 对象。每项填写 `ui_status`、`server_verification`、`manual_status`、`evidence_paths`，自动项还需匹配 `flow_sha256`。路径相对于基线文件。服务端后验 `pending` 的自动项只有在提供原始 `test_data_path` 且能补做完整只读后验时才可复用。`legacy_handoff: true` 使用固定的 0.3.0 等价证据映射。断流场景还需给档案设置 `fail_marker` 或传 `--fail-marker`，并确认独立模型代理能按该字面标记中断响应。
 
@@ -141,7 +141,7 @@ Python、ADB 和 Maestro 应可从同一终端运行。安装 Python 依赖使�
 
 `report.json` 与 `report.md` 列出整份清单的覆盖、UI、服务端及人工结果、证据与观测到的最后一步。`manual-cards.md` 按待确认项列出通过条件和可复制的 `record` 命令；可加 `--evidence <文件>`、`--note <说明>`。`--record` 为每个实跑场景保留最长 180 秒录像。服务请求使用 `Moerise-Android-Acceptance/1.0` 标识；准备失败保留脱敏的步骤、方法、路径和错误码，Cloudflare 1010 记为 `CLOUDFLARE_1010`。
 
-设备和会话写操作共享主仓库 `.local/android/device-build.lock`。`status` 与 `stop` 可在运行时访问。退出时归还本次占用的设备状态、驱动与端口；更换同一设备的 APK 或测试源时先归还上一会话资源。执行 `python -B scripts/android/phone-session.py cleanup --release --session <会话目录>` 结束活动会话，保留已装 App、账号数据和历史报告。再次使用固定入口会建立新会话。已有调用方仍可使用 `prepare`、`accept`、`run`、`ui`、`manual`、`record` 和 `cleanup` 子命令。
+设备和会话写操作共享主仓库 `.local/android/device-build.lock`。`status` 与 `stop` 可在运行时访问。退出时归还本次占用的设备状态、驱动与端口。主仓库保存按设备索引的未归还资源和输入法检查点，切换设备、APK、测试源或 worktree 后仍能找回原责任。执行 `python -B scripts/android/phone-session.py cleanup --release --session <会话目录>` 结束活动会话，保留已装 App、账号数据和历史报告。再次使用固定入口会建立新会话。已有调用方仍可使用 `prepare`、`accept`、`run`、`ui`、`manual`、`record` 和 `cleanup` 子命令。正式包的自动启动从 `verify` 进入。
 
 ### 登记新检查项
 

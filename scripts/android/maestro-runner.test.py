@@ -1,5 +1,6 @@
 """Host checks for Maestro isolation, failure evidence and server assertions."""
 import base64
+from contextlib import nullcontext
 import hashlib
 import io
 import json
@@ -111,6 +112,12 @@ class MaestroExecutionTest(unittest.TestCase):
                                            self.output / "execution", "maestro-host-test")
         self.engine.api = mock.Mock()
         self.engine.api.csrf = ""
+        for patcher in (
+            mock.patch.object(runner, "common_repo", return_value=self.output),
+            mock.patch.object(runner, "worktree_roots", return_value=[self.output]),
+        ):
+            patcher.start()
+            self.addCleanup(patcher.stop)
         self.validate = mock.patch.object(runner.subprocess, "run",
                                          return_value=mock.Mock(returncode=0, stdout=b"", stderr=b""))
         self.validate.start()
@@ -213,7 +220,8 @@ class MaestroExecutionTest(unittest.TestCase):
 
     def test_batch_source_preparation_failure_is_distinguished_from_login(self):
         self.engine.phone = True
-        with mock.patch.object(self.engine, "prepare_data", side_effect=runner.FixtureError(
+        with mock.patch.object(self.engine, "probe_phone_offline", return_value={"status": "passed"}), \
+                mock.patch.object(self.engine, "prepare_data", side_effect=runner.FixtureError(
                 503, "UPSTREAM_UNAVAILABLE", method="POST", path="/api/app/v1/notes")), \
                 mock.patch.object(self.engine, "run_flow") as execute:
             result = self.engine.run_batch(["search"])["search"]
@@ -343,7 +351,8 @@ class MaestroExecutionTest(unittest.TestCase):
 
     def test_phone_source_preflight_failure_stops_business_writes(self):
         self.engine.phone = True
-        with mock.patch.object(self.engine, "prepare_data", return_value=({}, None)) as prepare, \
+        with mock.patch.object(self.engine, "probe_phone_offline", return_value={"status": "passed"}), \
+                mock.patch.object(self.engine, "prepare_data", return_value=({}, None)) as prepare, \
                 mock.patch.object(self.engine, "run_flow", return_value={"status": "inconclusive"}) as execute, \
                 mock.patch.object(self.engine, "prepare_channel") as channel:
             result = self.engine.run_batch(["editing", "navigation"])
@@ -556,8 +565,12 @@ class MaestroExecutionTest(unittest.TestCase):
                     if step.get("tapOn", {}).get("id") == "sidebar_sync")
         guard = next(index for index, step in enumerate(steps)
                      if step.get("runFlow", {}).get("when", {}).get("notVisible", {}).get("id") == "account_menu")
-        self.assertLess(guard, sync)
-        self.assertNotIn("note_editor", source)
+        reset = next(index for index, step in enumerate(steps)
+                     if step.get("tapOn", {}).get("id") == "nav_home")
+        self.assertLess(guard, reset)
+        self.assertLess(reset, sync)
+        self.assertEqual(next(step["scrollUntilVisible"]["direction"] for step in steps if "scrollUntilVisible" in step), "UP")
+        self.assertFalse(any(step.get("assertVisible", {}).get("id") == "note_editor" for step in steps))
         for name in ("ensure-login.yaml", "open-menu.yaml"):
             self.assertNotIn("sidebar_sync", (maestro / "subflows" / name).read_text(encoding="utf-8"))
 
@@ -565,7 +578,8 @@ class MaestroExecutionTest(unittest.TestCase):
             self.assertEqual(flow, "test-source")
             self.assertEqual(prepared[0]["EXPECTED_ACCOUNT"], "Tablet Test")
             return {"status": "inconclusive"}
-        with mock.patch.object(self.engine, "prepare_data", return_value=({}, None)) as prepare, \
+        with mock.patch.object(self.engine, "probe_phone_offline", return_value={"status": "passed"}), \
+                mock.patch.object(self.engine, "prepare_data", return_value=({}, None)) as prepare, \
                 mock.patch.object(self.engine, "run_flow", side_effect=preflight), \
                 mock.patch.object(self.engine, "recover_editor_state") as recovery:
             result = self.engine.run_batch(["editing"])
@@ -573,10 +587,25 @@ class MaestroExecutionTest(unittest.TestCase):
         recovery.assert_not_called()
         self.assertEqual(prepare.call_count, 1)
 
+    def test_source_probe_navigates_home_even_when_archive_or_query_uses_home_tag(self):
+        source = runner.ROOT / "scripts/android/maestro/test-source.yaml"
+        steps = list(runner.yaml.safe_load_all(source.read_text(encoding="utf-8")))[1]
+        taps = [step["tapOn"]["id"] for step in steps if "tapOn" in step]
+        for start in ("archive", "filtered-home"):
+            with self.subTest(start=start):
+                page = start
+                for target in taps:
+                    if target == "nav_home":
+                        page = "unfiltered-home"
+                    if target == "sidebar_sync":
+                        self.assertEqual(page, "unfiltered-home")
+                self.assertEqual(taps, ["nav_home", "sidebar_sync"])
+
     def test_failed_single_recovery_skips_other_editor_dependent_flows(self):
         self.engine.phone = True
         error = {"status": "environment_blocked", "cause": "test_editor_cancel_unconfirmed"}
-        with mock.patch.object(self.engine, "prepare_data", return_value=({}, None)) as prepare, \
+        with mock.patch.object(self.engine, "probe_phone_offline", return_value={"status": "passed"}), \
+                mock.patch.object(self.engine, "prepare_data", return_value=({}, None)) as prepare, \
                 mock.patch.object(self.engine, "run_flow", return_value={"status": "passed"}) as execute, \
                 mock.patch.object(self.engine, "recover_editor_state", side_effect=[[], [error]]) as recover, \
                 mock.patch.object(self.engine, "draft_checkpoint", return_value=self.output / "drafts.json"):
@@ -586,6 +615,71 @@ class MaestroExecutionTest(unittest.TestCase):
         self.assertEqual(recover.call_count, 2)
         self.assertEqual(result["language"]["status"], "skipped")
         self.assertEqual(result["home-smoke"]["cause"], "test_editor_cancel_unconfirmed")
+
+    def test_phone_rejects_wrong_account_and_same_name_on_wrong_origin_before_online_launch(self):
+        self.engine.phone = True
+        self.engine.phone_isolation = nullcontext
+        self.engine.api.login.return_value = {"user": {"name": "users/owner", "display_name": "Same Name"}}
+        for name in ("Wrong Name", "Same Name"):
+            xml = (f'<hierarchy><node package="{self.engine.app}" resource-id="open_menu"/>'
+                   f'<node package="{self.engine.app}" resource-id="account_menu" text="{name}"/></hierarchy>')
+            with self.subTest(account=name), mock.patch.object(self.engine, "prepare_data") as prepare, \
+                    mock.patch.object(runner, "fresh_ui_dump", return_value=xml), \
+                    mock.patch.object(self.engine, "run_flow") as execute:
+                result = self.engine.run_batch(["search"])["search"]
+                self.assertEqual(result["preparation_step"], "phone_offline_identity")
+                self.assertEqual(result["probe_cause"], "selected_account_present")
+                execute.assert_not_called()
+                prepare.assert_not_called()
+
+    def test_offline_probe_requires_a_blank_form_from_the_target_app(self):
+        self.engine.phone_isolation = nullcontext
+        for package, field, status in ((self.engine.app, "server_origin_empty", "passed"),
+                                       (self.engine.app, "server_origin", "environment_blocked"),
+                                       ("another.app", "server_origin_empty", "environment_blocked")):
+            xml = (f'<hierarchy><node package="{package}" resource-id="server_login"/>'
+                   f'<node package="{package}" resource-id="{field}"/></hierarchy>')
+            with self.subTest(package=package, field=field), \
+                    mock.patch.object(runner, "fresh_ui_dump", return_value=xml):
+                self.assertEqual(self.engine.probe_phone_offline()["status"], status)
+
+    def test_shared_checkpoints_find_previous_worktree_and_normalize_origin(self):
+        other = self.output / "another-worktree"
+        local = other / ".local/android"
+        local.mkdir(parents=True)
+        source = "https://acceptance.example:443/"
+        channel_key = hashlib.sha256(source.encode()).hexdigest()[:16]
+        ime_key = hashlib.sha256(self.adb.serial.encode()).hexdigest()[:16]
+        old_channel = local / f"maestro-channel-{channel_key}.json"
+        old_ime = local / f"maestro-ime-{ime_key}.json"
+        old_channel.write_text("{}", encoding="utf-8")
+        old_ime.write_text("{}", encoding="utf-8")
+        with mock.patch.object(runner, "worktree_roots", return_value=[self.output, other]):
+            self.engine.connection["origin"] = source
+            channel = self.engine.channel_checkpoint()
+            self.engine.connection["origin"] = "https://ACCEPTANCE.EXAMPLE/"
+            self.assertEqual(self.engine.channel_checkpoint(), channel)
+            ime = runner.input_method_checkpoint(other, self.adb.serial)
+        self.assertTrue(ime.is_file() and channel.is_file())
+        self.assertEqual(ime.parent, self.output / ".local/android")
+        self.assertFalse(old_ime.exists() or old_channel.exists())
+
+    def test_interrupt_after_channel_patch_keeps_checkpoint_and_reports_failed_restore(self):
+        checkpoint = self.output / "channels.json"
+        saved = {"channel": {"kind": "none", "qq_app_id": ""}, "notifications": {"enabled": False}}
+        def prepare():
+            runner.write_result(checkpoint, saved)
+            self.engine.channel_fixture = saved
+        with mock.patch.object(self.engine, "channel_checkpoint", return_value=checkpoint), \
+                mock.patch.object(self.engine, "prepare_channel", side_effect=prepare), \
+                mock.patch.object(self.engine, "prepare_data", return_value=({}, None)), \
+                mock.patch.object(self.engine, "run_flow", side_effect=KeyboardInterrupt), \
+                mock.patch.object(self.engine, "restore_channel", side_effect=runner.FixtureError(503, "SETTINGS_BUSY")) as restore:
+            with self.assertRaises(KeyboardInterrupt):
+                self.engine.run_batch(["navigation-settings"])
+        self.assertEqual(restore.call_count, 2)
+        self.assertTrue(checkpoint.is_file())
+        self.assertEqual(self.engine.batch_cleanup_errors, ["channel_settings_restore"])
 
     def test_navigation_channel_verification_in_group_and_batch(self):
         config = {"settings": {"channel": {"kind": "qq", "qq_app_id": "100000019"}},
