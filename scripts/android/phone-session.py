@@ -946,10 +946,13 @@ class PhoneSession:
         return any(self.state.get(key) for key in ("resources_pending", "device_before", "source_network_before"))
 
     def capture_resources(self):
-        if self.owns_resources:
+        resume = self.owns_resources
+        if resume:
             self.save()
         roots = session_history(self.repo, self.directory.parent)
         recover_device_sessions(self.repo, self.adb, self.commit, [self.path, *roots])
+        if resume:
+            self.state = read_json(self.path)
         self.state["device_before"] = self.device_checkpoint()
         self.state["maestro_preexisting"] = {package: bool(self.package_paths(package)) for package in DRIVERS}
         self.state["forwards_before"] = self.adb.run("forward", "--list").splitlines()

@@ -993,6 +993,18 @@ class FixedWindowsEntry(unittest.TestCase):
                 self.fail("隔离未确认时不得启动 App")
         self.assertEqual(caught.exception.code, "source_network_not_isolated")
 
+    def test_capture_reloads_recovered_network_checkpoint_before_starting_new_work(self):
+        self.assertEqual(self.verify("--non-interactive", "--already-launched", "--check", "home")[0], 0)
+        phone = session.PhoneSession(self.repo, self.active(), self.active(), self.adb, "test")
+        self.adb.network.update(airplane_mode_on="0", wifi_on="1")
+        phone.state["source_network_before"] = {"airplane_mode_on": "0", "wifi_on": "1"}
+        phone.state["files"] = ["/sdcard/Download/moerise-maestro-" + "a" * 32 + ".txt"]
+        phone.state["resources_pending"] = True
+        phone.capture_resources()
+        self.assertNotIn("source_network_before", phone.state)
+        self.assertEqual(phone.state["files"], [])
+        self.assertEqual(phone.restore_resources(), [])
+
     def test_interrupted_channel_cleanup_error_is_in_top_level_report(self):
         def interrupt():
             self.engine.batch_cleanup_errors = ["channel_settings_restore"]
