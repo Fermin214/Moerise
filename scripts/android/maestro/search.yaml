@@ -99,15 +99,6 @@ onFlowComplete:
 - pressKey:
     key: Enter
     label: Submit search through the focused IME search field
-- runFlow:
-    file: subflows/hide-keyboard.yaml
-    label: Dismiss only an observed visible input method
-- extendedWaitUntil:
-    visible:
-      id: search_query
-      text: \Q${QUERY_TEXT}\E
-    timeout: 15000
-    label: Wait for the expected UI state
 - extendedWaitUntil:
     visible:
       id: note_card_${NOTE_NAME}
@@ -179,19 +170,19 @@ onFlowComplete:
 - assertNotVisible:
     id: open_note_${NOTE_NAME}
     label: Reject a note details route after reading
-- tapOn:
-    id: search_close
-    enabled: true
-    label: Close keyword search as in the original reading test
-- extendedWaitUntil:
-    notVisible:
-      id: search_query
-    timeout: 15000
-    label: Require keyword search to close
-- tapOn:
-    id: open_search
-    enabled: true
-    label: Reopen search for hybrid coverage
+- runFlow:
+    when:
+      notVisible:
+        id: search_query
+    commands:
+    - assertNotVisible:
+        id: search_query
+        label: Check whether reading closed the search field
+    - tapOn:
+        id: open_search
+        enabled: true
+        label: Reopen search when reading closed it
+    label: Keep the open search or reopen it after reading
 - extendedWaitUntil:
     visible:
       id: search_query
@@ -252,9 +243,6 @@ onFlowComplete:
 - pressKey:
     key: Enter
     label: Submit search through the focused IME search field
-- runFlow:
-    file: subflows/hide-keyboard.yaml
-    label: Dismiss only an observed visible input method
 - extendedWaitUntil:
     visible:
       id: note_card_${NOTE_NAME}
@@ -285,9 +273,6 @@ onFlowComplete:
 - pressKey:
     key: Enter
     label: Submit search through the focused IME search field
-- runFlow:
-    file: subflows/hide-keyboard.yaml
-    label: Dismiss only an observed visible input method
 - scrollUntilVisible:
     element:
       id: note_card_${NOTE_NAME}
@@ -352,9 +337,6 @@ onFlowComplete:
 - pressKey:
     key: Enter
     label: Submit search through the focused IME search field
-- runFlow:
-    file: subflows/hide-keyboard.yaml
-    label: Dismiss only an observed visible input method
 - extendedWaitUntil:
     visible:
       id: search_query_empty

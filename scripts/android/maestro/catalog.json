@@ -35,10 +35,35 @@
       "timeout_seconds": 420,
       "seed_notes": true
     },
+    "insights-disconnect": {
+      "file": "insights-disconnect.yaml",
+      "timeout_seconds": 240,
+      "seed_notes": true
+    },
     "navigation": {
       "file": "navigation.yaml",
       "timeout_seconds": 900,
       "seed_notes": true
+    },
+    "navigation-review": {
+      "file": "navigation-review.yaml",
+      "timeout_seconds": 240,
+      "seed_notes": false
+    },
+    "navigation-walk": {
+      "file": "navigation-walk.yaml",
+      "timeout_seconds": 240,
+      "seed_notes": false
+    },
+    "navigation-map": {
+      "file": "navigation-map.yaml",
+      "timeout_seconds": 240,
+      "seed_notes": false
+    },
+    "navigation-settings": {
+      "file": "navigation-settings.yaml",
+      "timeout_seconds": 300,
+      "seed_notes": false
     },
     "language": {
       "file": "language.yaml",
@@ -79,6 +104,11 @@
       "file": "recover-draft.yaml",
       "timeout_seconds": 120,
       "seed_notes": false
+    },
+    "editor-home": {
+      "file": "editor-home.yaml",
+      "timeout_seconds": 60,
+      "seed_notes": false
     }
   },
   "groups": {
@@ -95,7 +125,10 @@
       "insights"
     ],
     "navigation": [
-      "navigation"
+      "navigation-review",
+      "navigation-walk",
+      "navigation-map",
+      "navigation-settings"
     ],
     "attachments": [
       "attachments"

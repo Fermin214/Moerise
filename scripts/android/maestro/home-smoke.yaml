@@ -22,8 +22,12 @@ onFlowComplete:
     path: ${SCREENSHOT_PREFIX}-home-focused
     label: Capture the isolated test UI
 - runFlow:
-    file: subflows/hide-keyboard.yaml
-    label: Dismiss only an observed visible input method
+    file: subflows/open-menu.yaml
+    label: Use app navigation to move focus away from the composer
+- tapOn:
+    id: nav_home
+    enabled: true
+    label: Return to the composer on home
 - extendedWaitUntil:
     visible:
       id: save_note

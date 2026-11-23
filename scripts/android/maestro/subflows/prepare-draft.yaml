@@ -36,6 +36,3 @@ onFlowComplete:
       text: \Q${DRAFT_TEXT}\E
     timeout: 15000
     label: Wait for the expected UI state
-- runFlow:
-    file: hide-keyboard.yaml
-    label: Dismiss only an observed visible input method

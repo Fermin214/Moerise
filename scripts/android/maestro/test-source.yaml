@@ -6,8 +6,52 @@ onFlowComplete:
     label: Capture the service identity probe
 ---
 - runFlow:
-    file: subflows/home.yaml
-    label: Sign into the test service or read the existing account
+    file: subflows/ensure-login.yaml
+    label: Sign into the test service if the login form is visible
+- runFlow:
+    file: subflows/open-menu.yaml
+    label: Open the navigation drawer without syncing
+- runFlow:
+    when:
+      notVisible:
+        id: account_menu
+        text: \Q${EXPECTED_ACCOUNT}\E
+    commands:
+    - assertNotVisible:
+        id: account_menu
+        text: \Q${EXPECTED_ACCOUNT}\E
+        label: Check whether the account row exposes a separate text node
+    - assertVisible:
+        text: \Q${EXPECTED_ACCOUNT}\E
+        childOf:
+          id: account_menu
+        label: Require the verified server account before any sync
+    label: Match the test account even if the text is a child node
+- runFlow:
+    when:
+      notVisible:
+        id: home
+    commands:
+    - assertNotVisible:
+        id: home
+        label: Check whether home is already visible
+    - tapOn:
+        id: nav_home
+        enabled: true
+        label: Return to the verified account home
+    - runFlow:
+        file: subflows/open-menu.yaml
+        label: Reopen navigation in the verified account
+    label: Navigate only when starting outside home
+- tapOn:
+    id: sidebar_sync
+    enabled: true
+    label: Sync after the account identity check
+- extendedWaitUntil:
+    visible:
+      id: home
+    timeout: 15000
+    label: Wait for home without requiring the composer
 - scrollUntilVisible:
     element:
       id: note_card_${NOTE_NAME}

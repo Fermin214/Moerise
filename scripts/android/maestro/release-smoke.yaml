@@ -33,8 +33,17 @@ onFlowComplete:
     charactersToErase: 1
     label: Remove the input suffix
 - runFlow:
-    file: subflows/hide-keyboard.yaml
-    label: Dismiss the input method
+    when:
+      notVisible:
+        id: save_note
+    commands:
+    - assertNotVisible:
+        id: save_note
+        label: Check whether composer save is hidden
+    - runFlow:
+        file: subflows/hide-keyboard.yaml
+        label: Dismiss the keyboard only for an obscured save control
+    label: Skip keyboard dismissal when save is visible
 - tapOn:
     id: save_note
     enabled: true

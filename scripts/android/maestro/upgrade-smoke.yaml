@@ -31,9 +31,6 @@ onFlowComplete:
     timeout: 15000
     label: Require an editable restored draft
 - runFlow:
-    file: subflows/hide-keyboard.yaml
-    label: Dismiss the observed input method
-- runFlow:
     file: subflows/open-menu.yaml
     label: Open navigation for synchronization
 - extendedWaitUntil:

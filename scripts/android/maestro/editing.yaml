@@ -91,8 +91,17 @@ onFlowComplete:
     charactersToErase: 1
     label: Remove only the temporary input suffix
 - runFlow:
-    file: subflows/hide-keyboard.yaml
-    label: Dismiss only an observed visible input method
+    when:
+      notVisible:
+        id: save_note_${NOTE_NAME}
+    commands:
+    - assertNotVisible:
+        id: save_note_${NOTE_NAME}
+        label: Check whether the inline save control is hidden
+    - runFlow:
+        file: subflows/hide-keyboard.yaml
+        label: Dismiss the keyboard only for an obscured save control
+    label: Skip keyboard dismissal when inline save is visible
 - extendedWaitUntil:
     visible:
       id: note_editor_${NOTE_NAME}
@@ -207,8 +216,17 @@ onFlowComplete:
     charactersToErase: 1
     label: Remove only the temporary input suffix
 - runFlow:
-    file: subflows/hide-keyboard.yaml
-    label: Dismiss only an observed visible input method
+    when:
+      notVisible:
+        id: cancel_note_${PEER_NOTE_NAME}
+    commands:
+    - assertNotVisible:
+        id: cancel_note_${PEER_NOTE_NAME}
+        label: Check whether the inline cancel control is hidden
+    - runFlow:
+        file: subflows/hide-keyboard.yaml
+        label: Dismiss the keyboard only for an obscured cancel control
+    label: Skip keyboard dismissal when inline cancel is visible
 - extendedWaitUntil:
     visible:
       id: note_editor_${PEER_NOTE_NAME}
@@ -270,8 +288,17 @@ onFlowComplete:
     charactersToErase: 1
     label: Remove only the temporary input suffix
 - runFlow:
-    file: subflows/hide-keyboard.yaml
-    label: Dismiss only an observed visible input method
+    when:
+      notVisible:
+        id: save_note
+    commands:
+    - assertNotVisible:
+        id: save_note
+        label: Check whether composer save is hidden
+    - runFlow:
+        file: subflows/hide-keyboard.yaml
+        label: Dismiss the keyboard only for an obscured save control
+    label: Skip keyboard dismissal when composer save is visible
 - extendedWaitUntil:
     visible:
       id: save_note

@@ -48,12 +48,19 @@ onFlowComplete:
     childOf:
       id: note_card_${NOTE_NAME}
     label: Check the expected UI state
+- runFlow:
+    file: subflows/open-menu.yaml
+    label: Open navigation after reading the selected source
+- tapOn:
+    id: nav_home
+    enabled: true
+    label: Clear the source-reading target before locating the composer
 - scrollUntilVisible:
     element:
       id: note_editor
     direction: UP
     timeout: 15000
-    centerElement: true
+    centerElement: false
     label: Locate the specified control without coordinates
 - extendedWaitUntil:
     visible:
