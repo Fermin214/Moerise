@@ -88,6 +88,13 @@ onFlowComplete:
     text: QQ 私聊|QQ private chat
     enabled: true
     label: Select QQ private chat
+- extendedWaitUntil:
+    visible:
+      text: QQ 私聊|QQ private chat
+      childOf:
+        id: settings_channel_kind
+    timeout: 15000
+    label: Verify QQ was selected in the destination control
 - runFlow:
     when:
       notVisible:
@@ -98,12 +105,28 @@ onFlowComplete:
         label: Check whether save needs scrolling
     - scrollUntilVisible:
         element:
-          id: settings_save
+          text: 发送记录|Delivery history
         direction: DOWN
         timeout: 15000
         centerElement: false
-        label: Reveal save on the delivery page
+        label: Bring save above the navigation bar using the following section
     label: Scroll only if save is hidden
+- runFlow:
+    when:
+      notVisible:
+        text: 发送记录|Delivery history
+    commands:
+    - assertNotVisible:
+        text: 发送记录|Delivery history
+        label: Check whether save is at the bottom edge
+    - scrollUntilVisible:
+        element:
+          text: 发送记录|Delivery history
+        direction: DOWN
+        timeout: 15000
+        centerElement: false
+        label: Reveal the section below save before tapping it
+    label: Keep save clear of the system navigation area
 - tapOn:
     id: settings_save
     enabled: true
@@ -119,7 +142,7 @@ onFlowComplete:
     - scrollUntilVisible:
         element:
           text: 设置已保存。|Settings saved\.|设置服务繁忙，请稍后重新保存。|The settings service is busy\. Please save again later\.
-        direction: DOWN
+        direction: UP
         timeout: 15000
         centerElement: false
         label: Find confirmation after the form reflows
