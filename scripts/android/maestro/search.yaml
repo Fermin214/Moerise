@@ -352,33 +352,32 @@ onFlowComplete:
     visible:
       id: search_query_empty
     timeout: 15000
-    label: Wait for the expected UI state
-- scrollUntilVisible:
-    element:
-      id: note_card_${NOTE_NAME}
-    direction: DOWN
-    timeout: 65000
-    centerElement: false
-    label: Wait for the expected UI state
-- scrollUntilVisible:
-    element:
-      id: note_card_${PEER_NOTE_NAME}
-    direction: DOWN
-    timeout: 65000
-    centerElement: false
-    label: Wait for the expected UI state
+    label: Verify the submitted query is empty before closing search
 - tapOn:
     id: search_close
     enabled: true
-    label: Activate the specified control
+    label: Close the empty search using the app control
 - extendedWaitUntil:
     notVisible:
       id: search_query
     timeout: 15000
-    label: Wait for the expected UI state
-- runFlow:
-    file: subflows/home.yaml
-    label: Enter the signed-in home without clearing data
+    label: Require the search panel to close
+- scrollUntilVisible:
+    element:
+      id: note_editor
+    direction: UP
+    timeout: 15000
+    centerElement: false
+    label: Return to the top of the unfiltered timeline
+- scrollUntilVisible:
+    element:
+      text: \Q${PEER_NOTE_TEXT}\E
+      childOf:
+        id: note_card_${PEER_NOTE_NAME}
+    direction: DOWN
+    timeout: 65000
+    centerElement: false
+    label: Require the newer comparison note to return after clearing search
 - scrollUntilVisible:
     element:
       id: note_card_${NOTE_NAME}
