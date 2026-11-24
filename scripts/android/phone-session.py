@@ -1227,14 +1227,15 @@ class PhoneSession:
 
         def checkpoint(flow, result):
             name = by_flow[flow]["id"]
-            stopped = result.get("cause") != "interrupted" and should_stop(flow)
             self.remember_maestro(result)
             view["results"][name] = result
             self.save_flow_result(flow, result)
-            if stopped:
-                view["stopped"] = name
             self.save()
-            return stopped
+            if result.get("cause") != "interrupted" and should_stop(flow):
+                view["stopped"] = name
+                self.save()
+                return True
+            return False
 
         flows = list(by_flow)
         try:

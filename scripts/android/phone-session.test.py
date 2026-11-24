@@ -869,6 +869,30 @@ class FixedWindowsEntry(unittest.TestCase):
                 self.assertEqual(session.read_json(metadata)["flow_results"], original)
                 self.assertFalse(marker.exists())
 
+    def test_probe_checkpoint_stops_when_marker_arrives_during_save(self):
+        baseline = self.record_baseline({"language": self.evidence("language")})
+        save_session = session.PhoneSession.save
+        requested = []
+
+        def save(engine):
+            results = engine.state.get("coverage", {}).get("results", {})
+            if engine.state.get("active_run_id") and "editing" in results and not requested:
+                requested.append(session.request_stop(engine.directory)["run_id"])
+            save_session(engine)
+
+        with self.real_batch() as (_, _, _, _, execute), \
+                mock.patch.object(session.PhoneSession, "save", autospec=True, side_effect=save):
+            code, output = self.verify("--non-interactive", "--already-launched", "--baseline", baseline,
+                                       "--check", "editing", "--check", "language")
+        self.assertEqual(code, 1, output)
+        report = session.read_json(self.active() / "report.json")
+        self.assertEqual(requested, [report["run_id"]])
+        self.assertEqual(report["stopped_at"], "editing")
+        self.assert_report_result("editing", "environment_blocked", "phone_test_source_unverified")
+        self.assertEqual(self.assert_report_result("language", "not_run")["not_run_reason"], "stopped_at_boundary")
+        self.assertFalse((self.active() / "STOP_AFTER_CURRENT").exists())
+        execute.assert_called_once()
+
     def test_stop_item_write_error_ends_batch_in_top_level_report(self):
         baseline = self.record_baseline({"language": self.evidence("language")})
         write_result = maestro_runner.write_result
