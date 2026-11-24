@@ -97,7 +97,7 @@
     },
     "test-source": {
       "file": "test-source.yaml",
-      "timeout_seconds": 120,
+      "timeout_seconds": 300,
       "seed_notes": true
     },
     "test-source-resume": {

@@ -229,6 +229,26 @@ class MaestroExecutionTest(unittest.TestCase):
         self.assertEqual(result["request"]["path"], "/api/app/v1/notes")
         execute.assert_not_called()
 
+    def test_batch_failure_checks_only_local_results_until_checkpoint_stops(self):
+        self.engine.phone = True
+        self.engine.api.login.side_effect = runner.FixtureError(503, "UNAVAILABLE")
+        evidence = {"status": "reused_pass", "log": str(self.output / "previous" / "maestro.log")}
+        select = mock.Mock(side_effect=[None, None, evidence])
+        checkpoint = mock.Mock(side_effect=[False, True])
+        results = self.engine.run_batch(["editing", "language", "navigation-map"], on_result=checkpoint, select=select)
+        self.assertEqual(list(results), ["editing", "language"])
+        self.assertEqual(results["editing"]["preparation_step"], "session_login")
+        self.assertEqual(results["language"]["log"], evidence["log"])
+        self.assertEqual(results["language"]["status"], "reused_pass")
+        self.assertFalse(Path(evidence["log"]).parent.exists())
+        self.assertEqual(select.call_args_list, [
+            mock.call("editing", self.engine),
+            mock.call("editing", self.engine, local_only=True),
+            mock.call("language", self.engine, local_only=True),
+        ])
+        self.assertEqual([call.args[0] for call in checkpoint.call_args_list], ["editing", "language"])
+        self.engine.api.login.assert_called_once()
+
     def test_preparation_error_messages_redact_credentials_before_writing_reports(self):
         with mock.patch.object(self.engine, "prepare_data", side_effect=ValueError(
                 "invalid isolated-password-value isolated-token-value android-owner")):
@@ -561,11 +581,23 @@ class MaestroExecutionTest(unittest.TestCase):
         maestro = runner.ROOT / "scripts/android/maestro"
         source = (maestro / "test-source.yaml").read_text(encoding="utf-8")
         steps = list(runner.yaml.safe_load_all(source))[1]
-        sync = next(index for index, step in enumerate(steps)
-                    if step.get("tapOn", {}).get("id") == "sidebar_sync")
-        home = next(index for index, step in enumerate(steps)
-                    if step.get("runFlow", {}).get("file") == "subflows/test-source-home.yaml")
-        self.assertLess(home, sync)
+        marker = {"text": r"\Q${NOTE_TEXT}\E", "childOf": {"id": "note_card_${NOTE_NAME}"}}
+        home, conditional, final = steps[-3:]
+        self.assertEqual(home["runFlow"]["file"], "subflows/test-source-home.yaml")
+        branch = conditional["runFlow"]
+        self.assertEqual(branch["when"], {"notVisible": marker})
+        self.assertEqual({key: value for key, value in final["assertVisible"].items() if key != "label"}, marker)
+        self.assertFalse(any("tapOn" in step or "scrollUntilVisible" in step for step in steps))
+        precondition, reopen, sync, wait, scroll_up, find_card = branch["commands"]
+        self.assertEqual({key: value for key, value in precondition["assertNotVisible"].items() if key != "label"}, marker)
+        self.assertEqual(reopen["runFlow"]["file"], "subflows/open-menu.yaml")
+        self.assertEqual(sync["tapOn"]["id"], "sidebar_sync")
+        self.assertEqual(wait["extendedWaitUntil"]["visible"], {"id": "home"})
+        self.assertEqual(scroll_up["scrollUntilVisible"]["direction"], "UP")
+        down = find_card["runFlow"]
+        self.assertEqual(down["when"], {"notVisible": {"id": "note_card_${NOTE_NAME}"}})
+        self.assertEqual(down["commands"][-1]["scrollUntilVisible"]["direction"], "DOWN")
+        self.assertEqual(down["commands"][-1]["scrollUntilVisible"]["element"], {"id": "note_card_${NOTE_NAME}"})
         home_steps = list(runner.yaml.safe_load_all(
             (maestro / "subflows/test-source-home.yaml").read_text(encoding="utf-8")))[1]
         guard = next(index for index, step in enumerate(home_steps)
@@ -573,8 +605,10 @@ class MaestroExecutionTest(unittest.TestCase):
         reset = next(index for index, step in enumerate(home_steps)
                      if step.get("tapOn", {}).get("id") == "nav_home")
         self.assertLess(guard, reset)
-        self.assertEqual(next(step["scrollUntilVisible"]["direction"] for step in steps if "scrollUntilVisible" in step), "UP")
-        self.assertFalse(any(step.get("assertVisible", {}).get("id") == "note_editor" for step in steps))
+        self.assertFalse(any(step.get("assertVisible", {}).get("id") == "note_editor"
+                             for step in [*steps, *branch["commands"], *down["commands"], *home_steps]))
+        self.assertEqual(self.engine.catalog["flows"]["test-source"]["timeout_seconds"], 300)
+        self.assertEqual(self.engine.catalog["flows"]["test-source-resume"]["timeout_seconds"], 120)
         for name in ("ensure-login.yaml", "open-menu.yaml"):
             self.assertNotIn("sidebar_sync", (maestro / "subflows" / name).read_text(encoding="utf-8"))
 
@@ -738,7 +772,7 @@ class MaestroExecutionTest(unittest.TestCase):
         checkpoint = self.output / "channel.json"
         checkpoint.write_text(json.dumps(saved))
         self.engine.api.request.return_value = {"version": 4, "settings": {"channel": {"qq_app_id": "100000019"}}}
-        def select(flow, engine):
+        def select(flow, engine, *, local_only=False):
             self.assertFalse(checkpoint.exists())
             self.assertEqual(engine.api.request.call_args.args[:2], ("PATCH", "/api/app/v1/settings"))
         with mock.patch.object(self.engine, "channel_checkpoint", return_value=checkpoint), \

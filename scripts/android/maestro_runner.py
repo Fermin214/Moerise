@@ -962,6 +962,14 @@ class MaestroRunner:
                 write_result(directory / "result.json", result)
             return on_result(flow, result) if on_result else False
 
+        def finish_remaining(failure):
+            for flow in flows:
+                if flow in results:
+                    continue
+                selected = select(flow, self, local_only=True) if select else None
+                if checkpoint(flow, selected if selected is not None else failure.copy()):
+                    break
+
         try:
             if not self.phone or self.channel_checkpoint().exists():
                 self.login_batch(on_source_blocked)
@@ -995,8 +1003,11 @@ class MaestroRunner:
                         if preflight["status"] == "passed":
                             break
                         if attempt or not on_source_blocked or not on_source_blocked():
-                            return self.block_unverified_phone((name for name in flows if name not in results),
-                                                               results, checkpoint, preflight, step)
+                            finish_remaining({**preflight, "status": "environment_blocked", "ui_status": "not_run",
+                                              "server_verification": "pending", "cause": "phone_test_source_unverified",
+                                              "preparation_step": step, "log": None, "probe_log": preflight.get("log"),
+                                              "probe_cause": preflight.get("cause")})
+                            return results
                     phone_ready = True
                     recovery = self.recover_editor_state()
                     editor_error = next((item for item in recovery if item["status"] != "passed"), None)
@@ -1069,10 +1080,8 @@ class MaestroRunner:
             if step == "phone_access":
                 raise
             blocked = isinstance(error, FixtureError) or (step == "phone_offline_identity" and getattr(error, "code", None))
-            for flow in flows:
-                if flow not in results:
-                    checkpoint(flow, {"status": "environment_blocked" if blocked else "harness_error",
-                                      "ui_status": "not_run", "cause": "batch_preparation", **self.failure_details(error, step)})
+            finish_remaining({"status": "environment_blocked" if blocked else "harness_error",
+                              "ui_status": "not_run", "cause": "batch_preparation", **self.failure_details(error, step)})
         finally:
             if self.channel_fixture is not None:
                 try:
@@ -1151,14 +1160,6 @@ class MaestroRunner:
                 raise RuntimeError("未能确认目标 Activity 已启动")
         if self.on_app_launch:
             self.on_app_launch(attempted)
-
-    def block_unverified_phone(self, flows, results, checkpoint, preflight, step):
-        for flow in list(flows):
-            checkpoint(flow, {**preflight, "status": "environment_blocked", "ui_status": "not_run",
-                              "server_verification": "pending", "cause": "phone_test_source_unverified",
-                              "preparation_step": step, "log": None, "probe_log": preflight.get("log"),
-                              "probe_cause": preflight.get("cause")})
-        return results
 
     def source_checkpoint(self, kind, prefix=""):
         raw = self.connection["origin"]

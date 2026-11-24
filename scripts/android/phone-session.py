@@ -1063,7 +1063,7 @@ class PhoneSession:
         self.save()
         return imported
 
-    def baseline_pass(self, name, flow, record, fingerprint, runner):
+    def baseline_pass(self, name, flow, record, fingerprint, runner, *, local_only=False):
         if record.get("ui_status") != "passed":
             return None
         expected = "passed" if flow in SERVER_FLOWS else "not_applicable"
@@ -1074,7 +1074,7 @@ class PhoneSession:
             return None
         result = {**record, "status": "reused_baseline", "flow_sha256": fingerprint}
         if (result["server_verification"] == "pending" and result.get("test_data_path") and expected == "passed"):
-            if flow in ("editing", "navigation", "navigation-settings"):
+            if local_only or flow in ("editing", "navigation", "navigation-settings"):
                 return None
             try:
                 values = read_json(result["test_data_path"])
@@ -1195,7 +1195,7 @@ class PhoneSession:
         view = self.state["coverage"]
         marker = self.directory / "STOP_AFTER_CURRENT"
 
-        def select(flow, engine):
+        def select(flow, engine, *, local_only=False):
             item = by_flow[flow]
             name = item["id"]
             if item.get("requires_capability") and not getattr(args, item["requires_capability"]):
@@ -1207,19 +1207,22 @@ class PhoneSession:
                     return {**previous, "status": "reused_pass"}
                 if previous.get("attempted"):
                     return None
-                return self.baseline_pass(name, flow, baseline.get(name, {}), fingerprint, engine)
+                return self.baseline_pass(name, flow, baseline.get(name, {}), fingerprint, engine, local_only=local_only)
             return None
+
+        def stop_requested():
+            try:
+                return marker.read_text(encoding="utf-8-sig").strip() == run_id
+            except FileNotFoundError:
+                return False
 
         def checkpoint(flow, result):
             name = by_flow[flow]["id"]
             self.remember_maestro(result)
             view["results"][name] = result
-            attempted = result.get("attempted", False)
             self.save_flow_result(flow, result)
             self.save()
-            completed = result.get("cause") != "interrupted" and (attempted or result["status"] in REUSABLE)
-            requested = marker.exists() and marker.read_text(encoding="utf-8-sig").strip() == run_id
-            if completed and (args.stop_after in (name, flow) or requested):
+            if result.get("cause") != "interrupted" and (args.stop_after in (name, flow) or stop_requested()):
                 view["stopped"] = name
                 self.save()
                 return True
@@ -1229,7 +1232,7 @@ class PhoneSession:
         try:
             return runner.run_batch(flows, on_result=checkpoint, select=select,
                 clean_editor={flow for flow, item in by_flow.items() if item["requires_clean_editor"]},
-                on_source_blocked=lambda: prompt(
+                on_source_blocked=lambda: not stop_requested() and prompt(
                     "若离线账号核验失败，保持设备断网并退出账号，停在空白登录页后恢复测试网络。输入 y 重试一次。"))
         finally:
             self.state["batch_cleanup_errors"] = getattr(runner, "batch_cleanup_errors", [])
@@ -1274,7 +1277,7 @@ class PhoneSession:
                 if previous:
                     self.state.setdefault("flow_results", {}).setdefault(flow, previous)
 
-            def select(flow, _engine):
+            def select(flow, _engine, *, local_only=False):
                 previous = self.state.get("flow_results", {}).get(flow, {})
                 if not retry and compatible_pass(previous, flow, self.execution_digest(flow)):
                     return {**previous, "status": "reused_pass"}

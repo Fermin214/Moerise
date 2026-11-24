@@ -1,5 +1,5 @@
 """Host-only regression checks for device lifecycle and failure attribution."""
-from contextlib import nullcontext, redirect_stdout
+from contextlib import contextmanager, nullcontext, redirect_stdout
 import importlib.util
 import io
 import json
@@ -750,6 +750,134 @@ class FixedWindowsEntry(unittest.TestCase):
         captured = time.time() - 2
         os.utime(path, (captured, captured))
         return path
+
+    @contextmanager
+    def real_batch(self):
+        api = mock.Mock(csrf="", **{"login.return_value": {"instance_id": "fixture", "user": {"name": "users/owner"}}})
+
+        def engine(*args, **kwargs):
+            real = maestro_runner.MaestroRunner(*args, **kwargs)
+            real.api = api
+            return real
+
+        real = maestro_runner.MaestroRunner
+        with mock.patch.object(session, "MaestroRunner", side_effect=engine), \
+                mock.patch.object(maestro_runner, "common_repo", return_value=self.root), \
+                mock.patch.object(maestro_runner, "worktree_roots", return_value=[self.root]), \
+                mock.patch.object(real, "probe_phone_offline", return_value={"status": "passed"}) as offline, \
+                mock.patch.object(real, "prepare_data", return_value=({}, None)) as prepare, \
+                mock.patch.object(real, "verify") as readback, \
+                mock.patch.object(real, "run_flow", return_value={"status": "inconclusive", "cause": "timeout",
+                                                                  "log": str(self.root / "probe.log")}) as execute:
+            yield api, offline, prepare, readback, execute
+
+    def assert_report_result(self, name, status, cause=None, evidence=None):
+        row = self.rows()[name]
+        self.assertEqual(row["status"], status)
+        line = next(line for line in (self.active() / "report.md").read_text(encoding="utf-8").splitlines()
+                    if line.startswith(f"| {name} |"))
+        self.assertIn(status, line)
+        if cause:
+            self.assertEqual(row["cause"], cause)
+            self.assertIn(cause, line)
+        if evidence:
+            self.assertEqual(row["evidence_paths"], [str(evidence)])
+            self.assertEqual(row["reuse"], status)
+            self.assertIn(evidence.as_uri(), line)
+        return row
+
+    def test_probe_timeout_keeps_baselines_previous_pass_and_capability_skip(self):
+        evidence_path = self.root / "evidence.json"
+        self.flow_results["home-smoke"] = {"evidence_paths": [str(evidence_path)]}
+        self.assertEqual(self.verify("--non-interactive", "--already-launched", "--check", "home")[0], 0)
+        baselines = ("navigation-review", "navigation-walk", "navigation-map", "language")
+        baseline = self.record_baseline({name: self.evidence(name) for name in baselines})
+        args = [part for name in ("editing", "search", "insights-disconnect", "home", *baselines) for part in ("--check", name)]
+        with self.real_batch() as (api, _, prepare, _, execute):
+            code, output = self.verify("--non-interactive", "--baseline", baseline, *args)
+        self.assertEqual(code, 1, output)
+        api.login.assert_called_once()
+        prepare.assert_called_once()
+        execute.assert_called_once()
+        for name in ("editing", "search"):
+            row = self.assert_report_result(name, "environment_blocked", "phone_test_source_unverified")
+            self.assertEqual((row["preparation_step"], row["probe_cause"]), ("test_source_ui", "timeout"))
+            self.assertEqual(row["evidence_paths"], [str(self.root / "probe.log")])
+        for name in baselines:
+            self.assert_report_result(name, "reused_baseline", evidence=evidence_path)
+        self.assert_report_result("home", "reused_pass", evidence=evidence_path)
+        self.assert_report_result("insights-disconnect", "skipped", "capability_missing")
+
+    def test_batch_preparation_failure_keeps_local_results_without_pending_readback(self):
+        session.write_json(self.root / "test-data.json", {"ATTACHMENT_SHA256": "a" * 64,
+                           "ATTACHMENT_NAME": "example.txt", "ATTACHMENT_NOTE_TEXT": "Marker"})
+        baseline = self.record_baseline({
+            "language": self.evidence("language"),
+            "attachments": self.evidence("attachments", server_verification="pending", test_data_path="test-data.json"),
+        })
+        cases = (("session_login", "environment_blocked", maestro_runner.FixtureError(403, "FORBIDDEN")),
+                 ("test_source_data", "environment_blocked", maestro_runner.FixtureError(503, "UNAVAILABLE")),
+                 ("phone_offline_identity", "harness_error", RuntimeError("offline isolation failed")))
+        for index, (step, status, error) in enumerate(cases):
+            with self.subTest(step=step), self.real_batch() as (api, offline, prepare, readback, execute):
+                {"session_login": api.login, "test_source_data": prepare, "phone_offline_identity": offline}[step].side_effect = error
+                code, output = self.verify("--non-interactive", "--already-launched", "--baseline", baseline,
+                                           "--check", "editing", "--check", "language", "--check", "attachments",
+                                           "--check", "insights-disconnect")
+                self.assertEqual(code, 1, output)
+                api.login.assert_called_once()
+                readback.assert_not_called()
+                execute.assert_not_called()
+                for name in ("editing", "attachments"):
+                    row = self.assert_report_result(name, status, "batch_preparation")
+                    self.assertEqual(row["preparation_step"], step)
+                    self.assertEqual(row["error_message"], str(error))
+                self.assert_report_result("language", "reused_pass" if index else "reused_baseline",
+                                          evidence=self.root / "evidence.json")
+                self.assert_report_result("insights-disconnect", "skipped", "capability_missing")
+
+    def test_probe_failure_stops_at_target_or_consumes_matching_run_marker(self):
+        self.assertEqual(self.verify("--non-interactive", "--already-launched", "--check", "language")[0], 0)
+        metadata = self.active() / "session.json"
+        original = session.read_json(metadata)["flow_results"]
+        marker = self.active() / "STOP_AFTER_CURRENT"
+        args = ("--non-interactive", "--check", "editing", "--check", "language", "--check", "insights-disconnect")
+        for send_marker in (False, True):
+            with self.subTest(send_marker=send_marker), self.real_batch() as (_, _, _, _, execute):
+                if send_marker:
+                    def stop_during_probe(*_args, **_kwargs):
+                        session.request_stop(self.active())
+                        return execute.return_value
+
+                    execute.side_effect = stop_during_probe
+                code, output = self.verify(*args, *(() if send_marker else ("--stop-after", "editing")))
+                self.assertEqual(code, 1, output)
+                self.assertEqual(session.read_json(self.active() / "report.json")["stopped_at"], "editing")
+                self.assert_report_result("editing", "environment_blocked", "phone_test_source_unverified")
+                for name in ("language", "insights-disconnect"):
+                    self.assertEqual(self.assert_report_result(name, "not_run")["not_run_reason"], "stopped_at_boundary")
+                self.assertEqual(session.read_json(metadata)["flow_results"], original)
+                self.assertFalse(marker.exists())
+
+    def test_stop_after_first_reused_baseline_never_starts_the_probe(self):
+        baseline = self.record_baseline({"navigation-review": self.evidence("navigation-review")})
+        with self.real_batch() as (api, offline, prepare, _, execute):
+            code, output = self.verify("--non-interactive", "--baseline", baseline, "--check", "navigation-review",
+                                       "--check", "home", "--stop-after", "navigation-review")
+        self.assertEqual(code, 2, output)
+        self.assert_report_result("navigation-review", "reused_baseline", evidence=self.root / "evidence.json")
+        self.assertEqual(self.assert_report_result("home", "not_run")["not_run_reason"], "stopped_at_boundary")
+        for operation in (api.login, offline, prepare, execute):
+            operation.assert_not_called()
+
+    def test_missing_phone_access_confirmation_stays_in_top_level_report(self):
+        with self.real_batch() as (api, offline, _, _, _):
+            code, output = self.verify("--non-interactive", "--no-confirm-ready", "--check", "editing")
+        self.assertEqual(code, 1)
+        self.assertEqual(output["error"]["cause"], "test_account_confirmation_pending")
+        self.assert_report_result("editing", "not_run")
+        api.login.assert_not_called()
+        offline.assert_not_called()
 
     def test_verify_record_from_card_cleanup_and_new_session(self):
         code, first = self.verify("--non-interactive", "--already-launched", "--check", "home")
