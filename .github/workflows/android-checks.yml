@@ -72,6 +72,8 @@ jobs:
     name: Windows acceptance host
     runs-on: windows-latest
     timeout-minutes: 5
+    env:
+      PYTHONUTF8: '1'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - name: Check Android acceptance harness
@@ -328,7 +330,7 @@ jobs:
         id: robolectric
         with:
           path: &robolectric-path ${{ env.MOERISE_ROBOLECTRIC_DIR }}
-          key: &robolectric-key robolectric-${{ runner.os }}-${{ runner.arch }}-temurin${{ steps.java.outputs.version }}-${{ hashFiles('scripts/android/robolectric-sdk.sha256', 'mobile/gradle/wrapper/gradle-wrapper.properties', 'mobile/gradle/libs.versions.toml', 'mobile/androidApp/build.gradle.kts', 'mobile/settings.gradle.kts', '.github/workflows/android-checks.yml') }}
+          key: &robolectric-key robolectric-gcs-${{ runner.os }}-${{ runner.arch }}-temurin${{ steps.java.outputs.version }}-${{ hashFiles('scripts/android/robolectric-sdk.sha256', 'mobile/gradle/wrapper/gradle-wrapper.properties', 'mobile/gradle/libs.versions.toml', 'mobile/androidApp/build.gradle.kts', 'mobile/settings.gradle.kts') }}
       - name: Prefetch and verify locked Robolectric SDK
         run: |
           lock="$GITHUB_WORKSPACE/scripts/android/robolectric-sdk.sha256"
