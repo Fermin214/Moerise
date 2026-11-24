@@ -841,16 +841,26 @@ class FixedWindowsEntry(unittest.TestCase):
         metadata = self.active() / "session.json"
         original = session.read_json(metadata)["flow_results"]
         marker = self.active() / "STOP_AFTER_CURRENT"
-        args = ("--non-interactive", "--check", "editing", "--check", "language", "--check", "insights-disconnect")
-        for send_marker in (False, True):
-            with self.subTest(send_marker=send_marker), self.real_batch() as (_, _, _, _, execute):
-                if send_marker:
+        args = ("--check", "editing", "--check", "language", "--check", "insights-disconnect")
+        for stop in ("target", "probe_marker", "prompt_marker"):
+            with self.subTest(stop=stop), self.real_batch() as (_, _, _, _, execute), \
+                    mock.patch.object(session.sys.stdin, "isatty", return_value=True), \
+                    mock.patch.object(session, "ask", return_value="y") as prompt:
+                if stop == "probe_marker":
                     def stop_during_probe(*_args, **_kwargs):
                         session.request_stop(self.active())
                         return execute.return_value
 
                     execute.side_effect = stop_during_probe
-                code, output = self.verify(*args, *(() if send_marker else ("--stop-after", "editing")))
+                if stop == "prompt_marker":
+                    def stop_during_prompt(*_args):
+                        session.request_stop(self.active())
+                        return "y"
+
+                    prompt.side_effect = stop_during_prompt
+                code, output = self.verify(*args, *(("--stop-after", "editing") if stop == "target" else ()))
+                execute.assert_called_once()
+                self.assertEqual(prompt.call_count, int(stop == "prompt_marker"))
                 self.assertEqual(code, 1, output)
                 self.assertEqual(session.read_json(self.active() / "report.json")["stopped_at"], "editing")
                 self.assert_report_result("editing", "environment_blocked", "phone_test_source_unverified")
@@ -858,6 +868,53 @@ class FixedWindowsEntry(unittest.TestCase):
                     self.assertEqual(self.assert_report_result(name, "not_run")["not_run_reason"], "stopped_at_boundary")
                 self.assertEqual(session.read_json(metadata)["flow_results"], original)
                 self.assertFalse(marker.exists())
+
+    def test_stop_item_write_error_ends_batch_in_top_level_report(self):
+        baseline = self.record_baseline({"language": self.evidence("language")})
+        write_result = maestro_runner.write_result
+
+        def write(path, result):
+            if path.parts[-2:] == ("editing", "result.json"):
+                raise PermissionError("editing result is not writable")
+            write_result(path, result)
+
+        with self.real_batch(), mock.patch.object(maestro_runner, "write_result", side_effect=write) as writes:
+            code, output = self.verify("--non-interactive", "--already-launched", "--baseline", baseline,
+                                       "--check", "editing", "--check", "language", "--stop-after", "editing")
+        self.assertEqual(code, 1, output)
+        self.assertEqual(output["error"], {"cause": "PermissionError", "message": "editing result is not writable"})
+        self.assert_report_result("editing", "not_run")
+        self.assert_report_result("language", "not_run")
+        self.assertEqual(writes.call_args.args[1], {})
+        self.assertFalse(session.read_json(self.active() / "session.json").get("flow_results"))
+
+    def test_selection_read_error_does_not_hide_later_local_results(self):
+        baseline = self.record_baseline({"language": self.evidence("language")})
+        execution_digest = session.PhoneSession.execution_digest
+        for cause in ("selection", "probe"):
+            with self.subTest(cause=cause), self.real_batch() as (api, _, _, _, execute):
+                missing_flow = "editing" if cause == "selection" else "search"
+
+                def digest(engine, flow):
+                    if flow == missing_flow:
+                        raise FileNotFoundError(f"{flow}.yaml is missing")
+                    return execution_digest(engine, flow)
+
+                with mock.patch.object(session.PhoneSession, "execution_digest", autospec=True, side_effect=digest) as fingerprints:
+                    code, output = self.verify("--non-interactive", "--already-launched", "--baseline", baseline,
+                                               "--check", "editing", "--check", "search", "--check", "language",
+                                               "--check", "insights-disconnect")
+                self.assertEqual(code, 1, output)
+                self.assertIsNone(output["error"])
+                row = self.assert_report_result(missing_flow, "harness_error", "batch_preparation")
+                self.assertEqual((row["preparation_step"], row["error_message"]),
+                                 ("result_selection", f"{missing_flow}.yaml is missing"))
+                self.assertEqual([call.args[1] for call in fingerprints.call_args_list].count(missing_flow), 1)
+                self.assert_report_result("language", "reused_baseline" if cause == "selection" else "reused_pass",
+                                          evidence=self.root / "evidence.json")
+                self.assert_report_result("insights-disconnect", "skipped", "capability_missing")
+                self.assertEqual(api.login.call_count, int(cause == "probe"))
+                self.assertEqual(execute.call_count, int(cause == "probe"))
 
     def test_stop_after_first_reused_baseline_never_starts_the_probe(self):
         baseline = self.record_baseline({"navigation-review": self.evidence("navigation-review")})

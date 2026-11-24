@@ -1216,24 +1216,31 @@ class PhoneSession:
             except FileNotFoundError:
                 return False
 
+        def should_stop(flow):
+            item = by_flow.get(flow)
+            return (item is not None and args.stop_after in (item["id"], flow)) or stop_requested()
+
+        def retry_source(flow):
+            return not should_stop(flow) and prompt(
+                "若离线账号核验失败，保持设备断网并退出账号，停在空白登录页后恢复测试网络。输入 y 重试一次。"
+            ) and not should_stop(flow)
+
         def checkpoint(flow, result):
             name = by_flow[flow]["id"]
+            stopped = result.get("cause") != "interrupted" and should_stop(flow)
             self.remember_maestro(result)
             view["results"][name] = result
             self.save_flow_result(flow, result)
-            self.save()
-            if result.get("cause") != "interrupted" and (args.stop_after in (name, flow) or stop_requested()):
+            if stopped:
                 view["stopped"] = name
-                self.save()
-                return True
-            return False
+            self.save()
+            return stopped
 
         flows = list(by_flow)
         try:
             return runner.run_batch(flows, on_result=checkpoint, select=select,
                 clean_editor={flow for flow, item in by_flow.items() if item["requires_clean_editor"]},
-                on_source_blocked=lambda: not stop_requested() and prompt(
-                    "若离线账号核验失败，保持设备断网并退出账号，停在空白登录页后恢复测试网络。输入 y 重试一次。"))
+                on_source_blocked=retry_source)
         finally:
             self.state["batch_cleanup_errors"] = getattr(runner, "batch_cleanup_errors", [])
 

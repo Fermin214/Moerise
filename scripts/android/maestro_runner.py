@@ -951,39 +951,50 @@ class MaestroRunner:
         self.batch_identity = None
         step = "session_login"
         phone_ready, editor_error = False, None
+        selection_errors = (OSError, ValueError, KeyError, yaml.YAMLError)
+
+        def retry_source(flow=None):
+            return on_source_blocked and on_source_blocked(flow)
 
         def checkpoint(flow, result):
+            nonlocal step
+            step = "result_checkpoint"
             result.setdefault("ui_status", result["status"])
             result.setdefault("server_verification", "pending" if flow in SERVER_FLOWS else "not_applicable")
             result.setdefault("manual_status", "not_applicable")
-            results[flow] = result
             directory = Path(result["log"]).parent if result.get("log") else self.output / flow
             if result["status"] not in ("reused_pass", "reused_baseline"):
                 write_result(directory / "result.json", result)
-            return on_result(flow, result) if on_result else False
+            stopped = on_result(flow, result) if on_result else False
+            results[flow] = result
+            return stopped
 
-        def finish_remaining(failure):
+        def finish_remaining(failure, selection_failed=None):
             for flow in flows:
                 if flow in results:
                     continue
-                selected = select(flow, self, local_only=True) if select else None
+                try:
+                    selected = select(flow, self, local_only=True) if select and flow != selection_failed else None
+                except selection_errors as error:
+                    selected = {"status": "harness_error", "ui_status": "not_run", "cause": "batch_preparation",
+                                **self.failure_details(error, "result_selection")}
                 if checkpoint(flow, selected if selected is not None else failure.copy()):
                     break
 
         try:
             if not self.phone or self.channel_checkpoint().exists():
-                self.login_batch(on_source_blocked)
+                self.login_batch(retry_source)
                 step = "channel_recovery"
                 self.restore_pending_channel()
             for flow in flows:
-                step = "session_login"
+                step = "result_selection"
                 result = select(flow, self) if select else None
                 if result is None and self.phone and not phone_ready:
                     if self.on_phone_access:
                         step = "phone_access"
                         self.on_phone_access()
                     step = "session_login"
-                    identity = self.login_batch(on_source_blocked)
+                    identity = self.login_batch(lambda: retry_source(flow))
                     for attempt in range(2):
                         step = "phone_offline_identity"
                         preflight = self.probe_phone_offline(self.resume_values(identity))
@@ -1002,7 +1013,7 @@ class MaestroRunner:
                                         "note_name": probe[0]["NOTE_NAME"], "note_text": probe[0]["NOTE_TEXT"]})
                         if preflight["status"] == "passed":
                             break
-                        if attempt or not on_source_blocked or not on_source_blocked():
+                        if attempt or not retry_source(flow):
                             finish_remaining({**preflight, "status": "environment_blocked", "ui_status": "not_run",
                                               "server_verification": "pending", "cause": "phone_test_source_unverified",
                                               "preparation_step": step, "log": None, "probe_log": preflight.get("log"),
@@ -1076,12 +1087,13 @@ class MaestroRunner:
                     break
                 if "channel_settings_restore" in result["cleanup_errors"]:
                     break
-        except (FixtureError, OSError, ValueError, RuntimeError, KeyError, subprocess.SubprocessError) as error:
-            if step == "phone_access":
+        except (*selection_errors, RuntimeError, subprocess.SubprocessError) as error:
+            if step in ("phone_access", "result_checkpoint"):
                 raise
             blocked = isinstance(error, FixtureError) or (step == "phone_offline_identity" and getattr(error, "code", None))
             finish_remaining({"status": "environment_blocked" if blocked else "harness_error",
-                              "ui_status": "not_run", "cause": "batch_preparation", **self.failure_details(error, step)})
+                              "ui_status": "not_run", "cause": "batch_preparation", **self.failure_details(error, step)},
+                             selection_failed=flow if step == "result_selection" else None)
         finally:
             if self.channel_fixture is not None:
                 try:

@@ -249,6 +249,18 @@ class MaestroExecutionTest(unittest.TestCase):
         self.assertEqual([call.args[0] for call in checkpoint.call_args_list], ["editing", "language"])
         self.engine.api.login.assert_called_once()
 
+    def test_batch_callback_failure_propagates_without_settling_more_flows(self):
+        reused = {"status": "reused_pass"}
+        select = mock.Mock(return_value=reused)
+        checkpoint = mock.Mock(side_effect=PermissionError("cannot save session"))
+        self.engine.phone = True
+        with self.assertRaisesRegex(PermissionError, "cannot save session"):
+            self.engine.run_batch(["editing", "language"], on_result=checkpoint, select=select)
+        select.assert_called_once_with("editing", self.engine)
+        checkpoint.assert_called_once_with("editing", reused)
+        self.assertEqual(json.loads((self.engine.output / "results.json").read_text(encoding="utf-8")), {})
+        self.engine.api.login.assert_not_called()
+
     def test_preparation_error_messages_redact_credentials_before_writing_reports(self):
         with mock.patch.object(self.engine, "prepare_data", side_effect=ValueError(
                 "invalid isolated-password-value isolated-token-value android-owner")):
