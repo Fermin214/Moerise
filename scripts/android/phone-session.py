@@ -1092,7 +1092,7 @@ class PhoneSession:
                 return None
         return result if compatible_pass(result, flow, fingerprint) else None
 
-    def coverage_report(self, checks=None, selected=None):
+    def render_coverage_report(self, checks=None, selected=None):
         checks = phone_checks(self.repo) if checks is None else checks
         view = self.state.get("coverage", {})
         selected = view.get("selected", []) if selected is None else selected
@@ -1146,7 +1146,6 @@ class PhoneSession:
                   "test_origin": self.state["test_origin"], "run_id": view.get("run_id"),
                   "status": view.get("status"), "stopped_at": view.get("stopped"), "error": view.get("error"),
                   "cleanup_errors": self.state.get("cleanup_errors", []), "items": rows, "manual_results": manual}
-        write_json(self.directory / "report.json", report)
         title = ["# Android 正式包真机验收", "", f"设备 `{self.adb.serial}` · 来源 `{report['test_origin']}`",
                  f"APK `{report['apk']['sha256']}` · 运行 `{report['status']}`", "",
                  "[待确认操作卡](manual-cards.md)", "", "设备恢复错误　" + ", ".join(report["cleanup_errors"]), ""]
@@ -1164,9 +1163,16 @@ class PhoneSession:
                       " · ".join(filter(None, (step.get("source"), step.get("kind"), step.get("label") or step.get("stage")))),
                       artifact_links(row["evidence_paths"])]
             title.append("| " + " | ".join(map(markdown, values)) + " |")
-        write_atomic(self.directory / "report.md", "\n".join(title) + "\n")
-        write_atomic(self.directory / "manual-cards.md", "\n".join(cards) + "\n")
+        return report, "\n".join(title) + "\n", "\n".join(cards) + "\n"
+
+    def publish_coverage_report(self, report, markdown_report, manual_cards):
+        write_atomic(self.directory / "report.md", markdown_report)
+        write_atomic(self.directory / "manual-cards.md", manual_cards)
+        write_json(self.directory / "report.json", report)
         return report
+
+    def coverage_report(self):
+        return self.publish_coverage_report(*self.render_coverage_report())
 
     def configure_phone_runner(self, runner):
         runner.on_app_launch = self.mark_app_launch
@@ -1590,6 +1596,12 @@ def verify(args, adb):
     prompt = lambda text: ask(interactive, text)
     code = 1
 
+    def report_failed(error):
+        previous_error = view.get("error")
+        view.update(status="failed", error={"cause": "coverage_report_failed", "message": str(error)})
+        if previous_error:
+            view["error"]["previous_error"] = previous_error
+
     def before_phone():
         if not (args.confirm_ready or session.state.get("source_receipt") or (interactive and prompt(
                 f"若有未核验的登录账号，先在设备断网退出，停在空白登录页并恢复测试网络。"
@@ -1663,17 +1675,20 @@ def verify(args, adb):
             view["status"] = {0: "completed", 1: "failed", 2: "stopped"}[code]
         session.state.pop("active_run_id", None)
         try:
-            report = session.coverage_report(checks, view["selected"])
+            rendered = session.render_coverage_report(checks, view["selected"])
         except (ValueError, OSError) as error:
-            previous_error = view.get("error")
-            view.update(status="failed", error={"cause": "coverage_report_failed", "message": str(error)})
-            if previous_error:
-                view["error"]["previous_error"] = previous_error
+            report_failed(error)
             raise
         finally:
             session.save()
             if marker.exists() and marker.read_text(encoding="utf-8-sig").strip() == run_id:
                 marker.unlink(missing_ok=True)
+        try:
+            report = session.publish_coverage_report(*rendered)
+        except OSError as error:
+            report_failed(error)
+            session.save()
+            raise
         print(json.dumps({"status": report["status"], "session": str(session.directory),
                           "report": str(session.directory / "report.md"), "error": report["error"],
                           "cleanup_errors": report["cleanup_errors"]}, ensure_ascii=False, indent=2))

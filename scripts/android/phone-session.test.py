@@ -998,6 +998,32 @@ class FixedWindowsEntry(unittest.TestCase):
                 self.assertEqual(saved["coverage"]["error"]["message"], result["message"])
                 self.assertNotIn("active_run_id", saved)
 
+    def test_failed_terminal_save_keeps_all_previous_reports(self):
+        args = ("--non-interactive", "--already-launched", "--check", "language")
+        self.assertEqual(self.verify(*args)[0], 0)
+        directory = self.active()
+        paths = [directory / name for name in ("report.json", "report.md", "manual-cards.md")]
+        earlier = [path.read_bytes() for path in paths]
+        prior_run = json.loads(earlier[0])["run_id"]
+        save = session.PhoneSession.save
+
+        def fail_terminal_save(phone):
+            if phone.state["coverage"]["status"] in ("completed", "stopped"):
+                raise OSError("terminal session cannot be saved")
+            save(phone)
+
+        for stop in ((), ("--stop-after", "language")):
+            with self.subTest(stop=stop), mock.patch.object(session.PhoneSession, "save", fail_terminal_save):
+                code, result = self.verify(*args, *stop)
+                self.assertEqual(code, 1)
+                self.assertEqual(result["message"], "terminal session cannot be saved")
+                self.assertEqual([path.read_bytes() for path in paths], earlier)
+                state = session.read_json(directory / "session.json")
+                self.assertNotEqual(state["coverage"]["run_id"], prior_run)
+                self.assertEqual(state["coverage"]["status"], "running")
+                self.assertEqual(state["active_run_id"], state["coverage"]["run_id"])
+                self.assertEqual(state["coverage"]["results"]["language"]["status"], "reused_pass")
+
     def test_probe_timeout_keeps_baselines_previous_pass_and_capability_skip(self):
         evidence_path = self.root / "evidence.json"
         self.flow_results["home-smoke"] = {"evidence_paths": [str(evidence_path)], "log": None}

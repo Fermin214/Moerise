@@ -49,23 +49,32 @@ function turnSummary(name) {
 }
 
 function proseOutsideFences(content) {
-  let fence, fenceDepth = 0;
+  let fence, listDepth = 0, listIndents = [''];
   return content.split(/\r\n|\r|\n/).map(line => {
-    const quote = /^(?:[ \t]*>[ \t]?)+/.exec(line)?.[0] ?? '';
+    const quote = /^(?: {0,3}>[ \t]?)+/.exec(line)?.[0] ?? '';
     const depth = quote.replace(/[ \t]/g, '').length;
     const body = line.slice(quote.length);
-    if (depth < fenceDepth) fence = undefined;
+    if (fence && (depth < fence.depth ||
+        (depth === fence.depth && body.trim() && !body.startsWith(fence.indent)))) fence = undefined;
     if (fence) {
-      const closing = /^[ \t]*(`{3,}|~{3,})[ \t]*$/.exec(body)?.[1];
-      if (depth === fenceDepth && closing?.[0] === fence[0] && closing.length >= fence.length) {
+      const closing = /^ {0,3}(`{3,}|~{3,})[ \t]*$/.exec(body.slice(fence.indent.length))?.[1];
+      if (depth === fence.depth && closing?.[0] === fence.marker[0] && closing.length >= fence.marker.length) {
         fence = undefined;
       }
       return '';
     }
-    const opening = /^[ \t]*(?:(?:[-+*]|\d{1,9}[.)])[ \t]+)?(`{3,}|~{3,})(.*)$/.exec(body);
+    if (depth !== listDepth) listIndents = [''];
+    listDepth = depth;
+    while (body.trim() && !body.startsWith(listIndents.at(-1))) listIndents.pop();
+    let indent = listIndents.at(-1);
+    const item = /^ {0,3}(?:[-+*]|\d{1,9}[.)]) {1,4}(?=\S)/.exec(body.slice(indent.length))?.[0];
+    if (item) {
+      indent += ' '.repeat(item.length);
+      listIndents.push(indent);
+    }
+    const opening = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(body.slice(indent.length));
     if (opening && (opening[1][0] === '~' || !opening[2].includes('`'))) {
-      fence = opening[1];
-      fenceDepth = depth;
+      fence = { marker: opening[1], depth, indent };
       return '';
     }
     return line;

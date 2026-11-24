@@ -20,6 +20,10 @@ const long = `## 1. Findings\n${prose}\n\n## 2. Themes\n${prose}\n`;
 const fenceExamples = {
   'fenced-headings': `\`\`\`\`md\n## 1. Findings\n${prose}\n\`\`\`\n## 2. Themes\n${prose}\n\`\`\`\`\n`,
   'fenced-words': `## 1. Findings\nOne word.\n> ~~~text\n> ${prose}\n> ~~~~\n## 2. Themes\nTwo words.\n- \`\`\`text\n  ${prose}\n  \`\`\`\n`,
+  'overindented-fence': `\`\`\`md\n    \`\`\`\n${long}\`\`\`\n`,
+  'overindented-list-fence': `- Example\n    \`\`\`md\n      \`\`\`\n  ${long.trimEnd().replaceAll('\n', '\n  ')}\n  \`\`\`\n`,
+  'valid-indented-fence': `   \`\`\`md\n## 1. Example\n${prose}\n \`\`\`\n${long}`,
+  'valid-list-fence': `1. Example\n    \`\`\`md\n    ## 1. Example\n    ${prose}\n      \`\`\`\n\n${long}`,
 };
 
 function json(response, status, body, headers = {}) {
@@ -204,7 +208,10 @@ for (const mode of ['mismatch', 'short']) {
   });
 }
 
-for (const [mode, metrics] of [['fenced-headings', [0, []]], ['fenced-words', [2, [2, 2]]]]) {
+for (const [mode, metrics] of [
+  ['fenced-headings', [0, []]], ['fenced-words', [2, [2, 2]]],
+  ['overindented-fence', [0, []]], ['overindented-list-fence', [0, []]],
+]) {
   test(`excludes ${mode} from the long reply criteria`, async context => {
     const service = await fixture(context, mode);
     const { report, code } = await invoke(context, service, { marker: false });
@@ -214,6 +221,16 @@ for (const [mode, metrics] of [['fenced-headings', [0, []]], ['fenced-words', [2
     assert.equal(reply.content_match, true);
     assert.deepEqual([reply.heading_count, reply.section_word_counts], metrics);
     assert.equal(report.cleanup.get_after_delete_status, 404);
+  });
+}
+
+for (const mode of ['valid-indented-fence', 'valid-list-fence']) {
+  test(`reads prose after a ${mode}`, async context => {
+    const service = await fixture(context, mode);
+    const { report, code } = await invoke(context, service, { marker: false });
+    assert.equal(code, 0);
+    assert.equal(report.turns[1].heading_count, 2);
+    assert.deepEqual(report.turns[1].section_word_counts, [9, 9]);
   });
 }
 
