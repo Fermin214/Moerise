@@ -64,6 +64,19 @@ class DeviceTransportTest(unittest.TestCase):
             self.assertFalse(result["retry_allowed"])
             self.assertEqual(result["first_failure_command"]["command"], "tapOnElementCommand")
 
+    def test_known_cleanup_failure_survives_missing_or_corrupt_command_evidence(self):
+        self.result["cleanup_errors"] = ["forward_remove"]
+        self.write_result()
+        for sample in (None, "[truncated", json.dumps([{"metadata": None}])):
+            with self.subTest(sample=sample):
+                if sample is not None:
+                    self.commands.write_text(sample, encoding="utf-8")
+                result = self.summary()
+                self.assertEqual(result["classification"], "cleanup_failure")
+                self.assertFalse(result["fixture_restored"])
+                self.assertFalse(result["retry_allowed"])
+                self.assertIsNone(result["first_failure_command"])
+
     def test_first_transport_failure_can_retry_once(self):
         self.report(failed("tapOnElementCommand", 4, "Device server died during tap"),
                     failed("takeScreenshotCommand", 5, self.offline))

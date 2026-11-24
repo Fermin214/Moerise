@@ -4,6 +4,7 @@ from pathlib import Path
 import re
 
 TRANSPORT = re.compile(r"Device server died during |\(host:transport:[^\n]*(?:: device offline| not found)")
+EVIDENCE_ERRORS = (OSError, ValueError, TypeError, KeyError, AttributeError)
 
 
 def command_failures(directory):
@@ -41,34 +42,44 @@ def classify_failure(root, member):
                 else "evidence_incomplete"), None, False
     group = root / "maestro" / member
     results = json.loads((group / "results.json").read_text(encoding="utf-8"))
-    if not isinstance(results, dict) or not results or list(results) != groups[member][:len(results)]:
+    if not isinstance(results, dict):
         return "evidence_incomplete", None, False
+    cleanup_failed = any(isinstance(result, dict) and result.get("cleanup_errors") for result in results.values())
+    if (not results or list(results) != groups[member][:len(results)]
+            or any(not isinstance(result, dict) or "status" not in result for result in results.values())):
+        return ("cleanup_failure" if cleanup_failed else "evidence_incomplete"), None, False
     first, screenshot_secondary = None, False
     classification = "transport_retryable"
+    evidence_incomplete = False
     for flow, result in results.items():
-        if result.get("cleanup_errors"):
-            classification = "cleanup_failure"
         if result["status"] == "passed":
             continue
-        failures = command_failures(group / flow / "artifacts")
+        try:
+            failures = command_failures(group / flow / "artifacts")
+        except EVIDENCE_ERRORS:
+            evidence_incomplete = True
+            continue
         if not failures:
-            if classification != "cleanup_failure":
-                classification = ("assertion_failure" if result["status"] == "failed" else "evidence_incomplete")
+            if result["status"] == "failed":
+                classification = "assertion_failure"
+            else:
+                evidence_incomplete = True
             continue
         sequence, kind, transport = failures[0]
         if first is None:
             first = {"flow": flow, "command": kind, "sequence": sequence}
         screenshot_secondary |= any("screenshot" in later_kind.lower() and offline
                                     for _, later_kind, offline in failures[1:])
-        if classification == "cleanup_failure":
-            continue
         if not transport or any(not offline for _, _, offline in failures):
             classification = "assertion_failure"
-        elif classification == "transport_retryable" and ("screenshot" in kind.lower()
+        elif ("screenshot" in kind.lower()
                 or (result["status"], result.get("cause")) != ("environment_blocked", "maestro_driver_died")):
-            classification = "evidence_incomplete"
-    return (classification if first or classification != "transport_retryable" else "evidence_incomplete",
-            first, screenshot_secondary)
+            evidence_incomplete = True
+    if cleanup_failed:
+        classification = "cleanup_failure"
+    elif evidence_incomplete or (not first and classification == "transport_retryable"):
+        classification = "evidence_incomplete"
+    return classification, first, screenshot_secondary
 
 
 def attempt_summary(root, suite, member, attempt, passed, adb_probe_ok, fixture_restored, retry_transport=True):
@@ -78,7 +89,7 @@ def attempt_summary(root, suite, member, attempt, passed, adb_probe_ok, fixture_
     if not passed:
         try:
             classification, first, screenshot_secondary = classify_failure(root, member)
-        except (OSError, ValueError, TypeError, KeyError, AttributeError):
+        except EVIDENCE_ERRORS:
             classification, first, screenshot_secondary = "evidence_incomplete", None, False
         fixture_restored = fixture_restored and classification != "cleanup_failure"
         record.update(fixture_restored=fixture_restored, first_failure_command=first,

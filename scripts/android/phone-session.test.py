@@ -808,6 +808,7 @@ class FixedWindowsEntry(unittest.TestCase):
             ("reused", "verify", "marker", (), "reused_baseline", "not_run", "editing", 2),
             ("result_write_error", "verify", "target", ("editing",), "not_run", "not_run", None, 1),
             ("session_write_error", "verify", "marker", ("editing",), "not_run", "not_run", None, 1),
+            ("retry_write_error", "verify", "marker", ("editing",), "not_run", "not_run", None, 1),
             ("blocked_write_error", "verify", "marker", (), "not_run", "not_run", None, 1),
             ("reuse_write_error", "verify", "target", (), "not_run", "not_run", None, 1),
             ("stop_write_error", "verify", "marker", ("editing",), "passed", "not_run", None, 1),
@@ -817,14 +818,18 @@ class FixedWindowsEntry(unittest.TestCase):
             with self.subTest(event=event, entry=entry, stop=stop):
                 self.sessions = self.root / f"sessions-{index}"
                 base_args = ("--non-interactive", "--already-launched", "--sessions-root", str(self.sessions))
-                if entry == "run" or event == "retry_failure":
-                    initial = "editing" if event == "retry_failure" else "language"
+                retrying = event in ("retry_failure", "retry_write_error")
+                if entry == "run" or retrying:
+                    initial = "editing" if retrying else "language"
                     self.assertEqual(self.verify(*base_args, "--check", initial)[0], 0)
+                    if retrying:
+                        prior = session.read_json(self.active() / "session.json")["flow_results"]["editing"]
+                        self.assertEqual(prior["status"], "passed")
                 if stop and event not in ("source_timeout", "blocked_write_error"):
                     self.assertEqual(self.verify(*base_args, "--check", "search")[0], 0)
-                retry = ("--retry",) if event == "retry_failure" else ()
+                retry = ("--retry",) if retrying else ()
                 baseline = self.record_baseline({"editing": self.evidence("editing")})
-                baseline_args = ("--baseline", baseline) if event in ("reused", "reuse_write_error", "retry_failure") else ()
+                baseline_args = ("--baseline", baseline) if retrying or event in ("reused", "reuse_write_error") else ()
                 stop_args = ("--stop-after", "editing") if stop == "target" else ()
                 save_session = session.PhoneSession.save
                 write_result = maestro_runner.write_result
@@ -838,7 +843,10 @@ class FixedWindowsEntry(unittest.TestCase):
                         if stop == "marker":
                             session.request_stop(engine.directory)
                         injected = True
-                        if event in ("session_write_error", "blocked_write_error", "reuse_write_error"):
+                        if event in ("session_write_error", "retry_write_error", "blocked_write_error", "reuse_write_error"):
+                            if event == "retry_write_error":
+                                saved = session.read_json(engine.output / "maestro/editing/result.json")
+                                self.assertEqual((saved["status"], saved["attempted"]), ("failed", True))
                             raise OSError("checkpoint cannot be persisted")
                     if event == "stop_write_error" and view.get("stopped") == "editing":
                         raise OSError("stop cannot be persisted")
@@ -858,7 +866,7 @@ class FixedWindowsEntry(unittest.TestCase):
                         ui.append(flow)
                         if flow == "search":
                             self.assertEqual(session.read_json(self.active() / "session.json")["flow_results"]["editing"]["status"], first)
-                    return {"status": "failed" if flow == "editing" and event in ("ui_failure", "retry_failure") else "passed",
+                    return {"status": "failed" if flow == "editing" and (retrying or event == "ui_failure") else "passed",
                             "flow_sha256": session.flow_digest(self.repo, flow)}
 
                 def readback(flow, _values):
@@ -913,8 +921,10 @@ class FixedWindowsEntry(unittest.TestCase):
                     with mock.patch.object(session.PhoneSession, "restore_device_input", side_effect=OSError("restore")):
                         self.assertEqual(self.cli("cleanup", "--release", "--session", str(self.active()))[0], 1)
                     self.assertEqual(session.read_json(self.active() / "session.json")["cleanup_errors"], ["input_restore"])
-                if event == "retry_failure":
+                if retrying:
                     self.assertEqual(state["flow_results"]["editing"]["status"], "failed")
+                    if event == "retry_write_error":
+                        self.assertEqual(rows["editing"]["existing_status"], "failed")
                     self.executed.clear()
                     code, _ = self.verify(*base_args, "--check", "editing", "--baseline", baseline)
                     self.assertEqual(code, 0)
@@ -925,12 +935,42 @@ class FixedWindowsEntry(unittest.TestCase):
         self.assertEqual(self.verify(*args)[0], 0)
         path = self.active() / "session.json"
         state = session.read_json(path)
-        state["flow_results"]["language"].update(log=None, evidence_paths=["missing"], screenshots=[])
+        inputs = self.root / "test-data.json"
+        session.write_json(inputs, {"APP_ID": self.app})
+        state["flow_results"]["language"].update(log=None, evidence_paths=["missing"], screenshots=[],
+                                                  test_data_path=str(inputs))
         session.write_json(path, state)
         self.executed.clear()
         self.assertEqual(self.verify(*args)[0], 0)
         self.assertEqual(self.executed, ["language"])
         self.assertEqual(self.rows()["language"]["status"], "passed")
+
+    def test_missing_manual_baseline_evidence_returns_to_cards_and_can_be_replaced(self):
+        args = ("--non-interactive", "--already-launched", "--check", "language")
+        check = "editing-keyboard"
+        old = self.root / "evidence.json"
+        record = self.evidence("editing", ui_status="not_applicable",
+                               server_verification="not_applicable", manual_status="passed")
+        baseline = self.record_baseline({check: record})
+        self.assertEqual(self.verify(*args, "--baseline", baseline)[0], 0)
+        self.assert_report_result(check, "passed")
+        self.assertEqual(self.rows()[check]["reuse"], "reused_baseline")
+        old.unlink()
+
+        self.assertEqual(self.verify(*args)[0], 0)
+        row = self.assert_report_result(check, "pending", "人工基线证据已缺失，需重新取证")
+        self.assertIsNone(row["reuse"])
+        report = session.read_json(self.active() / "report.json")
+        self.assertEqual(report["manual_results"][check]["status"], "pending")
+        self.assertIn(f"--check {check}", (self.active() / "manual-cards.md").read_text(encoding="utf-8"))
+
+        new = self.root / "replacement.png"
+        new.write_bytes(b"replacement evidence")
+        replacement = self.record_baseline({check: {**record, "evidence_paths": [new.name]}})
+        self.assertEqual(self.verify(*args, "--baseline", replacement)[0], 0)
+        self.assertEqual(self.rows()[check]["status"], "passed")
+        self.assertEqual(self.rows()[check]["reuse"], "reused_baseline")
+        self.assertEqual(self.rows()[check]["evidence_paths"], [str(new)])
 
     def test_invalid_coverage_keeps_state_and_previous_reports(self):
         args = ("--non-interactive", "--already-launched", "--check", "language")
@@ -940,18 +980,23 @@ class FixedWindowsEntry(unittest.TestCase):
         validate = session.validate_coverage
 
         def invalid(checks, selected, current, stopped, rows):
+            self.assertEqual(session.read_json(self.active() / "session.json")["coverage"]["status"], "running")
             rows.append(rows[0])
             validate(checks, selected, current, stopped, rows)
 
-        with mock.patch.object(session, "validate_coverage", side_effect=invalid):
-            code, result = self.verify(*args)
-        self.assertEqual(code, 1)
-        self.assertRegex(result["message"], "检查项缺失或重复")
-        self.assertEqual(output.read_bytes(), earlier)
-        saved = session.read_json(self.active() / "session.json")
-        self.assertNotEqual(saved["coverage"]["run_id"], json.loads(earlier)["run_id"])
-        self.assertEqual(saved["coverage"]["results"]["language"]["status"], "reused_pass")
-        self.assertNotIn("active_run_id", saved)
+        for stop in ((), ("--stop-after", "language")):
+            with self.subTest(stop=stop), mock.patch.object(session, "validate_coverage", side_effect=invalid):
+                code, result = self.verify(*args, *stop)
+                self.assertEqual(code, 1)
+                self.assertRegex(result["message"], "检查项缺失或重复")
+                self.assertEqual(output.read_bytes(), earlier)
+                saved = session.read_json(self.active() / "session.json")
+                self.assertNotEqual(saved["coverage"]["run_id"], json.loads(earlier)["run_id"])
+                self.assertEqual(saved["coverage"]["results"]["language"]["status"], "reused_pass")
+                self.assertEqual(saved["coverage"]["status"], "failed")
+                self.assertEqual(saved["coverage"]["error"]["cause"], "coverage_report_failed")
+                self.assertEqual(saved["coverage"]["error"]["message"], result["message"])
+                self.assertNotIn("active_run_id", saved)
 
     def test_probe_timeout_keeps_baselines_previous_pass_and_capability_skip(self):
         evidence_path = self.root / "evidence.json"

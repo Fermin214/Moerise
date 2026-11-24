@@ -143,7 +143,7 @@ Python、ADB 和 Maestro 应可从同一终端运行。安装 Python 依赖使�
 
 `report.json` 与 `report.md` 列出整份清单的覆盖、UI、服务端及人工结果、证据与观测到的最后一步。`manual-cards.md` 按待确认项列出通过条件和可复制的 `record` 命令；可加 `--evidence <文件>`、`--note <说明>`。`--record` 为每个实跑场景保留最长 180 秒录像。服务请求使用 `Moerise-Android-Acceptance/1.0` 标识；准备失败保留脱敏的步骤、方法、路径和错误码，Cloudflare 1010 记为 `CLOUDFLARE_1010`。
 
-覆盖报告写出前核对检查清单、复用证据和停止顺序。报告校验失败时保留已落盘的 `session.json` 及上一份报告，使用 `run_id` 对应会话和报告。流式证据先用 [流式对话脚本](../../README.md#流式对话) 核对 SSE 与 Core GET，再按 `insights-stream` 操作卡核对手机呈现。
+覆盖报告写出前核对检查清单、复用证据和停止顺序。`test_data_path` 提供后验所需输入，自动项复用还需执行证据。缺证据的人工基线会重新列入待取证操作卡，可导入有效证据替换。报告校验失败时，`session.json` 将该次运行记为失败，保留已结算结果和上一份报告，可用 `run_id` 对应会话与报告。流式证据先用 [流式对话脚本](../../README.md#流式对话) 核对 SSE 与 Core GET，再按 `insights-stream` 操作卡核对手机呈现。
 
 设备和会话写操作共享主仓库 `.local/android/device-build.lock`。`status` 与 `stop` 可在运行时访问。退出时归还本次占用的设备状态、驱动与端口。主仓库保存按设备索引的未归还资源和输入法检查点，切换设备、APK、测试源或 worktree 后仍能找回原责任。执行 `python -B scripts/android/phone-session.py cleanup --release --session <会话目录>` 结束活动会话，保留已装 App、账号数据和历史报告。再次使用固定入口会建立新会话。已有调用方仍可使用 `prepare`、`accept`、`run`、`ui`、`manual`、`record` 和 `cleanup` 子命令。正式包的自动启动从 `verify` 进入。
 

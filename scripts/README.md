@@ -46,7 +46,7 @@ node scripts/acceptance/verify-chat-stream.mjs \
   --fail-marker ANDROID_FAIL --language zh-CN --min-headings 3 --min-words-per-section 40
 ```
 
-`--fail-marker` 需要测试模型代理返回部分正文后异常断流。省略时跳过异常轮。正常轮要求正文含从 `## 1.` 开始的连续编号标题，并以所选语言分词，核对每节词数。摘要只记录 SSE 增量数量、Core GET 终态、正文比对、章节指标和清理结果。脚本删除它创建的临时对话，确认 GET 返回 404，再注销测试会话。任一检查或清理失败时退出码为 `1`。真机渲染按 [Maestro 操作卡](android/maestro/README.md#windows-正式包真机入口) 的 `insights-stream` 验证。
+`--fail-marker` 需要测试模型代理返回部分正文后异常断流。省略时跳过异常轮。正常轮要求正文含从 `## 1.` 开始的连续编号标题，围栏代码块之外的正文按所选语言分词并核对每节词数。摘要只记录 SSE 增量数量、Core GET 终态、正文比对、章节指标和清理结果。创建响应中断时，脚本用原请求 ID 取回临时对话。删除后确认 GET 返回 404，再注销测试会话。任一检查或清理失败时退出码为 `1`。真机渲染按 [Maestro 操作卡](android/maestro/README.md#windows-正式包真机入口) 的 `insights-stream` 验证。
 
 ---
 

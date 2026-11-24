@@ -329,9 +329,10 @@ jobs:
       - uses: actions/cache/restore@v4
         id: robolectric
         with:
-          path: &robolectric-path ${{ env.MOERISE_ROBOLECTRIC_DIR }}
+          path: ${{ env.MOERISE_ROBOLECTRIC_DIR }}
           key: &robolectric-key robolectric-gcs-${{ runner.os }}-${{ runner.arch }}-temurin${{ steps.java.outputs.version }}-${{ hashFiles('scripts/android/robolectric-sdk.sha256', 'mobile/gradle/wrapper/gradle-wrapper.properties', 'mobile/gradle/libs.versions.toml', 'mobile/androidApp/build.gradle.kts', 'mobile/settings.gradle.kts') }}
       - name: Prefetch and verify locked Robolectric SDK
+        id: robolectric-sdk
         run: |
           lock="$GITHUB_WORKSPACE/scripts/android/robolectric-sdk.sha256"
           mkdir -p "$MOERISE_ROBOLECTRIC_DIR"
@@ -345,11 +346,27 @@ jobs:
             done < "$lock"
             sha256sum --check "$lock"
           fi
+          {
+            echo 'jars<<EOF'
+            while read -r checksum jar; do
+              printf '%s/%s\n' "$MOERISE_ROBOLECTRIC_DIR" "$jar"
+            done < "$lock"
+            echo EOF
+          } >> "$GITHUB_OUTPUT"
       - uses: actions/cache/save@v4
         if: steps.robolectric.outputs.cache-hit != 'true'
         with:
-          path: *robolectric-path
+          path: ${{ env.MOERISE_ROBOLECTRIC_DIR }}
           key: *robolectric-key
+      - name: Upload verified Robolectric SDK
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-robolectric-sdk
+          path: ${{ steps.robolectric-sdk.outputs.jars }}
+          include-hidden-files: true
+          compression-level: 0
+          if-no-files-found: error
+          overwrite: true
       - uses: actions/cache@v4
         with:
           path: *gradle-home
@@ -409,15 +426,14 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - uses: actions/setup-java@v4
-        id: java
         with:
           distribution: temurin
           java-version: '17'
-      - uses: actions/cache/restore@v4
+      - name: Download verified Robolectric SDK
+        uses: actions/download-artifact@v4
         with:
-          path: *robolectric-path
-          key: *robolectric-key
-          fail-on-cache-miss: true
+          name: android-robolectric-sdk
+          path: ${{ env.MOERISE_ROBOLECTRIC_DIR }}
       - name: Verify offline Robolectric SDK
         run: |
           cd "$MOERISE_ROBOLECTRIC_DIR"

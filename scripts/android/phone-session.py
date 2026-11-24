@@ -149,18 +149,32 @@ def create_release_state(session, artifact, fixture, origin, allow_production):
     session.save()
 
 
-def evidence_paths(item):
+def evidence_paths(item, *, include_input=False):
     paths = []
     for key in ("evidence_paths", "screenshots", "recordings"):
         values = item.get(key)
         if isinstance(values, (list, tuple)):
             paths.extend(values)
-    paths.extend(item.get(key) for key in ("log", "probe_log", "test_data_path"))
+    paths.extend(item.get(key) for key in ("log", "probe_log"))
+    if include_input:
+        paths.append(item.get("test_data_path"))
     return list(dict.fromkeys(path for path in paths if isinstance(path, str) and path.strip() and "\0" not in path))
 
 
 def has_evidence(item):
-    return any(Path(path).is_file() for path in evidence_paths(item))
+    input_path = item.get("test_data_path")
+    source = Path(input_path) if isinstance(input_path, str) and input_path else None
+    return any(path != source and path.is_file() for path in map(Path, evidence_paths(item)))
+
+
+def manual_evidence(record, phase):
+    if record.get("status") != "passed":
+        return record
+    if record.get("reuse") == "reused_baseline" and not has_evidence(record):
+        return {**record, "status": "pending", "reuse": None, "note": "人工基线证据已缺失，需重新取证"}
+    if phase == "pre_launch" and not record.get("evidence_captured_at"):
+        return {**record, "status": "inconclusive", "reuse": None}
+    return record
 
 
 def compatible_pass(item, flow, fingerprint):
@@ -1041,9 +1055,7 @@ class PhoneSession:
                         continue
                     value["evidence_captured_at"] = captured
                 local = self.state.setdefault("manual_results", {})
-                current = local.get(name, {})
-                if current.get("status") != "passed" or (
-                        item["phase"] == "pre_launch" and not current.get("evidence_captured_at")):
+                if manual_evidence(local.get(name, {}), item["phase"]).get("status") != "passed":
                     local[name] = {**value, "status": "passed", "reuse": "reused_baseline"}
         self.save()
         return imported
@@ -1085,7 +1097,8 @@ class PhoneSession:
         view = self.state.get("coverage", {})
         selected = view.get("selected", []) if selected is None else selected
         current = view.get("results", {})
-        manual = self.state.get("manual_results", {})
+        manual = {name: manual_evidence(record, checks.get(name, {}).get("phase"))
+                  for name, record in self.state.get("manual_results", {}).items()}
         categories = {"failed": "assertion", "harness_error": "tool", "environment_blocked": "environment",
                       "inconclusive": "unconfirmed", "skipped": "dependency", "not_run": "not_run"}
         rows, cards = [], ["# Android 真机操作卡", ""]
@@ -1096,12 +1109,10 @@ class PhoneSession:
             result = settled or previous
             human = manual.get(name, {})
             manual_status = human.get("status", "not_applicable" if automatic else "pending")
-            if item["phase"] == "pre_launch" and manual_status == "passed" and not human.get("evidence_captured_at"):
-                manual_status = "inconclusive"
             if not human and item["phase"] == "pre_install" and view.get("install_needed") is False:
                 manual_status = "not_applicable"
             status = (result.get("status", "not_run") if settled else "not_run") if automatic else manual_status
-            paths = evidence_paths(result) + evidence_paths(human)
+            paths = evidence_paths(result, include_input=True) + evidence_paths(human)
             row = {"id": name, "module": item["module"], "flow": item.get("flow"), "kind": item["kind"],
                    "phase": item["phase"], "handoff_items": item["handoff_items"], "status": status,
                    "ui_status": result.get("ui_status", "not_run") if settled else ("not_run" if automatic else "not_applicable"),
@@ -1120,7 +1131,7 @@ class PhoneSession:
                 continue
             card = item["manual_card"]
             linked = [path for auto in checks.values() if auto["kind"] == "auto" and auto["module"] == item["module"]
-                      for path in evidence_paths(self.previous_check(auto))]
+                      for path in evidence_paths(self.previous_check(auto), include_input=True)]
             quoted = str(self.directory).replace("'", "''")
             outcome = "inconclusive" if item["phase"] == "pre_launch" else "passed"
             command = (f"python -B scripts/android/phone-session.py record --release --session '{quoted}' "
@@ -1216,11 +1227,12 @@ class PhoneSession:
                 self.save()
             except OSError:
                 view["results"].pop(name, None)
-                history = self.state.get("flow_results", {})
-                if previous is None:
-                    history.pop(flow, None)
-                else:
-                    history[flow] = previous
+                if not result.get("attempted"):
+                    history = self.state.get("flow_results", {})
+                    if previous is None:
+                        history.pop(flow, None)
+                    else:
+                        history[flow] = previous
                 raise
             if result.get("cause") != "interrupted" and should_stop(flow):
                 view["stopped"] = name
@@ -1518,8 +1530,8 @@ def complete_phase(session, checks, phase, prompt, missed=False):
             continue
         name = item["id"]
         manual = session.state.setdefault("manual_results", {})
-        previous = manual.get(name, {})
-        if previous.get("status") == "passed" and (phase != "pre_launch" or previous.get("evidence_captured_at")):
+        previous = manual_evidence(manual.get(name, {}), phase)
+        if previous.get("status") == "passed":
             continue
         if missed:
             manual[name] = {"status": "inconclusive", "window_missed": True,
@@ -1650,10 +1662,18 @@ def verify(args, adb):
         if view["status"] == "running":
             view["status"] = {0: "completed", 1: "failed", 2: "stopped"}[code]
         session.state.pop("active_run_id", None)
-        session.save()
-        if marker.exists() and marker.read_text(encoding="utf-8-sig").strip() == run_id:
-            marker.unlink(missing_ok=True)
-        report = session.coverage_report(checks, [item["id"] for item in selected])
+        try:
+            report = session.coverage_report(checks, view["selected"])
+        except (ValueError, OSError) as error:
+            previous_error = view.get("error")
+            view.update(status="failed", error={"cause": "coverage_report_failed", "message": str(error)})
+            if previous_error:
+                view["error"]["previous_error"] = previous_error
+            raise
+        finally:
+            session.save()
+            if marker.exists() and marker.read_text(encoding="utf-8-sig").strip() == run_id:
+                marker.unlink(missing_ok=True)
         print(json.dumps({"status": report["status"], "session": str(session.directory),
                           "report": str(session.directory / "report.md"), "error": report["error"],
                           "cleanup_errors": report["cleanup_errors"]}, ensure_ascii=False, indent=2))

@@ -50,7 +50,7 @@ Linux 入口通过 `MOERISE_ANDROID_SUITE` 选择组；Maestro 场景时限由 `
 
 各分片使用同次构建的 Core 和目标 APK，各子项使用独立 Core/Memos 数据集。含原生专项的分片只额外下载一次测试 APK，含 `recovery` 的分片还下载升级 APK。分片失败时其他分片继续。结果页列出子项状态和耗时，`android-device-<组名>` 附件保存每次 `(suite, member, attempt)` 的 ADB 探针、首错、fixture 恢复、日志与诊断。首错确认是 transport 断链、证据齐全且 fixture 成功清理时，等待 ADB 和包管理探针通过后，用新建的隔离数据重跑该子项一次。
 
-JVM、lint、发行构建和接口检查使用两个 Gradle worker。Robolectric 的 API 29 JAR 在构建任务中从 Gradle 使用的 GCS 镜像预取并校验 SHA-256。Core API 恢复同一缓存并离线解析该 JAR。目标 APK 下载前后各有 UTC 时间戳，可与 Action 的内部下载完成时间及步骤结束时间对照。
+JVM、lint、发行构建和接口检查使用两个 Gradle worker。构建任务从缓存恢复 Robolectric 的 API 29 JAR，缺失或 SHA-256 不符时从 Gradle 使用的 GCS 镜像下载。Core API 下载同次运行中构建任务校验过的 JAR 产物，复核 SHA-256 后离线解析。目标 APK 下载前后各有 UTC 时间戳，可与 Action 的内部下载完成时间及步骤结束时间对照。
 
 设备调试使用没有开放 PR 的独立分支，推送后通过已有的 `Checks` 工作流选择设备组。
 修复集中通过后更新 PR 分支，触发适用的检查：

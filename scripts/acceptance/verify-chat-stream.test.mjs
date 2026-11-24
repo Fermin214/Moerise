@@ -17,6 +17,10 @@ const cookie = 'moerise_local_session=private-opaque-cookie';
 const partial = 'Private partial material 😀';
 const prose = 'Private fixture words appear here as synthetic example material.';
 const long = `## 1. Findings\n${prose}\n\n## 2. Themes\n${prose}\n`;
+const fenceExamples = {
+  'fenced-headings': `\`\`\`\`md\n## 1. Findings\n${prose}\n\`\`\`\n## 2. Themes\n${prose}\n\`\`\`\`\n`,
+  'fenced-words': `## 1. Findings\nOne word.\n> ~~~text\n> ${prose}\n> ~~~~\n## 2. Themes\nTwo words.\n- \`\`\`text\n  ${prose}\n  \`\`\`\n`,
+};
 
 function json(response, status, body, headers = {}) {
   response.writeHead(status, { 'Content-Type': 'application/json', ...headers });
@@ -29,6 +33,7 @@ function event(response, name, value) {
 
 async function fixture(context, mode) {
   let version = 1, exists = false, deleteAttempts = 0, loggedIn = false;
+  let creation;
   const requests = [], turns = [], streams = [], errors = [];
   let origin;
   const server = createServer(async (request, response) => {
@@ -49,7 +54,16 @@ async function fixture(context, mode) {
       assert.equal(request.headers['x-csrf-token'], csrf);
       if (method === 'POST' && path === '/chats') {
         assert.deepEqual(body.names, ['memos/synthetic1', 'memos/synthetic2']);
+        if (mode === 'create-rejected') return json(response, 422, { error: { code: 'INVALID_ARGUMENT' } });
+        if (creation) {
+          assert.deepEqual(body, creation);
+          assert.equal(exists, true);
+          if (mode === 'create-unconfirmed') return response.destroy();
+          return json(response, 200, { id: chatId, version, materials: body.names.map(name => ({ name })) });
+        }
+        creation = body;
         exists = true;
+        if (['create-disconnect', 'create-unconfirmed'].includes(mode)) return response.destroy();
         return json(response, 201, { id: chatId, version, materials: body.names.map(name => ({ name })) });
       }
       if (method === 'POST' && path === `${chatPath}/messages`) {
@@ -58,7 +72,8 @@ async function fixture(context, mode) {
         assert.equal(body.kind, 'question');
         assert.match(request.headers.accept, /text\/event-stream/);
         const protocolFailure = body.content.includes('ANDROID_FAIL');
-        const content = protocolFailure ? partial : mode === 'short' ? '## 1. Short\nOne word.\n## 2. Short\nTwo words.\n' : long;
+        const content = protocolFailure ? partial : mode === 'short' ?
+          '## 1. Short\nOne word.\n## 2. Short\nTwo words.\n' : fenceExamples[mode] ?? long;
         const requestId = body.request_id;
         streams.push(requestId);
         const turn = { request_id: requestId, assistant: { content: '', status: 'running', error_code: '' } };
@@ -188,6 +203,45 @@ for (const mode of ['mismatch', 'short']) {
     assert.equal(report.cleanup.get_after_delete_status, 404);
   });
 }
+
+for (const [mode, metrics] of [['fenced-headings', [0, []]], ['fenced-words', [2, [2, 2]]]]) {
+  test(`excludes ${mode} from the long reply criteria`, async context => {
+    const service = await fixture(context, mode);
+    const { report, code } = await invoke(context, service, { marker: false });
+    const reply = report.turns[1];
+    assert.equal(code, 1);
+    assert.equal(report.probe_stage, 'long_reply');
+    assert.equal(reply.content_match, true);
+    assert.deepEqual([reply.heading_count, reply.section_word_counts], metrics);
+    assert.equal(report.cleanup.get_after_delete_status, 404);
+  });
+}
+
+test('replays the same creation request after a lost response and cleans up the committed chat', async context => {
+  const service = await fixture(context, 'create-disconnect');
+  const { report, code } = await invoke(context, service, { marker: false });
+  assert.equal(code, 1);
+  assert.equal(report.probe_stage, 'create_chat');
+  assert.equal(service.streams.length, 0);
+  const creates = service.requests.filter(request => request.method === 'POST' && request.path === '/chats');
+  assert.equal(creates.length, 2);
+  assert.deepEqual(creates[0].body, creates[1].body);
+  assert.deepEqual(report.cleanup, { cancel_attempted: false, delete_ok: true, get_after_delete_status: 404,
+    logout_ok: true, error: null });
+});
+
+test('reports an unconfirmed creation separately from a definitive rejection', async context => {
+  for (const [mode, count, error] of [['create-unconfirmed', 2, 'chat_creation_unconfirmed'], ['create-rejected', 1, null]]) {
+    const service = await fixture(context, mode);
+    const { report, code } = await invoke(context, service, { marker: false });
+    assert.equal(code, 1);
+    assert.equal(report.probe_stage, 'create_chat');
+    assert.equal(report.cleanup.error, error);
+    assert.equal(report.cleanup.delete_ok, false);
+    assert.equal(report.cleanup.logout_ok, true);
+    assert.equal(service.requests.filter(request => request.method === 'POST' && request.path === '/chats').length, count);
+  }
+});
 
 test('on an interrupted stream, handles CHAT_BUSY, cancels its request, reloads version, then deletes', async context => {
   const service = await fixture(context, 'busy');

@@ -48,11 +48,36 @@ function turnSummary(name) {
     content_match: false, content_chars: 0 };
 }
 
+function proseOutsideFences(content) {
+  let fence, fenceDepth = 0;
+  return content.split(/\r\n|\r|\n/).map(line => {
+    const quote = /^(?:[ \t]*>[ \t]?)+/.exec(line)?.[0] ?? '';
+    const depth = quote.replace(/[ \t]/g, '').length;
+    const body = line.slice(quote.length);
+    if (depth < fenceDepth) fence = undefined;
+    if (fence) {
+      const closing = /^[ \t]*(`{3,}|~{3,})[ \t]*$/.exec(body)?.[1];
+      if (depth === fenceDepth && closing?.[0] === fence[0] && closing.length >= fence.length) {
+        fence = undefined;
+      }
+      return '';
+    }
+    const opening = /^[ \t]*(?:(?:[-+*]|\d{1,9}[.)])[ \t]+)?(`{3,}|~{3,})(.*)$/.exec(body);
+    if (opening && (opening[1][0] === '~' || !opening[2].includes('`'))) {
+      fence = opening[1];
+      fenceDepth = depth;
+      return '';
+    }
+    return line;
+  }).join('\n');
+}
+
 function sectionMetrics(content, language) {
-  const headings = [...content.matchAll(/^ {0,3}#{1,6}[ \t]+([1-9]\d*)[.．、)）][ \t]*\S[^\r\n]*/gm)];
+  const prose = proseOutsideFences(content);
+  const headings = [...prose.matchAll(/^ {0,3}#{1,6}[ \t]+([1-9]\d*)[.．、)）][ \t]*\S[^\n]*/gm)];
   const segmenter = new Intl.Segmenter(language, { granularity: 'word' });
   const words = headings.map((heading, index) => [...segmenter.segment(
-    content.slice(heading.index + heading[0].length, headings[index + 1]?.index),
+    prose.slice(heading.index + heading[0].length, headings[index + 1]?.index),
   )].filter(segment => segment.isWordLike).length);
   return { heading_count: headings.length, section_word_counts: words,
     numbered: headings.every((heading, index) => Number(heading[1]) === index + 1) };
@@ -119,6 +144,10 @@ function client(origin) {
   };
 }
 
+function createdChatPath(response) {
+  return [200, 201].includes(response.status) && uuid.test(response.value?.id) ? `/chats/${response.value.id}` : null;
+}
+
 async function cleanChat(api, path, requestId, cleanup) {
   const signal = AbortSignal.timeout(20_000);
   let busy = false;
@@ -169,7 +198,7 @@ async function run(args, signal) {
   const cleanup = { cancel_attempted: false, delete_ok: false, get_after_delete_status: null, logout_ok: false, error: null };
   const report = { origin: null, layers: ['sse', 'core_get'], probe_stage: 'arguments', material_count: 0,
     turns: [failure, long], cleanup, passed: false };
-  let api, path, requestId, version;
+  let api, path, creation, requestId, version;
   try {
     const config = options(args);
     report.origin = config.origin;
@@ -185,11 +214,14 @@ async function run(args, signal) {
     const login = await api.request('POST', '/session', { body: { username: connection.username, password: connection.password }, signal });
     if (login.status !== 200 || !api.canMutate) throw new Error('login_failed');
     report.probe_stage = 'create_chat';
-    const created = await api.request('POST', '/chats', {
-      body: { request_id: randomUUID(), title: 'Stream acceptance', names: config.notes }, signal,
-    });
-    if (created.status !== 201 || !uuid.test(created.value?.id)) throw new Error('create_failed');
-    path = `/chats/${created.value.id}`;
+    signal.throwIfAborted();
+    creation = { request_id: randomUUID(), title: 'Stream acceptance', names: config.notes };
+    const created = await api.request('POST', '/chats', { body: creation, signal });
+    path = createdChatPath(created);
+    if (!path) {
+      if (created.status >= 400 && created.status < 500 && ![408, 429].includes(created.status)) creation = undefined;
+      throw new Error('create_failed');
+    }
     version = created.value.version;
     const materials = created.value.materials?.map(material => material.name);
     if (!Number.isSafeInteger(version) || version < 1 || !materials ||
@@ -241,6 +273,12 @@ async function run(args, signal) {
     report.passed = false;
   } finally {
     const errors = [];
+    if (creation && !path) {
+      try {
+        path = createdChatPath(await api.request('POST', '/chats', { body: creation }));
+      } catch {}
+      if (!path) errors.push('chat_creation_unconfirmed');
+    }
     if (path) {
       try { await cleanChat(api, path, requestId, cleanup); }
       catch { errors.push('chat_cleanup_failed'); }
