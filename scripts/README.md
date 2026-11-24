@@ -35,6 +35,19 @@ node scripts/acceptance/check-stars.mjs \
 
 脚本使用独立容器与测试账号。观星导入指定语料并复用已有向量；其他脚本使用虚构笔记。模型服务由本地替身提供，不需要真实模型凭据。报告和截图写入 `.local/` 下各自的随机目录。观星脚本失败时保留来源容器，使用相同语料参数加 `--resume .local/stars-acceptance-<id>` 可复用已导入的笔记、状态与索引。成功退出后清理来源容器，`--keep` 可保留它。Compose 脚本支持 `--help`；`--keep` 在成功后保留测试环境，`--skip-build` 复用已构建镜像。
 
+### 流式对话
+
+`verify-chat-stream.mjs` 只需 Node.js 和已运行的测试 Core。指定 `environment` 为 `test`、`origin` 与 `--origin` 匹配的私有连接档案，并显式列出获准发送给模型的合成笔记 ID。`--connection -` 从标准输入读取同一 JSON 格式，包含 `origin`、`environment`、`username` 和 `password`。
+
+```bash
+node scripts/acceptance/verify-chat-stream.mjs \
+  --origin https://acceptance.example \
+  --connection .local/phone/connection.json --notes memos/synthetic-a,memos/synthetic-b \
+  --fail-marker ANDROID_FAIL --language zh-CN --min-headings 3 --min-words-per-section 40
+```
+
+`--fail-marker` 需要测试模型代理返回部分正文后异常断流。省略时跳过异常轮。正常轮要求正文含从 `## 1.` 开始的连续编号标题，并以所选语言分词，核对每节词数。摘要只记录 SSE 增量数量、Core GET 终态、正文比对、章节指标和清理结果。脚本删除它创建的临时对话，确认 GET 返回 404，再注销测试会话。任一检查或清理失败时退出码为 `1`。真机渲染按 [Maestro 操作卡](android/maestro/README.md#windows-正式包真机入口) 的 `insights-stream` 验证。
+
 ---
 
 ## 二、性能与检索质量
@@ -96,10 +109,12 @@ GitHub Actions 的 Android 检查通过 `android/ci-device-check.sh` 启动隔�
 | `verify-phone.ps1` | Windows 正式包固定验收入口，从 `.local/phone/profile.json` 读取配置并自动续跑 |
 | `phone-session.py`、`phone-checks.json` | 真机验收生命周期、清单登记、证据复用、操作卡与设备恢复，详见 [Maestro](android/maestro/README.md#windows-正式包真机入口) |
 | `maestro_runner.py`、`maestro-run.py` | 共用 UI 执行、独立测试数据、服务端后验、JUnit 与脱敏产物 |
+| `adb_common.py` | 模拟器、真机和发行冒烟共用的 ADB、代理与反向端口检查 |
 | `maestro/` | 登录、编辑、搜索、归档删除、洞察、导航、附件和语言流程及静态校验 |
 | `acceptance.ps1` | 动态设备选择、隔离包安装、登录/笔记/输入法；`-Recovery` 增加离线和后台自动同步；`-SkipBuild` 复用 APK |
-| `ci-device-check.sh` | 隔离模拟器按 `MOERISE_ANDROID_SUITE` 执行 Maestro 界面组或 instrumentation 专项 |
-| `fixture-artifacts.py` | 记录 Android 源码和两个 fixture APK 的摘要；界面组用 `verify --target-only` 单独校验目标包 |
+| `ci-scope.py` | 读取 NUL 分隔的 Git 路径，判定 `none`、`host` 或 `full` |
+| `ci-device-check.sh` | 隔离模拟器按 `MOERISE_ANDROID_SUITE` 执行界面组或专项，逐次输出 ADB 探针、首错、清理与重试结果 |
+| `fixture-artifacts.py` | 记录 Android 源码与目标／测试 APK 摘要；纯界面组用 `verify --target-only`，需要升级包时用 `write --upgrade-apk <路径>` 和 `verify --require-upgrade` |
 | `device-recovery.py` | 分阶段 instrumentation、SQLite/WAL 落盘确认、杀进程重开及官方 API 无重复检查 |
 | `start-fixture.ps1` | 隐藏进程启动隔离 Core/Memos/模型；`-Resume` 复用语料、端口与索引 |
 | `fixture-control.ps1` | 单实例状态、保留数据停止、精确身份旧进程停止和显式销毁 |

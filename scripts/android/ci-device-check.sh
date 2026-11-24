@@ -11,7 +11,40 @@ fi
 export MOERISE_ANDROID_SUITE="${MOERISE_ANDROID_SUITE:-all}"
 android_ci_selection="$(python3 scripts/android/device-suites.py "$MOERISE_ANDROID_SUITE")"
 mapfile -t android_ci_suites <<< "$android_ci_selection"
+
+probe_device() {
+    timeout 10s adb -s "$ANDROID_SERIAL" shell pm path android | grep -q '^package:'
+}
+
+wait_for_device() {
+    local ready_since=-1 deadline=$((SECONDS + 30))
+    while (( SECONDS < deadline )); do
+        if [[ $(timeout 2s adb -s "$ANDROID_SERIAL" get-state 2>/dev/null) == device ]]; then
+            if (( ready_since < 0 )); then ready_since=$SECONDS; fi
+            if (( SECONDS - ready_since >= 5 )); then probe_device; return $?; fi
+        else
+            ready_since=-1
+        fi
+        sleep 1
+    done
+    return 1
+}
+
+restore_device_fixture() {
+    local port="$1" mapping
+    if ! probe_device && ! wait_for_device; then return 1; fi
+    timeout 30s adb -s "$ANDROID_SERIAL" shell am force-stop io.github.fermin214.moerise.fixture || return 1
+    timeout 30s adb -s "$ANDROID_SERIAL" shell rm -f /data/local/tmp/moerise-android-fixture.json || return 1
+    mapping=$(timeout 30s adb -s "$ANDROID_SERIAL" reverse --list) || return 1
+    if awk -v port="tcp:$port" 'NF >= 2 && $(NF-1) == port && $NF == port { found = 1 } END { exit !found }' <<< "$mapping"; then
+        timeout 30s adb -s "$ANDROID_SERIAL" reverse --remove "tcp:$port" || return 1
+    fi
+}
+
 run_device_check() (
+    local member="$1" cleanup_receipt="$2" fixture_port=""
+    export MOERISE_ANDROID_SUITE="$member"
+    if [[ "$member" != recovery ]]; then unset MOERISE_ANDROID_UPGRADE_APK; fi
     export MOERISE_ANDROID_FIXTURE_ROOT
     export MOERISE_ANDROID_FIXTURE_DISPOSE_ON_EXIT=1
     MOERISE_ANDROID_FIXTURE_ROOT="$(mktemp -d "$android_repo_root/.local/android/device-XXXXXXXX")" || exit 1
@@ -19,16 +52,19 @@ run_device_check() (
     setsid scripts/android/start-fixture.sh > "$MOERISE_ANDROID_FIXTURE_ROOT/fixture.log" 2>&1 &
     fixture_pid=$!
     cleanup_fixture() {
-        local result=$?
+        local result=$? restored=true
         trap - EXIT
-        kill -TERM -- "-$fixture_pid" 2>/dev/null || true
-        if ! wait "$fixture_pid"; then result=1; fi
+        kill -TERM "$fixture_pid" 2>/dev/null || true
+        if ! wait "$fixture_pid"; then restored=false; fi
+        if [[ -n "$fixture_port" ]] && ! restore_device_fixture "$fixture_port"; then restored=false; fi
         for log in fixture core; do
             if [[ -f "$MOERISE_ANDROID_FIXTURE_ROOT/$log.log" ]]; then
                 cp "$MOERISE_ANDROID_FIXTURE_ROOT/$log.log" ".local/android/device-fixture-$log.log" || result=1
-                cp "$MOERISE_ANDROID_FIXTURE_ROOT/$log.log" ".local/android/device-fixture-$MOERISE_ANDROID_SUITE-$log.log" || result=1
+                cp "$MOERISE_ANDROID_FIXTURE_ROOT/$log.log" ".local/android/device-fixture-$member-$log.log" || result=1
             fi
         done
+        printf '%s\n' "$restored" > "$cleanup_receipt" || exit 1
+        if [[ "$restored" != true ]]; then result=1; fi
         exit "$result"
     }
     trap cleanup_fixture EXIT
@@ -46,107 +82,59 @@ while not path.exists():
         raise SystemExit("fixture 启动超时")
     time.sleep(1)
 PY
+    fixture_port="$(python3 -c 'import json,sys,urllib.parse; print(urllib.parse.urlparse(json.load(open(sys.argv[1]))["origin"]).port)' \
+        "$MOERISE_ANDROID_FIXTURE")" || exit 1
     scripts/android/acceptance.sh
 )
 
-wait_for_device() {
-    local ready_since=-1 deadline=$((SECONDS + 30))
-    while (( SECONDS < deadline )); do
-        if [[ $(timeout 2s adb -s "$ANDROID_SERIAL" get-state 2>/dev/null) == device ]]; then
-            if (( ready_since < 0 )); then ready_since=$SECONDS; fi
-            if (( SECONDS - ready_since >= 5 )); then return 0; fi
+check_device_member() {
+    local suite="$1" member="$2" attempt decision attempt_output cleanup_receipt path
+    local -a flags
+    for attempt in 1 2; do
+        attempt_output=".local/android/device-flows/$member/attempt-$attempt"
+        mkdir -p "$attempt_output" || return 1
+        cleanup_receipt="$attempt_output/fixture-restored"
+        rm -f "$cleanup_receipt" || return 1
+        flags=()
+        if [[ "${MOERISE_ANDROID_RETRY_TRANSPORT:-0}" == 1 ]]; then flags+=(--retry-transport); fi
+        : > .local/android/device-results.tsv
+        : > .local/android/device-acceptance.log
+        rm -f .local/android/device-fixture-{core,fixture}.log .local/android/device-diagnostics.tar || return 1
+        if [[ "$attempt" == 1 ]]; then rm -rf ".local/android/maestro/$member" || return 1; fi
+        if wait_for_device; then
+            flags+=(--adb-probe-ok)
+            if run_device_check "$member" "$cleanup_receipt"; then flags+=(--passed); fi
+            if [[ -f "$cleanup_receipt" && $(< "$cleanup_receipt") == true ]]; then flags+=(--fixture-restored); fi
         else
-            ready_since=-1
+            echo "ADB 设备探针失败：$member（尝试 $attempt）" >&2
+            flags+=(--fixture-restored)
         fi
-        sleep 1
+        decision=$(python3 -B scripts/android/device_transport.py .local/android "$suite" "$member" "$attempt" "${flags[@]}") || return 1
+        for path in .local/android/device-results.tsv .local/android/device-acceptance.log \
+            .local/android/device-diagnostics.tar .local/android/device-fixture-{core,fixture}.log; do
+            if [[ -f "$path" ]]; then cp "$path" "$attempt_output/" || return 1; fi
+        done
+        rm -f "$cleanup_receipt" || return 1
+        case "$decision" in
+            passed) return 0 ;;
+            retry)
+                mv ".local/android/maestro/$member" "$attempt_output/maestro" || return 1
+                echo "Maestro 设备连接中断，等待 ADB 恢复后重跑 $member。"
+                ;;
+            *) return 1 ;;
+        esac
     done
     return 1
 }
-
-check_device_suite() (
-export MOERISE_ANDROID_SUITE="$1"
-if run_device_check; then exit 0; fi
-if [[ "${MOERISE_ANDROID_RETRY_TRANSPORT:-0}" != 1 ]]; then exit 1; fi
-python3 - "$MOERISE_ANDROID_SUITE" <<'PY' || exit 1
-import json
-from pathlib import Path
-import subprocess
-import sys
-
-suite = sys.argv[1]
-root = Path('.local/android')
-groups = json.loads(Path('scripts/android/maestro/catalog.json').read_text())['groups']
-try:
-    selected = subprocess.check_output([sys.executable, 'scripts/android/device-suites.py', suite], text=True).splitlines()
-    rows = [row.split('\t') for row in (root / 'device-results.tsv').read_text().splitlines()[1:]]
-    if not rows or [row[0] for row in rows] != selected[:len(rows)] or rows[-1][1] != 'environment_blocked' or any(row[1] != 'passed' for row in rows[:-1]):
-        raise SystemExit(1)
-    failed = rows[-1][0]
-    if failed not in groups:
-        raise SystemExit(1)
-    group = root / 'maestro' / failed
-    results = json.loads((group / 'results.json').read_text())
-    transport = ('environment_blocked', 'maestro_driver_died')
-    retries = [flow for flow, result in results.items()
-               if (result['status'], result.get('cause')) == transport]
-    if any((result['status'], result.get('cause')) not in {transport, ('passed', None)}
-           for result in results.values()):
-        raise SystemExit(1)
-    for flow in retries:
-        if flow not in groups[failed]:
-            raise SystemExit(1)
-        reports = sorted((group / flow / 'artifacts').rglob('commands.json'))
-        if not reports:
-            raise SystemExit(1)
-        # Maestro's completion screenshot can replace an earlier assertion in JUnit.
-        for report in reports:
-            for command in json.loads(report.read_text()):
-                metadata = command.get('metadata', {})
-                if metadata.get('status') not in ('FAILED', 'ERROR'):
-                    continue
-                message = metadata.get('error', {}).get('message', '')
-                if 'Device server died during ' not in message and not (
-                    '(host:transport:' in message and (': device offline' in message or ' not found' in message)
-                ):
-                    raise SystemExit(1)
-except (OSError, ValueError, AttributeError, KeyError, IndexError, TypeError, subprocess.CalledProcessError):
-    raise SystemExit(1)
-if not retries:
-    raise SystemExit(1)
-PY
-echo "Maestro 设备连接中断，等待 ADB 恢复后重跑 $MOERISE_ANDROID_SUITE。"
-if ! wait_for_device; then
-    echo 'ADB 未恢复稳定连接。' >&2
-    exit 1
-fi
-first_attempt=$(mktemp -d .local/android/device-transport-XXXXXXXX)
-for path in .local/android/device-results.tsv .local/android/device-acceptance.log \
-    .local/android/device-diagnostics.tar .local/android/device-fixture-*.log \
-    ".local/android/maestro/$MOERISE_ANDROID_SUITE"; do
-    if [[ -e "$path" ]]; then mv "$path" "$first_attempt/"; fi
-done
-printf 'group\tstatus\tseconds\n' > .local/android/device-results.tsv
-: > .local/android/device-acceptance.log
-run_device_check
-
-)
 android_ci_summary=.local/android/device-results-combined.tsv
 printf 'group\tstatus\tseconds\n' > "$android_ci_summary"
 android_ci_failed=0
 for android_ci_suite in "${android_ci_suites[@]}"; do
     android_ci_started=$SECONDS
-    : > .local/android/device-results.tsv
-    : > .local/android/device-acceptance.log
     android_ci_result=0
-    if ! check_device_suite "$android_ci_suite"; then
+    if ! check_device_member "$MOERISE_ANDROID_SUITE" "$android_ci_suite"; then
         android_ci_result=1
         android_ci_failed=1
-    fi
-    android_ci_output=".local/android/device-flows/$android_ci_suite"
-    mkdir -p "$android_ci_output"
-    cp .local/android/device-results.tsv .local/android/device-acceptance.log "$android_ci_output/"
-    if [[ -f .local/android/device-diagnostics.tar ]]; then
-        mv .local/android/device-diagnostics.tar "$android_ci_output/"
     fi
     if [[ "$android_ci_result" == 1 ]] && awk -F '\t' 'NR > 1 && $2 != "passed" { exit 1 }' .local/android/device-results.tsv; then
         printf '%s\tharness_error\t%s\n' "$android_ci_suite" "$((SECONDS - android_ci_started))" >> "$android_ci_summary"

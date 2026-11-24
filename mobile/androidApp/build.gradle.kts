@@ -127,10 +127,19 @@ tasks.register("exportReleaseDependencies") {
 }
 
 room { schemaDirectory("$projectDir/schemas") }
+val robolectricRepoUrl = providers.gradleProperty("moeriseRobolectricRepoUrl")
+    .orElse(providers.environmentVariable("MOERISE_ROBOLECTRIC_REPO_URL"))
+    .orElse("https://maven-central.storage-download.googleapis.com/maven2")
+val robolectricDir = providers.gradleProperty("moeriseRobolectricDir")
+    .orElse(providers.environmentVariable("MOERISE_ROBOLECTRIC_DIR"))
+val robolectricOffline = providers.gradleProperty("moeriseRobolectricOffline")
+    .orElse(providers.environmentVariable("MOERISE_ROBOLECTRIC_OFFLINE"))
 tasks.withType<Test>().configureEach {
     maxHeapSize = "512m"
     jvmArgs("-XX:ActiveProcessorCount=2")
-    systemProperty("robolectric.dependency.repo.url", "https://repo.maven.apache.org/maven2")
+    systemProperty("robolectric.dependency.repo.url", robolectricRepoUrl.get())
+    robolectricDir.orNull?.let { systemProperty("robolectric.dependency.dir", file(it).absolutePath) }
+    robolectricOffline.orNull?.let { systemProperty("robolectric.offline", it) }
     testLogging.events("passed", "failed", "skipped")
     if (!name.contains("Integration")) exclude("**/CoreIntegrationTest*", "**/StarMapIntegrationTest*")
 }

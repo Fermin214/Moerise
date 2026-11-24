@@ -1,5 +1,5 @@
 """Host-only regression checks for device lifecycle and failure attribution."""
-from contextlib import contextmanager, nullcontext, redirect_stdout
+from contextlib import ExitStack, contextmanager, nullcontext, redirect_stdout
 import importlib.util
 import io
 import json
@@ -188,9 +188,11 @@ class SessionLifecycle(unittest.TestCase):
                 if result is None:
                     status = "harness_error" if flow == "editing" and not attempted else "passed"
                     attempted.append(flow)
+                    log = self.root / f"{flow}.log"
+                    log.write_text("Maestro result", encoding="utf-8")
                     result = {"status": status, "ui_status": status, "attempted": True,
                               "server_verification": "passed" if flow in session.SERVER_FLOWS else "not_applicable",
-                              "flow_sha256": self.driver.execution_digest(flow)}
+                              "flow_sha256": self.driver.execution_digest(flow), "log": str(log)}
                 on_result(flow, result)
                 results[flow] = result
             return results
@@ -705,9 +707,12 @@ class FixedWindowsEntry(unittest.TestCase):
                         self.interrupt()
                     started = True
                 self.executed.append(flow)
+                log = self.root / f"{flow}.log"
+                log.write_text("Maestro result", encoding="utf-8")
                 result = {"status": "passed", "ui_status": "passed", "manual_status": "not_applicable",
                           "server_verification": "passed" if flow in session.SERVER_FLOWS else "not_applicable",
                           "flow_sha256": session.flow_digest(self.repo, flow), "attempted": True,
+                          "log": str(log),
                           **self.flow_results.get(flow, {})}
             results[flow] = result
             if self.on_flow:
@@ -786,9 +791,171 @@ class FixedWindowsEntry(unittest.TestCase):
             self.assertIn(evidence.as_uri(), line)
         return row
 
+    def test_acceptance_state_table(self):
+        cases = (
+            ("source_timeout", "verify", None, (), "environment_blocked", "environment_blocked", None, 1),
+            ("login_failure", "verify", None, (), "environment_blocked", "environment_blocked", None, 1),
+            ("offline_failure", "verify", None, (), "harness_error", "harness_error", None, 1),
+            ("ui_failure", "verify", None, ("editing", "search"), "failed", "passed", None, 1),
+            ("readback_failure", "run", None, ("editing", "search"), "failed", "passed", None, 1),
+            ("retry_failure", "verify", None, ("editing", "search"), "failed", "passed", None, 1),
+            ("retry_failure", "run", None, ("editing", "search"), "failed", "passed", None, 1),
+            ("passed", "verify", "target", ("editing",), "passed", "not_run", "editing", 2),
+            ("source_timeout", "verify", "target", (), "environment_blocked", "not_run", "editing", 1),
+            ("reused", "verify", "target", (), "reused_baseline", "not_run", "editing", 2),
+            ("passed", "verify", "marker", ("editing",), "passed", "not_run", "editing", 2),
+            ("source_timeout", "verify", "marker", (), "environment_blocked", "not_run", "editing", 1),
+            ("reused", "verify", "marker", (), "reused_baseline", "not_run", "editing", 2),
+            ("result_write_error", "verify", "target", ("editing",), "not_run", "not_run", None, 1),
+            ("session_write_error", "verify", "marker", ("editing",), "not_run", "not_run", None, 1),
+            ("blocked_write_error", "verify", "marker", (), "not_run", "not_run", None, 1),
+            ("reuse_write_error", "verify", "target", (), "not_run", "not_run", None, 1),
+            ("stop_write_error", "verify", "marker", ("editing",), "passed", "not_run", None, 1),
+            ("cleanup_failure", "verify", "target", ("editing",), "passed", "not_run", "editing", 1),
+        )
+        for index, (event, entry, stop, executed, first, following, stopped, exit_code) in enumerate(cases):
+            with self.subTest(event=event, entry=entry, stop=stop):
+                self.sessions = self.root / f"sessions-{index}"
+                base_args = ("--non-interactive", "--already-launched", "--sessions-root", str(self.sessions))
+                if entry == "run" or event == "retry_failure":
+                    initial = "editing" if event == "retry_failure" else "language"
+                    self.assertEqual(self.verify(*base_args, "--check", initial)[0], 0)
+                if stop and event not in ("source_timeout", "blocked_write_error"):
+                    self.assertEqual(self.verify(*base_args, "--check", "search")[0], 0)
+                retry = ("--retry",) if event == "retry_failure" else ()
+                baseline = self.record_baseline({"editing": self.evidence("editing")})
+                baseline_args = ("--baseline", baseline) if event in ("reused", "reuse_write_error", "retry_failure") else ()
+                stop_args = ("--stop-after", "editing") if stop == "target" else ()
+                save_session = session.PhoneSession.save
+                write_result = maestro_runner.write_result
+                save_events, ui = [], []
+                injected = False
+
+                def save(engine):
+                    nonlocal injected
+                    view = engine.state.get("coverage", {})
+                    if engine.state.get("active_run_id") and "editing" in view.get("results", {}) and not injected:
+                        if stop == "marker":
+                            session.request_stop(engine.directory)
+                        injected = True
+                        if event in ("session_write_error", "blocked_write_error", "reuse_write_error"):
+                            raise OSError("checkpoint cannot be persisted")
+                    if event == "stop_write_error" and view.get("stopped") == "editing":
+                        raise OSError("stop cannot be persisted")
+                    save_session(engine)
+                    if view.get("results", {}).get("editing") and not save_events:
+                        save_events.append("editing")
+
+                def write(path, result):
+                    if event == "result_write_error" and path.parts[-2:] == ("editing", "result.json"):
+                        raise OSError("result cannot be persisted")
+                    write_result(path, result)
+
+                def execute(flow, **_kwargs):
+                    if flow == "test-source" and event in ("source_timeout", "blocked_write_error"):
+                        return {"status": "inconclusive", "cause": "timeout"}
+                    if flow != "test-source":
+                        ui.append(flow)
+                        if flow == "search":
+                            self.assertEqual(session.read_json(self.active() / "session.json")["flow_results"]["editing"]["status"], first)
+                    return {"status": "failed" if flow == "editing" and event in ("ui_failure", "retry_failure") else "passed",
+                            "flow_sha256": session.flow_digest(self.repo, flow)}
+
+                def readback(flow, _values):
+                    if flow == "editing" and event == "readback_failure":
+                        raise AssertionError("server value mismatch")
+                    return {}
+
+                real = maestro_runner.MaestroRunner
+                with self.real_batch() as (api, offline, prepare, verify_observation, run_flow), ExitStack() as stack:
+                    for patcher in (
+                        mock.patch.object(real, "recover_editor_state", return_value=[]),
+                        mock.patch.object(real, "prepare_conflict"),
+                        mock.patch.object(real, "wait_verify", side_effect=readback),
+                        mock.patch.object(session.PhoneSession, "save", autospec=True, side_effect=save),
+                        mock.patch.object(maestro_runner, "write_result", side_effect=write),
+                    ):
+                        stack.enter_context(patcher)
+                    if event == "login_failure":
+                        api.login.side_effect = maestro_runner.FixtureError(403, "FORBIDDEN")
+                    if event == "offline_failure":
+                        offline.side_effect = OSError("offline isolation failed")
+                    if event == "cleanup_failure":
+                        stack.enter_context(mock.patch.object(session.PhoneSession, "restore_device_input",
+                                                              side_effect=OSError("input restore failed")))
+                    prepare.side_effect = lambda flow, _item: ({"NOTE_NAME": "memos/synthetic", "NOTE_TEXT": "fixture"}, None)
+                    verify_observation.return_value = {}
+                    run_flow.side_effect = execute
+                    if entry == "verify":
+                        code, output = self.verify(*base_args, "--check", "editing", "--check", "search",
+                                                   *retry, *baseline_args, *stop_args)
+                    else:
+                        code, output = self.cli("run", "--release", "--session", str(self.active()),
+                                                "--group", "editing", "--group", "search", *retry)
+
+                self.assertEqual(code, exit_code, output)
+                self.assertEqual(tuple(ui), executed)
+                self.assertEqual([call.args[0] for call in prepare.call_args_list if call.args[0] != "test-source"], list(executed))
+                state = session.read_json(self.active() / "session.json")
+                report = session.read_json(self.active() / "report.json")
+                rows = {row.get("id", row.get("flow")): row for row in report["items"]}
+                self.assertEqual((rows["editing"]["status"], rows["search"]["status"]), (first, following))
+                self.assertEqual(report.get("stopped_at"), stopped)
+                self.assertEqual(state["coverage"].get("stopped"), stopped)
+                self.assertFalse((self.active() / "STOP_AFTER_CURRENT").exists())
+                if "write_error" in event:
+                    self.assertEqual(output["error"]["cause"], "OSError")
+                if event in ("login_failure", "offline_failure"):
+                    self.assertEqual(rows["editing"]["preparation_step"],
+                                     "session_login" if event == "login_failure" else "phone_offline_identity")
+                if event == "cleanup_failure":
+                    self.assertEqual(report["cleanup_errors"], ["input_restore"])
+                    with mock.patch.object(session.PhoneSession, "restore_device_input", side_effect=OSError("restore")):
+                        self.assertEqual(self.cli("cleanup", "--release", "--session", str(self.active()))[0], 1)
+                    self.assertEqual(session.read_json(self.active() / "session.json")["cleanup_errors"], ["input_restore"])
+                if event == "retry_failure":
+                    self.assertEqual(state["flow_results"]["editing"]["status"], "failed")
+                    self.executed.clear()
+                    code, _ = self.verify(*base_args, "--check", "editing", "--baseline", baseline)
+                    self.assertEqual(code, 0)
+                    self.assertEqual(self.executed, ["editing"])
+
+    def test_old_pass_with_no_valid_evidence_is_executed_again(self):
+        args = ("--non-interactive", "--already-launched", "--check", "language")
+        self.assertEqual(self.verify(*args)[0], 0)
+        path = self.active() / "session.json"
+        state = session.read_json(path)
+        state["flow_results"]["language"].update(log=None, evidence_paths=["missing"], screenshots=[])
+        session.write_json(path, state)
+        self.executed.clear()
+        self.assertEqual(self.verify(*args)[0], 0)
+        self.assertEqual(self.executed, ["language"])
+        self.assertEqual(self.rows()["language"]["status"], "passed")
+
+    def test_invalid_coverage_keeps_state_and_previous_reports(self):
+        args = ("--non-interactive", "--already-launched", "--check", "language")
+        self.assertEqual(self.verify(*args)[0], 0)
+        output = self.active() / "report.json"
+        earlier = output.read_bytes()
+        validate = session.validate_coverage
+
+        def invalid(checks, selected, current, stopped, rows):
+            rows.append(rows[0])
+            validate(checks, selected, current, stopped, rows)
+
+        with mock.patch.object(session, "validate_coverage", side_effect=invalid):
+            code, result = self.verify(*args)
+        self.assertEqual(code, 1)
+        self.assertRegex(result["message"], "检查项缺失或重复")
+        self.assertEqual(output.read_bytes(), earlier)
+        saved = session.read_json(self.active() / "session.json")
+        self.assertNotEqual(saved["coverage"]["run_id"], json.loads(earlier)["run_id"])
+        self.assertEqual(saved["coverage"]["results"]["language"]["status"], "reused_pass")
+        self.assertNotIn("active_run_id", saved)
+
     def test_probe_timeout_keeps_baselines_previous_pass_and_capability_skip(self):
         evidence_path = self.root / "evidence.json"
-        self.flow_results["home-smoke"] = {"evidence_paths": [str(evidence_path)]}
+        self.flow_results["home-smoke"] = {"evidence_paths": [str(evidence_path)], "log": None}
         self.assertEqual(self.verify("--non-interactive", "--already-launched", "--check", "home")[0], 0)
         baselines = ("navigation-review", "navigation-walk", "navigation-map", "language")
         baseline = self.record_baseline({name: self.evidence(name) for name in baselines})
@@ -1201,7 +1368,10 @@ class FixedWindowsEntry(unittest.TestCase):
                 state.update(screen="signed-in", note_name=values["NOTE_NAME"], note_text=values["NOTE_TEXT"])
             if flow == "test-source-resume":
                 self.assertEqual((values["NOTE_NAME"], values["NOTE_TEXT"]), (state["note_name"], state["note_text"]))
-            return {"status": "passed", "flow_sha256": session.flow_digest(self.repo, flow)}
+            log = self.root / flow / "maestro.log"
+            log.parent.mkdir(exist_ok=True)
+            log.write_text("Maestro result", encoding="utf-8")
+            return {"status": "passed", "flow_sha256": session.flow_digest(self.repo, flow), "log": str(log)}
 
         def engine(*args, **kwargs):
             real = maestro_runner.MaestroRunner(*args, **kwargs)

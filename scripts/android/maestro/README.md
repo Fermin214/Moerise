@@ -137,11 +137,13 @@ Python、ADB 和 Maestro 应可从同一终端运行。安装 Python 依赖使�
 
 每项依次准备独立数据、运行界面、恢复编辑态、执行服务端后验并落盘。已登记的测试行内编辑或完全匹配的草稿最多恢复一次。未知草稿保留，需要干净编辑态的后续项标记跳过。测试渠道恢复检查点以规范化来源索引，下次执行任意模块前先恢复。编辑冲突探针读回 `409 SOURCE_CHANGED` 与远端正文。
 
-重复执行固定入口会续跑同一设备、APK、连接档案与测试源对应的活动会话。成功的 UI、服务端后验与流指纹都有效时复用该项；`--check` 可重复指定检查 ID，`--retry` 强制重跑所选项。`--baseline` 或档案的 `baseline` 字段可导入已有证据。基线 JSON 包含 `apk_sha256`、`serial`、`test_origin` 和以检查 ID 为键的 `checks` 对象。每项填写 `ui_status`、`server_verification`、`manual_status`、`evidence_paths`，自动项还需匹配 `flow_sha256`。路径相对于基线文件。服务端后验 `pending` 的自动项只有在提供原始 `test_data_path` 且能补做完整只读后验时才可复用。`legacy_handoff: true` 使用固定的 0.3.0 等价证据映射。断流场景还需给档案设置 `fail_marker` 或传 `--fail-marker`，并确认独立模型代理能按该字面标记中断响应。
+重复执行固定入口会续跑同一设备、APK、连接档案与测试源对应的活动会话。复用需要成功的 UI、适用的服务端后验、匹配的流指纹和仍可读取的证据文件。缺证据的旧结果进入待跑队列。`--check` 可重复指定检查 ID，`--retry` 强制重跑所选项，实跑的新失败取代同项旧通过。`--baseline` 或档案的 `baseline` 字段可导入已有证据。基线 JSON 包含 `apk_sha256`、`serial`、`test_origin` 和以检查 ID 为键的 `checks` 对象。每项填写 `ui_status`、`server_verification`、`manual_status`、`evidence_paths`，自动项还需匹配 `flow_sha256`。路径相对于基线文件。服务端后验 `pending` 的自动项只有在提供原始 `test_data_path` 且能补做完整只读后验时才可复用。`legacy_handoff: true` 使用固定的 0.3.0 等价证据映射。断流场景还需给档案设置 `fail_marker` 或传 `--fail-marker`，并确认独立模型代理能按该字面标记中断响应。
 
 `--stop-after <检查ID或场景>` 在该项落盘后停下，含已复用项。运行中可从另一个终端执行 `python -B scripts/android/phone-session.py stop --session <会话目录>`，请求在当前项完成后停下。退出码 `0` 表示适用的自动项已完成，`2` 表示到边界且此前执行无失败，`1` 表示失败、阻塞或资源恢复出错。Ctrl+C 立即中止并终止当前 Maestro 子进程树。
 
 `report.json` 与 `report.md` 列出整份清单的覆盖、UI、服务端及人工结果、证据与观测到的最后一步。`manual-cards.md` 按待确认项列出通过条件和可复制的 `record` 命令；可加 `--evidence <文件>`、`--note <说明>`。`--record` 为每个实跑场景保留最长 180 秒录像。服务请求使用 `Moerise-Android-Acceptance/1.0` 标识；准备失败保留脱敏的步骤、方法、路径和错误码，Cloudflare 1010 记为 `CLOUDFLARE_1010`。
+
+覆盖报告写出前核对检查清单、复用证据和停止顺序。报告校验失败时保留已落盘的 `session.json` 及上一份报告，使用 `run_id` 对应会话和报告。流式证据先用 [流式对话脚本](../../README.md#流式对话) 核对 SSE 与 Core GET，再按 `insights-stream` 操作卡核对手机呈现。
 
 设备和会话写操作共享主仓库 `.local/android/device-build.lock`。`status` 与 `stop` 可在运行时访问。退出时归还本次占用的设备状态、驱动与端口。主仓库保存按设备索引的未归还资源和输入法检查点，切换设备、APK、测试源或 worktree 后仍能找回原责任。执行 `python -B scripts/android/phone-session.py cleanup --release --session <会话目录>` 结束活动会话，保留已装 App、账号数据和历史报告。再次使用固定入口会建立新会话。已有调用方仍可使用 `prepare`、`accept`、`run`、`ui`、`manual`、`record` 和 `cleanup` 子命令。正式包的自动启动从 `verify` 进入。
 

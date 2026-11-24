@@ -11,7 +11,7 @@ on:
         default: full
       suite:
         type: choice
-        options: [all, records, insights, explore, ui, editing, search, actions, navigation, attachments, language, home, lifecycle, ime, recovery, stars]
+        options: [all, records, records-edits, records-browse, insights, explore, ui, editing, search, actions, navigation, attachments, language, home, lifecycle, ime, recovery, stars]
         default: all
       fixture_run:
         description: Reuse fixture APKs from this workflow run
@@ -34,6 +34,7 @@ jobs:
       go: ${{ steps.scope.outputs.go }}
       web: ${{ steps.scope.outputs.web }}
       android: ${{ steps.scope.outputs.android }}
+      android_mode: ${{ steps.scope.outputs.android_mode }}
       linux_release: ${{ steps.scope.outputs.linux_release }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -55,10 +56,15 @@ jobs:
           }
           core=(internal main.go go.mod go.sum ':(top,glob)web/*.go' scripts/testweb cmd/moerise-telemetry)
           release=(scripts/release .github/workflows/{checks,main-smoke,publish}.yml)
-          device=(mobile scripts/android web/assets.go "${core[@]}")
           select_check go "${core[@]}" ':(top,glob)*.go' tests services/layout .github/workflows/checks.yml
-          select_check web web scripts/lib .github/workflows/checks.yml
-          select_check android "${device[@]}" docs/android/{THIRD_PARTY_NOTICES.md,licenses} .github/workflows/{checks,android-checks,android-release}.yml
+          select_check web web scripts/lib ':(top,glob)scripts/acceptance/*.mjs' .github/workflows/checks.yml
+          android_mode=$(git diff --no-renames --name-only -z HEAD^1 HEAD | python3 scripts/android/ci-scope.py)
+          echo "android_mode=$android_mode" >> "$GITHUB_OUTPUT"
+          if [[ "$android_mode" == none ]]; then
+            echo "android=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "android=true" >> "$GITHUB_OUTPUT"
+          fi
           select_check linux_release "${release[@]}" "${core[@]}" web services/layout \
             Dockerfile .dockerignore .env.example config.example.json LICENSE \
             docs/{OPERATIONS,STARGAZING}.md .github/workflows/release.yml
@@ -148,7 +154,7 @@ jobs:
       - run: npm --prefix web ci
       - run: npm --prefix web run build
       - run: npm --prefix web test
-      - run: node --test scripts/lib/*.test.mjs
+      - run: node --test scripts/lib/*.test.mjs scripts/acceptance/verify-chat-stream.test.mjs
       - name: Verify preinstalled Chrome
         run: google-chrome --version
       - name: Run browser suites
@@ -158,13 +164,13 @@ jobs:
         run: npm --prefix web run test:browser
   android-pr:
     needs: scope
-    if: needs.scope.outputs.android == 'true'
+    if: needs.scope.outputs.android_mode != 'none'
     permissions:
       contents: read
       actions: read
     uses: ./.github/workflows/android-checks.yml
     with:
-      mode: full
+      mode: ${{ needs.scope.outputs.android_mode }}
   linux-preview:
     needs: scope
     if: needs.scope.outputs.linux_release == 'true'
@@ -186,17 +192,9 @@ jobs:
       LINUX_REQUIRED: ${{ needs.scope.outputs.linux_release }}
       LINUX_RESULT: ${{ needs.linux-preview.result }}
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - name: Require all applicable checks
-        shell: bash
-        run: |
-          require_applicable() {
-            printf '%s: required=%s result=%s\n' "$1" "$2" "$3"
-            [[ ( "$2" == true && "$3" == success ) || ( "$2" == false && "$3" == skipped ) ]]
-          }
-          [[ "$SCOPE_RESULT" == success && "$GO_RESULT" == success ]]
-          require_applicable Web "$WEB_REQUIRED" "$WEB_RESULT"
-          require_applicable Android "$ANDROID_REQUIRED" "$ANDROID_RESULT"
-          require_applicable Linux "$LINUX_REQUIRED" "$LINUX_RESULT"
+        run: python3 scripts/android/ci-pr-gate.py
   android-device:
     if: github.event_name == 'workflow_dispatch' && inputs.mode == 'android-device'
     permissions:

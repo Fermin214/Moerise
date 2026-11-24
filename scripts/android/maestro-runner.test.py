@@ -337,29 +337,54 @@ class MaestroExecutionTest(unittest.TestCase):
         self.assertFalse(output.exists())
 
     def test_batch_checks_and_persists_each_flow_before_preparing_the_next(self):
-        events = []
         flows = ["editing", "actions"]
-        def prepare(flow, entry):
-            events.append("prepare:" + flow)
-            return {"flow": flow}, None
-        def execute(flow, **kwargs):
-            self.assertTrue(kwargs["deferred"])
-            events.append("ui:" + flow)
-            return {"status": "harness_error" if flow == "editing" else "passed"}
-        def save(flow, result):
-            self.assertTrue((self.engine.output / flow / "result.json").exists())
-            events.append("save:" + flow)
-        with mock.patch.object(self.engine, "prepare_conflict"), \
-                mock.patch.object(self.engine, "prepare_data", side_effect=prepare), \
-                mock.patch.object(self.engine, "run_flow", side_effect=execute), \
-                mock.patch.object(self.engine, "verify", side_effect=lambda flow, values: events.append("observe:" + flow)), \
-                mock.patch.object(self.engine, "wait_verify", side_effect=lambda flow, values: events.append("verify:" + flow)):
-            result = self.engine.run_batch(flows, on_result=save)
-        self.assertEqual(events, ["prepare:editing", "ui:editing", "observe:editing", "save:editing",
-                                  "prepare:actions", "ui:actions", "verify:actions", "save:actions"])
-        self.assertEqual(result["editing"]["status"], "harness_error")
-        self.assertEqual(result["actions"]["status"], "passed")
-        self.engine.api.close.assert_called_once()
+        for failure, stop, editing_status, expected in (
+            ("ui", False, "failed", ["observe:editing", "save:editing", "prepare:actions", "ui:actions",
+                                     "verify:actions", "save:actions"]),
+            ("readback", False, "failed", ["verify:editing", "save:editing", "prepare:actions", "ui:actions",
+                                           "verify:actions", "save:actions"]),
+            ("checkpoint", True, "passed", ["verify:editing", "save:editing"]),
+        ):
+            with self.subTest(failure=failure):
+                events = []
+                self.engine.api.close.reset_mock()
+
+                def prepare(flow, _entry):
+                    events.append("prepare:" + flow)
+                    return {"flow": flow}, None
+
+                def execute(flow, **kwargs):
+                    self.assertTrue(kwargs["deferred"])
+                    events.append("ui:" + flow)
+                    return {"status": "failed" if flow == "editing" and failure == "ui" else "passed"}
+
+                def readback(flow, _values):
+                    events.append("verify:" + flow)
+                    if flow == "editing" and failure == "readback":
+                        raise AssertionError("persisted value mismatch")
+                    return {}
+
+                def save(flow, result):
+                    saved = json.loads((self.engine.output / flow / "result.json").read_text(encoding="utf-8"))
+                    self.assertEqual(saved, result)
+                    events.append("save:" + flow)
+                    if stop:
+                        raise OSError("session save failed")
+
+                with mock.patch.object(self.engine, "prepare_conflict"), \
+                        mock.patch.object(self.engine, "prepare_data", side_effect=prepare), \
+                        mock.patch.object(self.engine, "run_flow", side_effect=execute), \
+                        mock.patch.object(self.engine, "verify", side_effect=lambda flow, _: events.append("observe:" + flow)), \
+                        mock.patch.object(self.engine, "wait_verify", side_effect=readback):
+                    if stop:
+                        with self.assertRaisesRegex(OSError, "session save failed"):
+                            self.engine.run_batch(flows, on_result=save)
+                    else:
+                        result = self.engine.run_batch(flows, on_result=save)
+                        self.assertEqual(result["editing"]["status"], editing_status)
+                        self.assertEqual(result["actions"]["status"], "passed")
+                self.assertEqual(events, ["prepare:editing", "ui:editing", *expected])
+                self.engine.api.close.assert_called_once()
 
     def test_navigation_precondition_failure_does_not_block_other_modules(self):
         with mock.patch.object(self.engine, "prepare_channel", side_effect=ValueError("configured")), \
