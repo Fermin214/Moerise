@@ -87,7 +87,7 @@ go test -race ./...
 
 ## 四、Playwright 浏览器自动化测试
 
-发往 `main` 的 PR 按变更路径运行检查。Go 或 Layout 改动并行运行构建与单元测试、竞态检测和 Memos 集成测试。Web 或共用脚本改动运行 Web 检查。Android 客户端、Core 或 Web 代理改动还会运行 Android 检查。同一 PR 推送新提交会取消旧检查，`PR gate` 要求新提交的全部适用检查和发布预演通过。可按 PR 编号或运行 ID 查询失败步骤、耗时和产物，见 [CI 排查技能](../.agents/skills/moerise-ci/SKILL.md)。
+发往 `main` 的 PR 按变更路径运行检查。Go 或 Layout 改动并行运行构建与单元测试、竞态检测和 Memos 集成测试。Web 或共用脚本改动运行 Web 检查。Android 客户端、Core 或内嵌静态服务改动还会运行 Android 检查。同一 PR 推送新提交会取消旧检查，`PR gate` 要求新提交的全部适用检查和发布预演通过。可按 PR 编号或运行 ID 查询失败步骤、耗时和产物，见 [CI 排查技能](../.agents/skills/moerise-ci/SKILL.md)。
 
 Moerise Web 前端使用 Playwright 覆盖真实的端到端浏览器交互：
 
@@ -123,7 +123,7 @@ go test -tags=integration ./tests -v -count=1
 
 测试流程会自动拉取 Memos 0.31.x 官方镜像，启动临时独立容器并完成初始化注册、PAT 签发、双向数据读写与断流容灾校验，并在测试结束后自动清理容器与匿名数据卷。
 
-需要同时验证 Compose 部署、Web 代理和真实浏览器时，使用[联合验收脚本](../scripts/README.md#一联合验收)。
+需要同时验证 Compose 部署、内嵌 Web 和真实浏览器时，使用[联合验收脚本](../scripts/README.md#一联合验收)。
 
 ### 可选的真实供应商测试
 

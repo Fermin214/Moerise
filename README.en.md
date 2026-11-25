@@ -1,160 +1,130 @@
 # Moerise
 
-**A self-hosted personal note enhancement system built on Memos.**
+A single-user, self-hosted personal note system built on [Memos](https://usememos.com/).
 
 [简体中文](README.md) · [Getting Started](docs/GETTING-STARTED.md) · [Operations](docs/OPERATIONS.md) · [API Documentation](docs/API-V1.md) · [Contributing](CONTRIBUTING.md)
 
----
+Moerise stores notes, tags, and attachments in Memos, and adds an embedded bilingual Web UI, a native Android app, hybrid full-text and semantic search, and four workflows: Review, Walk, Insights, and Stargazing. Private QQ, Telegram, and Feishu bots also support quick note capture and scheduled review delivery.
 
-Moerise stores notes in [Memos](https://usememos.com/) and provides a bilingual Web interface, hybrid full-text and vector search, and four sections: Review, Walk, Insights, and Stargazing. QQ, Telegram and Feishu bots support private note capture, daily review requests and scheduled delivery.
+All writes go through official Memos APIs without altering your Markdown or attachments; daily reads query a local synchronized index.
 
-Your raw notes, tags, and media attachments always remain authoritative inside Memos. Moerise reads and writes exclusively through Memos' official APIs and preserves the content you enter.
+## Features
 
----
+- **Web & Android Clients**: Embedded light two-column Web UI (English and Simplified Chinese) plus a native Jetpack Compose Android app with offline write queueing, local index reads, and draft recovery. Supports Markdown, native `#tags`, image/file attachments, and in-card editing.
+- **Full-Text & Semantic Search**: SQLite FTS5 with Chinese bigram segmentation for keyword filtering; optional OpenAI-compatible or Alibaba Bailian embeddings for semantic search and Reciprocal Rank Fusion (RRF) hybrid ranking.
+- **Walk**: Start from any note or a random seed and step through semantically related notes with per-walk deduplication.
+- **Stargazing**: Balanced UMAP projects note embeddings into 2D clusters with incremental updates (unchanged notes keep their positions), topic naming, pan/zoom, fullscreen, and click-to-read. A private Python service computes snapshots in the background; see the [Stargazing guide](docs/STARGAZING.md).
+- **Insights**: Select any mix of normal or archived notes as context for streaming multi-turn LLM chats. Supports OpenAI Chat Completions, OpenAI Responses, and Anthropic Messages, and saves selected replies back to Memos.
+- **Daily Review**: Randomly picks older notes using configurable maturity delay and recent-repeat filters into a fixed daily plan split across scheduled time slots. No unread badges or streaks. Optional delivery to a private QQ bot, Telegram, a Feishu app, or a Feishu group webhook.
+- **Read-Only REST & MCP**: Exposes `/api/ext/v1` and a read-only `/mcp` Server (Streamable HTTP) so tools like Claude Desktop and Cursor can search and read notes without write access.
+- **Single-Author Isolation & Dual SQLite Storage**: Each instance binds to one Memos author. `state.sqlite3` stores settings, sessions, AI chats, and review plans; `index.sqlite3` stores rebuildable search, vector, and map indexes.
 
-## Key Features
+Basic writing, reading, keyword search, and daily reviews work without external models. Semantic search, Walk, and Stargazing require an embedding provider; Insights requires an LLM. When enabled, relevant note text is sent to the model provider you configure.
 
-- 📝 **Native Note Management & Modern Web UI**
-  - Clean two-column light-theme Web interface with built-in, adaptive support for **English and Simplified Chinese**.
-  - Markdown writing, tag filtering, image and file attachments, in-card quick editing, and dedicated detail view routes.
-- 🔍 **Dual-Engine Search**
-  - Live keyword filtering in the timeline, plus SQLite FTS5 search with Chinese segmentation through machine REST/MCP and hybrid search.
-  - Optional vector embeddings (supporting OpenAI-compatible providers and Alibaba Bailian) enabling semantic search and Reciprocal Rank Fusion (RRF) hybrid retrieval.
-- 🧭 **Walk**
-  - Break free from rigid folder hierarchies and tag silos: wander through related notes starting from an arbitrary note or a random seed.
-  - Controlled semantic sampling with single-walk deduplication to spark unexpected cross-domain associations.
-- ✨ **Stargazing**
-  - Balanced UMAP projects existing note embeddings into semantic star clusters, with clear star cores and subtle light derived from actual density.
-  - Places new notes incrementally while keeping unchanged notes fixed. Supports chart and photographic rendering, pan, zoom, fullscreen, and live note reading.
-  - A private layout service computes background snapshots. See the [Stargazing guide](docs/STARGAZING.md).
-- 💬 **Insights**
-  - Handpick any combination of notes as contextual material to engage in streaming multi-turn dialogues, critique, and brainstorming.
-  - Compatible with OpenAI Chat Completions, OpenAI Responses, and Anthropic Messages protocols; supports customizable prompt templates and one-click saving back to Memos.
-- 📬 **Review**
-  - Randomly selects older notes based on configurable maturity delays (e.g. at least 3 days old) and recent repetition filters.
-  - Saves a fixed full-day plan distributed across configured time slots; no unread badges, streaks, or mandatory checklist pressures.
-  - Schedule delivery to a **private QQ bot**, **Telegram**, a **Feishu app** or a **Feishu group webhook**.
-  - New installations have no messaging channel selected; choose either channel in Settings.
-- 🔌 **Open Ecosystem & Agent Connectivity**
-  - Provides a read-only Model Context Protocol (MCP) server alongside machine REST APIs.
-  - Enables external tools such as Claude Desktop and Cursor to safely search and inspect your notes under strict server-side read-only whitelists.
-- 🛡️ **Strict Data Sovereignty & Dual-Database Architecture**
-  - Each Moerise instance strictly binds to a single Memos author account.
-  - Clean separation: `state.sqlite3` holds user settings, AI chats, and review logs; `index.sqlite3` maintains disposable, fully rebuildable search and map indexes.
-
-Basic notes, reading, keyword filtering, and daily review work without models. Semantic search, walks, and the map require Embedding; AI conversations require an LLM. Enabled model features send the relevant note content to the provider you configure.
-
----
-
-## Architecture Overview
+## Architecture
 
 ```mermaid
 flowchart LR
-    Browser["Web Browser"] -->|"Same-Origin Cookie / API"| Core["Moerise Core with embedded Web"]
+    Web["Web Browser"] -->|"Embedded Web / Same-Origin Cookie API"| Core["Moerise Core"]
+    Android["Android App"] -->|"HTTPS / Cookie API + Delta Sync"| Core
     Agent["External Agent / MCP Client"] -->|"Read-Only Bearer Token"| Core
-    Feishu["Feishu Platform"] <-->|"Event Callbacks / Delivery"| Core
-    Core -->|"Scheduled Delivery"| Telegram["Telegram Platform"]
+    Bots["QQ / Telegram / Feishu Bots"] <-->|"Private Capture & Review Delivery"| Core
 
-    Core -->|"Official API / Sync"| Memos["Official Memos (0.31.x)"]
+    Core -->|"Official API Writes & Sync"| Memos["Official Memos (0.31.x)"]
     Core --> State["state.sqlite3 (Application State)"]
-    Core --> Index["index.sqlite3 (Rebuildable Indexes)"]
-    Core -->|"Existing vectors / Background layout"| Layout["Private Python Layout Service"]
+    Core --> Index["index.sqlite3 (Rebuildable Index)"]
+    Core -->|"Vectors / Background Layout"| Layout["Private Python Layout Service"]
     Core -.-> Embedding["Embedding Provider (Optional)"]
     Core -.-> LLM["LLM Provider (Optional)"]
 ```
 
----
-
 ## Quick Start
 
-The recommended deployment method uses Docker Compose, which includes an official Memos 0.31.x instance, or connects Moerise to an existing Memos deployment. Core with embedded Web uses versioned images from GHCR, with AMD64 and ARM64 support.
+Docker Compose is the recommended way to run Moerise. The default stack includes official Memos 0.31.x and can also connect to an existing Memos instance. Prebuilt Core images (with embedded Web) are published on GHCR for `amd64` and `arm64`.
 
-### 1. Launch All-in-One Stack
+### 1. Initialize Memos and Environment Variables
 
 ```bash
-# Clone repository
 git clone https://github.com/Fermin214/Moerise.git
 cd Moerise
-
-# Prepare configuration
 cp .env.example .env
 
-# Start Memos first to set up your author account
+# Start Memos first to create your account
 docker compose up -d memos
 ```
 
-1. Open `http://localhost:5231` in your browser and complete initial Memos registration.
+1. Open `http://localhost:5231` and register your Memos account.
 2. In Memos **Settings → Access Tokens**, create a Personal Access Token (PAT).
-3. Query the author resource name with your PAT and record `user.name` from the response (e.g. `users/abc123`):
+3. Query your author resource name with the PAT and copy `user.name` (e.g. `users/abc123`):
 
    ```bash
    curl -H "Authorization: Bearer <your-PAT>" http://localhost:5231/api/v1/auth/me
    ```
 
-4. Set these values in `.env`:
+4. Fill in `.env`:
 
 | Variable | Value |
 | --- | --- |
 | `MOERISE_MEMOS_TOKEN` | Memos PAT |
-| `MOERISE_MEMOS_USER` | Complete `user.name` returned above |
-| `MOERISE_MEMOS_INSTANCE_ID` | A unique, stable instance identifier, such as `primary-memos` |
-| `MOERISE_ACCESS_TOKEN` | Independent access token for external REST/MCP |
-| `MOERISE_CURSOR_SECRET` | Independent random secret for pagination signatures |
-| `MOERISE_STATE_ENCRYPTION_KEY` | Base64-encoded 32-byte key for encrypting stored credentials |
+| `MOERISE_MEMOS_USER` | Full `user.name` returned above |
+| `MOERISE_MEMOS_INSTANCE_ID` | Unique, stable instance ID (e.g. `primary-memos`) |
+| `MOERISE_CURSOR_SECRET` | Random secret for cursor signing |
+| `MOERISE_STATE_ENCRYPTION_KEY` | Base64-encoded 32-byte key for encrypted credentials |
+| `MOERISE_ACCESS_TOKEN` | Bearer token for external REST/MCP (optional; leave blank to disable) |
 
-Generate three independent secrets and copy each into its corresponding variable:
+Generate independent secrets:
 
 ```bash
-openssl rand -hex 32     # MOERISE_ACCESS_TOKEN
 openssl rand -hex 32     # MOERISE_CURSOR_SECRET
 openssl rand -base64 32  # MOERISE_STATE_ENCRYPTION_KEY
+openssl rand -hex 32     # MOERISE_ACCESS_TOKEN (optional)
 ```
 
-### 2. Start Moerise
+### 2. Start Services
 
 ```bash
 docker compose pull moerise layout
 docker compose up -d
 ```
 
-For source deployments, use `docker compose up -d --build` to build Core with embedded Web and the layout service together.
+To build from source instead, run `docker compose up -d --build`.
 
-The `.env.example` enables bundled Memos and the layout service through the `memos,stargazing` profiles. To disable stargazing, turn off **Settings → General → Enable stargazing**, remove the `stargazing` profile, and run `docker compose stop layout`. Semantic search and walks remain available. See the [Operations Guide](docs/OPERATIONS.md#观星按需启用) to enable it again.
+`.env.example` enables bundled Memos and the layout service via `COMPOSE_PROFILES=memos,stargazing`. To run without Stargazing, disable **Settings → General → Enable stargazing**, remove `stargazing` from `COMPOSE_PROFILES`, and run `docker compose stop layout`. Semantic search and Walk stay available.
 
-Once running, navigate to `http://localhost:3000` and sign in using your Memos username and password.
+Open `http://localhost:3000` and sign in with your Memos username and password. Signed Android APKs are published on [Releases](https://github.com/Fermin214/Moerise/releases); see [Android Install & Upgrade](docs/android/INSTALL.md).
 
-> For detailed environment variables, existing Memos connections, HTTPS reverse proxy configuration, and server resource profiles, see [Operations Guide](docs/OPERATIONS.md).
-
----
+For existing Memos connections, HTTPS reverse proxy setup, backups, and resource profiles, see the [Operations Guide](docs/OPERATIONS.md).
 
 ## Documentation
 
-[Documentation Index](docs/README.md)
+Full index: [Documentation Index](docs/README.md) (detailed guides are written in Simplified Chinese).
 
-| Topic | Document | Description |
+| Area | Document | Summary |
 | --- | --- | --- |
-| **Setup & Operations** | [Getting Started](docs/GETTING-STARTED.md) | First-time setup, Docker Compose, and account binding |
-| | [Operations](docs/OPERATIONS.md) | Deployment, resource profiles, backups, and recovery procedures |
-| **User & Features** | [Web Interface](docs/WEB.md) | UI layout, bilingual settings, same-origin model, and security |
-| | [Stargazing](docs/STARGAZING.md) | Balanced UMAP, semantic themes, incremental coordinates, and star rendering |
-| | [Daily Review](docs/DAILY-REVIEW.md) | Review selection logic, schedule allocation, and reading flow |
-| | [Feishu Integration](docs/FEISHU.md) | Feishu bot note capture, review notifications, and webhooks |
-| | [Telegram Delivery](docs/TELEGRAM.md) | Scheduled review delivery via Telegram bots |
-| | [QQ](docs/QQ.md) | Private note capture and review delivery |
-| | [AI & Insights](docs/AI.md) | LLM configuration, contextual token limits, and connection health |
-| | [Embeddings](docs/EMBEDDING.md) | Vector models (OpenAI / Bailian), chunking, and index generation |
-| | [Search Engine](docs/SEARCH.md) | FTS5 full-text search, cosine similarity, and RRF fusion |
-| | [System Settings](docs/SETTINGS.md) | Versioned runtime settings and credential encryption |
-| **Architecture** | [Product Architecture](docs/PRODUCT-ARCHITECTURE.md) | Component responsibilities, dual-database model, and boundaries |
-| | [Codebase Guide](docs/CODEBASE.md) | Source entry points, directory responsibilities, and change guidance |
-| | [Development Scripts](scripts/README.md) | Cross-service acceptance, benchmarks, and quality evaluation |
-| | [System Design](docs/DESIGN.md) | Web integration, API boundaries, and communication architecture |
-| | [API Specification](docs/API-V1.md) | Client API `/api/app/v1`, machine REST `/api/ext/v1`, and `/mcp` |
-| | [Development Guide](docs/DEVELOPMENT.md) | Local development workflow, test suites, and verification |
-| | [Roadmap](docs/ROADMAP.md) | Completed capabilities and upcoming milestones (including Android) |
-
----
+| **Setup & Operations** | [Getting Started](docs/GETTING-STARTED.md) | First-time setup, account binding, and upgrades |
+| | [Operations](docs/OPERATIONS.md) | Configuration, resource profiles, backups, and rollback |
+| | [Android Install](docs/android/INSTALL.md) | APK verification, installation, and in-place upgrades |
+| **Features** | [Web Interface](docs/WEB.md) | UI behavior, bilingual support, Stargazing, and local builds |
+| | [Stargazing](docs/STARGAZING.md) | Balanced UMAP, topic naming, incremental snapshots, and layout service |
+| | [Daily Review](docs/DAILY-REVIEW.md) | Sampling rules, daily plans, and slot allocation |
+| | [Notifications](docs/NOTIFICATIONS.md) | Review scheduling, delivery retries, and bot channels |
+| | [Feishu](docs/FEISHU.md) | Feishu app private capture and group webhook delivery |
+| | [QQ](docs/QQ.md) | Private QQ bot note capture and reviews |
+| | [Telegram](docs/TELEGRAM.md) | Telegram private capture and scheduled review delivery |
+| | [AI & Insights](docs/AI.md) | LLM protocols, material budget, streaming chat, and diagnostics |
+| | [Embeddings](docs/EMBEDDING.md) | Vector providers (OpenAI / Bailian), chunking, and generations |
+| | [Search & Walk](docs/SEARCH.md) | FTS5 search, cosine similarity, RRF ranking, and random walk |
+| | [System Settings](docs/SETTINGS.md) | Layered config, encrypted secrets, and versioned updates |
+| | [Privacy & Telemetry](docs/PRIVACY.md) | Optional usage/error counters, retention, and opt-out |
+| **Architecture & Dev** | [Product Architecture](docs/PRODUCT-ARCHITECTURE.md) | Components, dual-database split, and security boundaries |
+| | [Codebase Guide](docs/CODEBASE.md) | Source map and change checklists |
+| | [System Design](docs/DESIGN.md) | Embedded Web design and frontend modules |
+| | [API v1](docs/API-V1.md) | Client `/api/app/v1`, read-only `/api/ext/v1`, and `/mcp` |
+| | [Development Guide](docs/DEVELOPMENT.md) | Local tooling, test suites, and release workflow |
+| | [Android Development](docs/ANDROID.md) | Android modules, toolchain, benchmarks, and releases |
+| | [Scripts](scripts/README.md) | Acceptance, benchmark, and evaluation scripts |
+| | [Roadmap](docs/ROADMAP.md) | Delivered milestones and future plans |
 
 ## License
 
-Distributed under the [MIT License](LICENSE). Reused Memos styles retain their [upstream license](web/MEMOS-LICENSE).
+Licensed under the [MIT License](LICENSE). Reused Memos styles and assets retain their [upstream license](web/MEMOS-LICENSE).

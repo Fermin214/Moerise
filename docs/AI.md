@@ -1,42 +1,31 @@
-# Moerise AI 模块
+# Moerise AI 洞察
 
-Moerise AI 为用户提供围绕个人笔记展开深度思考、多轮探讨与创意发散的能力。通过独立的协议适配器，Moerise 支持主流的大语言模型服务，并与向量模型（Embedding）完全解耦——更换或关闭 LLM 不影响笔记检索、每日回顾与基础笔记管理。
+AI 洞察围绕选定的个人笔记展开多轮流式对话，并与向量模型（Embedding）完全独立——关闭或更换大语言模型不影响笔记管理、检索与每日回顾。
 
----
+## 一、功能特性
 
-## 一、功能特性与设计理念
-
-1. **从个人笔记出发的自由思考**：
-   - AI 洞察鼓励以选定笔记为基石，进行跨领域联想、假设验证、潜在矛盾梳理以及头脑风暴。
-   - 回复中自然辨析笔记原意与 AI 延展想法，既尊重记录事实，又开拓全新视野。
-2. **精准的材料上下文控制**：
-   - 用户可以在 Web 界面自由选择多篇正常或归档笔记作为探讨的上下文材料。
-   - 系统统计所选笔记正文的 Unicode 码点总数，上限为 20,000 码点，发起调用前检查材料预算。该限制仅约束所选正文，完整请求还包含提示词和成功历史，实际 token 用量由模型决定。
-3. **流式传输与中断可恢复**：
-   - 会话采用 Server-Sent Events (SSE) 协议提供实时的流式 token 输出。
-   - 对话消息持久化存储于 `state.sqlite3`，支持刷新页面后无缝继续追问。
-   - 用户可随时点击“停止生成”中断输出，断开的未完成内容保留在会话中。
-4. **一键成果沉淀到 Memos**：
-   - 满意的 AI 产出或总结成果，支持通过客户端一键保存为 Memos 笔记。
-   - 保持完整的 Markdown 格式、代码块与换行，不添加多余的前缀或标签。
-
----
+1. **自由选材与预算控制**：
+   - 可在 Web 与 Android 中按日期范围、标签或逐条选择正常与归档笔记作为上下文材料。
+   - 单次选材上限为 20,000 个 Unicode 码点、最多 1,000 条笔记。该上限仅统计所选笔记正文，完整请求还包含提示词与历史对话，实际 token 用量由目标模型决定。
+2. **流式输出与中断恢复**：
+   - 通过 Server-Sent Events（SSE）实时流式返回回复，自动过滤模型输出的 `thinking` / `reasoning` 思维链片段。
+   - 会话与消息持久化在 `state.sqlite3`，支持刷新后继续追问、主动停止生成或保存因长度截断的部分回答。
+3. **保存回 Memos**：
+   - 支持将单条回复或多条选中的问答按对话顺序保存为一篇 Memos 笔记，保留原始 Markdown 格式，不附加额外前缀或标签。
 
 ## 二、支持的模型协议
 
-Moerise Core 统一实现了通用的 `LLMProvider`，适配以下三大主流模型通信协议：
+Core 适配以下三种模型协议：
 
-| 协议名称 (`protocol`) | 请求路径 | 鉴权格式 | 输出上限参数 | 适用场景 |
+| 协议 (`protocol`) | 请求路径 | 鉴权方式 | 输出上限字段 | 说明 |
 | --- | --- | --- | --- | --- |
-| `openai-compatible` | `base_url` + `/chat/completions` | `Authorization: Bearer <key>` | `max_completion_tokens` | 支持该请求字段及流式协议的 OpenAI 服务或兼容网关 |
-| `openai-responses` | `base_url` + `/responses` | `Authorization: Bearer <key>` | `max_output_tokens` | OpenAI 最新 Responses API 协议 |
-| `anthropic` | `base_url` + `/messages` | `x-api-key: <key>`<br>`anthropic-version: 2023-06-01` | `max_tokens` | Anthropic Claude 官方接口或中转服务 |
-
----
+| `openai-compatible` | `base_url` + `/chat/completions` | `Authorization: Bearer <key>` | `max_completion_tokens` | OpenAI 及兼容 Chat Completions 流式接口的网关 |
+| `openai-responses` | `base_url` + `/responses` | `Authorization: Bearer <key>` | `max_output_tokens` | OpenAI Responses API |
+| `anthropic` | `base_url` + `/messages` | `x-api-key: <key>`<br>`anthropic-version: 2023-06-01` | `max_tokens` | Anthropic Messages 接口或兼容网关 |
 
 ## 三、配置说明
 
-在配置文件中设置 `llm` 对象，或通过 Web 设置页面进行可视化管理：
+可在「设置 → AI」中管理，或在配置文件的 `llm` 字段初始化：
 
 ```json
 {
@@ -54,45 +43,42 @@ Moerise Core 统一实现了通用的 `LLMProvider`，适配以下三大主流�
 }
 ```
 
-### 字段说明与约束
+### 字段说明
 
-| 字段 | 类型 | 默认值 | 约束与说明 |
+| 字段 | 类型 | 默认值 | 说明与范围 |
 | --- | --- | --- | --- |
-| `enabled` | boolean | `false` | 是否启用大模型功能；未配置或关闭时基础功能照常运行 |
-| `protocol` | string | `openai-compatible` | 可选 `openai-compatible`、`openai-responses` 或 `anthropic` |
-| `base_url` | string | 必填 | 服务 HTTP(S) 基地址，不含末尾斜杠、查询参数或账号密码 |
-| `api_key` | string | 必填 | 模型服务的 API 密钥；在服务端妥善加密保管 |
-| `model` | string | 必填 | 具体的模型名称或网关路由标识（如 `gpt-4o`, `claude-3-5-sonnet-20241022`） |
-| `timeout_seconds` | number | `90` | 单次请求总超时时长（范围 1 至 110 秒），包含重试时间 |
-| `max_concurrency` | integer | `2` | 允许同一模型客户端同时发起的请求并发数（范围 1 至 8） |
-| `max_retries` | integer | `2` | 网络抖动或模型临时不可用时的最大重试次数（范围 0 至 3） |
-| `max_output_tokens` | integer | `2048` | 单次生成允许的最大 token 数量（范围 32 至 16384） |
+| `enabled` | boolean | `false` | 是否启用大模型；关闭时不影响基础功能 |
+| `protocol` | string | `openai-compatible` | `openai-compatible`、`openai-responses` 或 `anthropic` |
+| `base_url` | string | 必填 | HTTP(S) 基地址，不含末尾斜杠、查询参数或账号密码 |
+| `api_key` | string | 必填 | API 密钥，持久化后由服务端加密存储 |
+| `model` | string | 必填 | 模型名或路由标识（如 `gpt-4o`、`claude-3-5-sonnet-20241022`） |
+| `timeout_seconds` | number | `90` | 单次请求总超时（1 至 110 秒，含重试） |
+| `max_concurrency` | integer | `2` | 并发请求数上限（1 至 8） |
+| `max_retries` | integer | `2` | 临时网络或服务错误重试次数（0 至 3） |
+| `max_output_tokens` | integer | `2048` | 单次生成最大输出 token 数（32 至 16384） |
 
 > [!TIP]
-> 环境变量配置时使用 `MOERISE_LLM_*` 前缀（例如 `MOERISE_LLM_BASE_URL`、`MOERISE_LLM_API_KEY` 等）。若已在 Web 界面保存过持久化设置，则以持久化配置为准。
+> 环境变量使用 `MOERISE_LLM_*` 前缀（如 `MOERISE_LLM_BASE_URL`、`MOERISE_LLM_API_KEY`），仅用于首次初始化；在设置页保存后以持久设置为准。
 
----
+## 四、连接诊断
 
-## 四、连接诊断与健康检查
+### 1. 设置页检查
+在 Web 或 Android 的「设置 → AI」点击 LLM 区域的「检查连接」，Core 会发送一条内置测试消息验证流式响应并返回耗时。
 
-### 1. Web 界面诊断
-在 Web 界面的「设置」→「模型与索引」中，点击 LLM 区域的「检查连接」按钮。Core 将向大模型发送一条内置测试消息并验证流式响应，直观显示端到端延迟与可用状态。
+### 2. 命令行检查
 
-### 2. 命令行诊断
+独立于数据库与 Memos 执行连通性探测：
 
-在服务端可直接使用 CLI 命令进行模型连通性检测，该命令独立于数据库和 Memos 运行：
-
-**二进制环境：**
 ```bash
+# 二进制环境
 ./build/moerise check-llm --config .local/config.json
-```
 
-**Docker 容器环境：**
-```bash
+# Docker Compose 环境
 docker compose exec -T moerise moerise check-llm
 ```
 
 成功输出示例：
+
 ```json
 {
   "status": "ok",
@@ -109,21 +95,12 @@ docker compose exec -T moerise moerise check-llm
 }
 ```
 
----
-
 ## 五、上下文管理与会话状态
 
-1. **材料预算限制**：
-   - 圈选笔记正文总字符数若超过 20,000 Unicode 码点，系统将在发起调用前拦截并返回 `CHAT_MATERIAL_LIMIT` 错误提示，指导用户精简材料。
-   - 圈选笔记条数上限为 1,000 条（返回 `CHAT_RESOURCE_LIMIT`）。
-2. **多语言回复约定**：
-   - 生成请求默认携带界面语言偏好（`language=zh-CN` 或 `en`）。
-   - 英文请求增加英文回复指令；未修改的内置洞察 Prompt 使用英文对应文案。用户自定义 Prompt 与笔记材料保留原语言。
-3. **会话持久化与幂等保存**：
-   - 会话记录、消息序列与引用的材料版本保存在 `state.sqlite3` 中。
-   - 生成启动前对本地已同步索引执行一次材料解析与版本号核对，流式期间先推送 SSE 增量事件并按固定节拍批量落盘，同时隔离运行期设置热更新，避免打断进行中的对话流。
-   - 兼容跳过模型返回的 `thinking` / `reasoning` 思维链片段；因输出 token 上限停止且已有正文时保留已生成内容并将消息状态记为 `truncated`。
-   - 重启将遗留生成标记为 `interrupted`，保留已保存文本，不自动续调模型；后续可继续追问。
-   - 更换材料后，后续提问使用新材料版本，已经生成的回答保留原版本和来源摘要。
-   - “保存为笔记”可选择自己写的提问和已完成的回答；主动停止的 `canceled` 或截断的 `truncated` 回答也可勾选，需配合不完整确认标志一并保存。单条消息按原文保存，多条按对话顺序合成一篇 Markdown 笔记，正文最多 65,536 个 UTF-8 字节。
-   - 保存操作按键记录结果。连接中断后重试使用同一个键，单独保存同一回答会复用已有笔记。删除会话后，保存的笔记仍可从主页读取。
+1. **材料预算**：所选笔记正文超过 20,000 Unicode 码点时返回 `CHAT_MATERIAL_LIMIT`，超过 1,000 条返回 `CHAT_RESOURCE_LIMIT`。
+2. **语言偏好**：请求携带界面语言（`zh-CN` 或 `en`）。英文模式下内置洞察提示词切换为英文并附加英文回复要求；自定义 Prompt 与笔记原文保持原语言。
+3. **持久化与状态**：
+   - 生成启动前基于本地索引解析材料并核对版本号；流式推送期间隔离运行期设置热更新，修改设置不会打断进行中的回复。
+   - 达到输出上限停止且已有正文时标记为 `truncated`；服务重启将未完成生成标记为 `interrupted`，两者均保留已落盘文本且不自动续调模型。
+   - 修改会话材料后，后续提问使用新版本材料，历史回复保留原材料版本与来源摘要。
+   - 「保存为笔记」支持选中提问与已完成回答；`canceled` 或 `truncated` 的部分回答需确认后保存。正文上限 65,536 UTF-8 字节，保存按操作键幂等去重；删除会话不影响已存入 Memos 的笔记。
