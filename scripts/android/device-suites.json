@@ -1,13 +1,15 @@
 {
-  "records": [
+  "records-edits": [
     "editing",
-    "search",
     "actions",
-    "attachments",
-    "home",
-    "lifecycle",
     "ime",
     "recovery"
+  ],
+  "records-browse": [
+    "search",
+    "attachments",
+    "home",
+    "lifecycle"
   ],
   "insights": [
     "insights"

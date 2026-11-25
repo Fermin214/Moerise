@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Persistent USB device acceptance; installation, checks and cleanup are separate actions."""
 import argparse
+from collections import Counter
 from contextlib import contextmanager
 import csv
 from datetime import datetime, timezone
@@ -15,12 +16,12 @@ import subprocess
 import sys
 import tarfile
 import tempfile
-import threading
 import time
 import urllib.parse
 import urllib.error
 import urllib.request
 import uuid
+from adb_common import Adb, CommandError, NETWORK_KEYS, network_settings, proxy_enabled, reverse_conflict
 from maestro_runner import (
     DRIVERS, SERVER_FLOWS, MaestroRunner, catalog, common_repo, flow_digest, git, input_method_checkpoint, worktree_roots,
     junit_result as maestro_result, restore_input_method, FixtureAPI, FixtureError,
@@ -40,11 +41,6 @@ CASES = {
     "ime": "ImeLifecycleTest#composingCommitCursorEditsAndDraftSurviveRecreation",
     "stars": "StarRenderingTest#thousandAndFiveThousandStarsRenderSelectPanZoomAndRefresh",
 }
-NETWORK_KEYS = (
-    "http_proxy", "global_http_proxy_host", "global_http_proxy_port",
-    "global_http_proxy_exclusion_list", "global_proxy_pac_url",
-    "private_dns_mode", "private_dns_specifier",
-)
 UI_GROUPS = tuple(catalog()["groups"])
 DEFAULT_UI_GROUPS = UI_GROUPS
 FLOWS = tuple(catalog()["flows"])
@@ -153,11 +149,78 @@ def create_release_state(session, artifact, fixture, origin, allow_production):
     session.save()
 
 
+def evidence_paths(item, *, include_input=False):
+    paths = []
+    for key in ("evidence_paths", "screenshots", "recordings"):
+        values = item.get(key)
+        if isinstance(values, (list, tuple)):
+            paths.extend(values)
+    paths.extend(item.get(key) for key in ("log", "probe_log"))
+    if include_input:
+        paths.append(item.get("test_data_path"))
+    return list(dict.fromkeys(path for path in paths if isinstance(path, str) and path.strip() and "\0" not in path))
+
+
+def has_evidence(item):
+    input_path = item.get("test_data_path")
+    source = Path(input_path) if isinstance(input_path, str) and input_path else None
+    return any(path != source and path.is_file() for path in map(Path, evidence_paths(item)))
+
+
+def manual_evidence(record, phase):
+    if record.get("status") != "passed":
+        return record
+    if record.get("reuse") == "reused_baseline" and not has_evidence(record):
+        return {**record, "status": "pending", "reuse": None, "note": "人工基线证据已缺失，需重新取证"}
+    if phase == "pre_launch" and not record.get("evidence_captured_at"):
+        return {**record, "status": "inconclusive", "reuse": None}
+    return record
+
+
 def compatible_pass(item, flow, fingerprint):
     expected = "passed" if flow in SERVER_FLOWS else "not_applicable"
     return (item.get("status") in REUSABLE and item.get("ui_status") == "passed"
             and item.get("server_verification") == expected and item.get("flow_sha256") == fingerprint
-            and not item.get("cleanup_errors"))
+            and not item.get("cleanup_errors") and has_evidence(item))
+
+
+def validate_coverage(checks, selected, current, stopped, rows):
+    if Counter(row["id"] for row in rows) != Counter(checks.keys()):
+        raise ValueError("覆盖报告的检查项缺失或重复")
+    automatic = [name for name in selected if name in checks and checks[name]["kind"] == "auto"]
+    if (len(set(selected)) != len(selected) or set(selected) - checks.keys()
+            or set(current) - set(automatic) or (stopped and stopped not in current)):
+        raise ValueError("覆盖报告的选中项、结算项或停止点不一致")
+    after_stop = set(automatic[automatic.index(stopped) + 1:]) if stopped else set()
+    if after_stop & current.keys():
+        raise ValueError("覆盖报告在停止点之后结算了所选检查项")
+    for row in rows:
+        name, status = row["id"], row["status"]
+        item = checks[name]
+        if item["kind"] == "auto":
+            valid = row["manual_status"] == "not_applicable"
+            if name not in current:
+                valid &= (status == row["ui_status"] == "not_run" and bool(row["not_run_reason"])
+                          and row["reuse"] is None)
+            elif status == "not_run":
+                valid = False
+            elif status in ("reused_baseline", "reused_pass"):
+                result = current[name]
+                fingerprint = result.get("flow_sha256")
+                valid &= (row["reuse"] == status and bool(fingerprint)
+                          and compatible_pass(result, item["flow"], fingerprint))
+            elif row["cause"] == "capability_missing":
+                valid &= (status == "skipped" and row["ui_status"] == "not_run"
+                          and bool(item.get("requires_capability")) and row["reuse"] is None)
+        else:
+            valid = (status == row["manual_status"] and status in {
+                "pending", "passed", "failed", "inconclusive", "not_applicable", "environment_blocked"
+            } and row["ui_status"] == row["server_verification"] == "not_applicable"
+                and row["not_run_reason"] is None and row["existing_status"] is None)
+            if row["reuse"] is not None:
+                valid &= status == "passed" and row["reuse"] == "reused_baseline" and has_evidence(row)
+        if not valid:
+            raise ValueError(f"覆盖报告检查项状态或证据不一致：{name}")
 
 
 def prelaunch_evidence(paths, launch, *, window_missed=False):
@@ -208,69 +271,6 @@ def run_logged(command, log, timeout):
                 process.kill()
             process.wait(timeout=5)
             raise
-
-
-class CommandError(RuntimeError):
-    def __init__(self, code, message, output=""):
-        super().__init__(message)
-        self.code, self.output = code, output
-
-
-class Adb:
-    def __init__(self, executable, serial):
-        if not re.fullmatch(r"[A-Za-z0-9_.:-]+", serial):
-            raise ValueError("无效的设备序列号")
-        self.executable, self.serial = executable, serial
-
-    def run(self, *args, timeout=30, log=None, binary=False, check=True):
-        command = [self.executable, "-s", self.serial, *args]
-        if not log:
-            try:
-                process = subprocess.run(command, capture_output=True, timeout=timeout)
-            except subprocess.TimeoutExpired as error:
-                raise CommandError("timeout", "ADB 操作超时", error.stdout or b"") from None
-            if process.returncode and process.stderr:
-                process.stdout += b"\n" + process.stderr
-            result = process.stdout if binary else process.stdout.decode("utf-8", "replace")
-            if check and process.returncode:
-                raise CommandError("adb_error", f"ADB {args[0]} 失败", result)
-            return result
-        # Stream each status line immediately; a deadline must retain the last completed step.
-        process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-        lines = []
-        with Path(log).open("wb") as stream:
-            def drain():
-                for line in iter(process.stdout.readline, b""):
-                    stream.write(line)
-                    stream.flush()
-                    lines.append(line)
-                    text = line.decode("utf-8", "replace").strip()
-                    if text.startswith("INSTRUMENTATION_STATUS: acceptance_step="):
-                        print(text.partition("acceptance_step=")[2], flush=True)
-
-            thread = threading.Thread(target=drain, daemon=True)
-            thread.start()
-            timed_out = False
-            try:
-                process.wait(timeout=timeout)
-            except subprocess.TimeoutExpired:
-                timed_out = True
-                process.kill()
-                process.wait(timeout=5)
-            thread.join(timeout=5)
-        output = b"".join(lines).decode("utf-8", "replace")
-        if timed_out:
-            raise CommandError("timeout", f"ADB 操作超过 {timeout} 秒；保留已输出步骤", output)
-        if check and process.returncode:
-            raise CommandError("adb_error", f"ADB {args[0]} 失败", output)
-        return output
-
-
-def proxy_enabled(network):
-    old = network.get("http_proxy", "").strip()
-    host = network.get("global_http_proxy_host", "").strip()
-    pac = network.get("global_proxy_pac_url", "").strip()
-    return (old not in ("", "null", ":0") or host not in ("", "null") or pac not in ("", "null"))
 
 
 def instrument_result(text):
@@ -328,8 +328,7 @@ class PhoneSession:
         write_json(self.path, self.state)
 
     def network(self):
-        return {key: self.adb.run("shell", "settings", "get", "global", key).strip()
-                for key in NETWORK_KEYS}
+        return network_settings(self.adb)
 
     def restore_device_input(self):
         try:
@@ -374,10 +373,8 @@ class PhoneSession:
         if self.release:
             return
         mapping = f"tcp:{self.state['port']}"
-        for line in self.adb.run("reverse", "--list").splitlines():
-            parts = line.split()
-            if len(parts) >= 2 and parts[-2] == mapping and parts[-1] != mapping:
-                raise CommandError("reverse_conflict", "该手机端口已有其他 USB 映射；选择独立服务端口")
+        if reverse_conflict(self.adb, mapping):
+            raise CommandError("reverse_conflict", "该手机端口已有其他 USB 映射；选择独立服务端口")
         self.adb.run("reverse", mapping, mapping)
 
     def package_paths(self, package):
@@ -558,6 +555,8 @@ class PhoneSession:
             return flow_digest(self.repo, name)
         identity = hashlib.sha256(name.encode())
         scripts = ["phone-session.py"] if name not in (*UI_GROUPS, *FLOWS) else []
+        if name in (*CASES, "recovery"):
+            scripts.append("adb_common.py")
         if name in UI_GROUPS and (self.repo / "scripts/android/maestro/catalog.json").is_file():
             for flow in catalog(self.repo)["groups"][name]:
                 identity.update(flow_digest(self.repo, flow).encode())
@@ -1056,9 +1055,7 @@ class PhoneSession:
                         continue
                     value["evidence_captured_at"] = captured
                 local = self.state.setdefault("manual_results", {})
-                current = local.get(name, {})
-                if current.get("status") != "passed" or (
-                        item["phase"] == "pre_launch" and not current.get("evidence_captured_at")):
+                if manual_evidence(local.get(name, {}), item["phase"]).get("status") != "passed":
                     local[name] = {**value, "status": "passed", "reuse": "reused_baseline"}
         self.save()
         return imported
@@ -1095,41 +1092,37 @@ class PhoneSession:
                 return None
         return result if compatible_pass(result, flow, fingerprint) else None
 
-    def coverage_report(self):
-        checks = phone_checks(self.repo)
+    def render_coverage_report(self, checks=None, selected=None):
+        checks = phone_checks(self.repo) if checks is None else checks
         view = self.state.get("coverage", {})
+        selected = view.get("selected", []) if selected is None else selected
         current = view.get("results", {})
-        manual = self.state.get("manual_results", {})
+        manual = {name: manual_evidence(record, checks.get(name, {}).get("phase"))
+                  for name, record in self.state.get("manual_results", {}).items()}
         categories = {"failed": "assertion", "harness_error": "tool", "environment_blocked": "environment",
                       "inconclusive": "unconfirmed", "skipped": "dependency", "not_run": "not_run"}
         rows, cards = [], ["# Android 真机操作卡", ""]
         for name, item in checks.items():
             automatic = item["kind"] == "auto"
-            selected = current.get(name)
+            settled = current.get(name)
             previous = self.previous_check(item)
-            result = selected or previous
+            result = settled or previous
             human = manual.get(name, {})
             manual_status = human.get("status", "not_applicable" if automatic else "pending")
-            if item["phase"] == "pre_launch" and manual_status == "passed" and not human.get("evidence_captured_at"):
-                manual_status = "inconclusive"
             if not human and item["phase"] == "pre_install" and view.get("install_needed") is False:
                 manual_status = "not_applicable"
-            status = (result.get("status", "not_run") if selected else "not_run") if automatic else manual_status
-            paths = [*(result.get("evidence_paths") or []), *(human.get("evidence_paths") or []),
-                     *result.get("screenshots", []), *result.get("recordings", [])]
-            for key in ("log", "probe_log", "test_data_path"):
-                if result.get(key):
-                    paths.append(result[key])
+            status = (result.get("status", "not_run") if settled else "not_run") if automatic else manual_status
+            paths = evidence_paths(result, include_input=True) + evidence_paths(human)
             row = {"id": name, "module": item["module"], "flow": item.get("flow"), "kind": item["kind"],
                    "phase": item["phase"], "handoff_items": item["handoff_items"], "status": status,
-                   "ui_status": result.get("ui_status", "not_run") if selected else ("not_run" if automatic else "not_applicable"),
+                   "ui_status": result.get("ui_status", "not_run") if settled else ("not_run" if automatic else "not_applicable"),
                    "server_verification": result.get("server_verification", "pending" if item.get("flow") in SERVER_FLOWS else "not_applicable"),
                    "manual_status": manual_status, "reuse": human.get("reuse") or (
-                       result["status"] if selected and result["status"] in ("reused_baseline", "reused_pass") else None),
+                       result["status"] if settled and result["status"] in ("reused_baseline", "reused_pass") else None),
                    "category": categories.get(status), "cause": result.get("cause") or human.get("note"),
-                   "existing_status": previous.get("status") if not selected else None,
-                   "not_run_reason": ("stopped_at_boundary" if view.get("stopped") and name in view.get("selected", [])
-                                      else "not_selected_or_interrupted") if automatic and not selected else None,
+                   "existing_status": previous.get("status") if automatic and not settled else None,
+                   "not_run_reason": ("stopped_at_boundary" if view.get("stopped") and name in selected
+                                      else "not_selected_or_interrupted") if automatic and not settled else None,
                    "last_step": result.get("last_step"), "evidence_paths": list(dict.fromkeys(paths)),
                    **{key: result[key] for key in ("preparation_step", "request", "http_status", "error_code",
                                                    "error_type", "error_message", "probe_cause") if key in result}}
@@ -1138,9 +1131,7 @@ class PhoneSession:
                 continue
             card = item["manual_card"]
             linked = [path for auto in checks.values() if auto["kind"] == "auto" and auto["module"] == item["module"]
-                      for path in (*self.previous_check(auto).get("screenshots", []),
-                                   *self.previous_check(auto).get("recordings", []),
-                                   *self.previous_check(auto).get("evidence_paths", []))]
+                      for path in evidence_paths(self.previous_check(auto), include_input=True)]
             quoted = str(self.directory).replace("'", "''")
             outcome = "inconclusive" if item["phase"] == "pre_launch" else "passed"
             command = (f"python -B scripts/android/phone-session.py record --release --session '{quoted}' "
@@ -1150,11 +1141,11 @@ class PhoneSession:
                           f"通过条件　{card['pass_criteria']}", f"证据　{card['evidence_hint']}",
                           *([f"取证状态　{human['note']}"] if human.get("window_missed") else []), "",
                           artifact_links([*paths, *linked]), "", "```powershell", command, "```", ""])
+        validate_coverage(checks, selected, current, view.get("stopped"), rows)
         report = {"app": self.app, "apk": self.state["artifacts"][self.app], "serial": self.adb.serial,
                   "test_origin": self.state["test_origin"], "run_id": view.get("run_id"),
                   "status": view.get("status"), "stopped_at": view.get("stopped"), "error": view.get("error"),
                   "cleanup_errors": self.state.get("cleanup_errors", []), "items": rows, "manual_results": manual}
-        write_json(self.directory / "report.json", report)
         title = ["# Android 正式包真机验收", "", f"设备 `{self.adb.serial}` · 来源 `{report['test_origin']}`",
                  f"APK `{report['apk']['sha256']}` · 运行 `{report['status']}`", "",
                  "[待确认操作卡](manual-cards.md)", "", "设备恢复错误　" + ", ".join(report["cleanup_errors"]), ""]
@@ -1172,9 +1163,16 @@ class PhoneSession:
                       " · ".join(filter(None, (step.get("source"), step.get("kind"), step.get("label") or step.get("stage")))),
                       artifact_links(row["evidence_paths"])]
             title.append("| " + " | ".join(map(markdown, values)) + " |")
-        write_atomic(self.directory / "report.md", "\n".join(title) + "\n")
-        write_atomic(self.directory / "manual-cards.md", "\n".join(cards) + "\n")
+        return report, "\n".join(title) + "\n", "\n".join(cards) + "\n"
+
+    def publish_coverage_report(self, report, markdown_report, manual_cards):
+        write_atomic(self.directory / "report.md", markdown_report)
+        write_atomic(self.directory / "manual-cards.md", manual_cards)
+        write_json(self.directory / "report.json", report)
         return report
+
+    def coverage_report(self):
+        return self.publish_coverage_report(*self.render_coverage_report())
 
     def configure_phone_runner(self, runner):
         runner.on_app_launch = self.mark_app_launch
@@ -1228,12 +1226,27 @@ class PhoneSession:
         def checkpoint(flow, result):
             name = by_flow[flow]["id"]
             self.remember_maestro(result)
-            view["results"][name] = result
-            self.save_flow_result(flow, result)
-            self.save()
+            previous = self.state.get("flow_results", {}).get(flow)
+            try:
+                view["results"][name] = result
+                self.save_flow_result(flow, result)
+                self.save()
+            except OSError:
+                view["results"].pop(name, None)
+                if not result.get("attempted"):
+                    history = self.state.get("flow_results", {})
+                    if previous is None:
+                        history.pop(flow, None)
+                    else:
+                        history[flow] = previous
+                raise
             if result.get("cause") != "interrupted" and should_stop(flow):
                 view["stopped"] = name
-                self.save()
+                try:
+                    self.save()
+                except OSError:
+                    view.pop("stopped", None)
+                    raise
                 return True
             return False
 
@@ -1523,8 +1536,8 @@ def complete_phase(session, checks, phase, prompt, missed=False):
             continue
         name = item["id"]
         manual = session.state.setdefault("manual_results", {})
-        previous = manual.get(name, {})
-        if previous.get("status") == "passed" and (phase != "pre_launch" or previous.get("evidence_captured_at")):
+        previous = manual_evidence(manual.get(name, {}), phase)
+        if previous.get("status") == "passed":
             continue
         if missed:
             manual[name] = {"status": "inconclusive", "window_missed": True,
@@ -1582,6 +1595,12 @@ def verify(args, adb):
     interactive = sys.stdin.isatty() and not args.non_interactive
     prompt = lambda text: ask(interactive, text)
     code = 1
+
+    def report_failed(error):
+        previous_error = view.get("error")
+        view.update(status="failed", error={"cause": "coverage_report_failed", "message": str(error)})
+        if previous_error:
+            view["error"]["previous_error"] = previous_error
 
     def before_phone():
         if not (args.confirm_ready or session.state.get("source_receipt") or (interactive and prompt(
@@ -1655,10 +1674,21 @@ def verify(args, adb):
         if view["status"] == "running":
             view["status"] = {0: "completed", 1: "failed", 2: "stopped"}[code]
         session.state.pop("active_run_id", None)
-        session.save()
-        if marker.exists() and marker.read_text(encoding="utf-8-sig").strip() == run_id:
-            marker.unlink(missing_ok=True)
-        report = session.coverage_report()
+        try:
+            rendered = session.render_coverage_report(checks, view["selected"])
+        except (ValueError, OSError) as error:
+            report_failed(error)
+            raise
+        finally:
+            session.save()
+            if marker.exists() and marker.read_text(encoding="utf-8-sig").strip() == run_id:
+                marker.unlink(missing_ok=True)
+        try:
+            report = session.publish_coverage_report(*rendered)
+        except OSError as error:
+            report_failed(error)
+            session.save()
+            raise
         print(json.dumps({"status": report["status"], "session": str(session.directory),
                           "report": str(session.directory / "report.md"), "error": report["error"],
                           "cleanup_errors": report["cleanup_errors"]}, ensure_ascii=False, indent=2))

@@ -37,44 +37,47 @@ Linux 入口通过 `MOERISE_ANDROID_SUITE` 选择组；Maestro 场景时限由 `
 
 ## 集中检查与定向重跑
 
-发往 `main` 且涉及 Android 的 PR 先构建一对 fixture APK，再并行运行八组 Maestro 界面流程和四组专项：
-编辑、搜索、归档删除、洞察、导航、附件、语言、主页，以及 Activity 重建、输入法、离线恢复、星图渲染。
-界面组只下载和安装目标 APK，专项另需测试 APK。每组使用独立模拟器和 Core/Memos 数据集，
-单组失败不取消其他组。JVM、lint、发行构建和接口检查同时运行。
-各组使用同一次运行编译的 Core。CI 的 Gradle 构建使用两个 worker，本地检查默认使用单核。
-设备 APK 按 Android 源码摘要、JDK 和 SDK 版本复用，命中缓存后仍核对源码和两份 APK 的 SHA-256。
-结果页按组显示成功、失败和耗时，`android-device-<组名>` 附件保存该组的日志和诊断。
-Maestro 驱动断连时，CI 等待 ADB 稳定后用新建的隔离数据重跑该组一次，附件同时保存首次失败的日志。
-修复依据整批结果整理，重跑时选择涉及的组。
+发往 `main` 的 PR 按差异选择 Android 检查。纯真机宿主路径运行 Linux 和 Windows 宿主校验，共享设备工具、产品与工作流路径运行完整 Android 检查。没有 Android 适用路径时，跳过 Android 检查。
+
+完整设备检查覆盖八个 Maestro 界面组和四个专项，分到四台并行模拟器：
+
+| 分片 | 子项 |
+| --- | --- |
+| `records-edits` | `editing`、`actions`、`ime`、`recovery` |
+| `records-browse` | `search`、`attachments`、`home`、`lifecycle` |
+| `insights` | `insights` |
+| `explore` | `navigation`、`language`、`stars` |
+
+各分片使用同次构建的 Core 和目标 APK，各子项使用独立 Core/Memos 数据集。含原生专项的分片只额外下载一次测试 APK，含 `recovery` 的分片还下载升级 APK。分片失败时其他分片继续。结果页列出子项状态和耗时，`android-device-<组名>` 附件保存每次 `(suite, member, attempt)` 的 ADB 探针、首错、fixture 恢复、日志与诊断。首错确认是 transport 断链、证据齐全且 fixture 成功清理时，等待 ADB 和包管理探针通过后，用新建的隔离数据重跑该子项一次。
+
+JVM、lint、发行构建和接口检查使用两个 Gradle worker。构建任务从缓存恢复 Robolectric 的 API 29 JAR，缺失或 SHA-256 不符时从 Gradle 使用的 GCS 镜像下载。Core API 下载同次运行中构建任务校验过的 JAR 产物，复核 SHA-256 后离线解析。目标 APK 下载前后各有 UTC 时间戳，可与 Action 的内部下载完成时间及步骤结束时间对照。
 
 设备调试使用没有开放 PR 的独立分支，推送后通过已有的 `Checks` 工作流选择设备组。
-修复集中通过后更新 PR 分支，触发完整检查：
+修复集中通过后更新 PR 分支，触发适用的检查：
 
 ```bash
 gh workflow run checks.yml --ref debug/android-device -f mode=android-device -f suite=all
 gh workflow run checks.yml --ref debug/android-device -f mode=android-device -f suite=ime
 ```
 
-`suite` 支持 `all`、`ui`、`editing`、`search`、`actions`、`insights`、`navigation`、
+`suite` 支持 `all`、`records`、`records-edits`、`records-browse`、`explore`、`ui`、`editing`、`search`、`actions`、`insights`、`navigation`、
 `attachments`、`language`、`home`、`lifecycle`、`ime`、`recovery`、`stars`。
-`ui` 运行全部 Maestro 界面组。
+`records` 对应两个记录分片，`ui` 运行全部 Maestro 界面组。
 `stars` 覆盖 1000/5000 点的星点与光晕模式、选中、平移、双指缩放、近景摘要和快照刷新，
 保存总览与近景截图。该组检查渲染和交互，性能阈值由真机性能队列测量。
-`android-device` 模式只执行所选设备组；PR 的自动检查执行完整流程。
+`android-device` 模式执行所选设备组及所需宿主检查。
 `Android checks` 的 `build` 模式运行 JVM、lint、发行和性能变体构建及 Core／星图接口检查，
-跳过设备 APK 与模拟器。构建与接口检查分别生成报告。
+跳过设备 APK 与模拟器。`host` 模式仅运行两平台宿主校验，包含 Windows 固定入口参数及退出码冒烟。
 
 ```bash
 gh workflow run android-checks.yml --ref debug/android-device -f mode=build
+gh workflow run android-checks.yml --ref debug/android-device -f mode=host
 ```
 
 相同源码需要重试偶发失败时，用 `gh run rerun <运行编号> --failed` 只重跑失败任务。
 修改源码后需要重新构建；重试旧运行仍检查原提交。
 仅修改宿主脚本或文档时，可以传入 `-f fixture_run=<原运行编号>` 复用原运行的
-`android-fixture-apks`，跳过 Gradle。Android 源码或 APK 摘要不一致时，复用校验失败。
-同一源码的 APK 在各组之间复用；安装前核对 Android 源文件和所需 APK 的 SHA-256。
-界面组使用 `fixture-artifacts.py verify --target-only`，专项校验两个 APK。
-源码或包有变化时拒绝复用。Linux 手动复用入口为：
+`android-fixture-apks`，跳过 Gradle。分发前校验 Android 源码和目标／测试 APK 的 SHA-256。套件含 `recovery` 时，一并校验升级 APK 路径、`versionCode` 和摘要，缺少升级摘要的旧清单需要重建。设备安装前，界面组用 `fixture-artifacts.py verify --target-only` 核对目标 APK，专项核对目标与测试 APK。Linux 手动复用入口为：
 
 ```bash
 export MOERISE_ANDROID_SKIP_BUILD=1

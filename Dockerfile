@@ -4,7 +4,7 @@ COPY web/package.json web/build.mjs ./
 COPY web/src ./src
 RUN node build.mjs
 
-FROM golang:1.27.3-bookworm@sha256:972b4110ba0f47539a975c31e52c64765e1ff19f2d74469ae4a595c6676e80a5 AS build
+FROM golang:1.27.4-bookworm@sha256:ce59b41415e2524ae99926fe1f37ce48ba8c194dcbd2a56a65436cdcefa2bd34 AS build
 
 WORKDIR /src
 COPY go.mod go.sum ./

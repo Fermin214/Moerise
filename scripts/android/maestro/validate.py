@@ -202,6 +202,7 @@ def source_ids():
         add("WebSidebar.kt", "nav_" + target, 'testTag("nav_$target")')
     add("SettingsScreen.kt", "settings_page")
     add("SettingsScreen.kt", "settings_language", 'tag = "settings_language"')
+    add("SettingsScreen.kt", "settings_review_count", '"review.count", strings.text("每次数量（条）"')
     add("SettingsScreen.kt", "settings_stargazing_enabled", 'testTag("settings_${path.replace(\'.\', \'_\')}")')
     add("SettingsScreen.kt", "settings_channel_kind", '"channel.kind", strings.text("定时回顾发往"')
     add("SettingsScreen.kt", "settings_channel_qq_app_id", '"channel.qq_app_id", "QQ AppID"')

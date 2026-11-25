@@ -12,6 +12,7 @@ import time
 import urllib.request
 import xml.etree.ElementTree as ET
 
+from adb_common import Adb, CommandError
 from maestro_runner import DRIVERS, MaestroRunner, ROOT, write_result, fresh_ui_dump
 
 
@@ -53,10 +54,7 @@ def main():
     args = parser.parse_args()
     if not args.serial.startswith("emulator-"):
         parser.error("发行自动检查只使用隔离模拟器")
-    spec = importlib.util.spec_from_file_location("phone_session", ROOT / "scripts/android/phone-session.py")
-    phone = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(phone)
-    adb = phone.Adb("adb", args.serial)
+    adb = Adb("adb", args.serial)
     runner = MaestroRunner(ROOT, adb, args.fixture, args.output / "maestro", release=True)
     page_size = adb.run("shell", "getconf", "PAGESIZE", check=False).strip()
     if not page_size.isdigit():
@@ -89,7 +87,7 @@ def main():
             upgrade = upgrade_state.seed_upgrade(adb, runner.app, args.output / "upgrade")
             adb.run("install", "-r", str(args.apk.resolve()), timeout=120)
             runner = MaestroRunner(ROOT, adb, args.fixture, args.output / "upgraded" / "maestro", release=True)
-            require_restored_session(adb, runner.app, args.output / "upgrade/installed-window.xml", phone.CommandError)
+            require_restored_session(adb, runner.app, args.output / "upgrade/installed-window.xml", CommandError)
         else:
             adb.run("install", str(args.apk.resolve()), timeout=120)
         runner.api.login()
@@ -109,7 +107,7 @@ def main():
                 if time.monotonic() >= deadline:
                     raise RuntimeError("upgraded pending write did not drain")
                 time.sleep(.5)
-            xml = require_restored_session(adb, runner.app, args.output / "upgrade/completed-window.xml", phone.CommandError)
+            xml = require_restored_session(adb, runner.app, args.output / "upgrade/completed-window.xml", CommandError)
             assert upgrade["draft"] in xml, "upgraded draft missing"
             assert "welcome_enter" not in xml and "server_login" not in xml, "upgraded account or Keystore missing"
             assert len(runner.api.matching_notes(previous_note)) == 1, "0.2.0 笔记丢失"
@@ -135,7 +133,7 @@ def main():
                 if "open_menu" in ids and ids.isdisjoint({"server_login", "welcome_enter"}):
                     report["session_restored_without_login"] = True
                     break
-            except phone.CommandError as error:
+            except CommandError as error:
                 report["session_restore_errors"].append(command_failure(error))
             except ET.ParseError:
                 report["session_restore_errors"].append({"cause": "invalid_ui_xml"})
@@ -149,7 +147,7 @@ def main():
         report["status"] = "passed"
     except Exception as error:
         report["failure"] = {"type": type(error).__name__, "message": str(error)}
-        if isinstance(error, phone.CommandError):
+        if isinstance(error, CommandError):
             report["failure"].update(command_failure(error))
         raise
     finally:
@@ -157,7 +155,7 @@ def main():
         write_result(args.output / "result.json", report)
         try:
             (args.output / "logcat.txt").write_text(adb.run("logcat", "-d", "-t", "1000", check=False), encoding="utf-8")
-        except phone.CommandError:
+        except CommandError:
             pass
     print(json.dumps({"status": report["status"], "flows": list(report["flows"])}, ensure_ascii=False))
 
