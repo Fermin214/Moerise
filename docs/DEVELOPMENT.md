@@ -8,7 +8,7 @@
 
 ## 一、环境准备
 
-- **Go 1.27+**：服务端编译、运行测试与静态检查。构建无需 C 编译器（`modernc.org/sqlite` 纯 Go 驱动）；运行 `go test -race` 需 C 工具链。
+- **Go 1.27.4+**：服务端编译、运行测试与静态检查。构建无需 C 编译器（`modernc.org/sqlite` 纯 Go 驱动）；运行 `go test -race` 需 C 工具链。
 - **Node.js 24+ 与 npm**：构建和测试 Web 前端。
 - **Docker Engine 与 Compose 2.24+**：运行真实 Memos 容器进行集成端到端验收。日常单元测试无需 Docker。
 - **Git**：版本控制。
