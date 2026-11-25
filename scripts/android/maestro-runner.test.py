@@ -1,13 +1,88 @@
 """Host checks for Maestro isolation, failure evidence and server assertions."""
 import base64
+from contextlib import nullcontext
 import hashlib
+import io
 import json
 from pathlib import Path
+import shutil
 import tempfile
 import unittest
 from unittest import mock
 
 import maestro_runner as runner
+
+
+class FixtureRequestTest(unittest.TestCase):
+    def setUp(self):
+        self.api = runner.FixtureAPI({
+            "origin": "https://acceptance.example", "environment": "test",
+            "username": "test-owner", "password": "private-password"},
+            trusted_https=True, test_origin="https://acceptance.example")
+
+    def response(self, data, status=200):
+        response = mock.MagicMock()
+        response.__enter__.return_value = response
+        response.read.return_value = data
+        response.status = status
+        return response
+
+    def test_login_and_authenticated_requests_identify_the_acceptance_client(self):
+        with mock.patch.object(self.api.opener, "open", side_effect=[
+                self.response(b'{"csrf_token":"private-csrf"}'), self.response(b'{"notes":[]}')]) as request:
+            self.api.login()
+            self.api.request("GET", "/api/app/v1/notes")
+        for call in request.call_args_list:
+            self.assertEqual(call.args[0].get_header("User-agent"), runner.USER_AGENT)
+            self.assertEqual(call.args[0].get_header("Accept"), "application/json")
+        self.assertEqual(request.call_args.args[0].get_header("X-csrf-token"), "private-csrf")
+
+    def test_cloudflare_rejection_reports_only_safe_request_details(self):
+        error = runner.urllib.error.HTTPError(
+            "https://acceptance.example/api/app/v1/session", 403, "Forbidden",
+            {"Server": "cloudflare"}, io.BytesIO(b"error code: 1010\nprivate-password"))
+        with mock.patch.object(self.api.opener, "open", side_effect=error):
+            with self.assertRaises(runner.FixtureError) as caught:
+                self.api.request("POST", "/api/app/v1/session?password=private-password", {})
+        details = caught.exception.details()
+        self.assertEqual(details["error_code"], "CLOUDFLARE_1010")
+        self.assertEqual(details["http_status"], 403)
+        self.assertEqual(details["request"], {"method": "POST", "path": "/api/app/v1/session"})
+        self.assertNotIn("private-password", json.dumps(details))
+        self.assertTrue(error.fp.closed)
+
+    def test_core_error_keeps_its_code_without_echoing_response_secrets(self):
+        error = runner.urllib.error.HTTPError(
+            self.api.origin, 401, "Unauthorized", {"Content-Type": "application/json"},
+            io.BytesIO(b'{"error":{"code":"AUTH_FAILED","message":"private-password"}}'))
+        with mock.patch.object(self.api.opener, "open", side_effect=error):
+            with self.assertRaises(runner.FixtureError) as caught:
+                self.api.login()
+        self.assertEqual(caught.exception.code, "AUTH_FAILED")
+        self.assertNotIn("private-password", str(caught.exception))
+
+    def test_network_errors_explain_the_failure_without_echoing_the_url(self):
+        cases = [
+            (runner.ssl.SSLCertVerificationError("private-password"), "TLS 证书校验失败"),
+            (TimeoutError("private-password"), "请求超时"),
+            (runner.socket.gaierror("private-password"), "域名解析失败"),
+            (runner.http.client.IncompleteRead(b"private-password"), "服务响应不完整或连接已中断"),
+        ]
+        for reason, expected in cases:
+            with self.subTest(reason=type(reason).__name__):
+                with mock.patch.object(self.api.opener, "open", side_effect=runner.urllib.error.URLError(reason)):
+                    with self.assertRaises(runner.FixtureError) as caught:
+                        self.api.login()
+                self.assertIn(expected, str(caught.exception))
+                self.assertNotIn("private-password", str(caught.exception))
+                self.assertEqual(caught.exception.details()["request"]["path"], "/api/app/v1/session")
+
+    def test_non_json_success_is_a_reportable_fixture_error(self):
+        with mock.patch.object(self.api.opener, "open", return_value=self.response(b"<html>private-password</html>")):
+            with self.assertRaises(runner.FixtureError) as caught:
+                self.api.login()
+        self.assertEqual(caught.exception.code, "invalid_json")
+        self.assertNotIn("private-password", str(caught.exception))
 
 
 class FakeAdb:
@@ -37,6 +112,12 @@ class MaestroExecutionTest(unittest.TestCase):
                                            self.output / "execution", "maestro-host-test")
         self.engine.api = mock.Mock()
         self.engine.api.csrf = ""
+        for patcher in (
+            mock.patch.object(runner, "common_repo", return_value=self.output),
+            mock.patch.object(runner, "worktree_roots", return_value=[self.output]),
+        ):
+            patcher.start()
+            self.addCleanup(patcher.stop)
         self.validate = mock.patch.object(runner.subprocess, "run",
                                          return_value=mock.Mock(returncode=0, stdout=b"", stderr=b""))
         self.validate.start()
@@ -120,6 +201,76 @@ class MaestroExecutionTest(unittest.TestCase):
         self.assertEqual(self.adb.calls, [])
         execute.assert_not_called()
 
+    def test_batch_login_failure_reports_request_and_stage_for_all_modules(self):
+        self.engine.phone = True
+        self.engine.api.login.side_effect = runner.FixtureError(
+            403, "CLOUDFLARE_1010", method="POST", path="/api/app/v1/session")
+        flows = [flow for group in self.engine.catalog["groups"].values() for flow in group]
+        with mock.patch.object(self.engine, "prepare_data") as prepare, \
+                mock.patch.object(self.engine, "run_flow") as execute:
+            results = self.engine.run_batch(flows)
+        for flow, result in results.items():
+            self.assertEqual(result["preparation_step"], "session_login")
+            self.assertEqual(result["request"], {"method": "POST", "path": "/api/app/v1/session"})
+            self.assertEqual((result["http_status"], result["error_code"]), (403, "CLOUDFLARE_1010"))
+            self.assertEqual(json.loads((self.engine.output / flow / "result.json").read_text(encoding="utf-8")), result)
+        prepare.assert_not_called()
+        execute.assert_not_called()
+        self.assertEqual(self.adb.calls, [])
+
+    def test_batch_source_preparation_failure_is_distinguished_from_login(self):
+        self.engine.phone = True
+        with mock.patch.object(self.engine, "probe_phone_offline", return_value={"status": "passed"}), \
+                mock.patch.object(self.engine, "prepare_data", side_effect=runner.FixtureError(
+                503, "UPSTREAM_UNAVAILABLE", method="POST", path="/api/app/v1/notes")), \
+                mock.patch.object(self.engine, "run_flow") as execute:
+            result = self.engine.run_batch(["search"])["search"]
+        self.assertEqual(result["preparation_step"], "test_source_data")
+        self.assertEqual(result["request"]["path"], "/api/app/v1/notes")
+        execute.assert_not_called()
+
+    def test_batch_failure_checks_only_local_results_until_checkpoint_stops(self):
+        self.engine.phone = True
+        self.engine.api.login.side_effect = runner.FixtureError(503, "UNAVAILABLE")
+        evidence = {"status": "reused_pass", "log": str(self.output / "previous" / "maestro.log")}
+        select = mock.Mock(side_effect=[None, None, evidence])
+        checkpoint = mock.Mock(side_effect=[False, True])
+        results = self.engine.run_batch(["editing", "language", "navigation-map"], on_result=checkpoint, select=select)
+        self.assertEqual(list(results), ["editing", "language"])
+        self.assertEqual(results["editing"]["preparation_step"], "session_login")
+        self.assertEqual(results["language"]["log"], evidence["log"])
+        self.assertEqual(results["language"]["status"], "reused_pass")
+        self.assertFalse(Path(evidence["log"]).parent.exists())
+        self.assertEqual(select.call_args_list, [
+            mock.call("editing", self.engine),
+            mock.call("editing", self.engine, local_only=True),
+            mock.call("language", self.engine, local_only=True),
+        ])
+        self.assertEqual([call.args[0] for call in checkpoint.call_args_list], ["editing", "language"])
+        self.engine.api.login.assert_called_once()
+
+    def test_batch_callback_failure_propagates_without_settling_more_flows(self):
+        reused = {"status": "reused_pass"}
+        select = mock.Mock(return_value=reused)
+        checkpoint = mock.Mock(side_effect=PermissionError("cannot save session"))
+        self.engine.phone = True
+        with self.assertRaisesRegex(PermissionError, "cannot save session"):
+            self.engine.run_batch(["editing", "language"], on_result=checkpoint, select=select)
+        select.assert_called_once_with("editing", self.engine)
+        checkpoint.assert_called_once_with("editing", reused)
+        self.assertEqual(json.loads((self.engine.output / "results.json").read_text(encoding="utf-8")), {})
+        self.engine.api.login.assert_not_called()
+
+    def test_preparation_error_messages_redact_credentials_before_writing_reports(self):
+        with mock.patch.object(self.engine, "prepare_data", side_effect=ValueError(
+                "invalid isolated-password-value isolated-token-value android-owner")):
+            result = self.engine.run_batch(["search"])["search"]
+        self.assertEqual(result["preparation_step"], "search.data_preparation")
+        self.assertEqual(result["error_message"], "invalid [redacted] [redacted] [redacted]")
+        serialized = (self.engine.output / "search/result.json").read_text(encoding="utf-8")
+        self.assertNotIn("isolated-password-value", serialized)
+        self.assertNotIn("isolated-token-value", serialized)
+
     def test_release_mode_requires_emulator_and_trusted_loopback_https(self):
         connection = json.loads(self.connection.read_text())
         connection["origin"] = "https://localhost:28443"
@@ -185,9 +336,9 @@ class MaestroExecutionTest(unittest.TestCase):
                 runner.fresh_ui_dump(self.adb, output)
         self.assertFalse(output.exists())
 
-    def test_batch_prepares_all_data_before_ui_and_verifies_after_independent_failures(self):
+    def test_batch_checks_and_persists_each_flow_before_preparing_the_next(self):
         events = []
-        flows = ["editing", "search"]
+        flows = ["editing", "actions"]
         def prepare(flow, entry):
             events.append("prepare:" + flow)
             return {"flow": flow}, None
@@ -195,17 +346,19 @@ class MaestroExecutionTest(unittest.TestCase):
             self.assertTrue(kwargs["deferred"])
             events.append("ui:" + flow)
             return {"status": "harness_error" if flow == "editing" else "passed"}
-        def verify(flow, values):
-            events.append("verify:" + flow)
-            return {}
+        def save(flow, result):
+            self.assertTrue((self.engine.output / flow / "result.json").exists())
+            events.append("save:" + flow)
         with mock.patch.object(self.engine, "prepare_conflict"), \
                 mock.patch.object(self.engine, "prepare_data", side_effect=prepare), \
                 mock.patch.object(self.engine, "run_flow", side_effect=execute), \
-                mock.patch.object(self.engine, "wait_verify", side_effect=verify):
-            result = self.engine.run_batch(flows)
-        self.assertEqual(events, ["prepare:editing", "prepare:search", "ui:editing", "ui:search", "verify:editing", "verify:search"])
+                mock.patch.object(self.engine, "verify", side_effect=lambda flow, values: events.append("observe:" + flow)), \
+                mock.patch.object(self.engine, "wait_verify", side_effect=lambda flow, values: events.append("verify:" + flow)):
+            result = self.engine.run_batch(flows, on_result=save)
+        self.assertEqual(events, ["prepare:editing", "ui:editing", "observe:editing", "save:editing",
+                                  "prepare:actions", "ui:actions", "verify:actions", "save:actions"])
         self.assertEqual(result["editing"]["status"], "harness_error")
-        self.assertEqual(result["search"]["status"], "passed")
+        self.assertEqual(result["actions"]["status"], "passed")
         self.engine.api.close.assert_called_once()
 
     def test_navigation_precondition_failure_does_not_block_other_modules(self):
@@ -213,8 +366,8 @@ class MaestroExecutionTest(unittest.TestCase):
                 mock.patch.object(self.engine, "prepare_data", return_value=({}, None)), \
                 mock.patch.object(self.engine, "run_flow", return_value={"status": "passed"}) as execute, \
                 mock.patch.object(self.engine, "wait_verify", return_value={}):
-            result = self.engine.run_batch(["navigation", "search"])
-        self.assertEqual(result["navigation"]["status"], "harness_error")
+            result = self.engine.run_batch(["navigation-settings", "search"])
+        self.assertEqual(result["navigation-settings"]["status"], "harness_error")
         self.assertEqual(result["search"]["status"], "passed")
         self.assertEqual(execute.call_args.args[0], "search")
 
@@ -230,7 +383,8 @@ class MaestroExecutionTest(unittest.TestCase):
 
     def test_phone_source_preflight_failure_stops_business_writes(self):
         self.engine.phone = True
-        with mock.patch.object(self.engine, "prepare_data", return_value=({}, None)) as prepare, \
+        with mock.patch.object(self.engine, "probe_phone_offline", return_value={"status": "passed"}), \
+                mock.patch.object(self.engine, "prepare_data", return_value=({}, None)) as prepare, \
                 mock.patch.object(self.engine, "run_flow", return_value={"status": "inconclusive"}) as execute, \
                 mock.patch.object(self.engine, "prepare_channel") as channel:
             result = self.engine.run_batch(["editing", "navigation"])
@@ -277,17 +431,17 @@ class MaestroExecutionTest(unittest.TestCase):
         xml = '<hierarchy><node resource-id="note_editor" text="' + marker + '"/></hierarchy>'
         with mock.patch.object(self.engine, "draft_checkpoint", return_value=checkpoint), \
                 mock.patch.object(self.engine, "run_flow", return_value={"status": "passed"}) as run, \
-                mock.patch.object(runner, "fresh_ui_dump", return_value=xml):
-            self.engine.recover_drafts()
-        self.assertEqual(run.call_count, 2)
+                mock.patch.object(runner, "fresh_ui_dump", side_effect=[xml, xml.replace(marker, "")]):
+            self.engine.recover_editor_state()
+        self.assertEqual(run.call_count, 1)
         self.assertEqual(run.call_args.kwargs["prepared"][0]["DRAFT_TEXT"], marker)
         self.assertFalse(checkpoint.exists())
         checkpoint.write_text(json.dumps([marker]))
         with mock.patch.object(self.engine, "draft_checkpoint", return_value=checkpoint), \
                 mock.patch.object(self.engine, "run_flow", return_value={"status": "passed"}) as run, \
                 mock.patch.object(runner, "fresh_ui_dump", return_value=xml.replace(marker, "personal draft")):
-            result = self.engine.recover_drafts()
-        self.assertEqual(run.call_count, 1)
+            result = self.engine.recover_editor_state()
+        run.assert_not_called()
         self.assertEqual(result[0]["cause"], "unknown_draft_preserved")
         self.assertTrue(checkpoint.exists())
 
@@ -299,7 +453,7 @@ class MaestroExecutionTest(unittest.TestCase):
                     mock.patch.object(self.engine, "draft_checkpoint", return_value=checkpoint), \
                     mock.patch.object(self.engine, "run_flow", return_value={"status": "passed"}), \
                     mock.patch.object(runner, "fresh_ui_dump", side_effect=error):
-                result = self.engine.recover_drafts()
+                result = self.engine.recover_editor_state()
             self.assertEqual(result[0]["cause"], "draft_ui_collection")
             self.assertTrue(checkpoint.exists())
 
@@ -398,14 +552,294 @@ class MaestroExecutionTest(unittest.TestCase):
         self.assertEqual(run.call_count, 1)
 
     def test_pass_identity_changes_when_a_shared_subflow_changes(self):
-        directory = self.output / "repo/scripts/android/maestro/subflows"
-        directory.mkdir(parents=True)
-        path = directory / "home.yaml"
-        path.write_text("first")
         root = self.output / "repo"
+        target = root / "scripts/android/maestro"
+        shutil.copytree(runner.ROOT / "scripts/android/maestro", target)
         before = runner.flow_digest(root, "editing")
-        path.write_text("second")
+        search = runner.flow_digest(root, "search")
+        language = runner.flow_digest(root, "language")
+        path = target / "search.yaml"
+        path.write_bytes(path.read_bytes().replace(b"name:", b"name: Changed", 1))
+        self.assertNotEqual(search, runner.flow_digest(root, "search"))
+        self.assertEqual(before, runner.flow_digest(root, "editing"))
+        self.assertEqual(language, runner.flow_digest(root, "language"))
+        with mock.patch.dict(runner.FLOW_CONTRACT_VERSIONS, editing=2):
+            self.assertNotEqual(before, runner.flow_digest(root, "editing"))
+            self.assertEqual(language, runner.flow_digest(root, "language"))
+        path = target / "subflows/home.yaml"
+        path.write_bytes(path.read_bytes().replace(b"name:", b"name: Changed", 1))
         self.assertNotEqual(before, runner.flow_digest(root, "editing"))
+
+    def test_existing_inline_editor_is_cancelled_once_only_if_registered(self):
+        checkpoint = self.output / "drafts.json"
+        checkpoint.write_text(json.dumps({"drafts": [], "notes": ["memos/known"]}))
+        inline = ('<hierarchy><node resource-id="note_editor_memos/known"/>'
+                  '<node resource-id="cancel_note_memos/known" enabled="true" bounds="[0,0][10,20]"/></hierarchy>')
+        home = '<hierarchy><node resource-id="note_editor" text=""/></hierarchy>'
+        tap = ("shell", "input", "tap", "5", "10")
+        with mock.patch.object(self.engine, "draft_checkpoint", return_value=checkpoint), \
+                mock.patch.object(runner, "fresh_ui_dump", side_effect=[inline, home]):
+            self.assertEqual(self.engine.recover_editor_state(), [{"status": "passed"}])
+        self.assertEqual(self.adb.calls.count(tap), 1)
+        self.assertFalse(checkpoint.exists())
+        with mock.patch.object(self.engine, "draft_checkpoint", return_value=checkpoint), \
+                mock.patch.object(runner, "fresh_ui_dump", return_value=inline):
+            self.assertEqual(self.engine.recover_editor_state()[0]["cause"], "unknown_editor_preserved")
+        self.assertEqual(self.adb.calls.count(tap), 1)
+
+    def test_source_probe_checks_account_before_sync_without_composer_dependency(self):
+        self.engine.phone = True
+        self.engine.api.login.return_value = {"user": {"name": "users/owner", "display_name": "Tablet Test"}}
+        maestro = runner.ROOT / "scripts/android/maestro"
+        source = (maestro / "test-source.yaml").read_text(encoding="utf-8")
+        steps = list(runner.yaml.safe_load_all(source))[1]
+        marker = {"text": r"\Q${NOTE_TEXT}\E", "childOf": {"id": "note_card_${NOTE_NAME}"}}
+        home, conditional, final = steps[-3:]
+        self.assertEqual(home["runFlow"]["file"], "subflows/test-source-home.yaml")
+        branch = conditional["runFlow"]
+        self.assertEqual(branch["when"], {"notVisible": marker})
+        self.assertEqual({key: value for key, value in final["assertVisible"].items() if key != "label"}, marker)
+        self.assertFalse(any("tapOn" in step or "scrollUntilVisible" in step for step in steps))
+        precondition, reopen, sync, wait, scroll_up, find_card = branch["commands"]
+        self.assertEqual({key: value for key, value in precondition["assertNotVisible"].items() if key != "label"}, marker)
+        self.assertEqual(reopen["runFlow"]["file"], "subflows/open-menu.yaml")
+        self.assertEqual(sync["tapOn"]["id"], "sidebar_sync")
+        self.assertEqual(wait["extendedWaitUntil"]["visible"], {"id": "home"})
+        self.assertEqual(scroll_up["scrollUntilVisible"]["direction"], "UP")
+        down = find_card["runFlow"]
+        self.assertEqual(down["when"], {"notVisible": {"id": "note_card_${NOTE_NAME}"}})
+        self.assertEqual(down["commands"][-1]["scrollUntilVisible"]["direction"], "DOWN")
+        self.assertEqual(down["commands"][-1]["scrollUntilVisible"]["element"], {"id": "note_card_${NOTE_NAME}"})
+        home_steps = list(runner.yaml.safe_load_all(
+            (maestro / "subflows/test-source-home.yaml").read_text(encoding="utf-8")))[1]
+        guard = next(index for index, step in enumerate(home_steps)
+                     if step.get("runFlow", {}).get("when", {}).get("notVisible", {}).get("id") == "account_menu")
+        reset = next(index for index, step in enumerate(home_steps)
+                     if step.get("tapOn", {}).get("id") == "nav_home")
+        self.assertLess(guard, reset)
+        self.assertFalse(any(step.get("assertVisible", {}).get("id") == "note_editor"
+                             for step in [*steps, *branch["commands"], *down["commands"], *home_steps]))
+        self.assertEqual(self.engine.catalog["flows"]["test-source"]["timeout_seconds"], 300)
+        self.assertEqual(self.engine.catalog["flows"]["test-source-resume"]["timeout_seconds"], 120)
+        for name in ("ensure-login.yaml", "open-menu.yaml"):
+            self.assertNotIn("sidebar_sync", (maestro / "subflows" / name).read_text(encoding="utf-8"))
+
+        def preflight(flow, prepared, deferred):
+            self.assertEqual(flow, "test-source")
+            self.assertEqual(prepared[0]["EXPECTED_ACCOUNT"], "Tablet Test")
+            return {"status": "inconclusive"}
+        with mock.patch.object(self.engine, "probe_phone_offline", return_value={"status": "passed"}), \
+                mock.patch.object(self.engine, "prepare_data", return_value=({}, None)) as prepare, \
+                mock.patch.object(self.engine, "run_flow", side_effect=preflight), \
+                mock.patch.object(self.engine, "recover_editor_state") as recovery:
+            result = self.engine.run_batch(["editing"])
+        self.assertEqual(result["editing"]["cause"], "phone_test_source_unverified")
+        recovery.assert_not_called()
+        self.assertEqual(prepare.call_count, 1)
+
+    def test_source_probe_navigates_home_even_when_archive_or_query_uses_home_tag(self):
+        source = runner.ROOT / "scripts/android/maestro/subflows/test-source-home.yaml"
+        steps = list(runner.yaml.safe_load_all(source.read_text(encoding="utf-8")))[1]
+        taps = [step["tapOn"]["id"] for step in steps if "tapOn" in step] + ["sidebar_sync"]
+        for start in ("archive", "filtered-home"):
+            with self.subTest(start=start):
+                page = start
+                for target in taps:
+                    if target == "nav_home":
+                        page = "unfiltered-home"
+                    if target == "sidebar_sync":
+                        self.assertEqual(page, "unfiltered-home")
+                self.assertEqual(taps, ["nav_home", "sidebar_sync"])
+
+    def test_failed_single_recovery_skips_other_editor_dependent_flows(self):
+        self.engine.phone = True
+        error = {"status": "environment_blocked", "cause": "test_editor_cancel_unconfirmed"}
+        with mock.patch.object(self.engine, "probe_phone_offline", return_value={"status": "passed"}), \
+                mock.patch.object(self.engine, "prepare_data", return_value=({}, None)) as prepare, \
+                mock.patch.object(self.engine, "run_flow", return_value={"status": "passed"}) as execute, \
+                mock.patch.object(self.engine, "recover_editor_state", side_effect=[[], [error]]) as recover, \
+                mock.patch.object(self.engine, "draft_checkpoint", return_value=self.output / "drafts.json"):
+            result = self.engine.run_batch(["search", "language", "home-smoke"])
+        self.assertEqual([call.args[0] for call in execute.call_args_list], ["test-source", "search"])
+        self.assertEqual(prepare.call_count, 2)
+        self.assertEqual(recover.call_count, 2)
+        self.assertEqual(result["language"]["status"], "skipped")
+        self.assertEqual(result["home-smoke"]["cause"], "test_editor_cancel_unconfirmed")
+
+    def test_phone_rejects_wrong_account_and_same_name_on_wrong_origin_before_online_launch(self):
+        self.engine.phone = True
+        self.engine.phone_isolation = nullcontext
+        self.engine.api.login.return_value = {"user": {"name": "users/owner", "display_name": "Same Name"}}
+        for name in ("Wrong Name", "Same Name"):
+            xml = (f'<hierarchy><node package="{self.engine.app}" resource-id="open_menu"/>'
+                   f'<node package="{self.engine.app}" resource-id="account_menu" text="{name}"/></hierarchy>')
+            with self.subTest(account=name), mock.patch.object(self.engine, "prepare_data") as prepare, \
+                    mock.patch.object(runner, "fresh_ui_dump", return_value=xml), \
+                    mock.patch.object(self.engine, "start_app") as start, \
+                    mock.patch.object(self.engine, "run_flow") as execute:
+                result = self.engine.run_batch(["search"])["search"]
+                self.assertEqual(result["preparation_step"], "phone_offline_identity")
+                self.assertEqual(result["probe_cause"], "selected_account_present")
+                execute.assert_not_called()
+                prepare.assert_not_called()
+                start.assert_called_once()
+
+    def test_matching_host_receipt_cannot_reconnect_a_same_named_phone_without_cached_note(self):
+        self.engine.phone = True
+        self.engine.phone_isolation = nullcontext
+        identity = {"instance_id": "test-instance", "user": {"name": "users/owner", "display_name": "Same Name"}}
+        self.engine.api.login.return_value = identity
+        self.engine.source_receipt = {**self.engine.source_identity(identity), "note_name": "memos/probe",
+                                      "note_text": "Maestro test-source " + "a" * 32}
+        xml = f'<hierarchy><node package="{self.engine.app}" resource-id="open_menu"/></hierarchy>'
+        with mock.patch.object(runner, "fresh_ui_dump", return_value=xml), \
+                mock.patch.object(self.engine, "start_app") as start, \
+                mock.patch.object(self.engine, "run_flow", return_value={"status": "inconclusive"}) as execute, \
+                mock.patch.object(self.engine, "prepare_data") as prepare:
+            result = self.engine.run_batch(["search"])["search"]
+        self.assertEqual(result["probe_cause"], "cached_test_source_unverified")
+        start.assert_called_once()
+        prepare.assert_not_called()
+        self.assertEqual(execute.call_args.args, ("test-source-resume",))
+
+    def test_offline_probe_requires_a_blank_form_from_the_target_app(self):
+        self.engine.phone_isolation = nullcontext
+        for package, field, status in ((self.engine.app, "server_origin_empty", "passed"),
+                                       (self.engine.app, "server_origin", "environment_blocked"),
+                                       ("another.app", "server_origin_empty", "environment_blocked")):
+            xml = (f'<hierarchy><node package="{package}" resource-id="server_login"/>'
+                   f'<node package="{package}" resource-id="{field}"/></hierarchy>')
+            with self.subTest(package=package, field=field), \
+                    mock.patch.object(runner, "fresh_ui_dump", return_value=xml):
+                self.assertEqual(self.engine.probe_phone_offline()["status"], status)
+
+    def test_shared_checkpoints_find_previous_worktree_and_normalize_origin(self):
+        other = self.output / "another-worktree"
+        local = other / ".local/android"
+        local.mkdir(parents=True)
+        source = "https://acceptance.example:443/"
+        channel_key = hashlib.sha256(source.encode()).hexdigest()[:16]
+        ime_key = hashlib.sha256(self.adb.serial.encode()).hexdigest()[:16]
+        old_channel = local / f"maestro-channel-{channel_key}.json"
+        old_ime = local / f"maestro-ime-{ime_key}.json"
+        old_channel.write_text("{}", encoding="utf-8")
+        old_ime.write_text("{}", encoding="utf-8")
+        with mock.patch.object(runner, "worktree_roots", return_value=[self.output, other]):
+            self.engine.connection["origin"] = source
+            channel = self.engine.channel_checkpoint()
+            self.engine.connection["origin"] = "https://ACCEPTANCE.EXAMPLE/"
+            self.assertEqual(self.engine.channel_checkpoint(), channel)
+            ime = runner.input_method_checkpoint(other, self.adb.serial)
+        self.assertTrue(ime.is_file() and channel.is_file())
+        self.assertEqual(ime.parent, self.output / ".local/android")
+        self.assertFalse(old_ime.exists() or old_channel.exists())
+
+    def test_interrupt_after_channel_patch_keeps_checkpoint_and_reports_failed_restore(self):
+        checkpoint = self.output / "channels.json"
+        saved = {"channel": {"kind": "none", "qq_app_id": ""}, "notifications": {"enabled": False}}
+        def prepare():
+            runner.write_result(checkpoint, saved)
+            self.engine.channel_fixture = saved
+        with mock.patch.object(self.engine, "channel_checkpoint", return_value=checkpoint), \
+                mock.patch.object(self.engine, "prepare_channel", side_effect=prepare), \
+                mock.patch.object(self.engine, "prepare_data", return_value=({}, None)), \
+                mock.patch.object(self.engine, "run_flow", side_effect=KeyboardInterrupt), \
+                mock.patch.object(self.engine, "restore_channel", side_effect=runner.FixtureError(503, "SETTINGS_BUSY")) as restore:
+            with self.assertRaises(KeyboardInterrupt):
+                self.engine.run_batch(["navigation-settings"])
+        self.assertEqual(restore.call_count, 2)
+        self.assertTrue(checkpoint.is_file())
+        self.assertEqual(self.engine.batch_cleanup_errors, ["channel_settings_restore"])
+
+    def test_navigation_channel_verification_in_group_and_batch(self):
+        config = {"settings": {"channel": {"kind": "qq", "qq_app_id": "100000019"}},
+                  "secrets": {"qq_app_secret": {"configured": True}}}
+        self.engine.api.request.return_value = config
+        for batch in (False, True):
+            with self.subTest(batch=batch), \
+                    mock.patch.object(self.engine, "prepare_data", return_value=(self.values(), None)), \
+                    mock.patch.object(runner, "execute", side_effect=self.successful_execution), \
+                    mock.patch.object(self.engine, "restore_pending_channel"), \
+                    mock.patch.object(self.engine, "prepare_channel") as prepare, \
+                    mock.patch.object(self.engine, "restore_channel") as restore:
+                saved = {"channel": {"kind": "none"}}
+                def staged():
+                    self.engine.channel_fixture = saved
+                    return saved
+                def restore_saved(value):
+                    self.assertEqual(value, saved)
+                    self.engine.channel_fixture = None
+                prepare.side_effect = staged
+                restore.side_effect = restore_saved
+                results = (self.engine.run_batch(["navigation-settings"]) if batch
+                           else self.engine.run_group("navigation"))
+                self.assertEqual(list(results), ["navigation-settings"] if batch else
+                                 ["navigation-review", "navigation-walk", "navigation-map", "navigation-settings"])
+                self.assertTrue(results["navigation-settings"]["server_assertions"]["qq_credentials_retained"])
+                prepare.assert_called_once()
+                restore.assert_called_once_with(saved)
+
+    def test_search_only_restores_an_interrupted_channel_before_selection(self):
+        saved = {"channel": {"kind": "none"}, "notifications": {"enabled": True}}
+        checkpoint = self.output / "channel.json"
+        checkpoint.write_text(json.dumps(saved))
+        self.engine.api.request.return_value = {"version": 4, "settings": {"channel": {"qq_app_id": "100000019"}}}
+        def select(flow, engine, *, local_only=False):
+            self.assertFalse(checkpoint.exists())
+            self.assertEqual(engine.api.request.call_args.args[:2], ("PATCH", "/api/app/v1/settings"))
+        with mock.patch.object(self.engine, "channel_checkpoint", return_value=checkpoint), \
+                mock.patch.object(self.engine, "prepare_data", return_value=(self.values(), None)), \
+                mock.patch.object(runner, "execute", side_effect=self.successful_execution):
+            self.assertEqual(self.engine.run_batch(["search"], select=select)["search"]["status"], "passed")
+
+    def test_timeout_attribution_falls_back_from_command_to_console_and_host(self):
+        commands = self.output / "commands.json"
+        commands.write_text(json.dumps([{"metadata": {"status": "RUNNING", "sequenceNumber": 7},
+                                        "command": {"tapOnElementCommand": {"label": "Tap settings"}}}]))
+        observed = runner.last_failed_step(self.output, "maestro_execution", 300)
+        self.assertEqual((observed["source"], observed["kind"], observed["status"]),
+                         ("commands_json", "last_observed", "RUNNING"))
+        commands.write_text("[truncated")
+        log = self.output / "console.log"
+        log.write_text("Open settings COMPLETED\nTap save RUNNING\n")
+        observed = runner.last_failed_step(self.output, "maestro_execution", 300)
+        self.assertEqual((observed["source"], observed["kind"], observed["label"]),
+                         ("console_log", "last_observed", "Tap save"))
+        log.unlink()
+        self.assertEqual(runner.last_failed_step(self.output, "activity_launch", 60), {
+            "source": "runner_stage", "kind": "host_stage", "stage": "activity_launch", "timeout_seconds": 60})
+
+    def test_disconnect_checks_both_exact_questions_and_partial_protocol_reply(self):
+        values = {"NOTE_NAME": "memos/target", "DISCONNECT_MARKER": "ANDROID_FAIL", "FOLLOWUP_TEXT": "Normal followup"}
+        first = {"user": {"content": values["DISCONNECT_MARKER"]},
+                 "assistant": {"status": "failed", "error_code": "LLM_PROTOCOL", "content": "Partial text"}}
+        second = {"user": {"content": values["FOLLOWUP_TEXT"]},
+                  "assistant": {"status": "completed", "content": "Complete text"}}
+        summary = {"chats": [{"id": "a" * 36, "material_count": 1}]}
+        chat = {"materials": [{"name": values["NOTE_NAME"]}], "turns": [first, second]}
+        self.engine.api.request.side_effect = [summary, chat, summary, chat]
+        self.assertEqual(self.engine.verify("insights-disconnect", values)["turn_count"], 2)
+        second["user"]["content"] = "ANDROID_FAIL Normal followup"
+        with self.assertRaisesRegex(AssertionError, "followup_question"):
+            self.engine.verify("insights-disconnect", values)
+        source = runner.ROOT / "scripts/android/maestro/insights-disconnect.yaml"
+        steps = list(runner.yaml.safe_load_all(source.read_text(encoding="utf-8")))[1]
+        sends = [index for index, step in enumerate(steps) if step.get("tapOn", {}).get("id") == "chat_send"]
+        self.assertEqual([steps[index - 1]["assertVisible"]["text"] for index in sends],
+                         [r"\Q${DISCONNECT_MARKER}\E", r"\Q${FOLLOWUP_TEXT}\E"])
+        self.assertEqual(sum(step.get("runFlow", {}).get("file") == "subflows/clear-question.yaml" for step in steps), 2)
+
+    def test_release_smoke_persists_created_note_count(self):
+        values = {**self.values(), "NEW_NOTE_TEXT": "Created"}
+        self.engine.api.matching_notes.return_value = [{"name": "memos/created", "content": "Created"}]
+        self.engine.api.note.return_value = {"content": "Created"}
+        with mock.patch.object(self.engine, "prepare_data", return_value=(values, None)), \
+                mock.patch.object(runner, "execute", side_effect=self.successful_execution):
+            result = self.engine.run_flow("release-smoke")
+        self.assertEqual(result["status"], "passed")
+        self.assertEqual(result["server_assertions"]["created_note_count"], 1)
+        saved = json.loads((self.engine.output / "release-smoke/result.json").read_text(encoding="utf-8"))
+        self.assertEqual(saved["server_assertions"]["created_note_count"], 1)
 
     def test_real_accounts_and_remote_services_are_rejected(self):
         for origin, username in (("https://example.com", "android-owner"),

@@ -1,0 +1,10 @@
+appId: ${APP_ID}
+name: Star map round trip
+onFlowComplete:
+- takeScreenshot:
+    path: ${SCREENSHOT_PREFIX}-final
+    label: Capture home after stargazing
+---
+- runFlow:
+    file: subflows/map-roundtrip.yaml
+    label: Check enabled or disabled stargazing behavior and return home

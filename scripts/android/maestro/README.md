@@ -13,11 +13,13 @@
 | `search` | 以 IME 动作提交关键词、切换到 hybrid 并再次提交；点击正文和时间戳后保持主页，检查详情路由缺席；清空搜索并检查两条笔记恢复 | `QUERY_TEXT` 与 `NOTE_TEXT` 完全相同 |
 | `actions` | 保留顶部草稿穿过归档、恢复和两次删除；先检查 peer 未受影响再删除 peer，检查草稿恢复后仅清该草稿 | `NOTE_NAME` 和 `PEER_NOTE_NAME` 均已删除 |
 | `insights` | 新建会话、选择材料、阅读来源、查看历史、生成洞察并保存回答 | 只使用隔离模型，检查笔记正文与回答一致 |
-| `navigation` | 回顾、漫步、地图、五个设置页签、主页；检查跨页面草稿 | 回顾检查有内容或明确空结果；漫步检查禁用提示或开始／停止；地图按设置检查可用分支 |
+| `insights-disconnect` | 选入独立素材，核对断流标记和普通追问的完整输入，同一会话连发两轮 | 首轮 `failed / LLM_PROTOCOL` 且保留部分正文，第二轮 `completed` 且有正文 |
+| `navigation-review`、`navigation-walk`、`navigation-map` | 各自从主页检查对应场景并返回 | 回顾有结果或明确空态；漫步检查禁用提示或开始与停止；地图检查开关和全屏往返 |
+| `navigation-settings` | 切换四页签，保存 QQ 渠道并检查凭据控件，返回主页验证独立草稿 | 读回 QQ 目标与 AppID、密钥保留状态；随后恢复测试渠道配置 |
 | `language` | 中文与英语切换，恢复原语言设置，包括跟随系统 | 只修改隔离账号使用的语言偏好 |
 | `attachments` | 打开／取消选择器，再选择唯一 txt 并保存新笔记 | `ATTACHMENT_NOTE_TEXT` 恰好一篇；附件名与字节均匹配运行器准备的文件 |
 
-兼容短流程保持独立入口：`home-smoke`、`archive`、`insights-material`、`attachment-cancel`。`navigation.yaml` 同时保留原路径并覆盖完整导航。`archive` 完成后恢复目标笔记；`insights-material` 也先通过 UI 新建独立洞察。短流程的 `seed_notes` 标记以清单为准，不能从所属分组推断。
+兼容短流程保持独立入口：`home-smoke`、`archive`、`insights-material`、`attachment-cancel`。`navigation` 组按回顾、漫步、地图、设置的顺序运行，`navigation.yaml` 保留完整导航入口。`archive` 完成后恢复目标笔记；`insights-material` 先通过 UI 新建独立洞察。准备笔记以 `seed_notes` 标记为准。
 
 ## 变量与隔离数据
 
@@ -44,6 +46,9 @@
 | `NEW_NOTE_TEXT` | 编辑场景中 UI 新建并保存的笔记内容 |
 | `ATTACHMENT_NOTE_TEXT` | 附件场景中 UI 新建并保存的笔记内容 |
 | `ATTACHMENT_NAME` | 唯一 ASCII 文件名，仅含字母、数字、下划线、连字符，并以 `.txt` 结尾 |
+| `ATTACHMENT_SHA256` | 主机后验读取的附件摘要，保存在 `test-data.json` |
+| `EXPECTED_ACCOUNT` | 服务端会话的显示名，缺省使用用户名 |
+| `DISCONNECT_MARKER`、`FOLLOWUP_TEXT` | 已声明的断流触发标记与唯一普通追问 |
 | `CHAT_TITLE` | 保留运行器的数据字段；界面没有会话命名控件，流程不写入该值 |
 
 测试文本使用独立唯一 ASCII 标记，只含字母、数字、下划线、连字符及词间单个空格，长度最多 90。除 `QUERY_TEXT = NOTE_TEXT` 外，各种文本应不同。选择器通过 `\Q…\E` 将动态文本作为字面量匹配。
@@ -54,7 +59,7 @@
 
 删除操作展开卡片内的确认按钮后，单独滚动到完整按钮再点击，避免按钮下半部分被系统导航栏覆盖。
 
-输入后及打开导航前使用 `hide-keyboard.yaml`。它只在应用窗口的 `ime_visible` 标记出现时收起键盘，并等待该标记消失；键盘未显示时跳过动作，防止返回键退出应用。校验器拒绝无可见性条件的 `hideKeyboard`。
+打开抽屉时由应用清除焦点并收键盘。搜索提交后直接等待结果。保存、取消或添加附件的控件被遮挡时，流程可以调用 `hide-keyboard.yaml`。校验器要求 `hideKeyboard` 由 `ime_visible` 明确保护，后续以目标控件可用为准。
 
 `seed_notes: true` 的入口由运行器为每次场景独立创建两条正常笔记，并等待 Core 立即可读。主页执行同步后检查具体控件和笔记。不要在编辑、删除等场景之间复用同一组笔记。
 
@@ -107,37 +112,39 @@ python -B scripts/android/maestro/validate.py --flow editing --parameters-json $
 
 ## Windows 正式包真机入口
 
-三种模式使用各自的包和设备边界：`phone-session.py prepare/run` 使用 `.fixture` 包；`release-smoke.py` 使用隔离模拟器上的正式包与可信 HTTPS；`phone-session.py accept --release` 使用 USB 真机上的 `io.github.fermin214.moerise`。正式包与 fixture 使用同一套源码 testTag，工具栏直接导出资源标识；release 冒烟在 R8 压缩后点击 `open_search` 并检查 `search_query`。
-
-开跑前人工安装指定 APK、处理系统安装确认和首次系统弹窗，将 App 退出生产账号并切换到独立测试服务。`--confirm-ready` 表示这些步骤已完成。默认不安装、不卸载、不清数据。`--install` 才覆盖安装；`--uninstall --install` 才先卸载；`--clear-data` 才清数据。安装被系统取消时，处理确认后重跑同一入口。
-
-连接档案沿用 `origin`、`username`、`password` 字段，并增加 `"environment": "test"`。正式包地址必须是 HTTPS，`--test-origin` 必须与档案地址一致；省略测试环境声明会拒绝连接，只有显式 `--allow-production` 才允许该例外。档案只保存于 Git 忽略的私有目录。
-
-从仓库根目录在 PowerShell 执行：
+连接并授权一台 Android 真机，在仓库根目录以 PowerShell 运行：
 
 ```powershell
-$device = (adb devices | Select-String '^\S+\s+device$' | Select-Object -First 1).ToString().Split("`t")[0]
-$origin = (Get-Content .local/phone/connection.json -Raw | ConvertFrom-Json).origin
-python -B scripts/android/phone-session.py accept --release --serial $device `
-  --apk .local/phone/moerise-android.apk --fixture .local/phone/connection.json `
-  --test-origin $origin --confirm-ready --session .local/phone/session --record
+.\scripts\android\verify-phone.ps1
 ```
 
-入口先通过只读 UI 流程核对独立服务上新建的唯一笔记标记，防止已登录生产账号被当成测试来源；核对失败时停止业务写入并标记环境阻塞。之后按 catalog 的八个既有分组连续执行；`--group search --group editing` 可缩小范围。所有服务端笔记及设置准备集中在 UI 批次之前，后验集中在批次之后；失败保留实际证据，后续独立模块继续执行。精确测试草稿标记持久化到设备与来源绑定的检查点；每场景之后及补测开始时，通过既有清理子流程仅删除完全匹配的测试草稿，其他草稿保留并单独报告。渠道准备在 PATCH 前持久保存恢复检查点，响应丢失后按服务端测试标记恢复原设置。共享服务无法登录时各模块标记环境阻塞。`editing` 批次在开跑前额外准备一条来源已变化的专用冲突笔记，并保存 `conflict.json`；批次结束用旧 `source_hash` 发起写入，核对 `409 SOURCE_CHANGED` 与远端正文保留。手机上的人工冲突处理结果可通过 `record` 记录，不在普通 UI 步骤间注入临时服务端操作。
+Python、ADB 和 Maestro 应可从同一终端运行。安装 Python 依赖使用 `python -m pip install -r scripts/android/maestro/requirements.txt`。默认读取 Git 忽略的 `.local/phone/profile.json`，`--profile` 可指定另一个档案：
 
-同一会话、APK 和脚本未变化时，重跑自动跳过已通过模块，仅补测失败或缺失项；`--retry` 强制重跑所选模块。也可只执行：
-
-```powershell
-python -B scripts/android/phone-session.py run --release --serial $device `
-  --session .local/phone/session --group search --group editing
+```json
+{
+  "apk": "moerise-android.apk",
+  "fixture": "connection.json",
+  "sessions_root": "sessions",
+  "record": false
+}
 ```
 
-会话目录的 `report.json`、`report.md` 汇总所有模块的状态、产品／工具／环境／待确认分类、首错步骤以及截图、录像和日志路径。UI 断言失败归为待确认，服务端业务断言失败归为产品问题。视觉项集中复核关键截图；可选 `--record` 为每个执行的场景保存最长 180 秒录像，设备已有其他录像时拒绝启动该场景。
+档案中的相对路径以档案目录解析，命令行路径从当前目录解析，命令行参数优先。会话默认保存到 `.local/phone/sessions`。连接档案包含 `origin`、`username`、`password` 和 `"environment": "test"`，正式包使用 HTTPS 测试源。`test_origin` 省略时取档案的 `origin`，指定时必须匹配。多台在线真机时用 `--serial` 选定设备。
 
-每场景结束停止 Maestro 驱动、移除本次新增的 forward，再用唯一远端路径采集 UI XML。采集前删除本地旧文件；dump 失败、退出 137 或 XML 无效时不读历史文件，报告记录采集错误。整批结束恢复原输入法及其启用状态、Wi-Fi、移动数据和亮屏设置，移除本次安装的驱动并停止验收 App；恢复错误写入报告并令命令失败。中断后可再次执行同一会话，先恢复设备检查点再继续补测。
+首次使用 USB ADB 进入实跑时，已有未核验账号须在设备断网退出，停在空白登录页后恢复测试网络。在交互终端确认，或以 `--confirm-ready` 声明已核对。已装包摘要不符时，机主授权覆盖安装后在设备上及时确认。覆盖安装先采集旧态。首次启动前独立采集遥测 CSV，即使 APK 已手动装好也一样。入口确认目标 Activity 启动后记录首启时间；启动尝试失败后仍可补录首启前 CSV。已启动的设备用 `--already-launched` 记录错过窗口。`--non-interactive` 在需要人工操作时保存报告并退出，可用操作卡回填再续跑。启动前证据需要提供保留原始文件时间的遥测 CSV；入口未观察到首启时，补录通过还要用 `--first-launch-at` 提供实际首启的带时区时间，CSV 须早于该时间。
 
-```powershell
-python -B scripts/android/phone-session.py cleanup --release --serial $device --session .local/phone/session
-```
+来源探针先通过飞行模式和 Wi-Fi 关闭隔离设备，确认无活跃网络后启动 App。首次欢迎页保持遥测默认关闭，继续到空白登录页。入口在恢复设备网络前停止 App。通过离线检查后，仅登录档案指定的 HTTPS 测试源，再核对侧栏账号、切回主页重置搜索和归档状态、同步并读取唯一测试笔记。保留已验证的测试登录态即可非交互续跑。入口匹配 HTTPS 来源、Core 实例、用户身份，并在设备离线时核对缓存中的测试笔记标记，通过后才联网启动。全为复用结果时跳过手机来源探针。
 
-清理默认保留 App 与账号数据；需要卸载时显式添加 `--uninstall`。既有 USB 映射和预装驱动保留，清理范围限于该会话创建的资源。
+每项依次准备独立数据、运行界面、恢复编辑态、执行服务端后验并落盘。已登记的测试行内编辑或完全匹配的草稿最多恢复一次。未知草稿保留，需要干净编辑态的后续项标记跳过。测试渠道恢复检查点以规范化来源索引，下次执行任意模块前先恢复。编辑冲突探针读回 `409 SOURCE_CHANGED` 与远端正文。
+
+重复执行固定入口会续跑同一设备、APK、连接档案与测试源对应的活动会话。成功的 UI、服务端后验与流指纹都有效时复用该项；`--check` 可重复指定检查 ID，`--retry` 强制重跑所选项。`--baseline` 或档案的 `baseline` 字段可导入已有证据。基线 JSON 包含 `apk_sha256`、`serial`、`test_origin` 和以检查 ID 为键的 `checks` 对象。每项填写 `ui_status`、`server_verification`、`manual_status`、`evidence_paths`，自动项还需匹配 `flow_sha256`。路径相对于基线文件。服务端后验 `pending` 的自动项只有在提供原始 `test_data_path` 且能补做完整只读后验时才可复用。`legacy_handoff: true` 使用固定的 0.3.0 等价证据映射。断流场景还需给档案设置 `fail_marker` 或传 `--fail-marker`，并确认独立模型代理能按该字面标记中断响应。
+
+`--stop-after <检查ID或场景>` 在该项落盘后停下，含已复用项。运行中可从另一个终端执行 `python -B scripts/android/phone-session.py stop --session <会话目录>`，请求在当前项完成后停下。退出码 `0` 表示适用的自动项已完成，`2` 表示到边界且此前执行无失败，`1` 表示失败、阻塞或资源恢复出错。Ctrl+C 立即中止并终止当前 Maestro 子进程树。
+
+`report.json` 与 `report.md` 列出整份清单的覆盖、UI、服务端及人工结果、证据与观测到的最后一步。`manual-cards.md` 按待确认项列出通过条件和可复制的 `record` 命令；可加 `--evidence <文件>`、`--note <说明>`。`--record` 为每个实跑场景保留最长 180 秒录像。服务请求使用 `Moerise-Android-Acceptance/1.0` 标识；准备失败保留脱敏的步骤、方法、路径和错误码，Cloudflare 1010 记为 `CLOUDFLARE_1010`。
+
+设备和会话写操作共享主仓库 `.local/android/device-build.lock`。`status` 与 `stop` 可在运行时访问。退出时归还本次占用的设备状态、驱动与端口。主仓库保存按设备索引的未归还资源和输入法检查点，切换设备、APK、测试源或 worktree 后仍能找回原责任。执行 `python -B scripts/android/phone-session.py cleanup --release --session <会话目录>` 结束活动会话，保留已装 App、账号数据和历史报告。再次使用固定入口会建立新会话。已有调用方仍可使用 `prepare`、`accept`、`run`、`ui`、`manual`、`record` 和 `cleanup` 子命令。正式包的自动启动从 `verify` 进入。
+
+### 登记新检查项
+
+新增自动项时，写 YAML 并在 `catalog.json` 登记场景，在 `maestro_runner.py` 的 `FLOW_CONTRACT_VERSIONS` 为该场景登记准备与后验契约版本，再在 `../phone-checks.json` 追加检查 ID、模块、关联交接项和场景引用。有场景专属准备或后验变化时递增其契约版本。新增目视或现场操作项直接追加 `visual` 或 `manual`，填写执行阶段、操作步骤、通过条件和证据要求。固定入口会读取追加的条目并将其纳入覆盖报告。

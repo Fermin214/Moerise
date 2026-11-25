@@ -22,8 +22,17 @@ onFlowComplete:
     charactersToErase: 1
     label: Remove only the temporary input suffix
 - runFlow:
-    file: subflows/hide-keyboard.yaml
-    label: Dismiss only an observed visible input method
+    when:
+      notVisible:
+        id: add_attachment
+    commands:
+    - assertNotVisible:
+        id: add_attachment
+        label: Check whether the attachment control is hidden
+    - runFlow:
+        file: subflows/hide-keyboard.yaml
+        label: Dismiss the keyboard only for an obscured attachment control
+    label: Skip keyboard dismissal when attachment controls are visible
 - extendedWaitUntil:
     visible:
       id: note_editor

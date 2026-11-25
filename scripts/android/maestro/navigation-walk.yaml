@@ -1,0 +1,10 @@
+appId: ${APP_ID}
+name: Walk round trip
+onFlowComplete:
+- takeScreenshot:
+    path: ${SCREENSHOT_PREFIX}-final
+    label: Capture home after walk
+---
+- runFlow:
+    file: subflows/walk-roundtrip.yaml
+    label: Check enabled or disabled walk behavior and return home

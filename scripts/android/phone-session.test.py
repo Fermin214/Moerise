@@ -1,11 +1,20 @@
 """Host-only regression checks for device lifecycle and failure attribution."""
+from contextlib import contextmanager, nullcontext, redirect_stdout
 import importlib.util
+import io
 import json
+import os
 from pathlib import Path
+import shlex
+import shutil
+import subprocess
+import sys
 import tempfile
 import time
 import unittest
 from unittest import mock
+
+import maestro_runner
 
 SPEC = importlib.util.spec_from_file_location("phone_session", Path(__file__).with_name("phone-session.py"))
 session = importlib.util.module_from_spec(SPEC)
@@ -69,6 +78,18 @@ class SessionLifecycle(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory(prefix="phone-harness-test-", dir=output)
         self.root = Path(self.tmp.name)
         self.repo = self.root / "repo"
+        registry = self.repo / "scripts/android/phone-checks.json"
+        registry.parent.mkdir(parents=True)
+        shutil.copyfile(Path(__file__).with_name("phone-checks.json"), registry)
+        common = mock.patch.object(session, "common_repo", return_value=self.repo)
+        common.start()
+        self.addCleanup(common.stop)
+        trees = mock.patch.object(session, "worktree_roots", return_value=[self.repo])
+        trees.start()
+        self.addCleanup(trees.stop)
+        restore_ime = mock.patch.object(session, "input_method_checkpoint", return_value=self.root / "ime.json")
+        restore_ime.start()
+        self.addCleanup(restore_ime.stop)
         artifacts = []
         for index, path in enumerate(session.APK_PATHS.values()):
             target = self.repo / path
@@ -159,19 +180,31 @@ class SessionLifecycle(unittest.TestCase):
         apk = self.release_ready()
         engine = mock.Mock()
         engine.catalog = {"groups": {"editing": ["editing"], "search": ["search"], "home": ["home-smoke"]}}
-        results = {"editing": {"status": "harness_error", "cause": "driver", "screenshots": ["key.png"], "recordings": ["key.mp4"]},
-                   "search": {"status": "passed"}}
-        engine.run_batch.return_value = results
+        attempted = []
+        def batch(flows, on_result, select):
+            results = {}
+            for flow in flows:
+                result = select(flow, engine)
+                if result is None:
+                    status = "harness_error" if flow == "editing" and not attempted else "passed"
+                    attempted.append(flow)
+                    result = {"status": status, "ui_status": status, "attempted": True,
+                              "server_verification": "passed" if flow in session.SERVER_FLOWS else "not_applicable",
+                              "flow_sha256": self.driver.execution_digest(flow)}
+                on_result(flow, result)
+                results[flow] = result
+            return results
+        engine.run_batch.side_effect = batch
         with mock.patch.object(self.driver, "package_hash", return_value=session.digest(apk)), \
                 mock.patch.object(session, "MaestroRunner", return_value=engine):
             first = self.driver.run(["editing", "search"])
             self.assertEqual(list(first), ["editing", "search"])
-            engine.run_batch.return_value = {"editing": {"status": "passed"}, "home-smoke": {"status": "passed"}}
             self.driver.run(["editing", "search", "home"])
-        self.assertEqual(engine.run_batch.call_args.args[0], ["editing", "home-smoke"])
+        self.assertEqual(attempted, ["editing", "search", "editing", "home-smoke"])
         report = session.read_json(self.driver.directory / "report.json")
         self.assertEqual(len(report["items"]), 3)
-        self.assertTrue(all(row["status"] == "passed" for row in report["items"]))
+        self.assertEqual({row["flow"]: row["status"] for row in report["items"]},
+                         {"editing": "passed", "search": "reused_pass", "home-smoke": "passed"})
         self.assertTrue((self.driver.directory / "report.md").exists())
         self.assertFalse(any(call[:3] == ("shell", "pm", "clear") for call in self.adb.calls))
 
@@ -190,6 +223,7 @@ class SessionLifecycle(unittest.TestCase):
                 return ""
             return original(*args, **kwargs)
         def fail(*args, **kwargs):
+            engine.on_phone_access()
             settings.update(wifi_on="0", mobile_data="0", stay_on_while_plugged_in="3", screen_off_timeout="1800000")
             raise ValueError("batch failure")
         engine = mock.Mock(catalog={"groups": {"search": ["search"]}})
@@ -202,6 +236,66 @@ class SessionLifecycle(unittest.TestCase):
         self.assertEqual(settings, {"wifi_on": "1", "mobile_data": "1", "stay_on_while_plugged_in": "0", "screen_off_timeout": "60000"})
         self.assertNotIn("device_before", self.driver.state)
         self.assertTrue((self.driver.directory / "report.json").exists())
+
+    def test_release_preparation_failure_does_not_uninstall_absent_drivers(self):
+        apk = self.release_ready()
+        original = self.adb.run
+        def adb(*args, **kwargs):
+            if args[0] == "uninstall" and args[1] not in self.adb.installed:
+                raise session.CommandError("adb_error", "package not installed")
+            return original(*args, **kwargs)
+        engine = mock.Mock(catalog={"groups": {"search": ["search"]}})
+        failure = {"status": "environment_blocked", "cause": "batch_preparation",
+                   "preparation_step": "session_login", **session.FixtureError(
+                       403, "CLOUDFLARE_1010", method="POST", path="/api/app/v1/session").details()}
+        engine.run_batch.return_value = {"search": failure}
+        with mock.patch.object(self.driver, "package_hash", return_value=session.digest(apk)), \
+                mock.patch.object(self.adb, "run", side_effect=adb), \
+                mock.patch.object(session, "MaestroRunner", return_value=engine):
+            result = self.driver.run(["search"])
+        self.assertEqual(result["search"]["status"], "environment_blocked")
+        self.assertEqual(self.driver.state["cleanup_errors"], [])
+        self.assertNotIn("resources_pending", self.driver.state)
+        self.assertFalse(any(call[0] == "uninstall" for call in self.adb.calls))
+        report = session.read_json(self.driver.directory / "report.json")
+        self.assertEqual(report["items"][0]["request"], {"method": "POST", "path": "/api/app/v1/session"})
+        markdown = (self.driver.directory / "report.md").read_text(encoding="utf-8")
+        for text in ["session_login", "POST /api/app/v1/session", "403", "CLOUDFLARE_1010"]:
+            self.assertIn(text, markdown)
+
+    def test_release_driver_removal_failure_keeps_resource_checkpoint(self):
+        apk = self.release_ready()
+        engine = mock.Mock(catalog={"groups": {"search": ["search"]}})
+        def batch(*args, **kwargs):
+            engine.on_phone_access()
+            self.adb.installed[session.DRIVERS[0]] = b"new-driver"
+            return {"search": {"status": "passed"}}
+        engine.run_batch.side_effect = batch
+        original = self.adb.run
+        def adb(*args, **kwargs):
+            if args[:2] == ("uninstall", session.DRIVERS[0]):
+                raise session.CommandError("adb_error", "package manager unavailable")
+            return original(*args, **kwargs)
+        with mock.patch.object(self.driver, "package_hash", return_value=session.digest(apk)), \
+                mock.patch.object(self.adb, "run", side_effect=adb), \
+                mock.patch.object(session, "MaestroRunner", return_value=engine):
+            self.driver.run(["search"])
+        self.assertEqual(self.driver.state["cleanup_errors"], ["driver_remove"])
+        self.assertTrue(self.driver.state["resources_pending"])
+        self.assertIn(session.DRIVERS[0], self.adb.installed)
+
+    def test_driver_removal_requires_success_and_absent_package_readback(self):
+        package = session.DRIVERS[0]
+        self.adb.installed[package] = b"new-driver"
+        original = self.adb.run
+        for text in ["Failure [DELETE_FAILED_INTERNAL_ERROR]", "Success\n"]:
+            with self.subTest(output=text):
+                def adb(*args, **kwargs):
+                    return text if args[:2] == ("uninstall", package) else original(*args, **kwargs)
+                with mock.patch.object(self.adb, "run", side_effect=adb):
+                    with self.assertRaises(session.CommandError) as caught:
+                        self.driver.remove_package(package)
+                self.assertEqual(caught.exception.code, "cleanup_failed")
 
     def test_release_resume_keeps_new_driver_ownership_and_recovers_unrecorded_forward(self):
         apk = self.release_ready()
@@ -304,15 +398,14 @@ class SessionLifecycle(unittest.TestCase):
         self.assertNotIn("editing", self.driver.state["results"])
         self.assertEqual(len(self.installs()), 2)
 
-    def test_host_script_change_invalidates_pass_without_reinstall(self):
+    def test_unrelated_runner_change_does_not_invalidate_flow_pass(self):
         self.prepare()
         script = self.repo / "scripts/android/maestro_runner.py"
-        script.parent.mkdir(parents=True)
         script.write_text("# original\n", encoding="utf-8")
         self.driver.run(["editing"])
         script.write_text("# changed\n", encoding="utf-8")
         result = self.driver.run(["editing"])["editing"]
-        self.assertEqual(result["status"], "passed")
+        self.assertEqual(result["status"], "reused_pass")
         self.assertEqual(len(self.installs()), 1)
 
     def test_flow_only_commit_change_reuses_the_same_installed_apk(self):
@@ -556,6 +649,764 @@ class SessionLifecycle(unittest.TestCase):
 
 
 
+
+
+class FixedWindowsEntry(unittest.TestCase):
+    def setUp(self):
+        self.repo = Path(__file__).resolve().parents[2]
+        parent = self.repo / ".local/android"
+        parent.mkdir(parents=True, exist_ok=True)
+        storage = tempfile.TemporaryDirectory(prefix="verify-phone-test-", dir=parent)
+        self.addCleanup(storage.cleanup)
+        self.root = Path(storage.name)
+        self.adb = FakeAdb(self.repo)
+        self.app = session.APP.removesuffix(".fixture")
+        self.apk = self.root / "target.apk"
+        self.apk.write_bytes(b"fixture-release-apk")
+        self.adb.installed[self.app] = self.apk.read_bytes()
+        self.fixture = self.root / "connection.json"
+        self.origin = "https://android-tests.example"
+        session.write_json(self.fixture, {"origin": self.origin, "username": "android-owner",
+                                          "password": "fixture-password", "environment": "test"})
+        self.profile = self.root / "profile.json"
+        session.write_json(self.profile, {"apk": "target.apk", "fixture": "connection.json",
+                                           "sessions_root": "sessions", "confirm_ready": True})
+        self.sessions = self.root / "sessions"
+        self.engine = mock.Mock(batch_cleanup_errors=[])
+        self.engine.catalog = session.catalog(self.repo)
+        self.engine.run_batch.side_effect = self.batch
+        self.executed = []
+        self.events = []
+        self.interrupt = None
+        self.on_flow = None
+        self.flow_results = {}
+        for patcher in (
+            mock.patch.object(session, "Adb", return_value=self.adb),
+            mock.patch.object(session, "MaestroRunner", return_value=self.engine),
+            mock.patch.object(session, "discover_serial", return_value=self.adb.serial),
+            mock.patch.object(session, "device_lock", return_value=nullcontext()),
+            mock.patch.object(session, "common_repo", return_value=self.root),
+            mock.patch.object(session, "worktree_roots", return_value=[self.root]),
+            mock.patch.object(session, "input_method_checkpoint", return_value=self.root / "ime.json"),
+        ):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def batch(self, flows, on_result, select, **kwargs):
+        results, started = {}, False
+        for flow in flows:
+            result = select(flow, self.engine)
+            if result is None:
+                if not started:
+                    self.engine.on_phone_access()
+                    self.events.append("test-source")
+                    self.engine.on_app_launch(session.now())
+                    if self.interrupt:
+                        self.interrupt()
+                    started = True
+                self.executed.append(flow)
+                result = {"status": "passed", "ui_status": "passed", "manual_status": "not_applicable",
+                          "server_verification": "passed" if flow in session.SERVER_FLOWS else "not_applicable",
+                          "flow_sha256": session.flow_digest(self.repo, flow), "attempted": True,
+                          **self.flow_results.get(flow, {})}
+            results[flow] = result
+            if self.on_flow:
+                self.on_flow(flow)
+            if on_result(flow, result):
+                break
+        return results
+
+    def cli(self, *args):
+        with mock.patch.object(sys, "argv", ["phone-session", *args]), redirect_stdout(io.StringIO()) as out:
+            code = session.main()
+        return code, json.loads(out.getvalue())
+
+    def verify(self, *args):
+        return self.cli("verify", "--profile", str(self.profile), *args)
+
+    def active(self):
+        return session.active_directory(self.sessions)
+
+    def rows(self):
+        report = session.read_json(self.active() / "report.json")
+        return {item["id"]: item for item in report["items"]}
+
+    def record_baseline(self, records, **override):
+        baseline = self.root / "baseline.json"
+        session.write_json(baseline, {"apk_sha256": session.digest(self.apk), "serial": self.adb.serial,
+                                      "test_origin": self.origin, "checks": records, **override})
+        return str(baseline)
+
+    def evidence(self, flow, **override):
+        path = self.root / "evidence.json"
+        path.write_text("{}", encoding="utf-8")
+        return {"ui_status": "passed", "server_verification": "passed" if flow in session.SERVER_FLOWS else "not_applicable",
+                "manual_status": "not_applicable", "evidence_paths": [path.name],
+                "flow_sha256": session.flow_digest(self.repo, flow), **override}
+
+    def telemetry_csv(self):
+        path = self.root / "telemetry.csv"
+        path.write_text("week_ending_utc,platform,client_version,sample_count\n", encoding="utf-8")
+        captured = time.time() - 2
+        os.utime(path, (captured, captured))
+        return path
+
+    @contextmanager
+    def real_batch(self):
+        api = mock.Mock(csrf="", **{"login.return_value": {"instance_id": "fixture", "user": {"name": "users/owner"}}})
+
+        def engine(*args, **kwargs):
+            real = maestro_runner.MaestroRunner(*args, **kwargs)
+            real.api = api
+            return real
+
+        real = maestro_runner.MaestroRunner
+        with mock.patch.object(session, "MaestroRunner", side_effect=engine), \
+                mock.patch.object(maestro_runner, "common_repo", return_value=self.root), \
+                mock.patch.object(maestro_runner, "worktree_roots", return_value=[self.root]), \
+                mock.patch.object(real, "probe_phone_offline", return_value={"status": "passed"}) as offline, \
+                mock.patch.object(real, "prepare_data", return_value=({}, None)) as prepare, \
+                mock.patch.object(real, "verify") as readback, \
+                mock.patch.object(real, "run_flow", return_value={"status": "inconclusive", "cause": "timeout",
+                                                                  "log": str(self.root / "probe.log")}) as execute:
+            yield api, offline, prepare, readback, execute
+
+    def assert_report_result(self, name, status, cause=None, evidence=None):
+        row = self.rows()[name]
+        self.assertEqual(row["status"], status)
+        line = next(line for line in (self.active() / "report.md").read_text(encoding="utf-8").splitlines()
+                    if line.startswith(f"| {name} |"))
+        self.assertIn(status, line)
+        if cause:
+            self.assertEqual(row["cause"], cause)
+            self.assertIn(cause, line)
+        if evidence:
+            self.assertEqual(row["evidence_paths"], [str(evidence)])
+            self.assertEqual(row["reuse"], status)
+            self.assertIn(evidence.as_uri(), line)
+        return row
+
+    def test_probe_timeout_keeps_baselines_previous_pass_and_capability_skip(self):
+        evidence_path = self.root / "evidence.json"
+        self.flow_results["home-smoke"] = {"evidence_paths": [str(evidence_path)]}
+        self.assertEqual(self.verify("--non-interactive", "--already-launched", "--check", "home")[0], 0)
+        baselines = ("navigation-review", "navigation-walk", "navigation-map", "language")
+        baseline = self.record_baseline({name: self.evidence(name) for name in baselines})
+        args = [part for name in ("editing", "search", "insights-disconnect", "home", *baselines) for part in ("--check", name)]
+        with self.real_batch() as (api, _, prepare, _, execute):
+            code, output = self.verify("--non-interactive", "--baseline", baseline, *args)
+        self.assertEqual(code, 1, output)
+        api.login.assert_called_once()
+        prepare.assert_called_once()
+        execute.assert_called_once()
+        for name in ("editing", "search"):
+            row = self.assert_report_result(name, "environment_blocked", "phone_test_source_unverified")
+            self.assertEqual((row["preparation_step"], row["probe_cause"]), ("test_source_ui", "timeout"))
+            self.assertEqual(row["evidence_paths"], [str(self.root / "probe.log")])
+        for name in baselines:
+            self.assert_report_result(name, "reused_baseline", evidence=evidence_path)
+        self.assert_report_result("home", "reused_pass", evidence=evidence_path)
+        self.assert_report_result("insights-disconnect", "skipped", "capability_missing")
+
+    def test_batch_preparation_failure_keeps_local_results_without_pending_readback(self):
+        session.write_json(self.root / "test-data.json", {"ATTACHMENT_SHA256": "a" * 64,
+                           "ATTACHMENT_NAME": "example.txt", "ATTACHMENT_NOTE_TEXT": "Marker"})
+        baseline = self.record_baseline({
+            "language": self.evidence("language"),
+            "attachments": self.evidence("attachments", server_verification="pending", test_data_path="test-data.json"),
+        })
+        cases = (("session_login", "environment_blocked", maestro_runner.FixtureError(403, "FORBIDDEN")),
+                 ("test_source_data", "environment_blocked", maestro_runner.FixtureError(503, "UNAVAILABLE")),
+                 ("phone_offline_identity", "harness_error", RuntimeError("offline isolation failed")))
+        for index, (step, status, error) in enumerate(cases):
+            with self.subTest(step=step), self.real_batch() as (api, offline, prepare, readback, execute):
+                {"session_login": api.login, "test_source_data": prepare, "phone_offline_identity": offline}[step].side_effect = error
+                code, output = self.verify("--non-interactive", "--already-launched", "--baseline", baseline,
+                                           "--check", "editing", "--check", "language", "--check", "attachments",
+                                           "--check", "insights-disconnect")
+                self.assertEqual(code, 1, output)
+                api.login.assert_called_once()
+                readback.assert_not_called()
+                execute.assert_not_called()
+                for name in ("editing", "attachments"):
+                    row = self.assert_report_result(name, status, "batch_preparation")
+                    self.assertEqual(row["preparation_step"], step)
+                    self.assertEqual(row["error_message"], str(error))
+                self.assert_report_result("language", "reused_pass" if index else "reused_baseline",
+                                          evidence=self.root / "evidence.json")
+                self.assert_report_result("insights-disconnect", "skipped", "capability_missing")
+
+    def test_probe_failure_stops_at_target_or_consumes_matching_run_marker(self):
+        self.assertEqual(self.verify("--non-interactive", "--already-launched", "--check", "language")[0], 0)
+        metadata = self.active() / "session.json"
+        original = session.read_json(metadata)["flow_results"]
+        marker = self.active() / "STOP_AFTER_CURRENT"
+        args = ("--check", "editing", "--check", "language", "--check", "insights-disconnect")
+        for stop in ("target", "probe_marker", "prompt_marker"):
+            with self.subTest(stop=stop), self.real_batch() as (_, _, _, _, execute), \
+                    mock.patch.object(session.sys.stdin, "isatty", return_value=True), \
+                    mock.patch.object(session, "ask", return_value="y") as prompt:
+                if stop == "probe_marker":
+                    def stop_during_probe(*_args, **_kwargs):
+                        session.request_stop(self.active())
+                        return execute.return_value
+
+                    execute.side_effect = stop_during_probe
+                if stop == "prompt_marker":
+                    def stop_during_prompt(*_args):
+                        session.request_stop(self.active())
+                        return "y"
+
+                    prompt.side_effect = stop_during_prompt
+                code, output = self.verify(*args, *(("--stop-after", "editing") if stop == "target" else ()))
+                execute.assert_called_once()
+                self.assertEqual(prompt.call_count, int(stop == "prompt_marker"))
+                self.assertEqual(code, 1, output)
+                self.assertEqual(session.read_json(self.active() / "report.json")["stopped_at"], "editing")
+                self.assert_report_result("editing", "environment_blocked", "phone_test_source_unverified")
+                for name in ("language", "insights-disconnect"):
+                    self.assertEqual(self.assert_report_result(name, "not_run")["not_run_reason"], "stopped_at_boundary")
+                self.assertEqual(session.read_json(metadata)["flow_results"], original)
+                self.assertFalse(marker.exists())
+
+    def test_probe_checkpoint_stops_when_marker_arrives_during_save(self):
+        baseline = self.record_baseline({"language": self.evidence("language")})
+        save_session = session.PhoneSession.save
+        requested = []
+
+        def save(engine):
+            results = engine.state.get("coverage", {}).get("results", {})
+            if engine.state.get("active_run_id") and "editing" in results and not requested:
+                requested.append(session.request_stop(engine.directory)["run_id"])
+            save_session(engine)
+
+        with self.real_batch() as (_, _, _, _, execute), \
+                mock.patch.object(session.PhoneSession, "save", autospec=True, side_effect=save):
+            code, output = self.verify("--non-interactive", "--already-launched", "--baseline", baseline,
+                                       "--check", "editing", "--check", "language")
+        self.assertEqual(code, 1, output)
+        report = session.read_json(self.active() / "report.json")
+        self.assertEqual(requested, [report["run_id"]])
+        self.assertEqual(report["stopped_at"], "editing")
+        self.assert_report_result("editing", "environment_blocked", "phone_test_source_unverified")
+        self.assertEqual(self.assert_report_result("language", "not_run")["not_run_reason"], "stopped_at_boundary")
+        self.assertFalse((self.active() / "STOP_AFTER_CURRENT").exists())
+        execute.assert_called_once()
+
+    def test_stop_item_write_error_ends_batch_in_top_level_report(self):
+        baseline = self.record_baseline({"language": self.evidence("language")})
+        write_result = maestro_runner.write_result
+
+        def write(path, result):
+            if path.parts[-2:] == ("editing", "result.json"):
+                raise PermissionError("editing result is not writable")
+            write_result(path, result)
+
+        with self.real_batch(), mock.patch.object(maestro_runner, "write_result", side_effect=write) as writes:
+            code, output = self.verify("--non-interactive", "--already-launched", "--baseline", baseline,
+                                       "--check", "editing", "--check", "language", "--stop-after", "editing")
+        self.assertEqual(code, 1, output)
+        self.assertEqual(output["error"], {"cause": "PermissionError", "message": "editing result is not writable"})
+        self.assert_report_result("editing", "not_run")
+        self.assert_report_result("language", "not_run")
+        self.assertEqual(writes.call_args.args[1], {})
+        self.assertFalse(session.read_json(self.active() / "session.json").get("flow_results"))
+
+    def test_selection_read_error_does_not_hide_later_local_results(self):
+        baseline = self.record_baseline({"language": self.evidence("language")})
+        execution_digest = session.PhoneSession.execution_digest
+        for cause in ("selection", "probe"):
+            with self.subTest(cause=cause), self.real_batch() as (api, _, _, _, execute):
+                missing_flow = "editing" if cause == "selection" else "search"
+
+                def digest(engine, flow):
+                    if flow == missing_flow:
+                        raise FileNotFoundError(f"{flow}.yaml is missing")
+                    return execution_digest(engine, flow)
+
+                with mock.patch.object(session.PhoneSession, "execution_digest", autospec=True, side_effect=digest) as fingerprints:
+                    code, output = self.verify("--non-interactive", "--already-launched", "--baseline", baseline,
+                                               "--check", "editing", "--check", "search", "--check", "language",
+                                               "--check", "insights-disconnect")
+                self.assertEqual(code, 1, output)
+                self.assertIsNone(output["error"])
+                row = self.assert_report_result(missing_flow, "harness_error", "batch_preparation")
+                self.assertEqual((row["preparation_step"], row["error_message"]),
+                                 ("result_selection", f"{missing_flow}.yaml is missing"))
+                self.assertEqual([call.args[1] for call in fingerprints.call_args_list].count(missing_flow), 1)
+                self.assert_report_result("language", "reused_baseline" if cause == "selection" else "reused_pass",
+                                          evidence=self.root / "evidence.json")
+                self.assert_report_result("insights-disconnect", "skipped", "capability_missing")
+                self.assertEqual(api.login.call_count, int(cause == "probe"))
+                self.assertEqual(execute.call_count, int(cause == "probe"))
+
+    def test_stop_after_first_reused_baseline_never_starts_the_probe(self):
+        baseline = self.record_baseline({"navigation-review": self.evidence("navigation-review")})
+        with self.real_batch() as (api, offline, prepare, _, execute):
+            code, output = self.verify("--non-interactive", "--baseline", baseline, "--check", "navigation-review",
+                                       "--check", "home", "--stop-after", "navigation-review")
+        self.assertEqual(code, 2, output)
+        self.assert_report_result("navigation-review", "reused_baseline", evidence=self.root / "evidence.json")
+        self.assertEqual(self.assert_report_result("home", "not_run")["not_run_reason"], "stopped_at_boundary")
+        for operation in (api.login, offline, prepare, execute):
+            operation.assert_not_called()
+
+    def test_missing_phone_access_confirmation_stays_in_top_level_report(self):
+        with self.real_batch() as (api, offline, _, _, _):
+            code, output = self.verify("--non-interactive", "--no-confirm-ready", "--check", "editing")
+        self.assertEqual(code, 1)
+        self.assertEqual(output["error"]["cause"], "test_account_confirmation_pending")
+        self.assert_report_result("editing", "not_run")
+        api.login.assert_not_called()
+        offline.assert_not_called()
+
+    def test_verify_record_from_card_cleanup_and_new_session(self):
+        code, first = self.verify("--non-interactive", "--already-launched", "--check", "home")
+        self.assertEqual(code, 0, first)
+        first_dir = self.active()
+        text = (first_dir / "manual-cards.md").read_text(encoding="utf-8")
+        command = next(line for line in text.splitlines() if "--check editing-caret " in line)
+        self.assertEqual(self.cli(*shlex.split(command)[3:])[0], 0)
+        self.assertEqual(self.rows()["editing-caret"]["manual_status"], "passed")
+        self.assertEqual(self.cli("cleanup", "--release", "--session", str(first_dir))[0], 0)
+        self.assertEqual(self.verify("--non-interactive", "--check", "home")[0], 0)
+        self.assertNotEqual(self.active(), first_dir)
+        self.assertEqual(session.read_json(first_dir / "report.json")["status"], "completed")
+        self.assertEqual(self.rows()["telemetry-before-launch"]["manual_status"], "inconclusive")
+
+    def test_prelaunch_runs_for_manually_installed_apk_before_probe(self):
+        code, result = self.verify("--non-interactive", "--check", "home")
+        self.assertEqual(code, 1)
+        self.assertEqual(result["error"]["cause"], "pre_launch_evidence_pending")
+        self.assertEqual(self.events, [])
+        evidence = self.telemetry_csv()
+        with mock.patch.object(session, "ask", side_effect=lambda *_: self.events.append("pre_launch") or str(evidence)):
+            self.assertEqual(self.verify("--check", "home")[0], 0)
+        self.assertEqual(self.events, ["pre_launch", "test-source"])
+        self.assertEqual(self.rows()["telemetry-before-launch"]["manual_status"], "passed")
+
+    def test_preinstall_and_prelaunch_are_independent_and_precede_any_probe(self):
+        self.adb.installed[self.app] = b"old"
+        original = self.adb.run
+        def device(*args, **kwargs):
+            if args[0] == "install":
+                self.events.append("install")
+                self.adb.installed[self.app] = self.apk.read_bytes()
+                return "Success\n"
+            return original(*args, **kwargs)
+        def reply(interactive, text):
+            self.events.append(text.split(" · ", 1)[0])
+            return str(self.telemetry_csv()) if text.startswith("telemetry-before-launch") else "y"
+        with mock.patch.object(self.adb, "run", side_effect=device), mock.patch.object(session, "ask", side_effect=reply):
+            code, report = self.verify("--install", "--check", "home")
+            self.assertEqual(code, 0, report)
+        self.assertEqual(self.events, ["upgrade-before", "install", "telemetry-before-launch", "test-source"])
+
+    def test_baseline_status_identity_fingerprint_and_pending_readback(self):
+        actions = self.evidence("actions", server_verification="pending")
+        attachments = self.evidence("attachments", server_verification="pending", test_data_path="test-data.json")
+        values = {"ATTACHMENT_SHA256": "a" * 64, "ATTACHMENT_NAME": "example.txt",
+                  "ATTACHMENT_NOTE_TEXT": "Maestro file 0123456789"}
+        session.write_json(self.root / "test-data.json", values)
+        baseline = self.record_baseline({"search": self.evidence("search", flow_sha256="obsolete"),
+                                        "language": self.evidence("language"), "actions": actions, "attachments": attachments})
+        self.engine.verify.return_value = {"attachment_bytes_match": True}
+        args = ("--non-interactive", "--already-launched", "--check", "language", "--check", "search",
+                "--check", "actions", "--check", "attachments", "--baseline", baseline)
+        self.assertEqual(self.verify(*args)[0], 0)
+        self.assertEqual(self.executed, ["search", "actions"])
+        self.assertEqual(self.rows()["language"]["status"], "reused_baseline")
+        self.assertEqual(self.rows()["attachments"]["server_verification"], "passed")
+        self.engine.verify.assert_called_once_with("attachments", values)
+        self.record_baseline({}, apk_sha256="other")
+        code, output = self.verify(*args)
+        self.assertEqual(code, 1)
+        self.assertEqual(output["error"]["cause"], "baseline_identity_mismatch")
+
+    def test_legacy_baseline_accepts_only_pinned_equivalents(self):
+        def legacy(flow, **override):
+            return {field: value for field, value in self.evidence(flow, **override).items() if field != "flow_sha256"}
+        baseline = self.record_baseline({"language": legacy("language"), "navigation-review": legacy("navigation-review"),
+                                         "search": legacy("search"), "actions": legacy("actions", server_verification="pending")},
+                                         legacy_handoff=True, apk_sha256=session.LEGACY_APK)
+        real_digest = session.digest
+        def target_digest(path):
+            result = real_digest(path)
+            return session.LEGACY_APK if result == real_digest(self.apk) else result
+        with mock.patch.object(session, "digest", side_effect=target_digest):
+            self.assertEqual(self.verify("--non-interactive", "--already-launched", "--baseline", baseline,
+                                         "--check", "language", "--check", "search", "--check", "actions",
+                                         "--check", "navigation-review")[0], 0)
+        self.assertEqual(self.executed, ["search", "actions"])
+        self.assertEqual(self.rows()["navigation-review"]["status"], "reused_baseline")
+
+    def test_stop_after_reused_and_pending_preserves_existing_results(self):
+        args = ("--non-interactive", "--already-launched", "--check", "editing", "--check", "search")
+        self.assertEqual(self.verify(*args, "--stop-after", "editing")[0], 2)
+        self.assertEqual(self.executed, ["editing"])
+        self.assertEqual(self.rows()["search"]["status"], "not_run")
+        self.assertEqual(self.verify(*args)[0], 0)
+        self.assertEqual(self.executed, ["editing", "search"])
+        self.assertEqual(self.verify(*args, "--stop-after", "editing")[0], 2)
+        self.assertEqual(self.rows()["editing"]["status"], "reused_pass")
+        self.assertEqual(self.rows()["search"]["existing_status"], "passed")
+        self.assertEqual(self.rows()["search"]["not_run_reason"], "stopped_at_boundary")
+        self.assertEqual(session.read_json(self.active() / "session.json")["flow_results"]["search"]["status"], "passed")
+
+    def test_run_bound_stop_and_ctrl_c_do_not_stop_next_run(self):
+        args = ("--non-interactive", "--already-launched", "--check", "editing", "--check", "search")
+        def stop(flow):
+            if flow == "editing":
+                requested = session.request_stop(self.active())
+                self.assertEqual(requested["run_id"], session.read_json(self.active() / "session.json")["active_run_id"])
+        self.on_flow = stop
+        self.assertEqual(self.verify(*args)[0], 2)
+        self.assertEqual(self.executed, ["editing"])
+        self.on_flow = None
+        def interrupt():
+            session.request_stop(self.active())
+            raise KeyboardInterrupt
+        self.interrupt = interrupt
+        self.assertEqual(self.verify(*args)[0], 1)
+        self.assertFalse((self.active() / "STOP_AFTER_CURRENT").exists())
+        self.interrupt = None
+        self.assertEqual(self.verify(*args)[0], 0)
+        self.assertEqual(self.executed, ["editing", "search"])
+
+    def test_apk_switch_restores_old_resources_and_failed_restore_leaves_pointer(self):
+        args = ("--non-interactive", "--already-launched", "--check", "home")
+        self.assertEqual(self.verify(*args)[0], 0)
+        previous = self.active()
+        metadata = previous / "session.json"
+        state = session.read_json(metadata)
+        state.update(resources_pending=True, maestro_preexisting={session.DRIVERS[0]: False}, forwards_before=[])
+        session.write_json(metadata, state)
+        self.adb.installed[session.DRIVERS[0]] = b"driver"
+        self.apk.write_bytes(b"second-apk")
+        self.adb.installed[self.app] = self.apk.read_bytes()
+        with mock.patch.object(session.PhoneSession, "remove_package", side_effect=session.CommandError("adb_error", "lost device")):
+            code, output = self.verify(*args)
+        self.assertEqual(code, 1)
+        self.assertEqual(output["cause"], "previous_session_restore_failed")
+        self.assertEqual(self.active(), previous)
+        self.assertTrue(session.read_json(metadata)["resources_pending"])
+        self.assertEqual(self.verify(*args)[0], 0)
+        self.assertNotEqual(self.active(), previous)
+        self.assertNotIn(session.DRIVERS[0], self.adb.installed)
+        self.assertFalse(session.read_json(metadata).get("resources_pending"))
+
+    def test_missing_fail_marker_skips_disconnect_without_preparing(self):
+        self.assertEqual(self.verify("--non-interactive", "--already-launched", "--check", "insights-disconnect")[0], 0)
+        self.assertEqual(self.executed, [])
+        self.assertEqual(self.rows()["insights-disconnect"]["cause"], "capability_missing")
+
+    def test_device_owner_survives_switches_and_a_second_worktree_session_root(self):
+        args = ("--non-interactive", "--already-launched", "--check", "home")
+        self.assertEqual(self.verify(*args)[0], 0)
+        original = self.active()
+        state = session.read_json(original / "session.json")
+        state.update(resources_pending=True, maestro_preexisting={session.DRIVERS[0]: False}, forwards_before=[])
+        session.write_json(original / "session.json", state)
+        owner = session.device_resource_owner(self.repo, self.adb.serial)
+        session.write_json(owner, {"serial": self.adb.serial, "session": str(original / "session.json")})
+        self.adb.installed[session.DRIVERS[0]] = b"first-device-installed-driver"
+        device_b = FakeAdb(self.repo)
+        device_b.serial = "another-device"
+        device_b.installed[self.app] = self.apk.read_bytes()
+        with mock.patch.object(session, "Adb", return_value=device_b):
+            self.assertEqual(self.verify(*args)[0], 0)
+        self.assertTrue(owner.exists())
+        self.assertNotEqual(self.active(), original)
+        different_root = self.root / "second-worktree-sessions"
+        self.assertEqual(self.verify(*args, "--sessions-root", str(different_root))[0], 0)
+        self.assertNotIn(session.DRIVERS[0], self.adb.installed)
+        self.assertNotIn("maestro_preexisting", session.read_json(original / "session.json"))
+        self.assertFalse(owner.exists())
+
+    def test_verify_recovers_legacy_worktree_session_without_an_owner_index(self):
+        other = self.root / "old-worktree"
+        directory = other / ".local/phone/session"
+        legacy = session.PhoneSession(self.repo, directory, directory, self.adb, "old")
+        session.create_release_state(legacy, {"path": str(self.apk), "sha256": session.digest(self.apk)},
+                                     self.fixture, self.origin, False)
+        legacy.state.update(resources_pending=True, maestro_preexisting={session.DRIVERS[0]: False},
+                            forwards_before=[])
+        legacy.save()
+        self.adb.installed[session.DRIVERS[0]] = b"legacy-driver"
+        self.assertFalse(session.device_resource_owner(self.repo, self.adb.serial).exists())
+        mock_engine = self.engine
+        def batch(*args, **kwargs):
+            self.assertNotIn(session.DRIVERS[0], self.adb.installed)
+            result = self.batch(*args, **kwargs)
+            self.assertFalse(session.read_json(self.active() / "session.json")["maestro_preexisting"][session.DRIVERS[0]])
+            return result
+        mock_engine.run_batch.side_effect = batch
+        with mock.patch.object(session, "worktree_roots", return_value=[self.root, other]):
+            self.assertEqual(self.verify("--non-interactive", "--already-launched", "--check", "home")[0], 0)
+        self.assertFalse(session.read_json(legacy.path).get("resources_pending"))
+
+    def test_verify_and_run_share_the_latest_flow_after_cross_entry_retry(self):
+        args = ("--non-interactive", "--already-launched", "--check", "search")
+        self.assertEqual(self.verify(*args)[0], 0)
+        active = str(self.active())
+        self.assertEqual(self.cli("run", "--release", "--session", active, "--group", "search")[0], 0)
+        self.assertEqual(self.executed, ["search"])
+        self.flow_results["search"] = {"status": "failed", "ui_status": "passed", "server_verification": "failed"}
+        self.assertEqual(self.cli("run", "--release", "--session", active, "--group", "search", "--retry")[0], 1)
+        self.flow_results.clear()
+        self.assertEqual(self.verify(*args)[0], 0)
+        self.assertEqual(self.rows()["search"]["status"], "passed")
+        self.assertEqual(self.executed, ["search", "search", "search"])
+
+    def test_real_batch_resumes_logged_in_phone_and_accounts_for_confirmed_first_start(self):
+        identity = {"instance_id": "fixture-instance", "user": {"name": "users/owner", "display_name": "Test Owner"}}
+        api = mock.Mock(csrf="", **{"login.return_value": identity})
+        state = {"screen": "welcome", "airplane_mode_on": "0", "wifi_on": "1", "fail_start": True}
+        device = self.adb.run
+        flows = []
+
+        def run_adb(*args, **kwargs):
+            if args[:4] == ("shell", "settings", "get", "global") and args[4] in ("airplane_mode_on", "wifi_on"):
+                return state[args[4]]
+            if args[:4] == ("shell", "cmd", "connectivity", "airplane-mode"):
+                state["airplane_mode_on"] = str(int(args[4] == "enable"))
+                return ""
+            if args[:3] == ("shell", "svc", "wifi"):
+                state["wifi_on"] = str(int(args[3] == "enable"))
+                return ""
+            if args == ("shell", "dumpsys", "connectivity"):
+                return "Active default network: none\nCurrent Networks:\n\nStatus for known UIDs:\n"
+            if args[:3] == ("shell", "am", "start"):
+                if state["fail_start"]:
+                    return "Status: timeout\n"
+                flows.append(("start", state["airplane_mode_on"]))
+                return f"Status: ok\nActivity: {self.app}/.MainActivity\n"
+            return device(*args, **kwargs)
+
+        def dump(*args, **kwargs):
+            self.assertEqual(state["airplane_mode_on"], "1")
+            tags = {"welcome": ["welcome_enter"], "blank": ["server_login", "server_origin_empty"],
+                    "signed-in": ["open_menu"]}[state["screen"]]
+            return "<hierarchy>" + "".join(f'<node package="{self.app}" resource-id="{tag}"/>' for tag in tags) + "</hierarchy>"
+
+        def execute(engine, flow, prepared=None, deferred=False):
+            values = prepared[0]
+            flows.append((flow, state["airplane_mode_on"]))
+            if flow == "test-source-welcome":
+                self.assertEqual(state["screen"], "welcome")
+                state["screen"] = "blank"
+            if flow == "test-source":
+                self.assertEqual(state["screen"], "blank")
+                self.assertIn("test-source", values["NOTE_TEXT"])
+                state.update(screen="signed-in", note_name=values["NOTE_NAME"], note_text=values["NOTE_TEXT"])
+            if flow == "test-source-resume":
+                self.assertEqual((values["NOTE_NAME"], values["NOTE_TEXT"]), (state["note_name"], state["note_text"]))
+            return {"status": "passed", "flow_sha256": session.flow_digest(self.repo, flow)}
+
+        def engine(*args, **kwargs):
+            real = maestro_runner.MaestroRunner(*args, **kwargs)
+            real.api = api
+            return real
+
+        api.create.side_effect = lambda text, key: {"name": "memos/" + key}
+        args = ("--non-interactive", "--check", "language", "--check", "home")
+        with mock.patch.object(session, "MaestroRunner", side_effect=engine), \
+                mock.patch.object(self.adb, "run", side_effect=run_adb), \
+                mock.patch.object(maestro_runner, "fresh_ui_dump", side_effect=dump), \
+                mock.patch.object(maestro_runner.MaestroRunner, "run_flow", autospec=True, side_effect=execute), \
+                mock.patch.object(maestro_runner.MaestroRunner, "recover_editor_state", return_value=[]), \
+                mock.patch.object(maestro_runner, "common_repo", return_value=self.root), \
+                mock.patch.object(maestro_runner, "worktree_roots", return_value=[self.root]):
+            first_csv = self.telemetry_csv()
+            with mock.patch.object(session, "ask", return_value=str(first_csv)):
+                self.assertEqual(self.verify(*args)[0], 1)
+            metadata = self.active() / "session.json"
+            pending = session.read_json(metadata)
+            self.assertIn("last_app_launch_attempt_at", pending)
+            self.assertFalse(session.first_launch(pending))
+            self.assertEqual(flows, [])
+
+            csv = self.root / "recorded-after-failed-start.csv"
+            csv.write_bytes(first_csv.read_bytes())
+            self.assertEqual(self.cli("record", "--release", "--session", str(self.active()),
+                                      "--check", "telemetry-before-launch", "--outcome", "passed",
+                                      "--evidence", str(csv))[0], 0)
+            self.assertGreater(session.read_json(metadata)["manual_results"]["telemetry-before-launch"]["evidence_captured_at"],
+                               pending["last_app_launch_attempt_at"])
+            state["fail_start"] = False
+            self.assertEqual(self.verify(*args, "--stop-after", "home")[0], 2)
+            stopped = session.read_json(metadata)
+            self.assertTrue(session.first_launch(stopped))
+            self.assertEqual(stopped["source_receipt"]["instance_id"], identity["instance_id"])
+            self.assertEqual(flows, [("start", "1"), ("test-source-welcome", "1"), ("test-source", "0"),
+                                     ("home-smoke", "0")])
+
+            profile = session.read_json(self.profile)
+            profile.pop("confirm_ready")
+            session.write_json(self.profile, profile)
+            flows.clear()
+            self.assertEqual(self.verify(*args)[0], 0)
+            self.assertEqual(flows, [("start", "1"), ("test-source-resume", "1"), ("start", "0"), ("language", "0")])
+            self.assertEqual(self.rows()["home"]["status"], "reused_pass")
+            self.assertEqual(self.rows()["language"]["status"], "passed")
+            flows.clear()
+            api.reset_mock()
+            self.assertEqual(self.verify(*args)[0], 0)
+            self.assertEqual(flows, [])
+            api.login.assert_not_called()
+
+    def test_old_release_cleanup_leaves_drivers_owned_by_a_later_task(self):
+        self.assertEqual(self.verify("--non-interactive", "--already-launched", "--check", "home")[0], 0)
+        metadata = self.active() / "session.json"
+        state = session.read_json(metadata)
+        self.assertNotIn("maestro_preexisting", state)
+        state["maestro_preexisting"] = {session.DRIVERS[0]: False}
+        session.write_json(metadata, state)
+        self.adb.installed[session.DRIVERS[0]] = b"installed-by-later-task"
+        self.assertEqual(self.cli("cleanup", "--release", "--session", str(self.active()))[0], 0)
+        self.assertEqual(self.adb.installed[session.DRIVERS[0]], b"installed-by-later-task")
+
+    def test_retry_failure_replaces_pass_and_does_not_fall_back_to_baseline(self):
+        baseline = self.record_baseline({"search": self.evidence("search")})
+        args = ("--non-interactive", "--already-launched", "--check", "search", "--baseline", baseline)
+        self.assertEqual(self.verify(*args)[0], 0)
+        self.assertEqual(self.rows()["search"]["status"], "reused_baseline")
+        self.flow_results["search"] = {"status": "failed", "ui_status": "failed"}
+        self.assertEqual(self.verify(*args, "--retry")[0], 1)
+        self.assertEqual(session.read_json(self.active() / "session.json")["flow_results"]["search"]["status"], "failed")
+        self.flow_results.clear()
+        self.assertEqual(self.verify(*args)[0], 0)
+        self.assertEqual(self.executed, ["search", "search"])
+        self.assertEqual(self.rows()["search"]["status"], "passed")
+
+    def test_preparation_failure_ends_stop_boundary_for_both_requests(self):
+        args = ("--non-interactive", "--already-launched", "--check", "editing", "--check", "search")
+        self.flow_results["editing"] = {"status": "environment_blocked", "ui_status": "not_run", "cause": "data_preparation"}
+        for marker in (False, True):
+            with self.subTest(marker=marker):
+                self.executed.clear()
+                self.on_flow = (lambda _: session.request_stop(self.active())) if marker else None
+                stop = () if marker else ("--stop-after", "editing")
+                self.assertEqual(self.verify(*args, *stop)[0], 1)
+                self.assertEqual(self.executed, ["editing"])
+                self.assertEqual(self.rows()["search"]["not_run_reason"], "stopped_at_boundary")
+
+    def test_missed_launch_card_preserves_reason_and_requires_earlier_csv(self):
+        self.assertEqual(self.verify("--non-interactive", "--already-launched", "--check", "home")[0], 0)
+        text = (self.active() / "manual-cards.md").read_text(encoding="utf-8")
+        command = next(line for line in text.splitlines() if "--check telemetry-before-launch " in line)
+        self.assertIn("--outcome inconclusive", command)
+        self.assertEqual(self.cli(*shlex.split(command)[3:])[0], 0)
+        row = self.rows()["telemetry-before-launch"]
+        self.assertEqual(row["manual_status"], "inconclusive")
+        self.assertIn("错过", row["cause"])
+        args = ("record", "--release", "--session", str(self.active()), "--check", "telemetry-before-launch", "--outcome", "passed")
+        self.assertEqual(self.cli(*args)[0], 1)
+        evidence = self.telemetry_csv()
+        first_launch = session.datetime.fromtimestamp(time.time() - 120, session.timezone.utc)
+        launch = first_launch.timestamp()
+        self.assertEqual(self.cli(*args, "--evidence", str(evidence))[0], 1)
+        args = (*args, "--first-launch-at", first_launch.isoformat())
+        os.utime(evidence, (launch + 60, launch + 60))
+        self.assertEqual(self.cli(*args, "--evidence", str(evidence))[0], 1)
+        os.utime(evidence, (launch - 60, launch - 60))
+        self.assertEqual(self.cli(*args, "--evidence", str(evidence))[0], 0)
+        self.assertEqual(self.rows()["telemetry-before-launch"]["manual_status"], "passed")
+
+    def test_offline_probe_confirms_no_network_and_force_stops_before_restoring_radios(self):
+        self.assertEqual(self.verify("--non-interactive", "--already-launched", "--check", "home")[0], 0)
+        phone = session.PhoneSession(self.repo, self.active(), self.active(), self.adb, "test")
+        original = self.adb.run
+        settings = {"airplane_mode_on": "0", "wifi_on": "1"}
+        events = []
+        def device(*args, **kwargs):
+            if args[:4] == ("shell", "settings", "get", "global") and args[4] in settings:
+                return settings[args[4]]
+            if args[:4] == ("shell", "cmd", "connectivity", "airplane-mode"):
+                settings["airplane_mode_on"] = str(int(args[4] == "enable"))
+                events.append("airplane:" + settings["airplane_mode_on"])
+                return ""
+            if args[:3] == ("shell", "svc", "wifi"):
+                settings["wifi_on"] = str(int(args[3] == "enable"))
+                events.append("wifi:" + settings["wifi_on"])
+                return ""
+            if args == ("shell", "dumpsys", "connectivity"):
+                events.append("network-checked")
+                return "Active default network: none\n\nCurrent Networks:\n\nStatus for known UIDs:\n"
+            if args[:3] == ("shell", "am", "force-stop"):
+                events.append("force-stop")
+            return original(*args, **kwargs)
+        with mock.patch.object(self.adb, "run", side_effect=device):
+            with phone.isolate_source():
+                self.assertEqual(settings, {"airplane_mode_on": "1", "wifi_on": "0"})
+                events.append("offline-app-start")
+        self.assertEqual(events, ["airplane:1", "wifi:0", "network-checked", "force-stop",
+                                  "offline-app-start", "force-stop", "airplane:0", "wifi:1"])
+        self.assertNotIn("source_network_before", phone.state)
+
+    def test_offline_probe_does_not_start_app_when_ethernet_remains(self):
+        self.assertEqual(self.verify("--non-interactive", "--already-launched", "--check", "home")[0], 0)
+        phone = session.PhoneSession(self.repo, self.active(), self.active(), self.adb, "test")
+        self.adb.network.update(airplane_mode_on="1", wifi_on="0")
+        device = self.adb.run
+        def connected(*args, **kwargs):
+            if args == ("shell", "dumpsys", "connectivity"):
+                return ("Active default network: none\nCurrent Networks:\n"
+                        "  NetworkAgentInfo{network{100} Transports: ETHERNET}\n\nStatus for known UIDs:\n")
+            return device(*args, **kwargs)
+        with mock.patch.object(self.adb, "run", side_effect=connected), \
+                mock.patch.object(session.time, "monotonic", side_effect=[0, 13]):
+            with self.assertRaises(session.CommandError) as caught, phone.isolate_source():
+                self.fail("隔离未确认时不得启动 App")
+        self.assertEqual(caught.exception.code, "source_network_not_isolated")
+
+    def test_capture_reloads_recovered_network_checkpoint_before_starting_new_work(self):
+        self.assertEqual(self.verify("--non-interactive", "--already-launched", "--check", "home")[0], 0)
+        phone = session.PhoneSession(self.repo, self.active(), self.active(), self.adb, "test")
+        self.adb.network.update(airplane_mode_on="0", wifi_on="1")
+        phone.state["source_network_before"] = {"airplane_mode_on": "0", "wifi_on": "1"}
+        phone.state["files"] = ["/sdcard/Download/moerise-maestro-" + "a" * 32 + ".txt"]
+        phone.state["resources_pending"] = True
+        phone.capture_resources()
+        self.assertNotIn("source_network_before", phone.state)
+        self.assertEqual(phone.state["files"], [])
+        self.assertEqual(phone.restore_resources(), [])
+
+    def test_interrupted_channel_cleanup_error_is_in_top_level_report(self):
+        def interrupt():
+            self.engine.batch_cleanup_errors = ["channel_settings_restore"]
+            raise KeyboardInterrupt
+        self.interrupt = interrupt
+        code, report = self.verify("--non-interactive", "--already-launched", "--check", "navigation-settings")
+        self.assertEqual(code, 1)
+        self.assertEqual(report["status"], "interrupted")
+        self.assertEqual(report["cleanup_errors"], ["channel_settings_restore"])
+
+
+class SharedDeviceLock(unittest.TestCase):
+    def test_different_worktrees_and_manual_fail_before_any_adb(self):
+        root = Path(__file__).resolve().parents[2] / ".local/android"
+        root.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix="phone-lock-test-", dir=root) as directory:
+            repo, other = Path(directory) / "main", Path(directory) / "linked"
+            def git(*args):
+                subprocess.run(["git", *map(str, args)], check=True, capture_output=True)
+            git("init", "--quiet", repo)
+            git("-C", repo, "-c", "user.name=Phone Host Test", "-c", "user.email=host-test@example.invalid",
+                "-c", "commit.gpgsign=false", "commit", "--allow-empty", "-m", "test")
+            git("-C", repo, "worktree", "add", "--detach", other)
+            self.assertEqual(session.common_repo(repo), session.common_repo(other))
+            commit = session.git(repo, "rev-parse", "HEAD")
+            with session.device_lock(repo, "verify", commit), \
+                    mock.patch.object(session, "discover_serial") as discover, \
+                    mock.patch.object(session, "Adb") as adb:
+                for source in (repo, other):
+                    with mock.patch.object(sys, "argv", ["phone-session", "manual", "--repo", str(source),
+                            "--session", str(source / "session")]), redirect_stdout(io.StringIO()) as out:
+                        self.assertEqual(session.main(), 1)
+                    self.assertEqual(json.loads(out.getvalue())["cause"], "device_busy")
+                discover.assert_not_called()
+                adb.assert_not_called()
 
 
 if __name__ == "__main__":

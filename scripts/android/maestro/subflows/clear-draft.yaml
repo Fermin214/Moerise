@@ -61,5 +61,9 @@ onFlowComplete:
     timeout: 15000
     label: Wait for the expected UI state
 - runFlow:
-    file: hide-keyboard.yaml
-    label: Dismiss only an observed visible input method
+    file: open-menu.yaml
+    label: Use app navigation to clear focus from the composer
+- tapOn:
+    id: nav_home
+    enabled: true
+    label: Leave the empty composer on home

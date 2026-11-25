@@ -15,9 +15,4 @@ onFlowComplete:
         label: Require the app window to report a visible input method
     - hideKeyboard:
         label: Dismiss the observed input method
-    - extendedWaitUntil:
-        notVisible:
-          id: ime_visible
-        timeout: 15000
-        label: Wait for the input method to leave the app window
     label: Dismiss the input method only while it is visible

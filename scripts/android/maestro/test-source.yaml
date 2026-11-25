@@ -5,16 +5,66 @@ onFlowComplete:
     path: ${SCREENSHOT_PREFIX}-test-source
     label: Capture the service identity probe
 ---
+- assertNotVisible:
+    id: open_menu
+    label: Require a signed-out device before entering test credentials
+- assertVisible:
+    id: server_origin_empty
+    label: Require an empty server field before entering the test source
 - runFlow:
-    file: subflows/home.yaml
-    label: Sign into the test service or read the existing account
-- scrollUntilVisible:
-    element:
-      id: note_card_${NOTE_NAME}
-    direction: DOWN
-    timeout: 65000
-    centerElement: true
-    label: Locate the unique note prepared on the test service
+    file: subflows/ensure-login.yaml
+    label: Sign into the designated test service
+- runFlow:
+    file: subflows/test-source-home.yaml
+    label: Confirm account and return to unfiltered home
+- runFlow:
+    when:
+      notVisible:
+        text: \Q${NOTE_TEXT}\E
+        childOf:
+          id: note_card_${NOTE_NAME}
+    commands:
+    - assertNotVisible:
+        text: \Q${NOTE_TEXT}\E
+        childOf:
+          id: note_card_${NOTE_NAME}
+        label: Require the exact marker to be absent before syncing
+    - runFlow:
+        file: subflows/open-menu.yaml
+        label: Reopen navigation before syncing from home
+    - tapOn:
+        id: sidebar_sync
+        enabled: true
+        label: Sync after signing into the designated source and checking its account
+    - extendedWaitUntil:
+        visible:
+          id: home
+        timeout: 15000
+        label: Wait for home without requiring the composer
+    - scrollUntilVisible:
+        element:
+          id: note_card_${NOTE_NAME}|note_editor|note_editor_memos/[A-Za-z0-9_-]+
+        direction: UP
+        timeout: 15000
+        centerElement: false
+        label: Reset list position toward the newest note
+    - runFlow:
+        when:
+          notVisible:
+            id: note_card_${NOTE_NAME}
+        commands:
+        - assertNotVisible:
+            id: note_card_${NOTE_NAME}
+            label: Check whether the exact card is already visible
+        - scrollUntilVisible:
+            element:
+              id: note_card_${NOTE_NAME}
+            direction: DOWN
+            timeout: 65000
+            centerElement: false
+            label: Find the marker below the editor
+        label: Scroll to the marker only when it is below the visible editor
+    label: Sync and find the exact marker only when it is missing from home
 - assertVisible:
     text: \Q${NOTE_TEXT}\E
     childOf:

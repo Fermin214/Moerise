@@ -25,17 +25,20 @@ CREDENTIALS = {
 DATA_VARIABLES = {
     "APP_ID", "SCREENSHOT_PREFIX", "INPUT_SUFFIX", "NOTE_NAME", "PEER_NOTE_NAME", "NOTE_TEXT",
     "PEER_NOTE_TEXT", "EDITED_TEXT", "PEER_EDITED_TEXT", "DRAFT_TEXT", "QUERY_TEXT", "ATTACHMENT_NAME",
-    "NEW_NOTE_TEXT", "ATTACHMENT_NOTE_TEXT", "CHAT_TITLE",
+    "NEW_NOTE_TEXT", "ATTACHMENT_NOTE_TEXT", "CHAT_TITLE", "EXPECTED_ACCOUNT",
+    "ATTACHMENT_SHA256", "DISCONNECT_MARKER", "FOLLOWUP_TEXT",
 }
 TEXT_VARIABLES = {
     "NOTE_TEXT", "PEER_NOTE_TEXT", "EDITED_TEXT", "PEER_EDITED_TEXT", "DRAFT_TEXT", "QUERY_TEXT",
     "NEW_NOTE_TEXT", "ATTACHMENT_NOTE_TEXT", "CHAT_TITLE", "ATTACHMENT_NAME",
+    "DISCONNECT_MARKER", "FOLLOWUP_TEXT",
 }
 INPUT_FIELDS = {
     **CREDENTIALS, "EDITED_TEXT": "note_editor_${NOTE_NAME}",
     "PEER_EDITED_TEXT": "note_editor_${PEER_NOTE_NAME}",
     "DRAFT_TEXT": "note_editor", "QUERY_TEXT": "search_query",
     "NEW_NOTE_TEXT": "note_editor", "ATTACHMENT_NOTE_TEXT": "note_editor",
+    "DISCONNECT_MARKER": "chat_question", "FOLLOWUP_TEXT": "chat_question",
 }
 VARIABLE = re.compile(r"\$\{([A-Z][A-Z0-9_]*)\}")
 TIMESTAMP_TEXT = r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}"
@@ -58,6 +61,8 @@ UNION_IDS = {
     "open_menu|server_login", "welcome_enter|open_menu|server_login", "walk_settings|walk_start|walk_end",
     "note_editor|" + PROVIDER + "action_menu_select",
     PROVIDER + "toolbar|" + XIAOMI + "pick_container",
+    "note_editor|note_editor_memos/[A-Za-z0-9_-]+",
+    "note_card_${NOTE_NAME}|note_editor|note_editor_memos/[A-Za-z0-9_-]+",
 }
 LITERAL_TEXT = {
     "^$", "在主页查看|View on home", "简体中文", "English", "跟随系统|Follow system",
@@ -72,6 +77,7 @@ LITERAL_TEXT = {
     r"设置已保存。|Settings saved\.|设置服务繁忙，请稍后重新保存。|The settings service is busy\. Please save again later\.",
     r"今天没有可回顾的旧笔记。|No old notes to review today\.",
     r"今天没有可回顾的旧笔记。|No old notes to review today\.|下一条|Next note|再看一遍|Start again",
+    "100000019", "围绕所选笔记提问或追问…|Ask about the selected notes…",
 }
 
 
@@ -136,8 +142,48 @@ def validate_catalog(value):
                             "attachments", "language", "home"},
             "Catalog must expose exactly the eight UI groups")
     for group, names in groups.items():
-        require(names == (["home-smoke"] if group == "home" else [group]),
-                "UI groups must select their matching primary entry")
+        primary = "home-smoke" if group == "home" else group
+        require(all(name == primary or name.startswith(primary + "-") for name in names),
+                "UI groups must select entries belonging to their module")
+
+
+def validate_phone_checks(value, catalog):
+    require(isinstance(value, dict) and set(value) == {"checks"} and isinstance(value["checks"], list),
+            "Phone checklist requires a checks list")
+    ids, flows, coverage = set(), set(), set()
+    for item in value["checks"]:
+        require(isinstance(item, dict), "Phone check must be a mapping")
+        fields = {"id", "module", "handoff_items", "kind", "phase", "requires_clean_editor"}
+        require(fields <= item.keys(), "Phone check metadata is incomplete")
+        name, kind, phase = item["id"], item["kind"], item["phase"]
+        require(isinstance(name, str) and re.fullmatch(r"[a-z][a-z0-9-]*", name) and name not in ids,
+                "Phone check ID must be unique and suitable for the command line")
+        ids.add(name)
+        require(isinstance(item["module"], str) and re.fullmatch(r"[a-z][a-z0-9-]*", item["module"]),
+                "Phone check module name is invalid")
+        require(kind in {"auto", "visual", "manual"} and phase in {"pre_install", "pre_launch", "post_run"}
+                and type(item["requires_clean_editor"]) is bool, "Phone check kind, phase or editor dependency is invalid")
+        require(isinstance(item["handoff_items"], list) and item["handoff_items"] and
+                all(type(number) is int or number in ("upgrade", "offline", "telemetry")
+                    for number in item["handoff_items"]), "Phone check requires handoff references")
+        coverage.update(item["handoff_items"])
+        if kind == "auto":
+            require(set(item) <= fields | {"flow", "requires_capability"} and phase == "post_run"
+                    and item.get("flow") in catalog["flows"] and item["flow"] not in flows,
+                    "Automatic phone check must select one distinct catalog flow")
+            require(item.get("requires_capability") in (None, "fail_marker"), "Unknown phone capability")
+            flows.add(item["flow"])
+        else:
+            card = item.get("manual_card")
+            require(set(item) == fields | {"manual_card"} and isinstance(card, dict) and
+                    set(card) == {"start_state", "steps", "pass_criteria", "evidence_hint"},
+                    "Manual or visual phone check needs a complete operation card")
+            require(isinstance(card["steps"], list) and card["steps"] and
+                    all(isinstance(text, str) and text.strip() for text in
+                        (card["start_state"], card["pass_criteria"], card["evidence_hint"], *card["steps"])),
+                    "Operation card must describe steps, evidence and pass criteria")
+    require(set(range(1, 19)) | {"upgrade", "offline", "telemetry"} <= coverage,
+            "Phone checklist must cover the complete 0.3.0 handoff")
 
 
 def source_ids():
@@ -189,9 +235,10 @@ def source_ids():
         add("MoeriseApp.kt", "note_editor_${" + variable + "}_empty", '"${editorTag}_empty"')
     for identifier in ("insights_page", "chat_session_menu", "chat_new", "chat_delete", "chat_history",
                        "chat_add_materials", "chat_material_summary", "chat_error", "chat_insight",
-                       "chat_save_selection", "chat_save_confirm"):
+                       "chat_save_selection", "chat_save_confirm", "chat_question", "chat_send"):
         add("InsightScreen.kt", identifier)
-    add("InsightScreen.kt", "chat_reply_completed", 'testTag("chat_reply_${turn.assistant.status}")')
+    for status in ("completed", "failed"):
+        add("InsightScreen.kt", "chat_reply_" + status, 'testTag("chat_reply_${turn.assistant.status}")')
     add("InsightScreen.kt", "chat_save_dialog", 'close, "chat_save_dialog")')
     add("InsightScreen.kt", "chat_history_dialog", 'closeDialog, "chat_history_dialog")')
     add("InsightPickerDialog.kt", "chat_material_dialog", 'back, "chat_material_dialog")')
@@ -236,12 +283,15 @@ def selector(value, labelled=False, relation=False, absent=False):
                 "Historical detail-route IDs may only be used to assert absence")
     if "text" in value:
         text = value["text"]
-        dynamic = {r"\Q${" + variable + r"}\E" for variable in TEXT_VARIABLES}
+        dynamic = {r"\Q${" + variable + r"}\E" for variable in TEXT_VARIABLES | {"EXPECTED_ACCOUNT"}}
         require(isinstance(text, str) and text in LITERAL_TEXT | dynamic,
                 "Selector text must be a known label or a quoted fixture variable")
         if text == TIMESTAMP_TEXT:
             require(value.get("childOf") == {"id": "note_card_${NOTE_NAME}"},
                     "Timestamp matching must be scoped to the dedicated test note")
+        if text == r"\Q${EXPECTED_ACCOUNT}\E":
+            require(value.get("id") == "account_menu" or value.get("childOf") == {"id": "account_menu"},
+                    "Account identity must be checked inside the account control")
     if value.get("id") == XIAOMI + "file_name":
         require(value.get("text") in {r"\Q${ATTACHMENT_NAME}\E", "Download|下载"} and
                 value.get("childOf") == {"id": "android:id/list"},
@@ -360,7 +410,7 @@ def commands(items, flow, refs, inline=False, hook=False, focused=None, ime_guar
                 "server_password": None,
             }
             require(keys == {"key"} and value["key"] == "Enter" and
-                    (flow == "search.yaml" and focused == "search_query" or
+                    (flow in ("search.yaml", "test-source-resume.yaml") and focused == "search_query" or
                      flow == "subflows/ensure-login.yaml" and focused in login_next),
                     "Enter requires the focused search field or a login form field")
             focused = login_next[focused] if flow == "subflows/ensure-login.yaml" else None
@@ -525,6 +575,11 @@ def validate_runtime(flow, values, environment=None, catalog=None, documents=Non
             require(value in {".", "。"}, "Use the fixed ASCII or Unicode input suffix")
         elif key == "ATTACHMENT_NAME":
             require(re.fullmatch(r"[A-Za-z0-9_-]+\.txt", value), "Attachment must have one safe ASCII txt filename")
+        elif key == "ATTACHMENT_SHA256":
+            require(re.fullmatch(r"[a-f0-9]{64}", value), "Attachment digest must be a SHA-256")
+        elif key == "EXPECTED_ACCOUNT":
+            require(0 < len(value) <= 100 and value.isprintable() and r"\E" not in value and "${" not in value,
+                    "Account identity must be a bounded literal label")
         elif key in TEXT_VARIABLES:
             require(re.fullmatch(r"[A-Za-z0-9_-]+(?: [A-Za-z0-9_-]+)*", value) and len(value) <= 90,
                     "Fixture text must be a short unique ASCII marker without markup")
@@ -565,6 +620,9 @@ def main():
     try:
         catalog, documents = load_catalog(), load_documents()
         validate_documents(documents, catalog)
+        checks = json.loads((ROOT.parent / "phone-checks.json").read_text(encoding="utf-8-sig"),
+                            object_pairs_hook=unique_pairs)
+        validate_phone_checks(checks, catalog)
         validate_source_ids()
         require(bool(args.flow) == bool(args.parameters_json), "--flow and --parameters-json must be used together")
         if args.flow:
