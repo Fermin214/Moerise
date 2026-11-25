@@ -2,9 +2,9 @@
 
 Moerise 服务端提供两组 RESTful API 以及一个 Model Context Protocol (MCP) 接口：
 
-1. **客户端应用接口 (`/api/app/v1`)**：面向 Moerise Web 及未来的移动客户端，基于同源 Cookie 与 CSRF Token 鉴权。
-2. **外部开放接口 (`/api/ext/v1`)**：面向外部脚本与第三方集成，基于 Bearer Token 鉴权，**严格只读**。
-3. **MCP 协议接口 (`/mcp`)**：面向 Claude Desktop、Cursor 等支持 MCP 标准的外部 AI Agent，**严格只读**。
+1. **客户端应用接口 (`/api/app/v1`)**：面向 Moerise Web 及 Android 客户端，基于同源 Cookie 与 CSRF Token 鉴权。
+2. **外部开放接口 (`/api/ext/v1`)**：面向外部脚本与第三方集成，基于 Bearer Token 鉴权，仅开放只读接口。
+3. **MCP 协议接口 (`/mcp`)**：面向 Claude Desktop、Cursor 等支持 MCP 标准的外部 AI Agent，仅开放只读工具。
 
 完整接口契约以服务内置的 `/openapi.json` 及交互式文档页面 `/docs` 为准。
 
@@ -73,7 +73,7 @@ Moerise 服务端提供两组 RESTful API 以及一个 Model Context Protocol (M
 | `GET` | `/api/app/v1/chats/{chat_id}` | 读取指定对话详情与完整消息记录。 |
 | `PATCH` | `/api/app/v1/chats/{chat_id}` | 携带 `version`、标题及完整材料集合，替换会话选材。空数组可清空材料。 |
 | `DELETE` | `/api/app/v1/chats/{chat_id}` | 携带 `version` 删除指定对话。 |
-| `GET` | `/api/app/v1/chat-materials` | 从 Memos 分页筛选材料，支持正常与归档笔记。 |
+| `GET` | `/api/app/v1/chat-materials` | 从本地同步索引分页筛选材料，支持正常与归档笔记。 |
 | `POST` | `/api/app/v1/chat-materials/resolve` | 提交材料资源名 `names`，复查原文并返回材料规模与来源摘要。 |
 | `POST` | `/api/app/v1/chats/{chat_id}/messages` | 向大模型发送消息，返回 Server-Sent Events (SSE) 流式回复。 |
 | `POST` | `/api/app/v1/chats/{chat_id}/messages/{request_id}/cancel` | 主动停止正在生成的回复。 |
@@ -137,7 +137,7 @@ Moerise 服务端提供两组 RESTful API 以及一个 Model Context Protocol (M
 
 Moerise 实现了 Anthropic 提出的 Model Context Protocol (MCP) 标准，使各类 AI 工具能够安全检索知识库。
 
-- **安全红线**：MCP Server 仅暴露只读工具，绝不暴露创建、修改、删除笔记或更改系统配置的任何工具。
+- **只读边界**：MCP Server 仅暴露只读工具，不提供创建、修改、删除笔记或更改系统配置的接口。
 - **传输方式**：`/mcp` 使用无会话 Streamable HTTP，返回 JSON；调用方需支持远程 HTTP MCP 并携带 Bearer Token。
 - **暴露的 MCP 工具**：
   - `semantic_search`：多模式检索笔记，要求 `notes:read`。
@@ -155,4 +155,4 @@ Moerise 实现了 Anthropic 提出的 Model Context Protocol (MCP) 标准，使�
 - 聊天创建需 `request_id`；生成需 `request_id`、`version`、`kind`，以及适用的 `content` 和 `language`。同一请求 ID 的重试复用原 turn；保存回复需携带助手消息的 `version`。
 - 模型连接检查需提交设置 `version`；设置修改后先重新读取版本。
 - `GET /api/app/v1/admin/notifications` 可按 `kind`（`review` 或 `reply`）和 `status` 组合筛选。筛选后优先返回失败记录，同一状态按创建时间倒序，最多 100 条。状态为 `pending`、`running`、`sent`、`failed`；失败记录通过 `POST /api/app/v1/admin/notifications/{id}/retry` 和空对象请求体重试，见[通知调度](NOTIFICATIONS.md)。
-- 错误响应统一为 `{"error":{"code":"...","message":"...","retryable":false,"request_id":"..."}}`。来源不可用时不返回缓存正文；当日回顾尚未生成时，机器 REST/MCP 返回 `REVIEW_NOT_FOUND`。
+- 错误响应统一为 `{"error":{"code":"...","message":"...","retryable":false,"request_id":"..."}}`。外部只读接口（`/api/ext/v1`、`/mcp`）在来源不可用时不返回缓存正文；当日回顾尚未生成时，机器 REST/MCP 返回 `REVIEW_NOT_FOUND`。

@@ -113,3 +113,29 @@ class PublishTests(unittest.TestCase):
                 prepare.assert_called_once_with(REPO, SHA, 'v0.2.0', [
                     root / 'linux-amd64/moerise_0.2.0_linux_amd64.tar.gz',
                     root / 'linux-arm64/moerise_0.2.0_linux_arm64.tar.gz', *android_files, guide])
+
+    def test_release_notes_skip_author_attribution_and_pr_suffix(self):
+        tags = '\n'.join(['v0.3.0', 'android-v0.1.0', 'v0.2.0', 'v0.1.2'])
+        log = '\n'.join([
+            '修复 Android 离线发现 (#22)',
+            '内嵌 Web 与统一通知渠道 (#20)',
+        ])
+        with patch.object(publish, 'output', side_effect=[tags, log]):
+            notes = publish.release_notes(REPO, SHA, 'v0.3.0')
+        self.assertNotIn('by @', notes)
+        self.assertEqual(
+            notes,
+            '- 修复 Android 离线发现\n'
+            '- 内嵌 Web 与统一通知渠道\n\n'
+            f'完整提交对比：https://github.com/{REPO}/compare/v0.2.0...v0.3.0',
+        )
+
+    def test_upload_creates_draft_with_generated_notes_instead_of_github_auto_notes(self):
+        draft = json.dumps(dict(id=99, draft=True, tag_name='v0.3.0', assets=[]))
+        with patch.object(publish, 'release_notes', return_value='- 变更说明'), \
+                patch.object(publish, 'output', side_effect=[draft, draft]), \
+                patch.object(publish.subprocess, 'run') as run:
+            publish.upload(REPO, SHA, 'v0.3.0', [], [], None, {})
+        command = run.call_args.args[0]
+        self.assertNotIn('--generate-notes', command)
+        self.assertEqual(command[-2:], ['--notes', '- 变更说明'])

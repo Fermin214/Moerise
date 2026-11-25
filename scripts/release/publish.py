@@ -42,7 +42,31 @@ def linux_release(root, repo):
         if any(not re.fullmatch(re.escape(image) + r'@sha256:[0-9a-f]{64}', ref) for ref in refs):
             raise SystemExit(f'Invalid image digest for {image}')
         images[f'{image}:{value}'] = refs
-    return f'v{value}', files, images, ['--generate-notes']
+    return f'v{value}', files, images, []
+
+
+def previous_release_tag(sha, tag):
+    tags = output('git', 'tag', '--merged', sha, '--sort=-v:refname').splitlines()
+    for candidate in tags:
+        if candidate != tag and re.fullmatch(r'v[0-9]+\.[0-9]+\.[0-9]+', candidate):
+            return candidate
+    return None
+
+
+def release_notes(repo, sha, tag):
+    previous = previous_release_tag(sha, tag)
+    rev = f'{previous}..{sha}' if previous else sha
+    args = ['git', 'log', '--first-parent', '--format=%s']
+    if not previous:
+        args.extend(['-n', '20'])
+    args.append(rev)
+    subjects = [re.sub(r'\s*\(#\d+\)$', '', line.strip()) for line in output(*args).splitlines() if line.strip()]
+    lines = [f'- {subject}' for subject in subjects]
+    if previous:
+        if lines:
+            lines.append('')
+        lines.append(f'完整提交对比：https://github.com/{repo}/compare/{previous}...{tag}')
+    return '\n'.join(lines) or f'Moerise {tag}'
 
 
 def android_release(root, sha, run_id):
@@ -149,7 +173,8 @@ def upload(repo, sha, tag, files, notes, release, digests):
     endpoint = f'repos/{repo}/releases'
     if not release:
         title = f'Moerise Android {tag.removeprefix("android-v")}' if android else f'Moerise {tag}'
-        subprocess.run(['gh', 'release', 'create', tag, '--draft', '--target', sha, '--title', title, *notes], check=True)
+        create_notes = notes if notes else ['--notes', release_notes(repo, sha, tag)]
+        subprocess.run(['gh', 'release', 'create', tag, '--draft', '--target', sha, '--title', title, *create_notes], check=True)
         release = json.loads(output('gh', 'api', '--paginate', endpoint, '--jq',
                                     f'.[] | select(.tag_name == "{tag}" and .draft) | @json'))
     release_path = f"{endpoint}/{release['id']}"
@@ -182,6 +207,7 @@ def main():
     parser.add_argument('sha')
     parser.add_argument('component', choices=['core-web', 'android', 'both'])
     parser.add_argument('--run-id', required=True)
+    parser.add_argument('--notes-file', type=Path)
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument('--dry-run', action='store_true')
     mode.add_argument('--verify-only', action='store_true')
@@ -190,7 +216,9 @@ def main():
     if not repo and (not args.verify_only or args.component != 'android'):
         parser.error('Set GH_REPO or GITHUB_REPOSITORY')
     tag, files, images, notes = release_package(args.root, repo, args.sha, args.run_id, args.component)
-    required = files + ([Path(notes[1])] if notes[0] == '--notes-file' else [])
+    if args.notes_file:
+        notes = ['--notes-file', str(args.notes_file)]
+    required = files + ([Path(notes[1])] if notes and notes[0] == '--notes-file' else [])
     if any(not path.is_file() or not path.stat().st_size for path in required):
         raise SystemExit(f'Incomplete release files for {tag}')
     if args.verify_only:

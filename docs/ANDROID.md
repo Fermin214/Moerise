@@ -38,7 +38,7 @@ Gradle Wrapper 固定为 8.13，并校验发行包 SHA-256。依赖版本见 [�
 
 `scripts/android/check.sh` 运行纯 Kotlin 模块测试、Android 单元测试、lint 和 debug APK 构建，并检查非零执行数量。Android 单元测试使用 Robolectric 与系统 SQLite 文件数据库，覆盖关闭重开后草稿、冻结请求、游标和账号隔离。
 
-Android 0.1.0 是首次发行，Room 版本为 1，以完整的 [schema 1](../mobile/androidApp/schemas/io.github.fermin214.moerise.data.LocalDatabase/1.json) 建立初始结构，包含账号、草稿、冻结请求、快照和功能恢复记录。开发期 APK 与数据库不提供兼容迁移，也不作为首版升级验证的起点；首版设备流程使用新安装数据。正式发行后发生结构变化时，递增 Room 版本并新增迁移，保留已发行的 schema。
+Room 当前版本为 2（基线 [schema 1](../mobile/androidApp/schemas/io.github.fermin214.moerise.data.LocalDatabase/1.json) 经 `LOCAL_DB_MIGRATION_1_2` 升级），包含账号、草稿、冻结请求、功能恢复记录及本地笔记同步表。正式发行后发生结构变化时递增 Room 版本并新增迁移，保留已发行的 schema 文件。
 
 共享检查覆盖数据库关闭重开、创建与编辑的丢失响应恢复、保存确认事务期间续写，以及原键重放返回外部修改时的冲突合并。队列保存每次点击时的内容快照；后续输入只在本机保存，继续提交的修订在创建确认后绑定远端笔记。洞察使用真实 Room 文件检查重开后保留新建请求、生成请求和部分回复，读取恢复不会自动生成。
 
@@ -90,7 +90,7 @@ GET 与只读 POST `/search`、`/chat-materials/resolve` 遇到复用连接的 E
 scripts/android/live-check.sh
 ```
 
-脚本构建独立 Core，启动受 CPU 和内存限制的 Memos 容器、Web 代理和本机可控假模型，使用虚构账号检查登录、重开会话、同键创建、实时读回、删除与注销，以及洞察的生成、重放、异常结束、停止和回复存笔记。假模型只接受隔离服务的临时密钥，不连接外部模型。测试结束清理容器、来源数据和临时凭据；非敏感日志留在 `.local/android/live-*/`。Linux JVM 检查使用与 Android 相同的 OkHttp 引擎；Keystore、设备生命周期和触控通过 Android 设备流程检查。
+脚本构建独立 Core，启动受 CPU 和内存限制的 Memos 容器、内嵌 Web 服务和本机可控假模型，使用虚构账号检查登录、重开会话、同键创建、实时读回、删除与注销，以及洞察的生成、重放、异常结束、停止和回复存笔记。假模型只接受隔离服务的临时密钥，不连接外部模型。测试结束清理容器、来源数据和临时凭据；非敏感日志留在 `.local/android/live-*/`。Linux JVM 检查使用与 Android 相同的 OkHttp 引擎；Keystore、设备生命周期和触控通过 Android 设备流程检查。
 
 隔离实例通过 Memos 官方 API 将 `contentLengthLimit` 设为 65,536，用于覆盖 Core 的
 64 KiB 内容上限。真实服务的笔记长度还受其 Memos 实例配置约束。
@@ -246,7 +246,7 @@ Profile 采集使用 API 33 及以上设备，
 `baseline-prof.txt` 和 `startup-prof.txt`；
 启动规则与星图规则分别采集；Baseline 规则合并两组路径，Startup 规则只保留启动路径。AGP 在构建时转写。更新规则后提交源文件，再构建
 发行包。Profile 为可选优化；同时存在两份非空规则时，发行脚本检查 APK 内的编译产物。
-设备性能测试的最低 API 取自 [`moerise.minSdk`](../mobile/gradle.properties)，后续性能工作见[路线图](ROADMAP.md#112-android-010-后续工作)。
+设备性能测试的最低 API 取自 [`moerise.minSdk`](../mobile/gradle.properties)，后续规划见[路线图](ROADMAP.md#1-android-客户端演进)。
 
 | 场景 | 采样与输出 |
 | --- | --- |
@@ -330,8 +330,7 @@ Windows 结果目录为公共锁任务目录下的 `benchmark-<模式>/`，可�
 构建失败时也归档已生成的原始结果和错误信息；测量成功后复用
 `benchmark-report.py` 输出每项指标的 P50/P95 和 `summary.json`。报告支持 AndroidX `Mode.First` 的 `FirstMs` 字段，保留原字段名，并严格检查迭代数、非空 trace、成功的安装和 instrumentation 记录。缺失采样不能计作通过。
 
-性能目标和取样条件见[路线图](ROADMAP.md#18-快速启动与性能目标)，完整设备操作见
-[设备检查](android/DEVICE-CHECKS.md)。
+完整设备操作见[设备检查](android/DEVICE-CHECKS.md)。
 
 ## 发行
 
