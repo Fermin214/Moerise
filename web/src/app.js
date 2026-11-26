@@ -1,10 +1,10 @@
 import { l, setText, setAttr, resolveText, locale, monthLabel, weekdays, initI18n } from './i18n.js';
 import { Draft, readAttachments } from './draft.js';
 import { errorMessage as errorText } from './errors.js';
-import { pages, notePath, filters, listQuery, timelineURL, safeFrom, detailURL, noteID, attachmentURL, rasterImage } from './routes.js';
+import { pages, notePath, filters, timelineURL, safeFrom, detailURL, noteID, attachmentURL, rasterImage } from './routes.js';
 import { el, button } from './dom.js';
 import { validNote, renderNoteCard, renderReadingCard } from './notes.js';
-import { createTimeline } from './timeline.js';
+import { createTimeline, readTimeline, storeTimelineSnapshot } from './timeline.js';
 import { createClient, validIdentity, sessionOwner } from './client.js';
 import { bindMenu, closeMenus } from './menus.js';
 import { bindSearchInput } from './search-input.js';
@@ -57,7 +57,8 @@ let timeline = null;
 let month = '', routeReturnKey = null;
 let monthDirection = 0, lastSyncAt = null;
 let moduleReload = false;
-let lastTimeline = { path: '/', values: filters('') };
+let lastTimeline = { key: null, url: '/', path: '/', values: filters('') };
+let projectionRevision = 0, timelineRefresh = null;
 let settingsPage = null, sessionSettings = null;
 let mapPage = null, mapView = null, mapSnapshot = null;
 let discoveryPage = null, discovery = null;
@@ -125,7 +126,15 @@ function invalidate() {
 function updateStargazing(enabled = identity?.stargazing_enabled !== false) {
   if (identity) identity.stargazing_enabled = enabled;
   document.querySelectorAll('a[data-route][href="/map"]').forEach(link => { link.hidden = !enabled; });
-  if (!enabled) mapView = mapSnapshot = null;
+  if (enabled) return;
+  mapView = mapSnapshot = null;
+  if (identity && location.pathname === '/map') {
+    mapPage?.destroy(); mapPage = null;
+    if (history.state?.mapView || history.state?.mapReader) {
+      history.replaceState({ ...history.state, mapView: null, mapReader: null }, '');
+    }
+    setText($('capability'), l("观星已关闭。")); $('capability').hidden = false;
+  }
 }
 function clearDrafts() {
   for (const editor of editors.values()) editor.draft.clear();
@@ -156,7 +165,7 @@ function hidePrivate({ resume = false } = {}) {
   discovery?.clear();
   mapView = mapSnapshot = null;
   month = ''; identity = null; routeReturnKey = null;
-  lastTimeline = { path: '/', values: filters('') };
+  lastTimeline = { key: null, url: '/', path: '/', values: filters('') };
   closeMenus(); leaveGuard.update();
 }
 function authControls({ busy = false, login = true } = {}) {
@@ -200,10 +209,12 @@ function formatTime(value) {
 }
 const isTimeline = () => location.pathname === '/' || location.pathname === '/archived';
 function sourceTimeline() {
-  const source = notePath.test(location.pathname) ? safeFrom(new URLSearchParams(location.search).get('from')) : router.url;
+  const detail = notePath.test(location.pathname);
+  const source = detail ? safeFrom(new URLSearchParams(location.search).get('from')) : router.url;
   const url = new URL(source, location.origin);
   if (!['/', '/archived'].includes(url.pathname)) return lastTimeline;
-  return { path: url.pathname === '/archived' ? '/archived' : '/', values: filters(url.search) };
+  return { key: detail ? history.state?.returnKey : router.key, url: url.pathname + url.search,
+    path: url.pathname, values: filters(url.search) };
 }
 function sidebarFilter(change) {
   const source = sourceTimeline();
@@ -223,6 +234,7 @@ function rememberView(writeHistory = true) {
 function navigate(url, options) { return router.navigate(url, options); }
 function openNote(note) { navigate(detailURL(note.name, router.url), { returnKey: router.key }); }
 function dirtySnapshots() {
+  projectionRevision++;
   for (const snapshot of snapshots.values()) snapshot.dirty = true;
   discovery?.invalidate(); mapSnapshot = null;
   discoveryPage?.refresh();
@@ -396,7 +408,8 @@ function schedulePreload() {
       const snapshot = await request('/map', { controller: owner, maxBytes: 8 * 1024 * 1024 }).then(value => {
         usage('stars', 'success', performance.now() - started, 'prefetch'); return value;
       }, error => { usage('stars', resultOf(error), performance.now() - started, 'prefetch'); throw error; });
-      if (!owner.signal.aborted && generation === epoch && ['ready', 'empty'].includes(snapshot?.status)) mapSnapshot = snapshot;
+      if (!owner.signal.aborted && generation === epoch && identity?.stargazing_enabled !== false &&
+          ['ready', 'empty'].includes(snapshot?.status)) mapSnapshot = snapshot;
     } catch (error) { if (generation === epoch && error.status === 401) expire(error); }
     finally { if (preloadController === owner) preloadController = null; }
   }, 250);
@@ -786,6 +799,7 @@ async function routeModule(load, generation, sequence) {
 }
 async function showRoute({ focus = false, returning = false } = {}) {
   if (!identity) return;
+  timelineRefresh?.abort();
   stopPreload();
   shell.closeNavigation();
   timeline?.destroy(); timeline = null;
@@ -857,7 +871,7 @@ async function showRoute({ focus = false, returning = false } = {}) {
       return;
     }
     const module = await routeModule(() => import('./map.js'), generation, sequence);
-    if (!module) return;
+    if (!module || identity.stargazing_enabled === false) return;
     const owner = sessionOwner(identity);
     const saved = history.state?.mapView?.owner === owner ? history.state.mapView :
       mapView?.owner === owner ? mapView : null;
@@ -925,13 +939,7 @@ async function synchronize() {
   const transfer = syncStatus.start();
   try {
     dirtySnapshots(); invalidateSidebar();
-    const [, refreshed] = await Promise.all([loadSidebar(), timeline ? timeline.refresh({ record: false }) :
-      request(`/notes?${listQuery('/', { tags: [] })}`).then(page => {
-        if (!Array.isArray(page?.notes) || page.notes.some(note => !validNote(note) || note.state !== 'NORMAL')) {
-          throw Object.assign(new Error('Invalid note list response'), { code: 'NOTE_LIST_INVALID' });
-        }
-        return true;
-      })]);
+    const [, refreshed] = await Promise.all([loadSidebar(), timeline ? timeline.refresh({ record: false }) : refreshTimelineSnapshot()]);
     stale(generation);
     if (view !== viewSequence || !refreshed) { transfer(view === viewSequence ? 'failure' : 'canceled'); return; }
     transfer('success');
@@ -942,6 +950,23 @@ async function synchronize() {
     if (generation === epoch && (view === viewSequence || err.status === 401)) handleFailure($('list-error'), err);
   } finally {
     trigger.disabled = false;
+  }
+}
+
+async function refreshTimelineSnapshot() {
+  const source = sourceTimeline(), revision = projectionRevision;
+  const controller = timelineRefresh = new AbortController();
+  const matching = [...snapshots].reverse().find(([, snapshot]) => snapshot.url === source.url);
+  const key = source.key || matching?.[0] || crypto.randomUUID();
+  const snapshot = snapshots.get(key);
+  const previous = snapshot?.url === source.url ? snapshot : matching?.[1];
+  try {
+    const data = await readTimeline({ ...source, request, sessionRequest, controller, previous });
+    if (controller.signal.aborted || revision !== projectionRevision) return false;
+    storeTimelineSnapshot(snapshots, key, { ...previous, ...data, url: source.url, scroll: previous?.scroll ?? 0, dirty: false });
+    return true;
+  } finally {
+    if (timelineRefresh === controller) timelineRefresh = null;
   }
 }
 $('sync-trigger').addEventListener('click', synchronize);

@@ -1,5 +1,4 @@
 import { el, button } from './dom.js';
-import { formSignature } from './forms.js';
 import { l, setText, setAttr, resolveText, languagePreference, setLanguage } from './i18n.js';
 import { createModal } from './modal.js';
 import { privacySettings } from './privacy.js';
@@ -34,6 +33,16 @@ const connectionLabels = {
 };
 const deliveryLabels = { pending: l("等待发送"), running: l("发送中"), sent: l("已发送"), failed: l("发送失败") };
 const same = (left, right) => JSON.stringify(left) === JSON.stringify(right);
+const fieldValue = (settings, [group, key]) => (key ? settings[group]?.[key] : settings[group]) ?? '';
+const readField = ({ input, type }) => type === 'checkbox' ? input.checked :
+  type === 'number' ? input.valueAsNumber : input.value.trim();
+
+function embeddingOrigin(address) {
+  try {
+    const url = new URL(address);
+    return ['https:', 'http:'].includes(url.protocol) ? url.origin : '';
+  } catch { return ''; }
+}
 
 function invalid(message) {
   return Object.assign(new Error(resolveText(message)), { code: 'SETTINGS_INPUT_INVALID', localizedMessage: message });
@@ -125,7 +134,17 @@ export function createSettingsPage({ sessionRequest, handleFailure, onSaved = ()
   let refreshView = () => {};
   let tabs = new Map(), panels = new Map(), summaries = new Map();
   const retrying = new Set();
-  const hasChanges = () => !!editor && formSignature(editor.form) !== editor.baseline;
+  const session = new AbortController();
+  const hasChanges = () => editor?.hasChanges() ?? false;
+
+  async function requestWhile(owner, path, options) {
+    const controller = new AbortController();
+    const abort = () => controller.abort();
+    if (owner.signal.aborted) throw new DOMException('Settings view closed', 'AbortError');
+    owner.signal.addEventListener('abort', abort, { once: true });
+    try { return await sessionRequest(path, { ...options, controller }); }
+    finally { owner.signal.removeEventListener('abort', abort); }
+  }
 
   function failure(node, err) {
     if (err.name === 'AbortError') return;
@@ -163,7 +182,7 @@ export function createSettingsPage({ sessionRequest, handleFailure, onSaved = ()
 
   function commit(intent, { target, valid, node = pageError, saved = () => {}, lock = () => {}, deferred = false } = {}) {
     const page = lifecycle;
-    const owner = valid ? page : new AbortController();
+    const owner = valid ? page : session;
     const active = () => !disposed && (!valid || !page.signal.aborted && valid());
     pending++; stopPoll();
     const task = async () => {
@@ -185,13 +204,13 @@ export function createSettingsPage({ sessionRequest, handleFailure, onSaved = ()
             secrets: body.secrets,
             ...(target === 'embedding' ? {} : { target }),
           };
-          const checked = await sessionRequest(endpoint, { method: 'POST', body: candidate, controller: owner });
+          const checked = await requestWhile(owner, endpoint, { method: 'POST', body: candidate });
           if (!active()) return;
           if (checked.version !== body.version) throw { code: 'SETTINGS_CONFLICT' };
         }
         const before = snapshot;
         lock();
-        const data = await sessionRequest('/settings', { method: 'PATCH', body, controller: owner });
+        const data = await requestWhile(owner, '/settings', { method: 'PATCH', body });
         if (!active()) return;
         snapshot = data;
         const pushStopped = before.settings.notifications.enabled && body.settings.notifications?.enabled === false &&
@@ -254,8 +273,9 @@ export function createSettingsPage({ sessionRequest, handleFailure, onSaved = ()
     error.setAttribute('role', 'alert'); error.hidden = true;
     const reloadButton = button(l("重新加载设置"), 'ghost', reloadSettings);
     reloadButton.hidden = !conflict;
-    const inputs = new Map(), secrets = new Map();
-    let revision = 0, busy = false, closing = false, readExtra = () => {}, locked = [];
+    const inputs = new Map(), secrets = new Map(), onRebase = [];
+    let revision = 0, busy = false, closing = false, locked = [];
+    let confirmEmbedding = false, confirmedOrigin = '', addressError = false;
     const requestClose = async () => {
       if (closing || busy) return;
       closing = true;
@@ -268,8 +288,8 @@ export function createSettingsPage({ sessionRequest, handleFailure, onSaved = ()
       onClose: () => { if (editor?.modal === modal) editor = null; onDirtyChange(); },
     });
     function field(path, label, { type = 'text', options, hint, min, max, step } = {}) {
-      const [group, key] = path.split('.');
-      const original = key ? snapshot.settings[group]?.[key] : snapshot.settings[group];
+      const keys = path.split('.');
+      const original = fieldValue(snapshot.settings, keys);
       const id = `settings-${path.replaceAll('.', '-')}`;
       const input = type === 'checkbox' ? switchInput(id, original === true) :
         options ? select(options) : el(type === 'textarea' ? 'textarea' : 'input');
@@ -281,7 +301,7 @@ export function createSettingsPage({ sessionRequest, handleFailure, onSaved = ()
       if (max !== undefined) input.max = max;
       if (step !== undefined) input.step = step;
       if (type === 'number') input.required = true;
-      inputs.set(path, { input, type, original: original ?? '' });
+      inputs.set(path, { input, type, original, keys });
       row(container, label, input, hint);
       return input;
     }
@@ -297,19 +317,42 @@ export function createSettingsPage({ sessionRequest, handleFailure, onSaved = ()
         if (input.hidden) input.value = '';
         else input.focus();
       });
-      box.append(el('span', 'sub', snapshot.secrets?.[name]?.configured ? l("已配置") : l("未配置")), action, input);
+      const status = el('span', 'sub');
+      const update = () => setText(status, snapshot.secrets?.[name]?.configured ? l("已配置") : l("未配置"));
+      onRebase.push(update); update();
+      box.append(status, action, input);
       row(container, label, box); secrets.set(name, { action, input });
     }
-    const extra = populate({ container, field, secret });
-    if (extra) readExtra = extra;
+    const extra = populate({ container, field, secret, onRebase }) || {};
     const save = el('button', 'save', target ? l("测试并保存") : l("保存"));
     const cancel = button(l("关闭"), 'ghost', requestClose);
+    const address = inputs.get('embedding.base_url');
+    const needsConfirmation = () => confirmEmbedding &&
+      secrets.get('embedding_api_key').action.value === 'replace' &&
+      confirmedOrigin !== (embeddingOrigin(readField(address)) || null);
+    const confirmAddress = address ? button('', 'ghost settings-confirm-address', () => {
+      confirmedOrigin = embeddingOrigin(readField(address));
+      if (addressError) { addressError = false; error.hidden = true; }
+      updateConfirmation();
+      save.focus();
+    }) : null;
+    if (confirmAddress) container.append(confirmAddress);
     const actions = el('div', 'settings-inline-actions settings-edit-actions');
     actions.append(cancel, reloadButton, save);
     modal.dialog.append(el('h2', '', title), container);
     container.append(error, actions);
+    function updateConfirmation() {
+      if (!address) return;
+      const origin = embeddingOrigin(readField(address));
+      if (confirmedOrigin !== origin) confirmedOrigin = '';
+      const required = needsConfirmation();
+      confirmAddress.hidden = !required || !origin;
+      extra.confirmationRequired?.(required);
+      setText(confirmAddress, l("确认向 {0} 发送密钥", { 0: origin }));
+    }
     const changed = () => {
       revision++; onDirtyChange();
+      updateConfirmation();
       if (target === 'embedding') {
         const enabled = inputs.get('embedding.enabled').input.checked && secrets.get('embedding_api_key').action.value !== 'clear';
         setText(save, enabled ? l("测试并保存") : l("保存"));
@@ -329,11 +372,16 @@ export function createSettingsPage({ sessionRequest, handleFailure, onSaved = ()
       event.preventDefault();
       if (busy) return;
       try {
+        if (needsConfirmation()) {
+          addressError = true;
+          (confirmAddress.hidden ? address.input : confirmAddress).focus();
+          throw invalid(l("Embedding API 地址已变化，请确认密钥的发送地址。"));
+        }
         const draft = {}, operations = {};
-        for (const [path, { input, type, original }] of inputs) {
-          const value = type === 'checkbox' ? input.checked : type === 'number' ? input.valueAsNumber : input.value.trim();
-          if (same(original, value)) continue;
-          const [group, key] = path.split('.');
+        for (const field of inputs.values()) {
+          const value = readField(field);
+          if (same(field.original, value)) continue;
+          const [group, key] = field.keys;
           if (key) (draft[group] ||= {})[key] = value;
           else draft[group] = value;
         }
@@ -341,7 +389,8 @@ export function createSettingsPage({ sessionRequest, handleFailure, onSaved = ()
           if (action.disabled || action.value === 'keep') continue;
           operations[name] = action.value === 'replace' ? { action: 'replace', value: input.value } : { action: 'clear' };
         }
-        readExtra(draft);
+        addressError = false;
+        extra.read?.(draft);
         const stamp = revision;
         busy = true; save.disabled = true;
         await commit({ draft, operations }, {
@@ -361,7 +410,29 @@ export function createSettingsPage({ sessionRequest, handleFailure, onSaved = ()
         busy = false; save.disabled = conflict;
       }
     });
-    editor = { modal, form: container, baseline: formSignature(container), error, reload: reloadButton, save };
+    editor = {
+      modal, error, reload: reloadButton, save,
+      hasChanges: () => [...inputs.values()].some(field => !same(field.original, readField(field))) ||
+        [...secrets.values()].some(({ action }) => action.value !== 'keep') || !!extra.hasChanges?.(),
+      rebase() {
+        const before = address && embeddingOrigin(readField(address));
+        for (const field of inputs.values()) {
+          const clean = same(field.original, readField(field));
+          field.original = fieldValue(snapshot.settings, field.keys);
+          if (clean) {
+            if (field.type === 'checkbox') field.input.checked = field.original === true;
+            else field.input.value = field.original;
+          }
+        }
+        if (address && before !== embeddingOrigin(readField(address))) {
+          confirmEmbedding = true; confirmedOrigin = '';
+        }
+        extra.rebase?.();
+        for (const update of onRebase) update();
+        addressError = false;
+        changed();
+      },
+    };
     save.disabled = conflict;
     changed();
     modal.show();
@@ -378,15 +449,15 @@ export function createSettingsPage({ sessionRequest, handleFailure, onSaved = ()
       container.append(list, button(l("采用设备时区"), 'ghost', () => {
         input.value = system; input.dispatchEvent(new Event('input', { bubbles: true }));
       }));
-      return draft => {
+      return { read: () => {
         try { new Intl.DateTimeFormat('en', { timeZone: input.value.trim() }); }
         catch { throw invalid(l("请填写有效的 IANA 时区，例如 Asia/Hong_Kong。")); }
-      };
+      } };
     }, { deferred: true });
   }
 
   function editEmbedding() {
-    editDialog(l("向量模型"), ({ container, field, secret }) => {
+    editDialog(l("向量模型"), ({ container, field, secret, onRebase }) => {
       field('embedding.enabled', l("启用 Embedding"), { type: 'checkbox' });
       const protocol = field('embedding.protocol', l("接口协议"), {
         options: [['dashscope', 'DashScope'], ['openai-compatible', l("OpenAI 兼容 Embedding")]],
@@ -410,15 +481,14 @@ export function createSettingsPage({ sessionRequest, handleFailure, onSaved = ()
         send.closest('.settings-row').hidden = !generic;
         instruction.closest('.settings-row').hidden = generic;
       };
-      protocol.addEventListener('change', update); update();
+      protocol.addEventListener('change', update); onRebase.push(update); update();
+      let check;
       if (snapshot.settings.embedding.enabled) {
-        const check = button(l("检查 Embedding 连接"), 'ghost', async () => {
+        check = button(l("检查 Embedding 连接"), 'ghost', async () => {
           const ticket = snapshot.version;
           check.disabled = true;
           try {
-            const result = await sessionRequest('/models/embedding/check', {
-              method: 'POST', body: { version: ticket }, controller: lifecycle,
-            });
+            const result = await requestWhile(lifecycle, '/models/embedding/check', { method: 'POST', body: { version: ticket } });
             if (check.isConnected && snapshot.version === result.version) snackbar(l("连接正常 · {0} 毫秒", { 0: result.duration_ms }));
           } catch (err) {
             if (check.isConnected) {
@@ -431,12 +501,15 @@ export function createSettingsPage({ sessionRequest, handleFailure, onSaved = ()
         });
         container.append(check);
       }
-      return draft => {
-        if (!draft.embedding) return;
-        const embedding = draft.embedding, generic = protocol.value === 'openai-compatible';
-        if (embedding.protocol) embedding.provider = generic ? 'openai-compatible' : 'bailian';
-        if (generic) embedding.query_instruction = '';
-        else embedding.send_dimensions = false;
+      return {
+        confirmationRequired(required) { if (check) check.hidden = required; },
+        read(draft) {
+          if (!draft.embedding) return;
+          const embedding = draft.embedding, generic = protocol.value === 'openai-compatible';
+          if (embedding.protocol) embedding.provider = generic ? 'openai-compatible' : 'bailian';
+          if (generic) embedding.query_instruction = '';
+          else embedding.send_dimensions = false;
+        },
       };
     }, { target: 'embedding' });
   }
@@ -470,18 +543,31 @@ export function createSettingsPage({ sessionRequest, handleFailure, onSaved = ()
         list.append(line); update();
       };
       const add = button(l("添加时段"), 'ghost', () => append(''));
-      for (const clock of snapshot.settings.notifications.times) append(clock);
+      let original = snapshot.settings.notifications.times;
+      for (const clock of original) append(clock);
       container.append(list, add);
-      return draft => {
-        const clocks = read();
-        if (!clocks.length || new Set(clocks).size !== clocks.length) throw invalid(l("请填写至少一个有效推送时段，时段不能重复。"));
-        draft.notifications = { times: clocks };
+      const hasChanges = () => !same(original, read());
+      return {
+        hasChanges,
+        rebase() {
+          const edited = hasChanges();
+          original = snapshot.settings.notifications.times;
+          if (!edited && hasChanges()) {
+            list.replaceChildren();
+            for (const clock of original) append(clock);
+          }
+        },
+        read(draft) {
+          const clocks = read();
+          if (!clocks.length || new Set(clocks).size !== clocks.length) throw invalid(l("请填写至少一个有效推送时段，时段不能重复。"));
+          if (hasChanges()) draft.notifications = { times: clocks };
+        },
       };
     }, { deferred: true });
   }
 
   function editChannel(target) {
-    editDialog(channels[target][0], ({ container, field, secret }) => {
+    editDialog(channels[target][0], ({ container, field, secret, onRebase }) => {
       function conditional(trigger, predicate, populate) {
         const anchor = container.lastChild;
         populate();
@@ -491,7 +577,7 @@ export function createSettingsPage({ sessionRequest, handleFailure, onSaved = ()
           block.hidden = !predicate();
           for (const control of block.querySelectorAll('input,select')) control.disabled = block.hidden;
         };
-        trigger.addEventListener('change', update); update();
+        trigger.addEventListener('change', update); onRebase.push(update); update();
       }
       if (target === 'qq') {
         container.append(el('p', 'sub', l("支持随时私聊速记与查回顾。")));
@@ -536,7 +622,7 @@ export function createSettingsPage({ sessionRequest, handleFailure, onSaved = ()
           const page = lifecycle;
           retrying.add(item.id); retry.disabled = true;
           try {
-            await sessionRequest(`/admin/notifications/${encodeURIComponent(item.id)}/retry`, { method: 'POST', body: {} });
+            await requestWhile(page, `/admin/notifications/${encodeURIComponent(item.id)}/retry`, { method: 'POST', body: {} });
           } catch (err) {
             if (!page.signal.aborted) failure(pageError, err);
           } finally {
@@ -558,7 +644,7 @@ export function createSettingsPage({ sessionRequest, handleFailure, onSaved = ()
     const search = currentTab === 'search';
     try {
       if (search) {
-        const data = await sessionRequest('/models', { controller: request });
+        const data = await requestWhile(request, '/models');
         if (poll !== request) return;
         if (data.version !== snapshot.version) { markConflict(); return; }
         const labels = { disabled: l("语义索引已关闭"), waiting: l("语义索引等待同步或构建"),
@@ -574,8 +660,8 @@ export function createSettingsPage({ sessionRequest, handleFailure, onSaved = ()
           !indexProgress.hidden && generation.last_error].filter(Boolean).join(' · '));
       } else {
         const [data, deliveries] = await Promise.all([
-          sessionRequest('/settings', { controller: request }),
-          sessionRequest('/admin/notifications?kind=review', { controller: request }),
+          requestWhile(request, '/settings'),
+          requestWhile(request, '/admin/notifications?kind=review'),
         ]);
         if (poll !== request) return;
         if (data.version !== snapshot.version) { markConflict(); return; }
@@ -586,7 +672,7 @@ export function createSettingsPage({ sessionRequest, handleFailure, onSaved = ()
       if (poll === request) failure(search ? indexText : pageError, err);
     } finally {
       if (poll === request) {
-        poll = null;
+        poll = null; request.abort();
         if (!conflict && !document.hidden) timer = setTimeout(refresh, 5000);
       }
     }
@@ -652,7 +738,7 @@ export function createSettingsPage({ sessionRequest, handleFailure, onSaved = ()
       const page = lifecycle;
       rebuild.disabled = true;
       try {
-        await sessionRequest('/map/rebuild', { method: 'POST', body: {} });
+        await requestWhile(page, '/map/rebuild', { method: 'POST', body: {} });
         if (!page.signal.aborted) snackbar(l("已请求重新生成星图。"));
       } catch (err) {
         if (!page.signal.aborted) failure(pageError, err);
@@ -714,7 +800,7 @@ export function createSettingsPage({ sessionRequest, handleFailure, onSaved = ()
     for (const trigger of triggers) trigger.disabled = true;
     stopPoll();
     try {
-      const data = await sessionRequest('/settings', { controller: owner });
+      const data = await requestWhile(owner, '/settings');
       if (owner.signal.aborted) return;
       if (!data?.settings?.channel || !Number.isSafeInteger(data.version)) throw invalid(l("服务返回的设置不完整，请重新加载。"));
       const previous = snapshot;
@@ -727,14 +813,19 @@ export function createSettingsPage({ sessionRequest, handleFailure, onSaved = ()
       if (!form) { root.replaceChildren(); render(); }
       else {
         pageError.hidden = reload.hidden = true;
-        if (editor) { editor.error.hidden = editor.reload.hidden = true; editor.save.disabled = false; }
+        if (editor) {
+          editor.rebase();
+          editor.error.hidden = editor.reload.hidden = true;
+          editor.save.disabled = false;
+        }
         refreshView(); refresh();
       }
     } catch (err) {
       if (owner.signal.aborted) return;
       if (!form) {
         pageError = el('p', 'error sub');
-        root.replaceChildren(pageError, button(l("重新加载设置"), 'ghost', reloadSettings));
+        reload = button(l("重新加载设置"), 'ghost', reloadSettings);
+        root.replaceChildren(pageError, reload);
       }
       failure(editor?.error || pageError, err);
     } finally {
@@ -762,7 +853,7 @@ export function createSettingsPage({ sessionRequest, handleFailure, onSaved = ()
       tabs.clear(); panels.clear(); summaries.clear();
       refreshView = () => {};
     },
-    dispose() { disposed = true; this.destroy(); },
+    dispose() { disposed = true; session.abort(); this.destroy(); },
     hasChanges,
   };
 }

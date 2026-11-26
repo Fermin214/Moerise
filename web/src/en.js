@@ -290,6 +290,8 @@ export const english = {
   "设置已保存。": "Settings saved.",
   "设置保存失败，请重试。": "Settings could not be saved. Try again.",
   "清空飞书回调令牌前，请明确选择清空 App Secret，以停用飞书应用机器人。": "To clear the Feishu verification token, explicitly choose to clear the App Secret and disable the bot.",
+  "确认向 {0} 发送密钥": "Confirm sending the key to {0}",
+  "Embedding API 地址已变化，请确认密钥的发送地址。": "The Embedding API address changed. Confirm where to send the key.",
   "新密钥已从表单移除；再次替换时请重新填写。": "New secrets were cleared from the form. Enter them again to replace.",
   "发送": "Send",
   "材料 · {0} 条 · {1} / 20000 字 · {2}": p => `Materials · {0} ${noun(p[0], "note")} · {1} / 20000 characters · {2}`,

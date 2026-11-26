@@ -272,6 +272,7 @@ fun StarCanvas(
                                         (rendered.y - base.y) * base.scale + size.height / 2.0).toFloat(),
                                 )
                                 val label = livePlacements.firstOrNull { it.bounds.contains(mapped) }
+                                if (rendered != base) finishCamera(base, rendered)
                                 if (label != null) onFocus(label.label.members)
                                 else if (candidate != null) select(candidate)
                                 else onBlank()

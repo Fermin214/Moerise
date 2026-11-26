@@ -35,7 +35,8 @@ function settings() {
 async function fixture(t, { language = 'zh-CN', mobile = false, returning = true } = {}) {
   const state = { value: settings(), session: false, gets: 0, patches: [], checks: [], telemetry: false, batches: [],
     index: 'disabled', mapReads: 0, rebuilds: 0, deliveries: [], retries: [], fail: null, checkFail: null,
-    hold: null, holdCheck: null, holdNotes: null, notesFail: null, nextSettingsRead: null, csrf: false };
+    hold: null, holdCheck: null, holdNotes: null, notesFail: null, nextSettingsRead: null, csrf: false,
+    notes: [], notesReads: [], mapData: null, modelVersion: null };
   const core = http.createServer(async (req, res) => {
     const path = new URL(req.url, 'http://localhost').pathname;
     const raw = await readRequestText(req);
@@ -61,12 +62,12 @@ async function fixture(t, { language = 'zh-CN', mobile = false, returning = true
       state.batches.push(JSON.parse(raw)); res.writeHead(204); res.end(); return;
     }
     if (path === '/api/app/v1/models') {
-      json({ version: state.value.version, embedding: state.value.settings.embedding, index_status: state.index,
+      json({ version: state.modelVersion ?? state.value.version, embedding: state.value.settings.embedding, index_status: state.index,
         vector_index: { building: state.index === 'building' ? { chunks: 12, completed_chunks: 4 } : null } }); return;
     }
     if (path === '/api/app/v1/map') {
       state.mapReads++;
-      json({ status: 'disabled', algorithm: 'umap-balanced-v1', projection_revision: 0, layout_version: '',
+      json(state.mapData || { status: 'disabled', algorithm: 'umap-balanced-v1', projection_revision: 0, layout_version: '',
         layout_frame: '', vector_generation: '', points: [] }); return;
     }
     if (path === '/api/app/v1/map/rebuild') {
@@ -83,9 +84,10 @@ async function fixture(t, { language = 'zh-CN', mobile = false, returning = true
       json({ version: body.version, status: 'ok', duration_ms: 17 }); return;
     }
     if (path === '/api/app/v1/notes') {
+      state.notesReads.push(Object.fromEntries(new URL(req.url, 'http://localhost').searchParams));
       await state.holdNotes;
       if (state.notesFail) { error('NOTE_LIST_INVALID', state.notesFail); return; }
-      json({ notes: [], next_page_token: '' }); return;
+      json({ notes: state.notes, next_page_token: '' }); return;
     }
     if (path === '/api/app/v1/tags') { json({ tags: [] }); return; }
     if (path === '/api/app/v1/calendar') {
@@ -482,5 +484,122 @@ test('manual refresh waits for a successful notes read and safely handles naviga
   state.notesFail = 401;
   await sync.click();
   await page.locator('#login-form').waitFor();
+  assert.deepEqual(errors, []);
+});
+
+test('reloading settings after an Embedding origin change requires explicit confirmation before probing', async t => {
+  const { page, state, url } = await fixture(t);
+  Object.assign(state.value.settings.embedding, { enabled: true, base_url: 'https://first.example/v1' });
+  state.value.secrets.embedding_api_key.configured = true;
+  await login(page, url); await tab(page, 'search'); await edit(page, '向量模型');
+  await operation(page, 'Embedding API Key').selectOption('replace');
+  await newSecret(page, 'Embedding API Key').fill('draft-credential');
+  await settingsField(page, 'embedding.model').fill('draft-model');
+  state.value.version++;
+  Object.assign(state.value.settings.embedding, { base_url: 'https://second.example:8443/v2', batch_size: 6 });
+  await save(page); await dialog(page).getByRole('alert').waitFor();
+  await dialog(page).getByRole('button', { name: '重新加载设置' }).click();
+  const confirm = dialog(page).getByRole('button', { name: '确认向 https://second.example:8443 发送密钥' });
+  await confirm.waitFor();
+  assert.equal(await settingsField(page, 'embedding.base_url').inputValue(), 'https://second.example:8443/v2');
+  assert.equal(await settingsField(page, 'embedding.batch_size').inputValue(), '6');
+  assert.equal(await settingsField(page, 'embedding.model').inputValue(), 'draft-model');
+  assert.equal(await newSecret(page, 'Embedding API Key').inputValue(), 'draft-credential');
+  const checksBefore = state.checks.length;
+  await save(page);
+  await dialog(page).getByRole('alert').filter({ hasText: '请确认密钥的发送地址' }).waitFor();
+  assert.equal(await dialog(page).getByRole('button', { name: '检查 Embedding 连接' }).count(), 0);
+  assert.equal(state.checks.length, checksBefore);
+  assert.deepEqual(state.patches, []);
+  await confirm.click();
+  await save(page); await dialog(page).waitFor({ state: 'hidden' });
+  assert.equal(state.checks.length, checksBefore + 1);
+  assert.deepEqual(state.checks.at(-1).settings, { embedding: { model: 'draft-model' } });
+  assert.deepEqual(state.patches.at(-1).secrets, { embedding_api_key: { action: 'replace', value: 'draft-credential' } });
+});
+
+test('request timeout leaves settings reload, candidate checks and PATCH retries usable', async t => {
+  const { page, state, url, errors } = await fixture(t);
+  await page.clock.install();
+  let release;
+  state.hold = new Promise(resolve => { release = resolve; });
+  const loading = page.waitForRequest('**/api/app/v1/settings');
+  await login(page, url); await loading;
+  await page.clock.fastForward(65_100);
+  const settingsPage = page.locator('#settings-page');
+  await settingsPage.getByText(/请求超时/).waitFor();
+  release(); state.hold = null;
+  await settingsPage.getByRole('button', { name: '重新加载设置' }).click();
+  await tab(page, 'search'); await edit(page, '向量模型');
+  await settingsField(page, 'embedding.enabled').check();
+  await settingsField(page, 'embedding.base_url').fill('https://embedding.example/v1');
+  await operation(page, 'Embedding API Key').selectOption('replace');
+  await newSecret(page, 'Embedding API Key').fill('draft-credential');
+  state.holdCheck = new Promise(resolve => { release = resolve; });
+  const probing = page.waitForRequest('**/api/app/v1/models/embedding/check');
+  await save(page); await probing;
+  await page.clock.fastForward(65_100);
+  await dialog(page).getByRole('alert').filter({ hasText: /请求超时/ }).waitFor();
+  assert.equal(await newSecret(page, 'Embedding API Key').inputValue(), 'draft-credential');
+  assert.deepEqual(state.patches, []);
+  release(); state.holdCheck = null;
+  state.modelVersion = 1;
+  state.hold = new Promise(resolve => { release = resolve; });
+  const patching = page.waitForRequest(request => request.method() === 'PATCH' && request.url().endsWith('/settings'));
+  await save(page); await patching;
+  await page.clock.fastForward(65_100);
+  await dialog(page).getByRole('alert').filter({ hasText: /请求超时/ }).waitFor();
+  assert.equal(await newSecret(page, 'Embedding API Key').inputValue(), 'draft-credential');
+  release(); state.hold = null;
+  await save(page);
+  const reload = dialog(page).getByRole('button', { name: '重新加载设置' });
+  await reload.waitFor();
+  state.modelVersion = null;
+  await reload.click();
+  await save(page); await dialog(page).waitFor({ state: 'hidden' });
+  assert.deepEqual(state.patches.map(patch => patch.version), [1, 2]);
+  assert.deepEqual(errors, []);
+});
+
+test('refreshing from settings updates the filtered timeline snapshot for offline history return', async t => {
+  const { page, state, url, errors } = await fixture(t);
+  const note = { name: 'memos/archived', content: 'Old archived content', state: 'ARCHIVED',
+    source_hash: 'old-hash', create_time: '2026-11-24T01:02:03Z', tags: ['work'], attachments: [] };
+  state.notes = [note];
+  await login(page, url, '/archived?tag=work');
+  const card = page.locator('#notes article[data-name="memos/archived"]');
+  await card.getByText('Old archived content').waitFor();
+  await page.locator('a[data-route][href="/settings"]').click();
+  state.notes = [{ ...note, content: 'Refreshed archived content', source_hash: 'next-hash' }];
+  await page.getByRole('button', { name: '立即同步' }).click();
+  await confirmation(page, '已从 Core 刷新笔记。');
+  assert.equal(state.notesReads.at(-1).tag, 'work');
+  assert.equal(state.notesReads.at(-1).state, 'ARCHIVED');
+  await page.context().setOffline(true);
+  await page.goBack();
+  await card.getByText('Refreshed archived content').waitFor();
+  assert.equal(await card.getByText('Old archived content').count(), 0);
+  assert.deepEqual(errors, []);
+});
+
+test('saving a queued stargazing disable immediately removes the already open map', async t => {
+  const { page, state, url, errors } = await fixture(t);
+  state.mapData = { status: 'ready', algorithm: 'umap-balanced-v1', projection_revision: 1, layout_version: 'a'.repeat(64),
+    layout_frame: 'b'.repeat(64), vector_generation: 'first', topics: [], links: [],
+    points: [{ name: 'memos/star', source_hash: 'star-hash', x: 0, y: 0, semantic: true, tags: [],
+      stellar: { seed: 0.1, role: 'ordinary', radius: 1, luminosity: 0.9 } }] };
+  await login(page, url); await tab(page, 'search');
+  let release;
+  state.hold = new Promise(resolve => { release = resolve; });
+  const pending = page.waitForRequest(request => request.method() === 'PATCH' && request.url().endsWith('/settings'));
+  await settingsField(page, 'stargazing.enabled').uncheck(); await pending;
+  await page.locator('nav a[href="/map"]').click();
+  await page.locator('#map-field[data-rendered="true"]').waitFor();
+  assert.equal(state.mapReads, 1);
+  release(); state.hold = null;
+  await page.locator('#capability').filter({ hasText: '观星已关闭。' }).waitFor();
+  assert.equal(await page.locator('#map-field').count(), 0);
+  assert.equal(await page.locator('nav a[href="/map"]').isHidden(), true);
+  assert.equal(state.mapReads, 1);
   assert.deepEqual(errors, []);
 });
