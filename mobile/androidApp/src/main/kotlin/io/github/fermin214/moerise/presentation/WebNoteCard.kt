@@ -10,6 +10,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
@@ -209,9 +210,12 @@ fun WebNoteMenu(strings: Strings, actions: List<NoteMenuAction>, tag: String = "
     val leaveWriting = LocalLeaveWriting.current
     var open by remember { mutableStateOf(false) }
     Box {
-        IconButton(onClick = { if (!open) leaveWriting(); open = !open }, modifier = Modifier.size(44.dp).testTag(tag).semantics {
+        Box(Modifier.size(44.dp).clip(CircleShape).clickable(role = Role.Button) {
+            if (!open) leaveWriting()
+            open = !open
+        }.testTag(tag).semantics {
             stateDescription = if (open) strings.text("已展开", "Expanded") else strings.text("已收起", "Closed")
-        }) {
+        }, contentAlignment = Alignment.Center) {
             WebIcon(WebIcon.More, strings.text("更多操作", "More actions"), Modifier.size(16.dp))
         }
         DropdownMenu(expanded = open, onDismissRequest = { open = false },

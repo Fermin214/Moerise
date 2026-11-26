@@ -27,6 +27,7 @@ import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createEmptyComposeRule
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.height
+import androidx.test.platform.app.InstrumentationRegistry
 import io.github.fermin214.moerise.MainActivity
 import io.github.fermin214.moerise.data.ConnectionProfile
 import io.github.fermin214.moerise.data.CoreJson
@@ -57,9 +58,11 @@ class AndroidUiRegressionTest {
     private lateinit var host: ActivityController<ComponentActivity>
     private val strings = Strings(UiLanguage.ENGLISH)
 
-    @BeforeTest
-    fun createHost() {
-        compose.runOnUiThread { host = Robolectric.buildActivity(ComponentActivity::class.java).setup() }
+    private fun createHost(inTouchMode: Boolean = true) {
+        compose.runOnUiThread {
+            InstrumentationRegistry.getInstrumentation().setInTouchMode(inTouchMode)
+            host = Robolectric.buildActivity(ComponentActivity::class.java).setup()
+        }
     }
 
     @AfterTest
@@ -69,6 +72,7 @@ class AndroidUiRegressionTest {
 
     @Test
     fun drawerFollowsAnEligibleDragAndReleasesFocusOnlyAfterSlop() {
+        createHost()
         lateinit var drawer: NavigationDrawerState
         lateinit var scroll: ScrollState
         var clicks = 0
@@ -127,6 +131,7 @@ class AndroidUiRegressionTest {
 
     @Test
     fun stopClearsWritingFocusAndManifestKeepsTheImeHiddenOnEntry() {
+        createHost()
         compose.runOnUiThread {
             host.get().setContent {
                 val focus = LocalFocusManager.current
@@ -148,6 +153,7 @@ class AndroidUiRegressionTest {
     @OptIn(ExperimentalTestApi::class, ExperimentalComposeUiApi::class)
     @Test
     fun keyboardCanOpenNavigateAndDismissTheDrawerAndAccessibilityCanCloseIt() {
+        createHost(inTouchMode = false)
         var selections = 0
         compose.runOnUiThread {
             host.get().setContent {
@@ -181,6 +187,7 @@ class AndroidUiRegressionTest {
 
     @Test
     fun compactCardKeepsTapTargetsAndClosingTheMenuDoesNotRefocusTheEditor() {
+        createHost()
         compose.runOnUiThread {
             host.get().setContent {
                 val focus = LocalFocusManager.current
@@ -204,7 +211,7 @@ class AndroidUiRegressionTest {
         val date = compose.onNode(hasTestTag("note_card_date") and card, useUnmergedTree = true).fetchSemanticsNode().boundsInRoot
         val body = compose.onNode(hasTestTag("note_card_body") and card, useUnmergedTree = true).fetchSemanticsNode().boundsInRoot
         assertTrue(date.height < actionBounds.height)
-        assertTrue(body.top - actionBounds.top <= actionBounds.height + 2f)
+        assertTrue(body.top <= actionBounds.bottom + 2f, "Body starts at ${body.top}, action ends at ${actionBounds.bottom}")
         assertEquals(44.dp, action.getUnclippedBoundsInRoot().height)
         assertEquals(44.dp, compose.onNodeWithTag("queued_error_queued").getUnclippedBoundsInRoot().height)
 
@@ -216,6 +223,7 @@ class AndroidUiRegressionTest {
 
     @Test
     fun sidebarHasDirectArchiveAndLogoutAndPrivacyActionStaysEnabled() {
+        createHost()
         val scope = CoroutineScope(SupervisorJob())
         val session = SessionController(MemorySecrets(), true, scope)
         try {
@@ -243,6 +251,7 @@ class AndroidUiRegressionTest {
 
     @Test
     fun savingAndCancellingReturnToAnUnfocusedComposerAndFirstScreenPrewarmsFilters() {
+        createHost()
         val folder = Files.createTempDirectory("moerise-composer-focus").toFile()
         val database = testDatabase(folder.resolve("data.sqlite3").absolutePath)
         val repository = NoteRepository(database)
@@ -273,9 +282,12 @@ class AndroidUiRegressionTest {
             }
             waitForTag("note_editor")
             compose.waitUntil(10_000) { mobile.filterReads.cached("NORMAL", serviceMonth("UTC")) != null }
-            composer.performClick().performTextInput("New note")
-            compose.onNodeWithTag("save_note").performClick()
-            compose.waitUntil(10_000) { mobile.editor.state.value.draft?.content == "" }
+            composer.performClick().assertIsFocused().performTextReplacement("New note")
+            composer.assertTextContains("New note")
+            compose.onNodeWithTag("save_note").assertIsEnabled()
+                .performSemanticsAction(SemanticsActions.OnClick) { assertTrue(it()) }
+            compose.waitUntil(10_000) { mobile.editor.state.value.let { it.draft?.content == "" || it.error != null } }
+            assertNull(mobile.editor.state.value.error)
             composer.assertIsNotFocused()
 
             edit()
@@ -285,7 +297,9 @@ class AndroidUiRegressionTest {
 
             edit()
             inline.performTextReplacement("Edited")
-            compose.onNodeWithTag("save_note_${note.name}").performClick()
+            inline.assertTextContains("Edited")
+            compose.onNodeWithTag("save_note_${note.name}").assertIsEnabled()
+                .performSemanticsAction(SemanticsActions.OnClick) { assertTrue(it()) }
             waitForTag("note_editor")
             composer.assertIsNotFocused()
         } finally {
