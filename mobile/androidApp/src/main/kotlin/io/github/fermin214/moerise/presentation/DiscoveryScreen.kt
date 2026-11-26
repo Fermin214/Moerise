@@ -7,17 +7,16 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsFocusedAsState
 import androidx.compose.foundation.interaction.collectIsHoveredAsState
+import androidx.compose.foundation.interaction.collectIsPressedAsState
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.animation.core.Animatable
-import androidx.compose.animation.core.RepeatMode
-import androidx.compose.animation.core.animateFloat
-import androidx.compose.animation.core.infiniteRepeatable
-import androidx.compose.animation.core.rememberInfiniteTransition
-import androidx.compose.animation.core.tween
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.snap
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -28,9 +27,12 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
@@ -39,6 +41,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import io.github.fermin214.moerise.data.epochMillis
 import io.github.fermin214.moerise.domain.Note
+import kotlinx.coroutines.launch
 import kotlinx.serialization.json.*
 
 @OptIn(ExperimentalLayoutApi::class)
@@ -55,6 +58,10 @@ fun DiscoveryScreen(page: String, mobile: MobileController, strings: Strings, re
     val error = if (isReview) review.error else walk.error
     val timezone = connection.profile?.timezone ?: "UTC"
     val reviewItem = review.batch?.items?.getOrNull(review.position)
+    val haptic = rememberMoeriseHaptic()
+    fun selectReview(index: Int) {
+        if (index != review.position) { haptic(); mobile.review.select(index) }
+    }
     LaunchedEffect(page, reviewItem?.name, walk.result?.item?.note?.name) { readingScroll.scrollTo(0) }
 
     Column(Modifier.fillMaxSize().safeDrawingPadding().testTag("${page}_page")) {
@@ -91,11 +98,15 @@ fun DiscoveryScreen(page: String, mobile: MobileController, strings: Strings, re
                                             border = BorderStroke(1.dp, MoeriseColors.Line),
                                         ) {}
                                     }
-                                    DiscoveryCard(Modifier.fillMaxSize(), readingScroll, "${batch.id}:${review.position}", review = true) {
-                                        if (reviewItem.unavailable) DiscoveryMessage(strings.text(
-                                            "这条笔记已不存在或无法访问。", "This note was deleted or is no longer accessible."))
-                                        else reviewItem.note?.let { note ->
-                                            DiscoveryNoteContent(note, batch.timezone, mobile, strings, review = true, onTag = onTag)
+                                    ReviewStack(batch.id, batch.items.size, review.position, ::selectReview) { index, layer ->
+                                        val item = batch.items[index]
+                                        val scroll = if (index == review.position) readingScroll else rememberScrollState()
+                                        DiscoveryCard(layer.fillMaxSize(), scroll, "${batch.id}:$index", review = true) {
+                                            if (item.unavailable) DiscoveryMessage(strings.text(
+                                                "这条笔记已不存在或无法访问。", "This note was deleted or is no longer accessible."))
+                                            else item.note?.let { note ->
+                                                DiscoveryNoteContent(note, batch.timezone, mobile, strings, review = true, onTag = onTag)
+                                            }
                                         }
                                     }
                                 }
@@ -115,23 +126,7 @@ fun DiscoveryScreen(page: String, mobile: MobileController, strings: Strings, re
                             }
                             val result = walk.result
                             if (result?.item != null) {
-                                Column(Modifier.weight(1f).fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(10.dp),
-                                    horizontalAlignment = Alignment.CenterHorizontally) {
-                                    walk.previous?.let { previous ->
-                                        Surface(Modifier.fillMaxWidth(.92f).alpha(.6f), color = Color.White,
-                                            shape = RoundedCornerShape(14.dp), border = BorderStroke(1.dp, MoeriseColors.Line)) {
-                                            Column(Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
-                                                Text(displayNoteDate(previous.createTime, timezone, strings.text("zh", "en") == "en"),
-                                                    style = MaterialTheme.typography.bodySmall, color = MoeriseColors.Muted)
-                                                Text(previous.content, maxLines = 1, overflow = TextOverflow.Ellipsis,
-                                                    style = MaterialTheme.typography.bodySmall)
-                                            }
-                                        }
-                                    }
-                                    DiscoveryCard(Modifier.weight(1f).fillMaxWidth(), readingScroll, result.item.note.name) {
-                                        DiscoveryNoteContent(result.item.note, timezone, mobile, strings, onTag = onTag)
-                                    }
-                                }
+                                WalkCards(Modifier.weight(1f), result.item.note, walk.previous, readingScroll, timezone, mobile, strings, onTag)
                             } else if (result?.exhausted != true) {
                                 BoxWithConstraints(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
                                     val startEnabled = !loading && (walk.offline && walk.floaters.isNotEmpty() || connection.connected && walk.embeddingEnabled == true)
@@ -192,14 +187,16 @@ fun DiscoveryScreen(page: String, mobile: MobileController, strings: Strings, re
                         ) {
                             FlowRow {
                                 repeat(batch.items.size) { index ->
+                                    val dotScale = animateFloatAsState(if (index == review.position) 1f else .4f,
+                                        if (LocalReducedMotion.current) snap() else MoeriseMotion.tactile(), label = "review position")
                                     Box(
-                                        Modifier.size(if (index == review.position) 26.dp else 14.dp, 24.dp).testTag("review_item_$index")
+                                        Modifier.size(25.dp, 24.dp).testTag("review_item_$index")
                                             .semantics { contentDescription = strings.text(
                                                 "第 ${index + 1} / ${batch.items.size} 条", "Note ${index + 1} of ${batch.items.size}") }
-                                            .selectable(index == review.position, role = Role.RadioButton) { mobile.review.select(index) },
+                                            .selectable(index == review.position, role = Role.RadioButton) { selectReview(index) },
                                         contentAlignment = Alignment.Center,
                                     ) {
-                                        Box(Modifier.size(if (index == review.position) 20.dp else 8.dp, 8.dp)
+                                        Box(Modifier.size(20.dp, 8.dp).graphicsLayer { scaleX = dotScale.value }
                                             .background(if (index == review.position) Color(0xFF5B8DEF) else Color(0xFFD5DBE5), RoundedCornerShape(4.dp)))
                                     }
                                 }
@@ -212,7 +209,7 @@ fun DiscoveryScreen(page: String, mobile: MobileController, strings: Strings, re
                                 }
                                 WebAction(
                                     if (review.position + 1 < batch.items.size) strings.text("下一条", "Next note") else strings.text("再看一遍", "Start again"),
-                                    onClick = mobile.review::next, modifier = Modifier.testTag("review_next"),
+                                    onClick = { selectReview((review.position + 1) % batch.items.size) }, modifier = Modifier.testTag("review_next"),
                                 )
                             }
                         }
@@ -236,6 +233,122 @@ fun DiscoveryScreen(page: String, mobile: MobileController, strings: Strings, re
 }
 
 @Composable
+private fun WalkCards(modifier: Modifier, note: Note, previous: Note?, scroll: ScrollState, timezone: String,
+    mobile: MobileController, strings: Strings, onTag: ((String) -> Unit)?) {
+    val reduced = LocalReducedMotion.current
+    var displayed by remember { mutableStateOf(note.name) }
+    val advancing = previous?.name == displayed && displayed != note.name
+    val progress = remember(note.name) { Animatable(if (advancing) 0f else 1f) }
+    LaunchedEffect(note.name, reduced) {
+        if (advancing) progress.animateTo(1f, if (reduced) MoeriseMotion.fade() else MoeriseMotion.spatial())
+        displayed = note.name
+    }
+    BoxWithConstraints(modifier.fillMaxWidth()) {
+        val cardHeight = (maxHeight - 70.dp).coerceAtLeast(0.dp)
+        Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(10.dp),
+            horizontalAlignment = Alignment.CenterHorizontally) {
+            Box(Modifier.fillMaxWidth().height(60.dp), contentAlignment = Alignment.Center) {
+                if (previous != null) Surface(Modifier.fillMaxWidth(.92f).fillMaxHeight().graphicsLayer {
+                    alpha = .6f * progress.value.coerceIn(0f, 1f)
+                }, color = Color.White, shape = RoundedCornerShape(14.dp), border = BorderStroke(1.dp, MoeriseColors.Line)) {
+                    Column(Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
+                        Text(displayNoteDate(previous.createTime, timezone, strings.text("zh", "en") == "en"),
+                            style = MaterialTheme.typography.bodySmall, color = MoeriseColors.Muted)
+                        Text(previous.content, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+            }
+            DiscoveryCard(Modifier.weight(1f).fillMaxWidth(), scroll, note.name) {
+                DiscoveryNoteContent(note, timezone, mobile, strings, onTag = onTag)
+            }
+        }
+        if (advancing && previous != null && cardHeight > 0.dp) {
+            Surface(Modifier.fillMaxWidth().height(cardHeight).offset(y = 70.dp).clearAndSetSemantics {}.graphicsLayer {
+                val fraction = progress.value.coerceIn(0f, 1f)
+                alpha = 1f - fraction
+                if (!reduced) {
+                    transformOrigin = androidx.compose.ui.graphics.TransformOrigin(.5f, 0f)
+                    translationY = -70.dp.toPx() * fraction
+                    scaleX = 1f - .08f * fraction
+                    scaleY = 1f + ((60.dp / cardHeight).coerceAtMost(1f) - 1f) * fraction
+                }
+            }, shape = RoundedCornerShape(14.dp), color = Color.White, border = BorderStroke(1.dp, MoeriseColors.Line)) {
+                Column(Modifier.padding(horizontal = 20.dp, vertical = 22.dp)) {
+                    Text(displayNoteDate(previous.createTime, timezone, strings.text("zh", "en") == "en"),
+                        style = MaterialTheme.typography.bodySmall, color = MoeriseColors.Muted)
+                    val body = rememberNotePresentation(previous.content, previous.tags)
+                    MarkdownBody(body.body)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ReviewStack(batch: String, size: Int, position: Int, select: (Int) -> Unit,
+    card: @Composable (Int, Modifier) -> Unit) {
+    val reduced = LocalReducedMotion.current
+    val offset = remember(batch) { mutableFloatStateOf(0f) }
+    val rebound = remember(batch) { Animatable(0f) }
+    var shown by remember(batch) { mutableIntStateOf(position) }
+    val progress = remember(batch, position) { Animatable(if (shown == position) 1f else 0f) }
+    var direction by remember(batch) { mutableFloatStateOf(-1f) }
+    val selected by rememberUpdatedState(select)
+    val scope = rememberCoroutineScope()
+    val threshold = with(LocalDensity.current) { 72.dp.toPx() }
+    LaunchedEffect(progress, reduced) {
+        if (shown != position) {
+            progress.animateTo(1f, if (reduced) MoeriseMotion.fade() else MoeriseMotion.flip)
+            shown = position
+            offset.floatValue = 0f
+        }
+    }
+    fun settle() {
+        val distance = offset.floatValue
+        offset.floatValue = 0f
+        scope.launch {
+            rebound.snapTo(distance)
+            rebound.animateTo(0f, if (reduced) snap() else MoeriseMotion.responsive())
+        }
+    }
+    Box(Modifier.fillMaxSize().drawerGestureRegion().pointerInput(batch, size, position, shown) {
+        if (size < 2 || shown != position) return@pointerInput
+        detectHorizontalDragGestures(
+            onDragCancel = ::settle,
+            onDragEnd = {
+                val distance = offset.floatValue
+                if (kotlin.math.abs(distance) < threshold) settle()
+                else {
+                    direction = if (distance < 0f) -1f else 1f
+                    selected((position + (if (direction < 0f) 1 else -1) + size) % size)
+                }
+            },
+        ) { change, distance ->
+            change.consume()
+            offset.floatValue += distance
+        }
+    }) {
+        val switching = shown != position
+        if (switching) card(position, Modifier.graphicsLayer {
+            alpha = .72f + progress.value * .28f
+            if (!reduced) {
+                translationY = 12.dp.toPx() * (1 - progress.value)
+                scaleX = .955f + .045f * progress.value
+                scaleY = scaleX
+            }
+        })
+        card(shown, Modifier.graphicsLayer {
+            if (switching) alpha = 1f - progress.value
+            if (!reduced) translationX = if (switching) {
+                val start = offset.floatValue
+                val end = if (start == 0f) -42.dp.toPx() else start + direction * 42.dp.toPx()
+                start + (end - start) * progress.value
+            } else offset.floatValue + rebound.value
+        })
+    }
+}
+
+@Composable
 private fun DiscoveryMessage(text: String, error: Boolean = false, modifier: Modifier = Modifier) {
     Text(text, style = MaterialTheme.typography.bodySmall,
         color = if (error) MaterialTheme.colorScheme.error else MoeriseColors.Muted,
@@ -247,10 +360,11 @@ private fun WalkFloater(note: Note, index: Int, strings: Strings, enabled: Boole
     val interaction = remember(note.name) { MutableInteractionSource() }
     val focused by interaction.collectIsFocusedAsState()
     val hovered by interaction.collectIsHoveredAsState()
+    val pressed by interaction.collectIsPressedAsState()
     val active = focused || hovered
-    val animation = rememberInfiniteTransition(label = "walk_floater")
-    val drift by animation.animateFloat(-5f, 5f,
-        infiniteRepeatable(tween(2400 + index * 160), RepeatMode.Reverse), label = "walk_floater_drift")
+    val reduced = LocalReducedMotion.current
+    val sink = animateFloatAsState(if (pressed && !reduced) 1f else 0f,
+        if (reduced) snap() else MoeriseMotion.tactile(), label = "walk press")
     val preview = remember(note.content, note.attachments) {
         val text = note.content.replace(Regex("\\s+"), " ").trim()
         var end = 0
@@ -263,9 +377,11 @@ private fun WalkFloater(note: Note, index: Int, strings: Strings, enabled: Boole
         text.substring(0, end).ifBlank { note.attachments.firstOrNull()?.get("filename")?.jsonPrimitive?.content.orEmpty() }
     }.ifBlank { strings.text("笔记", "Note") }
     OutlinedButton(onClick, enabled = enabled, interactionSource = interaction,
-        modifier = modifier.heightIn(min = 76.dp).testTag("walk_floater_${note.name}").graphicsLayer {
-            rotationZ = listOf(-4f, 3f, 2f, -3f, -1f, 1.5f)[index % 6]
-            translationY = if (active) 0f else drift.dp.toPx()
+        modifier = modifier.heightIn(min = 76.dp).testTag("walk_floater_${note.name}")
+            .motionEnter(note.name, distance = -12f, delayMillis = index * 36L).graphicsLayer {
+            translationY = 2.dp.toPx() * sink.value
+            scaleX = 1f - .02f * sink.value
+            scaleY = scaleX
         }.semantics { contentDescription = strings.text("从这条笔记开始：$preview", "Start from this note: $preview") },
         shape = RoundedCornerShape(10.dp), contentPadding = PaddingValues(horizontal = 8.dp, vertical = 10.dp),
         border = BorderStroke(1.dp, if (active) MoeriseColors.Blue else MoeriseColors.Line),
@@ -278,14 +394,8 @@ private fun WalkFloater(note: Note, index: Int, strings: Strings, enabled: Boole
 @Composable
 private fun DiscoveryCard(modifier: Modifier, scroll: ScrollState, animationKey: String,
     review: Boolean = false, content: @Composable () -> Unit) {
-    val entrance = remember(animationKey) { Animatable(0f) }
-    LaunchedEffect(entrance) { entrance.animateTo(1f, tween(500)) }
-    Surface(modifier.graphicsLayer {
-        alpha = entrance.value
-        translationY = 18.dp.toPx() * (1 - entrance.value)
-        scaleX = .97f + entrance.value * .03f
-        scaleY = scaleX
-    }, shape = RoundedCornerShape(if (review) 22.dp else 14.dp), color = Color.White,
+    val appearance = if (review) modifier else modifier.motionEnter(animationKey, 18f, .975f, spatial = true)
+    Surface(appearance, shape = RoundedCornerShape(if (review) 22.dp else 14.dp), color = Color.White,
         border = BorderStroke(1.dp, MoeriseColors.Line), shadowElevation = 3.dp) {
         Column(Modifier.fillMaxSize().verticalScroll(scroll).padding(horizontal = 20.dp, vertical = 22.dp)) { content() }
     }

@@ -4,6 +4,7 @@ import { attachmentURL, rasterImage, noteID } from './routes.js';
 import { renderMarkdown } from './markdown.js';
 import { bindMenu } from './menus.js';
 import { prepareImage } from './media.js';
+import { snackbar } from './snackbar.js';
 
 export function validNote(note) {
   return note && noteID(note.name) && typeof note.content === 'string' &&
@@ -72,8 +73,7 @@ function legacyCopy(content) {
   finally { field.remove(); previousFocus?.focus({ preventScroll: true }); }
 }
 
-function copyAction(content, feedback) {
-  let timer;
+function copyAction(content) {
   return async () => {
     let copied = false;
     try {
@@ -82,9 +82,7 @@ function copyAction(content, feedback) {
     } catch {
       try { copied = legacyCopy(content); } catch { copied = false; }
     }
-    clearTimeout(timer);
-    setText(feedback, copied ? l("已复制") : l("复制失败"));
-    timer = setTimeout(() => setText(feedback, ''), 2000);
+    snackbar(copied ? l("已复制") : l("复制失败"));
   };
 }
 
@@ -93,9 +91,7 @@ export function renderNoteCard(note, { detail, formatTime, href, onTag, actions,
   card.dataset.name = note.name;
   card.dataset.sourceHash = note.source_hash;
   const header = el('div', 'hd'), time = el('time', '', formatTime(note.create_time));
-  const feedback = el('span', 'clipboard-status');
-  feedback.setAttribute('role', 'status');
-  const copy = [l("复制"), copyAction(note.content, feedback), ''];
+  const copy = [l("复制"), copyAction(note.content), ''];
   const commands = [...actions];
   const destructive = commands.findIndex(([, , cls]) => cls === 'dg');
   commands.splice(destructive < 0 ? commands.length : destructive, 0, copy);
@@ -116,8 +112,6 @@ export function renderNoteCard(note, { detail, formatTime, href, onTag, actions,
     wrap.append(more, menu); header.append(wrap);
     bindMenu(more, menu);
   }
-  if (detail) header.append(feedback);
-  else header.insertBefore(feedback, header.lastElementChild);
   const tags = el('div', 'note-tags');
   const renderedTags = new Set();
   const body = noteBody(note, onTag, renderedTags), referenced = new Set([...body.querySelectorAll('img')].map(image => image.getAttribute('src')));

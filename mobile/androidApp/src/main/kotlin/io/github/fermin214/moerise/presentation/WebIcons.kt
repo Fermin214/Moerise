@@ -37,6 +37,7 @@ enum class WebIcon {
     Archive,
     Refresh,
     Sync,
+    Check,
     CloudOff,
     Alert,
     SignIn,
@@ -119,6 +120,7 @@ private fun WebIcon.svgPath(): String = when (this) {
     WebIcon.Archive -> "M4 10h16"
     WebIcon.Refresh -> "M20 7v5h-5M4 17v-5h5M6 7a7 7 0 0 1 12-1l2 3M4 15l2 3a7 7 0 0 0 12-1"
     WebIcon.Sync -> "M7.5 18h9.2a4.3 4.3 0 0 0 .5-8.57A5.5 5.5 0 0 0 6.5 8.1 3.8 3.8 0 0 0 7.5 18Z"
+    WebIcon.Check -> "M5 12l4 4L19 6"
     WebIcon.CloudOff -> "M3 3l18 18M7 7a6 6 0 0 1 10.3 3.2A4 4 0 0 1 20 17M5 10a4 4 0 0 0 1 8h10"
     WebIcon.Alert -> "M12 8v5M12 17h.01M10.3 3.8L2.8 18a2 2 0 0 0 1.7 3h15a2 2 0 0 0 1.7-3L13.7 3.8a2 2 0 0 0-3.4 0"
     WebIcon.SignIn -> "M14 4h6v16h-6M3 12h12M10 7l5 5-5 5"

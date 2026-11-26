@@ -170,8 +170,8 @@ try {
     const dimensions = body.model === 'embedding-b' ? 4 : 3;
     if (body.dimensions !== undefined && body.dimensions !== dimensions) fixture.violations.push('Embedding dimensions');
     const document = body.input.some(text => text.startsWith('note '));
-    if (fixture.failure || (document && fixture.remaining === 0)) {
-      res.statusCode = fixture.failure || 503;
+    if (fixture.failure || (document && (fixture.documentFailure || fixture.remaining === 0))) {
+      res.statusCode = fixture.failure || fixture.documentFailure || 503;
       json({ error: { message: `private provider error ${embeddingKey}` } }); return;
     }
     if (document && fixture.remaining > 0) fixture.remaining--;
@@ -200,11 +200,16 @@ try {
   const field = path => page.locator(`[name="${path}"]`);
   const settingPage = async () => {
     await page.goto(`${url}/settings`);
-    await page.locator('#settings-tab-ai').click();
-    await page.getByRole('button', { name: '保存设置', exact: true }).waitFor();
+    await page.locator('#settings-tab-search').click();
+  };
+  const editor = page.locator('dialog.settings-edit');
+  const edit = async (advanced = false) => {
+    await page.locator('.settings-row').filter({ hasText: '向量模型' }).getByRole('button', { name: '编辑', exact: true }).click();
+    if (advanced) await editor.getByText('高级参数', { exact: true }).click();
   };
   const save = async () => {
-    await page.getByRole('button', { name: '保存设置', exact: true }).click();
+    await editor.locator('.save').click();
+    await editor.waitFor({ state: 'hidden' });
     await page.getByRole('status').filter({ hasText: '设置已保存' }).waitFor();
   };
   const fillEmbedding = async (model, key) => {
@@ -222,7 +227,7 @@ try {
     await page.goto(`${url}/settings`); await page.locator('#username').fill(username); await page.locator('#password').fill(password);
     await page.locator('#login').click();
     await page.getByRole('button', { name: '进入 Moerise', exact: true }).click();
-    await page.locator('#settings-tab-ai').click();
+    await page.locator('#settings-tab-search').click();
     await page.locator('#settings-index-status').filter({ hasText: '已关闭' }).waitFor();
     assert.equal((await models()).embedding.enabled, false);
     await request(url, '/api/app/v1/models', {}, 401);
@@ -230,7 +235,8 @@ try {
   });
   let initialID, firstChunk;
   await check('通用 Embedding 保存、部分构建与连接错误', async () => {
-    await field('embedding.provider').selectOption('openai-compatible');
+    await edit(true);
+    await field('embedding.protocol').selectOption('openai-compatible');
     await fillEmbedding('embedding-a', embeddingKey);
     await field('embedding.dimensions').fill('3'); await field('embedding.batch_size').fill('1');
     await field('embedding.max_retries').fill('0'); await field('embedding.timeout_seconds').fill('5');
@@ -242,13 +248,15 @@ try {
     });
     firstChunk = [...fixture.successes.keys()][0];
     fixture.failure = 401;
+    await edit();
     await page.getByRole('button', { name: '检查 Embedding 连接', exact: true }).click();
-    await page.locator('#settings-embedding-check-result').filter({ hasText: '密钥被拒绝' }).waitFor();
+    await editor.getByRole('alert').filter({ hasText: '密钥被拒绝' }).waitFor();
     assert.equal((await page.locator('#settings-page').textContent()).includes(embeddingKey), false);
     const status = await models();
     const error = await api('POST', '/models/embedding/check', { version: status.version }, 503);
     assert.equal(error.error.code, 'EMBEDDING_AUTH'); assert.equal(JSON.stringify(error).includes(embeddingKey), false);
     await api('POST', '/models/embedding/check', { version: status.version - 1 }, 409);
+    await editor.getByRole('button', { name: '关闭', exact: true }).click();
   });
   await check('Core 重启续建、会话保持与已提交片段复用', async () => {
     await docker(['restart', core]);
@@ -257,8 +265,10 @@ try {
     const active = await readyIndex(); assert.equal(active.id, initialID); assert.equal(active.chunks, 5);
     assert.equal(fixture.successes.get(firstChunk), 1);
     await settingPage();
+    await edit();
     await page.getByRole('button', { name: '检查 Embedding 连接', exact: true }).click();
-    await page.locator('#settings-embedding-check-result').filter({ hasText: '连接正常' }).waitFor();
+    await editor.locator('.snackbar').filter({ hasText: '连接正常' }).waitFor();
+    await editor.getByRole('button', { name: '关闭', exact: true }).click();
   });
   await check('增量编辑复用未变片段与通用语义查询', async () => {
     const beforeRev = (await readyIndex()).projection_revision;
@@ -275,7 +285,8 @@ try {
     assert.equal(result.semantic.used, true);
   });
   await check('Embedding 空间切换期间保留旧代次并阻止混用', async () => {
-    fixture.failure = 503;
+    fixture.documentFailure = 503;
+    await edit(true);
     await field('embedding.model').fill('embedding-b');
     await field('embedding.dimensions').fill('4'); await field('embedding.send_dimensions').check(); await save();
     await wait('新空间失败', async () => {
@@ -287,12 +298,14 @@ try {
       headers: { Authorization: `Bearer ${machineKey}` }, body: { query: 'herbs', mode: 'hybrid' } })).value;
     assert.equal(result.semantic.used, false); assert.equal(result.semantic.reason, 'INDEX_NOT_READY');
     await page.locator('#settings-index-status').filter({ hasText: '构建失败' }).waitFor();
-    fixture.failure = 0;
+    fixture.documentFailure = 0;
     const active = await readyIndex(); assert.notEqual(active.id, initialID); assert.equal(active.dimensions, 4); initialID = active.id;
   });
   await check('Embedding 切换后连接检查正常', async () => {
+    await edit();
     await page.getByRole('button', { name: '检查 Embedding 连接', exact: true }).click();
-    await page.locator('#settings-embedding-check-result').filter({ hasText: '连接正常' }).waitFor();
+    await editor.locator('.snackbar').filter({ hasText: '连接正常' }).waitFor();
+    await editor.getByRole('button', { name: '关闭', exact: true }).click();
   });
   await check('索引重建保留设置、密钥与真实浏览器会话', async () => {
     const before = await api('GET', '/settings');
@@ -314,6 +327,7 @@ try {
     assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
   });
   await check('关闭模型后基础操作与退出，模型请求保持独立密钥', async () => {
+    await edit();
     await field('embedding.enabled').uncheck(); await save();
     assert.equal((await models()).index_status, 'disabled');
     await api('POST', '/notes', { content: 'note after disabling models' }, 201);

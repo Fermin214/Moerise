@@ -71,7 +71,8 @@ Moerise 服务端提供两组 RESTful API 以及一个 Model Context Protocol (M
 | `GET` | `/api/app/v1/settings` | 读取系统设置与渠道能力矩阵。 |
 | `PATCH` | `/api/app/v1/settings` | 版本化更新系统设置与敏感凭据。 |
 | `GET` | `/api/app/v1/models` | 获取模型与向量索引构建进度与状态。 |
-| `POST` | `/api/app/v1/models/embedding/check` | 发送探测请求测试 Embedding 连通性与维度。 |
+| `POST` | `/api/app/v1/models/embedding/check` | 用 `{version, settings?, secrets?}` 探测已保存或候选 Embedding 配置的连通性与维度。 |
+| `POST` | `/api/app/v1/channels/check` | 用 `{version, target, settings?, secrets?}` 只读验证一个候选渠道的配置。 |
 
 ---
 

@@ -10,6 +10,7 @@ import io.github.fermin214.moerise.data.MemorySecrets
 import io.github.fermin214.moerise.data.SessionCookies
 import io.ktor.client.engine.mock.*
 import io.ktor.http.*
+import io.ktor.http.content.OutgoingContent
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.*
@@ -72,6 +73,107 @@ class SettingsControllerTest {
     }
 
     @Test
+    fun disablingCredentialsBuildsOneLegalPatchWithoutAProbe() {
+        val snapshot = SettingsForm.readSnapshot(CoreJson.parseToJsonElement(settingsPayload()).jsonObject)
+        val settings = snapshot.getValue("settings").jsonObject
+        val configured = JsonObject(snapshot + ("settings" to JsonObject(settings + mapOf(
+            "channel" to JsonObject(settings.getValue("channel").jsonObject + ("kind" to JsonPrimitive("telegram"))),
+            "notifications" to JsonObject(settings.getValue("notifications").jsonObject + ("enabled" to JsonPrimitive(true))),
+        ))))
+        val clearing = buildJsonObject {
+            put("settings", buildJsonObject {})
+            put("secrets", buildJsonObject { put("bot_token", buildJsonObject { put("action", "clear") }) })
+        }
+        val patch = SettingsForm.linkedPatch(configured, clearing, "telegram")
+        assertEquals("""{"notifications":{"enabled":false}}""", patch.getValue("settings").toString())
+        assertNull(SettingsForm.candidate(configured, patch, "telegram"))
+        val embedding = SettingsForm.linkedPatch(configured, buildJsonObject {
+            put("settings", buildJsonObject {})
+            put("secrets", buildJsonObject { put("embedding_api_key", buildJsonObject { put("action", "clear") }) })
+        }, "embedding")
+        assertEquals("""{"embedding":{"enabled":false}}""", embedding.getValue("settings").toString())
+        assertNull(SettingsForm.candidate(configured, embedding, "embedding"))
+    }
+
+    @Test
+    fun clearingFeishuCallbackTokenRequiresExplicitAppSecretClear() {
+        val snapshot = SettingsForm.readSnapshot(CoreJson.parseToJsonElement(settingsPayload()).jsonObject)
+        val settings = snapshot.getValue("settings").jsonObject
+        val configured = JsonObject(snapshot + mapOf(
+            "settings" to JsonObject(settings + ("channel" to JsonObject(settings.getValue("channel").jsonObject + mapOf(
+                "kind" to JsonPrimitive("feishu-app"), "feishu_mode" to JsonPrimitive("callback"),
+            )))),
+            "secrets" to CoreJson.parseToJsonElement("""{"app_secret":{"configured":true}}"""),
+        ))
+        val patch = CoreJson.parseToJsonElement("""{"settings":{},"secrets":{
+            "verification_token":{"action":"clear"},"app_secret":{"action":"replace","value":"replacement-secret"}
+        }}""").jsonObject
+        val rejected = assertFailsWith<IllegalArgumentException> { SettingsForm.linkedPatch(configured, patch, "feishu-app") }
+        assertEquals("FEISHU_CALLBACK_CLEAR_REQUIRES_APP_SECRET", rejected.message)
+        assertEquals("replacement-secret", patch.getValue("secrets").jsonObject.getValue("app_secret")
+            .jsonObject.getValue("value").jsonPrimitive.content)
+        val clear = CoreJson.parseToJsonElement("""{"action":"clear"}""")
+        val confirmed = JsonObject(patch + ("secrets" to JsonObject(patch.getValue("secrets").jsonObject + ("app_secret" to clear))))
+        val linked = SettingsForm.linkedPatch(configured, confirmed, "feishu-app")
+        assertEquals("""{"notifications":{"enabled":false}}""", linked.getValue("settings").toString())
+        assertEquals(confirmed["secrets"], linked["secrets"])
+        assertNull(SettingsForm.candidate(configured, linked, "feishu-app"))
+    }
+
+    @Test
+    fun atomicDisableUsesTheCommittedVersionEvenAfterLeavingSettings() = runBlocking<Unit> {
+        val scope = CoroutineScope(coroutineContext + SupervisorJob())
+        val first = CompletableDeferred<JsonObject>()
+        val resume = CompletableDeferred<Unit>()
+        val disabled = CompletableDeferred<JsonObject>()
+        var snapshot = settingsPayload().replace("\"kind\":\"none\"", "\"kind\":\"telegram\"")
+        val core = CoreClient("https://notes.example", SessionCookies("https://notes.example", MemorySecrets()), MockEngine { request ->
+            when {
+                request.url.encodedPath.endsWith("/session") -> respond(identity)
+                request.method == HttpMethod.Get -> respond(snapshot)
+                request.method == HttpMethod.Patch -> {
+                    val patch = CoreJson.parseToJsonElement((request.body as OutgoingContent.ByteArrayContent).bytes().decodeToString()).jsonObject
+                    val version = patch.getValue("version").jsonPrimitive.int
+                    if (version == 2) {
+                        first.complete(patch)
+                        resume.await()
+                        snapshot = snapshot.replace("\"version\":2", "\"version\":3")
+                            .replace("\"stargazing\":{\"enabled\":true}", "\"stargazing\":{\"enabled\":false}")
+                    } else {
+                        snapshot = snapshot.replace("\"version\":3", "\"version\":4")
+                            .replace("\"notifications\":{\"enabled\":true", "\"notifications\":{\"enabled\":false")
+                        disabled.complete(patch)
+                    }
+                    respond(snapshot)
+                }
+                else -> error(request.url.encodedPath)
+            }
+        })
+        try {
+            val committed = CompletableDeferred<Unit>()
+            val controller = SettingsController({ core }, { key }, scope, { _, after, _ ->
+                if (SettingsForm.version(after) == 4L) committed.complete(Unit)
+            })
+            controller.load()
+            withTimeout(5_000) { controller.state.first { it.snapshot != null && !it.loading } }
+            controller.saveAtomic("stargazing.enabled", "false")
+            withTimeout(5_000) { first.await() }
+            controller.saveAtomic("notifications.enabled", "false")
+            controller.leave()
+            assertFalse(disabled.isCompleted)
+            resume.complete(Unit)
+            val patch = withTimeout(5_000) { disabled.await().also { committed.await() } }
+            assertEquals("""{"version":3,"settings":{"notifications":{"enabled":false}},"secrets":{}}""", patch.toString())
+            controller.load()
+            val reopened = withTimeout(5_000) { controller.state.first { !it.loading && it.snapshot != null } }
+            assertEquals("false", reopened.values["notifications.enabled"])
+        } finally {
+            scope.coroutineContext[Job]!!.cancelAndJoin()
+            core.close()
+        }
+    }
+
+    @Test
     fun fourTabPollingTargetsRelevantEndpointsAndRebuildQueuesMap() = runBlocking<Unit> {
         val dispatcher = Executors.newSingleThreadExecutor().asCoroutineDispatcher()
         val scope = CoroutineScope(SupervisorJob() + dispatcher)
@@ -100,7 +202,7 @@ class SettingsControllerTest {
         val core = CoreClient("https://notes.example", SessionCookies("https://notes.example", MemorySecrets()), engine)
         try {
             val controller = SettingsController({ core }, { key }, scope)
-            withContext(dispatcher) { controller.load() }
+            withContext(dispatcher) { controller.selectTab(1); controller.load() }
             withTimeout(10_000) { controller.state.first { !it.loading && it.models != null } }
             assertEquals(1, modelsCalls.get())
             assertEquals(0, historyCalls.get())

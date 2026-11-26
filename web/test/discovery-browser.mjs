@@ -238,9 +238,12 @@ test('review and walk share title coordinates through loading, reading, empty st
         };
         const reopenReview = async () => { await navigate('/'); await navigate('/review'); };
         state.hold = null; state.pending.shift().release();
-        await page.locator('.review-positions button').nth(5).waitFor();
+        const dot = page.locator('.review-positions button').nth(5);
+        await dot.waitFor();
+        const sameDot = await dot.elementHandle();
         await assertPosition();
-        await page.locator('.review-positions button').nth(5).click();
+        await dot.click();
+        assert.equal(await dot.evaluate((node, previous) => node === previous && node.getAttribute('aria-pressed') === 'true', sameDot), true);
         await assertPosition();
         await navigate('/walk');
         await page.locator('.walk-start > .save:enabled').waitFor();
@@ -391,6 +394,34 @@ test('detail and review can start at the selected note; mobile cards keep full t
   await page.getByRole('button', { name: '停止', exact: true }).click();
   await assertDiscoverySpacing(page, page.locator('.walk-start'));
   await screenshot(page, 'walk-start-mobile.png');
+});
+
+test('touch review takes horizontal swipes while the header still opens the drawer', async t => {
+  if (process.env.MOERISE_PLAYWRIGHT_ENGINE && process.env.MOERISE_PLAYWRIGHT_ENGINE !== 'chromium') {
+    t.skip('Touch event injection requires Chromium'); return;
+  }
+  const { page, url } = await fixture(t, 'zh-CN', { viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
+  await login(page, url, '/review');
+  await card(page).waitFor();
+  const client = await page.context().newCDPSession(page);
+  const swipe = async (start, distance, y) => {
+    await client.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: start, y }] });
+    for (const fraction of [.1, .3, .55, .75, 1]) {
+      await client.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x: start + distance * fraction, y }] });
+    }
+    await client.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+  };
+  const bounds = await card(page).boundingBox();
+  await swipe(215, -36, bounds.y + 12);
+  assert.equal(await page.getByRole('button', { name: '第 1 / 6 条', pressed: true }).count(), 1);
+  await swipe(215, -145, bounds.y + 12);
+  await page.getByRole('button', { name: '第 2 / 6 条', pressed: true }).waitFor();
+  await swipe(20, 145, bounds.y + 12);
+  await page.getByRole('button', { name: '第 1 / 6 条', pressed: true }).waitFor();
+  assert.equal(await page.locator('#navigation-dialog').evaluate(node => node.open), false);
+  const header = await page.locator('.discovery-heading').boundingBox();
+  await swipe(12, 140, header.y + header.height / 2);
+  await page.locator('#navigation-dialog[open]').waitFor();
 });
 
 test('archived notes have no walk entry in detail or review', { timeout: 60_000 }, async t => {
@@ -575,7 +606,7 @@ test('floating note starts, centered groups and reduced motion work across deskt
   assert.ok(heading.y >= 56);
   await page.emulateMedia({ reducedMotion: 'no-preference' });
   await page.getByRole('button', { name: '第 5 / 6 条', exact: true }).click();
-  assert.equal(await card(page).evaluate(node => getComputedStyle(node).animationName), 'mobile-card-enter');
+  await page.getByRole('button', { name: '第 5 / 6 条', pressed: true }).waitFor();
   await screenshot(page, 'review-centered-mobile.png');
   await page.locator('#navigation-toggle').tap();
   await page.locator('nav a[href="/"]').tap();

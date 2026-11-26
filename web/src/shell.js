@@ -105,7 +105,7 @@ export function initShell(onOpenNavigation) {
   document.addEventListener('touchstart', event => {
     gesture = null;
     if (!compact.matches || app.hidden || event.touches.length !== 1 ||
-      event.target.closest('input, textarea, select, [contenteditable], pre, .map-field')) return;
+      event.target.closest('input, textarea, select, [contenteditable], pre, .map-field, .review-stack')) return;
     const touch = event.touches[0];
     if (!dialog.open && touch.clientX > 24) return;
     if (dialog.open && !sidebar.contains(event.target)) return;

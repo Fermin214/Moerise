@@ -15,9 +15,9 @@ android {
         applicationId = "io.github.fermin214.moerise"
         minSdk = providers.gradleProperty("moerise.minSdk").get().toInt()
         targetSdk = 36
-        versionCode = providers.gradleProperty("moeriseVersionCode").orElse("3").get().toInt()
+        versionCode = providers.gradleProperty("moeriseVersionCode").orElse("122").get().toInt()
             .also { require(it > 0) { "moeriseVersionCode 必须为正整数" } }
-        versionName = "0.3.0"
+        versionName = "0.4.0"
         manifestPlaceholders["appLabel"] = "Moerise"
         ndk { abiFilters += listOf("arm64-v8a", "x86_64") }
         buildConfigField("boolean", "ALLOW_LOOPBACK_HTTP", "false")

@@ -12,6 +12,8 @@ data class LogoutState(val account: String, val counts: LocalRemovalCounts? = nu
 
 enum class SaveOutcome { COMMITTED, NOT_COMMITTED }
 
+internal data class MobileNotice(val code: String, val undo: (() -> Unit)? = null)
+
 class MobileController(
     val session: SessionController,
     private val repository: suspend () -> NoteRepository,
@@ -57,9 +59,62 @@ class MobileController(
     val review = ReviewController({ session.core }, { session.state.value.profile?.accountKey }, scope, privacy, repository)
     val walk = WalkController({ session.core }, { session.state.value.profile?.accountKey }, scope, privacy, repository, enablePrefetch = true, online = { session.state.value.connected })
     val stars = StarMapController(repository, { session.core }, { session.state.value.profile?.accountKey }, scope, privacy, online = { session.state.value.connected })
-    val settings = SettingsController({ session.core }, { session.state.value.profile?.accountKey }, scope)
-    val homeNote = NoteDetailController(repository, { session.state.value.profile?.accountKey }, { session.core }, scope, ::noteChanged)
-    val noteActions = NoteDetailController(repository, { session.state.value.profile?.accountKey }, { session.core }, scope, ::noteChanged)
+    private val mutableNotices = MutableSharedFlow<MobileNotice>(extraBufferCapacity = 8)
+    internal val notices = mutableNotices.asSharedFlow()
+    private val mutableNewTimelineKey = MutableStateFlow<String?>(null)
+    internal val newTimelineKey = mutableNewTimelineKey.asStateFlow()
+    private var undoDeadline = 0L
+    internal fun notice(code: String, undo: (() -> Unit)? = null) {
+        val now = android.os.SystemClock.uptimeMillis()
+        if (undo == null && now < undoDeadline) return
+        if (undo != null) undoDeadline = now + 3000L
+        mutableNotices.tryEmit(MobileNotice(code, undo?.let { action -> { undoDeadline = 0L; action() } }))
+    }
+    val settings = SettingsController({ session.core }, { session.state.value.profile?.accountKey }, scope,
+        ::settingsChanged, { notice(it) })
+    val homeNote = NoteDetailController(repository, { session.state.value.profile?.accountKey }, { session.core }, scope,
+        ::archived, ::noteChanged)
+    val noteActions = NoteDetailController(repository, { session.state.value.profile?.accountKey }, { session.core }, scope,
+        ::archived, ::noteChanged)
+    private fun archived(key: String, note: Note) {
+        notice("NOTE_ARCHIVED") {
+            if (accountVisible(key)) noteActions.undoArchive(note) { code ->
+                val active = session.core
+                scope.launch {
+                    while (accountVisible(key) && active === session.core) {
+                        val remaining = undoDeadline - android.os.SystemClock.uptimeMillis()
+                        if (remaining <= 0) {
+                            notice(if (code == "SOURCE_CHANGED") "NOTE_UNDO_CONFLICT" else "NOTE_UNDO_FAILED")
+                            break
+                        }
+                        delay(remaining)
+                    }
+                }
+            }
+        }
+    }
+    private fun settingsChanged(before: JsonObject, after: JsonObject, changedSecrets: Set<String>) {
+        val key = session.state.value.profile?.accountKey ?: return
+        val previous = before.getValue("settings").jsonObject
+        val current = after.getValue("settings").jsonObject
+        val zoneChanged = previous["timezone"] != current["timezone"]
+        val starsChanged = previous["stargazing"] != current["stargazing"]
+        val embeddingChanged = "embedding_api_key" in changedSecrets || previous["embedding"] != current["embedding"] ||
+            before["secrets"]?.jsonObject?.get("embedding_api_key") != after["secrets"]?.jsonObject?.get("embedding_api_key")
+        val timezone = current.getValue("timezone").jsonPrimitive.content
+        val enabled = current.getValue("stargazing").jsonObject.getValue("enabled").jsonPrimitive.boolean
+        if (zoneChanged || starsChanged) session.acceptSettings(key, timezone, enabled)
+        if (zoneChanged || starsChanged || embeddingChanged) stars.clear()
+        if (zoneChanged) {
+            filterReads.clear()
+            sidebar.clear()
+            refreshTimelines()
+        }
+        if (zoneChanged || previous["review"] != current["review"]) review.clear()
+        if (embeddingChanged) walk.configurationChanged()
+        if ((zoneChanged || embeddingChanged) && search.state.value.query != SearchQuery()) search.search()
+        if (zoneChanged || starsChanged || embeddingChanged) updateDiscovery()
+    }
     private fun noteChanged(name: String, previous: Note?, note: Note?) {
         val key = session.state.value.profile?.accountKey ?: return
         filterReads.changed(previous ?: (timeline.state.value.notes + archive.state.value.notes).find { it.name == name }, note)
@@ -171,29 +226,6 @@ class MobileController(
             privacy.record("request_error", usageResult(error), started, if (inForeground) "user" else "background", error)
         }
         scope.launch {
-            var saved: Pair<String, Long>? = null
-            settings.state.collect { value ->
-                if (value.status != "SETTINGS_SAVED") return@collect
-                val key = session.state.value.profile?.accountKey ?: return@collect
-                val snapshot = value.snapshot ?: return@collect
-                val version = snapshot["version"]?.jsonPrimitive?.longOrNull ?: return@collect
-                if (saved == (key to version)) return@collect
-                saved = key to version
-                val values = snapshot["settings"]?.jsonObject ?: return@collect
-                val timezone = values["timezone"]?.jsonPrimitive?.content ?: return@collect
-                val stargazingEnabled = values["stargazing"]?.jsonObject?.get("enabled")?.jsonPrimitive?.booleanOrNull
-                    ?: return@collect
-                session.acceptSettings(key, timezone, stargazingEnabled)
-                if (!stargazingEnabled) stars.clear()
-                timeline.refresh()
-                if (archive.state.value.fresh) archive.refresh()
-                review.clear()
-                walk.configurationChanged()
-                if (search.state.value.query != SearchQuery()) search.search()
-                updateDiscovery()
-            }
-        }
-        scope.launch {
             stars.state.map { it.disabledReason }.distinctUntilChanged().collect { reason ->
                 if (reason == "stargazing") session.state.value.profile?.let {
                     session.acceptSettings(it.accountKey, it.timezone, false)
@@ -205,6 +237,8 @@ class MobileController(
             session.state.map { it.profile?.accountKey }.distinctUntilChanged().collectLatest { key ->
                 val switched = previousAccount != null && key != null && previousAccount != key
                 previousAccount = key
+                undoDeadline = 0L
+                mutableNewTimelineKey.value = null
                 leaveWriting()
                 filterSource.value = "NORMAL"
                 filterReads.clear(); sidebar.clear()
@@ -267,7 +301,7 @@ class MobileController(
                     editor.accountKey.takeIf { editor.draft != null && it == frame }
                 }.distinctUntilChanged(),
             ) { connection, ready -> connection to ready }.collect { (connection, ready) ->
-                if (connection.third) { filterReads.clear(); sidebar.clear(); timeline.hideAccountData(); archive.hideAccountData(); search.clear(); review.clear(); walk.clear(); stars.clear(); settings.clear(); homeNote.clear(); clearDownloadsAfterSessionChange() }
+                if (connection.third) { filterReads.clear(); sidebar.clear(); timeline.hideAccountData(); archive.hideAccountData(); search.clear(); review.clear(); walk.clear(); stars.clear(); settings.clear(); homeNote.clear(); noteActions.clear(); clearDownloadsAfterSessionChange() }
                 else if (!clearing.value) {
                     timeline.revealAccountData(); archive.revealAccountData()
                     if (connection.second && connection.first?.accountKey == ready && ready != null) refreshTimelines()
@@ -310,8 +344,11 @@ class MobileController(
         scope.launch {
             if (clearing.value) { onResult(SaveOutcome.NOT_COMMITTED); return@launch }
             registryLock.withLock {
+                val draft = editor.state.value.draft
                 if (enqueue(editor, true)) {
+                    if (draft?.targetName == null && draft != null) mutableNewTimelineKey.value = "queued:${draft.id}"
                     sync.request(SyncTrigger.ENQUEUED)
+                    notice("NOTE_SAVED")
                     onResult(SaveOutcome.COMMITTED)
                     onQueueChanged()
                 } else onResult(SaveOutcome.NOT_COMMITTED)
@@ -325,6 +362,7 @@ class MobileController(
                 val active = getNoteEditor(key) ?: return@withLock
                 if (enqueue(active, false)) {
                     sync.request(SyncTrigger.ENQUEUED)
+                    notice("NOTE_SAVED")
                     removeEditor(active, persist = false)
                     mutableLocalError.value = null
                     onQueueChanged()
@@ -611,7 +649,7 @@ class MobileController(
                 if (clearLocal && request.counts == null) {
                     val counts = repository().localRemovalCounts(account)
                     if (counts.requiresConfirmation) {
-                        mutableLogout.value = request.copy(counts = counts, error = null)
+                        mutableLogout.update { request.copy(counts = counts, error = null) }
                         return@launch
                     }
                 }

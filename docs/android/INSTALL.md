@@ -4,12 +4,12 @@ Moerise Android 客户端支持 Android 10（API 29）及以上系统，发行 A
 
 ## 安装
 
-从对应版本的 [GitHub Releases](https://github.com/Fermin214/Moerise/releases) 下载 `moerise-android-v0.3.0.apk` 及同名 `.sha256` 文件，核对校验和后通过文件管理器安装（如系统提示，请允许文件管理器安装未知应用）。
+从对应版本的 [GitHub Releases](https://github.com/Fermin214/Moerise/releases) 下载 `moerise-android-v0.4.0.apk`，通过文件管理器安装（如系统提示，请允许文件管理器安装未知应用）。可在 Release 的 APK 详情查看 SHA-256 摘要。
 
 也可通过 ADB 安装：
 
 ```bash
-adb install moerise-android-v0.3.0.apk
+adb install moerise-android-v0.4.0.apk
 ```
 
 首次启动时，欢迎页的遥测开关默认关闭。填写服务地址与绑定的 Memos 用户名、密码，登录后即可在主页写作：
@@ -23,10 +23,10 @@ adb install moerise-android-v0.3.0.apk
 已有正式发行版时，使用同包名（`io.github.fermin214.moerise`）、同签名且更高 `versionCode` 的发行 APK 直接覆盖安装，即可保留本机数据：
 
 ```bash
-adb install -r moerise-android-v0.3.0.apk
+adb install -r moerise-android-v0.4.0.apk
 ```
 
-从 `v0.2.0` 升级至 `v0.3.0` 会自动迁移本地 Room 数据库，保留已登录账号、未完成草稿、待发队列和语言设置。若签名证书不一致，Android 系统会拒绝覆盖安装。
+从 `v0.3.0` 覆盖升级至 `v0.4.0` 会保留本机 Room 数据、已登录账号、未完成草稿、待发队列和语言设置。若签名证书不一致，Android 系统会拒绝覆盖安装。
 
 开发包（`io.github.fermin214.moerise.dev`，应用名 Moerise Dev）与正式版数据相互独立，可并存安装；切换回正式版前请先将开发包中需要保留的草稿提交到服务端。
 
@@ -37,4 +37,4 @@ adb install -r moerise-android-v0.3.0.apk
 
 ## 发行附件
 
-每个正式版本包含签名 APK、`.apk.sha256`、构建元数据 `.apk.json`、第三方开源许可归档 `-notices.zip` 和安装说明。开发构建与本地签名流程见 [Android 开发指南](https://github.com/Fermin214/Moerise/blob/main/docs/ANDROID.md)。
+公开 Release 中的 Android 安装包为签名 APK。`Main CI` 的 `android-release` 产物保留 `.apk.sha256`、`.apk.json`、`-notices.zip`、`INSTALL.md` 和 `mapping.txt`，供发布前核验。开发构建与本地签名流程见 [Android 开发指南](https://github.com/Fermin214/Moerise/blob/main/docs/ANDROID.md)。

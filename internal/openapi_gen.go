@@ -93,8 +93,28 @@ type openAPIDeleteNote struct {
 }
 
 type openAPIModelCheckRequest struct {
-	Version int64   `json:"version"`
-	Model   *string `json:"model,omitempty"`
+	Version  int64                      `json:"version"`
+	Settings *openAPIEmbeddingCandidate `json:"settings,omitempty"`
+	Secrets  *openAPIEmbeddingSecret    `json:"secrets,omitempty"`
+}
+
+type openAPIEmbeddingCandidate struct {
+	Embedding map[string]json.RawMessage `json:"embedding"`
+}
+
+type openAPIEmbeddingSecret struct {
+	APIKey *SecretUpdate `json:"embedding_api_key,omitempty"`
+}
+
+type openAPIChannelCheckRequest struct {
+	Version  int64                         `json:"version"`
+	Target   string                        `json:"target"`
+	Settings *openAPIChannelCandidate      `json:"settings,omitempty"`
+	Secrets  *openAPISettingsSecretUpdates `json:"secrets,omitempty"`
+}
+
+type openAPIChannelCandidate struct {
+	Channel map[string]json.RawMessage `json:"channel"`
 }
 
 type openAPISettingsSecretUpdates struct {
@@ -142,77 +162,78 @@ func buildOpenAPISchemas() map[string]json.RawMessage {
 	clientNoteRef := openAPIRefSchema("Note")
 	clientNotePageRef := openAPIRefSchema("NotePage")
 	schemas := map[string]json.RawMessage{
-		"AttachmentReceipt":       schemaFrom[AttachmentReceipt](),
-		"ClientAttachment":        schemaFrom[map[string]any](),
-		"ClientAttachmentInput":   schemaFrom[CreateAttachment](),
-		"ClientCalendar":          schemaFrom[openAPIClientCalendar](),
-		"ClientCapabilities":      schemaFrom[openAPICapabilities](),
-		"ClientCreateNote":        schemaFrom[ClientCreateNote](),
-		"ClientDayCount":          schemaFrom[DayCount](),
-		"ClientDeleteNote":        schemaFrom[openAPIDeleteNote](),
-		"ClientLogin":             schemaFrom[ClientLogin](),
-		"ClientModelCheck":        schemaFrom[ClientModelCheck](),
-		"ClientModelCheckRequest": schemaFrom[openAPIModelCheckRequest](),
-		"ClientModelStatus":       schemaFrom[ClientModelStatus](),
-		"ClientModels":            schemaFrom[ClientModels](),
-		"ClientNote":              clientNoteRef,
-		"ClientNotePage":          clientNotePageRef,
-		"ClientProductSettings":   schemaFrom[ProductSettings](),
-		"ClientReviewBatch":       openAPIRefSchema("ReviewBatch"),
-		"ClientReviewItem":        openAPIRefSchema("ReviewItem"),
-		"ClientSearchHit":         openAPIRefSchema("SearchHit"),
-		"ClientSearchPage":        schemaFrom[ClientSearchPage](),
-		"ClientSearchRequest":     schemaFrom[ClientSearchRequest](),
-		"ClientSession":           schemaFrom[SessionIdentity](),
-		"ClientSettingsPatch":     json.RawMessage(`{"type":"object","additionalProperties":true}`),
-		"ClientTagCount":          schemaFrom[TagCount](),
-		"ClientTags":              schemaFrom[openAPIClientTags](),
-		"ClientUpdateNote":        schemaFrom[UpdateNote](),
-		"ClientWalkNext":          schemaFrom[openAPIWalkNext](),
-		"ClientWalkResponse":      openAPIRefSchema("WalkResponse"),
-		"ClientWalkStart":         schemaFrom[openAPIWalkStart](),
-		"CreateAttachmentRequest": schemaFrom[CreateAttachment](),
-		"ErrorDetail":             schemaFrom[openAPIErrorDetail](),
-		"ErrorResponse":           schemaFrom[openAPIErrorResponse](),
-		"Identity":                schemaFrom[openAPIIdentity](),
-		"Job":                     schemaFrom[Job](),
-		"JobCount":                schemaFrom[JobCount](),
-		"JobResponse":             schemaFrom[openAPIJobResponse](),
-		"Liveness":                schemaFrom[openAPILiveness](),
-		"MapDistrict":             schemaFrom[MapDistrict](),
-		"MapLink":                 schemaFrom[MapLink](),
-		"MapPoint":                schemaFrom[MapPoint](),
-		"MapResponse":             schemaFrom[MapResponse](),
-		"MapStellar":              schemaFrom[MapStellar](),
-		"MapTopic":                schemaFrom[MapTopic](),
-		"Note":                    schemaFrom[Note](),
-		"NotePage":                schemaFrom[NotePage](),
-		"Notification":            schemaFrom[Notification](),
-		"NotificationDetail":      schemaFrom[NotificationDetail](),
-		"EmptyRequest":            schemaFrom[struct{}](),
-		"NotificationList":        schemaFrom[openAPINotificationList](),
-		"PrivateBotStatus":        schemaFrom[botStatus](),
-		"Readiness":               schemaFrom[openAPIReadiness](),
-		"RelatedRequest":          schemaFrom[RelatedRequest](),
-		"RelatedResponse":         schemaFrom[RelatedResponse](),
-		"ReviewBatch":             schemaFrom[ReviewBatch](),
-		"ReviewItem":              schemaFrom[ReviewItem](),
-		"SearchHit":               schemaFrom[SearchHit](),
-		"SearchMatch":             schemaFrom[SearchMatch](),
-		"SearchRequest":           schemaFrom[SearchRequest](),
-		"SearchResponse":          schemaFrom[SearchResponse](),
-		"SearchSemantic":          schemaFrom[SearchSemantic](),
-		"SettingsSecretOperation": schemaFrom[SecretUpdate](),
-		"SettingsSecretStatus":    schemaFrom[SecretStatus](),
-		"SettingsSecretUpdates":   schemaFrom[openAPISettingsSecretUpdates](),
-		"SettingsUpdate":          schemaFrom[SettingsUpdate](),
-		"SettingsView":            schemaFrom[SettingsView](),
-		"SyncNotesResponse":       schemaFrom[SyncNotesResponse](),
-		"SyncStatus":              schemaFrom[SyncStatus](),
-		"VectorGeneration":        schemaFrom[VectorGeneration](),
-		"VectorIndexStatus":       schemaFrom[VectorIndexStatus](),
-		"WalkRequest":             schemaFrom[WalkRequest](),
-		"WalkResponse":            schemaFrom[WalkResponse](),
+		"AttachmentReceipt":         schemaFrom[AttachmentReceipt](),
+		"ClientAttachment":          schemaFrom[map[string]any](),
+		"ClientAttachmentInput":     schemaFrom[CreateAttachment](),
+		"ClientCalendar":            schemaFrom[openAPIClientCalendar](),
+		"ClientChannelCheckRequest": schemaFrom[openAPIChannelCheckRequest](),
+		"ClientCapabilities":        schemaFrom[openAPICapabilities](),
+		"ClientCreateNote":          schemaFrom[ClientCreateNote](),
+		"ClientDayCount":            schemaFrom[DayCount](),
+		"ClientDeleteNote":          schemaFrom[openAPIDeleteNote](),
+		"ClientLogin":               schemaFrom[ClientLogin](),
+		"ClientModelCheck":          schemaFrom[ClientModelCheck](),
+		"ClientModelCheckRequest":   schemaFrom[openAPIModelCheckRequest](),
+		"ClientModelStatus":         schemaFrom[ClientModelStatus](),
+		"ClientModels":              schemaFrom[ClientModels](),
+		"ClientNote":                clientNoteRef,
+		"ClientNotePage":            clientNotePageRef,
+		"ClientProductSettings":     schemaFrom[ProductSettings](),
+		"ClientReviewBatch":         openAPIRefSchema("ReviewBatch"),
+		"ClientReviewItem":          openAPIRefSchema("ReviewItem"),
+		"ClientSearchHit":           openAPIRefSchema("SearchHit"),
+		"ClientSearchPage":          schemaFrom[ClientSearchPage](),
+		"ClientSearchRequest":       schemaFrom[ClientSearchRequest](),
+		"ClientSession":             schemaFrom[SessionIdentity](),
+		"ClientSettingsPatch":       json.RawMessage(`{"type":"object","additionalProperties":true}`),
+		"ClientTagCount":            schemaFrom[TagCount](),
+		"ClientTags":                schemaFrom[openAPIClientTags](),
+		"ClientUpdateNote":          schemaFrom[UpdateNote](),
+		"ClientWalkNext":            schemaFrom[openAPIWalkNext](),
+		"ClientWalkResponse":        openAPIRefSchema("WalkResponse"),
+		"ClientWalkStart":           schemaFrom[openAPIWalkStart](),
+		"CreateAttachmentRequest":   schemaFrom[CreateAttachment](),
+		"ErrorDetail":               schemaFrom[openAPIErrorDetail](),
+		"ErrorResponse":             schemaFrom[openAPIErrorResponse](),
+		"Identity":                  schemaFrom[openAPIIdentity](),
+		"Job":                       schemaFrom[Job](),
+		"JobCount":                  schemaFrom[JobCount](),
+		"JobResponse":               schemaFrom[openAPIJobResponse](),
+		"Liveness":                  schemaFrom[openAPILiveness](),
+		"MapDistrict":               schemaFrom[MapDistrict](),
+		"MapLink":                   schemaFrom[MapLink](),
+		"MapPoint":                  schemaFrom[MapPoint](),
+		"MapResponse":               schemaFrom[MapResponse](),
+		"MapStellar":                schemaFrom[MapStellar](),
+		"MapTopic":                  schemaFrom[MapTopic](),
+		"Note":                      schemaFrom[Note](),
+		"NotePage":                  schemaFrom[NotePage](),
+		"Notification":              schemaFrom[Notification](),
+		"NotificationDetail":        schemaFrom[NotificationDetail](),
+		"EmptyRequest":              schemaFrom[struct{}](),
+		"NotificationList":          schemaFrom[openAPINotificationList](),
+		"PrivateBotStatus":          schemaFrom[botStatus](),
+		"Readiness":                 schemaFrom[openAPIReadiness](),
+		"RelatedRequest":            schemaFrom[RelatedRequest](),
+		"RelatedResponse":           schemaFrom[RelatedResponse](),
+		"ReviewBatch":               schemaFrom[ReviewBatch](),
+		"ReviewItem":                schemaFrom[ReviewItem](),
+		"SearchHit":                 schemaFrom[SearchHit](),
+		"SearchMatch":               schemaFrom[SearchMatch](),
+		"SearchRequest":             schemaFrom[SearchRequest](),
+		"SearchResponse":            schemaFrom[SearchResponse](),
+		"SearchSemantic":            schemaFrom[SearchSemantic](),
+		"SettingsSecretOperation":   schemaFrom[SecretUpdate](),
+		"SettingsSecretStatus":      schemaFrom[SecretStatus](),
+		"SettingsSecretUpdates":     schemaFrom[openAPISettingsSecretUpdates](),
+		"SettingsUpdate":            schemaFrom[SettingsUpdate](),
+		"SettingsView":              schemaFrom[SettingsView](),
+		"SyncNotesResponse":         schemaFrom[SyncNotesResponse](),
+		"SyncStatus":                schemaFrom[SyncStatus](),
+		"VectorGeneration":          schemaFrom[VectorGeneration](),
+		"VectorIndexStatus":         schemaFrom[VectorIndexStatus](),
+		"WalkRequest":               schemaFrom[WalkRequest](),
+		"WalkResponse":              schemaFrom[WalkResponse](),
 	}
 	var product map[string]any
 	if err := json.Unmarshal(schemas["ClientProductSettings"], &product); err == nil {
@@ -389,6 +410,7 @@ func buildOpenAPISpec() []byte {
 		{"PATCH", "/api/app/v1/settings", "client_update_settings", appSec, []openAPIParam{headerParam("Origin", true), headerParam("X-CSRF-Token", true)}, "#/components/schemas/SettingsUpdate", stdResponses("200", "#/components/schemas/SettingsView", "401", "403", "404", "405", "409", "415", "422", "500", "503")},
 		{"GET", "/api/app/v1/models", "client_models_status", appSec, nil, "", stdResponses("200", "#/components/schemas/ClientModels", "401", "403", "404", "405", "422", "500", "503")},
 		{"POST", "/api/app/v1/models/embedding/check", "client_models_embedding", appSec, []openAPIParam{headerParam("Origin", true), headerParam("X-CSRF-Token", true)}, "#/components/schemas/ClientModelCheckRequest", stdResponses("200", "#/components/schemas/ClientModelCheck", "401", "403", "404", "405", "409", "415", "422", "500", "503")},
+		{"POST", "/api/app/v1/channels/check", "client_channel_check", appSec, []openAPIParam{headerParam("Origin", true), headerParam("X-CSRF-Token", true)}, "#/components/schemas/ClientChannelCheckRequest", stdResponses("200", "#/components/schemas/ClientModelCheck", "401", "403", "404", "405", "409", "415", "422", "500", "503")},
 		{"GET", "/api/app/v1/reviews/daily", "client_daily_review", appSec, nil, "", stdResponses("200", "#/components/schemas/ClientReviewBatch", "401", "403", "404", "405", "409", "413", "415", "422", "500", "503")},
 		{"POST", "/api/app/v1/walks/start", "client_walk_start", appSec, []openAPIParam{headerParam("X-CSRF-Token", true)}, "#/components/schemas/ClientWalkStart", stdResponses("200", "#/components/schemas/ClientWalkResponse", "401", "403", "404", "405", "409", "413", "415", "422", "500", "503")},
 		{"POST", "/api/app/v1/walks/next", "client_walk_next", appSec, []openAPIParam{headerParam("X-CSRF-Token", true)}, "#/components/schemas/ClientWalkNext", stdResponses("200", "#/components/schemas/ClientWalkResponse", "401", "403", "404", "405", "409", "413", "415", "422", "500", "503")},

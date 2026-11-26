@@ -69,11 +69,6 @@ button.tag{cursor:pointer;font-family:inherit}button.tag:hover{background:#E3ECF
 .flc{width:190px;background:#fff;border:1px dashed #C9DAF5;border-radius:14px;padding:10px 14px;text-align:left;color:#3A4049}
 button.flc{cursor:pointer;font-size:13px;line-height:1.6}
 .flc.hit{box-shadow:0 0 0 4px #DCE8FB;border-color:#5B8DEF;border-style:solid}
-@keyframes fl{0%,100%{transform:translateY(0) rotate(var(--r,0deg))}50%{transform:translateY(-8px) rotate(var(--r,0deg))}}
-@keyframes ar{from{opacity:0;transform:translateY(18px) rotate(-2deg) scale(.97)}to{opacity:1;transform:none}}
-@keyframes br{from{opacity:0;transform:translateY(18px) rotate(2deg) scale(.97)}to{opacity:1;transform:none}}
-.fl{animation:fl 5s ease-in-out infinite}.wa{animation:ar .5s ease-out both}.wb{animation:br .5s ease-out both}
-@media (prefers-reduced-motion:reduce){.fl,.wa,.wb{animation:none}}
 .peek{position:absolute;left:0;right:0;top:0;bottom:22px;background:#fff;border:1px solid var(--line,#E3E8EF);border-radius:22px}
 .card.big.rv{border-radius:22px;padding:30px 36px;min-height:230px;border-color:var(--line,#E3E8EF);box-shadow:0 12px 36px rgba(31,35,40,.06)}
 .card.big.rv .note-content p{font-size:22px;line-height:2;margin:14px 0 6px}
@@ -81,7 +76,7 @@ button.flc{cursor:pointer;font-size:13px;line-height:1.6}
 .ghost{height:40px;padding:0 12px;border:0;border-radius:10px;background:transparent;color:#5F6672;font-size:14px;cursor:pointer}.ghost:hover{background:var(--surface-muted,#F0F4F9)}
 .ghost.dg{color:#B42318}.ghost.dg:hover{background:#FDF3F2}
 .back{display:inline-flex;align-items:center;gap:4px;padding:0 10px 0 6px;align-self:flex-start}
-.pg{display:inline-flex;align-items:center}.dt{display:inline-block;width:8px;height:8px;border-radius:4px;background:#D5DBE5;margin-right:6px;transition:width .2s}.dt.on{background:#5B8DEF;width:20px}
+.pg{display:inline-flex;align-items:center}
 .pc{display:grid;grid-template-columns:repeat(7,1fr);gap:3px}.pc span{font-size:12px;color:#5F6672;height:24px;line-height:24px;text-align:center}
 .pc button{height:36px;border:0;border-radius:8px;background:transparent;font-size:13px;color:#2B3038;cursor:pointer}.pc button:hover{background:var(--surface-muted,#F0F4F9)}
 .pc button.has{background:#EEF4FD;color:#1E4A9A}.pc button.rg{background:#DCE8FB;color:#1E4A9A}.pc button.ed{background:#1E4A9A;color:#fff}.pc button.blank{visibility:hidden}

@@ -26,7 +26,7 @@ func validModelName(value string) bool {
 		len(value) <= 200 && !strings.ContainsFunc(value, unicode.IsControl)
 }
 
-const Version = "0.3.0"
+const Version = "0.4.0"
 
 type MemosConfig struct {
 	InstanceID     string  `json:"instance_id"`

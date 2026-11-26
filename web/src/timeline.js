@@ -3,14 +3,55 @@ import { validNote, compareNotes } from './notes.js';
 import { filters, listQuery, enhancedSearch, searchBody } from './routes.js';
 import { usage, resultOf } from './privacy.js';
 
-export function createTimeline({ key, url, snapshots, request, sessionRequest, render, showError, handleFailure }) {
+export function storeTimelineSnapshot(snapshots, key, snapshot) {
+  snapshots.delete(key);
+  snapshots.set(key, snapshot);
+  if (snapshots.size > 12) snapshots.delete(snapshots.keys().next().value);
+}
+
+export async function readTimeline({ path, values, request, sessionRequest, controller, previous,
+  targetPages = previous?.pages || 1, reset = true, onPage }) {
+  const enhanced = enhancedSearch(values), state = path === '/archived' ? 'ARCHIVED' : 'NORMAL';
+  const merged = new Map((reset ? [] : previous.items).map(note => [note.name, note]));
+  const cursors = new Set(reset ? [] : previous.cursors);
+  const tail = reset && previous?.pages > 1 ? previous.items.at(-1) : null;
+  let token = reset ? '' : previous.nextToken, loaded = 0, page;
+  do {
+    page = enhanced
+      ? await sessionRequest('/search', { method: 'POST', body: searchBody(path, values, token), controller })
+      : await request(`/notes?${listQuery(path, values, token)}`, { controller });
+    controller.signal.throwIfAborted();
+    if (!Array.isArray(page?.notes) || page.notes.some(note => !validNote(note) || note.state !== state) ||
+        (enhanced && (!['keyword', values.mode].includes(page.mode) ||
+          typeof page.semantic?.used !== 'boolean' || typeof page.semantic?.reason !== 'string' ||
+          (page.mode === 'keyword' && (values.mode !== 'hybrid' || page.semantic.used)) ||
+          (page.mode !== 'keyword' && !page.semantic.used)))) {
+      throw Object.assign(new Error('Invalid note list response'), { code: 'NOTE_LIST_INVALID' });
+    }
+    onPage?.();
+    for (const note of page.notes) merged.set(note.name, note);
+    token = typeof page.next_page_token === 'string' ? page.next_page_token : '';
+    if (cursors.has(token)) token = '';
+    else if (token) cursors.add(token);
+    loaded++;
+  } while (reset && token && (loaded < targetPages ||
+    (!enhanced && tail && page.notes.length && compareNotes(page.notes.at(-1), tail) < 0)));
+  const items = [...merged.values()];
+  if (!enhanced) items.sort(compareNotes);
+  const searchStatus = enhanced && page.mode === 'keyword'
+    ? l("语义检索暂不可用，当前显示按相关度排列的关键词结果。")
+    : enhanced ? l("搜索结果按相关度排列。") : '';
+  return { items, nextToken: token, pages: reset ? loaded : previous.pages + loaded, searchStatus, cursors };
+}
+
+export function createTimeline({ key, url, snapshots, request, sessionRequest, render, showError, handleFailure, onSynced }) {
   const path = location.pathname, values = filters(location.search);
   const enhanced = enhancedSearch(values), state = path === '/archived' ? 'ARCHIVED' : 'NORMAL';
   const element = id => document.getElementById(id);
   let items = [], nextToken = '', pages = 0, status = '';
   let active = null, closed = false, retryOptions = null;
   let firstSearch = !!values.query;
-  const cursors = new Set();
+  let cursors = new Set();
   let scrollTimer = null, scrollFrame = null;
   const observer = new IntersectionObserver(entries => {
     if (entries.some(entry => entry.isIntersecting)) load();
@@ -19,12 +60,10 @@ export function createTimeline({ key, url, snapshots, request, sessionRequest, r
   function remember(writeHistory = true, clean = false) {
     if (!pages) return;
     const previous = snapshots.get(key);
-    snapshots.delete(key);
     const focusedName = document.activeElement?.closest('article[data-name]')?.dataset.name || previous?.focusedName;
-    snapshots.set(key, { url, items: [...items], nextToken, searchStatus: status, scroll: window.scrollY,
-      pages, focusedName, dirty: clean ? false : previous?.dirty });
+    storeTimelineSnapshot(snapshots, key, { url, items: [...items], nextToken, searchStatus: status, scroll: window.scrollY,
+      pages, cursors, focusedName, dirty: clean ? false : previous?.dirty });
     if (writeHistory) saveScroll();
-    if (snapshots.size > 12) snapshots.delete(snapshots.keys().next().value);
   }
   function saveScroll() {
     history.replaceState({ ...history.state, scroll: window.scrollY, pages }, '');
@@ -41,12 +80,12 @@ export function createTimeline({ key, url, snapshots, request, sessionRequest, r
     element('notes').setAttribute('aria-busy', String(!!active));
     element('load-more').hidden = !nextToken; element('load-more').disabled = !!active;
   }
-  function display(anchor = false) {
+  function display(anchor = false, entering) {
     const cards = anchor && window.scrollY > 0 ? [...element('notes').children] : [];
     const first = cards.findIndex(card => card.getBoundingClientRect().bottom > 0);
     const nearby = first < 0 ? [] : [cards[first], cards[first + 1], cards[first - 1]].filter(Boolean)
       .map(card => [card.dataset.name, card.getBoundingClientRect().top]);
-    render(items);
+    render(items, entering);
     setText(element('capability'), status); element('capability').hidden = !status;
     element('empty').hidden = !!items.length || !!nextToken;
     for (const [name, top] of nearby) {
@@ -54,20 +93,7 @@ export function createTimeline({ key, url, snapshots, request, sessionRequest, r
       if (card) { window.scrollBy(0, card.getBoundingClientRect().top - top); break; }
     }
   }
-  async function fetchPage(owner, token) {
-    const page = enhanced
-      ? await sessionRequest('/search', { method: 'POST', body: searchBody(path, values, token), controller: owner })
-      : await request(`/notes?${listQuery(path, values, token)}`, { controller: owner });
-    if (!Array.isArray(page?.notes) || page.notes.some(note => !validNote(note) || note.state !== state) ||
-        (enhanced && (!['keyword', values.mode].includes(page.mode) ||
-          typeof page.semantic?.used !== 'boolean' || typeof page.semantic?.reason !== 'string' ||
-          (page.mode === 'keyword' && (values.mode !== 'hybrid' || page.semantic.used)) ||
-          (page.mode !== 'keyword' && !page.semantic.used)))) {
-      throw Object.assign(new Error('Invalid note list response'), { code: 'NOTE_LIST_INVALID' });
-    }
-    return page;
-  }
-  async function load({ reset = false, targetPages = 1, scroll } = {}) {
+  async function load({ reset = false, targetPages = 1, scroll, record = true } = {}) {
     if (closed || (!reset && (active || !nextToken))) return;
     active?.abort();
     const owner = active = new AbortController();
@@ -78,31 +104,19 @@ export function createTimeline({ key, url, snapshots, request, sessionRequest, r
     observer.disconnect(); controls(); showError(element('list-error'), null);
     element('list-retry').hidden = element('empty').hidden = true;
     try {
-      const merged = new Map((reset ? [] : items).map(note => [note.name, note]));
-      let token = reset ? '' : nextToken, loaded = 0, page;
-      const seenTokens = reset ? new Set() : new Set(cursors);
-      const tail = reset && pages > 1 ? items.at(-1) : null;
-      do {
-        page = await fetchPage(owner, token);
-        if (owner !== active) return;
-        if (measure) { usage(`search_${values.mode}`, 'success', performance.now() - started); measure = false; }
-        for (const note of page.notes) merged.set(note.name, note);
-        token = typeof page.next_page_token === 'string' ? page.next_page_token : '';
-        if (seenTokens.has(token)) token = '';
-        else if (token) seenTokens.add(token);
-        loaded++;
-      } while (reset && token && (loaded < targetPages ||
-        (!enhanced && tail && page.notes.length && compareNotes(page.notes.at(-1), tail) < 0)));
-      items = [...merged.values()];
-      if (!enhanced) items.sort(compareNotes);
-      status = enhanced && page.mode === 'keyword'
-        ? l("语义检索暂不可用，当前显示按相关度排列的关键词结果。")
-        : enhanced ? l("搜索结果按相关度排列。") : '';
-      pages = reset ? loaded : pages + loaded; nextToken = token;
-      cursors.clear(); for (const cursor of seenTokens) cursors.add(cursor);
+      const data = await readTimeline({ path, values, request, sessionRequest, controller: owner,
+        previous: { items, pages, nextToken, cursors }, reset, targetPages,
+        onPage: () => {
+          if (measure) { usage(`search_${values.mode}`, 'success', performance.now() - started); measure = false; }
+        },
+      });
+      if (owner !== active) return;
+      ({ items, nextToken, pages, searchStatus: status, cursors } = data);
       display(true); remember(false, true);
+      if (record) onSynced?.();
       if (scroll != null) restoreScroll(scroll);
       if (nextToken) observer.observe(element('page-end'));
+      return true;
     } catch (error) {
       if (measure) usage(`search_${values.mode}`, resultOf(error), performance.now() - started);
       if (owner !== active) return;
@@ -124,7 +138,7 @@ export function createTimeline({ key, url, snapshots, request, sessionRequest, r
         [...snapshots.values()].reverse().find(entry => entry.url === url && !entry.dirty);
       if (snapshot) {
         if (firstSearch) { usage(`search_${values.mode}`, 'success'); firstSearch = false; }
-        items = [...snapshot.items]; nextToken = snapshot.nextToken; pages = snapshot.pages; status = snapshot.searchStatus;
+        ({ items, nextToken, pages, searchStatus: status, cursors } = snapshot);
         display(); controls(); remember(false, true); restoreScroll(snapshot.scroll);
         await load({ reset: true, targetPages: Math.max(1, pages) });
       } else {
@@ -137,17 +151,17 @@ export function createTimeline({ key, url, snapshots, request, sessionRequest, r
       }
     },
     loadMore: () => load(),
-    refresh: () => load({ reset: true, targetPages: pages || 1 }),
+    refresh: ({ record = true } = {}) => load({ reset: true, targetPages: pages || 1, record }),
     retry: () => retryOptions?.reset
       ? load({ reset: true, targetPages: pages || 1 }) : load(),
-    async update(name, note) {
+    async update(name, note, inserted = false) {
       active?.abort(); active = null;
       const filtered = values.query || values.date || values.tags.length;
       if (!filtered || items.some(item => item.name === name)) {
         items = items.filter(item => item.name !== name);
         if (note?.state === state) items.push(note);
         if (!enhanced) items.sort(compareNotes);
-        display(true); controls(); remember(false, !filtered);
+        display(true, inserted ? name : undefined); controls(); remember(false, !filtered);
       }
       if (filtered || !pages) await load({ reset: true, targetPages: pages || 1 });
       else if (nextToken) observer.observe(element('page-end'));

@@ -50,6 +50,7 @@ func TestOpenAPIOperationIDsAreUnique(t *testing.T) {
 		{"/api/app/v1/notes", "get", "200", "application/json"},
 		{"/api/app/v1/sync/notes", "get", "200", "application/json"},
 		{"/api/app/v1/models/embedding/check", "post", "200", "application/json"},
+		{"/api/app/v1/channels/check", "post", "200", "application/json"},
 		{"/api/app/v1/notes/{memo_id}/attachments/{attachment_id}/content", "get", "200", "application/octet-stream"},
 		{"/api/app/v1/notes/{memo_id}/attachments/{attachment_id}/content", "get", "206", "application/octet-stream"},
 	} {

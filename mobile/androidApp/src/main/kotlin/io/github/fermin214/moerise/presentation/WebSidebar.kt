@@ -182,6 +182,7 @@ private fun SidebarCalendar(
             }
         }
         val cells = ((grid.offset + grid.days + 6) / 7) * 7
+        Column(Modifier.motionEnter(month, distance = -5f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
         for (row in 0 until cells / 7) Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(3.dp)) {
             for (column in 0..6) {
                 val day = row * 7 + column - grid.offset + 1
@@ -204,6 +205,7 @@ private fun SidebarCalendar(
                     }
                 }
             }
+        }
         }
     }
 }

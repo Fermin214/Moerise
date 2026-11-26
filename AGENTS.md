@@ -56,4 +56,4 @@ Moerise 是基于 Memos 的单用户自托管笔记系统。`internal/` 是按�
 
 Web 依赖通过 `npm --prefix web ci` 安装。浏览器流程需要 Playwright 浏览器；真实 Memos 集成与联合验收需要 Docker。具体功能的联合验收脚本及参数见[脚本说明](scripts/README.md)。
 
-Dallas 的 Android Gradle 构建、JVM 测试、Lint 和 Core API 联调交给 GitHub Actions。正式签名 APK 按[发版前真机检查](docs/android/RELEASE-CHECKLIST.md)验收。
+Dallas 已配置轻量 JDK 17、Android CLI SDK 和离线 Robolectric 缓存。加载 `~/.config/android/environment.sh` 后可在推送前直接运行 `./gradlew` 验证纯 JVM/Robolectric 单测，使用 `--no-daemon --max-workers=2`，与 `go test -race` 分开运行。Dallas 不安装或运行 Android 模拟器。正式签名 APK、全变体构建和 Core API 联调由 GitHub Actions 验证。正式签名 APK 按[发版前真机检查](docs/android/RELEASE-CHECKLIST.md)验收。

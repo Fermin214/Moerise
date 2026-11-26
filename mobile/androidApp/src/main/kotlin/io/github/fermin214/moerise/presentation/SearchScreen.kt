@@ -1,21 +1,63 @@
 package io.github.fermin214.moerise.presentation
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.MutableTransitionState
+import androidx.compose.animation.core.VectorConverter
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
-import androidx.compose.runtime.Composable
+import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInParent
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun WebFilterBar(query: SearchQuery, strings: Strings, onChange: (SearchQuery) -> Unit) {
+    val labels = query.tags.map { "#$it" } + listOfNotNull(query.date.takeIf { it.isNotBlank() })
+    var shown by remember { mutableStateOf(labels) }
+    val reduced = LocalReducedMotion.current
+    LaunchedEffect(labels) {
+        shown = labels + shown.filterNot(labels::contains)
+        if (shown != labels) delay(if (reduced) 80 else 220)
+        shown = labels
+    }
     FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(6.dp),
         itemVerticalAlignment = Alignment.CenterVertically) {
         Text(strings.text("筛选", "Filters"), style = MaterialTheme.typography.bodySmall, color = MoeriseColors.Muted)
-        query.tags.forEach { tag -> FilterPill("#$tag", strings) { onChange(query.copy(tags = query.tags - tag)) } }
-        if (query.date.isNotBlank()) FilterPill(query.date, strings) { onChange(query.copy(date = "")) }
+        for (label in shown) key(label) {
+            val entering = remember { MutableTransitionState(false) }.apply { targetState = label in labels }
+            val previous = remember { mutableStateOf<Offset?>(null) }
+            val translation = remember { Animatable(Offset.Zero, Offset.VectorConverter) }
+            val scope = rememberCoroutineScope()
+            AnimatedVisibility(entering,
+                modifier = Modifier.onGloballyPositioned {
+                    val point = it.positionInParent()
+                    val start = previous.value
+                    previous.value = point
+                    if (!reduced && start != null && point != start) scope.launch {
+                        translation.snapTo(start - point)
+                        translation.animateTo(Offset.Zero, MoeriseMotion.responsive())
+                    }
+                }.graphicsLayer { translationX = translation.value.x; translationY = translation.value.y },
+                enter = fadeIn(if (reduced) MoeriseMotion.fade() else MoeriseMotion.tactile()),
+                exit = fadeOut(if (reduced) MoeriseMotion.fade() else MoeriseMotion.tactile()),
+            ) {
+                FilterPill(label, strings) {
+                    if (label.startsWith("#")) onChange(query.copy(tags = query.tags - label.drop(1)))
+                    else onChange(query.copy(date = ""))
+                }
+            }
+        }
         TextButton(onClick = { onChange(query.copy(tags = emptySet(), date = "")) }) { Text(strings.text("清除全部", "Clear all")) }
     }
 }

@@ -3,11 +3,13 @@ package moerise
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -82,6 +84,105 @@ func TestClientModelCheckProviderTimeout(t *testing.T) {
 	response := clientCall(api, "POST", "/api/app/v1/models/embedding/check", `{"version":1}`,
 		cookie, fixture.settings.Web.PublicOrigin, identity.CSRFToken)
 	assertSettingsError(t, response, 503, "MODEL_CHECK_TIMEOUT")
+}
+
+func TestEmbeddingCandidateRejectsCrossOriginKeepBeforeNetwork(t *testing.T) {
+	api, fixture := clientFixture(t)
+	cookie, identity := settingsSession(t, api)
+	api.app.Store.Settings.Embedding = embeddingTestConfig("https://previous.example")
+	var hits atomic.Int32
+	remote := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		if r.Header.Get("Authorization") != "Bearer candidate-key" {
+			t.Error("probe used a different key")
+		}
+		var input struct {
+			Input struct{ Texts []string }
+		}
+		if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+			t.Error(err)
+		}
+		writeJSON(w, 200, embeddingFixture(len(input.Input.Texts), 1024))
+	}))
+	t.Cleanup(remote.Close)
+	const body = `{"version":1,"settings":{"embedding":{"base_url":%q}}%s}`
+	for _, secrets := range []string{``, `,"secrets":{"embedding_api_key":{"action":"keep"}}`} {
+		for _, route := range []struct{ method, path string }{
+			{"POST", "/api/app/v1/models/embedding/check"}, {"PATCH", "/api/app/v1/settings"},
+		} {
+			response := clientCall(api, route.method, route.path, fmt.Sprintf(body, remote.URL+"/api/v1", secrets),
+				cookie, fixture.settings.Web.PublicOrigin, identity.CSRFToken)
+			assertSettingsError(t, response, 422, "EMBEDDING_KEY_ORIGIN")
+		}
+	}
+	if hits.Load() != 0 {
+		t.Fatal("rejected candidate reached the server")
+	}
+	replacement := fmt.Sprintf(body, remote.URL+"/api/v1", `,"secrets":{"embedding_api_key":{"action":"replace","value":"candidate-key"}}`)
+	response := clientCall(api, "POST", "/api/app/v1/models/embedding/check", replacement,
+		cookie, fixture.settings.Web.PublicOrigin, identity.CSRFToken)
+	if response.Code != 200 || hits.Load() != 2 || configured(api.app.Store.Settings.Embedding.APIKey) != "embedding-test-credential" {
+		t.Fatalf("candidate probe: %d, %d requests, %s", response.Code, hits.Load(), response.Body.String())
+	}
+	if embeddingOriginChanged(new("https://Example.com/api/v1"), new("https://example.com:443/different/api/v1")) {
+		t.Fatal("explicit default HTTPS port and path change changed the origin")
+	}
+}
+
+func TestEmbeddingCandidateReleasesRuntimeDuringNetworkCall(t *testing.T) {
+	api, fixture := clientFixture(t)
+	cookie, identity := settingsSession(t, api)
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var startOnce, releaseOnce sync.Once
+	unblock := func() { releaseOnce.Do(func() { close(release) }) }
+	remote := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var input struct {
+			Input struct{ Texts []string }
+		}
+		if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+			t.Error(err)
+		}
+		startOnce.Do(func() { close(started) })
+		select {
+		case <-release:
+			writeJSON(w, 200, embeddingFixture(len(input.Input.Texts), 1024))
+		case <-r.Context().Done():
+		}
+	}))
+	t.Cleanup(remote.Close)
+	t.Cleanup(unblock)
+	config := embeddingTestConfig(remote.URL)
+	config.Enabled = false
+	api.app.Store.Settings.Embedding = config
+	const body = `{"version":1,"settings":{"embedding":{"enabled":true}}}`
+	done := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		done <- clientCall(api, "POST", "/api/app/v1/models/embedding/check", body,
+			cookie, fixture.settings.Web.PublicOrigin, identity.CSRFToken)
+	}()
+	select {
+	case <-started:
+	case <-time.After(3 * time.Second):
+		t.Fatal("candidate did not reach the model provider")
+	}
+	response := clientCall(api, "PATCH", "/api/app/v1/settings", `{"version":1,"settings":{"review":{"count":6}}}`,
+		cookie, fixture.settings.Web.PublicOrigin, identity.CSRFToken)
+	if response.Code != 200 {
+		t.Fatalf("PATCH during probe: %d %s", response.Code, response.Body.String())
+	}
+	unblock()
+	select {
+	case response = <-done:
+		if response.Code != 200 {
+			t.Fatalf("probe did not retain candidate: %s", response.Body.String())
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("probe did not complete after releasing upstream")
+	}
+	response = clientCall(api, "PATCH", "/api/app/v1/settings", body,
+		cookie, fixture.settings.Web.PublicOrigin, identity.CSRFToken)
+	assertSettingsError(t, response, 409, "SETTINGS_CONFLICT")
 }
 
 func TestClientModelCheckSharedDeadline(t *testing.T) {

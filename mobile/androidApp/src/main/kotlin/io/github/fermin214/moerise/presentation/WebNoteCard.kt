@@ -2,8 +2,6 @@ package io.github.fermin214.moerise.presentation
 
 import android.content.ClipData
 import android.content.ClipboardManager
-import android.os.Build
-import android.widget.Toast
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -69,6 +67,8 @@ fun TimelineNoteCard(
     val id = draft?.id ?: requireNotNull(remote).name
     val leaveWriting = LocalLeaveWriting.current
     val context = LocalContext.current
+    val notice = LocalMobileNotice.current
+    val haptic = rememberMoeriseHaptic()
     var confirmDelete by remember(remote?.name) { mutableStateOf(false) }
     val menuActions = buildList {
         if (draft != null) add(NoteMenuAction(
@@ -87,8 +87,8 @@ fun TimelineNoteCard(
         add(NoteMenuAction(strings.text("复制", "Copy"), {
             val clipboard = context.getSystemService(ClipboardManager::class.java)
             val copied = runCatching { requireNotNull(clipboard).setPrimaryClip(ClipData.newPlainText("Moerise", content)) }.isSuccess
-            if (!copied || Build.VERSION.SDK_INT < 33) Toast.makeText(context,
-                if (copied) strings.text("已复制", "Copied") else strings.text("复制失败", "Copy failed"), Toast.LENGTH_SHORT).show()
+            if (copied) haptic()
+            notice(if (copied) "COPIED" else "COPY_FAILED")
         }, tag = "copy_note_$id"))
         if (remote != null && onDelete != null) add(NoteMenuAction(strings.text("删除", "Delete"), { confirmDelete = true },
             online && !busy && !pendingAction, danger = true, tag = "delete_note_$id"))
@@ -128,6 +128,7 @@ fun TimelineNoteCard(
             error?.let { Text(editorError(it, strings), color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(top = 8.dp)) }
             if (busy) LinearProgressIndicator(Modifier.fillMaxWidth().padding(top = 8.dp))
             if (confirmDelete) {
+                Column(Modifier.motionEnter("delete confirm", distance = 4f, initialScale = .98f)) {
                 HorizontalDivider(Modifier.padding(top = 10.dp), color = MoeriseColors.Line)
                 Text(strings.text("删除这条笔记？删除后无法恢复。", "Delete this note? This cannot be undone."),
                     style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 8.dp))
@@ -136,6 +137,7 @@ fun TimelineNoteCard(
                         modifier = Modifier.testTag("delete_cancel_$id")) { Text(strings.text("取消", "Cancel")) }
                     TextButton(onClick = { confirmDelete = false; remote?.let { onDelete?.invoke(it) } }, enabled = online && !busy && !pendingAction,
                         modifier = Modifier.testTag("delete_confirm_$id")) { Text(strings.text("删除", "Delete"), color = MaterialTheme.colorScheme.error) }
+                }
                 }
             }
         },

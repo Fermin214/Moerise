@@ -52,6 +52,9 @@ import io.github.fermin214.moerise.data.SyncStateEntity
 import io.github.fermin214.moerise.data.attachmentEdits
 import io.github.fermin214.moerise.data.testDatabase
 import io.github.fermin214.moerise.domain.Note
+import io.github.fermin214.moerise.domain.StarMap
+import io.github.fermin214.moerise.domain.StarPoint
+import io.github.fermin214.moerise.domain.StarView
 import io.ktor.client.engine.mock.MockEngine
 import io.ktor.client.engine.mock.respond
 import java.io.ByteArrayOutputStream
@@ -98,6 +101,50 @@ class AndroidUiRegressionTest {
     @AfterTest
     fun closeHost() {
         if (::host.isInitialized) compose.runOnUiThread { host.pause().stop().destroy() }
+    }
+
+    @Test
+    @GraphicsMode(GraphicsMode.Mode.NATIVE)
+    fun tappingDuringStarInertiaCommitsTheCameraSoFitCanRestoreTheOverview() {
+        createHost()
+        val overview = StarView()
+        val view = mutableStateOf(overview)
+        val point = StarPoint("memos/center", "center-hash", 0.0, 0.0, true, emptyList())
+        val map = StarMap("ready", "umap-balanced-v1", "layout", "frame", "vectors", 1,
+            points = listOf(point), topics = emptyList(), links = emptyList())
+        var selected: String? = null
+        compose.runOnUiThread {
+            host.get().setContent {
+                Column {
+                    Button(onClick = { view.value = overview }) { Text("Fit") }
+                    Box(Modifier.size(280.dp)) {
+                        StarCanvas(StarMapState(snapshot = map, view = view.value, photo = false, allFraming = true),
+                            strings, onSize = { _, _ -> }, onTransform = { factor, x, y, panX, panY ->
+                                view.value = view.value.transform(factor, x, y, panX, panY)
+                            }, onFocus = {}, onPick = { _, _, _ -> }, onExcerpts = {}, onDrawn = {},
+                            onSelect = { selected = it })
+                    }
+                }
+            }
+        }
+        val field = compose.onNodeWithTag("star_canvas").assertIsDisplayed()
+        compose.mainClock.autoAdvance = false
+        try {
+            field.performTouchInput { swipe(centerLeft + Offset(24f, 0f), centerRight - Offset(24f, 0f), durationMillis = 64) }
+            compose.mainClock.advanceTimeBy(64)
+            compose.runOnIdle { assertEquals(overview, view.value) }
+            field.performTouchInput { click(topLeft + Offset(20f, 20f)) }
+            compose.runOnIdle { assertNotEquals(overview, view.value) }
+            compose.onNodeWithText("Fit").performClick()
+            compose.mainClock.advanceTimeBy(500)
+            field.performTouchInput { click(center) }
+            compose.runOnIdle {
+                assertEquals(overview, view.value)
+                assertEquals(point.name, selected)
+            }
+        } finally {
+            compose.mainClock.autoAdvance = true
+        }
     }
 
     @Test

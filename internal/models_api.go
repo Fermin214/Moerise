@@ -9,12 +9,16 @@ import (
 
 const modelCheckTimeout = 55 * time.Second
 
-func isModelCheck(r *http.Request) bool {
-	return r.Method == http.MethodPost && r.URL.Path == "/api/app/v1/models/embedding/check"
+func isCandidateCheck(r *http.Request) bool {
+	return r.Method == http.MethodPost &&
+		(r.URL.Path == "/api/app/v1/models/embedding/check" || r.URL.Path == "/api/app/v1/channels/check")
 }
 
-func modelCheckError(ctx context.Context, err error) error {
-	if errors.Is(ctx.Err(), context.DeadlineExceeded) || errors.Is(err, context.DeadlineExceeded) {
+func candidateCheckError(r *http.Request, err error) error {
+	if errors.Is(r.Context().Err(), context.DeadlineExceeded) || errors.Is(err, context.DeadlineExceeded) {
+		if r.URL.Path == "/api/app/v1/channels/check" {
+			return failure("CHANNEL_CHECK_TIMEOUT", "Channel connection check timed out", 503, true)
+		}
 		return failure("MODEL_CHECK_TIMEOUT", "Model connection check timed out", 503, true)
 	}
 	return err
@@ -63,25 +67,61 @@ func (a *ClientAPI) modelsRoute(w http.ResponseWriter, r *http.Request) (any, in
 	if r.Method != http.MethodPost {
 		return nil, 0, failure("METHOD_NOT_ALLOWED", "Method Not Allowed", 405, false)
 	}
-	var body struct {
-		Version int64 `json:"version"`
-	}
-	if err := readClientJSON(w, r, 1024, []string{"version"}, &body); err != nil {
+	var body settingsRequest
+	if err := readClientJSON(w, r, 128*1024, []string{"version", "settings", "secrets"}, &body); err != nil {
 		return nil, 0, err
 	}
-	if body.Version < 1 {
-		return nil, 0, failure("INVALID_ARGUMENT", "A positive settings version is required", 422, false)
+	if err := validateCheckFields(body, "embedding", nil, []string{"embedding_api_key"}); err != nil {
+		return nil, 0, err
 	}
-	if body.Version != a.app.Store.productVersion {
-		return nil, 0, failure("SETTINGS_CONFLICT", "Settings have changed; reload before checking the model", 409, false)
+	config, provider, err := a.embeddingCheckSnapshot(r.Context(), body.SettingsUpdate)
+	if err != nil {
+		return nil, 0, err
 	}
-	ctx := r.Context()
 	started := time.Now()
-	if a.app.Search.Provider == nil {
-		return nil, 0, failure("EMBEDDING_DISABLED", "Embedding is disabled", 503, false)
+	if provider == nil {
+		_, err = CheckEmbedding(r.Context(), config)
+	} else {
+		_, err = checkEmbedding(r.Context(), config, provider)
 	}
-	if _, err := checkEmbedding(ctx, a.app.Store.Settings.Embedding, a.app.Search.Provider); err != nil {
+	if err != nil {
 		return nil, 0, err
 	}
 	return ClientModelCheck{body.Version, "ok", time.Since(started).Milliseconds()}, http.StatusOK, nil
+}
+
+func (a *ClientAPI) embeddingCheckSnapshot(ctx context.Context, update SettingsUpdate) (EmbeddingConfig, EmbeddingProvider, error) {
+	if err := a.lockTimedRequest(ctx); err != nil {
+		return EmbeddingConfig{}, nil, err
+	}
+	defer a.app.runtimeMu.RUnlock()
+	store := a.app.Store
+	if update.Version != store.productVersion {
+		return EmbeddingConfig{}, nil, failure("SETTINGS_CONFLICT", "Settings have changed; reload before checking the model", 409, false)
+	}
+	if len(update.Settings) == 0 && len(update.Secrets) == 0 {
+		provider := a.app.Search.Provider
+		if provider == nil {
+			return EmbeddingConfig{}, nil, failure("EMBEDDING_DISABLED", "Embedding is disabled", 503, false)
+		}
+		config := store.Settings.Embedding
+		if _, production := provider.(*embeddingClient); production {
+			config.BaseURL = new(configured(config.BaseURL))
+			config.APIKey = new(configured(config.APIKey))
+			config.Model = new(configured(config.Model))
+			if config.QueryInstruction != nil {
+				config.QueryInstruction = new(*config.QueryInstruction)
+			}
+			provider = nil
+		}
+		return config, provider, nil
+	}
+	settings, err := store.prepareSettings(update)
+	if err != nil {
+		return EmbeddingConfig{}, nil, err
+	}
+	if !settings.Embedding.Enabled {
+		return EmbeddingConfig{}, nil, failure("EMBEDDING_DISABLED", "Embedding is disabled", 503, false)
+	}
+	return settings.Embedding, nil, nil
 }

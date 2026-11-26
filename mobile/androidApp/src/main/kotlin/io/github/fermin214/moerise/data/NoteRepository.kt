@@ -489,11 +489,11 @@ class NoteRepository(private val db: LocalDatabase, private val files: Attachmen
         db.dao().pending(actionSlot(key, name))
     }
 
-    suspend fun prepareAction(key: String, name: String, method: String, body: String): PendingWriteEntity = transaction {
+    suspend fun prepareAction(key: String, name: String, method: String, body: String, requireFresh: Boolean = false): PendingWriteEntity = transaction {
         require(method in setOf("PATCH", "DELETE") && Regex("^memos/[A-Za-z0-9_-]+$").matches(name))
         val slot = actionSlot(key, name)
         db.dao().pending(slot)?.let {
-            require(it.method == method) { "WRITE_OUTCOME_UNKNOWN" }
+            require(!requireFresh && it.method == method) { "WRITE_OUTCOME_UNKNOWN" }
             return@transaction it
         }
         PendingWriteEntity(newLocalId(), slot, key, newLocalId(), method,

@@ -70,6 +70,8 @@ class PublishTests(unittest.TestCase):
             sha = publish.output('git', '-C', str(ROOT), 'rev-parse', 'HEAD')
             metadata, _ = write_android_artifact(root, sha)
             write_linux_artifacts(root)
+            _, android_files, _, _ = publish.release_package(root, REPO, sha, 'android')
+            self.assertEqual(android_files, [metadata.with_suffix('')])
             for component in ('android', 'both'):
                 with self.subTest(component=component):
                     result = verify_release(root, sha, component)
@@ -129,9 +131,6 @@ class PublishTests(unittest.TestCase):
             root = Path(directory)
             sha = publish.output('git', '-C', str(ROOT), 'rev-parse', 'HEAD')
             metadata, _ = write_android_artifact(root, sha)
-            android_files = [metadata.with_name(f'moerise-android-v0.2.0{suffix}')
-                             for suffix in ('.apk', '.apk.sha256', '.apk.json', '-notices.zip')]
-            guide = metadata.with_name('INSTALL.md')
             with patch.dict('os.environ', GH_REPO=REPO), \
                     patch('sys.argv', ['publish.py', directory, sha, 'both', '--dry-run']), \
                     patch.object(publish, 'prepare', return_value=(None, {})) as prepare:
@@ -143,7 +142,7 @@ class PublishTests(unittest.TestCase):
                 publish.main()
                 prepare.assert_called_once_with(REPO, sha, 'v0.2.0', [
                     root / 'linux-amd64/moerise_0.2.0_linux_amd64.tar.gz',
-                    root / 'linux-arm64/moerise_0.2.0_linux_arm64.tar.gz', *android_files, guide])
+                    root / 'linux-arm64/moerise_0.2.0_linux_arm64.tar.gz', metadata.with_suffix('')])
 
     def test_release_notes_skip_author_attribution_and_pr_suffix(self):
         tags = '\n'.join(['v0.3.0', 'android-v0.1.0', 'v0.2.0', 'v0.1.2'])

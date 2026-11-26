@@ -6,7 +6,10 @@ import (
 	"net/http"
 )
 
-type settingsRequest SettingsUpdate
+type settingsRequest struct {
+	SettingsUpdate
+	Target string `json:"target,omitempty"`
+}
 
 func (request *settingsRequest) UnmarshalJSON(data []byte) error {
 	bad := failure("INVALID_ARGUMENT", "Invalid settings request", 422, false)
@@ -93,7 +96,7 @@ func (a *ClientAPI) settingsRoute(w http.ResponseWriter, r *http.Request) (any, 
 		if body.Version < 1 || len(body.Secrets) == 0 && !hasSettingsFields(body.Settings) {
 			return nil, 0, failure("INVALID_ARGUMENT", "A positive version and settings changes are required", 422, false)
 		}
-		view, err := a.app.UpdateSettings(r.Context(), SettingsUpdate(body))
+		view, err := a.app.UpdateSettings(r.Context(), body.SettingsUpdate)
 		return view, http.StatusOK, err
 	default:
 		return nil, 0, failure("METHOD_NOT_ALLOWED", "Method Not Allowed", 405, false)

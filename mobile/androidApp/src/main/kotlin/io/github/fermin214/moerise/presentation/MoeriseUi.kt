@@ -19,6 +19,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.setValue
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
@@ -36,12 +37,19 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
-import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.snap
 import androidx.compose.animation.core.tween
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInParent
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
+import kotlinx.coroutines.delay
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.clearAndSetSemantics
@@ -184,6 +192,13 @@ fun WebToolbar(
 ) {
     val searchExpanded = LocalWebSearchOpen.current
     val syncAction = onSync ?: LocalWebSyncAction.current
+    var completedSync by remember { mutableStateOf(false) }
+    var transferring by remember { mutableStateOf(false) }
+    LaunchedEffect(syncStatus) {
+        completedSync = syncStatus == SyncStatus.CONNECTED && transferring
+        transferring = syncStatus == SyncStatus.SYNCING
+        if (completedSync) { delay(1200); completedSync = false }
+    }
     Column(modifier.fillMaxWidth().platformTestTags()) {
         Row(Modifier.fillMaxWidth().height(56.dp).padding(horizontal = 8.dp),
             verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
@@ -192,7 +207,9 @@ fun WebToolbar(
             }
             Text(title, style = MaterialTheme.typography.titleMedium,
                 modifier = Modifier.weight(1f).padding(start = 8.dp))
-            if (syncAction != null && syncStatus != null && syncStatus != SyncStatus.CONNECTED) SyncButton(syncStatus, strings, syncAction)
+            if (syncAction != null && syncStatus != null && (syncStatus != SyncStatus.CONNECTED || completedSync)) {
+                SyncButton(syncStatus, strings, syncAction)
+            }
             if (onSearch != null) IconButton(onClick = onSearch, modifier = Modifier.size(44.dp).testTag("open_search").semantics {
                 stateDescription = if (searchExpanded) strings.text("已展开", "Expanded") else strings.text("已收起", "Closed")
             }) {
@@ -228,12 +245,12 @@ fun SyncButton(status: SyncStatus, strings: Strings, onClick: () -> Unit) {
 
 @Composable
 fun SyncGlyph(status: SyncStatus, modifier: Modifier = Modifier) {
-    val pulse = if (status == SyncStatus.SYNCING)
-        rememberInfiniteTransition(label = "sync").animateFloat(0.45f, 1f,
-            animationSpec = infiniteRepeatable(tween(900, easing = LinearEasing)), label = "breath") else null
+    val pulse = if (status == SyncStatus.SYNCING && !LocalReducedMotion.current)
+        rememberInfiniteTransition(label = "sync").animateFloat(1f, .55f,
+            animationSpec = infiniteRepeatable(tween(550, easing = FastOutSlowInEasing), RepeatMode.Reverse), label = "breath") else null
     val (icon, tint, dotColor) = when (status) {
         SyncStatus.SYNCING -> Triple(WebIcon.Sync, MoeriseColors.Blue, MoeriseColors.Blue)
-        SyncStatus.CONNECTED -> Triple(WebIcon.Sync, Color(0xFF51816A), null)
+        SyncStatus.CONNECTED -> Triple(WebIcon.Check, Color(0xFF51816A), null)
         SyncStatus.PENDING -> Triple(WebIcon.Sync, MoeriseColors.Blue, MoeriseColors.Blue)
         SyncStatus.ATTENTION -> Triple(WebIcon.Alert, Color(0xFFB42318), Color(0xFFB42318))
         SyncStatus.SIGN_IN -> Triple(WebIcon.SignIn, Color(0xFFB47724), Color(0xFFB47724))
@@ -265,12 +282,25 @@ fun WebTabs(labels: List<String>, selected: Int, onSelect: (Int) -> Unit, modifi
     tagPrefix: String? = null, enabled: Boolean = true) {
     val focus = remember(labels.size) { List(labels.size) { FocusRequester() } }
     val scope = rememberCoroutineScope()
+    val measured = remember(labels) { mutableStateMapOf<Int, Pair<Float, Float>>() }
+    val reduced = LocalReducedMotion.current
+    val target = measured[selected]
+    val position = animateFloatAsState(target?.first ?: 0f, if (reduced) snap() else MoeriseMotion.responsive(), label = "tab position")
+    val width = animateFloatAsState(target?.second ?: 0f, if (reduced) snap() else MoeriseMotion.responsive(), label = "tab width")
+    val density = LocalDensity.current
     Surface(modifier.fillMaxWidth(), color = Color(0xFFF0F4F9), shape = RoundedCornerShape(12.dp)) {
-        Row(Modifier.horizontalScroll(rememberScrollState()).padding(4.dp), horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+        Box(Modifier.horizontalScroll(rememberScrollState()).padding(4.dp)) {
+        if (target != null) Box(Modifier.size(1.dp, 44.dp).graphicsLayer {
+            transformOrigin = androidx.compose.ui.graphics.TransformOrigin(0f, .5f)
+            translationX = position.value
+            scaleX = width.value / with(density) { 1.dp.toPx() }
+        }.background(Color.White))
+        Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
             labels.forEachIndexed { index, label ->
                 val bringIntoView = remember { BringIntoViewRequester() }
                 Surface(
                     modifier = Modifier.then(if (tagPrefix != null) Modifier.testTag("${tagPrefix}_$index") else Modifier)
+                        .onGloballyPositioned { coordinates -> measured[index] = coordinates.positionInParent().x to coordinates.size.width.toFloat() }
                         .focusRequester(focus[index]).bringIntoViewRequester(bringIntoView)
                         .onFocusChanged { if (it.isFocused) scope.launch { bringIntoView.bringIntoView() } }
                         .onPreviewKeyEvent { event ->
@@ -288,7 +318,7 @@ fun WebTabs(labels: List<String>, selected: Int, onSelect: (Int) -> Unit, modifi
                         }
                         .semantics { this.selected = selected == index }
                         .clickable(enabled = enabled, role = Role.Tab) { onSelect(index) },
-                    color = if (selected == index) Color.White else Color.Transparent,
+                    color = Color.Transparent,
                     shape = RoundedCornerShape(8.dp),
                 ) {
                     Box(Modifier.heightIn(min = 44.dp).padding(horizontal = 14.dp, vertical = 10.dp),
@@ -298,6 +328,7 @@ fun WebTabs(labels: List<String>, selected: Int, onSelect: (Int) -> Unit, modifi
                     }
                 }
             }
+        }
         }
     }
 }

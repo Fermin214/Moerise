@@ -1,6 +1,7 @@
 import { el, button } from './dom.js';
 import { l, setAttr } from './i18n.js';
 import { createModal } from './modal.js';
+import { snackbar } from './snackbar.js';
 
 const choiceKey = 'moerise.privacy.v1', batchKey = 'moerise.aggregate.v1', quotaKey = 'moerise.sent.v1';
 const ownerKey = 'moerise.aggregate-owner.v1';
@@ -143,7 +144,7 @@ function issues() {
   return link;
 }
 function toggle(onChange) {
-  const label = el('label', 'privacy-switch'), control = el('input');
+  const label = el('label', 'privacy-switch'), control = el('input', 'settings-switch');
   control.type = 'checkbox'; control.setAttribute('role', 'switch'); control.dataset.privacy = '';
   control.checked = allowed && choice() === 'on'; control.disabled = !allowed;
   control.addEventListener('change', () => onChange?.(control.checked));
@@ -161,7 +162,7 @@ function preview() {
   const recent = diagnostic && Date.now() - Date.parse(diagnostic.time) < day;
   area.value = JSON.stringify(recent ? diagnostic : metadata(), null, 2);
   const copy = button(l("复制诊断摘要"), 'save', async () => {
-    try { await navigator.clipboard.writeText(area.value); }
+    try { await navigator.clipboard.writeText(area.value); snackbar(l("已复制")); }
     catch { area.focus(); area.select(); }
   });
   modal.dialog.append(el('h2', '', l("诊断摘要")), el('p', '', l("公开 GitHub Issue 的内容会被其他人看到。请先检查，可删减后复制。")),
@@ -193,7 +194,12 @@ export function privacySettings(parent) {
   window.addEventListener('moeriseprivacy', update); update();
   parent.append(label, unavailable, el('p', '', explanation)); information(parent);
   const links = el('div', 'privacy-links');
-  links.append(button(l("预览诊断摘要"), 'ghost', preview), issues()); parent.append(links);
+  links.append(button(l("预览诊断摘要"), 'ghost', preview), button(l("复制诊断摘要"), 'ghost', async () => {
+    try {
+      await navigator.clipboard.writeText(JSON.stringify(diagnostic && Date.now() - Date.parse(diagnostic.time) < day ? diagnostic : metadata(), null, 2));
+      snackbar(l("已复制"));
+    } catch { preview(); }
+  }), issues()); parent.append(links);
   return () => window.removeEventListener('moeriseprivacy', update);
 }
 if (typeof window !== 'undefined') {

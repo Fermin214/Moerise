@@ -414,6 +414,7 @@ export function createMapPage({ request, handleFailure, validNote, renderNote, i
         return;
       }
       onData(next);
+      if (!activeMap(ticket)) return;
       const samePoints = (a, b) => a.length === b.length && a.every((p, i) => {
         const q = b[i];
         return p.name === q.name && p.source_hash === q.source_hash && p.excerpt === q.excerpt &&
