@@ -56,7 +56,12 @@ class AndroidSecretStore(context: Context) : SecretStore {
     override suspend fun write(key: String, value: String?) = lock.withLock { withContext(Dispatchers.IO) {
         check(directory.isDirectory || directory.mkdirs())
         val file = file(key)
-        if (value == null) { file.delete(); return@withContext }
+        if (value == null) {
+            file.delete()
+            val path = file.baseFile.path
+            check(listOf(path, "$path.bak", "$path.new").none { File(it).exists() }) { "LOCAL_REMOVE_FAILED" }
+            return@withContext
+        }
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
         cipher.init(Cipher.ENCRYPT_MODE, key())
         cipher.updateAAD(key.toByteArray())

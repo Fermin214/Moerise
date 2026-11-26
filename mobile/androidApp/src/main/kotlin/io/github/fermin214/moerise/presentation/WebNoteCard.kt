@@ -10,6 +10,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
@@ -67,6 +68,7 @@ fun QueuedNoteCard(
     modifier: Modifier = Modifier,
     onOpen: () -> Unit,
 ) {
+    val leaveWriting = LocalLeaveWriting.current
     val presentation = remember(draft.content) { localNotePresentation(draft.content) }
     val baseline = remember(draft.baselineJson) {
         draft.baselineJson?.let { runCatching { CoreJson.decodeFromString<Note>(it) }.getOrNull() }
@@ -83,10 +85,11 @@ fun QueuedNoteCard(
         core = null,
         note = null,
         onTag = null,
+        headerActions = if (hasFailure) 2 else 1,
         trailingHeader = {
             if (hasFailure) {
                 Box(
-                    Modifier.size(44.dp).clickable(role = Role.Button, onClick = onOpen)
+                    Modifier.size(44.dp).clickable(role = Role.Button) { leaveWriting(); onOpen() }
                         .testTag("queued_error_${draft.id}")
                         .semantics { contentDescription = strings.text("同步失败或冲突", "Sync failed or conflicted") },
                     contentAlignment = Alignment.Center,
@@ -142,6 +145,7 @@ fun WebNoteCard(
         core = core,
         note = note,
         onTag = onTag,
+        headerActions = if (menuActions.isEmpty()) 0 else 1,
         trailingHeader = { WebNoteMenu(strings, menuActions, tag = "note_more_${note.name}") },
         extraContent = {
             error?.let { Text(editorError(it, strings), color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(top = 8.dp)) }
@@ -171,24 +175,29 @@ private fun NoteCardScaffold(
     core: CoreClient?,
     note: Note?,
     onTag: ((String) -> Unit)?,
+    headerActions: Int,
     trailingHeader: @Composable RowScope.() -> Unit,
     extraContent: @Composable ColumnScope.() -> Unit,
 ) {
     Surface(modifier.fillMaxWidth(),
         shape = RoundedCornerShape(14.dp), color = Color.White,
         border = BorderStroke(1.dp, MoeriseColors.Line)) {
-        Column(Modifier.padding(start = 18.dp, top = 14.dp, end = 18.dp, bottom = 16.dp)) {
-            Row(Modifier.fillMaxWidth().heightIn(min = 32.dp), verticalAlignment = Alignment.CenterVertically) {
-                Text(date, fontSize = 13.sp, color = MoeriseColors.Muted,
-                    modifier = Modifier.weight(1f).heightIn(min = 44.dp).wrapContentHeight())
-                trailingHeader()
+        Box {
+            Column(Modifier.padding(start = 18.dp, end = 18.dp, bottom = 14.dp)) {
+                Box(Modifier.fillMaxWidth().heightIn(min = if (headerActions > 0) 42.dp else 0.dp)
+                    .padding(top = 10.dp, end = (headerActions * 44).dp)) {
+                    Text(date, fontSize = 13.sp, color = MoeriseColors.Muted, modifier = Modifier.testTag("note_card_date"))
+                }
+                if (body.isNotBlank()) Box(Modifier.fillMaxWidth().padding(top = 2.dp, bottom = 8.dp).testTag("note_card_body")) {
+                    MarkdownBody(body, note = note, core = core)
+                }
+                if (note != null) NoteAttachments(note, core, strings = strings)
+                NoteTags(tags, onTag = onTag)
+                extraContent()
             }
-            if (body.isNotBlank()) Box(Modifier.fillMaxWidth().padding(top = 4.dp, bottom = 10.dp)) {
-                MarkdownBody(body, note = note, core = core)
+            if (headerActions > 0) {
+                Row(Modifier.align(Alignment.TopEnd).padding(end = 6.dp), content = trailingHeader)
             }
-            if (note != null) NoteAttachments(note, core, strings = strings)
-            NoteTags(tags, onTag = onTag)
-            extraContent()
         }
     }
 }
@@ -198,11 +207,15 @@ data class NoteMenuAction(val label: String, val onClick: () -> Unit, val enable
 
 @Composable
 fun WebNoteMenu(strings: Strings, actions: List<NoteMenuAction>, tag: String = "note_more") {
+    val leaveWriting = LocalLeaveWriting.current
     var open by remember { mutableStateOf(false) }
     Box {
-        IconButton(onClick = { open = !open }, modifier = Modifier.size(44.dp).testTag(tag).semantics {
+        Box(Modifier.size(44.dp).clip(CircleShape).clickable(role = Role.Button) {
+            if (!open) leaveWriting()
+            open = !open
+        }.testTag(tag).semantics {
             stateDescription = if (open) strings.text("已展开", "Expanded") else strings.text("已收起", "Closed")
-        }) {
+        }, contentAlignment = Alignment.Center) {
             WebIcon(WebIcon.More, strings.text("更多操作", "More actions"), Modifier.size(16.dp))
         }
         DropdownMenu(expanded = open, onDismissRequest = { open = false },

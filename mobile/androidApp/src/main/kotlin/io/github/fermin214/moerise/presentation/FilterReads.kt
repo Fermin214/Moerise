@@ -4,8 +4,14 @@ import io.github.fermin214.moerise.data.*
 import io.github.fermin214.moerise.domain.Note
 import io.ktor.http.HttpMethod
 import kotlinx.coroutines.*
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+
+internal data class FilterPage(val tags: TagPage, val calendar: CalendarPage)
 
 class FilterReads(
     private val repository: suspend () -> NoteRepository,
@@ -14,66 +20,87 @@ class FilterReads(
     private val timezone: () -> String,
     private val scope: CoroutineScope,
 ) {
-    private val locks = mutableMapOf<String, Mutex>()
+    private data class Key(val account: String, val state: String, val month: String, val zone: String)
+    private data class Cached(val page: FilterPage, val fetchedAt: Long?, val offline: Boolean, val projection: Long)
+    private val lock = Mutex()
+    private val pages = linkedMapOf<Key, Cached>()
     private var generation = 0L
+    private var observedRepository: NoteRepository? = null
+    private var observation: Job? = null
+    private val mutableRevision = MutableStateFlow(0L)
+    val revision = mutableRevision.asStateFlow()
 
-    fun clear() { generation++; locks.clear() }
-
-    suspend fun tags(state: String): TagPage {
-        val key = account() ?: throw CancellationException()
-        val repo = repository()
-        if (repo.isNotesSynced(key)) return repo.localTagPage(key, state)
-        return CoreJson.decodeFromString(read("tags:$state", "/tags?state=$state"))
+    fun clear() {
+        generation++
+        pages.clear()
+        mutableRevision.value = generation
     }
 
-    suspend fun calendar(state: String, month: String): CalendarPage {
+    private fun cacheKey(state: String, month: String) = account()?.let { Key(it, state, month, timezone()) }
+
+    internal fun cached(state: String, month: String): FilterPage? = cacheKey(state, month)?.let(::cached)
+
+    private fun cached(key: Key): FilterPage? = pages[key]?.takeIf {
+        val online = core() != null
+        it.projection == observedRepository?.projection?.value &&
+            (it.fetchedAt == null || !online || !it.offline && epochMillis() - it.fetchedAt in 0..59_999)
+    }?.page
+
+    private fun observe(repo: NoteRepository) {
+        if (observedRepository === repo) return
+        observation?.cancel()
+        observedRepository = repo
+        observation = scope.launch(start = CoroutineStart.UNDISPATCHED) {
+            repo.projection.drop(1).collect { clear() }
+        }
+    }
+
+    internal suspend fun filters(state: String, month: String): FilterPage {
         require(month.matches(Regex("\\d{4}-(0[1-9]|1[0-2])")))
-        val key = account() ?: throw CancellationException()
-        val repo = repository()
-        if (repo.isNotesSynced(key)) return repo.localCalendarPage(key, state, month, timezone())
-        return CoreJson.decodeFromString<CalendarPage>(read("calendar:$state:$month", "/calendar?state=$state&month=$month"))
-            .also { require(it.month == month) }
-    }
-
-    private suspend fun read(name: String, path: String): String {
-        val key = account() ?: throw CancellationException()
-        val zone = timezone()
-        val filter = "$zone:$name"
+        val key = cacheKey(state, month) ?: throw CancellationException()
         val stamp = generation
-        val lock = locks.getOrPut("$key:$filter") { Mutex() }
+        fun checkOwner() {
+            if (key != cacheKey(state, month) || stamp != generation) throw CancellationException()
+        }
         return lock.withLock {
+            checkOwner()
+            cached(key)?.let { return@withLock it }
             val repo = repository()
-            val cached = repo.readSnapshot(key, filter)
+            observe(repo)
+            val projection = repo.projection.value
+            val local = repo.isNotesSynced(key.account)
             val active = core()
-            fun checkOwner() {
-                if (key != account() || zone != timezone() || stamp != generation) throw CancellationException()
+            suspend fun read(name: String, path: String): SnapshotEntity {
+                val filter = "${key.zone}:$name"
+                val cached = repo.readSnapshot(key.account, filter)
+                checkOwner()
+                if (cached != null && (epochMillis() - cached.fetchedAt in 0..59_999 || active == null)) return cached
+                val body = (active ?: error("CONNECTION_FAILED")).api(HttpMethod.Get, path)
+                checkOwner()
+                val snapshot = SnapshotEntity(key.account, filter, body, epochMillis())
+                repo.putFilterSnapshot(snapshot, projection)
+                return snapshot
             }
+            val result = if (local) Cached(FilterPage(
+                repo.localTagPage(key.account, state), repo.localCalendarPage(key.account, state, month, key.zone),
+            ), null, false, projection) else {
+                val tags = read("tags:$state", "/tags?state=$state")
+                val calendar = read("calendar:$state:$month", "/calendar?state=$state&month=$month")
+                Cached(FilterPage(CoreJson.decodeFromString(tags.body), CoreJson.decodeFromString(calendar.body)),
+                    minOf(tags.fetchedAt, calendar.fetchedAt), active == null, projection)
+            }
+            require(result.page.calendar.month == month)
             checkOwner()
-            if (cached != null && (epochMillis() - cached.fetchedAt in 0..59_999 || active == null)) return@withLock cached.body
-            val body = (active ?: error("CONNECTION_FAILED")).api(HttpMethod.Get, path)
-            checkOwner()
-            repo.putSnapshot(SnapshotEntity(key, filter, body, epochMillis()))
-            checkOwner()
-            body
+            if (projection != repo.projection.value) throw CancellationException()
+            if (pages.size >= 24) pages.remove(pages.keys.first())
+            pages[key] = result
+            result.page
         }
     }
 
     fun changed(before: Note?, after: Note?) {
-        val key = account() ?: return
-        val zone = timezone()
-        val statesChanged = before?.state != after?.state
-        val day = { note: Note? -> note?.let { displayServiceTime(it.createTime, zone).take(10) } }
-        val names = buildSet {
-            for (note in listOfNotNull(before, after)) {
-                if (statesChanged && note.tags.isNotEmpty() || before?.tags.orEmpty().toSet() != after?.tags.orEmpty().toSet())
-                    add("$zone:tags:${note.state}")
-                if (statesChanged || day(before) != day(after))
-                    add("$zone:calendar:${note.state}:${day(note)?.take(7)}")
-            }
-        }
-        for (name in names) {
-            val lock = locks.getOrPut("$key:$name") { Mutex() }
-            scope.launch(start = CoroutineStart.UNDISPATCHED) { lock.withLock { repository().dropSnapshot(key, name) } }
-        }
+        if (before?.state == after?.state && before?.createTime == after?.createTime &&
+            before?.tags.orEmpty().toSet() == after?.tags.orEmpty().toSet()) return
+        clear()
     }
 }

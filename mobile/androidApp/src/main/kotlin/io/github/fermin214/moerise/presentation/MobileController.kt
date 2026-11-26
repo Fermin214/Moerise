@@ -8,6 +8,8 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.json.*
 
+data class LogoutState(val account: String, val counts: LocalRemovalCounts? = null, val error: String? = null)
+
 class MobileController(
     val session: SessionController,
     private val repository: suspend () -> NoteRepository,
@@ -25,6 +27,17 @@ class MobileController(
         editors.filterValues { it.state.value.accountKey == key && key != null }
     }.stateIn(scope, SharingStarted.Eagerly, emptyMap())
     private var focusedEditor: String? = null
+    private var editorFocusRevision = 0L
+    private val mutableEditorFocus = MutableStateFlow<EditorController?>(null)
+    val editorFocus = mutableEditorFocus.asStateFlow()
+
+    fun leaveWriting() {
+        editorFocusRevision++
+        mutableEditorFocus.value = null
+    }
+
+    fun consumeEditorFocus(editor: EditorController): Boolean =
+        mutableEditorFocus.compareAndSet(editor, null)
     val noteEditor: EditorController get() = focusedEditor?.let(::getNoteEditor) ?: editor
     val timeline = TimelineController(repository, { session.core }, scope)
     val archive = TimelineController(repository, { session.core }, scope, "ARCHIVED")
@@ -56,8 +69,9 @@ class MobileController(
     private val writes = NoteWriteQueue(repository, editorLock, { listOf(editor) + mutableNoteEditors.value.values },
         { session.state.value.profile?.accountKey?.takeIf { key ->
             editor.state.value.let { it.accountKey == key && it.draft != null }
-        } }, privacy) { key, note, draftId ->
-        filterReads.changed(timeline.state.value.notes.firstOrNull { it.name == note.name }, note)
+        } }, privacy, onProjected = { key, previous, note ->
+            if (session.state.value.profile?.accountKey == key) filterReads.changed(previous, note)
+        }) { key, note, draftId ->
         timeline.onSaved(key, note, draftId); homeNote.acceptSaved(key, note)
     }
     val sync = SyncController(session, repository, writes, scope, {
@@ -79,14 +93,19 @@ class MobileController(
     private val editorFrameAccount = MutableStateFlow<String?>(null)
     private val mutableClearing = MutableStateFlow(false)
     val clearing = mutableClearing.asStateFlow()
+    private val mutableLogout = MutableStateFlow<LogoutState?>(null)
+    val logoutState = mutableLogout.asStateFlow()
     private val mutableLocalError = MutableStateFlow<String?>(null)
     val localError = mutableLocalError.asStateFlow()
     private var visiblePage: String? = null
-    private var inForeground = initialForeground
+    private val foregroundState = MutableStateFlow(initialForeground)
+    private val inForeground get() = foregroundState.value
     private val prefetchAllowed = MutableStateFlow(initialForeground)
+    private val filterSource = MutableStateFlow("NORMAL")
 
     fun page(value: String?) {
         visiblePage = value
+        if (value == "home" || value == "archive") filterSource.value = if (value == "home") "NORMAL" else "ARCHIVED"
         prefetchAllowed.value = inForeground && (value == null || value == "home")
         updateDiscovery()
         if (value == "drafts" && !clearing.value) scope.launch {
@@ -94,7 +113,7 @@ class MobileController(
         }
     }
     fun foreground(value: Boolean) {
-        inForeground = value
+        foregroundState.value = value
         privacy.foreground(value)
         prefetchAllowed.value = value && (visiblePage == null || visiblePage == "home")
         sync.foreground(value)
@@ -113,6 +132,10 @@ class MobileController(
     }
 
     init {
+        scope.launch {
+            try { repository().resumeAttachmentRemovals() }
+            catch (error: Exception) { if (error is CancellationException) throw error }
+        }
         session.onRequestFailure = { started, error ->
             privacy.record("request_error", usageResult(error), started, if (inForeground) "user" else "background", error)
         }
@@ -151,7 +174,10 @@ class MobileController(
             session.state.map { it.profile?.accountKey }.distinctUntilChanged().collectLatest { key ->
                 val switched = previousAccount != null && key != null && previousAccount != key
                 previousAccount = key
+                leaveWriting()
+                filterSource.value = "NORMAL"
                 filterReads.clear(); sidebar.clear()
+                if (logoutState.value?.account != key) mutableLogout.value = null
                 editorFrameAccount.value = null
                 timeline.reset(key)
                 archive.reset(key)
@@ -163,9 +189,26 @@ class MobileController(
                 homeNote.clear()
                 noteActions.clear()
                 closeEditors()
-                if (switched) clearFiles()
+                if (switched) clearDownloadsAfterSessionChange()
                 editor.open(key)
                 if (key != null) restoreEditing(key)
+            }
+        }
+        scope.launch {
+            session.state.map { it.profile?.timezone }.distinctUntilChanged().collect {
+                filterReads.clear(); sidebar.clear()
+            }
+        }
+        scope.launch {
+            val firstScreen = combine(editorFrameAccount, foregroundState, filterSource,
+                session.state.map { it.profile?.takeUnless { _ -> it.needsLogin } to it.connected }.distinctUntilChanged()) { frame, foreground, source, connection ->
+                val (profile, connected) = connection
+                profile?.takeIf { foreground && frame == it.accountKey }?.let { Triple(it, source, connected) }
+            }.distinctUntilChanged()
+            combine(firstScreen, filterReads.revision) { target, revision -> target to revision }.collectLatest { (target) ->
+                val (profile, state) = target ?: return@collectLatest
+                try { filterReads.filters(state, serviceMonth(profile.timezone)) }
+                catch (error: Exception) { if (error is CancellationException) throw error }
             }
         }
         scope.launch {
@@ -176,10 +219,6 @@ class MobileController(
                 if (profile == null) return@collectLatest
                 delay(250)
                 try {
-                    if (!repository().isNotesSynced(profile.accountKey)) {
-                        filterReads.tags("NORMAL")
-                        filterReads.calendar("NORMAL", serviceMonth(profile.timezone))
-                    }
                     review.prefetch()
                     if (profile.stargazingEnabled) stars.prefetch()
                 } catch (error: Exception) { if (error is CancellationException) throw error }
@@ -197,7 +236,7 @@ class MobileController(
                     editor.accountKey.takeIf { editor.draft != null && it == frame }
                 }.distinctUntilChanged(),
             ) { connection, ready -> connection to ready }.collect { (connection, ready) ->
-                if (connection.third) { filterReads.clear(); sidebar.clear(); timeline.hideAccountData(); archive.hideAccountData(); search.clear(); review.clear(); walk.clear(); stars.clear(); settings.clear(); homeNote.clear(); clearFiles() }
+                if (connection.third) { filterReads.clear(); sidebar.clear(); timeline.hideAccountData(); archive.hideAccountData(); search.clear(); review.clear(); walk.clear(); stars.clear(); settings.clear(); homeNote.clear(); clearDownloadsAfterSessionChange() }
                 else if (!clearing.value && connection.second && connection.first?.accountKey == ready && ready != null) timeline.refresh()
                 if (connection.first?.stargazingEnabled == false) stars.clear()
                 updateDiscovery()
@@ -205,12 +244,13 @@ class MobileController(
         }
     }
 
-    fun logout() {
+    fun askLogout() {
         if (clearing.value) return
-        scope.launch {
-            try { if (flushEditors()) { sync.stop(); clearFiles(); session.logout() } }
-            catch (error: Exception) { if (error is CancellationException) throw error }
-        }
+        session.state.value.profile?.accountKey?.let { mutableLogout.value = LogoutState(it) }
+    }
+
+    fun dismissLogout() {
+        if (!clearing.value) mutableLogout.value = null
     }
 
     fun flush() {
@@ -346,6 +386,7 @@ class MobileController(
         restore: suspend (EditorController, String, () -> Unit) -> Unit,
         onOpened: () -> Unit,
     ) {
+        val focusRevision = editorFocusRevision
         scope.launch {
             if (clearing.value) return@launch
             registryLock.withLock {
@@ -371,6 +412,7 @@ class MobileController(
                     rememberEditing(account, key, requireNotNull(active.state.value.draft).id)
                     focusNoteEditor(key)
                     mutableEditing.value = true
+                    if (focusRevision == editorFocusRevision) mutableEditorFocus.value = active
                     onOpened()
                 } catch (error: Exception) {
                     if (error is CancellationException) throw error
@@ -422,6 +464,7 @@ class MobileController(
 
     private suspend fun removeEditor(active: EditorController, persist: Boolean = true): Boolean {
         if (!active.close(persist)) return false
+        mutableEditorFocus.compareAndSet(active, null)
         mutableNoteEditors.update { entries -> entries.filterValues { it !== active } }
         if (focusedEditor !in mutableNoteEditors.value) focusedEditor = mutableNoteEditors.value.keys.lastOrNull()
         mutableEditing.value = mutableNoteEditors.value.isNotEmpty()
@@ -465,35 +508,78 @@ class MobileController(
             }
         }
     }
-    fun clearLocalData(account: String) {
+    private suspend fun clearDownloadsAfterSessionChange() {
+        try { clearFiles() }
+        catch (error: Exception) { if (error is CancellationException) throw error }
+    }
+
+    fun confirmLogout(clearLocal: Boolean) {
+        val request = logoutState.value ?: return
+        val account = request.account
         if (clearing.value || account != session.state.value.profile?.accountKey) return
         mutableClearing.value = true
-        mutableLocalError.value = null
-        visiblePage = null
-        editorFrameAccount.value = null
-        updateDiscovery()
+        mutableLogout.value = request.copy(error = null)
         scope.launch {
+            var stopped = false
+            var removing = false
+            var purged = false
             try {
+                if (!flushEditors()) error("LOCAL_WRITE_FAILED")
+                if (account != session.state.value.profile?.accountKey) return@launch
+                if (clearLocal && request.counts == null) {
+                    val counts = repository().localRemovalCounts(account)
+                    if (counts.requiresConfirmation) {
+                        mutableLogout.value = request.copy(counts = counts, error = null)
+                        return@launch
+                    }
+                }
+                stopped = true
                 session.stopForRemoval()
                 sync.stop()
-                search.clear(); review.clear(); walk.clear()
-                settings.clear()
-                if (!closeEditors()) error("LOCAL_WRITE_FAILED")
-                editor.stopForRemoval(); homeNote.stopForRemoval(); noteActions.stopForRemoval()
-                stars.stopForRemoval()
-                timeline.stopForRemoval(); archive.stopForRemoval()
-                mutableEditing.value = false
-                repository().clearAccount(account)
-                clearFiles()
-                session.logout()
+                if (account != session.state.value.profile?.accountKey) return@launch
+                if (clearLocal) {
+                    removing = true
+                    mutableLocalError.value = null
+                    visiblePage = null
+                    editorFrameAccount.value = null
+                    updateDiscovery()
+                    search.clear(); sidebar.clear(); filterReads.clear(); review.clear(); walk.clear(); settings.clear()
+                    if (!closeEditors()) error("LOCAL_WRITE_FAILED")
+                    editor.stopForRemoval(); homeNote.stopForRemoval(); noteActions.stopForRemoval()
+                    stars.stopForRemoval()
+                    timeline.stopForRemoval(); archive.stopForRemoval()
+                    mutableEditing.value = false
+                    val repo = repository()
+                    val counts = repo.localRemovalCounts(account)
+                    if (counts.requiresConfirmation && counts != request.counts) {
+                        mutableLogout.value = request.copy(counts = counts, error = null)
+                        return@launch
+                    }
+                    repo.clearAccountForLogout(account)
+                    purged = true
+                    session.logoutAfterRemoval(account, repo, clearFiles)
+                    repo.finishAccountAttachmentRemoval(account)
+                } else {
+                    clearFiles()
+                    session.logout()
+                }
+                mutableLogout.value = null
             } catch (error: Exception) {
                 if (error is CancellationException) throw error
-                mutableLocalError.value = "LOCAL_REMOVE_FAILED"
-                if (account == session.state.value.profile?.accountKey) {
+                if (account == session.state.value.profile?.accountKey)
+                    mutableLogout.value = request.copy(error = if (clearLocal) "LOCAL_REMOVE_FAILED" else "LOGOUT_FAILED")
+                else if (purged) session.reportRemovalFailure()
+            } finally {
+                mutableClearing.value = false
+                if (currentCoroutineContext().isActive && stopped && !purged && account == session.state.value.profile?.accountKey) {
                     session.recoverAfterRemovalFailure()
-                    timeline.reset(account); archive.reset(account); editor.open(account)
+                    if (removing) {
+                        timeline.reset(account); archive.reset(account); editor.open(account)
+                        restoreEditing(account)
+                    }
+                    if (inForeground) sync.foreground(true)
                 }
-            } finally { mutableClearing.value = false }
+            }
         }
     }
 }

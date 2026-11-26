@@ -24,6 +24,8 @@ class SessionController(
     private val allowLoopbackHttp: Boolean,
     private val scope: CoroutineScope,
     private val onConnectionFailure: (Exception) -> Unit = {},
+    private val removalRepository: (suspend () -> NoteRepository)? = null,
+    private val clearProtectedDownloads: suspend () -> Unit = {},
     private val onNetworkRequest: () -> Unit = {},
 ) : AutoCloseable {
     private val repository = ConnectionRepository(secrets)
@@ -85,7 +87,7 @@ class SessionController(
         core?.close()
         core = null
         try {
-            val profile = repository.selected()
+            val profile = restoreSelection()
             if (stamp != generation) return
             mutableState.value = SessionUiState(loading = false, profile = profile)
             if (profile == null) return
@@ -109,22 +111,43 @@ class SessionController(
         }
     }
 
+    private suspend fun restoreSelection(): ConnectionProfile? {
+        val profile = repository.selected() ?: return null
+        val notes = removalRepository?.invoke() ?: return profile
+        if (!notes.hasPendingLogout(profile.accountKey)) return profile
+        try {
+            clearProtectedDownloads()
+            SessionCookies(profile.origin, secrets).clear()
+            repository.clear()
+            notes.completePendingLogout(profile.accountKey)
+        } catch (error: Exception) {
+            if (error is CancellationException) throw error
+            throw IllegalArgumentException("LOCAL_REMOVE_FAILED", error)
+        }
+        return null
+    }
+
     fun login(originText: String, username: String, password: String) {
         if (state.value.busy) return
         val stamp = ++generation
         core?.close()
         core = null
         mutableState.update { it.copy(busy = true, error = null, connected = false) }
-        operation?.cancel()
+        val previous = operation
+        previous?.cancel()
         operation = scope.launch {
             var active: CoreClient? = null
             try {
+                previous?.join()
+                if (restoreSelection() == null && state.value.profile != null)
+                    mutableState.update { it.copy(profile = null, connected = false) }
                 val origin = normalizeOrigin(originText, allowLoopbackHttp)
                 active = client(origin, stamp)
                 val capabilities = active.capabilities()
                 require("password" in capabilities.loginMethods && capabilities.notes == "ready") { "INCOMPATIBLE_CORE" }
                 val identity = active.login(username, password)
                 if (stamp != generation) return@launch
+                removalRepository?.invoke()?.completePendingLogout(identity.accountKey(origin))
                 val profile = repository.select(origin, identity) {
                     if (stamp != generation) throw CancellationException("Account changed")
                     it
@@ -219,15 +242,34 @@ class SessionController(
 
     suspend fun logout() {
         stopForRemoval()
-        val active = core
-        val logout = try {
-            val request = active?.clearLocalSession()
-            repository.clear()
-            request
+        finishLogout()
+    }
+
+    internal suspend fun logoutAfterRemoval(account: String, notes: NoteRepository, clearDownloads: suspend () -> Unit) {
+        try {
+            clearDownloads()
+            finishLogout()
+            notes.completePendingLogout(account)
         } catch (error: Exception) {
-            if (error !is CancellationException) recoverAfterRemovalFailure()
+            core?.close()
+            core = null
+            mutableState.value = SessionUiState(loading = false)
+            reportRemovalFailure()
             throw error
         }
+    }
+
+    internal fun reportRemovalFailure() {
+        mutableState.update { if (it.profile == null) it.copy(error = "LOCAL_REMOVE_FAILED") else it }
+    }
+
+    private suspend fun finishLogout() {
+        val active = core
+        val logout = active?.clearLocalSession()
+        if (active == null) state.value.profile?.let { profile ->
+            SessionCookies(profile.origin, secrets).clear()
+        }
+        repository.clear()
         core = null
         mutableState.value = SessionUiState(loading = false)
         scope.launch {

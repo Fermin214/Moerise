@@ -11,8 +11,17 @@ import kotlinx.serialization.Serializable
 interface InstallPreferences {
     fun read(key: String): String?
     fun write(key: String, value: String?)
+    fun writeBatch(vararg entries: Pair<String, String?>) {
+        entries.forEach { (key, value) -> write(key, value) }
+    }
+    fun persist(vararg entries: Pair<String, String?>) {
+        writeBatch(*entries)
+    }
+    fun consentWithdrawn(): Boolean = false
+    fun markConsentWithdrawn(withdrawn: Boolean) = Unit
     val clientVersion: String
     val systemMajor: String
+    val systemVersion: String? get() = null
     fun processExits(since: Long): List<Pair<Long, String>> = emptyList()
 }
 
@@ -22,16 +31,22 @@ interface InstallPreferences {
     @SerialName("core_version") val coreVersion: String, @SerialName("system_major") val systemMajor: String,
     val rows: List<UsageRow>,
 )
-@Serializable private data class UsageWindow(val start: Long, val batch: UsageBatch)
+@Serializable internal data class UsageWindow(val start: Long, val batch: UsageBatch)
 data class PrivacyState(val welcome: Boolean = false, val enabled: Boolean = false, val allowed: Boolean? = null,
-    val coreVersion: String = "unknown", val diagnostic: String = "")
+    val coreVersion: String = "unknown", val diagnostic: String = "", val choiceSaveFailed: Boolean = false)
 
 class PrivacyController(
     private val preferences: InstallPreferences?, private val session: SessionController, private val scope: CoroutineScope,
+    private val clock: () -> Long = ::epochMillis,
 ) {
-    private val mutable = MutableStateFlow(PrivacyState(welcome = preferences != null && preferences.read("choice-v1") == null,
-        enabled = preferences?.read("choice-v1") == "on"))
+    private val expiryRevision = MutableStateFlow(0L)
+    private val outbox = preferences?.let { UsageOutbox(it, ::rescheduleExpiry) }
+    private val savedChoice = preferences?.read("choice-v1")
+    private val withdrawn = preferences?.consentWithdrawn() == true
+    private val mutable = MutableStateFlow(PrivacyState(welcome = preferences != null && savedChoice == null && !withdrawn,
+        enabled = savedChoice == "on" && !withdrawn))
     val state = mutable.asStateFlow()
+    private var pendingChoice: Boolean? = null
     private var owner: String? = null
     private var active: CoreClient? = null
     private var policy: Job? = null
@@ -53,6 +68,20 @@ class PrivacyController(
     private val results = setOf("success", "failure", "canceled", "conflict", "unknown", "timeout", "over_limit")
 
     init {
+        if (withdrawn && savedChoice != "off") choose(false, force = true)
+        cleanExpired()
+        outbox?.let { queue ->
+            scope.launch {
+                expiryRevision.collectLatest {
+                    while (isActive) {
+                        val deadline = queue.nextExpiry() ?: break
+                        val wait = deadline - clock()
+                        if (wait > 0) delay(wait)
+                        else if (!cleanExpired()) delay(60_000)
+                    }
+                }
+            }
+        }
         if (preferences != null) scope.launch {
             session.state.collect { connection ->
                 if (connection.loading) return@collect
@@ -60,8 +89,10 @@ class PrivacyController(
                 val client = session.core
                 if (key != owner || active !== client || connection.needsLogin) {
                     policy?.cancel(); sender?.cancel(); version++
-                    if (preferences.read("owner") != key || connection.needsLogin) {
-                        discard(); preferences.write("exit-after", null); preferences.write("owner", key)
+                    if (preferences.read("owner") != key) {
+                        startup = null
+                        mutable.update { it.copy(allowed = null) }
+                        if (runCatching { outbox?.discard("exit-after" to null, "owner" to key) }.isFailure) return@collect
                     }
                     owner = key; active = client
                     recentlyConnected = false
@@ -78,15 +109,17 @@ class PrivacyController(
     fun foreground(value: Boolean) {
         foreground = value
         if (value) {
+            cleanExpired()
+            rescheduleExpiry()
             if (editorReady) refreshPolicy()
-            if (epochMillis() - diagnosticAt >= day) mutable.update { it.copy(diagnostic = "") }
+            if (clock() - diagnosticAt >= day) mutable.update { it.copy(diagnostic = "") }
         } else sender?.cancel()
     }
 
     fun editorDisplayed(start: Long?) {
         editorReady = true
         if (start != null && state.value.enabled && preferences?.read("owner") == session.state.value.profile?.accountKey)
-            startup = start to epochMillis()
+            startup = start to clock()
         refreshPolicy()
     }
 
@@ -104,15 +137,16 @@ class PrivacyController(
             if (owner != key || active !== client || !session.state.value.connected) return@launch
             val allowed = cap.telemetry.schema == 1 && cap.telemetry.allowed
             val coreVersion = safeVersion(cap.version)
-            if (!allowed || state.value.coreVersion !in listOf("unknown", coreVersion)) {
-                version++; sender?.cancel(); discard(); preferences.write("exit-after", null)
-                grantedAt = epochMillis()
-                if (!allowed) startup = null
-            }
             mutable.update { it.copy(allowed = allowed, coreVersion = coreVersion) }
+            if (!allowed) {
+                version++; sender?.cancel()
+                runCatching { outbox?.discard("exit-after" to null) }
+                grantedAt = clock()
+                startup = null
+            }
             if (allowed && state.value.enabled) {
-                if (grantedAt == 0L) grantedAt = preferences.read("consent-at")?.toLongOrNull() ?: epochMillis()
-                cleanExpired()
+                if (grantedAt == 0L) grantedAt = preferences.read("consent-at")?.toLongOrNull() ?: clock()
+                if (runCatching { outbox?.initialize(grantedAt) }.isFailure) return@launch
                 if (!recovered) {
                     recovered = true
                     if (interruptedWrite != null && preferences.read("in-flight") == interruptedWrite)
@@ -126,23 +160,44 @@ class PrivacyController(
         }
     }
 
-    fun choose(enabled: Boolean) {
+    fun choose(enabled: Boolean) = choose(enabled, force = false)
+
+    fun retryChoice() { pendingChoice?.let { choose(it, force = true) } }
+
+    private fun choose(enabled: Boolean, force: Boolean) {
         val on = enabled && state.value.allowed != false
         val prefs = preferences ?: return
-        version++; sender?.cancel(); discard()
+        val queue = outbox ?: return
+        if (!force && !state.value.welcome && on == state.value.enabled) return
+        version++; sender?.cancel()
         startup = null
-        grantedAt = if (on) epochMillis() else 0L
-        prefs.write("consent-at", grantedAt.takeIf { on }?.toString())
-        prefs.write("exit-after", grantedAt.takeIf { on }?.toString())
-        prefs.write("choice-v1", if (on) "on" else "off")
-        mutable.update { it.copy(welcome = false, enabled = on) }
-        if (on) refreshPolicy()
+        mutable.update { it.copy(enabled = false) }
+        grantedAt = if (on) clock() else 0L
+        val baseline = grantedAt.takeIf { on }?.toString()
+        if (!on) runCatching { prefs.markConsentWithdrawn(true) }
+        val saved = runCatching {
+            queue.discard("consent-at" to baseline, "exit-after" to baseline,
+                "choice-v1" to if (on) "on" else "off", "last-attempt" to baseline)
+            if (on) prefs.markConsentWithdrawn(false)
+        }.isSuccess
+        pendingChoice = if (saved) null else on
+        mutable.update { it.copy(welcome = it.welcome && !saved, enabled = saved && on, choiceSaveFailed = !saved) }
+        if (saved && on) refreshPolicy()
     }
 
-    private fun discard() {
-        preferences?.write("aggregate", null)
-        preferences?.write("pending", null)
-        preferences?.write("in-flight", null)
+    fun diagnosticSummary(strings: Strings): String {
+        val connection = session.state.value
+        val status = when {
+            connection.needsLogin -> strings.text("需要重新登录", "Sign in required")
+            connection.connected -> strings.text("已连接", "Connected")
+            connection.profile != null -> strings.text("离线", "Offline")
+            else -> strings.text("未连接", "Not connected")
+        }
+        val diagnostic = state.value.diagnostic.takeIf { clock() - diagnosticAt in 0 until day }.orEmpty()
+        val sdk = preferences?.systemMajor ?: "unknown"
+        val android = preferences?.systemVersion?.let { "Android $it (SDK $sdk)" } ?: "Android SDK $sdk"
+        return listOf("Moerise ${safeVersion(preferences?.clientVersion.orEmpty())}", "Core ${state.value.coreVersion}", android, status,
+            diagnostic.ifEmpty { strings.text("近期无错误", "No recent errors") }).joinToString("\n")
     }
 
     private fun safeVersion(value: String) = value.takeIf { it.matches(Regex("(0|[1-9][0-9]{0,2})(\\.(0|[1-9][0-9]{0,2})){2}")) } ?: "unknown"
@@ -156,9 +211,9 @@ class PrivacyController(
     }
 
     fun record(operation: String, result: String = "success", started: Long? = null, source: String = "user",
-        error: Exception? = null, code: String? = null, finished: Long = epochMillis()) {
+        error: Exception? = null, code: String? = null, finished: Long = clock()) {
         if (operation !in operations || result !in results || source !in setOf("user", "background", "prefetch")) return
-        val now = epochMillis()
+        val now = clock()
         val elapsed = duration(started?.let { finished - it })
         if (result in setOf("failure", "conflict", "timeout", "unknown", "over_limit")) {
             val detail = (error as? CoreException)?.detail
@@ -169,15 +224,9 @@ class PrivacyController(
                 "duration=$elapsed", "android=${safeVersion(preferences?.clientVersion.orEmpty())}", "core=${it.coreVersion}",
                 request?.let { id -> "request_id=$id" }).joinToString("\n")) }
         }
-        val prefs = preferences ?: return
+        val queue = outbox ?: return
         if (!permitted() || started != null && started < grantedAt) return
-        val old = window(now)
-        val rows = old.batch.rows.toMutableList()
-        val row = UsageRow(operation, result, elapsed, source, 1)
-        val index = rows.indexOfFirst { it.copy(count = 1) == row }
-        if (index >= 0) rows[index] = rows[index].copy(count = (rows[index].count + 1).coerceAtMost(65_535))
-        else if (rows.size < 256) rows += row
-        prefs.write("aggregate", CoreJson.encodeToString(old.copy(batch = old.batch.copy(rows = rows))))
+        queue.record(now, batchIdentity(), UsageRow(operation, result, elapsed, source, 1))
         sendIfDue()
     }
 
@@ -206,45 +255,53 @@ class PrivacyController(
 
     private fun pendingWrites(): Map<String, Long> = preferences?.read("pending")?.let {
         runCatching { CoreJson.decodeFromString<Map<String, Long>>(it) }.getOrNull()
-    }.orEmpty().filterValues { epochMillis() - it in 0L until 2 * day }
+    }.orEmpty().filterValues { clock() - it in 0L until 2 * day }
 
-    private fun cleanExpired() {
-        val prefs = preferences ?: return
-        val batch = window(epochMillis())
-        if (batch.batch.rows.isEmpty()) prefs.write("aggregate", null)
-        if (prefs.read("pending") != null) prefs.write("pending", pendingWrites().takeIf { it.isNotEmpty() }?.let { CoreJson.encodeToString(it) })
+    private fun rescheduleExpiry() { expiryRevision.update { it + 1 } }
+
+    private fun cleanExpired(): Boolean {
+        val prefs = preferences ?: return true
+        return runCatching {
+            outbox?.expire(clock())
+            if (prefs.read("pending") != null) {
+                val pending = pendingWrites()
+                prefs.persist("pending" to pending.takeIf { it.isNotEmpty() }?.let { CoreJson.encodeToString(it) },
+                    "in-flight" to prefs.read("in-flight")?.takeIf { it in pending })
+            }
+        }.isSuccess
     }
 
-    private fun window(now: Long): UsageWindow {
+    private fun batchIdentity(): UsageBatch {
         val prefs = requireNotNull(preferences)
-        val batch = UsageBatch(clientVersion = safeVersion(prefs.clientVersion), coreVersion = state.value.coreVersion,
+        return UsageBatch(clientVersion = safeVersion(prefs.clientVersion), coreVersion = state.value.coreVersion,
             systemMajor = prefs.systemMajor.takeIf { it.matches(Regex("[1-9][0-9]{0,2}")) } ?: "unknown", rows = emptyList())
-        return prefs.read("aggregate")?.let { runCatching { CoreJson.decodeFromString<UsageWindow>(it) }.getOrNull() }
-            ?.takeIf { now - it.start in 0L until 2 * day && it.batch.copy(rows = emptyList()) == batch } ?: UsageWindow(now, batch)
     }
 
     private fun sendIfDue() {
-        val prefs = preferences ?: return
+        val queue = outbox ?: return
         val client = active ?: return
-        val now = epochMillis()
+        val now = clock()
         if (!foreground || !permitted() || !session.state.value.connected || sender?.isActive == true ||
-            now - (prefs.read("last-attempt")?.toLongOrNull() ?: 0L) < day) return
-        val batch = window(now).batch
-        if (batch.rows.isEmpty()) return
+            !queue.ready(now)) return
         val stamp = version
         sender = scope.launch {
             delay(500)
             if (!permitted() || stamp != version || !foreground || client !== session.core || !session.state.value.connected) return@launch
-            val latest = window(epochMillis()).batch
-            prefs.write("last-attempt", epochMillis().toString()); prefs.write("aggregate", null)
-            try { withTimeout(5000) { client.api(HttpMethod.Post, "/telemetry", CoreJson.encodeToString(latest)) } }
+            try {
+                val attempt = queue.freeze(clock()) ?: return@launch
+                val accepted = withTimeoutOrNull(5000) {
+                    client.api(HttpMethod.Post, "/telemetry", CoreJson.encodeToString(attempt.batch))
+                    true
+                }
+                if (accepted == true && stamp == version && permitted()) queue.acknowledge(clock(), attempt)
+            }
             catch (failure: Exception) { if (failure is CancellationException) throw failure }
         }
     }
 
     private fun countProcessExits() {
         val prefs = preferences ?: return
-        val now = epochMillis()
+        val now = clock()
         val since = prefs.read("exit-after")?.toLongOrNull()?.coerceAtLeast(now - 2 * day) ?: now
         prefs.write("exit-after", now.toString())
         prefs.processExits(since).filter { it.first in (since + 1)..now && it.second in setOf("crash", "anr") }

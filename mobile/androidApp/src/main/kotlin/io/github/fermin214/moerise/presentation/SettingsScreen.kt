@@ -52,6 +52,8 @@ fun SettingsScreen(
     val state by controller.state.collectAsState()
     val language by mobile.session.language.collectAsState()
     val preferencesError by mobile.session.preferencesError.collectAsState()
+    val sync by mobile.sync.state.collectAsState()
+    val connection by mobile.session.state.collectAsState()
     var tab by rememberSaveable { mutableIntStateOf(0) }
     val scroll = rememberScrollState()
 
@@ -83,6 +85,19 @@ fun SettingsScreen(
                     ),
                     tab, { if (!state.busy) tab = it }, tagPrefix = "settings_tab", enabled = !state.busy,
                 )
+                if (tab == 0) SettingsSection(strings.text("笔记同步", "Note sync")) {
+                    val lastSync = sync.lastSyncAt?.let { displayServiceTime(java.time.Instant.ofEpochMilli(it).toString(),
+                        connection.profile?.timezone ?: "UTC") }
+                    SettingsRow(
+                        strings.text("上次同步", "Last sync"),
+                        hint = lastSync ?: strings.text("尚未同步", "No sync yet"),
+                        separator = false,
+                    ) {
+                        SettingsGhost(strings.text("立即同步", "Sync now"),
+                            LocalWebSyncAction.current ?: mobile::synchronize,
+                            modifier = Modifier.testTag("settings_sync"))
+                    }
+                }
                 when {
                     tab == 3 -> PrivacySettings(mobile.privacy, strings)
                     state.loading -> SettingsHint(strings.text("正在加载设置…", "Loading settings…"))
@@ -710,7 +725,7 @@ private fun SettingsInput(
         keyboardOptions = KeyboardOptions(keyboardType = keyboard, autoCorrectEnabled = false),
         visualTransformation = if (password) PasswordVisualTransformation() else VisualTransformation.None,
         cursorBrush = SolidColor(MoeriseColors.Blue),
-        modifier = modifier
+        modifier = modifier.drawerGestureRegion()
             .focusRequester(focus)
             .onFocusChanged { focused = it.isFocused }
             .border(1.dp, if (focused) Color(0xFFB5CCF2) else MoeriseColors.Line, RoundedCornerShape(8.dp))

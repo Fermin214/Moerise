@@ -16,13 +16,13 @@ import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.unit.dp
 
 @Composable
-private fun ShareChoice(checked: Boolean, enabled: Boolean, strings: Strings, change: (Boolean) -> Unit) {
-    Row(Modifier.fillMaxWidth().toggleable(checked, enabled = enabled, role = Role.Switch, onValueChange = change)
+private fun ShareChoice(checked: Boolean, allowed: Boolean, strings: Strings, enabled: Boolean = true, change: (Boolean) -> Unit) {
+    Row(Modifier.fillMaxWidth().toggleable(checked, enabled = enabled && allowed, role = Role.Switch, onValueChange = change)
         .testTag("privacy_share"), verticalAlignment = Alignment.CenterVertically) {
         Text(strings.text("分享使用与故障统计", "Share usage and error statistics"), Modifier.weight(1f))
-        Switch(checked, onCheckedChange = null, enabled = enabled)
+        Switch(checked, onCheckedChange = null, enabled = enabled && allowed)
     }
-    Text(if (enabled) strings.text(
+    Text(if (allowed) strings.text(
         "开启后，发送功能使用次数、等待时间和错误类型等汇总，帮助改进 Moerise。不含笔记、搜索词、提问和回答正文。",
         "Share feature counts, waiting-time ranges and error categories to improve Moerise. Notes, searches, questions and answers are excluded.")
         else strings.text("此实例禁止发送统计。", "This instance disables statistics sharing."))
@@ -52,13 +52,15 @@ fun WelcomeDialog(controller: PrivacyController, strings: Strings) {
         title = { Text(strings.text("欢迎使用 Moerise", "Welcome to Moerise")) },
         text = { Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Text(strings.text("Moerise 还在持续完善中，欢迎反馈问题和建议。", "Moerise is still improving. Your feedback and suggestions are welcome."))
-            ShareChoice(checked && state.allowed != false, state.allowed != false, strings) { checked = it }
+            ShareChoice(checked && state.allowed != false && !state.choiceSaveFailed, state.allowed != false, strings,
+                enabled = !state.choiceSaveFailed) { checked = it }
+            if (state.choiceSaveFailed) PrivacyChoiceRetry(controller, strings)
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Feedback(strings)
                 Text("·")
                 TextButton({ details = true }) { Text(strings.text("查看统计说明", "About statistics")) }
             }
-        } }, confirmButton = { Button({ controller.choose(checked) }, modifier = Modifier.testTag("welcome_enter")) {
+        } }, confirmButton = { Button({ controller.choose(checked) }, enabled = !state.choiceSaveFailed, modifier = Modifier.testTag("welcome_enter")) {
             Text(strings.text("进入 Moerise", "Enter Moerise"))
         } })
 }
@@ -80,10 +82,12 @@ fun PrivacySettings(controller: PrivacyController, strings: Strings) {
     var text by remember { mutableStateOf("") }
     val clipboard = LocalClipboardManager.current
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        ShareChoice(state.enabled && state.allowed != false, state.allowed != false, strings, controller::choose)
+        ShareChoice(state.enabled && state.allowed != false, state.allowed != false, strings,
+            enabled = !state.choiceSaveFailed, change = controller::choose)
+        if (state.choiceSaveFailed) PrivacyChoiceRetry(controller, strings)
         PrivacyDetails(strings)
         Feedback(strings)
-        TextButton({ text = state.diagnostic; preview = true }, enabled = state.diagnostic.isNotEmpty()) {
+        TextButton({ text = controller.diagnosticSummary(strings); preview = true }, modifier = Modifier.testTag("diagnostic_summary")) {
             Text(strings.text("复制诊断摘要", "Copy diagnostic summary"))
         }
     }
@@ -94,4 +98,12 @@ fun PrivacySettings(controller: PrivacyController, strings: Strings) {
             OutlinedTextField(text, { text = it }, modifier = Modifier.fillMaxWidth(), minLines = 3)
         } }, dismissButton = { TextButton({ preview = false }) { Text(strings.text("取消", "Cancel")) } },
         confirmButton = { TextButton({ clipboard.setText(AnnotatedString(text)); preview = false }) { Text(strings.text("复制", "Copy")) } })
+}
+
+@Composable
+private fun PrivacyChoiceRetry(controller: PrivacyController, strings: Strings) {
+    Text(strings.text("未能保存统计设置。", "Could not save statistics settings."), color = MaterialTheme.colorScheme.error)
+    TextButton(controller::retryChoice, modifier = Modifier.testTag("privacy_choice_retry")) {
+        Text(strings.text("重试", "Retry"))
+    }
 }

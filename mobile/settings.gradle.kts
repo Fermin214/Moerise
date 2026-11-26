@@ -9,7 +9,9 @@ dependencyResolutionManagement {
     repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
     repositories {
         google()
-        mavenCentral()
+        mavenCentral {
+            content { excludeModule("org.robolectric", "nativeruntime-dist-compat") }
+        }
         maven { url = uri("https://maven-central.storage-download.googleapis.com/maven2/") }
     }
 }

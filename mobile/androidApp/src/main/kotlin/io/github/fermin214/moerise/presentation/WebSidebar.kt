@@ -25,15 +25,13 @@ import androidx.compose.ui.unit.sp
 
 @Composable
 fun WebSidebar(
-    page: String, strings: Strings, userName: String, filters: SearchState, month: String, open: Boolean,
+    page: String, strings: Strings, userName: String, filters: SearchState, month: String,
     onClose: () -> Unit, onNavigate: (String) -> Unit,
     onMonth: (String) -> Unit, onDate: (String) -> Unit, onTag: (String) -> Unit,
-    onArchive: () -> Unit, onLogout: () -> Unit, onRemoveAccount: () -> Unit, selectedTags: Set<String> = emptySet(), selectedDate: String = "",
-    today: String = "", stargazingEnabled: Boolean = true, onSync: () -> Unit = {},
+    onLogout: () -> Unit, selectedTags: Set<String> = emptySet(), selectedDate: String = "",
+    today: String = "", stargazingEnabled: Boolean = true,
 ) {
     val scroll = rememberScrollState()
-    var accountMenu by remember { mutableStateOf(false) }
-    LaunchedEffect(open) { if (!open) accountMenu = false }
     Column(Modifier.fillMaxHeight().safeDrawingPadding().padding(12.dp)) {
         Row(Modifier.fillMaxWidth().height(44.dp).padding(start = 8.dp),
             verticalAlignment = Alignment.CenterVertically) {
@@ -51,6 +49,7 @@ fun WebSidebar(
                         Triple("review", strings.text("回顾", "Review"), WebIcon.Review),
                         Triple("walk", strings.text("漫步", "Walk"), WebIcon.Walk),
                         Triple("map", strings.text("观星", "Stargazing"), WebIcon.Map),
+                        Triple("archive", strings.text("归档笔记", "Archived notes"), WebIcon.Archive),
                     ).filter { it.first != "map" || stargazingEnabled }.forEach { (target, label, icon) ->
                         SidebarEntry(label, icon, page == target, Modifier.testTag("nav_$target")) { onNavigate(target) }
                     }
@@ -81,35 +80,65 @@ fun WebSidebar(
                 Column(Modifier.padding(top = 8.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                     SidebarEntry(strings.text("设置", "Settings"), WebIcon.Settings, page == "settings",
                         Modifier.testTag("nav_settings")) { onNavigate("settings") }
-                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                        Box(Modifier.weight(1f)) {
-                            Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).testTag("account_menu")
-                                .clickable(role = Role.Button) { accountMenu = !accountMenu }
-                                .heightIn(min = 44.dp).padding(horizontal = 10.dp),
-                                verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                                WebIcon(WebIcon.User)
-                                Text(userName.removePrefix("users/"), fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
-                                    modifier = Modifier.weight(1f))
-                                WebIcon(WebIcon.More, strings.text("用户菜单", "Account menu"), Modifier.size(16.dp))
-                            }
-                            DropdownMenu(accountMenu, onDismissRequest = { accountMenu = false },
-                                modifier = Modifier.platformTestTags()) {
-                                DropdownMenuItem(text = { Text(strings.text("归档笔记", "Archived notes")) },
-                                    onClick = { accountMenu = false; onArchive() }, modifier = Modifier.testTag("nav_archive"))
-                                DropdownMenuItem(text = { Text(strings.text("退出登录", "Sign out")) },
-                                    onClick = { accountMenu = false; onLogout() }, modifier = Modifier.testTag("account_logout"))
-                                DropdownMenuItem(text = { Text(strings.text("删除本机账号数据", "Delete local account data"),
-                                    color = MaterialTheme.colorScheme.error) }, onClick = { accountMenu = false; onRemoveAccount() },
-                                    modifier = Modifier.testTag("account_remove"))
-                            }
-                        }
-                        IconButton(onClick = onSync, modifier = Modifier.size(44.dp).testTag("sidebar_sync")) {
-                            WebIcon(WebIcon.Sync, strings.text("立即同步", "Sync now"), Modifier.size(18.dp))
+                    Row(Modifier.fillMaxWidth().padding(start = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        WebIcon(WebIcon.User)
+                        Text(userName.removePrefix("users/"), fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f))
+                        TextButton(onClick = onLogout, modifier = Modifier.testTag("account_logout")) {
+                            Text(strings.text("退出登录", "Sign out"))
                         }
                     }
                 }
             }
     }
+}
+
+@Composable
+internal fun LogoutDialog(
+    state: LogoutState, busy: Boolean, strings: Strings, onConfirm: (Boolean) -> Unit, onDismiss: () -> Unit,
+) {
+    var clearLocal by remember(state.account) { mutableStateOf(false) }
+    val counts = state.counts
+    AlertDialog(
+        onDismissRequest = onDismiss, modifier = Modifier.platformTestTags(),
+        title = { Text(if (counts == null) strings.text("退出登录？", "Sign out?")
+            else strings.text("确认清除本地数据并退出？", "Delete local data and sign out?")) },
+        text = {
+            Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (counts == null) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Checkbox(clearLocal, { clearLocal = it }, enabled = !busy, modifier = Modifier.testTag("logout_clear_local"))
+                        Text(strings.text(
+                            "同时清除此设备上的本地数据（含未同步待发笔记、草稿、冲突副本与缓存，不影响服务器已保存笔记）",
+                            "Also clear local data on this device, including queued notes, drafts, conflict copies and cache. Notes saved on the server are kept.",
+                        ))
+                    }
+                } else {
+                    Text(strings.text("待发笔记 ${counts.queued} 条、冲突副本 ${counts.conflicts} 条、暂存附件 ${counts.attachments} 个。",
+                        "${counts.queued} queued notes, ${counts.conflicts} conflict copies, ${counts.attachments} staged attachments."),
+                        modifier = Modifier.testTag("logout_cleanup_counts"))
+                }
+                state.error?.let {
+                    Text(if (it == "LOCAL_REMOVE_FAILED") editorError(it, strings)
+                        else strings.text("退出登录失败，请重试。", "Could not sign out. Try again."), color = MaterialTheme.colorScheme.error)
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { onConfirm(clearLocal || counts != null) }, enabled = !busy,
+                modifier = Modifier.testTag("logout_confirm")) {
+                Text(when {
+                    counts != null -> strings.text("清除并退出", "Delete and sign out")
+                    clearLocal -> strings.text("确认清除并退出", "Confirm deletion and sign out")
+                    else -> strings.text("退出登录", "Sign out")
+                }, color = if (counts != null) MaterialTheme.colorScheme.error else Color.Unspecified)
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss, enabled = !busy) { Text(strings.text("取消", "Cancel")) }
+        },
+    )
 }
 
 @Composable

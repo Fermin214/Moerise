@@ -3,8 +3,6 @@ package io.github.fermin214.moerise.presentation
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.awaitEachGesture
-import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
@@ -18,7 +16,6 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -44,10 +41,7 @@ import androidx.compose.animation.core.tween
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.geometry.Rect
-import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.clearAndSetSemantics
@@ -59,12 +53,12 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import kotlin.math.abs
 import kotlinx.coroutines.launch
 
 val LocalWebSearchPanel = staticCompositionLocalOf<(@Composable () -> Unit)?> { null }
 val LocalWebSearchOpen = staticCompositionLocalOf { false }
 val LocalWebSyncAction = staticCompositionLocalOf<(() -> Unit)?> { null }
+internal val LocalLeaveWriting = staticCompositionLocalOf<() -> Unit> { {} }
 
 @Composable
 fun WebSearchPanel(query: SearchQuery, strings: Strings, onChange: (SearchQuery) -> Unit, onClose: () -> Unit, onSubmit: () -> Unit) {
@@ -84,7 +78,7 @@ fun WebSearchPanel(query: SearchQuery, strings: Strings, onChange: (SearchQuery)
                         cursorBrush = SolidColor(MoeriseColors.Blue),
                         keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
                         keyboardActions = KeyboardActions(onSearch = { onSubmit() }),
-                        modifier = Modifier.weight(1f).heightIn(min = 44.dp).focusRequester(focus).testTag("search_query")
+                        modifier = Modifier.weight(1f).heightIn(min = 44.dp).drawerGestureRegion().focusRequester(focus).testTag("search_query")
                             .semantics { contentDescription = strings.text("搜索笔记", "Search notes") }
                             .onPreviewKeyEvent { if (it.key == Key.Escape && it.type == KeyEventType.KeyDown) { onClose(); true } else false },
                         decorationBox = { input -> Box(
@@ -113,38 +107,6 @@ fun WebSearchPanel(query: SearchQuery, strings: Strings, onChange: (SearchQuery)
                     listOf("keyword" to strings.text("关键词", "Keyword"), "semantic" to strings.text("语义", "Semantic"), "hybrid" to strings.text("混合", "Hybrid")).forEach { (value, label) ->
                         DropdownMenuItem(text = { Text(label) }, onClick = { modeMenu = false; onChange(query.copy(mode = value)) })
                     }
-                }
-            }
-        }
-    }
-}
-
-@Composable
-fun Modifier.webNavigationGesture(enabled: Boolean, editorBounds: List<Rect>, onOpen: () -> Unit): Modifier {
-    val open = rememberUpdatedState(onOpen)
-    val excluded = rememberUpdatedState(editorBounds)
-    val keyboardOpen = WindowInsets.ime.getBottom(LocalDensity.current) > 0
-    return pointerInput(enabled, keyboardOpen) {
-        if (!enabled || keyboardOpen) return@pointerInput
-        val threshold = 64.dp.toPx()
-        awaitEachGesture {
-            val down = awaitFirstDown(requireUnconsumed = false)
-            if (down.position.x !in size.width * .25f..size.width * .75f ||
-                excluded.value.any { it.contains(down.position) })
-                return@awaitEachGesture
-            while (true) {
-                val event = awaitPointerEvent()
-                if (event.changes.count { it.pressed } > 1) break
-                val change = event.changes.firstOrNull { it.id == down.id } ?: break
-                if (!change.pressed || change.isConsumed ||
-                    change.uptimeMillis - down.uptimeMillis >= viewConfiguration.longPressTimeoutMillis) break
-                val movement = change.position - down.position
-                if (movement.x < -viewConfiguration.touchSlop ||
-                    abs(movement.y) > viewConfiguration.touchSlop && abs(movement.y) >= abs(movement.x)) break
-                if (movement.x >= threshold && movement.x > abs(movement.y) * 2) {
-                    change.consume()
-                    open.value()
-                    break
                 }
             }
         }
@@ -224,7 +186,7 @@ fun WebToolbar(
     Column(modifier.fillMaxWidth().platformTestTags()) {
         Row(Modifier.fillMaxWidth().height(56.dp).padding(horizontal = 8.dp),
             verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
-            IconButton(onClick = onMenu, modifier = Modifier.size(44.dp).testTag("open_menu")) {
+            IconButton(onClick = onMenu, modifier = Modifier.size(44.dp).drawerOpener().testTag("open_menu")) {
                 WebIcon(WebIcon.Menu, strings.text("打开导航", "Open navigation"), Modifier.size(20.dp))
             }
             Text(title, style = MaterialTheme.typography.titleMedium,

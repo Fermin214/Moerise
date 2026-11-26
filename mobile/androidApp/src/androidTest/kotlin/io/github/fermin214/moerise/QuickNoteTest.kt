@@ -184,13 +184,14 @@ class QuickNoteTest {
             state.notes.any { it.name == target && it.content == content }
         }
         compose.onNodeWithTag("note_card_$target").assertIsDisplayed()
-        compose.clickTag("open_menu")
-        compose.clickTag("sidebar_sync")
+        compose.navigate("settings")
+        compose.clickTag("settings_sync")
         waitTimeline("手动同步开始", CORE_REQUEST_TIMEOUT_MILLIS + 5_000) { mobile.sync.state.value.status == SyncStatus.SYNCING }
         waitTimeline("同步完成与两页笔记", 2 * CORE_REQUEST_TIMEOUT_MILLIS + 5_000) { state ->
             mobile.sync.state.value.status == SyncStatus.CONNECTED && state.fresh && !state.loading && !state.loadingMore &&
                 state.notes.getOrNull(29)?.let { it.name == target && it.content == content } == true
         }
+        compose.navigate("home")
         compose.onNodeWithTag("note_card_$target").assertIsDisplayed()
         val restored = compose.onNodeWithTag(anchor).assertIsDisplayed().fetchSemanticsNode().boundsInRoot.top
         check(kotlin.math.abs(restored - position) <= 2f) { "主页编辑导致卡片移动 $position → $restored" }

@@ -178,6 +178,7 @@ private fun ConnectionField(
 }
 
 fun connectionError(code: String, strings: Strings): String = when (code) {
+    "LOCAL_REMOVE_FAILED" -> strings.text("本机数据清理未完成，请重试。", "Local cleanup is incomplete. Try again.")
     "HTTPS_REQUIRED" -> strings.text("服务地址需要使用 HTTPS。", "Use an HTTPS server address.")
     "INVALID_ORIGIN" -> strings.text("请填写不含路径的服务地址。", "Enter a server address without a path.")
     "SESSION_UNAUTHORIZED", "INVALID_CREDENTIALS", "AUTHENTICATION_FAILED" -> strings.text("请检查用户名和密码后重新登录。", "Check your username and password, then sign in again.")
