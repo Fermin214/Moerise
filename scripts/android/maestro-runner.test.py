@@ -576,6 +576,13 @@ class MaestroExecutionTest(unittest.TestCase):
         self.assertEqual(list(result), ["first"])
         self.assertEqual(run.call_count, 1)
 
+    def test_every_catalog_flow_has_a_contract_fingerprint(self):
+        flows = runner.catalog()["flows"]
+        self.assertEqual(flows.keys(), runner.FLOW_CONTRACT_VERSIONS.keys())
+        for flow in flows:
+            with self.subTest(flow=flow):
+                self.assertRegex(runner.flow_digest(runner.ROOT, flow), r"^[a-f0-9]{64}$")
+
     def test_pass_identity_changes_when_a_shared_subflow_changes(self):
         root = self.output / "repo"
         target = root / "scripts/android/maestro"

@@ -32,7 +32,7 @@ USER_AGENT = "Moerise-Android-Acceptance/1.0"
 CHANNEL_FLOWS = {"navigation", "navigation-settings"}
 FLOW_CONTRACT_VERSIONS = {
     "actions": 1, "archive": 1, "attachments": 1, "attachment-cancel": 1,
-    "editing": 1, "home-smoke": 1,
+    "baseline-compatibility": 1, "editing": 1, "home-smoke": 1,
     "language": 1, "login": 1, "navigation": 1,
     "navigation-review": 1, "navigation-walk": 1, "navigation-map": 1, "navigation-settings": 1,
     "recover-draft": 1, "editor-home": 1, "release-smoke": 1, "search": 1, "test-source": 2,
