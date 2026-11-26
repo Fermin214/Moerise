@@ -23,6 +23,7 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.snapshots.Snapshot
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.geometry.Offset
@@ -371,8 +372,14 @@ class AndroidUiRegressionTest {
             } else {
                 compose.onNode(tagInBody, useUnmergedTree = true).assertDoesNotExist()
                 compose.mainClock.autoAdvance = false
-                compose.runOnIdle { entry.value = TimelineEntry.Remote(confirmed) }
+                compose.runOnIdle {
+                    entry.value = TimelineEntry.Remote(confirmed)
+                    Snapshot.sendApplyNotifications()
+                    shadowOf(Looper.getMainLooper()).idle()
+                }
                 compose.mainClock.advanceTimeByFrame()
+                compose.onNodeWithTag("note_card_${confirmed.name}", useUnmergedTree = true).assertExists()
+                compose.onNode(tagInBody, useUnmergedTree = true).assertExists()
             }
             image.assertIsDisplayed()
             compose.mainClock.autoAdvance = true

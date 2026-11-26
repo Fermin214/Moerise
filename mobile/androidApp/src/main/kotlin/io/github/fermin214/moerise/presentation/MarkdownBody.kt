@@ -314,8 +314,10 @@ fun MarkdownBody(content: String, modifier: Modifier = Modifier, note: Note? = n
             for (index in 0 until blocks.lastIndex) {
                 val block = blocks[index]
                 key(defBlocks, index) {
-                    val rendered = retainedBlocks[block] ?: rememberMarkdownState(block, flavour = flavour,
-                        parser = parser, referenceLinkHandler = refHandler, immediate = true).state.collectAsState().value as? MdState.Success
+                    val rendered = retainedBlocks[block] ?: key(block) {
+                        rememberMarkdownState(block, flavour = flavour, parser = parser, referenceLinkHandler = refHandler,
+                            immediate = true).state.collectAsState().value as? MdState.Success
+                    }
                     if (rendered != null) {
                         SideEffect { retainedBlocks[block] = rendered }
                         Markdown(
@@ -333,8 +335,10 @@ fun MarkdownBody(content: String, modifier: Modifier = Modifier, note: Note? = n
             val tail = blocks.last()
             key(defBlocks, blocks.lastIndex) {
                 val rendered = retainedBlocks[tail] ?: if (tail.length <= 4096) {
-                    rememberMarkdownState(tail, flavour = flavour, parser = parser, referenceLinkHandler = refHandler,
-                        immediate = true).state.collectAsState().value as? MdState.Success
+                    key(tail) {
+                        rememberMarkdownState(tail, flavour = flavour, parser = parser, referenceLinkHandler = refHandler,
+                            immediate = true).state.collectAsState().value as? MdState.Success
+                    }
                 } else {
                     val parse = LocalParseMarkdownTail.current
                     val parsed by produceState<MdState.Success?>(null, tail, refHandler, parse) {
