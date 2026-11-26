@@ -8,6 +8,8 @@ import kotlinx.coroutines.*
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
+internal data class DrainResult(val drained: Boolean, val committedCount: Int, val hadNewConflict: Boolean)
+
 internal class NoteWriteQueue(
     private val repository: suspend () -> NoteRepository,
     private val draftLock: Mutex,
@@ -16,16 +18,19 @@ internal class NoteWriteQueue(
     private val privacy: PrivacyController? = null,
     private val onProjected: (String, Note?, Note) -> Unit = { _, _, _ -> },
     private val onSaved: (String, Note, String?) -> Unit = { _, _, _ -> },
+    private val onCommitted: (String, DraftEntity?, PendingWriteEntity) -> Unit = { _, _, _ -> },
 ) {
     private val sendLock = Mutex()
     private var received: WriteResult? = null
 
     suspend fun reset() = sendLock.withLock { received = null }
 
-    suspend fun drain(key: String, client: CoreClient): Boolean = sendLock.withLock {
+    suspend fun drain(key: String, client: CoreClient): DrainResult = sendLock.withLock {
         val repo = repository()
+        var committed = 0
+        var newConflict = false
         repeat(100) {
-            if (key != account()) return@withLock false
+            if (key != account()) return@withLock DrainResult(false, committed, newConflict)
             draftLock.withLock {
                 for (draft in repo.queuedNotes(key)) {
                     val frozen = draft.queuedRevisionJson ?: continue
@@ -35,29 +40,37 @@ internal class NoteWriteQueue(
                     }
                 }
             }
-            val write = repo.queuedWrites(key).firstOrNull() ?: return@withLock true
+            val write = repo.queuedWrites(key).firstOrNull() ?: return@withLock DrainResult(!repo.automaticWritesPending(key), committed, newConflict)
             checkAccount(key)
             try {
                 val result = received?.takeIf { it.write.id == write.id } ?: send(repo, client, write).also { received = it }
                 draftLock.withLock {
                     val previous = result.remote?.let { repo.localNote(key, it.name) }
-                    commit(repo, result)
-                    result.remote?.let { onProjected(key, previous, it) }
+                    currentCoroutineContext().ensureActive()
+                    withContext(NonCancellable) {
+                        val next = commit(repo, result)
+                        if (key == account()) {
+                            result.remote?.let { onProjected(key, previous, it) }
+                            if (result.error == null) result.remote?.let { onSaved(key, it, write.draftId.takeIf { write.method == "POST" }) }
+                            onCommitted(key, next, write)
+                        }
+                        received = null
+                    }
                 }
-                received = null
+                if (result.matches) committed++
+                if (!result.matches) newConflict = true
                 privacy?.endWrite("${write.draftId}:${write.draftRevision}", when {
                     result.matches -> "success"
                     result.error == null || result.error in setOf("WRITE_CONFLICT", "SOURCE_CHANGED", "IDEMPOTENCY_CONFLICT") -> "conflict"
                     else -> "failure"
                 })
-                if (result.error == null) result.remote?.let { onSaved(key, it, write.draftId.takeIf { write.method == "POST" }) }
             } catch (failure: Exception) {
                 privacy?.endWrite("${write.draftId}:${write.draftRevision}", if (failure is CancellationException) "unknown" else usageResult(failure), failure)
                 withContext(NonCancellable) { runCatching { repo.status(write, "unknown") } }
                 throw failure
             }
         }
-        false
+        DrainResult(!repo.automaticWritesPending(key), committed, newConflict)
     }
 
     private fun checkAccount(key: String) {
@@ -95,7 +108,7 @@ internal class NoteWriteQueue(
         require(write.method != "PATCH" || write.path == "/notes/${remote.name.removePrefix("memos/")}")
     }
 
-    private suspend fun commit(repo: NoteRepository, result: WriteResult) {
+    private suspend fun commit(repo: NoteRepository, result: WriteResult): DraftEntity? {
         val write = result.write
         checkAccount(write.accountKey)
         val stored = repo.storedDraft(write.accountKey, write.draftId).draft
@@ -118,10 +131,13 @@ internal class NoteWriteQueue(
         if (holder == null && result.matches && continuation == null &&
             latest.slot.startsWith("queued:") && latest.revision == write.draftRevision) {
             repo.finishQueued(write, requireNotNull(result.remote))
+            return null
         } else {
             val next = confirmed(latest)
             repo.confirm(write, next, result.remote, next.conflictJson != null)
             holder?.acceptConfirmation(latest, next, result.error, ::confirmed)
+            return next.takeIf { it.conflictJson != null || it.queuedRevisionJson != null ||
+                it.slot.startsWith("saved:") && (it.content != result.remote?.content || it.attachmentEdits() != AttachmentEdits()) }
         }
     }
 }

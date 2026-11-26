@@ -41,11 +41,51 @@ export function renderAttachments(note, referenced = new Set()) {
   return box;
 }
 
-function noteBody(note) {
+function noteBody(note, onTag, renderedTags) {
   const content = el('div', 'note-content');
   content.dataset.userContent = '';
-  content.append(renderMarkdown(note.content, note));
+  content.append(renderMarkdown(note.content, note, { onTag, renderedTags }));
   return content;
+}
+
+function appendTags(container, tags, renderedTags, onTag) {
+  for (const tag of new Set(tags || [])) {
+    if (!renderedTags.has(tag)) container.append(onTag ? button(`#${tag}`, 'tag', () => onTag(tag)) : el('span', 'tag', `#${tag}`));
+  }
+}
+
+function legacyCopy(content) {
+  const previousFocus = document.activeElement;
+  const field = document.createElement('textarea');
+  field.value = content;
+  field.readOnly = true;
+  field.className = 'clipboard-field';
+  const writeOriginal = event => {
+    if (!event.clipboardData) return;
+    event.clipboardData.setData('text/plain', content);
+    event.preventDefault();
+  };
+  field.addEventListener('copy', writeOriginal);
+  document.body.append(field);
+  field.select();
+  try { return document.execCommand('copy'); }
+  finally { field.remove(); previousFocus?.focus({ preventScroll: true }); }
+}
+
+function copyAction(content, feedback) {
+  let timer;
+  return async () => {
+    let copied = false;
+    try {
+      await navigator.clipboard.writeText(content);
+      copied = true;
+    } catch {
+      try { copied = legacyCopy(content); } catch { copied = false; }
+    }
+    clearTimeout(timer);
+    setText(feedback, copied ? l("已复制") : l("复制失败"));
+    timer = setTimeout(() => setText(feedback, ''), 2000);
+  };
 }
 
 export function renderNoteCard(note, { detail, formatTime, href, onTag, actions, pending }) {
@@ -53,6 +93,12 @@ export function renderNoteCard(note, { detail, formatTime, href, onTag, actions,
   card.dataset.name = note.name;
   card.dataset.sourceHash = note.source_hash;
   const header = el('div', 'hd'), time = el('time', '', formatTime(note.create_time));
+  const feedback = el('span', 'clipboard-status');
+  feedback.setAttribute('role', 'status');
+  const copy = [l("复制"), copyAction(note.content, feedback), ''];
+  const commands = [...actions];
+  const destructive = commands.findIndex(([, , cls]) => cls === 'dg');
+  commands.splice(destructive < 0 ? commands.length : destructive, 0, copy);
   if (Number.isFinite(Date.parse(note.create_time))) time.dateTime = note.create_time;
   if (detail) header.append(time);
   else {
@@ -62,29 +108,34 @@ export function renderNoteCard(note, { detail, formatTime, href, onTag, actions,
     more.append(icon('M5 12h.01M12 12h.01M19 12h.01', 'i dots'));
     setAttr(more, 'aria-label', l("更多操作"));
     menu.hidden = true;
-    for (const [label, action, cls] of actions) {
+    for (const command of commands) {
+      const [label, action, cls] = command;
       const control = button(label, `mi ${cls}`, action);
-      control.disabled = pending; menu.append(control);
+      control.disabled = command !== copy && pending; menu.append(control);
     }
     wrap.append(more, menu); header.append(wrap);
     bindMenu(more, menu);
   }
+  if (detail) header.append(feedback);
+  else header.insertBefore(feedback, header.lastElementChild);
   const tags = el('div', 'note-tags');
-  for (const tag of new Set(note.tags || [])) tags.append(button(`#${tag}`, 'tag', () => onTag(tag)));
-  const body = noteBody(note), referenced = new Set([...body.querySelectorAll('img')].map(image => image.getAttribute('src')));
+  const renderedTags = new Set();
+  const body = noteBody(note, onTag, renderedTags), referenced = new Set([...body.querySelectorAll('img')].map(image => image.getAttribute('src')));
+  appendTags(tags, note.tags, renderedTags, onTag);
   card.append(header, body, renderAttachments(note, referenced), tags);
   if (detail) {
     const bar = el('div', 'note-actions');
-    for (const [label, action, cls] of actions) {
+    for (const command of commands) {
+      const [label, action, cls] = command;
       const control = button(label, `ghost ${cls}`, action);
-      control.disabled = pending; bar.append(control);
+      control.disabled = command !== copy && pending; bar.append(control);
     }
     card.append(bar);
   }
   return card;
 }
 
-export function renderReadingCard(note, { review = false, className = 'card big discovery-note', formatTime, openNote }) {
+export function renderReadingCard(note, { review = false, className = 'card big discovery-note', formatTime, openNote, onTag }) {
   const card = el('article', `${className}${review ? ' rv' : ''}`);
   card.dataset.name = note.name;
   const header = el('div', 'hd'), time = el('time', '', formatTime(note.create_time));
@@ -97,9 +148,10 @@ export function renderReadingCard(note, { review = false, className = 'card big 
     const days = Math.max(0, Math.floor((Date.now() - Date.parse(note.create_time)) / 86_400_000));
     header.append(el('span', 'pill', days ? l("{0} 天前", { 0: days }) : l("今天"))); metadata.append(time);
   } else header.append(time);
-  for (const tag of new Set(note.tags || [])) metadata.append(el('span', 'tag', `#${tag}`));
+  const renderedTags = new Set();
+  const body = noteBody(note, onTag, renderedTags), referenced = new Set([...body.querySelectorAll('img')].map(image => image.getAttribute('src')));
+  appendTags(metadata, note.tags, renderedTags, onTag);
   metadata.append(open); header.append(metadata);
-  const body = noteBody(note), referenced = new Set([...body.querySelectorAll('img')].map(image => image.getAttribute('src')));
   card.append(header, body, renderAttachments(note, referenced));
   return card;
 }

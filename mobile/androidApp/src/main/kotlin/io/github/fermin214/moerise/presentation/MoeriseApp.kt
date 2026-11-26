@@ -7,6 +7,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.selection.SelectionContainer
@@ -16,6 +17,7 @@ import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.focus.onFocusChanged
@@ -35,15 +37,23 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.input.OffsetMapping
 import androidx.compose.ui.text.input.TextFieldValue
+import androidx.compose.ui.text.input.TransformedText
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import io.github.fermin214.moerise.data.*
 import io.github.fermin214.moerise.domain.Note
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.serialization.json.*
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -62,6 +72,7 @@ fun MoeriseApp(mobile: MobileController, onEditorReady: () -> Unit = {}) {
     val strings = remember(language) { Strings(language) }
     val connection by session.state.collectAsState()
     val composer by mobile.editor.state.collectAsState()
+    val pickAttachments = AttachmentPicker(mobile)
     val noteEditors by mobile.noteEditors.collectAsState()
     val editorFocus by mobile.editorFocus.collectAsState()
     val home by mobile.timeline.state.collectAsState()
@@ -74,6 +85,7 @@ fun MoeriseApp(mobile: MobileController, onEditorReady: () -> Unit = {}) {
     val review by mobile.review.state.collectAsState()
     val walk by mobile.walk.state.collectAsState()
     val sync by mobile.sync.state.collectAsState()
+    val manualSync by mobile.sync.manualSync.collectAsState()
     val search by mobile.search.state.collectAsState()
     val account = connection.profile?.accountKey
     val timezone = connection.profile?.timezone ?: "UTC"
@@ -81,7 +93,9 @@ fun MoeriseApp(mobile: MobileController, onEditorReady: () -> Unit = {}) {
     var searchOpen by rememberSaveable(account) { mutableStateOf(false) }
     var sourceTimeline by rememberSaveable(account) { mutableStateOf("home") }
     var conflictKey by remember(account) { mutableStateOf<String?>(null) }
+    var quickCompose by rememberSaveable(account) { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
+    val timelineActions = remember(account) { mutableStateOf<WritingActions?>(null) }
     val drawer = remember(account, scope) { NavigationDrawerState(scope) }
     val drawerVisible = drawer.visible
     val sidebar = mobile.sidebar
@@ -94,7 +108,7 @@ fun MoeriseApp(mobile: MobileController, onEditorReady: () -> Unit = {}) {
     val walkScroll = key(account, walk.result?.item?.note?.name) { rememberScrollState() }
     val mapNotesScroll = key(account) { rememberLazyListState() }
     val query = search.query
-    val filtered = query.text.isNotBlank() || query.tags.isNotEmpty() || query.date.isNotEmpty()
+    val filtered = query.filtered
     var searchRefreshing by remember(account, page, filtered) { mutableStateOf(false) }
     LaunchedEffect(search.loading) { if (!search.loading) searchRefreshing = false }
     val timeline = if (page == "archive") archive else home
@@ -104,8 +118,8 @@ fun MoeriseApp(mobile: MobileController, onEditorReady: () -> Unit = {}) {
     }
     val editorsByKey = buildMap<String, EditorController> {
         noteEditors.forEach { (key, controller) ->
-            put(key, controller)
             editorStates[key]?.draft?.let { draft ->
+                put(key, controller)
                 put(draft.id, controller)
                 draft.targetName?.let { put(it, controller) }
             }
@@ -115,23 +129,38 @@ fun MoeriseApp(mobile: MobileController, onEditorReady: () -> Unit = {}) {
     val activeBaseline = activeDraft?.baselineJson?.let {
         runCatching { CoreJson.decodeFromString<Note>(it) }.getOrNull()
     }
-    val entries = remember(timeline.notes, timeline.displayKeys, timeline.snapshotAt, sync.notes, search.notes, filtered, page, homeNote.note, homeNote.snapshotAt, activeBaseline) {
+    val visibleQueue = remember(sync, account, connection.needsLogin, clearing) {
+        sync.notesFor(account.takeUnless { connection.needsLogin || clearing })
+    }
+    val entries = remember(timeline.notes, timeline.displayKeys, timeline.snapshotAt, visibleQueue, search.notes, filtered, page, homeNote.note, homeNote.snapshotAt, activeBaseline) {
         val notes = if (filtered) search.notes else timeline.notes
         val pinned = if (page == "home" && !filtered) listOfNotNull(homeNote.note, activeBaseline)
             .distinctBy { it.name }.filter { candidate -> notes.none { it.name == candidate.name } } else emptyList()
         val selected = notes.map { note ->
             homeNote.note?.takeIf { it.name == note.name && homeNote.snapshotAt >= timeline.snapshotAt } ?: note
         }
-        if (filtered) selected.map { TimelineEntry.Remote(it) }
-        else timelineEntries(pinned + selected, if (page == "archive") emptyList() else sync.notes, timeline.displayKeys)
+        if (filtered || page == "archive") filteredTimelineEntries(selected, visibleQueue, timeline.displayKeys)
+        else timelineEntries(pinned + selected, visibleQueue, timeline.displayKeys)
     }
     val entryEditorKeys = entries.map { when (it) { is TimelineEntry.Remote -> it.note.name; is TimelineEntry.Local -> it.draft.id } }.toSet()
     val displayedEditors = entryEditorKeys.mapNotNull(editorsByKey::get).toSet()
-    val orphanEditors = if (page == "home") noteEditors.filterValues { it !in displayedEditors }.keys.toList() else emptyList()
+    val orphanEditors = if (page == "home") noteEditors.filter { (key, editor) ->
+        editorStates[key]?.draft != null && editor !in displayedEditors
+    }.keys.toList() else emptyList()
     val homeStatusVisible = homeNote.loading || homeNote.error != null || localError != null
     val focusTarget = homeNote.name ?: activeDraft?.targetName ?: activeDraft?.id
     var targetPositioned by remember(focusTarget, account, page) { mutableStateOf(false) }
     val composerReady = !connection.loading && account != null && composer.accountKey == account && composer.draft != null
+    val composerVisible by remember(homeScroll) { derivedStateOf {
+        val layout = homeScroll.layoutInfo
+        layout.visibleItemsInfo.any { it.key == "composer" && it.offset < layout.viewportEndOffset &&
+            it.offset + it.size > layout.viewportStartOffset }
+    } }
+    fun showComposer() { leaveWriting(); searchOpen = false; quickCompose = true }
+    val openComposer: (() -> Unit)? = if (composerReady && !connection.needsLogin && !clearing &&
+        (page in setOf("archive", "review", "walk") || page == "home" && (noteEditors.isNotEmpty() || !composerVisible))) {
+        ::showComposer
+    } else null
     LaunchedEffect(composerReady, page, clearing, account) {
         if (composerReady && page == "home" && !clearing) {
             withFrameNanos { }; withFrameNanos { }
@@ -149,7 +178,6 @@ fun MoeriseApp(mobile: MobileController, onEditorReady: () -> Unit = {}) {
             mobile.search.change(SearchQuery(state = if (next == "archive") "ARCHIVED" else "NORMAL"))
         }
         mobile.page(next)
-        if (next == "archive") mobile.archive.refresh()
     }
     fun beginDrawer() {
         leaveWriting()
@@ -159,17 +187,18 @@ fun MoeriseApp(mobile: MobileController, onEditorReady: () -> Unit = {}) {
         beginDrawer()
         drawer.open()
     }
-    fun showFilter(value: SearchQuery) {
-        val target = if (page in setOf("home", "archive")) page else sourceTimeline
+    fun showFilter(value: SearchQuery, target: String = if (page in setOf("home", "archive")) page else sourceTimeline) {
         mobile.flush()
         if (page != target) { page = target; mobile.page(target) }
+        sourceTimeline = target
         mobile.homeNote.clear()
         mobile.search.change(value.copy(state = if (target == "archive") "ARCHIVED" else "NORMAL"))
         mobile.search.search()
         if (drawer.visible) drawer.close()
     }
+    val tagFromReading: (String) -> Unit = { tag -> showFilter(SearchQuery(tags = setOf(tag)), "home") }
     fun startWalk(note: Note) { navigate("walk"); mobile.walk.start(note.name) }
-    fun editNote(note: Note) { mobile.editNote(note) }
+    fun editNote(note: Note) { mobile.editNote(note, ::showComposer) }
     LaunchedEffect(homeNote.name) {
         if (homeNote.name != null) {
             page = "home"
@@ -178,8 +207,8 @@ fun MoeriseApp(mobile: MobileController, onEditorReady: () -> Unit = {}) {
             mobile.page("home")
         }
     }
-    LaunchedEffect(focusTarget, entries.map { it.key }, noteEditors.keys, page, homeStatusVisible) {
-        if (page != "home" || targetPositioned) return@LaunchedEffect
+    LaunchedEffect(focusTarget, entries.map { it.key }, noteEditors.keys, page, homeStatusVisible, quickCompose) {
+        if (page != "home" || targetPositioned || quickCompose) return@LaunchedEffect
         val target = focusTarget ?: return@LaunchedEffect
         val entryIndex = entries.indexOfFirst { entry ->
             when (entry) {
@@ -209,7 +238,7 @@ fun MoeriseApp(mobile: MobileController, onEditorReady: () -> Unit = {}) {
     LaunchedEffect(page, connection.connected) { mobile.page(page) }
     DisposableEffect(sidebar) { onDispose { sidebar.clear() } }
     DisposableEffect(mobile) { onDispose { mobile.page(null) } }
-    val modalBack = clearing || drawerVisible || searchOpen || conflictKey != null
+    val modalBack = clearing || drawerVisible || searchOpen || conflictKey != null || quickCompose
     PlatformBackHandler(!modalBack && page != "home") {
         mobile.flush()
         if (page != "map" || !mobile.stars.back()) navigate("home")
@@ -221,7 +250,8 @@ fun MoeriseApp(mobile: MobileController, onEditorReady: () -> Unit = {}) {
             onCancel = { mobile.finishEditing(id) }, onFocus = { if (it) mobile.focusNoteEditor(id) },
             requestFocus = editorFocus === controller, consumeFocus = { mobile.consumeEditorFocus(controller) },
             editorTag = "note_editor_$id", saveTag = "save_note_$id",
-            cancelTag = "cancel_note_$id")
+            cancelTag = "cancel_note_$id", actions = timelineActions, pick = pickAttachments,
+            filters = mobile.filterReads, filterRevision = filterRevision)
     }
     PlatformLanguage(language) {
     MoeriseTheme {
@@ -258,32 +288,32 @@ fun MoeriseApp(mobile: MobileController, onEditorReady: () -> Unit = {}) {
                         page in setOf("review", "walk") -> DiscoveryScreen(page, mobile, strings,
                             if (page == "review") reviewScroll else walkScroll, onMenu = ::openDrawer,
                             onSearch = { searchOpen = !searchOpen }, onWalk = ::startWalk,
-                            onSettings = { navigate("settings") })
+                            onSettings = { navigate("settings") }, onCompose = openComposer, onTag = tagFromReading)
                         page == "map" -> StarMapScreen(mobile, strings, mapNotesScroll,
-                            onMenu = ::openDrawer, onSearch = { searchOpen = !searchOpen })
+                            onMenu = ::openDrawer, onSearch = { searchOpen = !searchOpen }, onTag = tagFromReading)
                         else -> Column(Modifier.safeDrawingPadding().imePadding().fillMaxSize().testTag("home")) {
                             WebToolbar(strings, onMenu = ::openDrawer, onSearch = { searchOpen = !searchOpen },
-                                syncStatus = sync.status, onSync = { if (sync.status == SyncStatus.SIGN_IN) navigate("connect") else mobile.synchronize() })
-                            PullToRefreshBox(isRefreshing = if (filtered) searchRefreshing else timeline.refreshing,
+                                syncStatus = sync.status, onSync = { if (sync.status == SyncStatus.SIGN_IN) navigate("connect") else mobile.synchronize() },
+                                onCompose = openComposer)
+                            PullToRefreshBox(isRefreshing = if (filtered) searchRefreshing else timeline.refreshing || manualSync,
                                 onRefresh = {
                                     if (filtered) { searchRefreshing = true; mobile.search.search() }
-                                    else {
-                                        if (page == "home") mobile.synchronize() else timelineController.refresh(userInitiated = true)
-                                    }
+                                    else mobile.synchronize()
                                 },
                                 modifier = Modifier.weight(1f).fillMaxWidth().timelineFocusExit(leaveWriting),
                                 contentAlignment = androidx.compose.ui.Alignment.TopCenter) {
-                                LazyColumn(Modifier.fillMaxHeight().widthIn(max = 800.dp).fillMaxWidth(),
+                                LazyColumn(Modifier.fillMaxHeight().widthIn(max = 800.dp).fillMaxWidth().testTag("${page}_timeline"),
                                     state = if (page == "archive") archiveScroll else homeScroll,
                                     contentPadding = PaddingValues(horizontal = 16.dp, vertical = 20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
                                     if (page == "home" && noteEditors.isEmpty()) item(key = "composer") {
-                                        if (composerReady) HomeEditor(composer, mobile.editor, strings, onSave = mobile::saveComposer,
-                                            onConflict = {})
+                                        if (composerReady) HomeEditor(composer, mobile.editor, strings, onSave = { mobile.saveComposer() },
+                                            onConflict = { conflictKey = composer.draft?.id }, actions = timelineActions, pick = pickAttachments,
+                                            filters = mobile.filterReads, filterRevision = filterRevision)
                                         else { LinearProgressIndicator(Modifier.fillMaxWidth()); TextButton(mobile::retryDraft) { Text(strings.text("重新读取", "Read again")) } }
                                     }
                                     if (page == "archive") item { Text(strings.text("归档笔记", "Archived notes"),
                                         style = MaterialTheme.typography.titleLarge, modifier = Modifier.testTag("archive_page")) }
-                                    if (query.tags.isNotEmpty() || query.date.isNotEmpty()) item { WebFilterBar(query, strings, ::showFilter) }
+                                    if (query.tags.isNotEmpty() || query.date.isNotEmpty()) item { WebFilterBar(query, strings) { showFilter(it) } }
                                     if (filtered) item { SearchStatus(search, strings) }
                                     if (page == "home" && homeStatusVisible) item(key = "note_status") {
                                         if (homeNote.loading) LinearProgressIndicator(Modifier.fillMaxWidth())
@@ -296,7 +326,7 @@ fun MoeriseApp(mobile: MobileController, onEditorReady: () -> Unit = {}) {
                                             }) { Text(strings.text("重试", "Retry")) }
                                         }
                                     }
-                                    items(entries, key = { it.key }) { entry ->
+                                    items(if (connection.needsLogin || clearing) emptyList() else entries, key = { it.key }) { entry ->
                                         val noteId = when (entry) {
                                             is TimelineEntry.Local -> entry.draft.id
                                             is TimelineEntry.Remote -> entry.note.name
@@ -306,7 +336,7 @@ fun MoeriseApp(mobile: MobileController, onEditorReady: () -> Unit = {}) {
                                             if (actions.name == remote.name && (actions.busy || actions.pendingAction || actions.error != null)) actions
                                             else homeNote.takeIf { it.name == remote.name } ?: NoteDetailState()
                                         } else NoteDetailState()
-                                        val controller = editorsByKey[noteId].takeIf { entry is TimelineEntry.Local || page == "home" }
+                                        val controller = editorsByKey[noteId]
                                         if (controller != null) renderEditor(noteId, controller)
                                         else TimelineNoteCard(
                                             entry = entry,
@@ -315,7 +345,10 @@ fun MoeriseApp(mobile: MobileController, onEditorReady: () -> Unit = {}) {
                                             core = session.core,
                                             onTag = { showFilter(query.copy(tags = query.tags + it)) },
                                             onOpenLocal = { local ->
-                                                mobile.openDraft(local.id) {
+                                                mobile.openDraft(local.id, onComposer = {
+                                                    showComposer()
+                                                    if (local.conflictJson != null) conflictKey = local.id
+                                                }) {
                                                     if (mobile.getNoteEditor(local.id)?.state?.value?.draft?.conflictJson != null) {
                                                         leaveWriting()
                                                         conflictKey = local.id
@@ -334,7 +367,9 @@ fun MoeriseApp(mobile: MobileController, onEditorReady: () -> Unit = {}) {
                                             onCheckDeletion = { mobile.checkNoteDeletion(it.name) },
                                         )
                                     }
-                                    items(orphanEditors, key = { "editor:$it" }) { id -> noteEditors[id]?.let { renderEditor(id, it) } }
+                                    items(if (connection.needsLogin || clearing) emptyList() else orphanEditors, key = { "editor:$it" }) { id ->
+                                        noteEditors[id]?.let { renderEditor(id, it) }
+                                    }
                                     item {
                                         val error = if (filtered) search.error else timeline.error
                                         if (error != null) {
@@ -362,11 +397,12 @@ fun MoeriseApp(mobile: MobileController, onEditorReady: () -> Unit = {}) {
                                     }
                                 }
                             }
+                            timelineActions.value?.render?.invoke()
                         }
                     }
                 }
             }
-            PlatformBackHandler(modalBack) {
+            PlatformBackHandler(modalBack && !quickCompose) {
                 if (clearing) return@PlatformBackHandler
                 mobile.flush()
                 when {
@@ -378,14 +414,65 @@ fun MoeriseApp(mobile: MobileController, onEditorReady: () -> Unit = {}) {
             logout?.takeIf { it.account == account }?.let {
                 LogoutDialog(it, clearing, strings, mobile::confirmLogout, mobile::dismissLogout)
             }
-            conflictKey?.let { id -> editorsByKey[id]?.let { controller ->
-                val state by controller.state.collectAsState()
-                ConflictDialog(state, controller, strings, onFork = { content, attachments ->
-                    mobile.forkConflict(id, content, attachments) { conflictKey = null }
-                }) { conflictKey = null }
-            } }
+            if (quickCompose && composerReady && !connection.needsLogin && !clearing) {
+                QuickComposer(composer, mobile, strings, pickAttachments, filterRevision,
+                    onConflict = { conflictKey = composer.draft?.id }) { quickCompose = false }
+            }
+            conflictKey?.let { id ->
+                val target = editorsByKey[id] ?: mobile.editor.takeIf { composer.draft?.id == id }
+                target?.let { controller ->
+                    val state by controller.state.collectAsState()
+                    ConflictDialog(state, controller, strings, onFork = { content, attachments ->
+                        mobile.forkConflict(id, content, attachments) { conflictKey = null }
+                    }) { conflictKey = null }
+                }
+            }
+            LaunchedEffect(connection.needsLogin, clearing) {
+                if (connection.needsLogin || clearing) quickCompose = false
+            }
         }
     }
+    }
+}
+
+private class WritingActions(val render: @Composable () -> Unit)
+
+@Composable
+private fun QuickComposer(state: EditorUiState, mobile: MobileController, strings: Strings,
+    pick: (DraftEntity) -> Unit, filterRevision: Long, onConflict: () -> Unit, onClose: () -> Unit) {
+    val scope = rememberCoroutineScope()
+    val actions = remember { mutableStateOf<WritingActions?>(null) }
+    var closing by remember { mutableStateOf(false) }
+    val dismiss: () -> Unit = {
+        if (!closing && !mobile.editor.state.value.busy && !mobile.editor.state.value.importing) {
+            closing = true
+            scope.launch {
+                if (mobile.editor.flushForLifecycle()) onClose()
+                else closing = false
+            }
+        }
+    }
+    Dialog(onDismissRequest = dismiss, properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) {
+        val focus = LocalFocusManager.current
+        val keyboard = LocalSoftwareKeyboardController.current
+        val leave: () -> Unit = { focus.clearFocus(); keyboard?.hide() }
+        ClearWritingOnStop(leave)
+        CompositionLocalProvider(LocalLeaveWriting provides leave) {
+            Box(Modifier.fillMaxSize().imePadding().safeDrawingPadding()) {
+                Box(Modifier.matchParentSize().clickable(onClick = dismiss).semantics { contentDescription = strings.text("关闭速记", "Close quick note") })
+                Column(Modifier.align(Alignment.BottomCenter).widthIn(max = 800.dp).fillMaxWidth()
+                    .padding(horizontal = 16.dp).testTag("quick_editor_sheet")) {
+                    Column(Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState())) {
+                        HomeEditor(state.copy(busy = state.busy || closing), mobile.editor, strings,
+                            onSave = { mobile.saveComposer { if (it == SaveOutcome.COMMITTED) onClose() } },
+                            onConflict = onConflict, onCancel = dismiss, requestFocus = true, consumeFocus = { true },
+                            actions = actions, pick = pick, filters = mobile.filterReads, filterRevision = filterRevision,
+                            editorTag = "quick_editor", saveTag = "quick_save", cancelTag = "quick_cancel")
+                    }
+                    actions.value?.render?.invoke()
+                }
+            }
+        }
     }
 }
 
@@ -407,10 +494,12 @@ private fun HomeEditor(
     state: EditorUiState, controller: EditorController, strings: Strings, onSave: () -> Unit, onConflict: () -> Unit,
     onCancel: (() -> Unit)? = null, onFocus: (Boolean) -> Unit = {}, requestFocus: Boolean = false, consumeFocus: () -> Boolean = { false },
     editorTag: String = "note_editor", saveTag: String = "save_note", cancelTag: String? = null,
+    actions: MutableState<WritingActions?>, pick: (DraftEntity) -> Unit, filters: FilterReads, filterRevision: Long,
 ) {
     val draft = state.draft ?: return
     val leaveWriting = LocalLeaveWriting.current
     val editorFocus = remember(draft.id) { FocusRequester() }
+    var focused by remember(draft.id) { mutableStateOf(false) }
     LaunchedEffect(draft.id, requestFocus) {
         if (requestFocus && consumeFocus()) editorFocus.requestFocus()
     }
@@ -430,21 +519,100 @@ private fun HomeEditor(
     val canSave = !state.busy && !state.importing && draft.conflictJson == null &&
         (draft.content.isNotBlank() || edits.staged.isNotEmpty() ||
             baseline?.attachments?.any { it["name"]?.jsonPrimitive?.content !in edits.removed } == true || state.pending != null)
+    val scanner = remember(field.text) { if ('#' in field.text) NoteTagScanner(field.text) else null }
+    val transformation = if (scanner == null) VisualTransformation.None else remember(scanner) {
+        val highlighted = buildAnnotatedString {
+            append(field.text)
+            scanner.spans().forEach { addStyle(SpanStyle(color = Color(0xFF2A5BB5)), it.start, it.end) }
+        }
+        VisualTransformation { original ->
+            TransformedText(if (original.text == highlighted.text) highlighted else original, OffsetMapping.Identity)
+        }
+    }
+    var insertedMarker by remember(draft.id) { mutableStateOf<Int?>(null) }
+    val prefix = if (focused && field.composition == null && field.selection.collapsed) {
+        val cursor = field.selection.start
+        scanner?.prefixAt(cursor) ?: insertedMarker?.takeIf { it + 1 == cursor && field.text.getOrNull(it) == '#' }
+            ?.let { NoteTagSpan(it, cursor, "") }
+    } else null
+    var tags by remember(draft.accountKey, filterRevision) { mutableStateOf<List<TagCount>>(emptyList()) }
+    LaunchedEffect(draft.accountKey, prefix != null, filterRevision) {
+        if (prefix != null) {
+            tags = try { filters.writingTags(draft.accountKey) }
+            catch (error: Exception) {
+                if (error is kotlinx.coroutines.CancellationException) throw error
+                emptyList()
+            }
+        }
+    }
+    fun changeField(next: TextFieldValue) {
+        if (next.text != field.text) insertedMarker = null
+        field = next
+        if (next.text != draft.content) controller.change(next.text)
+    }
+    val actionContent: @Composable () -> Unit = {
+        val currentPrefix = prefix
+        val matching = if (currentPrefix == null) emptyList() else tags.asSequence()
+            .filter { it.tag.startsWith(currentPrefix.tag, ignoreCase = true) }.take(20).toList()
+        Column(Modifier.fillMaxWidth()) {
+            if (matching.isNotEmpty() && currentPrefix != null) Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())
+                .testTag("writing_tags"), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                matching.forEach { choice -> WebTag(choice.tag, {
+                    val next = field.text.getOrNull(currentPrefix.end)
+                    val text = "#${choice.tag}" + if (next?.isWhitespace() == true) "" else " "
+                    changeField(TextFieldValue(field.text.replaceRange(currentPrefix.start, currentPrefix.end, text),
+                        TextRange(currentPrefix.start + text.length + if (next == ' ') 1 else 0)))
+                }) }
+            }
+            Row(Modifier.fillMaxWidth().heightIn(min = 44.dp), verticalAlignment = Alignment.CenterVertically) {
+                IconButton(onClick = { pick(draft) }, enabled = !state.busy && !state.importing && state.pending == null && draft.conflictJson == null,
+                    modifier = Modifier.size(44.dp).testTag("add_attachment")) {
+                    WebIcon(WebIcon.Plus, if (state.importing) strings.text("读取附件…", "Reading files…") else strings.text("添加附件", "Add files"))
+                }
+                TextButton(enabled = !state.busy && field.composition == null, onClick = {
+                    if (field.selection.collapsed && scanner?.prefixAt(field.selection.start) != null) {
+                        editorFocus.requestFocus()
+                        return@TextButton
+                    }
+                    val start = field.selection.min
+                    val insertion = tagMarkerAt(field.text, start, field.selection.max)
+                    val marker = start + insertion.indexOf('#')
+                    changeField(TextFieldValue(field.text.replaceRange(start, field.selection.max, insertion),
+                        TextRange(marker + 1)))
+                    val preview = field.text.replaceRange(marker + 1, marker + 1, "a")
+                    insertedMarker = marker.takeIf { NoteTagScanner(preview).prefixAt(marker + 2)?.start == marker }
+                    editorFocus.requestFocus()
+                }, modifier = Modifier.testTag("insert_tag").semantics { contentDescription = strings.text("添加标签", "Add tag") }) { Text("#") }
+                Spacer(Modifier.weight(1f))
+                onCancel?.let { TextButton(onClick = { leaveWriting(); it() }, enabled = !state.busy && !state.importing,
+                    modifier = cancelTag?.let { tag -> Modifier.testTag(tag) } ?: Modifier) { Text(strings.text("取消", "Cancel")) } }
+                if (draft.conflictJson != null) {
+                    WebAction(strings.text("处理冲突", "Resolve conflict"), onClick = { leaveWriting(); onConflict() })
+                } else WebAction(strings.text("保存", "Save"), onClick = { leaveWriting(); onSave() },
+                    modifier = Modifier.testTag(saveTag), enabled = canSave)
+            }
+        }
+    }
+    val latestActions by rememberUpdatedState(actionContent)
+    val holder = remember { WritingActions { Surface(color = Color.White, shadowElevation = 3.dp) {
+        Box(Modifier.padding(horizontal = 16.dp)) { latestActions() }
+    } } }
+    DisposableEffect(focused, actions, holder) {
+        if (focused) actions.value = holder
+        onDispose { if (actions.value === holder) actions.value = null }
+    }
     Surface(shape = RoundedCornerShape(18.dp), border = BorderStroke(1.dp, MoeriseColors.Line), color = Color.White) {
         Column(Modifier.padding(start = 20.dp, top = 14.dp, end = 20.dp, bottom = 8.dp),
             verticalArrangement = Arrangement.spacedBy(2.dp)) {
             BasicTextField(
-                value = field, onValueChange = { next ->
-                    field = next
-                    if (next.text != draft.content) controller.change(next.text)
-                },
-                modifier = Modifier.fillMaxWidth().heightIn(min = 96.dp, max = 320.dp).drawerGestureRegion()
-                    .verticalScroll(rememberScrollState()).testTag(editorTag).onPreviewKeyEvent {
+                value = field, onValueChange = ::changeField, visualTransformation = transformation,
+                modifier = Modifier.fillMaxWidth().heightIn(min = 96.dp).drawerGestureRegion()
+                    .testTag(editorTag).onPreviewKeyEvent {
                         if (it.type == KeyEventType.KeyDown && it.key == Key.Escape && onCancel != null) {
                             leaveWriting(); onCancel(); true
                         } else if (it.type == KeyEventType.KeyDown && it.key == Key.Enter &&
                             (it.isCtrlPressed || it.isMetaPressed) && canSave) { leaveWriting(); onSave(); true } else false
-                    }.focusRequester(editorFocus).onFocusChanged { onFocus(it.isFocused) }.semantics {
+                    }.focusRequester(editorFocus).onFocusChanged { focused = it.isFocused; onFocus(it.isFocused) }.semantics {
                         contentDescription = strings.text("写点什么", "Write a note")
                 },
                 readOnly = state.busy,
@@ -478,28 +646,7 @@ private fun HomeEditor(
                 }
             }
             state.error?.let { Text(editorError(it, strings), color = MaterialTheme.colorScheme.error) }
-            Row(Modifier.fillMaxWidth().heightIn(min = 44.dp),
-                verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                key(draft.accountKey, draft.id) {
-                    AttachmentPicker(
-                        enabled = !state.busy && !state.importing && state.pending == null && draft.conflictJson == null,
-                        importScope = controller.attachmentScope,
-                        strings = strings, onPicked = { controller.attach(draft.accountKey, draft.id, it) },
-                        onError = { controller.attachmentError(it, draft.id) }, onBusy = { controller.importing(draft.id, it) },
-                    )
-                }
-                Spacer(Modifier.weight(1f))
-                onCancel?.let { TextButton(onClick = { leaveWriting(); it() }, enabled = !state.busy,
-                    modifier = cancelTag?.let { tag -> Modifier.testTag(tag) } ?: Modifier) { Text(strings.text("取消", "Cancel")) } }
-                if (draft.conflictJson != null) {
-                    WebAction(strings.text("处理冲突", "Resolve conflict"), onClick = { leaveWriting(); onConflict() })
-                } else WebAction(
-                    text = strings.text("保存", "Save"),
-                    onClick = { leaveWriting(); onSave() }, modifier = Modifier.testTag(saveTag),
-                    enabled = canSave,
-                )
-            }
+            if (!focused) actionContent()
         }
     }
 }

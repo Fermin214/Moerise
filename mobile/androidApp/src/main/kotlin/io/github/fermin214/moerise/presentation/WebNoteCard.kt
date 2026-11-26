@@ -1,5 +1,9 @@
 package io.github.fermin214.moerise.presentation
 
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.os.Build
+import android.widget.Toast
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -13,6 +17,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -25,6 +30,7 @@ import io.github.fermin214.moerise.data.CoreJson
 import io.github.fermin214.moerise.data.DraftEntity
 import io.github.fermin214.moerise.data.attachmentEdits
 import io.github.fermin214.moerise.domain.Note
+import kotlinx.serialization.json.jsonPrimitive
 
 @Composable
 fun TimelineNoteCard(
@@ -46,50 +52,61 @@ fun TimelineNoteCard(
     deleteUnknown: Boolean = false,
     onCheckDeletion: ((Note) -> Unit)? = null,
 ) {
-    when (entry) {
-        is TimelineEntry.Local -> QueuedNoteCard(entry.draft, strings, timezone, entry.draft.createdAt, modifier) {
-            onOpenLocal(entry.draft)
+    val draft = (entry as? TimelineEntry.Local)?.draft
+    val remote = (entry as? TimelineEntry.Remote)?.note
+    val content = draft?.content ?: requireNotNull(remote).content
+    val edits = remember(draft?.attachmentsJson) { draft?.attachmentEdits() }
+    val baseline = remember(draft?.baselineJson, edits) {
+        draft?.baselineJson?.let { runCatching { CoreJson.decodeFromString<Note>(it) }.getOrNull() }?.let { note ->
+            note.copy(attachments = note.attachments.filterNot { it["name"]?.jsonPrimitive?.content in edits?.removed.orEmpty() })
         }
-        is TimelineEntry.Remote -> WebNoteCard(
-            note = entry.note, timezone = timezone, strings = strings, core = core, onTag = onTag, modifier = modifier,
-            onEdit = onEdit?.let { fn -> { fn(entry.note) } },
-            onState = onState?.let { fn -> { fn(entry.note) } },
-            onDelete = onDelete?.let { fn -> { fn(entry.note) } },
-            onWalk = onWalk?.let { fn -> { fn(entry.note) } },
-            online = online, busy = busy, error = error, pendingAction = pendingAction,
-            deleteUnknown = deleteUnknown, onCheckDeletion = onCheckDeletion?.let { fn -> { fn(entry.note) } },
-        )
     }
-}
-
-@Composable
-fun QueuedNoteCard(
-    draft: DraftEntity, strings: Strings, timezone: String = "UTC", createdAt: Long = 0,
-    modifier: Modifier = Modifier,
-    onOpen: () -> Unit,
-) {
+    val note = remote ?: baseline
+    val presentation = rememberNotePresentation(content, remote?.tags)
+    val date = note?.createTime?.let { displayNoteDate(it, timezone, strings.text("zh", "en") == "en") }
+        ?: displayLocalNoteDate(draft?.createdAt ?: 0L, timezone, strings.text("zh", "en") == "en")
+    val hasFailure = draft?.conflictJson != null
+    val id = draft?.id ?: requireNotNull(remote).name
     val leaveWriting = LocalLeaveWriting.current
-    val presentation = remember(draft.content) { localNotePresentation(draft.content) }
-    val baseline = remember(draft.baselineJson) {
-        draft.baselineJson?.let { runCatching { CoreJson.decodeFromString<Note>(it) }.getOrNull() }
+    val context = LocalContext.current
+    var confirmDelete by remember(remote?.name) { mutableStateOf(false) }
+    val menuActions = buildList {
+        if (draft != null) add(NoteMenuAction(
+            if (hasFailure) strings.text("处理冲突", "Resolve conflict") else strings.text("编辑", "Edit"),
+            { onOpenLocal(draft) }, tag = "edit_note_$id",
+        ))
+        if (remote != null) {
+            onEdit?.let { add(NoteMenuAction(strings.text("编辑", "Edit"), { it(remote) }, !busy && !pendingAction, tag = "edit_note_$id")) }
+            onState?.let { add(NoteMenuAction(
+                if (pendingAction && !deleteUnknown) strings.text("重试操作", "Retry action")
+                else if (remote.state == "ARCHIVED") strings.text("恢复到主页", "Restore to home") else strings.text("归档", "Archive"),
+                { it(remote) }, online && !busy && !deleteUnknown, tag = "archive_note_$id")) }
+            if (remote.state == "NORMAL") onWalk?.let { add(NoteMenuAction(strings.text("从这条漫步", "Walk from this note"), { it(remote) }, online && !busy, tag = "walk_note_$id")) }
+            if (deleteUnknown) onCheckDeletion?.let { add(NoteMenuAction(strings.text("检查删除结果", "Check deletion"), { it(remote) }, online && !busy, tag = "check_delete_$id")) }
+        }
+        add(NoteMenuAction(strings.text("复制", "Copy"), {
+            val clipboard = context.getSystemService(ClipboardManager::class.java)
+            val copied = runCatching { requireNotNull(clipboard).setPrimaryClip(ClipData.newPlainText("Moerise", content)) }.isSuccess
+            if (!copied || Build.VERSION.SDK_INT < 33) Toast.makeText(context,
+                if (copied) strings.text("已复制", "Copied") else strings.text("复制失败", "Copy failed"), Toast.LENGTH_SHORT).show()
+        }, tag = "copy_note_$id"))
+        if (remote != null && onDelete != null) add(NoteMenuAction(strings.text("删除", "Delete"), { confirmDelete = true },
+            online && !busy && !pendingAction, danger = true, tag = "delete_note_$id"))
     }
-    val date = baseline?.createTime?.let { displayNoteDate(it, timezone, strings.text("zh", "en") == "en") }
-        ?: displayLocalNoteDate(createdAt, timezone, strings.text("zh", "en") == "en")
-    val hasFailure = draft.conflictJson != null
     NoteCardScaffold(
         date = date,
-        body = presentation.body,
-        tags = presentation.tags,
+        content = content,
+        presentation = presentation,
         strings = strings,
-        modifier = modifier.testTag("queued_note_${draft.id}"),
-        core = null,
-        note = null,
-        onTag = null,
+        modifier = modifier.testTag(if (draft != null) "queued_note_$id" else "note_card_$id"),
+        core = core,
+        note = note,
+        onTag = onTag.takeIf { remote != null },
         headerActions = if (hasFailure) 2 else 1,
         trailingHeader = {
             if (hasFailure) {
                 Box(
-                    Modifier.size(44.dp).clickable(role = Role.Button) { leaveWriting(); onOpen() }
+                    Modifier.size(44.dp).clickable(role = Role.Button) { leaveWriting(); onOpenLocal(draft) }
                         .testTag("queued_error_${draft.id}")
                         .semantics { contentDescription = strings.text("同步失败或冲突", "Sync failed or conflicted") },
                     contentAlignment = Alignment.Center,
@@ -102,52 +119,12 @@ fun QueuedNoteCard(
                     }
                 }
             }
-            WebNoteMenu(strings, listOf(NoteMenuAction(
-                if (hasFailure) strings.text("处理冲突", "Resolve conflict") else strings.text("编辑", "Edit"),
-                onOpen, tag = "edit_note_${draft.id}",
-            )), tag = "note_more_${draft.id}")
+            WebNoteMenu(strings, menuActions, tag = "note_more_$id")
         },
         extraContent = {
-            draft.attachmentEdits().staged.forEach {
+            edits?.staged.orEmpty().forEach {
                 Text(it.filename, fontSize = 13.sp, color = MoeriseColors.Muted, modifier = Modifier.padding(top = 8.dp))
             }
-        },
-    )
-}
-
-@Composable
-fun WebNoteCard(
-    note: Note, timezone: String, strings: Strings, core: CoreClient?,
-    onTag: (String) -> Unit, modifier: Modifier = Modifier,
-    onEdit: (() -> Unit)? = null, onState: (() -> Unit)? = null, onDelete: (() -> Unit)? = null,
-    onWalk: (() -> Unit)? = null,
-    online: Boolean = true, busy: Boolean = false, error: String? = null,
-    pendingAction: Boolean = false, deleteUnknown: Boolean = false, onCheckDeletion: (() -> Unit)? = null,
-) {
-    val presentation = remember(note.content, note.tags) { notePresentation(note.content, note.tags) }
-    var confirmDelete by remember(note.name) { mutableStateOf(false) }
-    val menuActions = buildList {
-        onEdit?.let { add(NoteMenuAction(strings.text("编辑", "Edit"), it, !busy && !pendingAction, tag = "edit_note_${note.name}")) }
-        onState?.let { add(NoteMenuAction(
-            if (pendingAction && !deleteUnknown) strings.text("重试操作", "Retry action")
-            else if (note.state == "ARCHIVED") strings.text("恢复到主页", "Restore to home") else strings.text("归档", "Archive"),
-            it, online && !busy && !deleteUnknown, tag = "archive_note_${note.name}")) }
-        if (note.state == "NORMAL") onWalk?.let { add(NoteMenuAction(strings.text("从这条漫步", "Walk from this note"), it, online && !busy, tag = "walk_note_${note.name}")) }
-        if (deleteUnknown) onCheckDeletion?.let { add(NoteMenuAction(strings.text("检查删除结果", "Check deletion"), it, online && !busy, tag = "check_delete_${note.name}")) }
-        onDelete?.let { add(NoteMenuAction(strings.text("删除", "Delete"), { confirmDelete = true }, online && !busy && !pendingAction, danger = true, tag = "delete_note_${note.name}")) }
-    }
-    NoteCardScaffold(
-        date = displayNoteDate(note.createTime, timezone, strings.text("zh", "en") == "en"),
-        body = presentation.body,
-        tags = presentation.tags,
-        strings = strings,
-        modifier = modifier.testTag("note_card_${note.name}"),
-        core = core,
-        note = note,
-        onTag = onTag,
-        headerActions = if (menuActions.isEmpty()) 0 else 1,
-        trailingHeader = { WebNoteMenu(strings, menuActions, tag = "note_more_${note.name}") },
-        extraContent = {
             error?.let { Text(editorError(it, strings), color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(top = 8.dp)) }
             if (busy) LinearProgressIndicator(Modifier.fillMaxWidth().padding(top = 8.dp))
             if (confirmDelete) {
@@ -156,9 +133,9 @@ fun WebNoteCard(
                     style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 8.dp))
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
                     TextButton(onClick = { confirmDelete = false }, enabled = !busy,
-                        modifier = Modifier.testTag("delete_cancel_${note.name}")) { Text(strings.text("取消", "Cancel")) }
-                    TextButton(onClick = { confirmDelete = false; onDelete?.invoke() }, enabled = online && !busy && !pendingAction,
-                        modifier = Modifier.testTag("delete_confirm_${note.name}")) { Text(strings.text("删除", "Delete"), color = MaterialTheme.colorScheme.error) }
+                        modifier = Modifier.testTag("delete_cancel_$id")) { Text(strings.text("取消", "Cancel")) }
+                    TextButton(onClick = { confirmDelete = false; remote?.let { onDelete?.invoke(it) } }, enabled = online && !busy && !pendingAction,
+                        modifier = Modifier.testTag("delete_confirm_$id")) { Text(strings.text("删除", "Delete"), color = MaterialTheme.colorScheme.error) }
                 }
             }
         },
@@ -168,8 +145,8 @@ fun WebNoteCard(
 @Composable
 private fun NoteCardScaffold(
     date: String,
-    body: String,
-    tags: List<String>,
+    content: String,
+    presentation: NotePresentation,
     strings: Strings,
     modifier: Modifier,
     core: CoreClient?,
@@ -188,11 +165,12 @@ private fun NoteCardScaffold(
                     .padding(top = 10.dp, end = (headerActions * 44).dp)) {
                     Text(date, fontSize = 13.sp, color = MoeriseColors.Muted, modifier = Modifier.testTag("note_card_date"))
                 }
-                if (body.isNotBlank()) Box(Modifier.fillMaxWidth().padding(top = 2.dp, bottom = 8.dp).testTag("note_card_body")) {
-                    MarkdownBody(body, note = note, core = core)
+                if (presentation.body.isNotBlank()) Box(Modifier.fillMaxWidth().padding(top = 2.dp, bottom = 8.dp).testTag("note_card_body")) {
+                    MarkdownBody(presentation.body, note = note, core = core, tags = presentation.inlineTags, onTag = onTag,
+                        originalContent = content)
                 }
                 if (note != null) NoteAttachments(note, core, strings = strings)
-                NoteTags(tags, onTag = onTag)
+                NoteTags(presentation.tags, onTag = onTag)
                 extraContent()
             }
             if (headerActions > 0) {

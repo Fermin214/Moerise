@@ -149,6 +149,21 @@ async function assertDiscoverySpacing(page, content) {
   assert.ok(body.y - heading.y - heading.height < 100, 'Discovery content should follow the heading without a large blank area');
 }
 
+test('reading cards open a home tag filter from review and walk', async t => {
+  const { page, state, url } = await fixture(t);
+  state.notes.forEach(note => { note.content += ' #原始标签。'; });
+  await login(page, url, '/review');
+  const inline = card(page).locator('button.inline-tag');
+  await inline.waitFor();
+  assert.deepEqual(await card(page).locator('.tag').allTextContents(), ['#第二标签']);
+  await inline.click();
+  await page.waitForURL(value => value.pathname === '/' && value.searchParams.get('tag') === '原始标签');
+  await page.locator('a[data-route][href="/walk"]').click();
+  await page.getByRole('button', { name: '随机开始', exact: true }).click();
+  await card(page).getByRole('button', { name: '#第二标签', exact: true }).click();
+  await page.waitForURL(value => value.pathname === '/' && value.searchParams.get('tag') === '第二标签');
+});
+
 test('daily review exposes all six fixed positions, full text/images, unavailable items and detail return without read writes', { timeout: 60_000 }, async t => {
   const { page, state, url } = await fixture(t);
   await login(page, url, '/review');

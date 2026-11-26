@@ -172,7 +172,7 @@ class PersistenceRecoveryTest {
         }
         val core = CoreClient("https://notes.example", SessionCookies("https://notes.example", MemorySecrets()), engine)
         try {
-            assertTrue(repo.syncNotes(keyA, core))
+            assertEquals(SyncNotesOutcome.UPDATED, repo.syncNotes(keyA, core))
             assertTrue(repo.isNotesSynced(keyA))
             val (normalPage, hasMoreNormal) = repo.localNotesPage(keyA, "NORMAL", 10, 0)
             assertFalse(hasMoreNormal)
@@ -182,13 +182,13 @@ class PersistenceRecoveryTest {
             assertEquals(listOf("2026-11-10" to 1, "2026-11-11" to 1), repo.localCalendarPage(keyA, "NORMAL", "2026-11", "Asia/Shanghai").days.map { it.date to it.count })
 
             phase = 1
-            assertTrue(repo.syncNotes(keyA, core))
+            assertEquals(SyncNotesOutcome.UPDATED, repo.syncNotes(keyA, core))
             assertNull(repo.localNote(keyA, "memos/c"))
             assertEquals(listOf("反思" to 1), repo.localTagPage(keyA, "NORMAL").tags.map { it.tag to it.count })
 
             repo.putCachedSnapshot(keyB, "walk", """{"ok":true}""")
             phase = 2
-            assertTrue(repo.syncNotes(keyA, core))
+            assertEquals(SyncNotesOutcome.UPDATED, repo.syncNotes(keyA, core))
             assertNull(repo.localNote(keyA, "memos/a"))
             assertNull(repo.localNote(keyA, "memos/b"))
             assertEquals(listOf("memos/e", "memos/d"), repo.localNotesPage(keyA, "NORMAL", 10, 0).first.map { it.name })

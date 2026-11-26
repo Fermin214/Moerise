@@ -23,7 +23,15 @@ import kotlinx.serialization.json.*
 data class SearchQuery(
     val text: String = "", val mode: String = "keyword", val tags: Set<String> = emptySet(),
     val state: String = "NORMAL", val date: String = "",
-)
+) {
+    internal val filtered: Boolean get() = text.isNotBlank() || tags.isNotEmpty() || date.isNotEmpty()
+
+    internal fun matchesScope(note: Note, timezone: String): Boolean =
+        (state == "ALL" || state == note.state) && tags.all { it in note.tags } &&
+            (date.isEmpty() || displayServiceTime(note.createTime, timezone).take(10) == date)
+
+    internal fun matchesKeyword(note: Note): Boolean = note.content.contains(text.trim(), ignoreCase = true)
+}
 
 data class SearchState(
     val query: SearchQuery = SearchQuery(), val notes: List<Note> = emptyList(), val next: String = "",
@@ -79,6 +87,20 @@ class SearchController(
     fun tab(value: Int) { mutable.update { it.copy(tab = value) } }
     fun month(value: String) { mutable.update { it.copy(month = value) } }
 
+    internal fun replaceNote(note: Note, refresh: Boolean) {
+        val zone = timezone()
+        ++generation
+        request?.cancel()
+        mutable.update { current ->
+            val matches = current.query.matchesScope(note, zone) &&
+                (current.query.mode != "keyword" || current.query.matchesKeyword(note))
+            current.copy(notes = current.notes.mapNotNull { previous ->
+                if (previous.name != note.name) previous else note.takeIf { matches }
+            }, next = "", loading = false)
+        }
+        if (refresh && state.value.query.filtered) search()
+    }
+
     fun search(append: Boolean = false) {
         val key = account() ?: return
         if (state.value.loading) return
@@ -114,6 +136,7 @@ class SearchController(
                         if (!append) privacy?.record(operation, started = started)
                         return@launch
                     }
+                    if (stamp != generation || key != account()) return@launch
                     if (core() == null) return@launch
                     mutable.update { it.copy(loading = true, error = null) }
                 }
@@ -152,7 +175,7 @@ class SearchController(
             } catch (error: Exception) {
                 if (!append && key == account()) privacy?.record(operation, usageResult(error), started, error = error)
                 if (error is CancellationException) throw error
-                if (stamp == generation) mutable.update { it.copy(loading = false, error = errorCode(error)) }
+                if (stamp == generation && key == account()) mutable.update { it.copy(loading = false, error = errorCode(error)) }
             }
         }
     }

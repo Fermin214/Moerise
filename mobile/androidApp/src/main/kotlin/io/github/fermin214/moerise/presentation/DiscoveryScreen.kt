@@ -45,7 +45,8 @@ import kotlinx.serialization.json.*
 @Composable
 fun DiscoveryScreen(page: String, mobile: MobileController, strings: Strings, readingScroll: ScrollState,
     onMenu: () -> Unit, onSearch: () -> Unit,
-    onWalk: (Note) -> Unit, onSettings: () -> Unit) {
+    onWalk: (Note) -> Unit, onSettings: () -> Unit,
+    onCompose: (() -> Unit)? = null, onTag: ((String) -> Unit)? = null) {
     val review by mobile.review.state.collectAsState()
     val walk by mobile.walk.state.collectAsState()
     val connection by mobile.session.state.collectAsState()
@@ -57,7 +58,7 @@ fun DiscoveryScreen(page: String, mobile: MobileController, strings: Strings, re
     LaunchedEffect(page, reviewItem?.name, walk.result?.item?.note?.name) { readingScroll.scrollTo(0) }
 
     Column(Modifier.fillMaxSize().safeDrawingPadding().testTag("${page}_page")) {
-        WebToolbar(strings, onMenu, onSearch)
+        WebToolbar(strings, onMenu, onSearch, onCompose = onCompose)
         BoxWithConstraints(Modifier.weight(1f).fillMaxWidth()) {
             val readingHeight = (maxHeight - 184.dp).coerceIn(360.dp, 480.dp)
             val topSpace = 20.dp + ((maxHeight - readingHeight - 151.dp) / 2).coerceAtLeast(0.dp)
@@ -94,7 +95,7 @@ fun DiscoveryScreen(page: String, mobile: MobileController, strings: Strings, re
                                         if (reviewItem.unavailable) DiscoveryMessage(strings.text(
                                             "这条笔记已不存在或无法访问。", "This note was deleted or is no longer accessible."))
                                         else reviewItem.note?.let { note ->
-                                            DiscoveryNoteContent(note, batch.timezone, mobile, strings, review = true)
+                                            DiscoveryNoteContent(note, batch.timezone, mobile, strings, review = true, onTag = onTag)
                                         }
                                     }
                                 }
@@ -128,7 +129,7 @@ fun DiscoveryScreen(page: String, mobile: MobileController, strings: Strings, re
                                         }
                                     }
                                     DiscoveryCard(Modifier.weight(1f).fillMaxWidth(), readingScroll, result.item.note.name) {
-                                        DiscoveryNoteContent(result.item.note, timezone, mobile, strings)
+                                        DiscoveryNoteContent(result.item.note, timezone, mobile, strings, onTag = onTag)
                                     }
                                 }
                             } else if (result?.exhausted != true) {
@@ -293,8 +294,8 @@ private fun DiscoveryCard(modifier: Modifier, scroll: ScrollState, animationKey:
 @OptIn(ExperimentalLayoutApi::class, kotlin.time.ExperimentalTime::class)
 @Composable
 internal fun DiscoveryNoteContent(note: Note, timezone: String, mobile: MobileController, strings: Strings,
-    review: Boolean = false) {
-    val presentation = remember(note.content, note.tags) { notePresentation(note.content, note.tags) }
+    review: Boolean = false, onTag: ((String) -> Unit)? = null) {
+    val presentation = rememberNotePresentation(note.content, note.tags)
     val date = displayNoteDate(note.createTime, timezone, strings.text("zh", "en") == "en")
     val age = remember(note.createTime) {
         runCatching { ((epochMillis() - kotlin.time.Instant.parse(note.createTime).toEpochMilliseconds()) / 86_400_000).coerceAtLeast(0) }.getOrNull()
@@ -311,7 +312,7 @@ internal fun DiscoveryNoteContent(note: Note, timezone: String, mobile: MobileCo
                 verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 if (review && age != null) Text(date, color = MoeriseColors.Muted, style = MaterialTheme.typography.bodySmall,
                     modifier = Modifier.align(Alignment.CenterVertically))
-                NoteTags(presentation.tags, Modifier.align(Alignment.CenterVertically))
+                NoteTags(presentation.tags, Modifier.align(Alignment.CenterVertically), onTag)
                 IconButton(onClick = { mobile.openNote(note.name) }, modifier = Modifier.size(44.dp)
                     .testTag("discovery_open")
                     .semantics { contentDescription = strings.text("在主页查看", "View on home") }) {
@@ -330,7 +331,7 @@ internal fun DiscoveryNoteContent(note: Note, timezone: String, mobile: MobileCo
         MaterialTheme(typography = typography.copy(
             bodyLarge = typography.bodyLarge.copy(fontSize = 18.sp, lineHeight = if (review) 36.sp else 34.2.sp),
         )) {
-            MarkdownBody(presentation.body, note = note, core = mobile.session.core)
+            MarkdownBody(presentation.body, note = note, core = mobile.session.core, tags = presentation.inlineTags, onTag = onTag)
         }
         mobile.session.core?.let { core ->
             note.attachments.forEach { item ->

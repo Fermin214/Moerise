@@ -58,6 +58,7 @@ class ScopeTest(unittest.TestCase):
             "docs/android/THIRD_PARTY_NOTICES.md": ["android"],
             "docs/android/licenses/dependency.txt": ["android"],
             "mobile/androidApp/src/main/Product.kt": ["android"],
+            "mobile/core/markdown/src/test/resources/note-presentation.json": ["web", "android"],
             "scripts/android/requirements.txt": ["android"],
             "internal/chat.go": ["go", "android", "linux_release"],
             "main.go": ["go", "android", "linux_release"],

@@ -105,6 +105,15 @@ async function ready(page) { await page.waitForFunction(() => document.querySele
 async function wait(condition) { for (let i = 0; i < 100; i++) { if (condition()) return; await new Promise(resolve => setTimeout(resolve, 20)); } assert.ok(condition()); }
 async function capture(page, name) { if (process.env.MOERISE_BROWSER_ARTIFACTS) { await mkdir(process.env.MOERISE_BROWSER_ARTIFACTS, { recursive: true }); await page.screenshot({ path: join(process.env.MOERISE_BROWSER_ARTIFACTS, name), fullPage: true }); } }
 
+test('a tag in the star reader opens the home filter', async t => {
+  const { page, state, url } = await fixture(t);
+  state.notes[0].content += ' #想法。';
+  await login(page, url); await ready(page);
+  await marker(page, 0).press('Enter');
+  await card(page).getByRole('button', { name: '#想法', exact: true }).click();
+  await page.waitForURL(value => value.pathname === '/' && value.searchParams.get('tag') === '想法');
+});
+
 test('stars pick the closest visible note and bring offscreen keyboard focus into view', async t => {
   const { page, state, url } = await fixture(t);
   state.malformed = { status: 'ready', algorithm: 'umap-balanced-v1', layout_version: state.version,

@@ -12,6 +12,14 @@ sealed interface TimelineEntry {
     data class Local(val draft: DraftEntity, override val key: String = draft.targetName ?: "queued:${draft.id}") : TimelineEntry
 }
 
+internal fun filteredTimelineEntries(notes: List<Note>, queued: List<DraftEntity>, displayKeys: Map<String, String>): List<TimelineEntry> {
+    val byTarget = queued.filter { it.targetName != null }.distinctBy { it.targetName }.associateBy { it.targetName }
+    return notes.map { note ->
+        val key = displayKeys[note.name] ?: note.name
+        byTarget[note.name]?.let { TimelineEntry.Local(it, key) } ?: TimelineEntry.Remote(note, key)
+    }
+}
+
 /** 本机编辑替换同一资源的远端卡片；新建记录按保存时间并入时间线。 */
 @OptIn(ExperimentalTime::class)
 fun timelineEntries(notes: List<Note>, local: List<DraftEntity>, displayKeys: Map<String, String> = emptyMap()): List<TimelineEntry> {

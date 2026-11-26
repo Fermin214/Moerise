@@ -39,7 +39,7 @@ import io.github.fermin214.moerise.data.CoreClient
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun StarMapScreen(mobile: MobileController, strings: Strings, noteScroll: LazyListState,
-    onMenu: () -> Unit, onSearch: () -> Unit) {
+    onMenu: () -> Unit, onSearch: () -> Unit, onTag: ((String) -> Unit)? = null) {
     val connection by mobile.session.state.collectAsState()
     StarMapScreen(
         mobile.stars,
@@ -50,13 +50,14 @@ fun StarMapScreen(mobile: MobileController, strings: Strings, noteScroll: LazyLi
         onMenu,
         onSearch,
         timezone = connection.profile?.timezone ?: "UTC",
+        onTag = onTag,
     )
 }
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun StarMapScreen(controller: StarMapController, core: CoreClient?, enabled: Boolean, strings: Strings,
-    noteScroll: LazyListState, onMenu: () -> Unit, onSearch: () -> Unit, timezone: String = "UTC") {
+    noteScroll: LazyListState, onMenu: () -> Unit, onSearch: () -> Unit, timezone: String = "UTC", onTag: ((String) -> Unit)? = null) {
     val state by controller.state.collectAsState()
     val map = state.snapshot
     if (!enabled || state.disabledReason == "stargazing") {
@@ -176,10 +177,10 @@ fun StarMapScreen(controller: StarMapController, core: CoreClient?, enabled: Boo
                         }
                     }
                     if (wideReader) MapUnplacedNotes(controller, core, state, strings, timezone, noteScroll, closeReader,
-                        Modifier.width(readerWidth).fillMaxHeight())
+                        Modifier.width(readerWidth).fillMaxHeight(), onTag = onTag)
                 }
                 if (readerVisible && !wideReader) MapUnplacedNotes(controller, core, state, strings, timezone, noteScroll, closeReader,
-                    Modifier.align(Alignment.BottomCenter).fillMaxWidth().heightIn(max = readerHeight), bottomSheet = true)
+                    Modifier.align(Alignment.BottomCenter).fillMaxWidth().heightIn(max = readerHeight), bottomSheet = true, onTag = onTag)
             }
         }
     }
@@ -188,7 +189,7 @@ fun StarMapScreen(controller: StarMapController, core: CoreClient?, enabled: Boo
 @Composable
 private fun MapUnplacedNotes(controller: StarMapController, core: CoreClient?, state: StarMapState, strings: Strings,
     timezone: String, noteScroll: LazyListState, onClose: () -> Unit,
-    modifier: Modifier, bottomSheet: Boolean = false) {
+    modifier: Modifier, bottomSheet: Boolean = false, onTag: ((String) -> Unit)? = null) {
     Surface(modifier, color = Color.White,
         shape = if (bottomSheet) RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp) else RoundedCornerShape(14.dp),
         border = BorderStroke(1.dp, MoeriseColors.Line), shadowElevation = if (bottomSheet) 8.dp else 0.dp) {
@@ -211,10 +212,11 @@ private fun MapUnplacedNotes(controller: StarMapController, core: CoreClient?, s
                         verticalArrangement = Arrangement.spacedBy(10.dp),
                     ) {
                         state.reader?.let { note ->
-                            val presentation = remember(note.content, note.tags) { notePresentation(note.content, note.tags) }
-                            if (presentation.body.isNotBlank()) MarkdownBody(presentation.body, note = note, core = core)
+                            val presentation = rememberNotePresentation(note.content, note.tags)
+                            if (presentation.body.isNotBlank()) MarkdownBody(presentation.body, note = note, core = core,
+                                tags = presentation.inlineTags, onTag = onTag)
                             NoteAttachments(note, core, strings)
-                            NoteTags(presentation.tags)
+                            NoteTags(presentation.tags, onTag = onTag)
                         }
                         if (state.reading) Text(strings.text("正在读取笔记…", "Loading note…"))
                         state.readerError?.let { Text(editorError(it, strings), color = MaterialTheme.colorScheme.error) }

@@ -140,6 +140,7 @@ class EditorController(
     }
 
     fun change(content: String) {
+        if (state.value.busy) return
         val id = state.value.draft?.id ?: return
         mutable.update { before ->
             val draft = before.draft
@@ -199,7 +200,14 @@ class EditorController(
         false
     }
 
-    suspend fun flushForLifecycle(): Boolean = flushWithFeedback()
+    suspend fun flushForLifecycle(): Boolean = try {
+        localLock.withLock { flushLatestLocked() }
+        true
+    } catch (error: Exception) {
+        if (error is CancellationException) throw error
+        mutable.update { it.copy(error = "LOCAL_WRITE_FAILED") }
+        false
+    }
 
     suspend fun enqueue(returnHome: Boolean = true, onEnqueued: (DraftEntity) -> Unit = {}): Boolean {
         val before = state.value
@@ -223,32 +231,25 @@ class EditorController(
                     current.baselineJson?.let { body -> CoreJson.decodeFromString<Note>(body) }
                 }
                 if (acknowledged != null && requireNotNull(previousWrite).draftRevision >= submitted.revision) {
-                    if (!returnHome) mutable.value = EditorUiState(accountKey = submitted.accountKey)
+                    if (!returnHome) {
+                        repo.putFeature(submitted.accountKey, ACTIVE_NOTE_EDITOR, "{}")
+                        mutable.value = EditorUiState(accountKey = submitted.accountKey)
+                    }
                     return@withLock true
                 }
                 val frozen = if (acknowledged != null)
                     completedDraft(submitted, requireNotNull(previousWrite), acknowledged)
                         .copy(queuedRevisionJson = null)
                     else submitted
-                val write = repo.prepare(frozen, current)
-                val next = repo.enqueue(frozen, write)
-                onEnqueued(frozen)
-                val queued = repo.storedDraft(submitted.accountKey, submitted.id).draft
-                mutable.update { latest ->
-                    val draft = latest.draft
-                    if (latest.accountKey != submitted.accountKey || draft?.id != submitted.id) latest
-                    else latest.copy(draft = draft.copy(slot = queued.slot, createdAt = queued.createdAt,
-                        queuedRevisionJson = queued.queuedRevisionJson), pending = write,
-                        savedRevision = if (draft == queued) queued.revision else -1)
-                }
-                flushLatestLocked()
-                if (stamp != generation) return@withLock false
+                val committed = repo.submit(frozen, clearEditorRegistration = !returnHome)
+                val next = committed.home
+                val delivery = runCatching { onEnqueued(committed.frozen) }
                 mutable.update { latest ->
                     when {
+                        stamp != generation -> latest
                         !returnHome -> EditorUiState(accountKey = submitted.accountKey)
-                        latest.draft?.revision != submitted.revision -> latest
                         else -> EditorUiState(submitted.accountKey, next.draft, next.pending,
-                            savedRevision = next.draft.revision)
+                            savedRevision = next.draft.revision, error = if (delivery.isFailure) "LOCAL_READ_FAILED" else null)
                     }
                 }
                 true

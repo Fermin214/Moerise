@@ -1,0 +1,12 @@
+[
+  {"name":"pure tags","content":"#日记\n\n甲\n#灵感\n乙\n\n#日记","tags":["日记","灵感","日记"],"body":"甲\n乙\n","inline":[],"footer":["日记","灵感"],"blocks":[["p","甲\n乙"]]},
+  {"name":"inline and pure","content":"今天在 #日记 里记了 #灵感。\n\n#日记 #收藏","tags":["日记","灵感","收藏"],"body":"今天在 #日记 里记了 #灵感。\n","inline":["日记","灵感"],"footer":["收藏"],"blocks":[["p","今天在 #日记 里记了 #灵感。"]]},
+  {"name":"metadata only","content":"甲\n乙","tags":["收藏"],"body":"甲\n乙","inline":[],"footer":["收藏"],"blocks":[["p","甲\n乙"]]},
+  {"name":"unrecognized","content":"甲 #未知\n\n#未知","tags":[],"body":"甲 #未知\n\n#未知","inline":[],"footer":[],"blocks":[["p","甲 #未知"],["p","#未知"]]},
+  {"name":"same text recognized","content":"甲 #未知\n\n#未知","tags":["未知"],"body":"甲 #未知\n","inline":["未知"],"footer":[],"blocks":[["p","甲 #未知"]]},
+  {"name":"protected syntax","content":"# 标题 #日记\n\n```\n#日记\n```\n\n    #日记\n\n`#日记` \\#日记 https://example.com/#日记 [#日记](https://example.com/#日记) ![图](https://example.com/#日记)\n\n[ref]: https://example.com/#日记","tags":["日记"],"body":"# 标题 #日记\n\n```\n#日记\n```\n\n    #日记\n\n`#日记` \\#日记 https://example.com/#日记 [#日记](https://example.com/#日记) ![图](https://example.com/#日记)\n\n[ref]: https://example.com/#日记","inline":[],"footer":["日记"]},
+  {"name":"single quote with soft break","content":"> 甲\n> 乙 #日记","tags":["日记"],"body":"> 甲\n> 乙 #日记","inline":["日记"],"footer":[],"blocks":[["blockquote","甲\n乙 #日记"]]},
+  {"name":"long paragraph with multiline inline code","repeatPrefix":17000,"content":" `代码\n#日记\n结束`\n\n#收藏","tags":["日记","收藏"],"body":" `代码\n#日记\n结束`\n","inline":[],"footer":["日记","收藏"]},
+  {"name":"unpaired backticks in separate paragraphs","content":"左 `\n\n#日记\n\n` 右","tags":["日记"],"body":"左 `\n\n` 右","inline":[],"footer":["日记"],"blocks":[["p","左 `"],["p","` 右"]]},
+  {"name":"escaped backtick does not open a code span","content":"左 \\`\n#日记\n结尾`","tags":["日记"],"body":"左 \\`\n结尾`","inline":[],"footer":["日记"]}
+]

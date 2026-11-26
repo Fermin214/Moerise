@@ -87,7 +87,7 @@ class EditorRecoveryTest {
             withTimeout(10_000) { confirming.await() }
             withContext(dispatcher) { editor.change("ABC") }
             resumeConfirmation.countDown()
-            assertTrue(withTimeout(10_000) { sending.await() })
+            assertTrue(withTimeout(10_000) { sending.await() }.drained)
             withTimeout(10_000) {
                 editor.state.first {
                     val draft = it.draft
@@ -104,7 +104,7 @@ class EditorRecoveryTest {
             val restored = DraftQueueFixture({ NoteRepository(db) }, core, scope)
             restored.composer.openStored(account, id)
             assertTrue(restored.composer.enqueue())
-            assertTrue(restored.queue.drain(account, core))
+            assertTrue(restored.queue.drain(account, core).drained)
             assertEquals(HttpMethod.Patch, requests[1].first)
             val patch = CoreJson.parseToJsonElement(requests[1].second).jsonObject
             assertEquals("ABC", patch.getValue("content").jsonPrimitive.content)
@@ -164,7 +164,7 @@ class EditorRecoveryTest {
                 val restored = DraftQueueFixture({ NoteRepository(db) }, core, scope)
                 val reopened = restored.composer
                 reopened.openStored(account, id)
-                assertTrue(restored.queue.drain(account, core))
+                assertTrue(restored.queue.drain(account, core).drained)
                 assertEquals(requests[0], requests[1])
                 val result = db.dao().draft(id)!!
                 assertEquals("AB", result.content)
@@ -226,7 +226,7 @@ class EditorRecoveryTest {
             assertEquals(1, writes)
             assertEquals("AB", db.dao().draft(id)?.content)
             db.useWriterConnection { it.immediateTransaction { it.usePrepared("DROP TRIGGER fail_confirmation") { statement -> statement.step() } } }
-            assertTrue(fixture.queue.drain(account, core))
+            assertTrue(fixture.queue.drain(account, core).drained)
             assertEquals(1, writes)
             assertNull(editor.state.value.pending)
             val saved = db.dao().draft(id)!!
@@ -280,7 +280,7 @@ class EditorRecoveryTest {
             assertFalse(retry.isCompleted)
             releaseWriter.complete(Unit)
             blocker.join()
-            assertTrue(withTimeout(10_000) { retry.await() })
+            assertTrue(withTimeout(10_000) { retry.await() }.drained)
             assertEquals(writes[0], writes[1])
             assertNull(db.dao().pending(id))
             assertEquals("memos/one", editor.state.value.draft?.targetName)

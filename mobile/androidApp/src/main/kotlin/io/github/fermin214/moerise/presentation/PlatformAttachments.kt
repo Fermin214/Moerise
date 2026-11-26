@@ -3,6 +3,7 @@ package io.github.fermin214.moerise.presentation
 import android.content.ClipData
 import android.content.Intent
 import android.content.ActivityNotFoundException
+import android.net.Uri
 import android.util.Log
 import android.graphics.BitmapFactory
 import android.provider.OpenableColumns
@@ -10,12 +11,11 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.IconButton
-import androidx.compose.foundation.layout.size
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
@@ -57,63 +57,82 @@ suspend fun clearAttachmentCache(context: android.content.Context) = withContext
 }
 
 @Composable
-fun AttachmentPicker(enabled: Boolean, importScope: CoroutineScope, strings: Strings, onPicked: (List<StagedAttachment>) -> Boolean, onError: (String) -> Unit, onBusy: (Boolean) -> Unit) {
+internal fun AttachmentPicker(mobile: MobileController): (DraftEntity) -> Unit {
     val context = LocalContext.current.applicationContext
-    var busy by remember { mutableStateOf(false) }
-    val accept by rememberUpdatedState(onPicked)
-    val fail by rememberUpdatedState(onError)
-    val pending by rememberUpdatedState(onBusy)
+    var target by rememberSaveable { mutableStateOf<ArrayList<String>?>(null) }
+    var returnedUris by rememberSaveable { mutableStateOf<ArrayList<String>?>(null) }
     val launcher = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
-        if (uris.isNotEmpty()) importScope.launch {
-            busy = true
-            pending(true)
-            val files = androidAttachmentFiles(context)
-            val staged = mutableListOf<StagedAttachment>()
-            var accepted = false
-            try {
-                require(uris.size <= 10) { "ATTACHMENTS_TOO_LARGE" }
-                withContext(Dispatchers.IO) {
-                    var total = 0
-                    for (uri in uris) {
-                        val resolver = context.contentResolver
-                        val reported = resolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
-                            if (cursor.moveToFirst()) cursor.getString(0) else null
-                        }
-                        val filename = reported?.takeIf(::validFilename) ?: "attachment"
-                        val type = resolver.getType(uri)?.lowercase()?.takeIf {
-                            Regex("^[a-z0-9!#&^_.+-]+/[a-z0-9!#&^_.+-]+$").matches(it)
-                        } ?: "application/octet-stream"
-                        val bytes = resolver.openInputStream(uri)?.use { input ->
-                            val output = ByteArrayOutputStream()
-                            val buffer = ByteArray(16 * 1024)
-                            while (true) {
-                                ensureActive()
-                                val count = input.read(buffer)
-                                if (count < 0) break
-                                total += count
-                                require(total <= 8 * 1024 * 1024) { "ATTACHMENTS_TOO_LARGE" }
-                                output.write(buffer, 0, count)
-                            }
-                            output.toByteArray()
-                        } ?: error("ATTACHMENT_READ_FAILED")
-                        ensureActive()
-                        withContext(NonCancellable) { staged += files.stage(filename, type, bytes) }
-                    }
-                }
-                accepted = accept(staged)
-            } catch (error: Exception) {
-                if (error is CancellationException) throw error
-                fail(if (error is IllegalArgumentException) error.message ?: "ATTACHMENT_READ_FAILED" else "ATTACHMENT_READ_FAILED")
-            } finally {
-                if (!accepted) withContext(NonCancellable) { staged.forEach { runCatching { files.remove(it) } } }
-                busy = false
-                pending(false)
+        if (target != null) {
+            if (uris.isEmpty()) {
+                target = null
+                returnedUris = null
+            } else returnedUris = ArrayList(uris.map(Uri::toString))
+        }
+    }
+    LaunchedEffect(mobile, target, returnedUris) {
+        val (account, id) = target ?: return@LaunchedEffect
+        val uris = returnedUris?.map(Uri::parse) ?: return@LaunchedEffect
+        val editor = mobile.awaitAttachmentTarget(account, id)
+        target = null
+        returnedUris = null
+        editor?.attachmentScope?.launch { importAttachments(context, uris, mobile, editor, account, id) }
+    }
+    return { draft ->
+        val editor = mobile.attachmentTarget(draft.accountKey, draft.id)
+        if (target == null && editor != null) {
+            target = arrayListOf(draft.accountKey, draft.id)
+            try { launcher.launch(arrayOf("*/*")) }
+            catch (_: ActivityNotFoundException) {
+                target = null
+                editor.attachmentError("ATTACHMENT_READ_FAILED", draft.id)
             }
         }
     }
-    IconButton(onClick = { launcher.launch(arrayOf("*/*")) }, enabled = enabled && !busy,
-        modifier = Modifier.size(40.dp).testTag("add_attachment")) {
-        WebIcon(WebIcon.Plus, if (busy) strings.text("读取附件…", "Reading files…") else strings.text("添加附件", "Add files"))
+}
+
+private suspend fun importAttachments(context: android.content.Context, uris: List<Uri>, mobile: MobileController,
+    editor: EditorController, account: String, id: String) {
+    editor.importing(id, true)
+    val files = androidAttachmentFiles(context)
+    val staged = mutableListOf<StagedAttachment>()
+    var accepted = false
+    try {
+        require(uris.size <= 10) { "ATTACHMENTS_TOO_LARGE" }
+        withContext(Dispatchers.IO) {
+            var total = 0
+            for (uri in uris) {
+                val resolver = context.contentResolver
+                val reported = resolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
+                    if (cursor.moveToFirst()) cursor.getString(0) else null
+                }
+                val filename = reported?.takeIf(::validFilename) ?: "attachment"
+                val type = resolver.getType(uri)?.lowercase()?.takeIf {
+                    Regex("^[a-z0-9!#&^_.+-]+/[a-z0-9!#&^_.+-]+$").matches(it)
+                } ?: "application/octet-stream"
+                val bytes = resolver.openInputStream(uri)?.use { input ->
+                    val output = ByteArrayOutputStream()
+                    val buffer = ByteArray(16 * 1024)
+                    while (true) {
+                        ensureActive()
+                        val count = input.read(buffer)
+                        if (count < 0) break
+                        total += count
+                        require(total <= 8 * 1024 * 1024) { "ATTACHMENTS_TOO_LARGE" }
+                        output.write(buffer, 0, count)
+                    }
+                    output.toByteArray()
+                } ?: error("ATTACHMENT_READ_FAILED")
+                ensureActive()
+                withContext(NonCancellable) { staged += files.stage(filename, type, bytes) }
+            }
+        }
+        accepted = mobile.attachmentTarget(account, id) === editor && editor.attach(account, id, staged)
+    } catch (error: Exception) {
+        if (error is CancellationException) throw error
+        editor.attachmentError(if (error is IllegalArgumentException) error.message ?: "ATTACHMENT_READ_FAILED" else "ATTACHMENT_READ_FAILED", id)
+    } finally {
+        if (!accepted) withContext(NonCancellable) { staged.forEach { runCatching { files.remove(it) } } }
+        editor.importing(id, false)
     }
 }
 

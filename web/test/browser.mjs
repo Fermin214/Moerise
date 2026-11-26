@@ -170,6 +170,47 @@ async function login(page) {
   await page.locator('#workspace').waitFor({ state: 'visible' });
 }
 
+test('inline tags filter within the timeline and copy preserves the source even after clipboard rejection', async t => {
+  const { page, context, state, url } = await fixture(t);
+  const original = '  开头 **粗体** #想法。\n第二行\n\n#灵感\n  ';
+  state.notes.get('n00').content = original;
+  const archived = state.notes.get('old');
+  archived.content = '归档 #想法。\n\n#灵感';
+  await context.grantPermissions(['clipboard-read', 'clipboard-write']);
+  await page.goto(url);
+  await login(page);
+  const current = page.locator('#notes article[data-name="memos/n00"]');
+  const more = current.locator('.more');
+  const inline = current.getByRole('button', { name: '#想法', exact: true });
+  await inline.waitFor();
+  assert.equal(await current.locator('.note-tags button').allTextContents().then(tags => tags.join()), '#灵感');
+  await more.click();
+  await current.getByRole('menuitem', { name: '复制', exact: true }).click();
+  await current.getByText('已复制', { exact: true }).waitFor();
+  assert.equal(await page.evaluate(() => navigator.clipboard.readText()), original);
+
+  await setUILanguage(page, 'en');
+  await page.evaluate(async () => {
+    await navigator.clipboard.writeText('not the note');
+    navigator.clipboard.writeText = async () => { throw new DOMException('Denied', 'NotAllowedError'); };
+  });
+  await more.click();
+  await current.getByRole('menuitem', { name: 'Copy', exact: true }).click();
+  await current.getByText('Copied', { exact: true }).waitFor();
+  assert.equal(await page.evaluate(() => navigator.clipboard.readText()), original);
+  await page.evaluate(() => { document.execCommand = () => false; });
+  await more.click();
+  await current.getByRole('menuitem', { name: 'Copy', exact: true }).click();
+  await current.getByText('Copy failed', { exact: true }).waitFor();
+
+  await inline.click();
+  await page.waitForURL(value => value.pathname === '/' && value.searchParams.get('tag') === '想法');
+  await page.goto(url + '/archived');
+  const old = page.locator('#notes article[data-name="memos/old"]');
+  await old.getByRole('button', { name: '#灵感', exact: true }).click();
+  await page.waitForURL(value => value.pathname === '/archived' && value.searchParams.get('tag') === '灵感');
+});
+
 test('CSRF renewal discards drafts and never replays a note after an instance or author change', async t => {
   const { page, state, url } = await fixture(t);
   await page.goto(url);

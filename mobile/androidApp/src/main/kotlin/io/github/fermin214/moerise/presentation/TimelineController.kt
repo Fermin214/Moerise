@@ -7,6 +7,8 @@ import io.ktor.http.HttpMethod
 import io.ktor.http.encodeURLQueryComponent
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 data class TimelineUiState(
     val notes: List<Note> = emptyList(),
@@ -25,6 +27,10 @@ class TimelineController(
     private val core: () -> CoreClient?,
     private val scope: CoroutineScope,
     private val filter: String = "NORMAL",
+    private val visible: (String) -> Boolean = { true },
+    private val localPage: suspend (NoteRepository, String, String, Int) -> Pair<List<Note>, Boolean> = { repo, account, state, size ->
+        repo.localNotesPage(account, state, size, 0)
+    },
 ) {
     private val mutable = MutableStateFlow(TimelineUiState())
     val state = mutable.asStateFlow()
@@ -34,12 +40,19 @@ class TimelineController(
     private var request: Job? = null
     private var pageCount = 1
     private val cursors = mutableSetOf<String>()
+    private val projectionRead = Mutex()
+    private var deliveredProjection: Pair<String, Long>? = null
+    private var hidden = false
+
+    private fun canRead(account: String) = !hidden && key == account && visible(account)
 
     fun reset(accountKey: String?) {
         ++generation
         ++accountGeneration
         request?.cancel()
         key = accountKey
+        hidden = false
+        deliveredProjection = null
         pageCount = 1
         cursors.clear()
         mutable.value = TimelineUiState()
@@ -53,32 +66,54 @@ class TimelineController(
     }
 
     suspend fun readCache() {
-        val account = key ?: return
+        val account = key?.takeIf(::canRead) ?: return
         val stamp = accountGeneration
         val repo = repository()
         if (repo.isNotesSynced(account)) {
-            val (local, hasMore) = repo.localNotesPage(account, filter, 20 * pageCount, 0)
-            if (stamp == accountGeneration) applyNotes(local, if (hasMore) "local:${local.size}" else "", stamp)
+            reloadLocal()
             return
         }
         if (filter != "NORMAL") return
         val cached = repo.datedSnapshot(account) ?: return
-        if (stamp == accountGeneration && !state.value.fresh) mutable.update { it.copy(notes = cached.first.notes, snapshotAt = cached.second) }
+        if (stamp == accountGeneration && canRead(account) && !state.value.fresh) mutable.update { it.copy(notes = cached.first.notes, snapshotAt = cached.second) }
+    }
+
+    suspend fun refreshProjection(legacyFallback: Boolean = true) {
+        val account = key?.takeIf(::canRead) ?: return
+        val stamp = generation
+        val repo = repository()
+        if (repo.isNotesSynced(account)) {
+            if (deliveredProjection != (account to repo.projection.value)) readProjection(account, stamp)
+        }
+        else if (legacyFallback && stamp == generation && canRead(account)) refresh()
     }
 
     suspend fun reloadLocal() {
-        val account = key ?: return
+        val account = key?.takeIf(::canRead) ?: return
+        readProjection(account, generation)
+    }
+
+    private suspend fun readProjection(account: String, stamp: Long, append: Boolean = false) = projectionRead.withLock {
+        if (!canRead(account) || stamp != generation) return@withLock
         val repo = repository()
-        if (!repo.isNotesSynced(account)) return
-        val stamp = generation
-        val (local, hasMore) = repo.localNotesPage(account, filter, 20 * pageCount, 0)
-        if (stamp == generation && account == key) {
+        if (!canRead(account) || stamp != generation || !repo.isNotesSynced(account)) return@withLock
+        var force = append
+        val count = pageCount + if (append) 1 else 0
+        while (canRead(account) && stamp == generation) {
+            val readProjection = account to repo.projection.value
+            if (!force && deliveredProjection == readProjection) break
+            val (local, hasMore) = localPage(repo, account, filter, 20 * count)
+            if (!canRead(account) || stamp != generation) break
+            pageCount = count
             applyNotes(local, if (hasMore) "local:${local.size}" else "", stamp)
+            deliveredProjection = readProjection
+            force = false
+            if (repo.projection.value == readProjection.second) break
         }
     }
 
     private fun applyNotes(loaded: List<Note>, next: String, expectedGen: Long) {
-        if (expectedGen != generation && expectedGen != accountGeneration) return
+        if (expectedGen != generation) return
         val previous = state.value
         val byName = previous.notes.associateBy { it.name }
         val notes = loaded.map { note -> byName[note.name]?.takeIf { it == note } ?: note }
@@ -95,14 +130,17 @@ class TimelineController(
     fun hideAccountData() {
         val account = key ?: return
         reset(account)
+        hidden = true
         scope.launch { repository().clearCache(account) }
     }
+
+    fun revealAccountData() { hidden = false }
 
     fun refresh(userInitiated: Boolean = false) = load(false, userInitiated)
     fun more() = load(true, false)
 
     private fun load(append: Boolean, userInitiated: Boolean) {
-        val account = key ?: return
+        val account = key?.takeIf(::canRead) ?: return
         val token = if (append) state.value.nextPageToken.takeIf { it.isNotBlank() } ?: return else ""
         val active = core()
         if (active == null && !(append && token.startsWith("local:"))) return
@@ -113,13 +151,7 @@ class TimelineController(
             mutable.update { it.copy(loading = true, error = null, loadingMore = true) }
             request = scope.launch {
                 try {
-                    val repo = repository()
-                    val offset = token.removePrefix("local:").toIntOrNull() ?: 0
-                    val (moreNotes, hasMore) = repo.localNotesPage(account, filter, 20, offset)
-                    if (stamp != generation || account != key) return@launch
-                    val combined = (state.value.notes + moreNotes).distinctBy { it.name }
-                    pageCount++
-                    applyNotes(combined, if (hasMore) "local:${combined.size}" else "", stamp)
+                    readProjection(account, stamp, append = true)
                 } catch (error: Exception) {
                     if (error is CancellationException) throw error
                     if (stamp == generation) mutable.update { it.copy(error = errorCode(error)) }
@@ -134,10 +166,10 @@ class TimelineController(
         request = scope.launch {
             try {
                 val repo = repository()
-                if (!append && repo.isNotesSynced(account)) {
+                if (!canRead(account)) return@launch
+                if (repo.isNotesSynced(account)) {
                     if (userInitiated && active != null) repo.syncNotes(account, active)
-                    val (local, hasMore) = repo.localNotesPage(account, filter, 20 * pageCount, 0)
-                    if (stamp == generation && account == key) applyNotes(local, if (hasMore) "local:${local.size}" else "", stamp)
+                    readProjection(account, stamp, append)
                     return@launch
                 }
                 val client = active ?: return@launch
@@ -150,6 +182,7 @@ class TimelineController(
                 val oldNames = state.value.notes.mapTo(mutableSetOf()) { it.name }
                 var added = 0
                 do {
+                    if (!canRead(account)) return@launch
                     val body = client.api(HttpMethod.Get,
                         "/notes?state=$filter&order=created_desc&page_size=20" +
                             if (next.isEmpty()) "" else "&page_token=${next.encodeURLQueryComponent(encodeFull = true)}")
@@ -161,7 +194,11 @@ class TimelineController(
                     loaded++
                 } while (!append && next.isNotBlank() && (loaded < pageCount ||
                         tail != null && rows.none { it.name == tail } && rows.size < state.value.notes.size + added && loaded < pageCount + 2))
-                if (filter == "NORMAL" && repo.hasPendingCreation(account) || stamp != generation) return@launch
+                if (filter == "NORMAL" && repo.hasPendingCreation(account) || stamp != generation || !canRead(account)) return@launch
+                if (repo.isNotesSynced(account)) {
+                    readProjection(account, stamp, append)
+                    return@launch
+                }
                 val previous = state.value
                 val byName = previous.notes.associateBy { it.name }
                 val notes = (if (append) previous.notes + rows else rows).distinctBy { it.name }
@@ -169,7 +206,8 @@ class TimelineController(
                 val unchanged = notes == previous.notes && next == previous.nextPageToken
                 if (filter == "NORMAL" && (!unchanged || !previous.fresh))
                     repo.cache(account, NotePage(notes, next))
-                if (stamp == generation) {
+                if (stamp == generation && canRead(account) && deliveredProjection == null) {
+                    deliveredProjection = null
                     pageCount = if (append) pageCount + 1 else loaded
                     cursors.clear(); cursors.addAll(seen)
                     mutable.value = previous.copy(notes = if (unchanged) previous.notes else notes, nextPageToken = next, fresh = true,
@@ -185,18 +223,19 @@ class TimelineController(
     }
 
     fun remove(name: String) {
+        deliveredProjection = null
         ++generation
         request?.cancel()
         mutable.update { it.copy(notes = it.notes.filterNot { note -> note.name == name }, displayKeys = it.displayKeys - name,
             loading = false, refreshing = false, loadingMore = false) }
     }
 
-    fun onSaved(accountKey: String, note: Note, draftId: String? = null) {
-        if (key != accountKey || key?.split('\u0000')?.getOrNull(1) != note.instanceId) return
+    fun onSaved(accountKey: String, note: Note, displayKey: String? = null) {
+        if (!canRead(accountKey) || accountKey.split('\u0000').getOrNull(1) != note.instanceId) return
         ++generation
         request?.cancel()
         mutable.update { it.copy(notes = orderedNotes((listOf(note) + it.notes.filter { old -> old.name != note.name }).filter { it.state == filter }),
             loading = false, refreshing = false, loadingMore = false,
-            displayKeys = if (draftId == null) it.displayKeys else it.displayKeys + (note.name to "queued:$draftId")) }
+            displayKeys = if (displayKey == null) it.displayKeys else it.displayKeys + (note.name to displayKey)) }
     }
 }

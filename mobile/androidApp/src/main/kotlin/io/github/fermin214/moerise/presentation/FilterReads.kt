@@ -40,6 +40,24 @@ class FilterReads(
 
     internal fun cached(state: String, month: String): FilterPage? = cacheKey(state, month)?.let(::cached)
 
+    internal suspend fun writingTags(owner: String): List<TagCount> {
+        if (account() != owner) return emptyList()
+        val key = cacheKey("NORMAL", serviceMonth(timezone())) ?: return emptyList()
+        val cachedTags = cached(key) ?: pages.keys.toList().asReversed()
+            .filter { it.account == key.account && it.state == key.state && it.zone == key.zone }
+            .firstNotNullOfOrNull(::cached)
+        if (cachedTags != null) return cachedTags.tags.tags.sortedByDescending { it.count }
+        val repo = repository()
+        observe(repo)
+        if (!repo.isNotesSynced(owner) || account() != owner) return emptyList()
+        while (account() == owner) {
+            val projection = repo.projection.value
+            val result = repo.localTagPage(owner, "NORMAL").tags
+            if (account() == owner && projection == repo.projection.value) return result
+        }
+        return emptyList()
+    }
+
     private fun cached(key: Key): FilterPage? = pages[key]?.takeIf {
         val online = core() != null
         it.projection == observedRepository?.projection?.value &&
