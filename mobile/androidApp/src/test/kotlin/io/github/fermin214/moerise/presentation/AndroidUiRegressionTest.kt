@@ -85,6 +85,15 @@ class AndroidUiRegressionTest {
         }
     }
 
+    private fun waitForMainCondition(description: String, condition: () -> Boolean) {
+        compose.waitUntil(conditionDescription = description, timeoutMillis = 10_000) {
+            compose.runOnIdle {
+                shadowOf(Looper.getMainLooper()).idle()
+                condition()
+            }
+        }
+    }
+
     @AfterTest
     fun closeHost() {
         if (::host.isInitialized) compose.runOnUiThread { host.pause().stop().destroy() }
@@ -340,7 +349,8 @@ class AndroidUiRegressionTest {
         val allowTailParse = CompletableDeferred<Unit>()
         val image = compose.onNode(hasTestTag("decoded_attachment_image") and hasContentDescription("protected.png") and
             hasAnyAncestor(hasTestTag("note_card_body")), useUnmergedTree = true)
-        val tagInBody = hasText(tagLine) and hasAnyAncestor(hasTestTag("note_card_body"))
+        val tagInBody = hasText(tagLine, substring = true) and hasAnyAncestor(hasTestTag("note_card_body"))
+        val textInBody = hasText(text, substring = true) and hasAnyAncestor(hasTestTag("note_card_body"))
         try {
             compose.runOnUiThread {
                 host.get().setContent {
@@ -359,6 +369,7 @@ class AndroidUiRegressionTest {
                 compose.runOnIdle { entry.value = TimelineEntry.Remote(confirmed) }
                 compose.waitUntil(10_000) { compose.onAllNodes(tagInBody, useUnmergedTree = true).fetchSemanticsNodes().isEmpty() }
             } else {
+                compose.onNode(tagInBody, useUnmergedTree = true).assertDoesNotExist()
                 compose.mainClock.autoAdvance = false
                 compose.runOnIdle { entry.value = TimelineEntry.Remote(confirmed) }
                 compose.mainClock.advanceTimeByFrame()
@@ -366,7 +377,8 @@ class AndroidUiRegressionTest {
             image.assertIsDisplayed()
             compose.mainClock.autoAdvance = true
             allowTailParse.complete(Unit)
-            compose.onNodeWithText(if (promoteToTail) text else "$text\n$tagLine", substring = true).assertExists()
+            compose.onNode(textInBody, useUnmergedTree = true).assertExists()
+            if (!promoteToTail) compose.onNode(tagInBody, useUnmergedTree = true).assertExists()
             image.assertIsDisplayed()
         } finally {
             allowTailParse.complete(Unit)
@@ -461,7 +473,10 @@ class AndroidUiRegressionTest {
                 }
             }
             if (inlineRestoreFails) {
-                compose.waitUntil(10_000) { mobile.localError.value == "LOCAL_READ_FAILED" }
+                waitForMainCondition("inline editor restoration fails with the composer still available") {
+                    assertNull(mobile.editor.state.value.error)
+                    mobile.localError.value == "LOCAL_READ_FAILED"
+                }
                 compose.waitForIdle()
                 assertTrue(mobile.editor.state.value.draft?.attachmentEdits()?.staged?.isEmpty() == true)
                 field.performClick().assertIsFocused()
@@ -475,7 +490,7 @@ class AndroidUiRegressionTest {
                     shadowOf(Looper.getMainLooper()).idle()
                 }
             }
-            compose.waitUntil(10_000) {
+            waitForMainCondition("the picked file is staged in the composer") {
                 val state = mobile.editor.state.value
                 assertNull(state.error)
                 state.draft?.attachmentEdits()?.staged?.size == 1 && !state.importing
@@ -483,7 +498,9 @@ class AndroidUiRegressionTest {
             staged = mobile.editor.state.value.draft?.attachmentEdits()?.staged?.single()
             field.assertIsNotFocused()
             compose.onNodeWithTag("save_note").assertIsEnabled().performSemanticsAction(SemanticsActions.OnClick) { assertTrue(it()) }
-            compose.waitUntil(10_000) { mobile.sync.state.value.notes.singleOrNull()?.attachmentEdits()?.staged?.size == 1 }
+            waitForMainCondition("the attachment-only note is queued") {
+                mobile.sync.state.value.notes.singleOrNull()?.attachmentEdits()?.staged?.size == 1
+            }
             val saved = mobile.sync.state.value.notes.single()
             assertEquals("", saved.content)
             assertEquals(assertNotNull(staged).id, saved.attachmentEdits().staged.single().id)
@@ -561,8 +578,8 @@ class AndroidUiRegressionTest {
                 inline.performClick().assertIsFocused()
             }
             waitForTag("note_editor")
-            compose.waitUntil(10_000) {
-                compose.runOnIdle { mobile.filterReads.cached("NORMAL", serviceMonth("UTC")) != null }
+            waitForMainCondition("first-screen tag and calendar data are available") {
+                mobile.filterReads.cached("NORMAL", serviceMonth("UTC")) != null
             }
             fun checkQuickComposerPosition(page: String, firstKey: String) {
                 val timeline = compose.onNodeWithTag("${page}_timeline")
@@ -577,13 +594,17 @@ class AndroidUiRegressionTest {
                 assertEquals(offset, anchor.getUnclippedBoundsInRoot().top - timeline.getUnclippedBoundsInRoot().top)
             }
             compose.onNodeWithTag("quick_compose").assertDoesNotExist()
-            compose.waitUntil(10_000) { mobile.timeline.state.value.notes.any { it.name == "memos/home-10" } }
+            waitForMainCondition("home timeline includes the scroll anchor") {
+                mobile.timeline.state.value.notes.any { it.name == "memos/home-10" }
+            }
             checkQuickComposerPosition("home", "memos/home-10")
             compose.onNodeWithTag("open_menu").performSemanticsAction(SemanticsActions.OnClick) { assertTrue(it()) }
             compose.onNodeWithTag("nav_archive").performScrollTo().assertIsDisplayed()
                 .performSemanticsAction(SemanticsActions.OnClick) { assertTrue(it()) }
             waitForTag("archive_timeline")
-            compose.waitUntil(10_000) { mobile.archive.state.value.notes.any { it.name == "memos/archive-10" } }
+            waitForMainCondition("archive timeline includes the scroll anchor") {
+                mobile.archive.state.value.notes.any { it.name == "memos/archive-10" }
+            }
             checkQuickComposerPosition("archive", "memos/archive-10")
             compose.onNodeWithTag("open_menu").performSemanticsAction(SemanticsActions.OnClick) { assertTrue(it()) }
             compose.onNodeWithTag("nav_home").performScrollTo().assertIsDisplayed()
@@ -594,8 +615,8 @@ class AndroidUiRegressionTest {
             composer.assertTextContains("New note")
             compose.onNodeWithTag("save_note").assertIsEnabled()
                 .performSemanticsAction(SemanticsActions.OnClick) { assertTrue(it()) }
-            compose.waitUntil(10_000) {
-                compose.runOnIdle { mobile.editor.state.value.let { it.draft?.content == "" || it.error != null } }
+            waitForMainCondition("the composer clears after the local commit") {
+                mobile.editor.state.value.let { it.draft?.content == "" || it.error != null }
             }
             assertNull(mobile.editor.state.value.error)
             assertEquals("New note", runBlocking { repository.queuedNotes(account).single().content })
@@ -632,7 +653,9 @@ class AndroidUiRegressionTest {
 
             compose.onNodeWithTag("home_timeline").performScrollToKey(note.name)
             compose.onNodeWithText("#writing").performClick()
-            compose.waitUntil(10_000) { mobile.search.state.value.notes.map { it.name } == listOf(note.name) }
+            waitForMainCondition("the writing tag filter returns the edited note") {
+                mobile.search.state.value.notes.map { it.name } == listOf(note.name)
+            }
             edit()
             inline.performTextReplacement("Edited")
             inline.assertTextContains("Edited")
