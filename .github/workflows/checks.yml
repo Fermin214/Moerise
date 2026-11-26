@@ -4,19 +4,6 @@ on:
   pull_request:
     branches: [main]
   workflow_dispatch:
-    inputs:
-      mode:
-        type: choice
-        options: [full, android-device]
-        default: full
-      suite:
-        type: choice
-        options: [all, records, records-edits, records-browse, explore, ui, editing, search, actions, navigation, attachments, language, home, lifecycle, ime, recovery, stars]
-        default: all
-      fixture_run:
-        description: Reuse fixture APKs from this workflow run
-        type: string
-        default: ''
 
 permissions:
   contents: read
@@ -28,14 +15,13 @@ concurrency:
 
 jobs:
   scope:
-    if: github.event_name == 'pull_request'
     runs-on: ubuntu-24.04
     outputs:
       go: ${{ steps.scope.outputs.go }}
       web: ${{ steps.scope.outputs.web }}
       android: ${{ steps.scope.outputs.android }}
-      android_mode: ${{ steps.scope.outputs.android_mode }}
       linux_release: ${{ steps.scope.outputs.linux_release }}
+      release_guards: ${{ steps.scope.outputs.release_guards }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -44,10 +30,14 @@ jobs:
         id: scope
         shell: bash
         run: |
+          if [[ "$GITHUB_EVENT_NAME" == workflow_dispatch ]]; then
+            printf '%s=true\n' go web android linux_release release_guards >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           select_check() {
             local name=$1 files
             shift
-            files=$(git diff --name-only HEAD^1 HEAD -- "$@")
+            files=$(git diff --no-renames --name-only HEAD^1 HEAD -- "$@")
             if [[ -n "$files" ]]; then
               echo "$name=true" >> "$GITHUB_OUTPUT"
             else
@@ -55,25 +45,27 @@ jobs:
             fi
           }
           core=(internal main.go go.mod go.sum ':(top,glob)web/*.go' scripts/testweb cmd/moerise-telemetry)
-          release=(scripts/release .github/workflows/{checks,main-smoke,publish}.yml)
           select_check go "${core[@]}" ':(top,glob)*.go' tests services/layout .github/workflows/checks.yml
           select_check web web scripts/lib ':(top,glob)scripts/acceptance/*.mjs' .github/workflows/checks.yml
-          android_mode=$(git diff --no-renames --name-only -z HEAD^1 HEAD | python3 scripts/android/ci-scope.py)
-          echo "android_mode=$android_mode" >> "$GITHUB_OUTPUT"
-          if [[ "$android_mode" == none ]]; then
-            echo "android=false" >> "$GITHUB_OUTPUT"
-          else
+          android_scope=$(git diff --no-renames --name-only -z HEAD^1 HEAD | python3 scripts/android/ci-scope.py)
+          if [[ "$android_scope" == build ]]; then
             echo "android=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "android=false" >> "$GITHUB_OUTPUT"
           fi
-          select_check linux_release "${release[@]}" "${core[@]}" web services/layout \
+          select_check linux_release "${core[@]}" tests web services/layout \
             Dockerfile .dockerignore .env.example config.example.json LICENSE \
-            docs/{OPERATIONS,STARGAZING}.md .github/workflows/release.yml
+            compose.yaml scripts/lib/process.mjs scripts/acceptance/{check-compose,check-telemetry}.mjs \
+            scripts/release/{build-images,smoke-core}.sh .github/workflows/{checks,main-smoke,publish,release}.yml
+          select_check release_guards scripts/release .github/workflows/{checks,main-smoke,publish,android-release}.yml
+      - name: Check packaged documentation exists
+        run: test -f docs/OPERATIONS.md && test -f docs/STARGAZING.md
       - name: Check release guards
-        if: steps.scope.outputs.linux_release == 'true' || steps.scope.outputs.android == 'true'
+        if: steps.scope.outputs.release_guards == 'true' || steps.scope.outputs.linux_release == 'true' || steps.scope.outputs.android == 'true'
         run: python3 -B -m unittest discover -s scripts/release -p 'test_*.py'
   go-suites:
     needs: scope
-    if: ${{ !cancelled() && (needs.scope.outputs.go == 'true' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'full')) }}
+    if: needs.scope.outputs.go == 'true'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -141,7 +133,7 @@ jobs:
           [[ ( "$REQUIRED" == true && "$RESULT" == success ) || ( "$REQUIRED" == false && "$RESULT" == skipped ) ]]
   web:
     needs: scope
-    if: ${{ !cancelled() && (needs.scope.outputs.web == 'true' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'full')) }}
+    if: needs.scope.outputs.web == 'true'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -166,13 +158,11 @@ jobs:
         run: npm --prefix web run test:browser
   android-pr:
     needs: scope
-    if: needs.scope.outputs.android_mode != 'none'
+    if: needs.scope.outputs.android == 'true'
     permissions:
       contents: read
       actions: read
     uses: ./.github/workflows/android-checks.yml
-    with:
-      mode: ${{ needs.scope.outputs.android_mode }}
   linux-preview:
     needs: scope
     if: needs.scope.outputs.linux_release == 'true'
@@ -197,13 +187,3 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - name: Require all applicable checks
         run: python3 scripts/android/ci-pr-gate.py
-  android-device:
-    if: github.event_name == 'workflow_dispatch' && inputs.mode == 'android-device'
-    permissions:
-      contents: read
-      actions: read
-    uses: ./.github/workflows/android-checks.yml
-    with:
-      mode: device
-      suite: ${{ inputs.suite }}
-      fixture_run: ${{ inputs.fixture_run }}

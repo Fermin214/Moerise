@@ -69,55 +69,43 @@ def release_notes(repo, sha, tag):
     return '\n'.join(lines) or f'Moerise {tag}'
 
 
-def android_release(root, sha, run_id):
-    metadata, = (root / 'android/android-release').glob('*/moerise-android-*.apk.json')
+def android_release(root, sha):
+    artifact = root / 'android/android-release'
+    manifests = list(artifact.glob('*/moerise-android-*.apk.json'))
+    if len(manifests) != 1:
+        raise SystemExit(f'Expected one Android APK metadata file under {artifact}, found {len(manifests)}')
+    metadata, = manifests
     info = json.loads(metadata.read_text())
     value = version(info['version_name'])
     base = f'moerise-android-v{value}'
-    apk = metadata.with_name(base + '.apk')
+    apk, digest_file, expected_metadata, notices = (
+        metadata.with_name(base + suffix) for suffix in ('.apk', '.apk.sha256', '.apk.json', '-notices.zip')
+    )
+    guide = metadata.with_name('INSTALL.md')
+    files = [apk, digest_file, expected_metadata, notices]
+    for path in [*files, guide, metadata.with_name('mapping.txt')]:
+        if not path.is_file() or not path.stat().st_size:
+            raise SystemExit(f'Missing or empty Android release file: {path}')
     digest = checksum(apk)
-    report = root / 'android/android-release-checks/result.json'
-    if not report.is_file():
-        raise SystemExit('Android device verification result is missing')
-    smoke = json.loads(report.read_text())
     properties = output('git', 'show', f'{sha}:mobile/gradle.properties')
     min_sdk, = re.findall(r'^moerise\.minSdk=(\d+)$', properties, re.M)
-    flow = smoke.get('flows', {}).get('release-smoke', {})
     expected_info = dict(commit=sha, sha256=digest, apk=apk.name, min_sdk=int(min_sdk))
-    expected_report = dict(status='passed', commit=sha, run_id=run_id, apk_sha256=digest)
-    if (info.get('signed') is not True or any(info.get(key) != value for key, value in expected_info.items())
-            or any(smoke.get(key) != value for key, value in expected_report.items())
-            or str(smoke.get('api')) != min_sdk or smoke.get('secure_cookie') is not True
-            or smoke.get('session_restored_without_login') is not True or flow.get('status') != 'passed'
-            or flow.get('server_assertions', {}).get('created_note_count') != 1):
-        raise SystemExit('Android APK does not match the successful signed smoke test')
-    upgrade_report = report.parent / 'upgrade-smoke/result.json'
-    if not upgrade_report.is_file():
-        raise SystemExit('Android upgrade verification result is missing')
-    upgrade_smoke = json.loads(upgrade_report.read_text())
-    upgrade = upgrade_smoke.get('upgrade', {})
-    baseline = upgrade_smoke.get('flows', {}).get('baseline-compatibility', {})
-    if (any(upgrade_smoke.get(key) != value for key, value in expected_report.items())
-            or str(upgrade_smoke.get('api')) != min_sdk
-            or upgrade_smoke.get('session_restored_without_login') is not True
-            or upgrade_smoke.get('flows', {}).get('upgrade-smoke', {}).get('status') != 'passed'
-            or baseline.get('status') != 'passed' or baseline.get('server_assertions', {}).get('created_note_count') != 1
-            or upgrade.get('from') != '0.3.0' or upgrade.get('pending_write_count') != 1
-            or any(upgrade.get(key) is not True for key in ('account', 'draft', 'keystore_session',
-                                                            'local_database_restored', 'telemetry_received'))):
-        raise SystemExit('Android APK does not match the successful upgrade test')
-    files = [metadata.with_name(base + suffix) for suffix in ('.apk', '.apk.sha256', '.apk.json', '-notices.zip')]
-    if files[1].read_text().split() != [digest, apk.name]:
+    code = info.get('version_code')
+    if type(code) is not int or code <= 0:
+        raise SystemExit('Android APK version_code must be a positive integer')
+    if info.get('signed') is not True or any(info.get(key) != expected for key, expected in expected_info.items()):
+        raise SystemExit('Android APK metadata does not match the signed package and source commit')
+    if digest_file.read_text().split() != [digest, apk.name]:
         raise SystemExit('Android APK checksum file does not match the package')
-    return f'android-v{value}', files, {}, ['--notes-file', str(metadata.with_name('INSTALL.md'))]
+    return f'android-v{value}', files, {}, ['--notes-file', str(guide)]
 
 
-def release_package(root, repo, sha, run_id, component):
+def release_package(root, repo, sha, component):
     if component == 'android':
-        return android_release(root, sha, run_id)
+        return android_release(root, sha)
     tag, files, images, notes = linux_release(root, repo)
     if component == 'both':
-        android_tag, android_files, _, android_notes = android_release(root, sha, run_id)
+        android_tag, android_files, _, android_notes = android_release(root, sha)
         if android_tag != f'android-{tag}':
             raise SystemExit(f'Linux and Android versions differ: {tag}, {android_tag}')
         files.extend([*android_files, Path(android_notes[1])])
@@ -209,7 +197,6 @@ def main():
     parser.add_argument('root', type=Path)
     parser.add_argument('sha')
     parser.add_argument('component', choices=['core-web', 'android', 'both'])
-    parser.add_argument('--run-id', required=True)
     parser.add_argument('--notes-file', type=Path)
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument('--dry-run', action='store_true')
@@ -218,7 +205,7 @@ def main():
     repo = os.environ.get('GH_REPO') or os.environ.get('GITHUB_REPOSITORY')
     if not repo and (not args.verify_only or args.component != 'android'):
         parser.error('Set GH_REPO or GITHUB_REPOSITORY')
-    tag, files, images, notes = release_package(args.root, repo, args.sha, args.run_id, args.component)
+    tag, files, images, notes = release_package(args.root, repo, args.sha, args.component)
     if args.notes_file:
         notes = ['--notes-file', str(args.notes_file)]
     required = files + ([Path(notes[1])] if notes and notes[0] == '--notes-file' else [])

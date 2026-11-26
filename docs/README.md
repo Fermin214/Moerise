@@ -25,7 +25,6 @@
 | 参与贡献 | [指南](../CONTRIBUTING.md) |
 | Android 开发 | [工具链、构建与设备安装](ANDROID.md) |
 | Android 安装与升级 | [APK 安装、签名身份与数据恢复](android/INSTALL.md) |
-| Android 设备检查 | [交互、恢复与发行流程](android/DEVICE-CHECKS.md) |
-| Android Maestro 用例 | [页面流程、参数与校验](../scripts/android/maestro/README.md) |
+| Android 发版前真机检查 | [覆盖升级、主要交互与隐私默认值](android/RELEASE-CHECKLIST.md) |
 | Android 第三方许可 | [运行时依赖与许可声明](android/THIRD_PARTY_NOTICES.md) |
 | 路线图 | [路线图](ROADMAP.md) |

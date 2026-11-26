@@ -16,6 +16,7 @@ Moerise 是基于 Memos 的单用户自托管笔记系统。`internal/` 是按�
 | 修改向量模型或产品设置 | [向量与语义检索](docs/EMBEDDING.md)、[系统设置](docs/SETTINGS.md) |
 | 修改回顾、飞书记录或渠道推送 | [每日回顾](docs/DAILY-REVIEW.md)、[飞书接入](docs/FEISHU.md)、[通知与推送](docs/NOTIFICATIONS.md) |
 | 修改配置、部署或恢复流程 | [运行与恢复](docs/OPERATIONS.md) |
+| Android 构建、联调及发版验收 | [Android 开发](docs/ANDROID.md)、[发版前真机检查](docs/android/RELEASE-CHECKLIST.md) |
 | 选择测试、准备浏览器或集成环境 | [开发指南](docs/DEVELOPMENT.md)、[脚本说明](scripts/README.md) |
 
 ## 关键约束
@@ -48,7 +49,11 @@ Moerise 是基于 Memos 的单用户自托管笔记系统。`internal/` 是按�
 | Web 逻辑、样式与构建 | `npm --prefix web run build`、`npm --prefix web test` |
 | Web 界面与交互 | `npm --prefix web run test:browser` |
 | 共用脚本与策略 | `node --test scripts/lib/*.test.mjs scripts/android/fixture-policy.test.mjs` |
+| CI 路径与门禁 | 安装 `scripts/android/requirements.txt`，运行 `python3 -B scripts/android/ci-scope.test.py` 与 `bash .agents/skills/moerise-ci/inspect.sh workflow main` |
+| 发布守护 | `python3 -B -m unittest discover -s scripts/release -p 'test_*.py'` |
 | 同步、Memos 协议、迁移、备份恢复或通知推送 | `MOERISE_V030_BINARY=<发行包内的 moerise 路径> go test -tags=integration ./tests -v -count=1`，基线和布局服务见[开发指南](docs/DEVELOPMENT.md#五真实-memos-集成测试) |
 | Compose、Core、Web 联合验收 | `node scripts/acceptance/check-compose.mjs --browser`，其他功能脚本见[脚本说明](scripts/README.md) |
 
 Web 依赖通过 `npm --prefix web ci` 安装。浏览器流程需要 Playwright 浏览器；真实 Memos 集成与联合验收需要 Docker。具体功能的联合验收脚本及参数见[脚本说明](scripts/README.md)。
+
+Dallas 的 Android Gradle 构建、JVM 测试、Lint 和 Core API 联调交给 GitHub Actions。正式签名 APK 按[发版前真机检查](docs/android/RELEASE-CHECKLIST.md)验收。

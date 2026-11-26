@@ -52,7 +52,7 @@ flowchart TD
 | `mobile/benchmark/` | 独立 Macrobenchmark runner 与 Profile 采集流程 |
 | `mobile/gradle/` | 工具链版本、Wrapper 和依赖完整性校验 |
 | `scripts/android/` | 构建、隔离服务、设备验收、性能与发行入口 |
-| `docs/android/` | 设备检查、安装和第三方许可；工程说明见 [Android 开发](ANDROID.md) |
+| `docs/android/` | 发版前真机检查、安装和第三方许可，工程说明见 [Android 开发](ANDROID.md) |
 | `scripts/acceptance/` | Compose、浏览器、Core 与真实 Memos 的联合验收 |
 | `scripts/performance/` | CPU 配置基准与检索质量评测 |
 | `scripts/lib/` | 脚本共用的进程管理工具及测试 |
