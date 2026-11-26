@@ -24,7 +24,7 @@ func TestStaticRoutesAndEncodings(t *testing.T) {
 	handler := Handler(dir, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusTeapot)
 	}))
-	for _, path := range []string{"/", "/archived", "/review", "/walk", "/insights", "/map", "/settings", "/notes/a-b_1"} {
+	for _, path := range []string{"/", "/archived", "/review", "/walk", "/map", "/settings", "/notes/a-b_1"} {
 		w := httptest.NewRecorder()
 		handler.ServeHTTP(w, httptest.NewRequest("GET", path, nil))
 		if w.Code != 200 || w.Body.String() != "<html>app</html>" ||
@@ -39,7 +39,7 @@ func TestStaticRoutesAndEncodings(t *testing.T) {
 			t.Fatalf("API boundary %s: %d", path, w.Code)
 		}
 	}
-	for _, path := range []string{"/unknown", "/notes/", "/notes/a/b", "/../index.html", "/%2e%2e/index.html", "/foo.js", "/.keep", "/src/app.js"} {
+	for _, path := range []string{"/unknown", "/insights", "/notes/", "/notes/a/b", "/../index.html", "/%2e%2e/index.html", "/foo.js", "/.keep", "/src/app.js"} {
 		w := httptest.NewRecorder()
 		handler.ServeHTTP(w, httptest.NewRequest("GET", path, nil))
 		if w.Code != 404 {

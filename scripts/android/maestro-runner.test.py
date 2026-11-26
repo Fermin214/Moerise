@@ -576,6 +576,13 @@ class MaestroExecutionTest(unittest.TestCase):
         self.assertEqual(list(result), ["first"])
         self.assertEqual(run.call_count, 1)
 
+    def test_every_catalog_flow_has_a_contract_fingerprint(self):
+        flows = runner.catalog()["flows"]
+        self.assertEqual(flows.keys(), runner.FLOW_CONTRACT_VERSIONS.keys())
+        for flow in flows:
+            with self.subTest(flow=flow):
+                self.assertRegex(runner.flow_digest(runner.ROOT, flow), r"^[a-f0-9]{64}$")
+
     def test_pass_identity_changes_when_a_shared_subflow_changes(self):
         root = self.output / "repo"
         target = root / "scripts/android/maestro"
@@ -833,26 +840,6 @@ class MaestroExecutionTest(unittest.TestCase):
         log.unlink()
         self.assertEqual(runner.last_failed_step(self.output, "activity_launch", 60), {
             "source": "runner_stage", "kind": "host_stage", "stage": "activity_launch", "timeout_seconds": 60})
-
-    def test_disconnect_checks_both_exact_questions_and_partial_protocol_reply(self):
-        values = {"NOTE_NAME": "memos/target", "DISCONNECT_MARKER": "ANDROID_FAIL", "FOLLOWUP_TEXT": "Normal followup"}
-        first = {"user": {"content": values["DISCONNECT_MARKER"]},
-                 "assistant": {"status": "failed", "error_code": "LLM_PROTOCOL", "content": "Partial text"}}
-        second = {"user": {"content": values["FOLLOWUP_TEXT"]},
-                  "assistant": {"status": "completed", "content": "Complete text"}}
-        summary = {"chats": [{"id": "a" * 36, "material_count": 1}]}
-        chat = {"materials": [{"name": values["NOTE_NAME"]}], "turns": [first, second]}
-        self.engine.api.request.side_effect = [summary, chat, summary, chat]
-        self.assertEqual(self.engine.verify("insights-disconnect", values)["turn_count"], 2)
-        second["user"]["content"] = "ANDROID_FAIL Normal followup"
-        with self.assertRaisesRegex(AssertionError, "followup_question"):
-            self.engine.verify("insights-disconnect", values)
-        source = runner.ROOT / "scripts/android/maestro/insights-disconnect.yaml"
-        steps = list(runner.yaml.safe_load_all(source.read_text(encoding="utf-8")))[1]
-        sends = [index for index, step in enumerate(steps) if step.get("tapOn", {}).get("id") == "chat_send"]
-        self.assertEqual([steps[index - 1]["assertVisible"]["text"] for index in sends],
-                         [r"\Q${DISCONNECT_MARKER}\E", r"\Q${FOLLOWUP_TEXT}\E"])
-        self.assertEqual(sum(step.get("runFlow", {}).get("file") == "subflows/clear-question.yaml" for step in steps), 2)
 
     def test_release_smoke_persists_created_note_count(self):
         values = {**self.values(), "NEW_NOTE_TEXT": "Created"}

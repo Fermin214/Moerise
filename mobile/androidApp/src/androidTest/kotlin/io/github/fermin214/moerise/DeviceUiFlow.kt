@@ -218,7 +218,6 @@ internal fun deviceDiagnostics(): String {
     val session = mobile.session.state.value
     val action = mobile.noteActions.state.value
     val home = mobile.homeNote.state.value
-    val picker = mobile.insights.picker.state.value
     val search = mobile.search.state.value
     val composer = mobile.editor.state.value
     val editors = mobile.noteEditors.value.entries.joinToString { (name, controller) ->
@@ -234,7 +233,6 @@ internal fun deviceDiagnostics(): String {
         "actionName=${action.name}；actionBusy=${action.busy}；actionPending=${action.pendingAction}；" +
         "actionUnknown=${action.deleteUnknown}；actionError=${action.error}；" +
         "homeBusy=${home.busy}；homeLoading=${home.loading}；homePending=${home.pendingAction}；homeError=${home.error}；" +
-        "pickerBusy=${picker.busy}；pickerError=${picker.error}；pickerCandidates=${picker.candidates.map { it.name }}；" +
         "searchLoading=${search.loading}；searchError=${search.error}；searchMode=${search.query.mode}；" +
         "searchResponseMode=${search.responseMode}；searchSemantic=${search.semantic}；searchNames=${search.notes.map { it.name }}"
 }
@@ -349,7 +347,7 @@ internal fun AndroidComposeTestRule<FixtureActivityRule, MainActivity>.navigate(
 }
 
 private fun ComposeTestRule.pageDiagnostics(): String {
-    val pages = listOf("home", "review_page", "walk_page", "insights_page", "map_page",
+    val pages = listOf("home", "review_page", "walk_page", "map_page",
         "settings_page", "settings_tab_0", "sidebar_scroll", "server_login")
     return "页面标记=" + pages.filter { hasTag(it) }.joinToString(",")
 }

@@ -276,7 +276,7 @@ func TestClientDiscoveryMemosAcceptance(t *testing.T) {
 	settings = c.call("GET", "/api/app/v1/settings", nil, 200)
 	c.call("PATCH", "/api/app/v1/settings", map[string]any{
 		"version": settings["version"], "settings": map[string]any{
-			"embedding": map[string]bool{"enabled": false}, "llm": map[string]bool{"enabled": false},
+			"embedding": map[string]bool{"enabled": false},
 		},
 	}, 200)
 	assertPlan()

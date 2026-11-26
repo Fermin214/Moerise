@@ -11,7 +11,7 @@ on:
         default: full
       suite:
         type: choice
-        options: [all, records, records-edits, records-browse, insights, explore, ui, editing, search, actions, navigation, attachments, language, home, lifecycle, ime, recovery, stars]
+        options: [all, records, records-edits, records-browse, explore, ui, editing, search, actions, navigation, attachments, language, home, lifecycle, ime, recovery, stars]
         default: all
       fixture_run:
         description: Reuse fixture APKs from this workflow run
@@ -113,6 +113,8 @@ jobs:
         if: matrix.suite == 'integration'
         run: |
           docker build -t moerise-layout:checks services/layout
+          docker run --rm --entrypoint python -v "$PWD/services/layout/test_semantic.py:/app/test_semantic.py:ro" \
+            moerise-layout:checks -B -m unittest test_semantic
           docker run -d --name moerise-layout --cpus=1 --memory=1g \
             -p 127.0.0.1:8766:8766 moerise-layout:checks
       - name: Run Memos acceptance scenarios
@@ -120,11 +122,11 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          mkdir -p "$RUNNER_TEMP/v020"
-          gh release download v0.2.0 --pattern moerise_0.2.0_linux_amd64.tar.gz --dir "$RUNNER_TEMP/v020"
-          tar -xzf "$RUNNER_TEMP/v020/moerise_0.2.0_linux_amd64.tar.gz" -C "$RUNNER_TEMP/v020"
-          export MOERISE_V020_BINARY="$RUNNER_TEMP/v020/moerise_0.2.0_linux_amd64/moerise"
-          test -x "$MOERISE_V020_BINARY"
+          mkdir -p "$RUNNER_TEMP/v030"
+          gh release download v0.3.0 --pattern moerise_0.3.0_linux_amd64.tar.gz --dir "$RUNNER_TEMP/v030"
+          tar -xzf "$RUNNER_TEMP/v030/moerise_0.3.0_linux_amd64.tar.gz" -C "$RUNNER_TEMP/v030"
+          export MOERISE_V030_BINARY="$RUNNER_TEMP/v030/moerise_0.3.0_linux_amd64/moerise"
+          test -x "$MOERISE_V030_BINARY"
           go test -tags=integration ./tests -v -count=1
   go:
     needs: [scope, go-suites]
@@ -154,7 +156,7 @@ jobs:
       - run: npm --prefix web ci
       - run: npm --prefix web run build
       - run: npm --prefix web test
-      - run: node --test scripts/lib/*.test.mjs scripts/acceptance/verify-chat-stream.test.mjs
+      - run: node --test scripts/lib/*.test.mjs scripts/android/fixture-policy.test.mjs
       - name: Verify preinstalled Chrome
         run: google-chrome --version
       - name: Run browser suites

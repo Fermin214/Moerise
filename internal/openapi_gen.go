@@ -26,11 +26,10 @@ type openAPIOp struct {
 }
 
 type openAPIErrorDetail struct {
-	Code         string   `json:"code"`
-	Message      string   `json:"message"`
-	Retryable    bool     `json:"retryable"`
-	RequestID    string   `json:"request_id"`
-	ChangedNames []string `json:"changed_names,omitempty"`
+	Code      string `json:"code"`
+	Message   string `json:"message"`
+	Retryable bool   `json:"retryable"`
+	RequestID string `json:"request_id"`
 }
 
 type openAPIErrorResponse struct {
@@ -58,43 +57,9 @@ type openAPIIdentity struct {
 type openAPICapabilities struct {
 	Version      string         `json:"version"`
 	Telemetry    map[string]any `json:"telemetry"`
-	Chat         map[string]any `json:"chat"`
 	Sync         map[string]any `json:"sync"`
 	LoginMethods []string       `json:"login_methods"`
 	Notes        string         `json:"notes"`
-}
-
-type openAPIChatPage struct {
-	Chats          []ChatSummary `json:"chats"`
-	NextPageToken  string        `json:"next_page_token"`
-	CharacterLimit int           `json:"character_limit"`
-}
-
-type openAPIChatMaterialPage struct {
-	Notes          []Note `json:"notes"`
-	NextPageToken  string `json:"next_page_token"`
-	CharacterLimit int    `json:"character_limit"`
-}
-
-type openAPIChatCandidatePage struct {
-	Candidates     []ChatCandidate `json:"candidates"`
-	NextPageToken  string          `json:"next_page_token"`
-	CharacterLimit int             `json:"character_limit"`
-	SourceLimit    int             `json:"source_limit"`
-}
-
-type openAPIChatNames struct {
-	Names []string `json:"names"`
-}
-
-type openAPIChatVersion struct {
-	Version   int64          `json:"version"`
-	Materials []ChatMaterial `json:"materials,omitempty"`
-}
-
-type openAPIChatStreamError struct {
-	Error openAPIErrorDetail `json:"error"`
-	Turn  *ChatTurn          `json:"turn"`
 }
 
 type openAPIClientTags struct {
@@ -135,7 +100,6 @@ type openAPIModelCheckRequest struct {
 type openAPISettingsSecretUpdates struct {
 	QQAppSecret       *SecretUpdate `json:"qq_app_secret,omitempty"`
 	WebhookAppSecret  *SecretUpdate `json:"webhook_app_secret,omitempty"`
-	LLMAPIKey         *SecretUpdate `json:"llm_api_key,omitempty"`
 	EmbeddingAPIKey   *SecretUpdate `json:"embedding_api_key,omitempty"`
 	AppSecret         *SecretUpdate `json:"app_secret,omitempty"`
 	VerificationToken *SecretUpdate `json:"verification_token,omitempty"`
@@ -179,27 +143,6 @@ func buildOpenAPISchemas() map[string]json.RawMessage {
 	clientNotePageRef := openAPIRefSchema("NotePage")
 	schemas := map[string]json.RawMessage{
 		"AttachmentReceipt":       schemaFrom[AttachmentReceipt](),
-		"ChatCandidate":           schemaFrom[ChatCandidate](),
-		"ChatCandidatePage":       schemaFrom[openAPIChatCandidatePage](),
-		"ChatCreate":              schemaFrom[ChatCreate](),
-		"ChatEvent":               schemaFrom[ChatEvent](),
-		"ChatGenerate":            schemaFrom[ChatGenerate](),
-		"ChatMaterial":            schemaFrom[ChatMaterial](),
-		"ChatMaterialPage":        schemaFrom[openAPIChatMaterialPage](),
-		"ChatMaterials":           schemaFrom[ChatMaterials](),
-		"ChatMessage":             schemaFrom[ChatMessage](),
-		"ChatMessageRef":          schemaFrom[ChatMessageRef](),
-		"ChatNames":               schemaFrom[openAPIChatNames](),
-		"ChatOperationKey":        json.RawMessage(`{"type":"string","minLength":1,"maxLength":128}`),
-		"ChatPage":                schemaFrom[openAPIChatPage](),
-		"ChatSaveReceipt":         schemaFrom[ChatSaveReceipt](),
-		"ChatSaveSelection":       schemaFrom[ChatSaveSelection](),
-		"ChatSession":             schemaFrom[ChatSession](),
-		"ChatStreamError":         schemaFrom[openAPIChatStreamError](),
-		"ChatSummary":             schemaFrom[ChatSummary](),
-		"ChatTurn":                schemaFrom[ChatTurn](),
-		"ChatUpdate":              schemaFrom[ChatUpdate](),
-		"ChatVersion":             schemaFrom[openAPIChatVersion](),
 		"ClientAttachment":        schemaFrom[map[string]any](),
 		"ClientAttachmentInput":   schemaFrom[CreateAttachment](),
 		"ClientCalendar":          schemaFrom[openAPIClientCalendar](),
@@ -235,7 +178,6 @@ func buildOpenAPISchemas() map[string]json.RawMessage {
 		"Job":                     schemaFrom[Job](),
 		"JobCount":                schemaFrom[JobCount](),
 		"JobResponse":             schemaFrom[openAPIJobResponse](),
-		"LLMUsage":                schemaFrom[LLMUsage](),
 		"Liveness":                schemaFrom[openAPILiveness](),
 		"MapDistrict":             schemaFrom[MapDistrict](),
 		"MapLink":                 schemaFrom[MapLink](),
@@ -346,34 +288,10 @@ func buildOpenAPISpec() []byte {
 		}
 		return resps
 	}
-	chatErrRef := map[string]any{"$ref": "#/components/responses/ChatError"}
-	chatResponses := func(okCodes []string, okMedia string, okSchema map[string]any, codes ...string) map[string]any {
-		resps := map[string]any{}
-		for _, code := range okCodes {
-			if okSchema != nil {
-				resps[code] = schemaResp(code, okMedia, okSchema)
-			} else {
-				resps[code] = descResp(code)
-			}
-		}
-		for _, code := range codes {
-			resps[code] = chatErrRef
-		}
-		return resps
-	}
-	chatJSON := func(schema string) map[string]any {
-		return map[string]any{"$ref": "#/components/schemas/" + schema}
-	}
 	feishuOK := schemaResp("OK", "application/json", map[string]any{
 		"oneOf": []map[string]any{
 			{"type": "object", "required": []string{"challenge"}, "properties": map[string]any{"challenge": map[string]any{"type": "string"}}},
 			{"type": "object", "required": []string{"code"}, "properties": map[string]any{"code": map[string]any{"type": "integer", "const": 0}}},
-		},
-	})
-	chatMaterialsOK := schemaResp("OK", "application/json", map[string]any{
-		"oneOf": []map[string]any{
-			{"$ref": "#/components/schemas/ChatMaterialPage"},
-			{"$ref": "#/components/schemas/ChatCandidatePage"},
 		},
 	})
 	mapRebuildOK := schemaResp("Queued", "application/json", map[string]any{
@@ -471,30 +389,9 @@ func buildOpenAPISpec() []byte {
 		{"PATCH", "/api/app/v1/settings", "client_update_settings", appSec, []openAPIParam{headerParam("Origin", true), headerParam("X-CSRF-Token", true)}, "#/components/schemas/SettingsUpdate", stdResponses("200", "#/components/schemas/SettingsView", "401", "403", "404", "405", "409", "415", "422", "500", "503")},
 		{"GET", "/api/app/v1/models", "client_models_status", appSec, nil, "", stdResponses("200", "#/components/schemas/ClientModels", "401", "403", "404", "405", "422", "500", "503")},
 		{"POST", "/api/app/v1/models/embedding/check", "client_models_embedding", appSec, []openAPIParam{headerParam("Origin", true), headerParam("X-CSRF-Token", true)}, "#/components/schemas/ClientModelCheckRequest", stdResponses("200", "#/components/schemas/ClientModelCheck", "401", "403", "404", "405", "409", "415", "422", "500", "503")},
-		{"POST", "/api/app/v1/models/llm/check", "client_models_llm", appSec, []openAPIParam{headerParam("Origin", true), headerParam("X-CSRF-Token", true)}, "#/components/schemas/ClientModelCheckRequest", stdResponses("200", "#/components/schemas/ClientModelCheck", "401", "403", "404", "405", "409", "415", "422", "500", "503")},
 		{"GET", "/api/app/v1/reviews/daily", "client_daily_review", appSec, nil, "", stdResponses("200", "#/components/schemas/ClientReviewBatch", "401", "403", "404", "405", "409", "413", "415", "422", "500", "503")},
 		{"POST", "/api/app/v1/walks/start", "client_walk_start", appSec, []openAPIParam{headerParam("X-CSRF-Token", true)}, "#/components/schemas/ClientWalkStart", stdResponses("200", "#/components/schemas/ClientWalkResponse", "401", "403", "404", "405", "409", "413", "415", "422", "500", "503")},
 		{"POST", "/api/app/v1/walks/next", "client_walk_next", appSec, []openAPIParam{headerParam("X-CSRF-Token", true)}, "#/components/schemas/ClientWalkNext", stdResponses("200", "#/components/schemas/ClientWalkResponse", "401", "403", "404", "405", "409", "413", "415", "422", "500", "503")},
-		{"GET", "/api/app/v1/chats", "client_list_chats", appSec, []openAPIParam{queryParam("page_size", "integer", "20"), queryParam("page_token", "string", "")}, "", chatResponses([]string{"200"}, "application/json", chatJSON("ChatPage"), "401", "403", "404", "405", "409", "413", "415", "422", "500", "503")},
-		{"POST", "/api/app/v1/chats", "client_create_chat", appSec, []openAPIParam{headerParam("X-CSRF-Token", true)}, "#/components/schemas/ChatCreate", chatResponses([]string{"200", "201"}, "application/json", chatJSON("ChatSession"), "401", "403", "404", "405", "409", "413", "415", "422", "500", "503")},
-		{"GET", "/api/app/v1/chats/{chat_id}", "client_get_chat", appSec, []openAPIParam{pathParam("chat_id")}, "", chatResponses([]string{"200"}, "application/json", chatJSON("ChatSession"), "401", "403", "404", "405", "409", "413", "415", "422", "500", "503")},
-		{"PATCH", "/api/app/v1/chats/{chat_id}", "client_update_chat", appSec, []openAPIParam{headerParam("X-CSRF-Token", true), pathParam("chat_id")}, "#/components/schemas/ChatUpdate", chatResponses([]string{"200"}, "application/json", chatJSON("ChatSession"), "401", "403", "404", "405", "409", "413", "415", "422", "500", "503")},
-		{"DELETE", "/api/app/v1/chats/{chat_id}", "client_delete_chat", appSec, []openAPIParam{headerParam("X-CSRF-Token", true), pathParam("chat_id")}, "object", chatResponses([]string{"204"}, "", nil, "401", "403", "404", "405", "409", "413", "415", "422", "500", "503")},
-		{"GET", "/api/app/v1/chat-materials", "client_select_chat_materials", appSec, []openAPIParam{
-			queryParam("tag_match", "string", "all"), queryParam("format", "string", "full"), queryParam("state", "string", "ALL"),
-			queryParam("query", "string", ""), queryParam("tag", "string", ""), queryParam("from", "string", ""), queryParam("until", "string", ""),
-			queryParam("page_size", "integer", "100"), queryParam("page_token", "string", ""),
-		}, "", map[string]any{
-			"200": chatMaterialsOK, "401": chatErrRef, "403": chatErrRef, "404": chatErrRef,
-			"405": chatErrRef, "409": chatErrRef, "413": chatErrRef, "415": chatErrRef,
-			"422": chatErrRef, "500": chatErrRef, "503": chatErrRef,
-		}},
-		{"POST", "/api/app/v1/chat-materials/resolve", "client_resolve_chat_materials", appSec, []openAPIParam{headerParam("X-CSRF-Token", true)}, "#/components/schemas/ChatNames", chatResponses([]string{"200"}, "application/json", chatJSON("ChatMaterials"), "401", "403", "404", "405", "409", "413", "415", "422", "500", "503")},
-		{"POST", "/api/app/v1/chats/{chat_id}/messages", "client_generate_chat", appSec, []openAPIParam{headerParam("X-CSRF-Token", true), pathParam("chat_id")}, "#/components/schemas/ChatGenerate", chatResponses([]string{"200"}, "text/event-stream", map[string]any{"type": "string"}, "401", "403", "404", "405", "409", "413", "415", "422", "500", "503")},
-		{"POST", "/api/app/v1/chats/{chat_id}/messages/{request_id}/cancel", "client_cancel_chat", appSec, []openAPIParam{headerParam("X-CSRF-Token", true), pathParam("chat_id"), pathParam("request_id")}, "object", chatResponses([]string{"200"}, "application/json", chatJSON("ChatTurn"), "401", "403", "404", "405", "409", "413", "415", "422", "500", "503")},
-		{"POST", "/api/app/v1/chats/{chat_id}/save-selection", "client_save_chat_selection", appSec, []openAPIParam{headerParam("X-CSRF-Token", true), pathParam("chat_id")}, "#/components/schemas/ChatSaveSelection", chatResponses([]string{"200", "201"}, "application/json", chatJSON("ClientNote"), "default")},
-		{"GET", "/api/app/v1/chats/{chat_id}/save-selection/{operation_key}", "client_chat_save_receipt", appSec, []openAPIParam{pathParam("chat_id"), pathParam("operation_key")}, "", chatResponses([]string{"200"}, "application/json", chatJSON("ChatSaveReceipt"), "default")},
-		{"POST", "/api/app/v1/chats/{chat_id}/messages/{request_id}/save", "client_save_chat", appSec, []openAPIParam{headerParam("X-CSRF-Token", true), pathParam("chat_id"), pathParam("request_id")}, "#/components/schemas/ChatVersion", chatResponses([]string{"200", "201"}, "application/json", chatJSON("ClientNote"), "401", "403", "404", "405", "409", "413", "415", "422", "500", "503")},
 		{"GET", "/api/app/v1/map", "client_cognitive_map", appSec, nil, "", stdResponses("200", "#/components/schemas/MapResponse", "401", "403", "404", "405", "422", "500", "503")},
 		{"POST", "/api/app/v1/search", "client_search", appSec, []openAPIParam{headerParam("X-CSRF-Token", true)}, "#/components/schemas/ClientSearchRequest", stdResponses("200", "#/components/schemas/ClientSearchPage", "401", "403", "405", "409", "413", "422", "503")},
 		{"POST", "/api/app/v1/map/rebuild", "client_rebuild_star_map", appSec, []openAPIParam{headerParam("Origin", true), headerParam("X-CSRF-Token", true)}, "", map[string]any{
@@ -565,18 +462,6 @@ func buildOpenAPISpec() []byte {
 					"type": "apiKey",
 					"in":   "cookie",
 					"name": "moerise_local_session",
-				},
-			},
-			"responses": map[string]any{
-				"ChatError": map[string]any{
-					"description": "客户端聊天错误。流开始后的错误使用 ChatStreamError，EOF 不代表成功。",
-					"content": map[string]any{
-						"application/json": map[string]any{"schema": map[string]any{"$ref": "#/components/schemas/ErrorResponse"}},
-					},
-					"headers": map[string]any{
-						"Cache-Control": map[string]any{"schema": map[string]any{"type": "string", "const": "no-store"}},
-						"X-Request-ID":  map[string]any{"schema": map[string]any{"type": "string"}},
-					},
 				},
 			},
 			"schemas": buildOpenAPISchemas(),

@@ -44,7 +44,7 @@ const cardObserver = new ResizeObserver(entries => {
     measuredCards.clear();
   });
 });
-const sidebarTags = new Map(), sidebarCalendars = new Map(), recentChats = new Map();
+const sidebarTags = new Map(), sidebarCalendars = new Map();
 let preloadController = null, preloadTimer = null, serviceDay = '';
 let sidebarTagState = '', sidebarCalendarKey = '';
 let sidebarFocusTimer = null, sidebarFocusRefresh = null;
@@ -56,7 +56,6 @@ let month = '', routeReturnKey = null;
 let moduleReload = false;
 let lastTimeline = { path: '/', values: filters('') };
 let settingsPage = null;
-let insightsPage = null;
 let mapPage = null, mapView = null, mapSnapshot = null;
 let discoveryPage = null, discovery = null;
 const client = createClient({
@@ -72,7 +71,7 @@ const client = createClient({
   },
   onOwnerChange: () => expire({ code: 'SESSION_UNAUTHORIZED' }, false),
 });
-const { request, sessionRequest, renewCSRF } = client;
+const { request, sessionRequest } = client;
 let capabilitiesRequest;
 function readCapabilities() {
   if (!capabilitiesRequest) {
@@ -86,7 +85,7 @@ function readCapabilities() {
 }
 const searchInput = bindSearchInput($('q'), query => sidebarFilter({ query }));
 const discoveryCard = (note, review = false, className) => renderReadingCard(note, { review, className, formatTime, openNote });
-const pageDirty = () => settingsPage?.hasChanges() || insightsPage?.hasChanges();
+const pageDirty = () => settingsPage?.hasChanges();
 const leaveGuard = createLeaveGuard(() => !!identity && (pageDirty() || draft.locked || readingFiles ||
   !!draft.content.trim() || !!draft.attachments.length || [...editors.values()].some(editor => editor.hasChanges())));
 const router = createRouter({
@@ -105,10 +104,9 @@ function invalidate() {
   epoch++; viewSequence++;
   syncStatus.reset();
   capabilitiesRequest = null;
-  stopPreload(); invalidateHistory();
+  stopPreload();
   timeline?.destroy(); timeline = null;
   settingsPage?.destroy(); settingsPage = null;
-  insightsPage?.destroy(); insightsPage = null;
   mapPage?.destroy(); mapPage = null;
   discoveryPage?.destroy(); discoveryPage = null;
   invalidateSidebar();
@@ -316,8 +314,6 @@ function discard(cache, key) {
   cache.get(key)?.controller?.abort();
   cache.delete(key);
 }
-function invalidateHistory() { discard(recentChats, 'first'); }
-function readHistory(owner) { return sidebarData(recentChats, 'first', '/chats?page_size=20', owner); }
 function readTags(state, owner) { return sidebarData(sidebarTags, state, `/tags?${new URLSearchParams({ state })}`, owner); }
 function readCalendar(state, month, owner) {
   return sidebarData(sidebarCalendars, `${state}:${month}`, `/calendar?${new URLSearchParams({ state, month })}`, owner);
@@ -367,7 +363,6 @@ function schedulePreload() {
     try {
       await loadSidebar(owner);
       if (owner.signal.aborted || document.hidden) return;
-      await readHistory(owner);
       if (owner.signal.aborted || document.hidden || mapSnapshot || identity?.stargazing_enabled === false) return;
       const started = performance.now();
       const snapshot = await request('/map', { controller: owner, maxBytes: 8 * 1024 * 1024 }).then(value => {
@@ -483,7 +478,6 @@ function renderNote(note, detail = false) {
     ...(!detail ? [[l("打开笔记"), () => openNote(note), '']] : []),
     [note.state === 'ARCHIVED' ? l("恢复到主页") : l("归档"), () => changeState(note), ''],
     ...(note.state === 'NORMAL' ? [[l("从这条漫步"), () => startFromNote(note), '']] : []),
-    [l("洞察这条"), () => navigate(`/insights?${new URLSearchParams({ note: note.name })}`), ''],
     [l("删除"), () => confirmDelete(card, note), 'dg'],
   ];
   const card = renderNoteCard(note, {
@@ -738,7 +732,6 @@ async function showRoute({ focus = false, returning = false } = {}) {
   shell.closeNavigation();
   timeline?.destroy(); timeline = null;
   settingsPage?.destroy(); settingsPage = null;
-  insightsPage?.destroy(); insightsPage = null;
   mapPage?.destroy(); mapPage = null;
   discoveryPage?.destroy(); discoveryPage = null;
   cardObserver.disconnect();
@@ -747,7 +740,7 @@ async function showRoute({ focus = false, returning = false } = {}) {
   moduleReload = false;
   $('notes').setAttribute('aria-busy', 'false');
   $('notes').replaceChildren(); closeMenus();
-  $('notes').hidden = $('page-end').hidden = ['/settings', '/review', '/walk', '/insights', '/map'].includes(location.pathname);
+  $('notes').hidden = $('page-end').hidden = ['/settings', '/review', '/walk', '/map'].includes(location.pathname);
   for (const id of ['back', 'view-title', 'capability', 'empty', 'list-retry', 'filters', 'load-more']) $(id).hidden = true;
   showError($('list-error'), null); $('composer').hidden = location.pathname !== '/';
   const detail = notePath.exec(location.pathname);
@@ -793,29 +786,11 @@ async function showRoute({ focus = false, returning = false } = {}) {
     const module = await routeModule(() => import('./discovery.js'), generation, sequence);
     if (!module) return;
     discovery ||= module.createDiscovery({ request, sessionRequest, getIdentity: () => identity,
-      localToday, formatTime, discoveryCard, navigate, startFromNote, expire });
+      localToday, formatTime, discoveryCard, startFromNote, expire });
     discoveryPage = discovery.createPage(location.pathname === '/review' ? 'review' : 'walk', {
       key: router.key, seedName: new URLSearchParams(location.search).get('name'),
     });
     await discoveryPage.mount($('workspace'));
-  } else if (location.pathname === '/insights') {
-    window.scrollTo(0, 0);
-    const module = await routeModule(() => import('./insights.js'), generation, sequence);
-    if (!module) return;
-    insightsPage = module.createInsightsPage({
-      owner: sessionOwner(identity), sessionRequest, csrfToken: () => identity?.csrf_token, handleFailure, openNote,
-      navigate: async (url, options) => {
-        if (url === router.url) { if (await leaveGuard.confirm(pageDirty())) showRoute({ focus: true }); }
-        else navigate(url, options);
-      },
-      closeMenus,
-      renewCSRF,
-      replaceURL: url => router.replaceURL(url),
-      today: localToday, formatTime, readTags, readCalendar, readHistory, invalidateHistory, readCapabilities,
-      onDirtyChange: () => leaveGuard.update(),
-      onSaved: note => { dirtySnapshots(); sidebarChanged(null, note); },
-    });
-    await insightsPage.mount($('workspace'));
   } else if (location.pathname === '/map') {
     setText($('view-title'), l("观星")); $('view-title').hidden = false;
     window.scrollTo(0, 0);

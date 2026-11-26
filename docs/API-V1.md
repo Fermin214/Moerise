@@ -54,7 +54,7 @@ Moerise 服务端提供两组 RESTful API 以及一个 Model Context Protocol (M
 | `GET` | `/api/app/v1/map` | 读取观星快照，包含完整点集 `points`（含 `excerpt` 摘要与 `create_time`）、语义主题 `topics` 和笔记关联 `links`；主题可包含语义子主题 `districts`。 |
 | `POST` | `/api/app/v1/map/rebuild` | 排队重新生成星图与主题，返回 `202 {"status":"queued"}`；要求本人会话、同源与 CSRF 校验。 |
 
-观星使用均衡 UMAP，每日在服务时区 03:00 按需检查并调度更新（普通变化不再高频率自动重算），未变笔记复用坐标；全量构建时根据 `stargazing.llm_naming` 开关决定是否单次调用 LLM 归纳主题命名。`stellar` 定义可复现的星体属性；`layout_frame` 标识坐标框架，主动重建或更换向量空间时变化；更新期间 `update_state` 可为 `building` 或 `unavailable`，已发布快照继续可读。字段定义由 [OpenAPI 生成器](../internal/openapi_gen.go) 产出并经 `/openapi.json` 提供，布局说明见[观星](STARGAZING.md)。
+观星使用均衡 UMAP，每日在服务时区 03:00 按需检查并调度更新（普通变化不再高频率自动重算），未变笔记复用坐标；星系和星团沿用关键词命名。`stellar` 定义可复现的星体属性；`layout_frame` 标识坐标框架，主动重建或更换向量空间时变化；`update_state` 为 `building` 或 `unavailable` 时表示生成正在进行或失败，已发布快照继续可读。`unavailable_reason` 为 `layout` 表示布局服务不可用，为 `layout_incompatible` 表示布局服务版本不兼容。后台健康告警可单独出现，不表示一次重建失败。字段定义由 [OpenAPI 生成器](../internal/openapi_gen.go) 产出并经 `/openapi.json` 提供，布局说明见[观星](STARGAZING.md)。
 
 `stargazing.enabled=false` 时，读取返回 `status: disabled`、`disabled_reason: stargazing` 和空点集；重建返回 `409 STARGAZING_DISABLED`。Embedding 关闭时对应 `disabled_reason: embedding` 与 `409 EMBEDDING_DISABLED`。关闭不删除已发布快照或向量。
 
@@ -64,51 +64,13 @@ Moerise 服务端提供两组 RESTful API 以及一个 Model Context Protocol (M
 | --- | --- | --- |
 | `GET` | `/api/app/v1/reviews/daily` | 获取当天全天固定回顾计划及全部选中笔记。 |
 
-### 5. 上下文 AI 洞察
-
-| 方法 | 路径 | 功能说明 |
-| --- | --- | --- |
-| `GET` | `/api/app/v1/chats` | 分页获取历史 AI 对话列表。 |
-| `POST` | `/api/app/v1/chats` | 创建新对话会话，指定对话标题与绑定的笔记上下文材料。 |
-| `GET` | `/api/app/v1/chats/{chat_id}` | 读取指定对话详情与完整消息记录。 |
-| `PATCH` | `/api/app/v1/chats/{chat_id}` | 携带 `version`、标题及完整材料集合，替换会话选材。空数组可清空材料。 |
-| `DELETE` | `/api/app/v1/chats/{chat_id}` | 携带 `version` 删除指定对话。 |
-| `GET` | `/api/app/v1/chat-materials` | 从本地同步索引分页筛选材料，支持正常与归档笔记。 |
-| `POST` | `/api/app/v1/chat-materials/resolve` | 提交材料资源名 `names`，复查原文并返回材料规模与来源摘要。 |
-| `POST` | `/api/app/v1/chats/{chat_id}/messages` | 向大模型发送消息，返回 Server-Sent Events (SSE) 流式回复。 |
-| `POST` | `/api/app/v1/chats/{chat_id}/messages/{request_id}/cancel` | 主动停止正在生成的回复。 |
-| `POST` | `/api/app/v1/chats/{chat_id}/messages/{request_id}/save` | 将选定的助手回复原样保存为 Memos 笔记。 |
-| `POST` | `/api/app/v1/chats/{chat_id}/save-selection` | 提交消息引用、版本及操作键，按对话顺序合成一篇笔记。 |
-| `GET` | `/api/app/v1/chats/{chat_id}/save-selection/{operation_key}` | 查询保存结果。`saved` 返回笔记资源名，`pending` 可按原请求重试。 |
-
-`capabilities.chat.material_selection` 和 `capabilities.chat.save_selection` 分别表示支持轻量选材和消息选存。创建及更新会话时，旧客户端仍可提交 `names`。支持来源校验的客户端提交 `materials`，例如 `[{"name":"memos/example","source_hash":"…"}]`，摘要取自候选清单。来源变化或消失时返回 `409 SOURCE_CHANGED`，`error.changed_names` 列出需要重选的笔记。`material_version` 随材料变化递增，每轮消息记录生成时的版本与来源摘要。
-
-`GET /api/app/v1/chat-materials?format=compact&tag_match=any&tag=阅读&tag=灵感` 返回 `candidates`，每项含资源名、来源摘要、Unicode 码点数、最多 160 个码点的预览、创建时间及状态。`from` 含起始日，`until` 不含结束日，日期按服务时区解释。正常和归档笔记依次分页，空页也要检查 `next_page_token`。整组选择最多枚举 1,000 条，材料正文合计上限为 20,000 个码点。
-
-消息选存请求示例
-
-```json
-{
-  "operation_key": "save-2026-01",
-  "language": "zh-CN",
-  "messages": [
-    { "request_id": "first-question", "role": "user", "version": 1 },
-    { "request_id": "later-answer", "role": "assistant", "version": 4 }
-  ],
-  "confirm_incomplete": false
-}
-```
-
-提问取自 `kind=question` 的用户原文。回复默认选择 `completed`，或在 `confirm_incomplete=true` 时允许纳入已持久化的 `truncated`（输出达到 token 上限而截断）与 `canceled` 版本。选一条时原样写入，多条按轮次排序，同轮先提问后回答，以本地化的 Markdown 角色标签分段。合成结果最多 65,536 个 UTF-8 字节。保存响应为笔记对象。超时可查询后用同一操作键重试，同键更换选集返回 `409 IDEMPOTENCY_CONFLICT`。
-
-### 6. 系统设置与诊断
+### 5. 系统设置与诊断
 
 | 方法 | 路径 | 功能说明 |
 | --- | --- | --- |
 | `GET` | `/api/app/v1/settings` | 读取系统设置与渠道能力矩阵。 |
 | `PATCH` | `/api/app/v1/settings` | 版本化更新系统设置与敏感凭据。 |
 | `GET` | `/api/app/v1/models` | 获取模型与向量索引构建进度与状态。 |
-| `POST` | `/api/app/v1/models/llm/check` | 发送探测请求测试 LLM 连通性。 |
 | `POST` | `/api/app/v1/models/embedding/check` | 发送探测请求测试 Embedding 连通性与维度。 |
 
 ---

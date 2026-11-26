@@ -1,7 +1,6 @@
 package moerise
 
 import (
-	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -28,10 +27,6 @@ func TestPhase1ZeroHTTPClientReadsAndAuthEvictionOn401(t *testing.T) {
 	}
 	vecProvider := &clientSearchEmbedding{dimensions: store.Settings.Embedding.Dimensions}
 	api.app.Search.Provider = vecProvider
-	store.Settings.LLM.Enabled = true
-	llmModel := "local"
-	store.Settings.LLM.Model = &llmModel
-	api.app.Chat.swapProvider(textChatProvider("local reply"))
 
 	var authFail atomic.Bool
 	var upstreamHTTP atomic.Int32
@@ -58,15 +53,6 @@ func TestPhase1ZeroHTTPClientReadsAndAuthEvictionOn401(t *testing.T) {
 	origin := fixture.settings.Web.PublicOrigin
 	clientAPI := api
 
-	var created struct {
-		ID string `json:"id"`
-	}
-	createResp := clientCall(clientAPI, "POST", "/api/app/v1/chats",
-		`{"request_id":"c1","title":"t","names":["memos/a"]}`, cookie, origin, identity.CSRFToken)
-	if createResp.Code != 201 || json.Unmarshal(createResp.Body.Bytes(), &created) != nil {
-		t.Fatalf("create chat failed: %d %s", createResp.Code, createResp.Body.String())
-	}
-
 	month := time.Now().UTC().Format("2006-01")
 	requests := []struct{ method, path, body string }{
 		{"GET", "/api/app/v1/notes", ""},
@@ -75,13 +61,10 @@ func TestPhase1ZeroHTTPClientReadsAndAuthEvictionOn401(t *testing.T) {
 		{"GET", "/api/app/v1/calendar?month=" + month, ""},
 		{"GET", "/api/app/v1/reviews/daily", ""},
 		{"GET", "/api/app/v1/map", ""},
-		{"GET", "/api/app/v1/chat-materials", ""},
-		{"POST", "/api/app/v1/chat-materials/resolve", `{"names":["memos/a"]}`},
 		{"POST", "/api/app/v1/search", `{"query":"alpha","mode":"keyword"}`},
 		{"POST", "/api/app/v1/search", `{"query":"alpha","mode":"hybrid"}`},
 		{"POST", "/api/app/v1/walks/start", `{}`},
 		{"POST", "/api/app/v1/walks/next", `{"name":"memos/a","path":["memos/a"]}`},
-		{"POST", "/api/app/v1/chats/" + created.ID + "/messages", `{"request_id":"g1","version":1,"kind":"insight","content":""}`},
 	}
 
 	var wg sync.WaitGroup
@@ -433,154 +416,6 @@ func (s *Store) MaxChangeSeqNoErr() int64 {
 	return seq
 }
 
-func TestPhase1StreamingInsightsBufferedFlushSettingsHotReloadThinkingAndTruncated(t *testing.T) {
-	prevInterval := chatPersistInterval
-	chatPersistInterval = 15 * time.Millisecond
-	defer func() { chatPersistInterval = prevInterval }()
-
-	api, fixture, cookie, identity := clientChatFixture(t)
-	savedMemos := map[string]map[string]any{}
-	saveSource := fakeClient(api.app.Store.Settings, func(r *http.Request) (int, any, error) {
-		if status, body, ok := identityResponse(r); ok {
-			return status, body, nil
-		}
-		if r.Method == http.MethodPost && r.URL.Path == "/api/v1/memos" {
-			id := r.URL.Query().Get("memoId")
-			var body map[string]any
-			_ = json.NewDecoder(r.Body).Decode(&body)
-			raw := rawMemo(id, body["content"].(string))
-			savedMemos["memos/"+id] = raw
-			return 200, raw, nil
-		}
-		if r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/api/v1/memos/") {
-			if m := savedMemos[strings.TrimPrefix(r.URL.Path, "/api/v1/")]; m != nil {
-				return 200, m, nil
-			}
-		}
-		return 404, nil, nil
-	})
-	api.app.Records = NewRecordService(api.app.Store, saveSource)
-	api.app.Chat.Records = api.app.Records
-	llmBase, llmKey := "https://llm.invalid/v1", "test-key"
-	api.app.Store.Settings.LLM.BaseURL = &llmBase
-	api.app.Store.Settings.LLM.APIKey = &llmKey
-	chat := createClientChat(t, api, fixture, cookie, identity)
-	origin := fixture.settings.Web.PublicOrigin
-
-	streamStarted := make(chan struct{})
-	releaseStream := make(chan struct{})
-	var releaseOnce sync.Once
-	release := func() { releaseOnce.Do(func() { close(releaseStream) }) }
-	defer release()
-	var firstProviderClosed atomic.Bool
-	oldProvider := &phase1ClosableLLM{
-		onClose: func() { firstProviderClosed.Store(true) },
-		fn: func(ctx context.Context, _ []LLMMessage, emit func(string) error) (LLMResult, error) {
-			if err := emit("第一段 "); err != nil {
-				return LLMResult{}, err
-			}
-			close(streamStarted)
-			<-releaseStream
-			if err := emit("第二段"); err != nil {
-				return LLMResult{}, err
-			}
-			return LLMResult{Content: "第一段 第二段", Model: "m1", FinishReason: "stop"}, nil
-		},
-	}
-	api.app.Chat.swapProvider(oldProvider)
-
-	streamDone := make(chan *httptest.ResponseRecorder, 1)
-	go func() {
-		streamDone <- clientCall(api, "POST", "/api/app/v1/chats/"+chat.ID+"/messages",
-			`{"request_id":"r-stream","version":1,"kind":"question","content":"并发"}`,
-			cookie, origin, identity.CSRFToken)
-	}()
-	<-streamStarted
-
-	time.Sleep(45 * time.Millisecond)
-	midTurn, err := api.app.Store.chatTurn(chat.ID, "r-stream")
-	if err != nil || midTurn.Assistant.Content != "第一段 " {
-		t.Fatalf("expected buffered periodic persistence during active stream, got: %+v err=%v", midTurn, err)
-	}
-
-	patchResp := clientCall(api, "PATCH", "/api/app/v1/settings",
-		`{"version":1,"settings":{"insights":{"default_prompt":"热更新提示"}}}`, cookie, origin, identity.CSRFToken)
-	if patchResp.Code != 200 {
-		t.Fatalf("settings PATCH blocked during active stream: %d %s", patchResp.Code, patchResp.Body.String())
-	}
-	if firstProviderClosed.Load() {
-		t.Fatal("retired active LLM provider while stream was still running")
-	}
-	release()
-	resp := <-streamDone
-	if resp.Code != 200 || !strings.Contains(resp.Body.String(), "event: complete") {
-		t.Fatalf("active stream failed after settings hot reload: %d %s", resp.Code, resp.Body.String())
-	}
-
-	lenLLM := aiLLMFunc(func(_ context.Context, _ []LLMMessage, emit func(string) error) (LLMResult, error) {
-		if err := emit("截断正文"); err != nil {
-			return LLMResult{}, err
-		}
-		return LLMResult{Content: "截断正文", Model: "m2", FinishReason: "length"}, nil
-	})
-	api.app.Chat.swapProvider(lenLLM)
-	truncResp := clientCall(api, "POST", "/api/app/v1/chats/"+chat.ID+"/messages",
-		`{"request_id":"r-trunc","version":1,"kind":"question","content":"长文"}`,
-		cookie, origin, identity.CSRFToken)
-	if truncResp.Code != 200 || !strings.Contains(truncResp.Body.String(), `"status":"truncated"`) ||
-		!strings.Contains(truncResp.Body.String(), `"error_code":"LLM_OUTPUT_LIMIT"`) {
-		t.Fatalf("expected truncated completion for length limit with text: %s", truncResp.Body.String())
-	}
-	truncTurn, err := api.app.Store.chatTurn(chat.ID, "r-trunc")
-	if err != nil || truncTurn.Assistant.Status != "truncated" || truncTurn.Assistant.Content != "截断正文" {
-		t.Fatalf("truncated turn not persisted cleanly: %+v %v", truncTurn, err)
-	}
-	blockedSave := clientCall(api, "POST", "/api/app/v1/chats/"+chat.ID+"/save-selection",
-		fmt.Sprintf(`{"operation_key":"save-trunc-deny","language":"zh-CN","messages":[{"request_id":"r-trunc","role":"assistant","version":%d}],"confirm_incomplete":false}`, truncTurn.Assistant.Version),
-		cookie, origin, identity.CSRFToken)
-	if blockedSave.Code != 409 {
-		t.Fatalf("expected 409 saving truncated without confirm_incomplete: %d %s", blockedSave.Code, blockedSave.Body.String())
-	}
-	var savedNote map[string]any
-	fixture.mu.Lock()
-	fixture.mu.Unlock()
-	okSave := clientCall(api, "POST", "/api/app/v1/chats/"+chat.ID+"/save-selection",
-		fmt.Sprintf(`{"operation_key":"save-trunc-ok","language":"zh-CN","messages":[{"request_id":"r-trunc","role":"assistant","version":%d}],"confirm_incomplete":true}`, truncTurn.Assistant.Version),
-		cookie, origin, identity.CSRFToken)
-	_ = savedNote
-	if okSave.Code != 201 && okSave.Code != 200 {
-		t.Fatalf("expected save with confirm_incomplete=true to succeed, got %d %s", okSave.Code, okSave.Body.String())
-	}
-}
-
-func TestPhase1LLMThinkingSkipAndLengthPartialOutputs(t *testing.T) {
-	openAIJSON := `{"model":"gpt-x","choices":[{"index":0,"message":{"role":"assistant","reasoning_content":"chain","content":"partial ok"},"finish_reason":"length"}]}`
-	res, err := readLLMJSON(strings.NewReader(openAIJSON))
-	if err != nil || res.Content != "partial ok" || res.FinishReason != "length" {
-		t.Fatalf("OpenAI JSON partial length: %+v %v", res, err)
-	}
-	anthropicThinking := `{"type":"message","role":"assistant","model":"claude-x","content":[{"type":"thinking","thinking":"deep"},{"type":"text","text":"answer"}],"stop_reason":"max_tokens"}`
-	aRes, err := readAnthropicLLMJSON(strings.NewReader(anthropicThinking))
-	if err != nil || aRes.Content != "answer" || aRes.FinishReason != "length" {
-		t.Fatalf("Anthropic thinking+max_tokens: %+v %v", aRes, err)
-	}
-	anthStream := anthropicTestStart("") +
-		anthropicTestEvent("content_block_start", `{"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}`) +
-		anthropicTestEvent("content_block_delta", `{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"step"}}`) +
-		anthropicTestEvent("content_block_stop", `{"type":"content_block_stop","index":0}`) +
-		anthropicTestBlock(1, "real text") +
-		anthropicTestFinish("max_tokens", "")
-	asRes, _, err := readAnthropicLLMStream(context.Background(), strings.NewReader(anthStream), func(string) error { return nil })
-	if err != nil || asRes.Content != "real text" || asRes.FinishReason != "length" {
-		t.Fatalf("Anthropic stream thinking+max_tokens: %+v %v", asRes, err)
-	}
-	respJSON := `{"model":"gpt-5","status":"incomplete","incomplete_details":{"reason":"max_output_tokens"},"output":[{"id":"rs_1","type":"reasoning","status":"completed"},{"id":"msg_1","type":"message","role":"assistant","status":"incomplete","content":[{"type":"output_text","text":"partial resp"}]}]}`
-	rRes, err := decodeResponsesResult([]byte(respJSON))
-	if err != nil || rRes.Content != "partial resp" || rRes.FinishReason != "length" {
-		t.Fatalf("Responses thinking+incomplete: %+v %v", rRes, err)
-	}
-}
-
 func seedV020StateDB(settings Settings) error {
 	if err := os.MkdirAll(settings.StateDir, 0700); err != nil {
 		return err
@@ -625,13 +460,7 @@ func runPhase1AutoBackupAndRollback(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfgPath := filepath.Join(root, "config.json")
-	var cfgMap map[string]any
 	cfgBytes, _ := json.Marshal(settings)
-	_ = json.Unmarshal(cfgBytes, &cfgMap)
-	if sg, ok := cfgMap["stargazing"].(map[string]any); ok {
-		delete(sg, "llm_naming")
-	}
-	cfgBytes, _ = json.Marshal(cfgMap)
 	if err := os.WriteFile(cfgPath, cfgBytes, 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -739,21 +568,6 @@ func runPhase1AutoBackupAndRollback(t *testing.T) {
 
 func TestAutoBackupRotationAndRollback(t *testing.T) {
 	runPhase1AutoBackupAndRollback(t)
-}
-
-type phase1ClosableLLM struct {
-	onClose func()
-	fn      func(context.Context, []LLMMessage, func(string) error) (LLMResult, error)
-}
-
-func (c *phase1ClosableLLM) Close() {
-	if c.onClose != nil {
-		c.onClose()
-	}
-}
-
-func (c *phase1ClosableLLM) Generate(ctx context.Context, messages []LLMMessage, emit func(string) error) (LLMResult, error) {
-	return c.fn(ctx, messages, emit)
 }
 
 func TestPhase1Index004TagBackfillAndKeywordPaginationPast300(t *testing.T) {

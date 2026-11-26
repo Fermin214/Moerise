@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 """Check the signed release on an isolated emulator through system-trusted HTTPS."""
 import argparse
+from contextlib import closing
 import hashlib
 import importlib.util
 import json
 import os
 from pathlib import Path
 import re
+import sqlite3
 import subprocess
 import time
 import urllib.request
@@ -14,6 +16,16 @@ import xml.etree.ElementTree as ET
 
 from adb_common import Adb, CommandError
 from maestro_runner import DRIVERS, MaestroRunner, ROOT, write_result, fresh_ui_dump
+
+
+def apk_version_name(apk):
+    executable = "aapt2.exe" if os.name == "nt" else "aapt2"
+    tool = Path(os.environ["ANDROID_HOME"]) / "build-tools" / "36.0.0" / executable
+    badging = subprocess.check_output([tool, "dump", "badging", apk], encoding="utf-8")
+    version = re.search(r"(?m)^package: name='[^']+' versionCode='\d+' versionName='([^']+)'", badging)
+    if version is None:
+        raise ValueError("无法读取基线 APK 的 versionName")
+    return version[1]
 
 
 def command_failure(error):
@@ -44,16 +56,46 @@ def require_restored_session(adb, app, output, command_error):
     raise RuntimeError("升级后未进入已登录主页：" + ",".join(errors))
 
 
+def wait_for_stars(api):
+    api.login()
+    try:
+        deadline = time.monotonic() + 180
+        while time.monotonic() < deadline:
+            stars = api.request("GET", "/api/app/v1/map")
+            if stars["status"] == "ready" and any(point["semantic"] for point in stars["points"]):
+                return
+            time.sleep(2)
+        raise RuntimeError("基线 APK 验收前未生成非空星图：" + stars["status"])
+    finally:
+        api.close()
+
+
+def require_baseline_telemetry(database, version):
+    deadline = time.monotonic() + 15
+    with closing(sqlite3.connect(database.resolve().as_uri() + "?mode=ro", uri=True)) as receiver:
+        while time.monotonic() < deadline:
+            count, = receiver.execute(
+                "SELECT COALESCE(SUM(count), 0) FROM daily_totals WHERE platform = 'android' AND client_version = ?",
+                (version,)).fetchone()
+            if count > 0:
+                return
+            time.sleep(.5)
+    raise RuntimeError(f"隔离接收端未收到 Android {version} 遥测批次")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--serial", default="emulator-5554")
     parser.add_argument("--fixture", required=True)
     parser.add_argument("--apk", required=True, type=Path)
     parser.add_argument("--upgrade-from", type=Path)
+    parser.add_argument("--telemetry-db", type=Path)
     parser.add_argument("--output", required=True, type=Path)
     args = parser.parse_args()
     if not args.serial.startswith("emulator-"):
         parser.error("发行自动检查只使用隔离模拟器")
+    if bool(args.upgrade_from) != bool(args.telemetry_db):
+        parser.error("覆盖安装验收需要同时指定基线 APK 与隔离遥测数据库")
     adb = Adb("adb", args.serial)
     runner = MaestroRunner(ROOT, adb, args.fixture, args.output / "maestro", release=True)
     page_size = adb.run("shell", "getconf", "PAGESIZE", check=False).strip()
@@ -76,11 +118,15 @@ def main():
             raise RuntimeError("发行检查要求尚未安装此包的模拟器")
         upgrade = None
         if args.upgrade_from:
+            baseline_version = apk_version_name(args.upgrade_from)
+            wait_for_stars(runner.api)
             adb.run("install", str(args.upgrade_from.resolve()), timeout=120)
-            prior = runner.run_flow("release-smoke")
-            if prior["status"] != "passed":
-                raise RuntimeError("0.2.0 preparation failed: " + str(prior.get("cause")))
-            previous_note = json.loads((args.output / "maestro/release-smoke/test-data.json").read_text())["NEW_NOTE_TEXT"]
+            prior = runner.run_flow("baseline-compatibility")
+            report["flows"]["baseline-compatibility"] = prior
+            if prior["status"] != "passed" or prior["server_assertions"].get("created_note_count") != 1:
+                raise RuntimeError(f"{baseline_version} preparation failed: {prior.get('cause')}")
+            require_baseline_telemetry(args.telemetry_db, baseline_version)
+            previous_note = json.loads(Path(prior["test_data_path"]).read_text())["NEW_NOTE_TEXT"]
             spec = importlib.util.spec_from_file_location("upgrade_state", ROOT / "scripts/android/upgrade-state.py")
             upgrade_state = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(upgrade_state)
@@ -110,9 +156,10 @@ def main():
             xml = require_restored_session(adb, runner.app, args.output / "upgrade/completed-window.xml", CommandError)
             assert upgrade["draft"] in xml, "upgraded draft missing"
             assert "welcome_enter" not in xml and "server_login" not in xml, "upgraded account or Keystore missing"
-            assert len(runner.api.matching_notes(previous_note)) == 1, "0.2.0 笔记丢失"
-            report["upgrade"] = {"from": "0.2.0", "account": True, "draft": True, "pending_write_count": 1,
-                                 "keystore_session": True, "previous_apk_sha256": hashlib.sha256(args.upgrade_from.read_bytes()).hexdigest()}
+            assert len(runner.api.matching_notes(previous_note)) == 1, f"{baseline_version} 笔记丢失"
+            report["upgrade"] = {"from": baseline_version, "account": True, "draft": True, "pending_write_count": 1,
+                                 "keystore_session": True, "telemetry_received": True,
+                                 "previous_apk_sha256": hashlib.sha256(args.upgrade_from.read_bytes()).hexdigest()}
 
         for package in reversed(DRIVERS):
             if adb.run("shell", "pm", "path", package, check=False).strip():

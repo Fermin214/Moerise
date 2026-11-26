@@ -10,7 +10,7 @@ import { resolve, relative, isAbsolute } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { runProcess } from '../lib/process.mjs';
 import { createFixtureProxy } from './fixture-proxy.mjs';
-import { tuneFixtureConfig, createModelGate, applyModelPolicy, fixtureInsightReply, observeFixtureApi } from './fixture-policy.mjs';
+import { tuneFixtureConfig, createModelGate, applyModelPolicy, observeFixtureApi } from './fixture-policy.mjs';
 import { createMemosThrottle } from './memos-throttle.mjs';
 
 const repo = fileURLToPath(new URL('../../', import.meta.url));
@@ -118,24 +118,18 @@ try {
   assert.equal(publicUrl.origin, origin, 'fixture 来源只包含协议、主机和端口');
   assert.ok(publicUrl.protocol === 'https:' || (publicUrl.protocol === 'http:' &&
     ['127.0.0.1', 'localhost', '[::1]'].includes(publicUrl.hostname)), 'fixture 来源需要 HTTPS 或回环 HTTP');
-  const modelKey = priorConfig?.llm.api_key || randomBytes(32).toString('hex');
-  const modelPort = priorConfig ? new URL(priorConfig.llm.base_url).port : 0;
-  if (priorConfig?.embedding.enabled) {
-    assert.ok(priorConfig.embedding.api_key === modelKey, 'fixture 模型密钥需一致');
-    assert.equal(new URL(priorConfig.embedding.base_url).port, modelPort, 'fixture 模型端口需一致');
-  }
-  const modelStats = resolve(root, 'model-stats.json');
-  let modelCalls = 0;
-  const modelGate = createModelGate();
-  await writeFile(modelStats, JSON.stringify({ calls: 0 }), { mode: 0o600 });
-  model = createServer(async (req, res) => {
-    let release;
-    try {
-      assert.equal(req.headers.authorization, `Bearer ${modelKey}`);
-      release = await modelGate();
-      if (!release) { res.writeHead(429, { 'Retry-After': '2' }); res.end(); return; }
-      const body = JSON.parse(await requestText(req));
-      if (stars && req.url === '/v1/embeddings') {
+  const modelKey = priorConfig?.embedding.api_key || randomBytes(32).toString('hex');
+  const modelPort = priorConfig?.embedding.base_url ? new URL(priorConfig.embedding.base_url).port : 0;
+  if (stars) {
+    const modelGate = createModelGate();
+    model = createServer(async (req, res) => {
+      let release;
+      try {
+        assert.equal(req.headers.authorization, `Bearer ${modelKey}`);
+        release = await modelGate();
+        if (!release) { res.writeHead(429, { 'Retry-After': '2' }); res.end(); return; }
+        const body = JSON.parse(await requestText(req));
+        assert.equal(req.url, '/v1/embeddings');
         assert.equal(body.model, 'android-map-fixture');
         const data = body.input.map((text, index) => {
           if (vectorByText) {
@@ -150,29 +144,13 @@ try {
           return { index, embedding };
         });
         res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ data }));
-        return;
-      }
-      assert.equal(req.url, '/v1/chat/completions');
-      assert.equal(body.model, 'android-fixture'); assert.equal(body.stream, true);
-      modelCalls++;
-      await writeFile(modelStats, JSON.stringify({ calls: modelCalls }), { mode: 0o600 });
-      const question = body.messages.at(-1).content;
-      res.writeHead(200, { 'Content-Type': 'text/event-stream' });
-      res.write(`data: ${JSON.stringify({ model: 'android-fixture', choices: [{
-        index: 0, delta: { content: fixtureInsightReply }, finish_reason: null,
-      }] })}\n\n`);
-      if (question.includes('ANDROID_HOLD')) return;
-      if (question.includes('ANDROID_FAIL')) { res.end(); return; }
-      if (question.includes('ANDROID_SILENT')) await delay(16_000);
-      res.end(`data: ${JSON.stringify({ model: 'android-fixture', choices: [{
-        index: 0, delta: {}, finish_reason: 'stop',
-      }] })}\n\ndata: [DONE]\n\n`);
-    } catch {
-      if (!res.headersSent) res.writeHead(400);
-      res.end();
-    } finally { release?.(); }
-  });
-  model.listen(Number(modelPort), '127.0.0.1'); await once(model, 'listening');
+      } catch {
+        if (!res.headersSent) res.writeHead(400);
+        res.end();
+      } finally { release?.(); }
+    });
+    model.listen(Number(modelPort), '127.0.0.1'); await once(model, 'listening');
+  }
   if (!resume) await docker(['run', '-d', '--name', name, '--cpus', '0.5', '--memory', '512m',
     '--mount', 'type=volume,target=/var/opt/memos', '-p', `127.0.0.1:${sourcePort}:5230`,
     'neosmemo/memos:0.31.0@sha256:24c2707ddd8fbd2ceaa7a61ecab86a53cdcde640b24ce572b73da14b00b5785f']);
@@ -235,8 +213,7 @@ try {
   config.state_dir = resolve(root, 'state'); config.index_dir = resolve(root, 'index');
   if (!resume) config.cursor_secret = randomBytes(32).toString('hex');
   if (!resume) config.access_tokens = [{ name: 'fixture-read', token: randomBytes(32).toString('hex'), scopes: ['notes:read'] }];
-  config.llm = { ...config.llm, enabled: true, protocol: 'openai-compatible',
-    base_url: `http://127.0.0.1:${model.address().port}/v1`, api_key: modelKey, model: 'android-fixture', max_retries: 0 };
+  config.stargazing.enabled = stars;
   config.embedding.enabled = false;
   if (stars) {
     config.embedding = { ...config.embedding, enabled: true, provider: 'openai-compatible', protocol: 'openai-compatible',
@@ -244,6 +221,7 @@ try {
       dimensions, batch_size: 20 };
   }
   config.notifications.enabled = false;
+  if (process.env.MOERISE_ANDROID_UPGRADE_FROM) config.review.min_age_hours = 0;
   tuneFixtureConfig(config);
   await writeFile(resolve(root, 'config.json'), JSON.stringify(config), { mode: 0o600 });
   const coreEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('MOERISE_')));
@@ -272,11 +250,11 @@ try {
     }
   }
   core.once('exit', () => stop.abort());
-  await applyModelPolicy(coreOrigin, origin, username, password);
+  await applyModelPolicy(coreOrigin, origin, username, password, stars);
   web = createFixtureProxy(coreOrigin);
   web.prependListener('request', observeFixtureApi);
   web.listen(webPort, '127.0.0.1'); await once(web, 'listening');
-  const fixture = { origin, webPort, username, password, sourceOrigin, memosProxyOrigin, sourceToken: pat, modelStats,
+  const fixture = { origin, webPort, username, password, sourceOrigin, memosProxyOrigin, sourceToken: pat,
     ...(corpusMetadata ? { corpus: corpusMetadata } : {}),
     ...(stars ? { stars, layoutContainer: layoutName, layoutOrigin,
       layoutImage: (await docker(['image', 'inspect', '--format', '{{.Id}}',

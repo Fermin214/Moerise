@@ -20,7 +20,7 @@ adb install moerise-android-v0.3.0.apk
 
 ## 升级
 
-已有正式发行版时，使用同包名（`io.github.fermin214.moerise`）、同签名且更高 `versionCode` 的发行 APK 直接覆盖安装即可保留全部本机数据（`android-v0.1.0` 的 `versionCode` 为 1，`v0.2.0` 为 2，`v0.3.0` 为 3）：
+已有正式发行版时，使用同包名（`io.github.fermin214.moerise`）、同签名且更高 `versionCode` 的发行 APK 直接覆盖安装，即可保留本机数据：
 
 ```bash
 adb install -r moerise-android-v0.3.0.apk

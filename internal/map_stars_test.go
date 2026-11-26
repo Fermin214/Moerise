@@ -24,41 +24,215 @@ func starsFixture(t *testing.T, wait func()) (*MapService, *VectorIndexService, 
 
 func testStarsService(t *testing.T, store *Store, wait func()) (*MapService, *atomic.Int32) {
 	t.Helper()
+	store.Settings.Stargazing.Enabled = true
 	calls := &atomic.Int32{}
 	worker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var input starRequest
-		if json.NewDecoder(r.Body).Decode(&input) != nil {
-			t.Error("invalid worker request")
-			w.WriteHeader(400)
-			return
-		}
-		call := calls.Add(1)
 		if wait != nil {
 			wait()
 		}
-		frame := input.Frame
-		if frame == "" {
-			frame = fmt.Sprintf("%032x", call)
-		}
-		result := starResult{Algorithm: starsAlgorithm, Frame: frame, Points: []MapPoint{}, Topics: []MapTopic{}, Links: []MapLink{}}
-		old := map[string]starPreviousPoint{}
-		for _, point := range input.PreviousPoints {
-			old[point.Name] = point
-		}
-		for i, document := range input.Documents {
-			point := MapPoint{Name: document.Name, X: float64(i) / 10, Y: float64(i) / 7,
-				Stellar: &MapStellar{Seed: .5, Role: "ordinary", Radius: 1, Luminosity: .7}}
-			if previous, ok := old[document.Name]; ok && previous.VectorHash == document.VectorHash {
-				point.X, point.Y, point.Stellar = previous.X, previous.Y, previous.Stellar
-			}
-			result.Points = append(result.Points, point)
-		}
-		_ = json.NewEncoder(w).Encode(result)
+		_ = json.NewEncoder(w).Encode(testStarsResult(t, r, calls.Add(1)))
 	}))
 	t.Cleanup(worker.Close)
 	service := NewMapService(store)
 	service.workerURL = worker.URL
 	return service, calls
+}
+
+func testStarsResult(t *testing.T, request *http.Request, call int32) starResult {
+	t.Helper()
+	var input starRequest
+	if err := json.NewDecoder(request.Body).Decode(&input); err != nil {
+		t.Errorf("invalid worker request: %v", err)
+	}
+	frame := input.Frame
+	if frame == "" {
+		frame = fmt.Sprintf("%032x", call)
+	}
+	result := starResult{Algorithm: starsAlgorithm, NamingVersion: starsNamingVersion,
+		Frame: frame, Points: []MapPoint{}, Topics: []MapTopic{}, Links: []MapLink{}}
+	old := map[string]starPreviousPoint{}
+	for _, point := range input.PreviousPoints {
+		old[point.Name] = point
+	}
+	for i, document := range input.Documents {
+		point := MapPoint{Name: document.Name, X: float64(i) / 10, Y: float64(i) / 7,
+			Stellar: &MapStellar{Seed: .5, Role: "ordinary", Radius: 1, Luminosity: .7}}
+		if previous, ok := old[document.Name]; ok && previous.VectorHash == document.VectorHash {
+			point.X, point.Y, point.Stellar = previous.X, previous.Y, previous.Stellar
+		}
+		result.Points = append(result.Points, point)
+	}
+	return result
+}
+
+func TestStarsHealthKeepsSnapshotDuringOutage(t *testing.T) {
+	service, _, _, calls := starsFixture(t, nil)
+	if err := service.Update(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	first, err := service.Read(t.Context())
+	if err != nil || first.Status != "ready" {
+		t.Fatalf("initial stars: %+v %v", first, err)
+	}
+	var probes, status atomic.Int32
+	worker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/health" {
+			t.Errorf("unexpected layout request: %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(404)
+			return
+		}
+		probes.Add(1)
+		w.WriteHeader(int(status.Load()))
+		fmt.Fprintf(w, `{"status":"ready","naming_version":%d}`, starsNamingVersion)
+	}))
+	t.Cleanup(worker.Close)
+	service.workerURL = worker.URL
+	status.Store(503)
+	service.checkLayout(t.Context())
+	if err := service.Update(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	down, err := service.Read(t.Context())
+	if err != nil || down.UpdateState != "" || down.UnavailableReason != layoutUnavailable {
+		t.Fatalf("layout outage: %+v %v", down, err)
+	}
+	down.UnavailableReason = ""
+	if !reflect.DeepEqual(first, down) {
+		t.Fatal("layout outage changed the published snapshot")
+	}
+	status.Store(200)
+	service.checkLayout(t.Context())
+	restored, err := service.Read(t.Context())
+	if err != nil || !reflect.DeepEqual(first, restored) || calls.Load() != 1 {
+		t.Fatalf("layout recovery changed the snapshot: %+v %v", restored, err)
+	}
+	service.Store.Settings.Stargazing.Enabled = false
+	service.Reset()
+	service.checkLayout(t.Context())
+	if probes.Load() != 2 {
+		t.Fatalf("disabled stars issued a health request: %d", probes.Load())
+	}
+}
+
+func TestStarsOldLayoutReportsIncompatibilityAndResumesAfterUpgrade(t *testing.T) {
+	service, _, _, _ := starsFixture(t, nil)
+	var calls atomic.Int32
+	var upgraded atomic.Bool
+	worker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/health" {
+			if upgraded.Load() {
+				fmt.Fprintf(w, `{"status":"ready","naming_version":%d}`, starsNamingVersion)
+			} else {
+				fmt.Fprint(w, `{"status":"ready","last_job":{}}`)
+			}
+			return
+		}
+		result := testStarsResult(t, r, calls.Add(1))
+		if upgraded.Load() {
+			_ = json.NewEncoder(w).Encode(result)
+		} else {
+			_ = json.NewEncoder(w).Encode(map[string]any{"algorithm": result.Algorithm, "frame": result.Frame,
+				"points": result.Points, "topics": result.Topics, "links": result.Links})
+		}
+	}))
+	t.Cleanup(worker.Close)
+	service.workerURL = worker.URL
+	if err := service.Update(t.Context()); errorCode(err) != "MAP_LAYOUT_INCOMPATIBLE" {
+		t.Fatalf("old response not diagnosed: %v", err)
+	}
+	service.checkLayout(t.Context())
+	response, err := service.Read(t.Context())
+	if err != nil || response.Status != "unavailable" || response.UnavailableReason != layoutIncompatible {
+		t.Fatalf("unexpected old service state: %+v %v", response, err)
+	}
+	if err := service.update(t.Context(), time.Now().Add(time.Minute)); err != nil || calls.Load() != 1 {
+		t.Fatalf("incompatible worker retried: %v, calls=%d", err, calls.Load())
+	}
+	upgraded.Store(true)
+	service.checkLayout(t.Context())
+	select {
+	case <-service.wake:
+	default:
+		t.Fatal("compatible worker did not wake the scheduler")
+	}
+	if err := service.Update(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	response, err = service.Read(t.Context())
+	if err != nil || response.Status != "ready" || response.UnavailableReason != "" || response.UpdateState != "" {
+		t.Fatalf("unexpected upgraded service state: %+v %v", response, err)
+	}
+}
+
+func TestStarsRebuildClearsOutageBeforeNextHealthProbe(t *testing.T) {
+	service, _, _, _ := starsFixture(t, nil)
+	if err := service.Update(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	initial, err := service.Read(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	entered, release := make(chan struct{}), make(chan struct{})
+	var releaseOnce sync.Once
+	unblock := func() { releaseOnce.Do(func() { close(release) }) }
+	worker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/health" {
+			close(entered)
+			<-release
+			w.WriteHeader(503)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(testStarsResult(t, r, 2))
+	}))
+	t.Cleanup(worker.Close)
+	t.Cleanup(unblock)
+	service.workerURL = worker.URL
+	service.layoutHealth.Store(&layoutHealth{key: service.cacheKey(), reason: layoutUnavailable})
+	checked := make(chan struct{})
+	go func() { defer close(checked); service.checkLayout(t.Context()) }()
+	select {
+	case <-entered:
+	case <-time.After(3 * time.Second):
+		t.Fatal("layout health probe did not arrive")
+	}
+	if err := service.Rebuild(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Update(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	unblock()
+	<-checked
+	result, err := service.Read(t.Context())
+	if err != nil || result.Status != "ready" || result.LayoutFrame == initial.LayoutFrame ||
+		result.UpdateState != "" || result.UnavailableReason != "" {
+		t.Fatalf("stale outage masked a new frame: %+v %v", result, err)
+	}
+}
+
+func TestStarsLegacyNamingUpdatesWithoutIndexChanges(t *testing.T) {
+	service, _, _, calls := starsFixture(t, nil)
+	if err := service.Update(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	first := publishedStars(t, service)
+	if _, err := service.Store.index.Exec("UPDATE star_snapshots SET naming_version = 0"); err != nil {
+		t.Fatal(err)
+	}
+	restarted := NewMapService(service.Store)
+	restarted.workerURL = service.workerURL
+	if err := restarted.Update(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	second := publishedStars(t, restarted)
+	if calls.Load() != 2 || second.namingVersion != starsNamingVersion || first.frame != second.frame ||
+		!reflect.DeepEqual(first.points, second.points) {
+		t.Fatal("legacy naming did not republish the existing layout")
+	}
+	if err := restarted.Update(t.Context()); err != nil || calls.Load() != 2 {
+		t.Fatalf("current naming triggered an extra generation: %v", err)
+	}
 }
 
 func TestStarsSnapshotRestartIncrementalAndRebuild(t *testing.T) {
@@ -191,125 +365,6 @@ func TestStarsDisableAndReenableRejectsInFlightResult(t *testing.T) {
 	restored, err := service.Read(t.Context())
 	if err != nil || !reflect.DeepEqual(first, restored) || calls.Load() != 2 {
 		t.Fatalf("saved snapshot changed: %+v %v", restored, err)
-	}
-}
-
-func TestStarsBatchLLMNamingFallbackBoundsAndExcerptInvalidation(t *testing.T) {
-	store, index, memos, _ := indexFixture(t)
-	longBody := "# 周末研究\n\n- **Rust** [tokio](https://tokio.rs) ![图](img.png) " + strings.Repeat("异步并发模型与运行时架构探讨。", 12)
-	edited, _ := normalizeMemo(rawMemo("a", longBody))
-	memos[edited.Name] = rawMemo("a", longBody)
-	if err := store.Refresh(edited.Name, &edited); err != nil {
-		t.Fatal(err)
-	}
-	finishIndex(t, index)
-
-	service := NewMapService(store)
-	worker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var input starRequest
-		if json.NewDecoder(r.Body).Decode(&input) != nil {
-			w.WriteHeader(400)
-			return
-		}
-		points := make([]MapPoint, len(input.Documents))
-		members := make([]string, len(input.Documents))
-		for i, doc := range input.Documents {
-			points[i] = MapPoint{Name: doc.Name, X: float64(i), Y: 0.5,
-				Stellar: &MapStellar{Seed: 0.5, Role: "ordinary", Radius: 1, Luminosity: 0.8}}
-			members[i] = doc.Name
-		}
-		topics := []MapTopic{{
-			ID: "topic-0123456789abcdef", Label: "tokio · rust", X: 1, Y: 0.5, Members: members,
-			Districts: []MapDistrict{{ID: "district-0123456789abcdef", Label: "runtime", X: 1, Y: 0.5, Members: members[:2]}},
-		}}
-		_ = json.NewEncoder(w).Encode(starResult{Algorithm: starsAlgorithm, Frame: strings.Repeat("a", 32), Points: points, Topics: topics, Links: []MapLink{}})
-	}))
-	defer worker.Close()
-	service.workerURL = worker.URL
-
-	llmCalls := atomic.Int32{}
-	var capturedPrompt string
-	var currentProvider LLMProvider = aiLLMFunc(func(ctx context.Context, messages []LLMMessage, _ func(string) error) (LLMResult, error) {
-		llmCalls.Add(1)
-		capturedPrompt = messages[1].Content
-		if _, hasDeadline := ctx.Deadline(); !hasDeadline {
-			t.Fatal("LLM cluster naming missed 15s deadline")
-		}
-		return LLMResult{Content: "```json\n{\"topic-0123456789abcdef\":\"异步运行时架构\"}\n```"}, nil
-	})
-	service.acquireLLM = func() (LLMProvider, func()) { return currentProvider, func() {} }
-	store.Settings.LLM.Enabled = true
-	store.Settings.Stargazing.LLMNaming = true
-
-	if err := service.Update(t.Context()); err != nil {
-		t.Fatal(err)
-	}
-	if llmCalls.Load() != 1 || strings.Contains(capturedPrompt, "https://tokio.rs") {
-		t.Fatalf("unexpected LLM naming calls=%d prompt=%s", llmCalls.Load(), capturedPrompt)
-	}
-	snap, err := service.Read(t.Context())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if snap.Topics[0].Label != "异步运行时架构" || snap.Topics[0].Districts[0].Label != "runtime" {
-		t.Fatalf("LLM naming or c-TF-IDF partial fallback failed: %+v", snap.Topics)
-	}
-	var pointA MapPoint
-	for _, p := range snap.Points {
-		if p.Name == "memos/a" {
-			pointA = p
-		}
-	}
-	if pointA.CreateTime == "" || len([]rune(pointA.Excerpt)) > 91 || strings.Contains(pointA.Excerpt, "**") || strings.Contains(pointA.Excerpt, "https://") {
-		t.Fatalf("unexpected excerpt formatting: %+v", pointA)
-	}
-
-	added := testMemo(t, "added", "增量笔记正文")
-	memos[added.Name] = rawMemo("added", "增量笔记正文")
-	if err := store.Refresh(added.Name, &added); err != nil {
-		t.Fatal(err)
-	}
-	finishIndex(t, index)
-	stamp, _ := time.Parse(time.RFC3339Nano, snap.GeneratedAt)
-	if err := service.update(t.Context(), nextMapSchedule(stamp, store.Settings.Timezone)); err != nil {
-		t.Fatal(err)
-	}
-	if llmCalls.Load() != 1 {
-		t.Fatalf("incremental update re-called LLM: %d", llmCalls.Load())
-	}
-
-	archived := rawMemo("a", longBody)
-	archived["state"] = "ARCHIVED"
-	archivedMemo, _ := normalizeMemo(archived)
-	if err := store.Refresh("memos/a", &archivedMemo); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.Refresh("memos/added", nil); err != nil {
-		t.Fatal(err)
-	}
-	afterDelete, err := NewMapService(store).Read(t.Context())
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, p := range afterDelete.Points {
-		if (p.Name == "memos/a" || p.Name == "memos/added") && p.Excerpt != "" {
-			t.Fatalf("deleted or archived note kept stale excerpt: %+v", p)
-		}
-	}
-
-	currentProvider = aiLLMFunc(func(context.Context, []LLMMessage, func(string) error) (LLMResult, error) {
-		llmCalls.Add(1)
-		return LLMResult{}, context.DeadlineExceeded
-	})
-	if err := service.Rebuild(t.Context()); err != nil {
-		t.Fatal(err)
-	}
-	if err := service.Update(t.Context()); err != nil {
-		t.Fatal(err)
-	}
-	fallbackSnap, err := service.Read(t.Context())
-	if err != nil || fallbackSnap.Topics[0].Label != "tokio · rust" {
-		t.Fatalf("timeout fallback failed: %+v %v", fallbackSnap.Topics, err)
 	}
 }
 

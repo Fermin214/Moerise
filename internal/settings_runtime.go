@@ -34,9 +34,6 @@ func closeChannel(events *FeishuService, transport NotificationTransport) {
 
 func (a *App) closeRuntime() {
 	a.Notifications.closeResolvedTransports()
-	if a.LLM != nil {
-		a.LLM.Close()
-	}
 	if a.Search.Provider != nil {
 		a.Search.Provider.Close()
 	}
@@ -102,27 +99,19 @@ func (s *Store) dailyTransition(settings Settings, now time.Time) *dailySettings
 }
 
 type runtimeReplacements struct {
-	llmChanged, embeddingChanged, channelChanged bool
-	llm                                          LLMProvider
-	embedding                                    EmbeddingProvider
-	events                                       *FeishuService
-	transport                                    NotificationTransport
+	embeddingChanged, channelChanged bool
+	embedding                        EmbeddingProvider
+	events                           *FeishuService
+	transport                        NotificationTransport
 }
 
 func (a *App) prepareRuntime(settings Settings) (*runtimeReplacements, error) {
 	old := a.Store.Settings
 	replacements := &runtimeReplacements{
-		llmChanged:       !reflect.DeepEqual(old.LLM, settings.LLM),
 		embeddingChanged: !reflect.DeepEqual(old.Embedding, settings.Embedding),
 		channelChanged:   !reflect.DeepEqual(old.Channel, settings.Channel),
 	}
 	var err error
-	if replacements.llmChanged && settings.LLM.Enabled {
-		replacements.llm, err = NewLLMProvider(settings.LLM)
-		if err != nil {
-			return nil, err
-		}
-	}
 	if replacements.embeddingChanged && settings.Embedding.Enabled {
 		replacements.embedding, err = NewEmbeddingProvider(settings.Embedding)
 		if err != nil {
@@ -148,10 +137,6 @@ func (a *App) installRuntime(settings Settings, replacements *runtimeReplacement
 		a.Store.feishuGeneration++
 	}
 	a.Store.Settings, a.Notes.Settings = settings, settings
-	if replacements.llmChanged {
-		a.LLM = replacements.llm
-		a.Chat.swapProvider(replacements.llm)
-	}
 	if replacements.embeddingChanged {
 		if a.Search.Provider != nil {
 			a.Search.Provider.Close()
@@ -180,9 +165,6 @@ func feishuReceiverConfig(channel ChannelConfig) [6]string {
 }
 
 func (r *runtimeReplacements) close() {
-	if r.llm != nil {
-		r.llm.Close()
-	}
 	if r.embedding != nil {
 		r.embedding.Close()
 	}

@@ -6,24 +6,19 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"io"
-	"log/slog"
 	"math"
 	"net/http"
 	"os"
 	"regexp"
-	"sort"
 	"strings"
 	"time"
-	"unicode"
-	"unicode/utf8"
 )
 
 const (
-	starsAlgorithm        = "umap-balanced-v1"
-	maxStarNamingClusters = 24
-	maxStarNamingRunes    = 6000
-	starNamingTimeout     = 15 * time.Second
-	maxStarLabelRunes     = 40
+	starsAlgorithm     = "umap-balanced-v1"
+	starsNamingVersion = 1
+	layoutUnavailable  = "layout"
+	layoutIncompatible = "layout_incompatible"
 )
 
 var (
@@ -48,21 +43,45 @@ type starPreviousPoint struct {
 }
 
 type starRequest struct {
-	Scope          string              `json:"scope"`
-	Dimensions     int                 `json:"dimensions"`
-	Matrix         []byte              `json:"matrix"`
-	Documents      []starDocument      `json:"documents"`
-	Frame          string              `json:"frame"`
-	PreviousPoints []starPreviousPoint `json:"previous_points"`
-	PreviousTopics []MapTopic          `json:"previous_topics"`
+	Scope                 string              `json:"scope"`
+	Dimensions            int                 `json:"dimensions"`
+	Matrix                []byte              `json:"matrix"`
+	Documents             []starDocument      `json:"documents"`
+	Frame                 string              `json:"frame"`
+	PreviousPoints        []starPreviousPoint `json:"previous_points"`
+	PreviousTopics        []MapTopic          `json:"previous_topics"`
+	PreviousNamingVersion int                 `json:"previous_naming_version"`
 }
 
 type starResult struct {
-	Algorithm string     `json:"algorithm"`
-	Frame     string     `json:"frame"`
-	Points    []MapPoint `json:"points"`
-	Topics    []MapTopic `json:"topics"`
-	Links     []MapLink  `json:"links"`
+	Algorithm     string     `json:"algorithm"`
+	NamingVersion int        `json:"naming_version"`
+	Frame         string     `json:"frame"`
+	Points        []MapPoint `json:"points"`
+	Topics        []MapTopic `json:"topics"`
+	Links         []MapLink  `json:"links"`
+}
+
+func (s *MapService) probeLayout(ctx context.Context) string {
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(s.workerURL, "/")+"/health", nil)
+	if err != nil {
+		return layoutUnavailable
+	}
+	response, err := (&http.Client{Timeout: 3 * time.Second}).Do(request)
+	if err != nil {
+		return layoutUnavailable
+	}
+	defer response.Body.Close()
+	var health struct {
+		NamingVersion int `json:"naming_version"`
+	}
+	if response.StatusCode != http.StatusOK || json.NewDecoder(io.LimitReader(response.Body, 4096)).Decode(&health) != nil {
+		return layoutUnavailable
+	}
+	if health.NamingVersion != starsNamingVersion {
+		return layoutIncompatible
+	}
+	return ""
 }
 
 func (s *MapService) computeStars(ctx context.Context, snapshot mapSnapshot, previous *mapLayout) (*mapLayout, error) {
@@ -70,6 +89,7 @@ func (s *MapService) computeStars(ctx context.Context, snapshot mapSnapshot, pre
 		Dimensions: snapshot.dimensions, Documents: []starDocument{}, Matrix: []byte{}}
 	if previous != nil && previous.algorithm == starsAlgorithm {
 		input.Frame, input.PreviousTopics = previous.frame, previous.topics
+		input.PreviousNamingVersion = previous.namingVersion
 		for _, point := range previous.points {
 			if point.Semantic {
 				input.PreviousPoints = append(input.PreviousPoints,
@@ -106,8 +126,13 @@ func (s *MapService) computeStars(ctx context.Context, snapshot mapSnapshot, pre
 		return nil, failure("MAP_LAYOUT_UNAVAILABLE", "Stars layout generation failed", 503, true)
 	}
 	decoder := json.NewDecoder(io.LimitReader(response.Body, 64<<20))
-	if err := decoder.Decode(&result); err != nil || result.Algorithm != starsAlgorithm ||
-		!starFramePattern.MatchString(result.Frame) || len(result.Points) != len(input.Documents) ||
+	if err := decoder.Decode(&result); err != nil {
+		return nil, failure("MAP_LAYOUT_INVALID", "Stars layout worker returned invalid data", 503, true)
+	}
+	if result.Algorithm != starsAlgorithm || result.NamingVersion != starsNamingVersion {
+		return nil, failure("MAP_LAYOUT_INCOMPATIBLE", "Upgrade and restart the stars layout worker with Core", 503, true)
+	}
+	if !starFramePattern.MatchString(result.Frame) || len(result.Points) != len(input.Documents) ||
 		result.Topics == nil || result.Links == nil {
 		return nil, failure("MAP_LAYOUT_INVALID", "Stars layout worker returned invalid data", 503, true)
 	}
@@ -122,7 +147,7 @@ func (s *MapService) computeStars(ctx context.Context, snapshot mapSnapshot, pre
 		}
 		byName[point.Name] = point
 	}
-	layout := &mapLayout{algorithm: starsAlgorithm, frame: result.Frame, topics: result.Topics, links: result.Links,
+	layout := &mapLayout{algorithm: starsAlgorithm, namingVersion: result.NamingVersion, frame: result.Frame, topics: result.Topics, links: result.Links,
 		points: make([]MapPoint, 0, len(snapshot.documents))}
 	for _, document := range snapshot.documents {
 		point, exists := byName[document.name]
@@ -200,196 +225,4 @@ func layoutWorkerURL() string {
 		return address
 	}
 	return "http://127.0.0.1:8766"
-}
-
-func starClusterRepresentatives(docsByName map[string]mapDocument, members []string, limit int) []mapDocument {
-	var docs []mapDocument
-	var dims int
-	for _, name := range members {
-		doc, ok := docsByName[name]
-		if !ok || len(doc.vector) == 0 {
-			continue
-		}
-		if dims == 0 {
-			dims = len(doc.vector)
-		}
-		if len(doc.vector) == dims {
-			docs = append(docs, doc)
-		}
-	}
-	if len(docs) == 0 {
-		return nil
-	}
-	centroid := make([]float64, dims)
-	for _, doc := range docs {
-		for j, v := range doc.vector {
-			centroid[j] += v
-		}
-	}
-	if !mapNormalize(centroid) {
-		if len(docs) > limit {
-			return docs[:limit]
-		}
-		return docs
-	}
-	type rankedDoc struct {
-		doc   mapDocument
-		score float64
-	}
-	ranked := make([]rankedDoc, len(docs))
-	for i, doc := range docs {
-		var dot float64
-		for j, v := range doc.vector {
-			dot += v * centroid[j]
-		}
-		if doc.excerpt != "" {
-			dot += 1e-6
-		}
-		ranked[i] = rankedDoc{doc, dot}
-	}
-	sort.SliceStable(ranked, func(i, j int) bool {
-		if ranked[i].score != ranked[j].score {
-			return ranked[i].score > ranked[j].score
-		}
-		return ranked[i].doc.name < ranked[j].doc.name
-	})
-	if len(ranked) > limit {
-		ranked = ranked[:limit]
-	}
-	result := make([]mapDocument, len(ranked))
-	for i, item := range ranked {
-		result[i] = item.doc
-	}
-	return result
-}
-
-func cleanStarLabel(raw string) string {
-	cleaned := strings.TrimSpace(strings.TrimPrefix(raw, "#"))
-	cleaned = strings.Trim(cleaned, "\"'`“”‘’")
-	cleaned = strings.Join(strings.FieldsFunc(cleaned, func(r rune) bool {
-		return unicode.IsControl(r) || r == '\n' || r == '\r'
-	}), " ")
-	if cleaned == "" || !utf8.ValidString(cleaned) {
-		return ""
-	}
-	runes := []rune(cleaned)
-	if len(runes) > maxStarLabelRunes {
-		cleaned = strings.TrimSpace(string(runes[:maxStarLabelRunes]))
-	}
-	return cleaned
-}
-
-func parseStarLabelsJSON(content string) map[string]string {
-	text := strings.TrimSpace(content)
-	if start := strings.IndexByte(text, '{'); start >= 0 {
-		if end := strings.LastIndexByte(text, '}'); end > start {
-			text = text[start : end+1]
-		}
-	}
-	var decoded map[string]string
-	if json.Unmarshal([]byte(text), &decoded) != nil {
-		return nil
-	}
-	return decoded
-}
-
-func nameStarClusters(ctx context.Context, snapshot mapSnapshot, layout *mapLayout, provider LLMProvider) {
-	if provider == nil || len(layout.topics) == 0 || ctx.Err() != nil {
-		return
-	}
-	docsByName := make(map[string]mapDocument, len(snapshot.documents))
-	for _, doc := range snapshot.documents {
-		docsByName[doc.name] = doc
-	}
-	type clusterEntry struct {
-		id      string
-		members []string
-	}
-	var entries []clusterEntry
-	for _, topic := range layout.topics {
-		entries = append(entries, clusterEntry{topic.ID, topic.Members})
-		for _, district := range topic.Districts {
-			entries = append(entries, clusterEntry{district.ID, district.Members})
-		}
-	}
-	sort.SliceStable(entries, func(i, j int) bool {
-		return len(entries[i].members) > len(entries[j].members)
-	})
-	if len(entries) > maxStarNamingClusters {
-		entries = entries[:maxStarNamingClusters]
-	}
-	type promptCluster struct {
-		ID    string   `json:"id"`
-		Notes []string `json:"notes"`
-	}
-	payloadClusters := make([]promptCluster, 0, len(entries))
-	totalRunes := 0
-	for _, entry := range entries {
-		reps := starClusterRepresentatives(docsByName, entry.members, 8)
-		if len(reps) == 0 {
-			continue
-		}
-		notes := make([]string, 0, len(reps))
-		clusterRunes := 0
-		for _, doc := range reps {
-			snippet := doc.excerpt
-			if snippet == "" && len(doc.tags) > 0 {
-				snippet = strings.Join(doc.tags, " ")
-			}
-			if snippet == "" {
-				continue
-			}
-			line := trimRunes(snippet, 80)
-			lineRunes := utf8.RuneCountInString(line)
-			if totalRunes+clusterRunes+lineRunes > maxStarNamingRunes {
-				break
-			}
-			notes = append(notes, line)
-			clusterRunes += lineRunes
-		}
-		if len(notes) == 0 {
-			continue
-		}
-		totalRunes += clusterRunes
-		payloadClusters = append(payloadClusters, promptCluster{ID: entry.id, Notes: notes})
-		if totalRunes >= maxStarNamingRunes {
-			break
-		}
-	}
-	if len(payloadClusters) == 0 {
-		return
-	}
-	encoded, err := json.Marshal(payloadClusters)
-	if err != nil {
-		return
-	}
-	namingCtx, cancel := context.WithTimeout(ctx, starNamingTimeout)
-	defer cancel()
-	messages := []LLMMessage{
-		{
-			Role: "system",
-			Content: "Name each note cluster with a concise, natural topic title matching the notes' primary language " +
-				"(2-8 words in Chinese or 2-5 words in English). Omit hashtags and punctuation. Return only a JSON object mapping id to title.",
-		},
-		{Role: "user", Content: string(encoded)},
-	}
-	result, err := provider.Generate(namingCtx, messages, nil)
-	if err != nil {
-		slog.Warn("stars cluster naming skipped", "code", errorCode(err))
-		return
-	}
-	labels := parseStarLabelsJSON(result.Content)
-	if len(labels) == 0 {
-		return
-	}
-	for i := range layout.topics {
-		if title := cleanStarLabel(labels[layout.topics[i].ID]); title != "" {
-			layout.topics[i].Label = title
-		}
-		for j := range layout.topics[i].Districts {
-			if title := cleanStarLabel(labels[layout.topics[i].Districts[j].ID]); title != "" {
-				layout.topics[i].Districts[j].Label = title
-			}
-		}
-	}
 }

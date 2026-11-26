@@ -295,7 +295,7 @@ func TestSearchQualityLiveAcceptance(t *testing.T) {
 	}
 	saveConfig()
 	report := map[string]any{
-		"dataset_version": dataset.Version, "dataset_sha256": qualityDigest(data),
+		"dataset_version": dataset.Version, "dataset_sha256": fmt.Sprintf("%x", sha256.Sum256(data)),
 		"model": config.Embedding.Model, "dimensions": config.Embedding.Dimensions,
 		"batch_size": config.Embedding.BatchSize, "max_concurrency": config.Embedding.MaxConcurrency,
 		"notes": notes, "questions": dataset.Questions, "go_version": runtime.Version(), "goarch": runtime.GOARCH,

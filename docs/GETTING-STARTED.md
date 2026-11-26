@@ -48,7 +48,7 @@ openssl rand -hex 32     # MOERISE_ACCESS_TOKEN（可选）
 5. 启动完整服务：
 
 ```bash
-docker compose pull moerise layout
+docker compose pull moerise
 docker compose up -d
 docker compose ps
 curl --fail http://localhost:3000/health/ready
@@ -64,29 +64,27 @@ curl --fail http://localhost:3000/health/ready
 2. 在 `.env` 中设置：
 
 ```dotenv
-COMPOSE_PROFILES=stargazing
+COMPOSE_PROFILES=
 MOERISE_MEMOS_BASE_URL=https://memos.example.com
 MOERISE_MEMOS_PUBLIC_URL=https://memos.example.com
 ```
 
 - `MOERISE_MEMOS_BASE_URL`：Core 容器内可访问的 Memos 地址。
 - `MOERISE_MEMOS_PUBLIC_URL`：浏览器打开 Memos 原文时使用的地址。
-- 不需要观星时，将 `COMPOSE_PROFILES` 留空即可。
 
 3. 填入作者绑定与密钥后启动：
 
 ```bash
-docker compose pull moerise layout
+docker compose pull moerise
 docker compose up -d
 ```
-
-不使用观星时只拉取 `moerise`。
 
 ## 三、配置可选功能
 
 基础记录、阅读、关键词筛选和每日回顾无需模型或消息渠道。可在「设置」中按需开启增强功能：
 
-- **AI（Embedding 与 LLM）**：在「设置 → AI」配置向量模型（OpenAI 兼容或阿里云百炼 DashScope）与大语言模型（OpenAI Chat Completions、OpenAI Responses 或 Anthropic Messages）。向量索引就绪后可使用语义搜索、混合检索、漫步与观星；AI 洞察只需配置大语言模型。
+- **Embedding**：在「设置 → AI」配置 OpenAI 兼容或阿里云百炼 DashScope 向量模型。向量索引就绪后可使用语义搜索、混合检索和漫步。
+- **观星**：在 `.env` 的 `COMPOSE_PROFILES` 追加 `,stargazing`（外接 Memos 时设为 `stargazing`），执行 `docker compose pull layout` 和 `docker compose up -d layout`。配好 Embedding 后，在「设置 → 通用」打开「启用观星」。详见[观星指南](STARGAZING.md)。
 - **消息渠道**：在「设置 → 回顾与推送」按需配置 [QQ](QQ.md)、[Telegram](TELEGRAM.md) 或 [飞书](FEISHU.md)，支持私聊速记、指令查回顾和定时推送。新安装默认不启用任何渠道。
 - **Android 客户端**：从 Releases 下载签名 APK 并填写对外 HTTPS 服务地址登录，详见 [Android 安装与升级](android/INSTALL.md)。
 
@@ -126,10 +124,10 @@ Compose 会在卷名前添加项目名前缀，升级时请保持 `COMPOSE_PROJE
 
 1. 按[运行与恢复](OPERATIONS.md)备份 Memos 数据、Moerise 产品状态与 `.env`。
 2. 将 `.env` 中的 `MOERISE_IMAGE_TAG` 设为目标版本。从旧版独立 Web 容器升级至内嵌 Web 时，将 `MOERISE_PORT`、`MOERISE_BIND_ADDRESS` 改为原 `WEB_PORT`、`WEB_BIND_ADDRESS`，并删除旧的 `WEB_*` 变量。
-3. 拉取新镜像并重建容器（`down` 不加 `--volumes`，保留全部数据卷）：
+3. 拉取新镜像并重建容器。已启用观星时，也拉取 `layout` 镜像。（`down` 不加 `--volumes`，保留全部数据卷）：
 
    ```bash
-   docker compose pull moerise layout
+   docker compose pull moerise
    docker compose down --remove-orphans
    docker compose up -d
    curl --fail http://localhost:3000/health/ready

@@ -59,6 +59,17 @@ jobs:
         with:
           packages: platform-tools
       - run: sdkmanager 'platforms;android-36' 'build-tools;36.0.0'
+      - name: Read 0.3.0 upgrade baseline
+        id: baseline
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download v0.3.0 --pattern moerise-android-v0.3.0.apk --dir "$RUNNER_TEMP/upgrade"
+          baseline_apk="$RUNNER_TEMP/upgrade/moerise-android-v0.3.0.apk"
+          version_code=$("$ANDROID_HOME/build-tools/36.0.0/aapt2" dump badging "$baseline_apk" |
+            sed -n "s/^package: .* versionCode='\([0-9][0-9]*\)'.*/\1/p")
+          [[ "$version_code" =~ ^[1-9][0-9]*$ ]]
+          printf 'version_code=%s\n' "$version_code" >> "$GITHUB_OUTPUT"
       - name: Prepare release signing identity
         if: inputs.sign
         env:
@@ -77,12 +88,15 @@ jobs:
       - name: Build APK
         id: build
         env:
+          BASELINE_VERSION_CODE: ${{ steps.baseline.outputs.version_code }}
           MOERISE_ANDROID_KEYSTORE: ${{ runner.temp }}/moerise-release.jks
           MOERISE_ANDROID_KEY_ALIAS: ${{ !inputs.sign && 'rehearsal' || secrets.ANDROID_KEY_ALIAS }}
           MOERISE_ANDROID_STORE_PASSWORD: ${{ !inputs.sign && 'rehearsal' || secrets.ANDROID_STORE_PASSWORD }}
           MOERISE_ANDROID_KEY_PASSWORD: ${{ !inputs.sign && 'rehearsal' || secrets.ANDROID_KEY_PASSWORD }}
         run: |
-          MOERISE_ANDROID_VERSION_CODE="$((GITHUB_RUN_NUMBER + 100))" scripts/android/release.sh --sign
+          run_code=$((GITHUB_RUN_NUMBER + 100))
+          version_code=$((run_code > BASELINE_VERSION_CODE ? run_code : BASELINE_VERSION_CODE + 1))
+          MOERISE_ANDROID_VERSION_CODE="$version_code" scripts/android/release.sh --sign
       - name: Enable emulator acceleration
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
@@ -98,19 +112,18 @@ jobs:
         run: |
           bash scripts/android/install-maestro.sh
           python3 -m pip install --disable-pip-version-check -r scripts/android/maestro/requirements.txt
-      - name: Prepare 0.2.0 upgrade baseline
+          docker build -t moerise-android-layout:fixture services/layout
+      - name: Prepare 0.3.0 upgrade baseline
         env:
-          GH_TOKEN: ${{ github.token }}
           MOERISE_ANDROID_KEYSTORE: ${{ runner.temp }}/moerise-release.jks
           MOERISE_ANDROID_KEY_ALIAS: ${{ !inputs.sign && 'rehearsal' || secrets.ANDROID_KEY_ALIAS }}
           MOERISE_ANDROID_STORE_PASSWORD: ${{ !inputs.sign && 'rehearsal' || secrets.ANDROID_STORE_PASSWORD }}
           MOERISE_ANDROID_KEY_PASSWORD: ${{ !inputs.sign && 'rehearsal' || secrets.ANDROID_KEY_PASSWORD }}
         run: |
-          gh release download v0.2.0 --pattern moerise-android-v0.2.0.apk --dir "$RUNNER_TEMP/upgrade"
           if [[ '${{ inputs.sign }}' != true ]]; then
-            "$ANDROID_HOME/build-tools/36.0.0/apksigner" sign --ks "$MOERISE_ANDROID_KEYSTORE" --ks-key-alias "$MOERISE_ANDROID_KEY_ALIAS" --ks-pass env:MOERISE_ANDROID_STORE_PASSWORD --key-pass env:MOERISE_ANDROID_KEY_PASSWORD "$RUNNER_TEMP/upgrade/moerise-android-v0.2.0.apk"
+            "$ANDROID_HOME/build-tools/36.0.0/apksigner" sign --ks "$MOERISE_ANDROID_KEYSTORE" --ks-key-alias "$MOERISE_ANDROID_KEY_ALIAS" --ks-pass env:MOERISE_ANDROID_STORE_PASSWORD --key-pass env:MOERISE_ANDROID_KEY_PASSWORD "$RUNNER_TEMP/upgrade/moerise-android-v0.3.0.apk"
           fi
-          python3 scripts/android/verify-apk.py "${{ steps.build.outputs.apk }}" --release --package io.github.fermin214.moerise --same-signer-as "$RUNNER_TEMP/upgrade/moerise-android-v0.2.0.apk"
+          python3 scripts/android/verify-apk.py "${{ steps.build.outputs.apk }}" --release --package io.github.fermin214.moerise --same-signer-as "$RUNNER_TEMP/upgrade/moerise-android-v0.3.0.apk"
       - name: Remove signing file
         if: always()
         run: rm -f "$RUNNER_TEMP/moerise-release.jks"
@@ -125,7 +138,7 @@ jobs:
           script: |
             bash scripts/android/release-smoke.sh "${{ steps.build.outputs.apk }}"
             adb uninstall io.github.fermin214.moerise
-            MOERISE_ANDROID_SMOKE_OUTPUT=.local/android/release-smoke/upgrade-smoke MOERISE_ANDROID_UPGRADE_FROM="$RUNNER_TEMP/upgrade/moerise-android-v0.2.0.apk" bash scripts/android/release-smoke.sh "${{ steps.build.outputs.apk }}"
+            MOERISE_ANDROID_SMOKE_OUTPUT=.local/android/release-smoke/upgrade-smoke MOERISE_ANDROID_UPGRADE_FROM="$RUNNER_TEMP/upgrade/moerise-android-v0.3.0.apk" bash scripts/android/release-smoke.sh "${{ steps.build.outputs.apk }}"
       - name: Verify Android release artifacts
         run: |
           artifact_root="$RUNNER_TEMP/release-verification"

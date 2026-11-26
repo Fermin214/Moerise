@@ -30,11 +30,11 @@ func (s *Store) loadStars(ctx context.Context, space string) (*mapLayout, string
 		}
 		layout = &mapLayout{}
 		var stamp, points, topics, links string
-		if err := tx.QueryRowContext(ctx, `SELECT algorithm, frame, generation_id, projection_revision,
+		if err := tx.QueryRowContext(ctx, `SELECT algorithm, naming_version, frame, generation_id, projection_revision,
 			generated_at, points_json, topics_json, links_json FROM star_snapshots
 			WHERE version = ? AND instance_id = ? AND user_name = ? AND space_hash = ?`,
 			version.String, s.Settings.Memos.InstanceID, s.Settings.Memos.User, space).
-			Scan(&layout.algorithm, &layout.frame, &layout.generation, &layout.revision,
+			Scan(&layout.algorithm, &layout.namingVersion, &layout.frame, &layout.generation, &layout.revision,
 				&stamp, &points, &topics, &links); err != nil {
 			return err
 		}
@@ -89,7 +89,7 @@ func (s *Store) publishStars(ctx context.Context, snapshot mapSnapshot, layout *
 	}
 	topics, _ := json.Marshal(layout.topics)
 	links, _ := json.Marshal(layout.links)
-	layout.version = hashBytes(canonicalJSON([]any{layout.algorithm, snapshot.space, layout.frame,
+	layout.version = hashBytes(canonicalJSON([]any{layout.algorithm, layout.namingVersion, snapshot.space, layout.frame,
 		stored, layout.topics, layout.links}))
 	if layout.generatedAt.IsZero() {
 		layout.generatedAt = time.Now().UTC()
@@ -118,10 +118,10 @@ func (s *Store) publishStars(ctx context.Context, snapshot mapSnapshot, layout *
 			return mapIndexChanged()
 		}
 		if _, err := tx.ExecContext(ctx, `INSERT OR REPLACE INTO star_snapshots
-			(version, instance_id, user_name, space_hash, algorithm, frame, generation_id, projection_revision,
-			generated_at, points_json, topics_json, links_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			(version, instance_id, user_name, space_hash, algorithm, naming_version, frame, generation_id, projection_revision,
+			generated_at, points_json, topics_json, links_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			layout.version, s.Settings.Memos.InstanceID, s.Settings.Memos.User, snapshot.space,
-			layout.algorithm, layout.frame, snapshot.generation, snapshot.revision,
+			layout.algorithm, layout.namingVersion, layout.frame, snapshot.generation, snapshot.revision,
 			layout.generatedAt.Format(time.RFC3339Nano), string(points), string(topics), string(links)); err != nil {
 			return err
 		}

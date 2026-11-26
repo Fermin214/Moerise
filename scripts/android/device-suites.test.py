@@ -16,8 +16,8 @@ def select(*args):
 class DeviceSuitesTest(unittest.TestCase):
     def test_full_matrix_covers_each_member_once(self):
         matrix = json.loads(select("all", "--matrix"))
-        self.assertEqual(matrix, ["records-edits", "records-browse", "insights", "explore"])
-        expected = ("editing", "search", "actions", "attachments", "home", "insights", "navigation",
+        self.assertEqual(matrix, ["records-edits", "records-browse", "explore"])
+        expected = ("editing", "search", "actions", "attachments", "home", "navigation",
                     "language", "lifecycle", "ime", "recovery", "stars")
         self.assertEqual(Counter(member for suite in matrix for member in select(suite).splitlines()),
                          Counter(expected))

@@ -28,37 +28,37 @@ func TestSettingsRuntimeDrainAndResourceReplacement(t *testing.T) {
 		t.Fatalf("busy application published settings: %v", err)
 	}
 	key := "runtime-private-model-key"
-	update = settingsChange(1, `{"llm":{"enabled":true,"base_url":"http://127.0.0.1:1/v1","model":"runtime-model"}}`)
-	update.Secrets = map[string]SecretUpdate{"llm_api_key": {Action: "replace", Value: &key}}
+	update = settingsChange(1, `{"embedding":{"enabled":true,"provider":"openai-compatible","protocol":"openai-compatible","base_url":"http://127.0.0.1:1/v1","model":"runtime-model"}}`)
+	update.Secrets = map[string]SecretUpdate{"embedding_api_key": {Action: "replace", Value: &key}}
 	view, err := app.UpdateSettings(t.Context(), update)
-	if err != nil || view.Version != 2 || app.LLM == nil {
+	if err != nil || view.Version != 2 || app.Search.Provider == nil {
 		t.Fatalf("offline provider configuration did not publish: %v", err)
 	}
-	provider := app.LLM
-	view, err = app.UpdateSettings(t.Context(), settingsChange(2, `{"llm":{"model":"replacement-model"}}`))
-	if err != nil || view.Version != 3 || app.LLM == provider || configured(store.Settings.LLM.Model) != "replacement-model" {
+	provider := app.Search.Provider
+	view, err = app.UpdateSettings(t.Context(), settingsChange(2, `{"embedding":{"model":"replacement-model"}}`))
+	if err != nil || view.Version != 3 || app.Search.Provider == provider || configured(store.Settings.Embedding.Model) != "replacement-model" {
 		t.Fatalf("model-only update did not replace the provider: %v", err)
 	}
-	provider = app.LLM
-	view, err = app.UpdateSettings(t.Context(), settingsChange(3, `{"insights":{"default_prompt":"新的思考方向"}}`))
-	if err != nil || view.Version != 4 || app.LLM != provider {
+	provider = app.Search.Provider
+	view, err = app.UpdateSettings(t.Context(), settingsChange(3, `{"review":{"count":9}}`))
+	if err != nil || view.Version != 4 || app.Search.Provider != provider {
 		t.Fatalf("unrelated setting replaced provider: %v", err)
 	}
 	if app.Records != records || app.Reviews != reviews || app.Search != search ||
-		app.Store != store || app.Source != source || app.Notes.Settings.Insights.DefaultPrompt != "新的思考方向" {
+		app.Store != store || app.Source != source || app.Notes.Settings.Review.Count != 9 {
 		t.Fatal("settings update rebuilt shared state or left a stale settings consumer")
 	}
-	if _, err := app.UpdateSettings(t.Context(), settingsChange(4, `{"llm":{"protocol":"invalid"}}`)); errorCode(err) != "INVALID_ARGUMENT" ||
-		store.productVersion != 4 || app.LLM != provider {
+	if _, err := app.UpdateSettings(t.Context(), settingsChange(4, `{"embedding":{"protocol":"invalid"}}`)); errorCode(err) != "INVALID_ARGUMENT" ||
+		store.productVersion != 4 || app.Search.Provider != provider {
 		t.Fatalf("invalid provider update changed runtime: %v", err)
 	}
 	if _, err := store.state.Exec(`CREATE TRIGGER reject_settings BEFORE UPDATE ON product_settings
 		BEGIN SELECT RAISE(ABORT, 'settings write rejected'); END`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := app.UpdateSettings(t.Context(), settingsChange(4, `{"llm":{"model":"unsaved-model"}}`)); err == nil ||
-		store.productVersion != 4 || app.LLM != provider || app.Chat.Provider != provider ||
-		configured(store.Settings.LLM.Model) != "replacement-model" {
+	if _, err := app.UpdateSettings(t.Context(), settingsChange(4, `{"embedding":{"model":"unsaved-model"}}`)); err == nil ||
+		store.productVersion != 4 || app.Search.Provider != provider ||
+		configured(store.Settings.Embedding.Model) != "replacement-model" {
 		t.Fatalf("failed settings write changed runtime: %v", err)
 	}
 }

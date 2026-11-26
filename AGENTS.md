@@ -13,7 +13,7 @@ Moerise 是基于 Memos 的单用户自托管笔记系统。`internal/` 是按�
 | 修改 Web 布局、导航、交互或登录 | [Web 界面](docs/WEB.md)、[Web 集成设计](docs/DESIGN.md) |
 | 修改客户端 API、外部 REST、MCP 或权限 | [API v1](docs/API-V1.md) |
 | 修改检索、向量、漫步或地图 | [检索系统](docs/SEARCH.md)、[向量与语义检索](docs/EMBEDDING.md)、[产品与架构](docs/PRODUCT-ARCHITECTURE.md) |
-| 修改 AI 洞察、模型协议或设置 | [AI 对话与洞察](docs/AI.md)、[系统设置](docs/SETTINGS.md) |
+| 修改向量模型或产品设置 | [向量与语义检索](docs/EMBEDDING.md)、[系统设置](docs/SETTINGS.md) |
 | 修改回顾、飞书记录或渠道推送 | [每日回顾](docs/DAILY-REVIEW.md)、[飞书接入](docs/FEISHU.md)、[通知与推送](docs/NOTIFICATIONS.md) |
 | 修改配置、部署或恢复流程 | [运行与恢复](docs/OPERATIONS.md) |
 | 选择测试、准备浏览器或集成环境 | [开发指南](docs/DEVELOPMENT.md)、[脚本说明](scripts/README.md) |
@@ -22,7 +22,7 @@ Moerise 是基于 Memos 的单用户自托管笔记系统。`internal/` 是按�
 
 - Memos 保存笔记原文、标签和附件，只通过官方 API 写入与同步；客户端日常读取走本地同步索引，写前核验作者身份并与写入直通保持一致。一个实例绑定一名作者，管理员 PAT 同样受作者范围限制。
 - `/api/app/v1` 使用本人会话，可执行笔记写入和产品设置操作，保持同源、Cookie 和 CSRF 校验。`/api/ext/v1` 与 `/mcp` 只读，配置仅接受 `notes:read`、`sync:read`、`reviews:read`。
-- `state.sqlite3` 保存需备份的产品状态，包括设置、会话、聊天与回顾计划；`index.sqlite3` 保存可重建的检索、向量和地图索引。重建索引保留产品状态。
+- `state.sqlite3` 保存需备份的产品状态，包括设置、会话与回顾计划；`index.sqlite3` 保存可重建的检索、向量和地图索引。重建索引保留产品状态。
 - 正常与归档笔记的全部分页成功后，才能发布投影并推进同步水位。
 - `internal/migrations/state/`、`internal/migrations/index/` 分别管理双库迁移，按编号和摘要记账。结构变化新增迁移，保持已应用 SQL 不变。
 - 地图使用后台快照，点选详情读取本地笔记投影。业务规则放在共享服务中，客户端与外部路由负责协议和权限。
@@ -48,7 +48,7 @@ Moerise 是基于 Memos 的单用户自托管笔记系统。`internal/` 是按�
 | Web 逻辑、样式与构建 | `npm --prefix web run build`、`npm --prefix web test` |
 | Web 界面与交互 | `npm --prefix web run test:browser` |
 | 共用脚本与策略 | `node --test scripts/lib/*.test.mjs scripts/android/fixture-policy.test.mjs` |
-| 同步、Memos 协议、迁移、备份恢复或通知推送 | `go test -tags=integration ./tests -v -count=1` |
+| 同步、Memos 协议、迁移、备份恢复或通知推送 | `MOERISE_V030_BINARY=<发行包内的 moerise 路径> go test -tags=integration ./tests -v -count=1`，基线和布局服务见[开发指南](docs/DEVELOPMENT.md#五真实-memos-集成测试) |
 | Compose、Core、Web 联合验收 | `node scripts/acceptance/check-compose.mjs --browser`，其他功能脚本见[脚本说明](scripts/README.md) |
 
 Web 依赖通过 `npm --prefix web ci` 安装。浏览器流程需要 Playwright 浏览器；真实 Memos 集成与联合验收需要 Docker。具体功能的联合验收脚本及参数见[脚本说明](scripts/README.md)。

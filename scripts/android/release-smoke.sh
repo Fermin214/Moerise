@@ -13,7 +13,7 @@ mkdir -p .local/android
 android_smoke_output="${MOERISE_ANDROID_SMOKE_OUTPUT:-.local/android/release-smoke}"
 android_release_fixture="$(mktemp -d "$android_repo_root/.local/android/release-fixture-XXXXXXXX")"
 chmod 700 "$android_release_fixture"
-android_release_fixture_pid="" android_release_tls_pid=""
+android_release_fixture_pid="" android_release_tls_pid="" android_release_telemetry_pid=""
 android_release_device_ca=""
 cleanup_android_release_smoke() {
     if [[ -n "$android_release_device_ca" ]]; then
@@ -45,7 +45,7 @@ PY
             android_release_fixture_pid=""
         fi
     fi
-    for android_release_pid in "$android_release_tls_pid" "$android_release_fixture_pid"; do
+    for android_release_pid in "$android_release_tls_pid" "$android_release_fixture_pid" "$android_release_telemetry_pid"; do
         if [[ -n "$android_release_pid" ]]; then
             kill -TERM -- "-$android_release_pid" 2>/dev/null || true
             wait "$android_release_pid" 2>/dev/null || true
@@ -53,7 +53,7 @@ PY
     done
     timeout 10 adb reverse --remove tcp:28443 >/dev/null 2>&1 || true
     mkdir -p "$android_smoke_output"
-    for android_release_log in fixture core tls; do
+    for android_release_log in fixture core tls telemetry; do
         if [[ -f "$android_release_fixture/$android_release_log.log" ]]; then
             cp "$android_release_fixture/$android_release_log.log" "$android_smoke_output/$android_release_log.log"
         fi
@@ -83,6 +83,22 @@ android_release_ca_hash="$(openssl x509 -in "$android_release_fixture/ca.pem" -s
 export MOERISE_ANDROID_FIXTURE_ROOT="$android_release_fixture"
 export MOERISE_ANDROID_FIXTURE_ORIGIN=https://localhost:28443
 export MOERISE_ANDROID_FIXTURE_PORT=28442
+android_release_upgrade=()
+android_release_proxy=()
+if [[ -n "${MOERISE_ANDROID_UPGRADE_FROM:-}" ]]; then
+    android_release_db="$android_release_fixture/telemetry.sqlite3"
+    android_release_upgrade=(--upgrade-from "$MOERISE_ANDROID_UPGRADE_FROM" --telemetry-db "$android_release_db")
+    android_release_proxy=(--telemetry-port 28445)
+    export MOERISE_ANDROID_STARS=1
+    export MOERISE_ANDROID_FIXTURE_BINARY="$android_release_fixture/smoke-core"
+    go build -ldflags="-X moerise/internal.telemetryReceiverURL=$MOERISE_ANDROID_FIXTURE_ORIGIN/v1/batches" \
+        -o "$MOERISE_ANDROID_FIXTURE_BINARY" .
+    go build -o "$android_release_fixture/telemetry" ./cmd/moerise-telemetry
+    setsid "$android_release_fixture/telemetry" -db "$android_release_db" -listen 127.0.0.1:28445 serve \
+        > "$android_release_fixture/telemetry.log" 2>&1 &
+    android_release_telemetry_pid=$!
+fi
+export SSL_CERT_FILE="$android_release_fixture/ca.pem"
 setsid scripts/android/start-fixture.sh > "$android_release_fixture/fixture.log" 2>&1 &
 android_release_fixture_pid=$!
 python3 - "$android_release_fixture/connection.json" "$android_release_fixture_pid" <<'PY'
@@ -97,10 +113,9 @@ while not Path(sys.argv[1]).exists():
 PY
 setsid node scripts/android/usb-https.mjs --origin "$MOERISE_ANDROID_FIXTURE_ORIGIN" \
     --upstream http://127.0.0.1:28442 --cert "$android_release_fixture/tls.pem" \
-    --key "$android_release_fixture/tls.key" --proxy-port 28444 \
+    --key "$android_release_fixture/tls.key" --proxy-port 28444 "${android_release_proxy[@]}" \
     > "$android_release_fixture/tls.log" 2>&1 &
 android_release_tls_pid=$!
-export SSL_CERT_FILE="$android_release_fixture/ca.pem"
 python3 - <<'PY'
 import time, urllib.request
 deadline = time.monotonic() + 20
@@ -155,8 +170,6 @@ for zygote in $zygotes; do
 done
 DEVICE
 [[ "$(timeout 10 adb shell getenforce | tr -d '\r')" == Enforcing ]]
-android_release_upgrade=()
-if [[ -n "${MOERISE_ANDROID_UPGRADE_FROM:-}" ]]; then android_release_upgrade=(--upgrade-from "$MOERISE_ANDROID_UPGRADE_FROM"); fi
 python3 scripts/android/release-smoke.py "${android_release_upgrade[@]}" --serial "$ANDROID_SERIAL" \
     --fixture "$android_release_fixture/connection.json" --apk "$android_release_apk" \
     --output "$android_smoke_output"

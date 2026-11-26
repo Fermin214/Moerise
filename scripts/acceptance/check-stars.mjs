@@ -170,7 +170,8 @@ try {
     config.cursor_secret = resumedConfig?.cursor_secret || randomBytes(32).toString('hex');
     config.access_tokens = [{ name: 'read', token: randomBytes(32).toString('hex'), scopes: ['notes:read'] }];
     config.sync = { ...config.sync, poll_seconds: 15, full_seconds: 600, retry_seconds: 5 };
-    config.notifications.enabled = false; config.llm.enabled = false;
+    config.notifications.enabled = false;
+    config.stargazing.enabled = true;
     config.embedding = { ...config.embedding, enabled: true, provider: 'openai-compatible', protocol: 'openai-compatible',
       base_url: `http://127.0.0.1:${model.address().port}/v1`, api_key: modelKey, model: 'qwen3-local-fixture',
       dimensions, max_retries: 0, batch_size: 20 };

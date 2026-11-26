@@ -37,7 +37,7 @@ func Handler(directory string, next http.Handler) http.Handler {
 		w.Header().Set("Content-Security-Policy", "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'")
 		name := strings.TrimPrefix(path, "/")
 		switch path {
-		case "/", "/archived", "/review", "/walk", "/insights", "/map", "/settings":
+		case "/", "/archived", "/review", "/walk", "/map", "/settings":
 			name = "index.html"
 		default:
 			if notePage.MatchString(path) {

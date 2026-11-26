@@ -12,7 +12,7 @@ on:
         default: full
       suite:
         type: choice
-        options: [all, records, records-edits, records-browse, insights, explore, ui, editing, search, actions, navigation, attachments, language, home, lifecycle, ime, recovery, stars]
+        options: [all, records, records-edits, records-browse, explore, ui, editing, search, actions, navigation, attachments, language, home, lifecycle, ime, recovery, stars]
         default: all
       fixture_run:
         description: Reuse fixture APKs from this workflow run

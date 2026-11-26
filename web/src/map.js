@@ -346,6 +346,14 @@ export function createMapPage({ request, handleFailure, validNote, renderNote, i
     for (const id of pointers.keys()) if (field.hasPointerCapture(id)) field.releasePointerCapture(id);
     pointers.clear(); candidate = ''; dragged = false; origin = null; field.classList.remove('dragging');
   }
+  function unavailableMessage(next) {
+    if (next.unavailable_reason === 'layout_incompatible') return l("观星布局服务版本不兼容，请与 Core 一起升级并重启。");
+    if (next.unavailable_reason === 'layout') return l("观星布局服务不可用，请检查 layout 服务是否已启动。");
+    return l("观星暂时不可用，稍后重试。");
+  }
+  function unavailable(next) {
+    return next.status === 'unavailable' || next.update_state === 'unavailable' || Boolean(next.unavailable_reason);
+  }
   function display(next) {
     if (openedAt != null && ['ready', 'empty'].includes(next.status)) {
       usage('stars', 'success', performance.now() - openedAt); openedAt = null;
@@ -362,8 +370,9 @@ export function createMapPage({ request, handleFailure, validNote, renderNote, i
     setText(unplaced, l("未定位笔记（{0}）", { 0: missing }));
     if (!['ready', 'empty'].includes(next.status)) {
       clearReader();
-      say({ disabled: next.disabled_reason === 'stargazing' ? l("观星已关闭。") : l("请在设置中启用 Embedding。"), waiting: l("语义索引正在等待同步或构建。"),
-        building: l("正在生成观星布局…"), unavailable: l("观星暂时不可用，稍后重试。") }[next.status]);
+      say(unavailable(next) ? unavailableMessage(next) :
+        { disabled: next.disabled_reason === 'stargazing' ? l("观星已关闭。") : l("请在设置中启用 Embedding。"), waiting: l("语义索引正在等待同步或构建。"),
+          building: l("正在生成观星布局…") }[next.status], unavailable(next));
       if (next.status !== 'disabled') refreshLater(next.status === 'unavailable' ? 10000 : 3000);
       return;
     }
@@ -383,7 +392,8 @@ export function createMapPage({ request, handleFailure, validNote, renderNote, i
     overviewScale = fitResult().scale;
     scene.setData(next, overviewScale); positionMarkers();
     scene.mode?.('photo');
-    say(next.status === 'empty' ? l("还没有可显示的笔记。") : '');
+    say(unavailable(next) ? unavailableMessage(next) :
+      next.status === 'empty' ? l("还没有可显示的笔记。") : '', unavailable(next));
     if (selected && points.has(selected)) {
       if (readName !== selected && !noteController) readPoint(selected);
     } else if (history.state?.mapReader === 'unplaced' && !unplaced.hidden) openUnplaced();
@@ -397,10 +407,10 @@ export function createMapPage({ request, handleFailure, validNote, renderNote, i
       const next = await request('/map', { controller: mapController });
       if (!activeMap(ticket)) return;
       if (!validMap(next)) throw Object.assign(new Error('Invalid map response'), { code: 'MAP_RESPONSE_INVALID' });
-      retry.hidden = next.status !== 'unavailable' && next.update_state !== 'unavailable';
-      refreshLater(['waiting', 'building'].includes(next.status) ? 3000 : 60000);
+      retry.hidden = !unavailable(next);
+      refreshLater(!retry.hidden ? 10000 : ['waiting', 'building'].includes(next.status) ? 3000 : 60000);
       if (['ready', 'empty'].includes(result?.status) && ['building', 'waiting', 'unavailable'].includes(next.status)) {
-        say(next.status === 'unavailable' ? l("观星暂时不可用，稍后重试。") : '', next.status === 'unavailable');
+        say(!retry.hidden ? unavailableMessage(next) : '', !retry.hidden);
         return;
       }
       onData(next);
@@ -413,7 +423,7 @@ export function createMapPage({ request, handleFailure, validNote, renderNote, i
           result.layout_version === next.layout_version && result.layout_frame === next.layout_frame &&
           result.vector_generation === next.vector_generation && result.projection_revision === next.projection_revision &&
           samePoints(result.points, next.points)) {
-        say(!retry.hidden ? l("观星暂时不可用，稍后重试。") : next.status === 'empty' ? l("还没有可显示的笔记。") : '', !retry.hidden);
+        say(!retry.hidden ? unavailableMessage(next) : next.status === 'empty' ? l("还没有可显示的笔记。") : '', !retry.hidden);
         return;
       }
       // A changed selected source must never retain its old reading card.

@@ -27,7 +27,7 @@ func TestAppSharesServicesAndClosesOnce(t *testing.T) {
 	if api.App != app || app.Feishu == nil ||
 		app.Feishu.Records != app.Records ||
 		app.Feishu.Notifications != app.Notifications ||
-		app.Chat.Notes != app.Notes {
+		app.Notes.Store != store {
 		t.Fatal("entry points do not share the application services")
 	}
 	var order []int

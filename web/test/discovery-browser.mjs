@@ -378,18 +378,16 @@ test('detail and review can start at the selected note; mobile cards keep full t
   await screenshot(page, 'walk-start-mobile.png');
 });
 
-test('archived notes keep the insights entry and have no walk entry in detail or review', { timeout: 60_000 }, async t => {
+test('archived notes have no walk entry in detail or review', { timeout: 60_000 }, async t => {
   const { page, state, url } = await fixture(t);
   state.notes[0].state = 'ARCHIVED';
   await login(page, url, '/notes/n0');
   const detail = page.locator('article.note[data-name="memos/n0"]');
   await detail.waitFor();
   assert.equal(await detail.getByRole('button', { name: '从这条漫步', exact: true }).count(), 0);
-  await detail.getByRole('button', { name: '洞察这条', exact: true }).waitFor();
   await page.goto(url + '/review');
   await page.getByRole('button', { name: '第 6 / 6 条', exact: true }).waitFor();
   assert.equal(await page.getByRole('button', { name: '从这条漫步', exact: true }).count(), 0);
-  await page.getByRole('button', { name: '洞察这条', exact: true }).waitFor();
   assert.equal(requests(state, '/walks/start').length, 0);
 });
 

@@ -180,7 +180,7 @@ func TestClientMapMemosAcceptance(t *testing.T) {
 		settings = c.call("PATCH", "/api/app/v1/settings", map[string]any{"version": settings["version"], "settings": changes,
 			"secrets": map[string]any{"embedding_api_key": map[string]string{"action": "replace", "value": key}}}, 200)
 	}
-	patch(map[string]any{"embedding": map[string]any{"enabled": true, "provider": "openai-compatible", "protocol": "openai-compatible",
+	patch(map[string]any{"stargazing": map[string]bool{"enabled": true}, "embedding": map[string]any{"enabled": true, "provider": "openai-compatible", "protocol": "openai-compatible",
 		"base_url": embedding.URL + "/v1", "model": "map-fixture", "dimensions": 3, "max_retries": 0},
 		"review": map[string]any{"min_age_hours": 0, "recent_days": 0}})
 	h.vectorsReady()
@@ -318,18 +318,6 @@ func TestClientMapMemosAcceptance(t *testing.T) {
 	}
 	t.Log("PASS incremental snapshots combine edits/additions/deletions; originals stay live and source authentication stays required")
 
-	chatModel := &chatAcceptanceModel{key: randomToken(), release: make(chan struct{}, 1)}
-	chatServer := httptest.NewServer(chatModel)
-	defer chatServer.Close()
-	settings = c.call("PATCH", "/api/app/v1/settings", map[string]any{"version": settings["version"], "settings": map[string]any{
-		"llm": map[string]any{"enabled": true, "protocol": "openai-compatible", "base_url": chatServer.URL + "/v1", "model": "chat-acceptance"}},
-		"secrets": map[string]any{"llm_api_key": map[string]string{"action": "replace", "value": chatModel.key}}}, 200)
-	if unchanged := acceptanceMap(t, c); !reflect.DeepEqual(incremental, unchanged) {
-		t.Fatal("LLM-only change rebuilt the map")
-	}
-	chat := acceptanceChat(t, c.call("POST", "/api/app/v1/chats", map[string]any{"request_id": "map-product-chat", "title": "地图与产品恢复", "names": []string{notes[0]["name"].(string)}}, 201))
-	completeAcceptanceChat(t, c, chat.ID, moerise.ChatGenerate{RequestID: "map-product-message", Version: chat.Version, Kind: "question", Content: "讨论原文"})
-	chatState := c.call("GET", "/api/app/v1/chats/"+chat.ID, nil, 200)
 	plan := c.call("GET", "/api/app/v1/reviews/daily", nil, 200)
 	modelFailure.Store(true)
 	patch(map[string]any{"embedding": map[string]any{"model": "map-fixture-next"}})
@@ -364,7 +352,6 @@ func TestClientMapMemosAcceptance(t *testing.T) {
 		h.vectorsReady()
 		rebuilt := acceptanceMap(t, c)
 		if rebuilt.VectorGeneration == switched.VectorGeneration || !reflect.DeepEqual(rebuilt.Points, switched.Points) ||
-			!reflect.DeepEqual(c.call("GET", "/api/app/v1/chats/"+chat.ID, nil, 200), chatState) ||
 			!reflect.DeepEqual(c.call("GET", "/api/app/v1/reviews/daily", nil, 200), plan) ||
 			!reflect.DeepEqual(c.call("GET", "/api/app/v1/settings", nil, 200), settings) {
 			t.Fatalf("%s lost complete map or durable product state", operation)
@@ -374,7 +361,7 @@ func TestClientMapMemosAcceptance(t *testing.T) {
 			t.Fatalf("%s lost original note idempotency", operation)
 		}
 	}
-	patch(map[string]any{"embedding": map[string]any{"enabled": false}, "llm": map[string]any{"enabled": false}})
+	patch(map[string]any{"embedding": map[string]any{"enabled": false}})
 	if disabled := c.call("GET", "/api/app/v1/map", nil, 200); disabled["status"] != "disabled" || len(disabled["points"].([]any)) != 0 {
 		t.Fatal("disabled model retained private map")
 	}
@@ -382,7 +369,7 @@ func TestClientMapMemosAcceptance(t *testing.T) {
 	c.call("GET", "/api/app/v1/notes?query=balcony", nil, 200)
 	c.call("DELETE", "/api/app/v1/session", nil, 204)
 	c.call("GET", "/api/app/v1/map", nil, 401)
-	t.Log("PASS model replacement/disabled status, LLM independence, map rebuild and restore preserve encrypted settings, complete chat messages, fixed review and idempotent notes")
+	t.Log("PASS model replacement, disabled status, map rebuild and restore preserve encrypted settings, fixed review and idempotent notes")
 }
 
 func toStrings(values []any) []string {

@@ -9,7 +9,6 @@ import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.Dispatcher
 import okhttp3.mockwebserver.RecordedRequest
 import okhttp3.mockwebserver.SocketPolicy
-import io.github.fermin214.moerise.domain.ChatGenerate
 import io.github.fermin214.moerise.domain.CoreException
 import io.ktor.client.engine.mock.MockEngine
 import io.ktor.client.engine.mock.respond
@@ -40,13 +39,12 @@ class SessionTransportRecoveryTest {
         val writes = AtomicInteger()
         val readSequences = CopyOnWriteArrayList<Int>()
         val materialSequences = CopyOnWriteArrayList<Int>()
-        val messageSequences = CopyOnWriteArrayList<Int>()
         val cookies = CopyOnWriteArrayList<String>()
         val server = MockWebServer()
         server.dispatcher = object : Dispatcher() {
             override fun dispatch(request: RecordedRequest): MockResponse {
                 if (request.method == "GET") {
-                    val materials = request.path.orEmpty().endsWith("/chat-materials")
+                    val materials = request.path.orEmpty().endsWith("/notes")
                     if (materials) {
                         materialSequences += request.sequenceNumber
                         if (materialReads.incrementAndGet() == 1) return MockResponse().setSocketPolicy(SocketPolicy.DISCONNECT_AFTER_REQUEST)
@@ -59,7 +57,7 @@ class SessionTransportRecoveryTest {
                         .setHeader("Set-Cookie", "moerise_local_session=fixture; Path=/; Max-Age=300; HttpOnly")
                         .setBody(if (materials) """{"notes":[]}""" else identity)
                 }
-                if (request.path.orEmpty().endsWith("/messages")) messageSequences += request.sequenceNumber else writes.incrementAndGet()
+                writes.incrementAndGet()
                 return MockResponse().setSocketPolicy(SocketPolicy.DISCONNECT_AFTER_REQUEST)
             }
         }
@@ -72,14 +70,9 @@ class SessionTransportRecoveryTest {
                 assertEquals(3, reads.get())
                 assertEquals(listOf(0, 1, 0), readSequences.toList())
                 assertEquals(listOf("", "moerise_local_session=fixture", "moerise_local_session=fixture"), cookies.toList())
-                assertEquals("""{"notes":[]}""", core.api(HttpMethod.Get, "/chat-materials"))
+                assertEquals("""{"notes":[]}""", core.api(HttpMethod.Get, "/notes"))
                 assertEquals(2, materialReads.get())
                 assertEquals(listOf(1, 0), materialSequences.toList())
-                assertFailsWith<IOException> {
-                    core.chatStream("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
-                        ChatGenerate("insight-001", 1, "insight", "", "en")) {}
-                }
-                assertEquals(0, messageSequences.single())
                 assertFailsWith<IOException> { core.api(HttpMethod.Post, "/notes", "{}", "fixed") }
                 assertEquals(1, writes.get())
             }
@@ -100,7 +93,7 @@ class SessionTransportRecoveryTest {
                     mutations.incrementAndGet()
                     if (request.sequenceNumber > 0) return MockResponse().setSocketPolicy(SocketPolicy.DISCONNECT_AFTER_REQUEST)
                 }
-                if (request.path.orEmpty().endsWith("/chat-materials")) {
+                if (request.path.orEmpty().endsWith("/notes")) {
                     if (!recover.get()) {
                         warmSequences += request.sequenceNumber
                         warm.countDown()
@@ -119,13 +112,13 @@ class SessionTransportRecoveryTest {
             CoreClient(origin, SessionCookies(origin, MemorySecrets())).use { core ->
                 core.session()
                 coroutineScope {
-                    List(3) { async { core.api(HttpMethod.Get, "/chat-materials") } }.awaitAll()
+                    List(3) { async { core.api(HttpMethod.Get, "/notes") } }.awaitAll()
                 }
                 assertEquals(listOf(0, 0, 1), warmSequences.sorted())
                 recover.set(true)
-                assertEquals("""{"notes":[]}""", core.api(HttpMethod.Get, "/chat-materials"))
+                assertEquals("""{"notes":[]}""", core.api(HttpMethod.Get, "/notes"))
                 assertEquals(2, attempts.get())
-                assertEquals("""{"notes":[]}""", core.api(HttpMethod.Post, "/chats", "{}"))
+                assertEquals("""{"notes":[]}""", core.api(HttpMethod.Post, "/walks/start", "{}"))
                 assertEquals(1, mutations.get())
             }
         } finally {
@@ -135,8 +128,8 @@ class SessionTransportRecoveryTest {
 
     @Test
     fun readReconnectionStopsAfterOneRetryAndDoesNotRetryHttpErrorsOrOtherIoFailures() = runBlocking<Unit> {
-        val reads = listOf(HttpMethod.Get to "/session", HttpMethod.Get to "/chat-materials",
-            HttpMethod.Post to "/search", HttpMethod.Post to "/chat-materials/resolve")
+        val reads = listOf(HttpMethod.Get to "/session", HttpMethod.Get to "/notes",
+            HttpMethod.Post to "/search")
         for ((method, path) in reads) for (failure in listOf("eof", "io", "http")) {
             var requests = 0
             val engine = MockEngine { request ->
@@ -159,9 +152,9 @@ class SessionTransportRecoveryTest {
 
     @Test
     fun eofDoesNotReplayMutationsOrBroadenTheReadOnlyPostPaths() = runBlocking<Unit> {
-        for ((method, path) in listOf(HttpMethod.Post to "/notes", HttpMethod.Post to "/chats",
+        for ((method, path) in listOf(HttpMethod.Post to "/notes", HttpMethod.Post to "/walks/start",
             HttpMethod.Patch to "/notes/one", HttpMethod.Delete to "/notes/one",
-            HttpMethod.Post to "/search/other", HttpMethod.Post to "/chat-materials/resolve/other")) {
+            HttpMethod.Post to "/search/other")) {
             var attempts = 0
             val engine = MockEngine { request ->
                 if (request.method == HttpMethod.Get && request.url.encodedPath.endsWith("/session"))

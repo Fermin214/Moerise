@@ -12,7 +12,8 @@ import (
 )
 
 func TestTelemetryIsolatedForwardingAndFailure(t *testing.T) {
-	api, fixture, cookie, identity := clientChatFixture(t)
+	api, fixture := clientFixture(t)
+	cookie, identity := settingsSession(t, api)
 	store := api.app.Store
 	originalTarget := telemetryReceiverURL
 	t.Cleanup(func() { telemetryReceiverURL = originalTarget })
@@ -25,7 +26,7 @@ func TestTelemetryIsolatedForwardingAndFailure(t *testing.T) {
 		}
 		sends.Add(1)
 		data, err := telemetry.ReadBatch(r.Body)
-		if err != nil || data.ClientVersion != "1.2.3" || data.CoreVersion != "unknown" || r.URL.RawQuery != "" ||
+		if err != nil || data.ClientVersion != "0.3.0" || data.CoreVersion != "unknown" || r.URL.RawQuery != "" ||
 			r.Header.Get("User-Agent") != "Moerise" || len(r.Header.Values("Cookie")) != 0 {
 			t.Errorf("unexpected forwarding envelope")
 		}
@@ -38,7 +39,7 @@ func TestTelemetryIsolatedForwardingAndFailure(t *testing.T) {
 	}))
 	defer receiver.Close()
 	api.telemetryClient.Transport = receiver.Client().Transport
-	const body = `{"schema":1,"platform":"web","client_version":"1.2.3","core_version":"unknown","system_major":"unknown","rows":[{"operation":"save_ack","result":"unknown","source":"user","duration":"unknown","count":2}]}`
+	const body = `{"schema":1,"platform":"web","client_version":"0.3.0","core_version":"unknown","system_major":"unknown","rows":[{"operation":"save_ack","result":"unknown","source":"user","duration":"unknown","count":2},{"operation":"insight","result":"success","source":"user","duration":"lt3s","count":1}]}`
 	origin := fixture.settings.Web.PublicOrigin
 	post := func(data string, session *http.Cookie, csrf string, status int) {
 		t.Helper()
@@ -93,5 +94,7 @@ func TestTelemetryIsolatedForwardingAndFailure(t *testing.T) {
 	if err := store.state.QueryRow("SELECT last_attempt FROM telemetry_send_limits WHERE platform='web'").Scan(new(int64)); err != nil {
 		t.Fatal(err)
 	}
-	createClientChat(t, api, fixture, cookie, identity)
+	if reply := clientCall(api, "GET", "/api/app/v1/notes", "", cookie, "", ""); reply.Code != http.StatusOK {
+		t.Fatalf("statistics failure affected note requests: %d", reply.Code)
+	}
 }

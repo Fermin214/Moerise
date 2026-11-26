@@ -15,6 +15,7 @@ data class StarMapState(
     val excerpts: Map<String, String> = emptyMap(), val photo: Boolean = true, val fullScreen: Boolean = false,
     val allFraming: Boolean = false, val tab: Int = 0, val compatible: Boolean = true, val unplacedOnly: Boolean = false,
     val disabledReason: String = "",
+    val unavailableReason: String = "",
 )
 data class MapMetric(val kind: String, val value: Long, val version: String)
 
@@ -205,7 +206,7 @@ class StarMapController(
                 }
                 if (snapshot?.layoutVersion != previousMap?.layoutVersion || pointChanges) cancelExcerpts()
                 mutable.update { it.copy(snapshot = snapshot, status = map.status, disabledReason = map.disabledReason,
-                    loading = false, compatible = true,
+                    unavailableReason = map.unavailableReason, loading = false, compatible = true,
                     view = if (map.readable && frameChanged) null else it.view,
                     selected = if (map.readable && (point == null || excerptCleared) || map.status == "disabled") null else it.selected,
                     reader = if (map.readable && readerInvalidated || map.status == "disabled") null else it.reader,
@@ -224,9 +225,10 @@ class StarMapController(
                 val rebuild = state.value.rebuild
                 if (rebuild != null && rebuild.state in setOf("unknown", "observing")) {
                     val next = when {
-                        map.status == "unavailable" || map.updateState == "unavailable" || map.status == "disabled" ->
-                            rebuild.copy(state = "failed", retryAfter = epochMillis() + 10_000)
                         map.readable && map.layoutFrame != rebuild.frame -> rebuild.copy(state = "complete")
+                        map.status == "disabled" || map.unavailableReason.isEmpty() &&
+                            (map.updateState == "unavailable" || map.status == "unavailable") ->
+                            rebuild.copy(state = "failed", retryAfter = epochMillis() + 10_000)
                         else -> rebuild
                     }
                     if (next != rebuild) recordRebuild(account, next)
@@ -250,7 +252,7 @@ class StarMapController(
         val state = state.value
         val waiting = state.status in setOf("waiting", "building") || state.snapshot?.updateState == "building" ||
             state.rebuild?.state in setOf("unknown", "observing")
-        val failed = state.error != null || state.status == "unavailable" || state.snapshot?.updateState == "unavailable" ||
+        val failed = state.error != null || state.status == "unavailable" || state.unavailableReason.isNotEmpty() || state.snapshot?.updateState == "unavailable" ||
             state.rebuild?.state == "failed"
         val delayMs = if (failed) 10_000L else if (waiting) 3000L else 60_000L
         polling = scope.launch { delay(delayMs); refresh() }

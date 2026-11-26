@@ -38,11 +38,6 @@ class MobileController(
     }
     val review = ReviewController({ session.core }, { session.state.value.profile?.accountKey }, scope, privacy, repository)
     val walk = WalkController({ session.core }, { session.state.value.profile?.accountKey }, scope, privacy, repository, enablePrefetch = true, online = { session.state.value.connected })
-    val insights = InsightController(repository, { session.core }, { session.state.value.profile?.accountKey }, scope,
-        { Strings(session.language.value).text("zh-CN", "en") },
-        timezone = { session.state.value.profile?.timezone ?: "UTC" }, filters = filterReads, privacy = privacy) { key, note ->
-        filterReads.changed(null, note); timeline.onSaved(key, note)
-    }
     val stars = StarMapController(repository, { session.core }, { session.state.value.profile?.accountKey }, scope, privacy, online = { session.state.value.connected })
     val settings = SettingsController({ session.core }, { session.state.value.profile?.accountKey }, scope)
     val homeNote = NoteDetailController(repository, { session.state.value.profile?.accountKey }, { session.core }, scope, ::noteChanged)
@@ -113,7 +108,6 @@ class MobileController(
         review.visible(available && visiblePage == "review")
         walk.connectivityChanged()
         walk.visible(available && visiblePage == "walk")
-        insights.visible(connected && visiblePage == "insights")
         stars.connectivityChanged()
         stars.visible(available && visiblePage == "map" && session.state.value.profile?.stargazingEnabled != false)
     }
@@ -164,7 +158,6 @@ class MobileController(
                 search.clear()
                 review.clear()
                 walk.clear()
-                insights.clear()
                 stars.clear()
                 settings.clear()
                 homeNote.clear()
@@ -188,7 +181,6 @@ class MobileController(
                         filterReads.calendar("NORMAL", serviceMonth(profile.timezone))
                     }
                     review.prefetch()
-                    insights.prefetchHistory()
                     if (profile.stargazingEnabled) stars.prefetch()
                 } catch (error: Exception) { if (error is CancellationException) throw error }
             }
@@ -205,7 +197,7 @@ class MobileController(
                     editor.accountKey.takeIf { editor.draft != null && it == frame }
                 }.distinctUntilChanged(),
             ) { connection, ready -> connection to ready }.collect { (connection, ready) ->
-                if (connection.third) { filterReads.clear(); sidebar.clear(); timeline.hideAccountData(); archive.hideAccountData(); search.clear(); review.clear(); walk.clear(); insights.clear(); stars.clear(); settings.clear(); homeNote.clear(); clearFiles() }
+                if (connection.third) { filterReads.clear(); sidebar.clear(); timeline.hideAccountData(); archive.hideAccountData(); search.clear(); review.clear(); walk.clear(); stars.clear(); settings.clear(); homeNote.clear(); clearFiles() }
                 else if (!clearing.value && connection.second && connection.first?.accountKey == ready && ready != null) timeline.refresh()
                 if (connection.first?.stargazingEnabled == false) stars.clear()
                 updateDiscovery()
@@ -226,7 +218,6 @@ class MobileController(
         scope.launch {
             if (clearing.value) return@launch
             flushEditors()
-            if (!clearing.value) runCatching { insights.flush() }
         }
     }
     fun retryDraft() {
@@ -489,7 +480,7 @@ class MobileController(
                 settings.clear()
                 if (!closeEditors()) error("LOCAL_WRITE_FAILED")
                 editor.stopForRemoval(); homeNote.stopForRemoval(); noteActions.stopForRemoval()
-                insights.stopForRemoval(); stars.stopForRemoval()
+                stars.stopForRemoval()
                 timeline.stopForRemoval(); archive.stopForRemoval()
                 mutableEditing.value = false
                 repository().clearAccount(account)

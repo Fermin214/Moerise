@@ -23,8 +23,6 @@ type App struct {
 	Records       *RecordService
 	Reviews       *ReviewService
 	Search        *SearchService
-	LLM           LLMProvider
-	Chat          *ChatService
 	Map           *MapService
 	Feishu        *FeishuService
 	Notifications *NotificationService
@@ -45,14 +43,12 @@ func NewApp(settings Settings, store *Store, source Source) *App {
 	a.Notes = NewNoteService(settings, store, source)
 	a.Records, a.Reviews = NewRecordService(store, source), NewReviewService(store, source)
 	a.Search = NewSearchService(store, source, nil)
-	a.Chat = NewChatService(store, a.Notes, a.Records, nil)
 	a.Map = NewMapService(store)
-	a.Map.acquireLLM = a.Chat.acquireProvider
 	a.Notifications = NewNotificationService(store, a.Reviews, nil)
 	a.Feishu = NewFeishuService(store, source, a.Records, a.Notifications)
 	a.Notifications.resetTransport(store.deliveryChannel(), a.Feishu)
 	a.Notifications.channelTransport = a.notificationTransport
-	a.closers = append(a.closers, a.closeRuntime, a.Chat.Close)
+	a.closers = append(a.closers, a.closeRuntime)
 	return a
 }
 
@@ -89,14 +85,6 @@ func OpenApp(settings Settings) (_ *App, result error) {
 	a := NewApp(settings, store, source)
 	cleanup = append(cleanup, a.closers...)
 	settings = store.Settings
-	if settings.LLM.Enabled {
-		provider, err := NewLLMProvider(settings.LLM)
-		if err != nil {
-			return nil, err
-		}
-		a.LLM = provider
-		a.Chat.swapProvider(provider)
-	}
 	if settings.Embedding.Enabled {
 		provider, err := NewEmbeddingProvider(settings.Embedding)
 		if err != nil {
@@ -142,6 +130,7 @@ func (a *App) Run(ctx context.Context, server *http.Server) error {
 	start("channels", a.RunChannels)
 	start("vector index", a.runVector)
 	start("stars", a.runMap)
+	start("layout health", a.Map.monitorLayout)
 	go func() { done <- outcome{"HTTP", server.ListenAndServe()} }()
 	var result error
 	select {

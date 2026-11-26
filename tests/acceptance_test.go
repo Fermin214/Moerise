@@ -302,14 +302,6 @@ func newHarnessWithBinary(t *testing.T, decorate func(string) string, binary str
 	h.settings, h.upstream = s, pat
 	h.config = filepath.Join(root, "config.json")
 	data, _ := json.Marshal(s)
-	if binary != "" {
-		var config map[string]any
-		if err := json.Unmarshal(data, &config); err != nil {
-			t.Fatal(err)
-		}
-		delete(config["stargazing"].(map[string]any), "llm_naming")
-		data, _ = json.Marshal(config)
-	}
 	if err := os.WriteFile(h.config, data, 0600); err != nil {
 		t.Fatal(err)
 	}

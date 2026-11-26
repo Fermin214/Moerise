@@ -30,8 +30,6 @@
     {"id": "navigation-walk", "module": "navigation", "handoff_items": [7], "kind": "auto", "phase": "post_run", "flow": "navigation-walk", "requires_clean_editor": true},
     {"id": "navigation-map", "module": "navigation", "handoff_items": [10, 12], "kind": "auto", "phase": "post_run", "flow": "navigation-map", "requires_clean_editor": true},
     {"id": "navigation-settings", "module": "navigation", "handoff_items": [14, 16], "kind": "auto", "phase": "post_run", "flow": "navigation-settings", "requires_clean_editor": true},
-    {"id": "insights", "module": "insights", "handoff_items": [1, 2, 16], "kind": "auto", "phase": "post_run", "flow": "insights", "requires_clean_editor": true},
-    {"id": "insights-disconnect", "module": "insights", "handoff_items": [2, 4], "kind": "auto", "phase": "post_run", "flow": "insights-disconnect", "requires_clean_editor": false, "requires_capability": "fail_marker"},
     {"id": "home", "module": "home", "handoff_items": [6], "kind": "auto", "phase": "post_run", "flow": "home-smoke", "requires_clean_editor": true},
     {"id": "actions", "module": "actions", "handoff_items": [12, 17], "kind": "auto", "phase": "post_run", "flow": "actions", "requires_clean_editor": true},
     {"id": "attachments", "module": "attachments", "handoff_items": [16], "kind": "auto", "phase": "post_run", "flow": "attachments", "requires_clean_editor": true},
@@ -44,24 +42,6 @@
         "steps": ["输入可辨识文字，点系统键盘收起按钮。", "核对文字仍在，点击保存并检查时间线。"],
         "pass_criteria": "收键盘后编辑框和内容仍在，保存后显示修改正文。",
         "evidence_hint": "可导入同 APK 的收起键盘和保存后两张旧截图。"
-      }
-    },
-    {
-      "id": "insights-calendar", "module": "insights", "handoff_items": [1], "kind": "visual", "phase": "post_run", "requires_clean_editor": false,
-      "manual_card": {
-        "start_state": "打开洞察选材日历。",
-        "steps": ["选择同月、跨月范围；切换中文与英语后比较。"],
-        "pass_criteria": "日期格无额外蓝线，起止蓝框及浅色区间明确，确认后勾选范围内材料。",
-        "evidence_hint": "保存两种语言的日期范围与选中素材截图。"
-      }
-    },
-    {
-      "id": "insights-stream", "module": "insights", "handoff_items": [2, 4, 5], "kind": "visual", "phase": "post_run", "requires_clean_editor": false,
-      "manual_card": {
-        "start_state": "测试源配置可产生足够长的多段 Markdown，选入独立测试材料。",
-        "steps": ["同一次长回复记录发送、开始流式和首段出现时间；生成中使用电脑保存一项可恢复设置。", "滚动、收放键盘并回看已完成段落，观察浮钮并点回底部；用中英截图核对图标。"],
-        "pass_criteria": "正文增量出现且已显示内容在断流后保留；设置正常保存，材料读取无逐篇 Memos 实时核验；无残影、反复重排或丢段，浮钮为居中白底向下箭头并恢复跟随。",
-        "evidence_hint": "复用同一次长回复录像、UI 截图、首段时间、服务端请求数；断流终态见 insights-disconnect。"
       }
     },
     {
@@ -167,7 +147,7 @@
       "id": "upgrade-retention", "module": "upgrade", "handoff_items": [16, "upgrade"], "kind": "manual", "phase": "post_run", "requires_clean_editor": false,
       "manual_card": {
         "start_state": "保留原数据的真实覆盖安装，有 upgrade-before 或等价证据。",
-        "steps": ["核对版本、应用数据与 Keystore 保留；首次启动、强停重开和后台恢复后比对旧态。", "恢复网络并验证既有待发只到达一次；引用服务端热备与 0.2.0 回滚证据。"],
+        "steps": ["核对版本、应用数据与 Keystore 保留；首次启动、强停重开和后台恢复后比对旧态。", "恢复网络并验证既有待发只到达一次；引用服务端热备与 0.3.0 回滚证据。"],
         "pass_criteria": "账号、会话、笔记、附件、偏好、草稿和队列保留；待发不重复。记录实际起始版本。",
         "evidence_hint": "历史同 APK 的覆盖证据可复用；已装同包且无覆盖窗口时注明不适用，勿为取证降级。"
       }

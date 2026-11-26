@@ -26,7 +26,8 @@ def seed_upgrade(adb, package, output):
         try:
             profiles = db.execute("SELECT * FROM profiles ORDER BY accountKey").fetchall()
             home = db.execute("SELECT id,accountKey FROM drafts WHERE slot='home'").fetchone()
-            assert home, "0.2.0 home draft missing"
+            assert home, "baseline APK home draft missing"
+            assert db.execute("PRAGMA user_version").fetchone()[0] == 2
             account = home[1]
             db.execute("UPDATE drafts SET content=?,revision=revision+1 WHERE id=?", (draft_text, home[0]))
             draft_id, operation, key = (str(uuid.uuid4()) for _ in range(3))

@@ -23,9 +23,8 @@ class SettingsControllerTest {
     private val identity = """{"instance_id":"one","user":{"name":"users/owner"},"timezone":"UTC","expires_at":"2027-01-01T00:00:00Z","csrf_token":"token"}"""
     private val key = "https://notes.example\u0000one\u0000users/owner"
 
-    private fun settingsPayload(llmNaming: Boolean? = null): String = buildJsonObject {
+    private fun settingsPayload(): String = buildJsonObject {
         put("version", 2)
-        put("default_insight_prompt", "默认 Prompt")
         put("settings", buildJsonObject {
             put("timezone", "Asia/Shanghai")
             put("review", buildJsonObject {
@@ -37,11 +36,6 @@ class SettingsControllerTest {
             })
             put("stargazing", buildJsonObject {
                 put("enabled", true)
-                if (llmNaming != null) put("llm_naming", llmNaming)
-            })
-            put("llm", buildJsonObject {
-                put("enabled", false); put("protocol", "openai-compatible"); put("base_url", ""); put("model", "")
-                put("timeout_seconds", 30); put("max_concurrency", 2); put("max_retries", 1); put("max_output_tokens", 1024)
             })
             put("embedding", buildJsonObject {
                 put("enabled", false); put("provider", "openai-compatible"); put("protocol", "openai-compatible")
@@ -53,7 +47,6 @@ class SettingsControllerTest {
                 put("kind", "none"); put("app_id", ""); put("user_open_id", ""); put("destination", "")
                 put("qq_app_id", ""); put("feishu_mode", "websocket"); put("webhook_images", false); put("webhook_app_id", "")
             })
-            put("insights", buildJsonObject { put("default_prompt", "自定义 Prompt") })
         })
         put("channel_status", buildJsonObject {})
         put("secrets", buildJsonObject {})
@@ -61,20 +54,20 @@ class SettingsControllerTest {
     }.toString()
 
     @Test
-    fun settingsFormDefaultsLlmNamingToTrueAndProducesMinimalPatch() {
-        val raw = CoreJson.parseToJsonElement(settingsPayload(llmNaming = null)).jsonObject
+    fun settingsFormProducesMinimalStargazingPatch() {
+        val raw = CoreJson.parseToJsonElement(settingsPayload()).jsonObject
         val snapshot = SettingsForm.readSnapshot(raw)
         val values = SettingsForm.values(snapshot)
-        assertEquals("true", values["stargazing.llm_naming"])
+        assertEquals("true", values["stargazing.enabled"])
         val state = SettingsUiState(
             snapshot = snapshot,
-            values = values + ("stargazing.llm_naming" to "false"),
+            values = values + ("stargazing.enabled" to "false"),
             times = SettingsForm.times(snapshot),
         )
         val patch = SettingsForm.patch(snapshot, state)
         assertEquals(
             false,
-            patch.getValue("settings").jsonObject.getValue("stargazing").jsonObject.getValue("llm_naming").jsonPrimitive.boolean,
+            patch.getValue("settings").jsonObject.getValue("stargazing").jsonObject.getValue("enabled").jsonPrimitive.boolean,
         )
     }
 
@@ -88,10 +81,10 @@ class SettingsControllerTest {
         val engine = MockEngine { request ->
             when {
                 request.url.encodedPath.endsWith("/session") -> respond(identity)
-                request.url.encodedPath.endsWith("/settings") -> respond(settingsPayload(true))
+                request.url.encodedPath.endsWith("/settings") -> respond(settingsPayload())
                 request.url.encodedPath.endsWith("/models") -> {
                     modelsCalls.incrementAndGet()
-                    respond("""{"version":2,"llm":{"enabled":false},"embedding":{"enabled":false},"index_status":"disabled"}""")
+                    respond("""{"version":2,"embedding":{"enabled":false},"index_status":"disabled"}""")
                 }
                 request.url.encodedPath.endsWith("/admin/notifications") -> {
                     historyCalls.incrementAndGet()

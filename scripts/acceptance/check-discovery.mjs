@@ -176,7 +176,6 @@ try {
     config.sync = { ...config.sync, poll_seconds: 5, full_seconds: 60, retry_seconds: 3 };
     config.review = { ...config.review, count: 3, min_age_hours: 0, recent_days: 0 };
     config.notifications = { enabled: false, times: ['08:00', '20:00'] };
-    config.llm.enabled = false;
     config.embedding = { ...config.embedding, enabled: true, provider: 'openai-compatible', protocol: 'openai-compatible',
       base_url: `http://host.docker.internal:${mock.address().port}/v1`, api_key: modelKey,
       model: 'discovery-fixture', dimensions: 3, max_retries: 0 };
@@ -314,7 +313,7 @@ try {
   await check('关闭模型仍可回顾、漫步提示与机器接口写入隔离', async () => {
     const settings = await api('GET', '/settings');
     await api('PATCH', '/settings', { version: settings.version,
-      settings: { embedding: { enabled: false }, llm: { enabled: false } } });
+      settings: { embedding: { enabled: false } } });
     assert.deepEqual(await api('GET', '/reviews/daily'), batch);
     await page.goto(`${url}/review`);
     await page.getByRole('button', { name: '第 6 / 6 条', exact: true }).waitFor();
@@ -324,7 +323,7 @@ try {
     await page.goto(`${url}/walk`);
     await page.getByRole('status').filter({ hasText: '请在设置中启用 Embedding' }).waitFor();
     assert.ok(await page.getByRole('button', { name: '随机开始', exact: true }).isDisabled());
-    for (const path of ['/reviews/daily', '/notes', '/chats']) {
+    for (const path of ['/reviews/daily', '/notes', '/walks/start']) {
       await request(coreURL, `/api/ext/v1${path}`, { method: 'POST',
         headers: { Authorization: `Bearer ${machineKey}` }, body: {} }, 403);
     }

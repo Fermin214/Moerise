@@ -46,11 +46,10 @@ class PrivacyController(
     private val interruptedWrite = preferences?.read("in-flight")
     private var recovered = false
     private val day = 86_400_000L
-    private val codes = setOf("CHAT_CONFLICT", "SOURCE_CHANGED", "CHAT_RESOURCE_LIMIT", "CHAT_MATERIAL_LIMIT", "SOURCE_NOT_FOUND",
-        "WRITE_CONFLICT", "REQUEST_TIMEOUT", "CONNECTION_FAILED", "LLM_PROTOCOL", "CHAT_INTERRUPTED", "CHAT_CANCELED", "SESSION_EXPIRED")
+    private val codes = setOf("SOURCE_CHANGED", "SOURCE_NOT_FOUND",
+        "WRITE_CONFLICT", "REQUEST_TIMEOUT", "CONNECTION_FAILED", "SESSION_EXPIRED")
     private val operations = setOf("create", "edit", "enqueue", "save_ack", "sync", "search_keyword", "search_semantic", "search_hybrid",
-        "review", "walk", "stars", "insight", "material_date", "material_tags", "material_manual", "save_answer", "save_multiple",
-        "save_question", "startup", "client_error", "request_error", "crash", "anr")
+        "review", "walk", "stars", "startup", "client_error", "request_error", "crash", "anr")
     private val results = setOf("success", "failure", "canceled", "conflict", "unknown", "timeout", "over_limit")
 
     init {
@@ -258,9 +257,9 @@ internal fun usageResult(error: Exception): String = when {
     error is CancellationException -> "canceled"
     else -> when ((error as? CoreException)?.detail?.code ?: (error as? IllegalArgumentException)?.message) {
         "REQUEST_TIMEOUT" -> "timeout"
-        "SOURCE_CHANGED", "CHAT_CONFLICT", "WRITE_CONFLICT", "IDEMPOTENCY_CONFLICT" -> "conflict"
-        "CHAT_RESOURCE_LIMIT", "CHAT_MATERIAL_LIMIT", "CONTENT_TOO_LARGE" -> "over_limit"
-        "CONNECTION_FAILED", "CHAT_OUTCOME_UNKNOWN", "CHAT_INTERRUPTED", null -> "unknown"
+        "SOURCE_CHANGED", "WRITE_CONFLICT", "IDEMPOTENCY_CONFLICT" -> "conflict"
+        "CONTENT_TOO_LARGE" -> "over_limit"
+        "CONNECTION_FAILED", null -> "unknown"
         else -> "failure"
     }
 }

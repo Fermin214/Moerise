@@ -20,8 +20,7 @@ node scripts/acceptance/check-compose.mjs --browser
 | `check-telemetry.mjs <接收端二进制>` | 在隔离目录启动真实接收端，验证 HTTP 入库与周报 CSV，退出后清理数据库 |
 | `check-compose.mjs` | Compose 构建、启动、健康检查、代理、会话、观星开关与可选布局服务、持久化与备份恢复；`--browser` 增加浏览器流程 |
 | `check-discovery.mjs` | Web 每日回顾、语义漫步、只读机器接口和模型异常 |
-| `check-chat.mjs` | 材料选择、流式回复、追问、保存成笔记与重启恢复。`--android-insights <目录>` 使用 Android 设备验收的 `insights/test-data.json` 和同目录的 `result.json`，比对两端选择的原文和写入 Memos 的笔记。 |
-| `check-models.mjs` | 设置热更新、模型诊断、多种 LLM/Embedding 协议与失败响应 |
+| `check-models.mjs` | 设置热更新、模型诊断、Embedding 协议与失败响应 |
 | `check-stars.mjs` | 既有真实向量、UMAP 快照、浏览器星图、API/绘制延迟、内存、增量与主动重建 |
 | `check-map.mjs` | `check-stars.mjs` 的兼容入口，参数相同 |
 
@@ -34,21 +33,6 @@ node scripts/acceptance/check-stars.mjs \
 ```
 
 脚本使用独立容器与测试账号。观星导入指定语料并复用已有向量；其他脚本使用虚构笔记。模型服务由本地替身提供，不需要真实模型凭据。报告和截图写入 `.local/` 下各自的随机目录。观星脚本失败时保留来源容器，使用相同语料参数加 `--resume .local/stars-acceptance-<id>` 可复用已导入的笔记、状态与索引。成功退出后清理来源容器，`--keep` 可保留它。Compose 脚本支持 `--help`；`--keep` 在成功后保留测试环境，`--skip-build` 复用已构建镜像。
-
-### 流式对话
-
-`verify-chat-stream.mjs` 只需 Node.js 和已运行的测试 Core。指定 `environment` 为 `test`、`origin` 与 `--origin` 匹配的私有连接档案，并显式列出获准发送给模型的合成笔记 ID。`--connection -` 从标准输入读取同一 JSON 格式，包含 `origin`、`environment`、`username` 和 `password`。
-
-```bash
-node scripts/acceptance/verify-chat-stream.mjs \
-  --origin https://acceptance.example \
-  --connection .local/phone/connection.json --notes memos/synthetic-a,memos/synthetic-b \
-  --fail-marker ANDROID_FAIL --language zh-CN --min-headings 3 --min-words-per-section 40
-```
-
-`--fail-marker` 需要测试模型代理返回部分正文后异常断流。省略时跳过异常轮。正常轮要求正文含从 `## 1.` 开始的连续编号标题，围栏代码块之外的正文按所选语言分词并核对每节词数。摘要只记录 SSE 增量数量、Core GET 终态、正文比对、章节指标和清理结果。创建响应中断时，脚本用原请求 ID 取回临时对话。删除后确认 GET 返回 404，再注销测试会话。任一检查或清理失败时退出码为 `1`。真机渲染按 [Maestro 操作卡](android/maestro/README.md#windows-正式包真机入口) 的 `insights-stream` 验证。
-
----
 
 ## 二、性能与检索质量
 
@@ -82,7 +66,7 @@ Core 需完成同步；语义检索还需启用并完成向量构建。问题文
 node --test scripts/lib/*.test.mjs
 ```
 
-`tests/testdata/search-quality.json` 定义检索问题标注，材料取自仓库中的公开文档；`chat-quality.json` 提供虚构的聊天评测材料。需要真实供应商的可选评测入口见[开发指南](../docs/DEVELOPMENT.md)。
+`tests/testdata/search-quality.json` 定义检索问题标注，材料取自仓库中的公开文档。需要真实供应商的可选评测入口见[开发指南](../docs/DEVELOPMENT.md)。
 
 ---
 
@@ -110,7 +94,7 @@ GitHub Actions 的 Android 检查通过 `android/ci-device-check.sh` 启动隔�
 | `phone-session.py`、`phone-checks.json` | 真机验收生命周期、清单登记、证据复用、操作卡与设备恢复，详见 [Maestro](android/maestro/README.md#windows-正式包真机入口) |
 | `maestro_runner.py`、`maestro-run.py` | 共用 UI 执行、独立测试数据、服务端后验、JUnit 与脱敏产物 |
 | `adb_common.py` | 模拟器、真机和发行冒烟共用的 ADB、代理与反向端口检查 |
-| `maestro/` | 登录、编辑、搜索、归档删除、洞察、导航、附件和语言流程及静态校验 |
+| `maestro/` | 登录、编辑、搜索、归档删除、导航、附件和语言流程及静态校验 |
 | `acceptance.ps1` | 动态设备选择、隔离包安装、登录/笔记/输入法；`-Recovery` 增加离线和后台自动同步；`-SkipBuild` 复用 APK |
 | `ci-scope.py` | 读取 NUL 分隔的 Git 路径，判定 `none`、`host` 或 `full` |
 | `ci-device-check.sh` | 隔离模拟器按 `MOERISE_ANDROID_SUITE` 执行界面组或专项，逐次输出 ADB 探针、首错、清理与重试结果 |

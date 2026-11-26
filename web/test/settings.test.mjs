@@ -8,11 +8,9 @@ const snapshot = {
     timezone: 'Asia/Hong_Kong',
     review: { count: 3, min_age_hours: 72, recent_days: 7, include_archived: false },
     notifications: { enabled: false, times: ['09:00'] },
-    llm: { enabled: false, model: null },
     embedding: { enabled: false, dimensions: 1024 },
     stargazing: { enabled: true },
     channel: { kind: 'none', app_id: null },
-    insights: { default_prompt: '默认提示词' },
   },
 };
 
@@ -21,8 +19,8 @@ test('settings patch merges only changed public fields and replaces time arrays'
   draft.review.count = 5;
   draft.review.include_archived = true;
   draft.notifications.times = ['09:00', '18:00'];
-  draft.llm.model = 'model-a';
-  draft.llm.api_key = 'must-not-leak';
+  draft.embedding.model = 'model-a';
+  draft.embedding.api_key = 'must-not-leak';
   draft.channel.app_secret = 'must-not-leak';
   draft.channel.webhook_url = 'must-not-leak';
   draft.channel.bot_token = 'must-not-leak';
@@ -31,7 +29,7 @@ test('settings patch merges only changed public fields and replaces time arrays'
     version: 4,
     settings: {
       review: { count: 5, include_archived: true },
-      notifications: { times: ['09:00', '18:00'] }, llm: { model: 'model-a' },
+      notifications: { times: ['09:00', '18:00'] }, embedding: { model: 'model-a' },
     },
     secrets: {},
   });
@@ -40,7 +38,7 @@ test('settings patch merges only changed public fields and replaces time arrays'
 
 test('secret actions keep, replace and clear have distinct payloads', () => {
   assert.deepEqual(buildSettingsPatch(snapshot, {}, {
-    llm_api_key: { action: 'keep' },
+    bot_token: { action: 'keep' },
     embedding_api_key: { action: 'replace', value: 'new-key' },
     app_secret: { action: 'clear' },
     webhook_url: { action: 'replace', value: 'https://example.test/hook/token' },
@@ -48,7 +46,7 @@ test('secret actions keep, replace and clear have distinct payloads', () => {
   }), {
     version: 4, settings: {},
     secrets: {
-      llm_api_key: { action: 'keep' }, embedding_api_key: { action: 'replace', value: 'new-key' },
+      bot_token: { action: 'keep' }, embedding_api_key: { action: 'replace', value: 'new-key' },
       app_secret: { action: 'clear' }, webhook_url: { action: 'replace', value: 'https://example.test/hook/token' },
     },
   });
@@ -56,7 +54,7 @@ test('secret actions keep, replace and clear have distinct payloads', () => {
 
 test('masked secrets, blank replacement, unknown actions and stray values are rejected', () => {
   for (const value of ['', ' ', '••••••••', '********', 'sk-…', 'sk-●●']) {
-    assert.throws(() => buildSettingsPatch(snapshot, {}, { llm_api_key: { action: 'replace', value } }),
+    assert.throws(() => buildSettingsPatch(snapshot, {}, { bot_token: { action: 'replace', value } }),
       { code: 'SETTINGS_INPUT_INVALID' });
   }
   for (const operation of [{ action: 'reset' }, { action: 'keep', value: 'old' }, { action: 'clear', value: '' }]) {

@@ -16,7 +16,7 @@ func TestClientModelsVersionAndIsolation(t *testing.T) {
 	api, fixture := clientFixture(t)
 	cookie, identity := settingsSession(t, api)
 	origin := fixture.settings.Web.PublicOrigin
-	for _, path := range []string{"/api/app/v1/models", "/api/app/v1/models/embedding/check", "/api/app/v1/models/llm/check"} {
+	for _, path := range []string{"/api/app/v1/models", "/api/app/v1/models/embedding/check"} {
 		method := "GET"
 		if strings.HasSuffix(path, "/check") {
 			method = "POST"
@@ -34,7 +34,7 @@ func TestClientModelsVersionAndIsolation(t *testing.T) {
 	response := clientCall(api, "GET", "/api/app/v1/models", "", cookie, "", "")
 	var status ClientModels
 	if response.Code != 200 || json.Unmarshal(response.Body.Bytes(), &status) != nil ||
-		status.Version != 1 || status.Embedding.Enabled || status.LLM.Enabled || status.IndexStatus != "disabled" {
+		status.Version != 1 || status.Embedding.Enabled || status.IndexStatus != "disabled" {
 		t.Fatalf("disabled model status: %s", response.Body.String())
 	}
 	for _, secret := range []string{"api_key", fixture.settings.Memos.Token, fixture.settings.Web.StateEncryptionKey} {
@@ -56,7 +56,7 @@ func TestClientModelsVersionAndIsolation(t *testing.T) {
 		assertSettingsError(t, response, item.status, item.code)
 	}
 	response = clientCall(api, "POST", "/api/app/v1/models/llm/check", `{"version":1}`, cookie, origin, identity.CSRFToken)
-	assertSettingsError(t, response, 503, "LLM_DISABLED")
+	assertSettingsError(t, response, 404, "NOT_FOUND")
 	if api.app.Store.productVersion != 1 {
 		t.Fatal("connection check mutated product settings")
 	}
@@ -69,12 +69,17 @@ func TestClientModelCheckProviderTimeout(t *testing.T) {
 		_, _ = io.Copy(io.Discard, r.Body)
 		<-r.Context().Done()
 	}))
-	defer server.Close()
-	config := llmTestConfig(server.URL)
+	t.Cleanup(server.Close)
+	config := embeddingTestConfig(server.URL)
 	config.TimeoutSeconds, config.MaxRetries = 1, 0
-	api.app.Store.Settings.LLM = config
-	api.app.LLM = llmTestProvider(t, config)
-	response := clientCall(api, "POST", "/api/app/v1/models/llm/check", `{"version":1}`,
+	api.app.Store.Settings.Embedding = config
+	provider, err := NewEmbeddingProvider(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(provider.Close)
+	api.app.Search.Provider = provider
+	response := clientCall(api, "POST", "/api/app/v1/models/embedding/check", `{"version":1}`,
 		cookie, fixture.settings.Web.PublicOrigin, identity.CSRFToken)
 	assertSettingsError(t, response, 503, "MODEL_CHECK_TIMEOUT")
 }
@@ -98,21 +103,22 @@ func TestClientModelCheckSharedDeadline(t *testing.T) {
 			return transport.RoundTrip(r)
 		})
 	}
-	api.app.LLM = aiLLMFunc(func(ctx context.Context, _ []LLMMessage, _ func(string) error) (LLMResult, error) {
+	api.app.Search.Provider = modelCheckEmbedding(func(ctx context.Context, _ []string, _ EmbeddingPurpose) (EmbeddingResult, error) {
 		deadline, _ := ctx.Deadline()
 		deadlines = append(deadlines, deadline)
-		return LLMResult{Content: "OK"}, nil
+		return EmbeddingResult{}, nil
 	})
+	api.app.Store.Settings.Embedding.TimeoutSeconds = 60
 	started := time.Now()
-	warm := clientCall(api, "POST", "/api/app/v1/models/llm/check", `{"version":1}`,
+	warm := clientCall(api, "POST", "/api/app/v1/models/embedding/check", `{"version":1}`,
 		cookie, fixture.settings.Web.PublicOrigin, identity.CSRFToken)
-	if warm.Code != 200 || len(deadlines) != 1 {
+	if warm.Code != 200 || len(deadlines) != 2 {
 		t.Fatalf("cached model check unexpectedly called auth/source: %d %s %v", warm.Code, warm.Body, deadlines)
 	}
 	deadlines = nil
 	started = time.Now()
 	api.app.Sessions.ClearCache()
-	response := clientCall(api, "POST", "/api/app/v1/models/llm/check", `{"version":1}`,
+	response := clientCall(api, "POST", "/api/app/v1/models/embedding/check", `{"version":1}`,
 		cookie, fixture.settings.Web.PublicOrigin, identity.CSRFToken)
 	if response.Code != 200 || len(deadlines) < 3 {
 		t.Fatalf("uncached check did not share auth and model deadline: %d %s %v", response.Code, response.Body, deadlines)
@@ -125,15 +131,20 @@ func TestClientModelCheckSharedDeadline(t *testing.T) {
 	}
 }
 
+type modelCheckEmbedding func(context.Context, []string, EmbeddingPurpose) (EmbeddingResult, error)
+
+func (provider modelCheckEmbedding) Embed(ctx context.Context, texts []string, purpose EmbeddingPurpose) (EmbeddingResult, error) {
+	return provider(ctx, texts, purpose)
+}
+
+func (modelCheckEmbedding) Close() {}
+
 func TestClientModelCheckDeadlineDuringAuthenticationAndLocks(t *testing.T) {
 	for _, stage := range []string{"authentication", "runtime_lock", "session_lock"} {
 		t.Run(stage, func(t *testing.T) {
 			api, fixture := clientFixture(t)
 			cookie, identity := settingsSession(t, api)
-			api.app.Store.Settings.LLM.Enabled = true
-			api.app.LLM = aiLLMFunc(func(context.Context, []LLMMessage, func(string) error) (LLMResult, error) {
-				return LLMResult{Content: "OK"}, nil
-			})
+			api.app.Search.Provider = &clientSearchEmbedding{}
 			unlock := func() {}
 			switch stage {
 			case "authentication":
@@ -156,12 +167,12 @@ func TestClientModelCheckDeadlineDuringAuthenticationAndLocks(t *testing.T) {
 			}
 			var once sync.Once
 			release := func() { once.Do(unlock) }
-			defer release()
+			t.Cleanup(release)
 			timer := time.AfterFunc(time.Second, release)
 			defer timer.Stop()
 			ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
 			defer cancel()
-			request := httptest.NewRequest("POST", "/api/app/v1/models/llm/check",
+			request := httptest.NewRequest("POST", "/api/app/v1/models/embedding/check",
 				strings.NewReader(`{"version":1}`)).WithContext(ctx)
 			request.AddCookie(cookie)
 			request.Header.Set("Content-Type", "application/json")

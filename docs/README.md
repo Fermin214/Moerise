@@ -12,7 +12,6 @@
 | 飞书接入 | [指南](FEISHU.md) |
 | 私人 QQ 机器人 | [指南](QQ.md) |
 | Telegram | [指南](TELEGRAM.md) |
-| AI 洞察 | [指南](AI.md) |
 | 向量模型 | [指南](EMBEDDING.md) |
 | 检索与漫步 | [指南](SEARCH.md) |
 | 系统设置 | [指南](SETTINGS.md) |

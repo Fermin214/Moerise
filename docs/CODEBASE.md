@@ -8,7 +8,7 @@
 
 1. **进程入口**：`main.go` 解析命令、加载配置，再由 `internal/app.go` 创建服务并管理生命周期。
 2. **请求入口**：`internal/client_api.go` 接收 Web 与移动端本人会话请求；`internal/api.go` 和 `internal/mcp.go` 接收外部只读请求。
-3. **业务服务**：沿路由找到笔记、检索、回顾、聊天或地图服务。路由负责协议和权限，业务规则放在共享服务中。
+3. **业务服务**：沿路由找到笔记、检索、回顾或地图服务。路由负责协议和权限，业务规则放在共享服务中。
 4. **数据边界**：`internal/memos*.go` 访问 Memos 官方 API；`internal/store.go` 管理本地双库、事务和同步状态。
 
 从一次手机保存可以看清两种同步。`EditorController.enqueue` 将草稿和冻结请求写入 Room，`SyncController` 调用 `NoteWriteQueue` 发送请求。Core 的 `RecordService.Create` 通过 Memos 官方 API 写入原文。响应丢失时，手机用原幂等键重试。`internal/sync.go` 则从 Memos 拉取变化，完成正常与归档笔记的分页后才发布检索投影。
@@ -19,7 +19,7 @@ flowchart TD
     Web["Web / Android"] --> Client["client_*.go：本人会话"]
     External["REST / MCP"] --> ReadOnly["api.go / mcp.go：只读"]
     Feishu["飞书私聊"] --> Capture["feishu.go：原样记录"]
-    App --> Services["笔记、检索、回顾、聊天、地图"]
+    App --> Services["笔记、检索、回顾、地图"]
     Client --> Services
     ReadOnly --> Services
     Capture --> Services
@@ -46,7 +46,7 @@ flowchart TD
 | `web/src/` | 浏览器应用源码 |
 | `web/test/` | Node 单元测试与 Playwright 浏览器流程 |
 | `tests/` | 带 `integration` 构建标签的真实 Memos 集成测试 |
-| `tests/testdata/` | 检索问题标注与虚构聊天质量评测数据 |
+| `tests/testdata/` | 检索问题标注与测试数据 |
 | `mobile/androidApp/` | Android 入口、生命周期、平台资源和设备流程；`src/benchmark/` 仅进入性能包 |
 | `mobile/androidApp/`、`mobile/core/` | 原生 Android 界面、平台存储与纯 Kotlin 模型、同步和 Markdown |
 | `mobile/benchmark/` | 独立 Macrobenchmark runner 与 Profile 采集流程 |
@@ -75,16 +75,15 @@ Android 文件的版本管理规则见 [Android 开发](ANDROID.md#文件与产�
 | --- | --- |
 | 应用与配置 | `app.go` 装配与关闭；`config.go`、`config_environment.go` 校验部署配置；`resources.go` 识别 CPU/内存并计算后台预算 |
 | 接口与权限 | `api.go`、`external_policy.go` 管理外部只读白名单；`client_api.go` 管理本人会话路由；`mcp.go` 暴露只读工具 |
-| 数据契约 | `models.go`、`client_models.go`、`chat_models.go` 定义请求与响应；`openapi_gen.go` 与 `openapi.go` 由 Go DTO 生成 OpenAPI 规范并嵌入 `docs.html` |
+| 数据契约 | `models.go`、`client_models.go` 定义请求与响应；`openapi_gen.go` 与 `openapi.go` 由 Go DTO 生成 OpenAPI 规范并嵌入 `docs.html` |
 | Memos 适配 | `memos.go` 处理官方 API 与数据规范化；`memos_live.go` 处理实时分页与筛选；`memos_stats.go` 聚合标签和日历；`memos_auth.go` 适配官方登录 |
 | 会话与设置 | `sessions.go` 管理加密会话与 CSRF。`App.startup` 保存启动时确定的 Web、Memos 和机器令牌配置。`settings_api.go` 接收产品设置，`settings.go` 加密持久化，`settings_runtime.go` 在写入成功后更新 `Store.Settings` 并替换受影响的服务 |
 | 笔记与附件 | `notes.go`、`notes_live.go` 读取原文和时间线；`records.go` 处理创建幂等；`notes_mutations.go` 处理编辑、归档和删除；`attachments.go` 管理附件写入 |
-| 客户端适配 | `client_notes.go`、`client_attachments.go`、`client_search.go`、`client_discovery.go`、`client_chat.go`、`client_map.go` 将共享服务接到本人会话接口 |
+| 客户端适配 | `client_notes.go`、`client_attachments.go`、`client_search.go`、`client_discovery.go`、`client_map.go` 将共享服务接到本人会话接口 |
 | 同步与存储 | `sync.go` 完整分页并发布投影；`store.go`、`store_local.go` 管理双库、绑定、局部查询、变更日志、任务与同步水位；`maintenance.go` 负责自动热备份、手动备份、恢复、回滚与索引重建 |
 | 检索与漫步 | `chunks.go` 分块并保留原文偏移；`search_index.go` 维护 FTS5；`search.go` 混合排序；`related.go` 查找相关笔记；`discovery.go` 选择漫步候选；`discovery_api.go` 适配只读接口 |
-| 向量与观星 | `embedding.go` 适配向量协议；`vector_index.go` 发布向量代次；`map_stars.go` 调用 `services/layout/` 并支持可选单次 LLM 命名；`map_stars_store.go` 保存快照；`map.go` 每日 03:00 调度与手动重建；`map_layout.go`、`map_store.go` 提供共享快照类型与索引增量对账 |
+| 向量与观星 | `embedding.go` 适配向量协议；`vector_index.go` 发布向量代次；`map_stars.go` 调用 `services/layout/` 计算星图与关键词主题；`map_stars_store.go` 保存快照；`map.go` 每日 03:00 调度与手动重建；`map_layout.go`、`map_store.go` 提供共享快照类型与索引增量对账 |
 | 每日回顾 | `reviews.go` 选择笔记并读取计划；`review_plans.go` 冻结规则与时段分配；`reviews_api.go` 提供只读查询 |
-| AI 聊天 | `chat_selection.go` 解析所选材料；`chat.go` 编排生成；`chat_store.go` 保存会话和消息；`llm*.go` 适配模型协议与错误；`models_api.go` 提供模型诊断 |
 | 通知与渠道 | `notifications.go` 管理调度、发送记录和失败重试；`notification_channels.go` 绑定任务接收方；`review_delivery.go` 生成有序回顾分片；`feishu_delivery.go`、`feishu_review_parts.go`、`telegram_delivery.go` 适配平台 |
 | 飞书记录 | `feishu.go` 接收私聊并原样记录；`feishu_crypto.go` 验证回调和加密队列；`feishu_client.go` 处理平台凭据、资源与消息 |
 | 机器人私聊 | `bot_qq_gateway.go` 与 `bot_telegram.go` 接收事件，`bot_inbox.go` 在同一事务绑定地址、去重和提交进度，`bot_runtime.go` 写入私密笔记、查询回顾并保存发送结果；`channel_runtime.go` 统一 QQ、Telegram、飞书应用连接与事件唤醒 |
@@ -102,9 +101,8 @@ Android 文件的版本管理规则见 [Android 开发](ANDROID.md#文件与产�
 | `draft.js`、`leave-guard.js`、`search-input.js`、`errors.js` | 冻结写入、会话内草稿、输入离开确认、输入法保护与错误文案 |
 | `dom.js`、`notes.js`、`modal.js`、`menus.js`、`media.js` | DOM 与图标、笔记卡片、原生模态、菜单键盘与定位、图片尺寸缓存 |
 | `discovery.js` | 每日回顾、随机漫步、会话缓存与预取生命周期 |
+| `markdown.js` | 安全 Markdown 渲染 |
 | `settings.js`、`forms.js` | 按需加载的设置页、字段签名、修改状态与保存 |
-| `insights.js`、`material-picker.js` | 按需加载的洞察页、持久会话、材料分页与选择 |
-| `chat-stream.js`、`stream-markdown.js`、`markdown.js` | SSE 消息解析、流式段落呈现与安全 Markdown 渲染 |
 | `map.js`、`map-stars-scene.js` | 按需加载的观星页、视口、点位摘要预览与点击命中网格 |
 | `map-star-renderer.js`、`map-render-worker.js`、`map-star-paint.js` | 星图后台绘制、摘要增量更新、ImageBitmap 合成与分批回退 |
 | `map-star-cloud.js`、`map-density-worker.js`、`map-star-density.js` | 密度任务生命周期、Worker 与共享密度算法 |

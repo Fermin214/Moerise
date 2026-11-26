@@ -249,80 +249,6 @@ class QuickNoteTest {
     }
 
     @Test
-    fun insightsPickerAndSourceReadingReturnToHome() {
-        compose.signIntoFixture()
-        if (visualSetup()) return
-        compose.homeNode("note_editor")
-        val unfinished = requireNotNull(compose.editorConfiguration("note_editor"))[SemanticsProperties.EditableText].text
-        val text = "Android picker note ${System.currentTimeMillis()} #android"
-        val name = saveNew(text)
-        compose.homeNode("note_editor").performTextReplacement(unfinished)
-
-        compose.navigate("insights")
-        // 材料读取和页面进入都是异步的，按钮可用后再打开选材弹窗。
-        compose.clickTag("chat_add_materials")
-        compose.waitForTag("chat_material_dialog")
-        compose.clickTag("chat_picker_tab_1")
-        try {
-            compose.waitUntil(60_000) {
-                compose.hasTag("chat_picker_note_$name") || compose.model().mobile.insights.picker.state.value.error != null
-            }
-            check(compose.hasTag("chat_picker_note_$name"))
-        } catch (failure: Throwable) {
-            val picker = compose.model().mobile.insights.picker.state.value
-            throw AssertionError("选材未出现：tab=${picker.tab}；busy=${picker.busy}；error=${picker.error}；" +
-                "候选=${picker.candidates.map { it.name }}；next=${picker.next}；${deviceDiagnostics()}", failure)
-        }
-        compose.clickTag("chat_picker_note_$name")
-        compose.waitUntil(20_000) {
-            compose.model().mobile.insights.picker.state.value.selected.any { it.name == name }
-        }
-        compose.clickTag("chat_apply_materials")
-        try {
-            compose.waitUntil(CORE_REQUEST_TIMEOUT_MILLIS + 5_000) {
-                val state = compose.model().mobile.insights.state.value
-                val picker = compose.model().mobile.insights.picker.state.value
-                !state.busy && !picker.visible || state.error != null
-            }
-            val state = compose.model().mobile.insights.state.value
-            val picker = compose.model().mobile.insights.picker.state.value
-            check(!picker.visible && state.error == null && state.recovery.creation == null &&
-                state.recovery.selected.contains(name) && state.recovery.candidates.any { it.name == name && it.sourceHash.isNotBlank() })
-        } catch (failure: Throwable) {
-            val state = compose.model().mobile.insights.state.value
-            val picker = compose.model().mobile.insights.picker.state.value
-            throw AssertionError("选材完成失败：busy=${state.busy}；error=${state.error}；" +
-                "pickerBusy=${picker.busy}；pickerError=${picker.error}；" +
-                "selected=${picker.selected.map { it.name }}", failure)
-        }
-        compose.waitForTag("chat_material_summary")
-        compose.clickTag("chat_add_materials")
-        compose.clickTag("chat_picker_selected")
-        compose.clickTag("chat_picker_note_$name")
-        compose.clickTag("chat_picker_selected")
-        compose.clickTag("chat_material_dialog_close")
-        compose.waitUntil(20_000) { !compose.hasTag("chat_material_dialog") }
-        check(name in compose.model().mobile.insights.state.value.recovery.selected)
-        compose.clickTag("chat_session_menu")
-        compose.clickTag("chat_history")
-        compose.waitForTag("chat_history_dialog")
-        compose.clickTag("chat_history_dialog_close")
-        compose.waitUntil(20_000) { !compose.hasTag("chat_history_dialog") }
-
-        // 材料中的阅读动作应回到主页并定位该笔记，不借助测试滚动掩盖定位失败。
-        compose.clickTag("chat_add_materials")
-        compose.clickTag("chat_picker_selected")
-        compose.clickTag("chat_picker_read_$name")
-        compose.waitForHome()
-        compose.waitUntil(20_000) {
-            runCatching { compose.onNodeWithTag("note_card_$name").assertIsDisplayed() }.isSuccess
-        }
-        compose.waitForEditor("note_editor", unfinished)
-        deleteCard(name)
-        compose.waitForEditor("note_editor", unfinished)
-    }
-
-    @Test
     fun navigationPreservesUnfinishedInput() {
         compose.signIntoFixture()
         if (visualSetup()) return
@@ -342,9 +268,11 @@ class QuickNoteTest {
             compose.waitForTag("walk_end")
             compose.clickTag("walk_end")
         }
-        compose.navigate("map")
-        compose.clickTag("map_fullscreen")
-        compose.clickTag("map_fullscreen")
+        if (compose.model().mobile.session.state.value.profile?.stargazingEnabled == true) {
+            compose.navigate("map")
+            compose.clickTag("map_fullscreen")
+            compose.clickTag("map_fullscreen")
+        }
         compose.navigate("settings")
         for (index in 0..3) compose.clickTag("settings_tab_$index")
         compose.onNodeWithTag("privacy_share").performScrollTo().assertIsOff()

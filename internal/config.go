@@ -17,7 +17,14 @@ import (
 	"strings"
 	"time"
 	_ "time/tzdata"
+	"unicode"
+	"unicode/utf8"
 )
+
+func validModelName(value string) bool {
+	return strings.TrimSpace(value) != "" && utf8.ValidString(value) &&
+		len(value) <= 200 && !strings.ContainsFunc(value, unicode.IsControl)
+}
 
 const Version = "0.3.0"
 
@@ -64,18 +71,6 @@ type NotificationConfig struct {
 	Times   []string `json:"times"`
 }
 
-type LLMConfig struct {
-	Enabled         bool    `json:"enabled"`
-	Protocol        string  `json:"protocol"`
-	BaseURL         *string `json:"base_url"`
-	APIKey          *string `json:"api_key"`
-	Model           *string `json:"model"`
-	TimeoutSeconds  float64 `json:"timeout_seconds"`
-	MaxConcurrency  int     `json:"max_concurrency"`
-	MaxRetries      int     `json:"max_retries"`
-	MaxOutputTokens int     `json:"max_output_tokens"`
-}
-
 type EmbeddingConfig struct {
 	Enabled          bool    `json:"enabled"`
 	Provider         string  `json:"provider"`
@@ -93,8 +88,7 @@ type EmbeddingConfig struct {
 }
 
 type StargazingConfig struct {
-	Enabled   bool `json:"enabled"`
-	LLMNaming bool `json:"llm_naming"`
+	Enabled bool `json:"enabled"`
 }
 
 type ChannelConfig struct {
@@ -137,10 +131,9 @@ type Settings struct {
 	Notifications       NotificationConfig `json:"notifications"`
 	Embedding           EmbeddingConfig    `json:"embedding"`
 	Stargazing          StargazingConfig   `json:"stargazing"`
-	LLM                 LLMConfig          `json:"llm"`
 	Channel             ChannelConfig      `json:"channel"`
-	Insights            InsightsConfig     `json:"insights"`
 
+	stargazingExplicit   bool
 	daily                *dailySettings
 	notificationChannels map[string]ChannelConfig
 	productExtras        map[string]json.RawMessage
@@ -157,11 +150,7 @@ func DefaultSettings() Settings {
 		Notifications: NotificationConfig{Times: []string{"09:00"}},
 		Embedding: EmbeddingConfig{Provider: "bailian", Protocol: "dashscope", Model: &embeddingModel,
 			Dimensions: 1024, BatchSize: 20, TimeoutSeconds: 30, MaxConcurrency: 2, MaxRetries: 2},
-		Stargazing: StargazingConfig{Enabled: true, LLMNaming: true},
-		LLM: LLMConfig{Protocol: "openai-compatible", TimeoutSeconds: 90, MaxConcurrency: 2,
-			MaxRetries: 2, MaxOutputTokens: 2048},
-		Channel:  ChannelConfig{Kind: "none"},
-		Insights: InsightsConfig{DefaultPrompt: DefaultInsightPrompt},
+		Channel: ChannelConfig{Kind: "none"},
 	}
 }
 
@@ -243,7 +232,7 @@ func LoadSettings(path string) (Settings, error) {
 		return settings, errors.New("cannot read the configuration file")
 	}
 	if len(content) != 0 {
-		if err := strictJSON(bytes.NewReader(content), &settings); err != nil {
+		if err := decodeDeploymentSettings(content, &settings); err != nil {
 			return settings, errors.New("invalid configuration structure")
 		}
 	}
@@ -255,6 +244,69 @@ func LoadSettings(path string) (Settings, error) {
 		return settings, err
 	}
 	return settings, settings.Validate()
+}
+
+func decodeDeploymentSettings(content []byte, settings *Settings) error {
+	body, err := filterDeploymentObject(content, func(key string, raw json.RawMessage) (json.RawMessage, error) {
+		if strings.EqualFold(key, "llm") || strings.EqualFold(key, "insights") {
+			return nil, nil
+		}
+		if !strings.EqualFold(key, "stargazing") {
+			return raw, nil
+		}
+		return filterDeploymentObject(raw, func(name string, value json.RawMessage) (json.RawMessage, error) {
+			if strings.EqualFold(name, "llm_naming") {
+				return nil, nil
+			}
+			if strings.EqualFold(name, "enabled") && (bytes.Equal(value, []byte("true")) || bytes.Equal(value, []byte("false"))) {
+				settings.stargazingExplicit = true
+			}
+			return value, nil
+		})
+	})
+	if err != nil {
+		return err
+	}
+	return strictJSON(bytes.NewReader(body), settings)
+}
+
+func filterDeploymentObject(data json.RawMessage, filter func(string, json.RawMessage) (json.RawMessage, error)) (json.RawMessage, error) {
+	if !json.Valid(data) {
+		return nil, errors.New("expected one JSON value")
+	}
+	if bytes.TrimSpace(data)[0] != '{' {
+		return data, nil
+	}
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	_, _ = decoder.Token()
+	body := bytes.NewBufferString("{")
+	for decoder.More() {
+		token, err := decoder.Token()
+		if err != nil {
+			return nil, err
+		}
+		var raw json.RawMessage
+		if err := decoder.Decode(&raw); err != nil {
+			return nil, err
+		}
+		key := token.(string)
+		value, err := filter(key, raw)
+		if err != nil {
+			return nil, err
+		}
+		if value == nil {
+			continue
+		}
+		if body.Len() > 1 {
+			body.WriteByte(',')
+		}
+		name, _ := json.Marshal(key)
+		body.Write(name)
+		body.WriteByte(':')
+		body.Write(value)
+	}
+	body.WriteByte('}')
+	return body.Bytes(), nil
 }
 
 var instancePattern = regexp.MustCompile(`^[a-zA-Z0-9_-]{8,128}$`)
@@ -420,8 +472,5 @@ func (s *Settings) Validate() error {
 			return bad("channel.webhook_url")
 		}
 	}
-	if err := s.Embedding.Validate(); err != nil {
-		return err
-	}
-	return s.LLM.Validate()
+	return s.Embedding.Validate()
 }

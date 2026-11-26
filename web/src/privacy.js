@@ -5,7 +5,7 @@ import { createModal } from './modal.js';
 const choiceKey = 'moerise.privacy.v1', batchKey = 'moerise.aggregate.v1', quotaKey = 'moerise.sent.v1';
 const ownerKey = 'moerise.aggregate-owner.v1';
 const day = 86400000;
-const operations = new Set('create edit enqueue save_ack sync search_keyword search_semantic search_hybrid review walk stars insight material_date material_tags material_manual save_answer save_multiple save_question startup client_error request_error crash anr'.split(' '));
+const operations = new Set('create edit enqueue save_ack sync search_keyword search_semantic search_hybrid review walk stars startup client_error request_error crash anr'.split(' '));
 const results = new Set('success failure canceled conflict unknown timeout over_limit'.split(' '));
 const sources = new Set(['user', 'prefetch', 'background']);
 const codes = new Set('SOURCE_CHANGED WRITE_CONFLICT IDEMPOTENCY_CONFLICT CHAT_MATERIAL_CHANGED WRITE_OUTCOME_UNKNOWN NETWORK_ERROR REQUEST_TIMEOUT SESSION_UNAUTHORIZED CORE_UNAVAILABLE UPSTREAM_UNAVAILABLE RATE_LIMITED SEARCH_RESOURCE_LIMIT'.split(' '));
