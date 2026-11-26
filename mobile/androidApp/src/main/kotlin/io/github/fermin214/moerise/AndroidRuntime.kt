@@ -56,7 +56,10 @@ class AndroidRuntime(application: MoeriseApplication) {
                 .joinToString("->") { it.javaClass.simpleName }
             val http = (error as? CoreException)?.status
             Log.w("MoeriseSync", "connection_failed=$chain http_status=$http")
-        }) {
+        },
+        removalRepository = { repository.await() },
+        clearProtectedDownloads = { clearAttachmentCache(application) },
+    ) {
         val count = requests.incrementAndGet()
         Trace.setCounter("moerise_network_requests", count)
         Log.i("MoeriseStartup", "network_requests=$count")

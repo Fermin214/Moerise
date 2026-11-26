@@ -52,8 +52,7 @@ private object OpenFileCache {
 suspend fun clearAttachmentCache(context: android.content.Context) = withContext(Dispatchers.IO) {
     OpenFileCache.lock.withLock {
         ++OpenFileCache.epoch
-        File(context.applicationContext.cacheDir, "attachments").deleteRecursively()
-        Unit
+        check(File(context.applicationContext.cacheDir, "attachments").deleteRecursively()) { "LOCAL_REMOVE_FAILED" }
     }
 }
 

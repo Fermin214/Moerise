@@ -168,7 +168,14 @@ class SearchController(
             mutable.update { it.copy(tags = page.tags.tags, calendar = page.calendar, filtersLoading = false, filtersError = null) }
             return
         }
-        mutable.update { it.copy(filtersLoading = true, filtersError = null, calendar = it.calendar?.takeIf { page -> page.month == month }) }
+        mutable.update {
+            it.copy(
+                tags = if (reads == null) it.tags else emptyList(),
+                calendar = it.calendar?.takeIf { page -> reads == null && page.month == month },
+                filtersLoading = true,
+                filtersError = null,
+            )
+        }
         filters = scope.launch {
             try {
                 val page = reads?.filters(sourceState, month) ?: FilterPage(

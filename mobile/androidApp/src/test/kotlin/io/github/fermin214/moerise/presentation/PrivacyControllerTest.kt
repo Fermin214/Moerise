@@ -9,6 +9,10 @@ import kotlin.test.*
 import kotlinx.coroutines.*
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.test.advanceTimeBy
+import kotlinx.coroutines.test.currentTime
+import kotlinx.coroutines.test.runCurrent
+import kotlinx.coroutines.test.runTest
 import okhttp3.mockwebserver.Dispatcher
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
@@ -87,6 +91,55 @@ class PrivacyControllerTest {
             assertNull(preferences.read("inflight-batch"))
             assertFalse(session.state.value.connected)
         } finally { session.close(); scope.coroutineContext[Job]!!.cancelAndJoin() }
+    }
+
+    @OptIn(ExperimentalCoroutinesApi::class)
+    @Test
+    fun offlineTimerPersistsExpiryAtEachWindowsDeadlineAcrossLifecycleChanges() = runTest {
+        val store = MemoryInstallPreferences()
+        val removed = mutableListOf<String>()
+        val preferences = object : InstallPreferences by store {
+            override fun persist(vararg entries: Pair<String, String?>) {
+                removed += entries.filter { it.second == null }.map { it.first }
+                store.writeBatch(*entries)
+            }
+        }
+        val lifetime = 2 * 86_400_000L
+        val base = 10 * lifetime
+        val batch = UsageBatch(clientVersion = "0.3.0", coreVersion = "0.3.0", systemMajor = "29",
+            rows = listOf(UsageRow("sync", "success", "unknown", "user", 1)))
+        val frozen = UsageWindow(base - lifetime + 200, batch)
+        val backlog = UsageWindow(base - lifetime + 400, batch.copy(coreVersion = "0.2.0"))
+        val active = UsageWindow(base - lifetime + 600, batch)
+        store.write("inflight-batch", CoreJson.encodeToString(listOf(frozen)))
+        store.write("usage-backlog", CoreJson.encodeToString(listOf(backlog)))
+        store.write("aggregate", CoreJson.encodeToString(active))
+        val session = SessionController(MemorySecrets(), true, backgroundScope)
+        try {
+            val privacy = PrivacyController(preferences, session, backgroundScope, clock = { base + currentTime })
+            privacy.foreground(true)
+            runCurrent()
+            advanceTimeBy(199)
+            assertNotNull(store.read("inflight-batch"))
+            advanceTimeBy(1)
+            runCurrent()
+            assertNull(store.read("inflight-batch"))
+            assertNotNull(store.read("usage-backlog"))
+            assertEquals(listOf("inflight-batch"), removed)
+
+            privacy.foreground(false)
+            advanceTimeBy(200)
+            runCurrent()
+            assertNull(store.read("usage-backlog"))
+            assertNotNull(store.read("aggregate"))
+            privacy.foreground(true)
+            runCurrent()
+            advanceTimeBy(200)
+            runCurrent()
+            assertNull(store.read("aggregate"))
+            assertEquals(listOf("inflight-batch", "usage-backlog", "aggregate"), removed)
+            assertFalse(session.state.value.connected)
+        } finally { session.close() }
     }
 
     @Test

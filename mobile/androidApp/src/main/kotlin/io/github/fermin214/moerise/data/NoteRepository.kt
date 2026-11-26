@@ -17,6 +17,7 @@ import kotlinx.serialization.json.*
 import kotlin.time.Instant
 import kotlin.time.ExperimentalTime
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
@@ -56,6 +57,7 @@ class NoteRepository(private val db: LocalDatabase, private val files: Attachmen
     private val syncLock = Mutex()
     private val removalLock = Mutex()
     private val pendingRemoval = "pending-account-attachment-removal"
+    private val pendingLogout = "pending-account-logout"
     private val mutableProjection = MutableStateFlow(0L)
     internal val projection = mutableProjection.asStateFlow()
 
@@ -187,17 +189,33 @@ class NoteRepository(private val db: LocalDatabase, private val files: Attachmen
     }
 
     suspend fun clearAccount(key: String) = removalLock.withLock {
+        clearAccountData(key, signOut = false)
+        finishAttachmentRemoval(key)
+    }
+
+    internal suspend fun clearAccountForLogout(key: String) = removalLock.withLock {
+        clearAccountData(key, signOut = true)
+    }
+
+    private suspend fun clearAccountData(key: String, signOut: Boolean) {
         transaction(publishesNotes = true) {
             val attachments = pendingAttachmentRemoval(key) +
                 accountAttachments(db.dao().drafts(key), db.dao().accountWrites(key)).map { it.id }
+            val logout = signOut || hasPendingLogout(key)
             db.dao().deleteWrites(key); db.dao().deleteDrafts(key); db.dao().deleteSnapshots(key)
             db.dao().deleteFeatures(key); db.dao().deleteProfile(key)
             db.dao().deleteAllNoteTags(key); db.dao().deleteAllNotes(key)
             db.dao().deleteSyncState(key); db.dao().deleteCachedSnapshots(key)
             if (attachments.isNotEmpty() && files != null) putFeature(key, pendingRemoval, CoreJson.encodeToString(attachments.distinct()))
+            if (logout) putFeature(key, pendingLogout, "")
         }
-        finishAttachmentRemoval(key)
     }
+
+    internal suspend fun hasPendingLogout(key: String) = feature(key, pendingLogout) != null
+
+    internal suspend fun completePendingLogout(key: String) { db.dao().deleteFeature(key, pendingLogout) }
+
+    internal suspend fun finishAccountAttachmentRemoval(key: String) = removalLock.withLock { finishAttachmentRemoval(key) }
 
     private suspend fun pendingAttachmentRemoval(key: String): List<String> =
         feature(key, pendingRemoval)?.let { CoreJson.decodeFromString<List<String>>(it) }.orEmpty()
@@ -275,6 +293,7 @@ class NoteRepository(private val db: LocalDatabase, private val files: Attachmen
         }
 
     private suspend fun upsertLocalNoteLocked(key: String, note: Note) {
+        if (!isNotesSynced(key)) db.dao().deleteFilterSnapshots(key)
         db.dao().deleteNoteTagsByName(key, listOf(note.name))
         db.dao().putNote(note.toEntity(key))
         val tags = note.tagEntities(key)
@@ -282,6 +301,7 @@ class NoteRepository(private val db: LocalDatabase, private val files: Attachmen
     }
 
     private suspend fun deleteLocalNoteLocked(key: String, name: String) {
+        if (!isNotesSynced(key)) db.dao().deleteFilterSnapshots(key)
         db.dao().deleteNoteTagsByName(key, listOf(name))
         db.dao().deleteNotesByName(key, listOf(name))
     }
@@ -413,7 +433,10 @@ class NoteRepository(private val db: LocalDatabase, private val files: Attachmen
     suspend fun clearCache(key: String) { db.dao().deleteSnapshots(key) }
     suspend fun readSnapshot(key: String, filter: String) = db.dao().snapshot(key, filter)
     suspend fun putSnapshot(snapshot: SnapshotEntity) = db.dao().putSnapshot(snapshot)
-    suspend fun dropSnapshot(key: String, filter: String) = db.dao().deleteSnapshot(key, filter)
+    internal suspend fun putFilterSnapshot(snapshot: SnapshotEntity, projectionVersion: Long) = transaction {
+        if (projection.value != projectionVersion) throw CancellationException()
+        db.dao().putSnapshot(snapshot)
+    }
     suspend fun feature(key: String, feature: String): String? = db.dao().feature(key, feature)
     suspend fun putFeature(key: String, feature: String, body: String) { db.dao().putFeature(FeatureStateEntity(key, feature, body)) }
 

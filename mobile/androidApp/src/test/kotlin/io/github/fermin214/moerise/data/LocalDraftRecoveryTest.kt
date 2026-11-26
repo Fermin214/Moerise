@@ -16,10 +16,94 @@ import io.github.fermin214.moerise.presentation.EditorController
 import io.github.fermin214.moerise.presentation.MobileController
 import io.github.fermin214.moerise.presentation.SessionController
 import io.github.fermin214.moerise.presentation.clearAttachmentCache
+import io.ktor.http.Cookie
+import io.ktor.http.Url
 
 @RunWith(RobolectricTestRunner::class)
 @Config(manifest = Config.NONE, sdk = [29])
 class LocalDraftRecoveryTest {
+    @Test
+    fun committedAccountRemovalSignsOutBeforeRestoreWithOrWithoutStagedAttachments() = runBlocking<Unit> {
+        val context = ApplicationProvider.getApplicationContext<android.content.Context>()
+        val origin = "http://127.0.0.1:1"
+        val key = "$origin\u0000instance\u0000users/owner"
+        val profile = ConnectionProfile(origin, key, "instance", "users/owner", "Owner", "UTC")
+        val otherOrigin = "https://other.example"
+        val pendingUrl = Url("$origin/api/app/v1/session")
+        val otherUrl = Url("$otherOrigin/api/app/v1/session")
+        for (withAttachment in listOf(false, true)) {
+            val folder = Files.createTempDirectory("moerise-pending-logout").toFile()
+            val path = folder.resolve("data.sqlite3").absolutePath
+            val files = AttachmentFiles(folder.resolve("files").absolutePath)
+            var db = testDatabase(path)
+            val scope = CoroutineScope(coroutineContext + SupervisorJob())
+            var session: SessionController? = null
+            try {
+                val repo = NoteRepository(db, files)
+                val staged = if (withAttachment) listOf(files.stage("draft.txt", "text/plain", byteArrayOf(1))) else emptyList()
+                repo.persist(DraftEntity("draft", key, "待清理", 1, attachmentsJson = CoreJson.encodeToString(AttachmentEdits(staged))))
+                val other = "$otherOrigin\u0000instance\u0000users/owner"
+                repo.persist(DraftEntity("other", other, "保留", 1))
+                val secrets = MemorySecrets()
+                secrets.write("selected-profile", CoreJson.encodeToString(profile))
+                SessionCookies(origin, secrets).addCookie(pendingUrl,
+                    Cookie("moerise_local_session", "old", maxAge = 300, path = "/", httpOnly = true))
+                SessionCookies(otherOrigin, secrets).addCookie(otherUrl,
+                    Cookie("__Host-moerise_session", "keep", maxAge = 300, path = "/", secure = true, httpOnly = true))
+                val cache = context.cacheDir.resolve("attachments").apply { mkdirs() }.resolve("protected.txt")
+                cache.writeText("protected")
+
+                val purge = launch(start = CoroutineStart.LAZY) { repo.clearAccountForLogout(key) }
+                val interrupt = launch(Dispatchers.Unconfined, start = CoroutineStart.UNDISPATCHED) {
+                    repo.projection.drop(1).first()
+                    purge.cancel()
+                }
+                purge.start()
+                withTimeout(5_000) { purge.join(); interrupt.join() }
+                assertTrue(purge.isCancelled)
+                assertTrue(repo.hasPendingLogout(key))
+                assertNull(db.dao().draft("draft"))
+                assertTrue(cache.exists())
+                db.close()
+
+                db = testDatabase(path)
+                val reopened = NoteRepository(db, files)
+                var requests = 0
+                var failDownloadCleanup = withAttachment
+                val restored = SessionController(secrets, true, scope, removalRepository = { reopened }, clearProtectedDownloads = {
+                    if (failDownloadCleanup) throw java.io.IOException("cache unavailable")
+                    clearAttachmentCache(context)
+                }, onNetworkRequest = { requests++ })
+                session = restored
+                withTimeout(5_000) { restored.state.first { !it.loading } }
+                if (withAttachment) {
+                    assertEquals("LOCAL_REMOVE_FAILED", restored.state.value.error)
+                    assertTrue(reopened.hasPendingLogout(key))
+                    assertFalse(restored.state.value.connected)
+                    assertNull(restored.state.value.profile)
+                    assertEquals(0, requests)
+                    failDownloadCleanup = false
+                    restored.retrySession()
+                    withTimeout(5_000) { restored.state.first { !it.loading && it.error == null } }
+                }
+                assertNull(restored.state.value.profile)
+                assertEquals(0, requests)
+                assertNull(secrets.read("selected-profile"))
+                assertTrue(SessionCookies(origin, secrets).get(pendingUrl).isEmpty())
+                assertEquals("keep", SessionCookies(otherOrigin, secrets).get(otherUrl).single().value)
+                assertFalse(cache.exists())
+                assertFalse(reopened.hasPendingLogout(key))
+                assertNotNull(db.dao().draft("other"))
+                reopened.resumeAttachmentRemovals()
+                for (item in staged) assertFalse(folder.resolve("files").resolve(item.id).exists())
+            } finally {
+                session?.close()
+                scope.coroutineContext[Job]!!.cancelAndJoin()
+                db.close(); folder.deleteRecursively(); clearAttachmentCache(context)
+            }
+        }
+    }
+
     @Test
     fun accountAttachmentCleanupResumesAfterTheDatabaseCommitAndKeepsOtherAccountsFiles() = runBlocking<Unit> {
         val folder = Files.createTempDirectory("moerise-logout-interrupted").toFile()
@@ -133,12 +217,20 @@ class LocalDraftRecoveryTest {
             withContext(dispatcher) { mobile.askLogout(); mobile.confirmLogout(clearLocal = true) }
             withTimeout(10_000) { mobile.logoutState.first { it?.counts != null } }
             withTimeout(10_000) { mobile.clearing.first { !it } }
+            val blockedFile = folder.resolve("files").resolve(file.id)
+            assertTrue(blockedFile.delete())
+            assertTrue(blockedFile.mkdir())
+            val blocker = blockedFile.resolve("busy").apply { writeText("busy") }
             withContext(dispatcher) { mobile.confirmLogout(clearLocal = true) }
             signedOut()
             assertTrue(db.dao().drafts(key).isEmpty())
             assertTrue(db.dao().accountWrites(key).isEmpty())
             assertNull(db.dao().snapshot(key, "home"))
-            assertFails { files.encoded(file) }
+            assertEquals("LOCAL_REMOVE_FAILED", session.state.value.error)
+            assertNull(secrets.read("selected-profile"))
+            assertTrue(blocker.delete())
+            repository.resumeAttachmentRemovals()
+            assertFalse(blockedFile.exists())
             assertEquals("另一个账号", db.dao().homeDraft(other)?.content)
             assertEquals("Ag==", files.encoded(otherFile))
         } finally {

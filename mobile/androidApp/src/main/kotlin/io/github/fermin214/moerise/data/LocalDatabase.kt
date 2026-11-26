@@ -140,8 +140,8 @@ interface LocalDao {
     @Query("SELECT * FROM snapshots WHERE accountKey = :key AND filterKey = :filter")
     suspend fun snapshot(key: String, filter: String): SnapshotEntity?
     @Query("DELETE FROM snapshots WHERE accountKey = :key") suspend fun deleteSnapshots(key: String)
-    @Query("DELETE FROM snapshots WHERE accountKey = :key AND filterKey = :filter")
-    suspend fun deleteSnapshot(key: String, filter: String)
+    @Query("DELETE FROM snapshots WHERE accountKey = :key AND (filterKey GLOB '*:tags:*' OR filterKey GLOB '*:calendar:*')")
+    suspend fun deleteFilterSnapshots(key: String)
     @Upsert suspend fun putFeature(state: FeatureStateEntity)
     @Query("SELECT body FROM feature_states WHERE accountKey = :key AND feature = :feature")
     suspend fun feature(key: String, feature: String): String?

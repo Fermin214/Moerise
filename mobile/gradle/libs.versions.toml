@@ -30,6 +30,7 @@ robolectric = { module = "org.robolectric:robolectric", version = "4.16" }
 androidx-test-core = { module = "androidx.test:core", version = "1.7.0" }
 markdown-parser = { module = "org.jetbrains:markdown", version = "0.7.3" }
 coroutines-core = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "coroutines" }
+coroutines-test = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-test", version.ref = "coroutines" }
 serialization-json = { module = "org.jetbrains.kotlinx:kotlinx-serialization-json", version.ref = "serialization" }
 ktor-client-core = { module = "io.ktor:ktor-client-core", version.ref = "ktor" }
 ktor-client-okhttp = { module = "io.ktor:ktor-client-okhttp", version.ref = "ktor" }

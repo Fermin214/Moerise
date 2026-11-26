@@ -78,7 +78,7 @@ class FilterReads(
                 val body = (active ?: error("CONNECTION_FAILED")).api(HttpMethod.Get, path)
                 checkOwner()
                 val snapshot = SnapshotEntity(key.account, filter, body, epochMillis())
-                repo.putSnapshot(snapshot)
+                repo.putFilterSnapshot(snapshot, projection)
                 return snapshot
             }
             val result = if (local) Cached(FilterPage(
@@ -99,28 +99,8 @@ class FilterReads(
     }
 
     fun changed(before: Note?, after: Note?) {
-        val key = account() ?: return
-        val zone = timezone()
-        val notes = listOfNotNull(before, after)
-        if (notes.isEmpty() || before?.state == after?.state && before?.createTime == after?.createTime &&
+        if (before?.state == after?.state && before?.createTime == after?.createTime &&
             before?.tags.orEmpty().toSet() == after?.tags.orEmpty().toSet()) return
-        val names = buildSet {
-            for (note in notes) {
-                val month = displayServiceTime(note.createTime, zone).take(7)
-                for (state in listOf("ALL", note.state)) {
-                    add("$zone:tags:$state")
-                    add("$zone:calendar:$state:$month")
-                }
-            }
-        }
-        generation++
-        pages.clear()
-        scope.launch(start = CoroutineStart.UNDISPATCHED) {
-            lock.withLock {
-                val repo = repository()
-                if (!repo.isNotesSynced(key)) names.forEach { repo.dropSnapshot(key, it) }
-            }
-        }
-        mutableRevision.value = generation
+        clear()
     }
 }

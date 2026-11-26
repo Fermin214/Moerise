@@ -84,6 +84,7 @@ dependencies {
     implementation(libs.ktor.client.okhttp)
     ksp(libs.room.compiler)
     testImplementation(kotlin("test"))
+    testImplementation(libs.coroutines.test)
     testImplementation(libs.ktor.client.mock)
     testImplementation(libs.mockwebserver)
     testImplementation(libs.robolectric)

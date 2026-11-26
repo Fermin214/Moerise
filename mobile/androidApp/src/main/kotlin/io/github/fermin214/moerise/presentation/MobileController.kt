@@ -189,7 +189,7 @@ class MobileController(
                 homeNote.clear()
                 noteActions.clear()
                 closeEditors()
-                if (switched) clearFiles()
+                if (switched) clearDownloadsAfterSessionChange()
                 editor.open(key)
                 if (key != null) restoreEditing(key)
             }
@@ -236,7 +236,7 @@ class MobileController(
                     editor.accountKey.takeIf { editor.draft != null && it == frame }
                 }.distinctUntilChanged(),
             ) { connection, ready -> connection to ready }.collect { (connection, ready) ->
-                if (connection.third) { filterReads.clear(); sidebar.clear(); timeline.hideAccountData(); archive.hideAccountData(); search.clear(); review.clear(); walk.clear(); stars.clear(); settings.clear(); homeNote.clear(); clearFiles() }
+                if (connection.third) { filterReads.clear(); sidebar.clear(); timeline.hideAccountData(); archive.hideAccountData(); search.clear(); review.clear(); walk.clear(); stars.clear(); settings.clear(); homeNote.clear(); clearDownloadsAfterSessionChange() }
                 else if (!clearing.value && connection.second && connection.first?.accountKey == ready && ready != null) timeline.refresh()
                 if (connection.first?.stargazingEnabled == false) stars.clear()
                 updateDiscovery()
@@ -508,6 +508,11 @@ class MobileController(
             }
         }
     }
+    private suspend fun clearDownloadsAfterSessionChange() {
+        try { clearFiles() }
+        catch (error: Exception) { if (error is CancellationException) throw error }
+    }
+
     fun confirmLogout(clearLocal: Boolean) {
         val request = logoutState.value ?: return
         val account = request.account
@@ -517,6 +522,7 @@ class MobileController(
         scope.launch {
             var stopped = false
             var removing = false
+            var purged = false
             try {
                 if (!flushEditors()) error("LOCAL_WRITE_FAILED")
                 if (account != session.state.value.profile?.accountKey) return@launch
@@ -549,18 +555,23 @@ class MobileController(
                         mutableLogout.value = request.copy(counts = counts, error = null)
                         return@launch
                     }
-                    repo.clearAccount(account)
+                    repo.clearAccountForLogout(account)
+                    purged = true
+                    session.logoutAfterRemoval(account, repo, clearFiles)
+                    repo.finishAccountAttachmentRemoval(account)
+                } else {
+                    clearFiles()
+                    session.logout()
                 }
-                clearFiles()
-                session.logout()
                 mutableLogout.value = null
             } catch (error: Exception) {
                 if (error is CancellationException) throw error
                 if (account == session.state.value.profile?.accountKey)
                     mutableLogout.value = request.copy(error = if (clearLocal) "LOCAL_REMOVE_FAILED" else "LOGOUT_FAILED")
+                else if (purged) session.reportRemovalFailure()
             } finally {
                 mutableClearing.value = false
-                if (stopped && account == session.state.value.profile?.accountKey) {
+                if (currentCoroutineContext().isActive && stopped && !purged && account == session.state.value.profile?.accountKey) {
                     session.recoverAfterRemovalFailure()
                     if (removing) {
                         timeline.reset(account); archive.reset(account); editor.open(account)

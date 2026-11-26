@@ -180,4 +180,62 @@ class SidebarFilterTest {
             core.close(); db.close(); folder.deleteRecursively()
         }
     }
+
+    @Test
+    fun cancelledArchiveCannotReviveServerFilterSnapshotsBeforeTheFirstSync() = runBlocking<Unit> {
+        val folder = Files.createTempDirectory("moerise-filter-archive").toFile()
+        val db = testDatabase(folder.resolve("data.sqlite3").absolutePath)
+        val repository = NoteRepository(db)
+        val scope = CoroutineScope(coroutineContext + SupervisorJob())
+        val origin = "https://notes.example"
+        val account = "$origin\u0000instance\u0000users/owner"
+        val otherAccount = "$origin\u0000instance\u0000users/other"
+        val month = "2026-03"
+        val original = Note("instance", "memos/original", "entry", "NORMAL", "hash",
+            createTime = "$month-01T02:00:00Z", tags = listOf("old"))
+        val archived = original.copy(state = "ARCHIVED", sourceHash = "updated")
+        val core = CoreClient(origin, SessionCookies(origin, MemorySecrets()), MockEngine { request ->
+            respond(when (request.url.encodedPath) {
+                "/api/app/v1/session" -> """{"instance_id":"instance","user":{"name":"users/owner"},"timezone":"UTC","expires_at":"2027-01-01T00:00:00Z","csrf_token":"token"}"""
+                "/api/app/v1/notes/original" -> CoreJson.encodeToString(archived)
+                else -> error(request.url.encodedPath)
+            })
+        })
+        try {
+            val tags = SnapshotEntity(account, "UTC:tags:NORMAL",
+                CoreJson.encodeToString(TagPage(listOf(TagCount("old", 1)))), epochMillis())
+            val calendar = SnapshotEntity(account, "UTC:calendar:NORMAL:$month",
+                CoreJson.encodeToString(CalendarPage(month, listOf(DayCount("$month-01", 1)))), epochMillis())
+            val other = tags.copy(accountKey = otherAccount)
+            for (snapshot in listOf(tags, calendar, other)) repository.putSnapshot(snapshot)
+            assertFalse(repository.isNotesSynced(account))
+            val reads = FilterReads({ repository }, { null }, { account }, { "UTC" }, scope)
+            val sidebar = SearchController({ null }, { account }, scope, reads)
+            sidebar.filters(month)
+            withTimeout(5_000) { sidebar.state.first { it.tags == listOf(TagCount("old", 1)) } }
+            val version = repository.projection.value
+            var changed = false
+            val controller = NoteDetailController({ repository }, { account }, { core }, scope) { _, _, _ -> changed = true }
+            val interrupt = launch(Dispatchers.Unconfined, start = CoroutineStart.UNDISPATCHED) {
+                repository.projection.drop(1).first()
+                controller.clear()
+            }
+            controller.changeState(original)
+            withTimeout(5_000) { interrupt.join() }
+            assertEquals(archived, repository.localNote(account, original.name))
+            assertFalse(changed)
+            assertNull(repository.readSnapshot(account, tags.filterKey))
+            assertNull(repository.readSnapshot(account, calendar.filterKey))
+            assertEquals(other, repository.readSnapshot(otherAccount, other.filterKey))
+            assertFailsWith<CancellationException> { repository.putFilterSnapshot(tags, version) }
+            sidebar.filters(month)
+            assertTrue(sidebar.state.value.tags.isEmpty())
+            val unavailable = withTimeout(5_000) { sidebar.state.first { it.filtersError != null } }
+            assertTrue(unavailable.tags.isEmpty())
+            assertNull(unavailable.calendar)
+        } finally {
+            scope.coroutineContext[Job]!!.cancelAndJoin()
+            core.close(); db.close(); folder.deleteRecursively()
+        }
+    }
 }
