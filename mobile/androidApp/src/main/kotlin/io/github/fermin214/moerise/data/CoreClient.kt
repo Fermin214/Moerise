@@ -129,7 +129,7 @@ class CoreClient(
         try {
             return send(method, path, body, current.csrfToken, idempotencyKey)
         } catch (error: CoreException) {
-            if (error.detail.code != "CSRF_REJECTED") throw error
+            if (error.detail.code != "CSRF_REJECTED" || path == "/telemetry") throw error
             val refreshed = sessionLock.withLock {
                 if (identity?.csrfToken == current.csrfToken) refreshSession() else identity ?: refreshSession()
             }

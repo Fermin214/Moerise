@@ -14,6 +14,7 @@ internal class NoteWriteQueue(
     private val editors: () -> Collection<EditorController>,
     private val account: () -> String?,
     private val privacy: PrivacyController? = null,
+    private val onProjected: (String, Note?, Note) -> Unit = { _, _, _ -> },
     private val onSaved: (String, Note, String?) -> Unit = { _, _, _ -> },
 ) {
     private val sendLock = Mutex()
@@ -38,7 +39,11 @@ internal class NoteWriteQueue(
             checkAccount(key)
             try {
                 val result = received?.takeIf { it.write.id == write.id } ?: send(repo, client, write).also { received = it }
-                draftLock.withLock { commit(repo, result) }
+                draftLock.withLock {
+                    val previous = result.remote?.let { repo.localNote(key, it.name) }
+                    commit(repo, result)
+                    result.remote?.let { onProjected(key, previous, it) }
+                }
                 received = null
                 privacy?.endWrite("${write.draftId}:${write.draftRevision}", when {
                     result.matches -> "success"

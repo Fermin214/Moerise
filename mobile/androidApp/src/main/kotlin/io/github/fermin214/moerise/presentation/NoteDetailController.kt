@@ -58,8 +58,11 @@ class NoteDetailController(
                 if (error is CancellationException) throw error
                 if (stamp == generation) {
                     if (pending?.method == "DELETE" && missing(error)) {
-                        repository().finishAction(pending!!, null, name)
-                        mutable.value = NoteDetailState(); onChanged(name, fallback, null)
+                        val repo = repository()
+                        val previous = repo.localNote(key, name) ?: fallback
+                        repo.finishAction(pending!!, null, name)
+                        mutable.value = NoteDetailState()
+                        if (key == account()) onChanged(name, previous, null)
                     } else mutable.update { it.copy(loading = false, error = errorCode(error)) }
                 }
             }
@@ -122,11 +125,13 @@ class NoteDetailController(
                     write.idempotencyKey.takeIf { method != "DELETE" })
                 val updated = if (method == "DELETE") null else CoreJson.decodeFromString<Note>(result)
                 if (updated != null) require(updated.name == note.name && updated.instanceId == key.split('\u0000')[1])
-                repository().finishAction(write, updated, note.name)
+                val repo = repository()
+                val previous = repo.localNote(key, note.name) ?: note
+                repo.finishAction(write, updated, note.name)
+                if (key == account()) onChanged(note.name, previous, updated)
                 if (stamp == generation) {
                     pending = null
                     mutable.value = if (updated == null) NoteDetailState() else NoteDetailState(name = updated.name, note = updated)
-                    onChanged(note.name, note, updated)
                 }
             } catch (error: Exception) {
                 val conflict = error is CoreException && error.detail.code == "SOURCE_CHANGED"
@@ -144,6 +149,7 @@ class NoteDetailController(
     }
 
     fun checkDeletion() {
+        val key = account() ?: return
         val name = state.value.name ?: return
         val previous = state.value.note
         val active = core() ?: return
@@ -153,8 +159,14 @@ class NoteDetailController(
         operation = scope.launch {
             try {
                 val note = CoreJson.decodeFromString<Note>(active.api(HttpMethod.Get, path(name)))
+                require(note.name == name && note.instanceId == key.split('\u0000')[1])
                 if (stamp == generation) {
-                    pending?.let { repository().finishAction(it, note, name) }
+                    pending?.let {
+                        val repo = repository()
+                        val indexed = repo.localNote(key, name) ?: previous
+                        repo.finishAction(it, note, name)
+                        if (key == account()) onChanged(name, indexed, note)
+                    }
                     pending = null
                     mutable.update { it.copy(note = note, busy = false, deleteUnknown = false, pendingAction = false) }
                 }
@@ -162,9 +174,15 @@ class NoteDetailController(
                 if (error is CancellationException) throw error
                 if (stamp == generation) {
                     if (missing(error)) {
-                        pending?.let { repository().finishAction(it, null, name) }
+                        val indexed = pending?.let {
+                            val repo = repository()
+                            val old = repo.localNote(key, name)
+                            repo.finishAction(it, null, name)
+                            old
+                        }
                         pending = null
-                        mutable.value = NoteDetailState(); onChanged(name, previous, null)
+                        mutable.value = NoteDetailState()
+                        if (key == account()) onChanged(name, indexed ?: previous, null)
                     } else mutable.update { it.copy(busy = false, error = errorCode(error)) }
                 }
             }

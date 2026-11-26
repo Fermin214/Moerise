@@ -18,7 +18,6 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
-import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
@@ -31,8 +30,6 @@ import androidx.compose.ui.input.key.isMetaPressed
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
-import androidx.compose.ui.layout.boundsInRoot
-import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -41,9 +38,11 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import io.github.fermin214.moerise.data.*
 import io.github.fermin214.moerise.domain.Note
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.delay
 import kotlinx.serialization.json.*
 
@@ -52,40 +51,48 @@ import kotlinx.serialization.json.*
 fun MoeriseApp(mobile: MobileController, onEditorReady: () -> Unit = {}) {
     val focusManager = LocalFocusManager.current
     val keyboard = LocalSoftwareKeyboardController.current
+    val leaveWriting: () -> Unit = {
+        mobile.leaveWriting()
+        focusManager.clearFocus()
+        keyboard?.hide()
+    }
+    ClearWritingOnStop(leaveWriting)
     val session = mobile.session
     val language by session.language.collectAsState()
     val strings = remember(language) { Strings(language) }
     val connection by session.state.collectAsState()
     val composer by mobile.editor.state.collectAsState()
     val noteEditors by mobile.noteEditors.collectAsState()
+    val editorFocus by mobile.editorFocus.collectAsState()
     val home by mobile.timeline.state.collectAsState()
     val archive by mobile.archive.state.collectAsState()
     val homeNote by mobile.homeNote.state.collectAsState()
     val actions by mobile.noteActions.state.collectAsState()
     val clearing by mobile.clearing.collectAsState()
+    val logout by mobile.logoutState.collectAsState()
     val localError by mobile.localError.collectAsState()
     val review by mobile.review.state.collectAsState()
     val walk by mobile.walk.state.collectAsState()
     val sync by mobile.sync.state.collectAsState()
     val search by mobile.search.state.collectAsState()
     val account = connection.profile?.accountKey
+    val timezone = connection.profile?.timezone ?: "UTC"
     var page by rememberSaveable(account) { mutableStateOf("home") }
     var searchOpen by rememberSaveable(account) { mutableStateOf(false) }
     var sourceTimeline by rememberSaveable(account) { mutableStateOf("home") }
     var conflictKey by remember(account) { mutableStateOf<String?>(null) }
-    var confirmRemoval by remember(account) { mutableStateOf(false) }
-    val drawer = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
+    val drawer = remember(account, scope) { NavigationDrawerState(scope) }
+    val drawerVisible = drawer.visible
     val sidebar = mobile.sidebar
     val sidebarFilters by sidebar.state.collectAsState()
-    var month by rememberSaveable(account) { mutableStateOf(serviceMonth(connection.profile?.timezone ?: "UTC")) }
+    val filterRevision by mobile.filterReads.revision.collectAsState()
+    var month by rememberSaveable(account, timezone) { mutableStateOf(serviceMonth(timezone)) }
     val homeScroll = key(account) { rememberLazyListState() }
     val archiveScroll = key(account) { rememberLazyListState() }
     val reviewScroll = key(account, review.batch?.id, review.position) { rememberScrollState() }
     val walkScroll = key(account, walk.result?.item?.note?.name) { rememberScrollState() }
     val mapNotesScroll = key(account) { rememberLazyListState() }
-    val bounds = remember(account) { mutableStateMapOf<String, Rect>() }
-    val focused = remember(account) { mutableStateMapOf<String, Boolean>() }
     val query = search.query
     val filtered = query.text.isNotBlank() || query.tags.isNotEmpty() || query.date.isNotEmpty()
     var searchRefreshing by remember(account, page, filtered) { mutableStateOf(false) }
@@ -133,6 +140,7 @@ fun MoeriseApp(mobile: MobileController, onEditorReady: () -> Unit = {}) {
         }
     }
     fun navigate(next: String) {
+        leaveWriting()
         mobile.flush()
         mobile.closeNote()
         page = next
@@ -141,12 +149,15 @@ fun MoeriseApp(mobile: MobileController, onEditorReady: () -> Unit = {}) {
             mobile.search.change(SearchQuery(state = if (next == "archive") "ARCHIVED" else "NORMAL"))
         }
         mobile.page(next)
+        if (next == "archive") mobile.archive.refresh()
+    }
+    fun beginDrawer() {
+        leaveWriting()
+        searchOpen = false
     }
     fun openDrawer() {
-        focusManager.clearFocus()
-        keyboard?.hide()
-        searchOpen = false
-        scope.launch { drawer.open() }
+        beginDrawer()
+        drawer.open()
     }
     fun showFilter(value: SearchQuery) {
         val target = if (page in setOf("home", "archive")) page else sourceTimeline
@@ -155,7 +166,7 @@ fun MoeriseApp(mobile: MobileController, onEditorReady: () -> Unit = {}) {
         mobile.homeNote.clear()
         mobile.search.change(value.copy(state = if (target == "archive") "ARCHIVED" else "NORMAL"))
         mobile.search.search()
-        scope.launch { drawer.close() }
+        if (drawer.visible) drawer.close()
     }
     fun startWalk(note: Note) { navigate("walk"); mobile.walk.start(note.name) }
     fun editNote(note: Note) { mobile.editNote(note) }
@@ -188,9 +199,9 @@ fun MoeriseApp(mobile: MobileController, onEditorReady: () -> Unit = {}) {
         if (homeScroll.layoutInfo.visibleItemsInfo.none { it.key == targetKey }) homeScroll.scrollToItem(index)
         targetPositioned = true
     }
-    LaunchedEffect(query.text, query.mode) { if (searchOpen) { delay(250); showFilter(query) } }
-    LaunchedEffect(drawer.isOpen, month, account, connection.connected, sourceTimeline, connection.profile?.timezone) {
-        if (drawer.isOpen && account != null && !connection.needsLogin) {
+    LaunchedEffect(query.text, query.mode) { if (searchOpen) { delay(250); if (searchOpen) showFilter(query) } }
+    LaunchedEffect(drawerVisible, month, account, connection.connected, connection.needsLogin, sourceTimeline, timezone, filterRevision) {
+        if (drawerVisible && account != null && !connection.needsLogin) {
             sidebar.change(query.copy(state = if (sourceTimeline == "archive") "ARCHIVED" else "NORMAL"))
             sidebar.filters(month)
         } else sidebar.leave()
@@ -198,56 +209,46 @@ fun MoeriseApp(mobile: MobileController, onEditorReady: () -> Unit = {}) {
     LaunchedEffect(page, connection.connected) { mobile.page(page) }
     DisposableEffect(sidebar) { onDispose { sidebar.clear() } }
     DisposableEffect(mobile) { onDispose { mobile.page(null) } }
-    PlatformBackHandler(clearing || drawer.isOpen || searchOpen || conflictKey != null || page != "home") {
-        if (clearing) return@PlatformBackHandler
+    val modalBack = clearing || drawerVisible || searchOpen || conflictKey != null
+    PlatformBackHandler(!modalBack && page != "home") {
         mobile.flush()
-        when {
-            drawer.isOpen -> scope.launch { drawer.close() }
-            conflictKey != null -> conflictKey = null
-            searchOpen -> searchOpen = false
-            page == "map" && mobile.stars.back() -> Unit
-            else -> navigate("home")
-        }
+        if (page != "map" || !mobile.stars.back()) navigate("home")
     }
     @Composable
     fun renderEditor(id: String, controller: EditorController) {
         val state by controller.state.collectAsState()
         HomeEditor(state, controller, strings, onSave = { mobile.saveNote(id) }, onConflict = { conflictKey = id },
-            onCancel = { mobile.finishEditing(id) }, onFocus = { focused[id] = it; if (it) mobile.focusNoteEditor(id) }, onBounds = { bounds[id] = it },
-            onRemoved = { bounds.remove(id); focused.remove(id) }, editorTag = "note_editor_$id", saveTag = "save_note_$id",
+            onCancel = { mobile.finishEditing(id) }, onFocus = { if (it) mobile.focusNoteEditor(id) },
+            requestFocus = editorFocus === controller, consumeFocus = { mobile.consumeEditorFocus(controller) },
+            editorTag = "note_editor_$id", saveTag = "save_note_$id",
             cancelTag = "cancel_note_$id")
     }
     PlatformLanguage(language) {
     MoeriseTheme {
         WelcomeDialog(mobile.privacy, strings)
         CompositionLocalProvider(
+            LocalLeaveWriting provides leaveWriting,
             LocalWebSyncAction provides { if (sync.status == SyncStatus.SIGN_IN) navigate("connect") else mobile.synchronize() },
             LocalWebSearchOpen provides searchOpen, LocalWebSearchPanel provides {
             if (searchOpen) WebSearchPanel(query, strings, onChange = mobile.search::change,
-                onClose = { searchOpen = false }, onSubmit = { showFilter(query) })
+                onClose = { leaveWriting(); searchOpen = false }, onSubmit = { showFilter(query) })
         }) {
-            ModalNavigationDrawer(modifier = Modifier.platformTestTags()
-                .testTag(if (platformImeVisible()) "ime_visible" else "ime_hidden"),
-                drawerState = drawer, gesturesEnabled = drawer.isOpen, drawerContent = {
-                ModalDrawerSheet(Modifier.width(320.dp), drawerShape = androidx.compose.ui.graphics.RectangleShape,
-                    drawerContainerColor = MoeriseColors.Paper) {
+            NavigationDrawer(
+                drawer, account != null && !clearing && conflictKey == null && logout == null && page != "connect", strings,
+                onDragStart = ::beginDrawer,
+                modifier = Modifier.platformTestTags().testTag(if (platformImeVisible()) "ime_visible" else "ime_hidden"),
+                sheet = {
                     WebSidebar(page, strings, connection.profile?.let { it.displayName.trim().ifBlank { it.userName.removePrefix("users/") } }.orEmpty(),
-                        sidebarFilters, month, drawer.isOpen, onClose = { scope.launch { drawer.close() } },
-                        onNavigate = { target -> scope.launch { drawer.close() }; navigate(target) },
+                        sidebarFilters, month, onClose = drawer::close,
+                        onNavigate = { target -> drawer.close(); navigate(target) },
                         onMonth = { month = it }, onDate = { showFilter(query.copy(date = if (query.date == it) "" else it)) },
                         onTag = { tag -> showFilter(query.copy(tags = if (tag in query.tags) query.tags - tag else query.tags + tag)) },
-                        onArchive = { scope.launch { drawer.close() }; navigate("archive"); mobile.archive.refresh() },
-                        onLogout = { scope.launch { drawer.close() }; mobile.logout() },
-                        onRemoveAccount = { scope.launch { drawer.close() }; confirmRemoval = true }, selectedTags = query.tags,
-                        selectedDate = query.date, today = serviceToday(connection.profile?.timezone ?: "UTC"),
-                        stargazingEnabled = connection.profile?.stargazingEnabled != false,
-                        onSync = { scope.launch { drawer.close() }; if (sync.status == SyncStatus.SIGN_IN) navigate("connect") else mobile.synchronize() })
+                        onLogout = { drawer.close(); mobile.askLogout() }, selectedTags = query.tags,
+                        selectedDate = query.date, today = serviceToday(timezone),
+                        stargazingEnabled = connection.profile?.stargazingEnabled != false)
                 }
-            }) {
-                Surface(Modifier.fillMaxSize().platformTestTags().webNavigationGesture(
-                    enabled = account != null && !clearing && !drawer.isOpen && conflictKey == null &&
-                        focused.values.none { it } && page !in setOf("map", "connect"),
-                    editorBounds = bounds.values.toList(), onOpen = ::openDrawer), color = MoeriseColors.Paper) {
+            ) {
+                Surface(Modifier.fillMaxSize().platformTestTags(), color = MoeriseColors.Paper) {
                     when {
                         connection.loading -> Box(Modifier.safeDrawingPadding().padding(24.dp)) { CircularProgressIndicator() }
                         account == null || page == "connect" -> Box(Modifier.safeDrawingPadding().imePadding()) {
@@ -270,14 +271,14 @@ fun MoeriseApp(mobile: MobileController, onEditorReady: () -> Unit = {}) {
                                         if (page == "home") mobile.synchronize() else timelineController.refresh(userInitiated = true)
                                     }
                                 },
-                                modifier = Modifier.weight(1f).fillMaxWidth(), contentAlignment = androidx.compose.ui.Alignment.TopCenter) {
+                                modifier = Modifier.weight(1f).fillMaxWidth().timelineFocusExit(leaveWriting),
+                                contentAlignment = androidx.compose.ui.Alignment.TopCenter) {
                                 LazyColumn(Modifier.fillMaxHeight().widthIn(max = 800.dp).fillMaxWidth(),
                                     state = if (page == "archive") archiveScroll else homeScroll,
                                     contentPadding = PaddingValues(horizontal = 16.dp, vertical = 20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
                                     if (page == "home" && noteEditors.isEmpty()) item(key = "composer") {
                                         if (composerReady) HomeEditor(composer, mobile.editor, strings, onSave = mobile::saveComposer,
-                                            onConflict = {}, onFocus = { focused["composer"] = it }, onBounds = { bounds["composer"] = it },
-                                            onRemoved = { bounds.remove("composer"); focused.remove("composer") })
+                                            onConflict = {})
                                         else { LinearProgressIndicator(Modifier.fillMaxWidth()); TextButton(mobile::retryDraft) { Text(strings.text("重新读取", "Read again")) } }
                                     }
                                     if (page == "archive") item { Text(strings.text("归档笔记", "Archived notes"),
@@ -315,7 +316,10 @@ fun MoeriseApp(mobile: MobileController, onEditorReady: () -> Unit = {}) {
                                             onTag = { showFilter(query.copy(tags = query.tags + it)) },
                                             onOpenLocal = { local ->
                                                 mobile.openDraft(local.id) {
-                                                    if (mobile.getNoteEditor(local.id)?.state?.value?.draft?.conflictJson != null) conflictKey = local.id
+                                                    if (mobile.getNoteEditor(local.id)?.state?.value?.draft?.conflictJson != null) {
+                                                        leaveWriting()
+                                                        conflictKey = local.id
+                                                    }
                                                 }
                                             },
                                             onEdit = { editNote(it) },
@@ -362,24 +366,18 @@ fun MoeriseApp(mobile: MobileController, onEditorReady: () -> Unit = {}) {
                     }
                 }
             }
-            if (confirmRemoval && account != null) AlertDialog(
-                onDismissRequest = { confirmRemoval = false },
-                title = { Text(strings.text("删除本机账号数据？", "Delete account data on this device?")) },
-                text = { Text(strings.text("此账号的草稿、待发请求和缓存将被删除，并退出登录。服务端笔记不受影响。",
-                    "This deletes this account’s drafts, queued changes and cache, then signs you out. Notes on the server are kept.")) },
-                confirmButton = {
-                    TextButton(modifier = Modifier.testTag("account_remove_confirm"), onClick = {
-                        confirmRemoval = false
-                        page = "home"
-                        mobile.clearLocalData(account)
-                    }) { Text(strings.text("删除并退出", "Delete and sign out"), color = MaterialTheme.colorScheme.error) }
-                },
-                dismissButton = {
-                    TextButton(modifier = Modifier.testTag("account_remove_cancel"), onClick = { confirmRemoval = false }) {
-                        Text(strings.text("取消", "Cancel"))
-                    }
-                },
-            )
+            PlatformBackHandler(modalBack) {
+                if (clearing) return@PlatformBackHandler
+                mobile.flush()
+                when {
+                    drawerVisible -> drawer.close()
+                    conflictKey != null -> conflictKey = null
+                    searchOpen -> { leaveWriting(); searchOpen = false }
+                }
+            }
+            logout?.takeIf { it.account == account }?.let {
+                LogoutDialog(it, clearing, strings, mobile::confirmLogout, mobile::dismissLogout)
+            }
             conflictKey?.let { id -> editorsByKey[id]?.let { controller ->
                 val state by controller.state.collectAsState()
                 ConflictDialog(state, controller, strings, onFork = { content, attachments ->
@@ -390,16 +388,31 @@ fun MoeriseApp(mobile: MobileController, onEditorReady: () -> Unit = {}) {
     }
     }
 }
+
+@Composable
+internal fun ClearWritingOnStop(leaveWriting: () -> Unit) {
+    val lifecycle = LocalLifecycleOwner.current.lifecycle
+    val exitFocus by rememberUpdatedState(leaveWriting)
+    DisposableEffect(lifecycle) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_STOP) exitFocus()
+        }
+        lifecycle.addObserver(observer)
+        onDispose { lifecycle.removeObserver(observer) }
+    }
+}
+
 @Composable
 private fun HomeEditor(
     state: EditorUiState, controller: EditorController, strings: Strings, onSave: () -> Unit, onConflict: () -> Unit,
-    onCancel: (() -> Unit)? = null, onFocus: (Boolean) -> Unit = {}, onBounds: (Rect) -> Unit = {},
-    onRemoved: () -> Unit = {}, editorTag: String = "note_editor", saveTag: String = "save_note", cancelTag: String? = null,
+    onCancel: (() -> Unit)? = null, onFocus: (Boolean) -> Unit = {}, requestFocus: Boolean = false, consumeFocus: () -> Boolean = { false },
+    editorTag: String = "note_editor", saveTag: String = "save_note", cancelTag: String? = null,
 ) {
     val draft = state.draft ?: return
+    val leaveWriting = LocalLeaveWriting.current
     val editorFocus = remember(draft.id) { FocusRequester() }
-    LaunchedEffect(draft.id, onCancel != null) {
-        if (onCancel != null) editorFocus.requestFocus()
+    LaunchedEffect(draft.id, requestFocus) {
+        if (requestFocus && consumeFocus()) editorFocus.requestFocus()
     }
     val edits = draft.attachmentEdits()
     val baseline = remember(draft.baselineJson) {
@@ -417,9 +430,7 @@ private fun HomeEditor(
     val canSave = !state.busy && !state.importing && draft.conflictJson == null &&
         (draft.content.isNotBlank() || edits.staged.isNotEmpty() ||
             baseline?.attachments?.any { it["name"]?.jsonPrimitive?.content !in edits.removed } == true || state.pending != null)
-    DisposableEffect(draft.id) { onDispose { onFocus(false); onRemoved() } }
-    Surface(modifier = Modifier.onGloballyPositioned { onBounds(it.boundsInRoot()) },
-        shape = RoundedCornerShape(18.dp), border = BorderStroke(1.dp, MoeriseColors.Line), color = Color.White) {
+    Surface(shape = RoundedCornerShape(18.dp), border = BorderStroke(1.dp, MoeriseColors.Line), color = Color.White) {
         Column(Modifier.padding(start = 20.dp, top = 14.dp, end = 20.dp, bottom = 8.dp),
             verticalArrangement = Arrangement.spacedBy(2.dp)) {
             BasicTextField(
@@ -427,12 +438,12 @@ private fun HomeEditor(
                     field = next
                     if (next.text != draft.content) controller.change(next.text)
                 },
-                modifier = Modifier.fillMaxWidth().heightIn(min = 96.dp, max = 320.dp)
+                modifier = Modifier.fillMaxWidth().heightIn(min = 96.dp, max = 320.dp).drawerGestureRegion()
                     .verticalScroll(rememberScrollState()).testTag(editorTag).onPreviewKeyEvent {
                         if (it.type == KeyEventType.KeyDown && it.key == Key.Escape && onCancel != null) {
-                            onCancel(); true
+                            leaveWriting(); onCancel(); true
                         } else if (it.type == KeyEventType.KeyDown && it.key == Key.Enter &&
-                            (it.isCtrlPressed || it.isMetaPressed) && canSave) { onSave(); true } else false
+                            (it.isCtrlPressed || it.isMetaPressed) && canSave) { leaveWriting(); onSave(); true } else false
                     }.focusRequester(editorFocus).onFocusChanged { onFocus(it.isFocused) }.semantics {
                         contentDescription = strings.text("写点什么", "Write a note")
                 },
@@ -479,13 +490,13 @@ private fun HomeEditor(
                     )
                 }
                 Spacer(Modifier.weight(1f))
-                onCancel?.let { TextButton(onClick = it, enabled = !state.busy,
+                onCancel?.let { TextButton(onClick = { leaveWriting(); it() }, enabled = !state.busy,
                     modifier = cancelTag?.let { tag -> Modifier.testTag(tag) } ?: Modifier) { Text(strings.text("取消", "Cancel")) } }
                 if (draft.conflictJson != null) {
-                    WebAction(strings.text("处理冲突", "Resolve conflict"), onClick = onConflict)
+                    WebAction(strings.text("处理冲突", "Resolve conflict"), onClick = { leaveWriting(); onConflict() })
                 } else WebAction(
                     text = strings.text("保存", "Save"),
-                    onClick = onSave, modifier = Modifier.testTag(saveTag),
+                    onClick = { leaveWriting(); onSave() }, modifier = Modifier.testTag(saveTag),
                     enabled = canSave,
                 )
             }

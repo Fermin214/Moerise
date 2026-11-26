@@ -145,6 +145,10 @@ interface LocalDao {
     @Upsert suspend fun putFeature(state: FeatureStateEntity)
     @Query("SELECT body FROM feature_states WHERE accountKey = :key AND feature = :feature")
     suspend fun feature(key: String, feature: String): String?
+    @Query("SELECT accountKey FROM feature_states WHERE feature = :feature")
+    suspend fun featureAccounts(feature: String): List<String>
+    @Query("DELETE FROM feature_states WHERE accountKey = :key AND feature = :feature")
+    suspend fun deleteFeature(key: String, feature: String)
     @Query("DELETE FROM drafts WHERE accountKey = :key") suspend fun deleteDrafts(key: String)
     @Query("DELETE FROM pending_writes WHERE accountKey = :key") suspend fun deleteWrites(key: String)
     @Query("DELETE FROM feature_states WHERE accountKey = :key") suspend fun deleteFeatures(key: String)
@@ -164,6 +168,19 @@ interface LocalDao {
     @Query("SELECT COUNT(*) FROM notes WHERE accountKey = :key AND state = :state") suspend fun countNotes(key: String, state: String): Int
     @Query("SELECT * FROM notes WHERE accountKey = :key AND (:state = 'ALL' OR state = :state) ORDER BY createTime DESC, name DESC")
     suspend fun notesByState(key: String, state: String): List<NoteEntity>
+    @Query("SELECT createTime FROM notes WHERE accountKey = :key AND state = :state AND createTime >= :start AND createTime < :end")
+    suspend fun noteTimes(key: String, state: String, start: String, end: String): List<String>
+    @Query("SELECT createTime FROM notes WHERE accountKey = :key AND createTime >= :start AND createTime < :end")
+    suspend fun noteTimes(key: String, start: String, end: String): List<String>
+    @Query("""
+        SELECT createTime FROM notes
+        WHERE accountKey = :key AND (:state = 'ALL' OR state = :state) AND substr(createTime, 21, 1) = '.'
+          AND CAST(ltrim(substr(createTime, 1, 20), '0') AS INTEGER) >= :start
+          AND CAST(ltrim(substr(createTime, 1, 20), '0') AS INTEGER) < :end
+    """)
+    suspend fun historicNoteTimes(key: String, state: String, start: Long, end: Long): List<String>
+    @Query("SELECT * FROM pending_writes WHERE accountKey = :key")
+    suspend fun accountWrites(key: String): List<PendingWriteEntity>
     @Query("SELECT note_tags.tag AS tag, COUNT(*) AS count FROM note_tags INNER JOIN notes ON notes.accountKey = note_tags.accountKey AND notes.name = note_tags.name WHERE notes.accountKey = :key AND (:state = 'ALL' OR notes.state = :state) GROUP BY note_tags.tag ORDER BY count DESC, note_tags.tag ASC")
     suspend fun tagCounts(key: String, state: String): List<LocalTagRow>
     @Query("SELECT * FROM sync_state WHERE accountKey = :key") suspend fun syncState(key: String): SyncStateEntity?

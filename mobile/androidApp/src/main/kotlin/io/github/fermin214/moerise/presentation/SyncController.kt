@@ -14,6 +14,7 @@ enum class SyncStatus { SYNCING, CONNECTED, OFFLINE, PENDING, ATTENTION, SIGN_IN
 data class SyncUiState(
     val status: SyncStatus = SyncStatus.SYNCING,
     val notes: List<DraftEntity> = emptyList(),
+    val lastSyncAt: Long? = null,
 )
 
 class SyncController internal constructor(
@@ -44,7 +45,13 @@ class SyncController internal constructor(
                 writes.reset()
                 account = key
                 mutable.value = SyncUiState()
-                if (key != null && foreground) start(key)
+                if (key != null) {
+                    try {
+                        val lastSyncAt = repository().lastNoteSync(key)
+                        mutable.update { it.copy(lastSyncAt = lastSyncAt) }
+                    } catch (error: Exception) { if (error is CancellationException) throw error }
+                    if (foreground) start(key)
+                }
             }
         }
     }
@@ -84,7 +91,7 @@ class SyncController internal constructor(
         activeCycle?.cancelAndJoin()
         writes.reset()
         worker = null
-        mutable.value = SyncUiState()
+        mutable.update { SyncUiState(lastSyncAt = it.lastSyncAt) }
     }
 
     suspend fun synchronizeOnce(): Boolean = coroutineScope {
@@ -97,7 +104,7 @@ class SyncController internal constructor(
                 if (session.state.value.busy || account != key) return@withLock false
                 requested = false
                 val queued = repository().queuedNotes(key)
-                mutable.value = SyncUiState(SyncStatus.SYNCING, queued)
+                mutable.update { it.copy(status = SyncStatus.SYNCING, notes = queued) }
                 if (!session.checkConnection()) {
                     privacy?.record("sync", "failure", started, source)
                     mutable.update { it.copy(status = if (session.state.value.needsLogin) SyncStatus.SIGN_IN else SyncStatus.OFFLINE) }
@@ -108,7 +115,7 @@ class SyncController internal constructor(
                 val drained = writes.drain(key, active)
                 if (key != account) return@withLock false
                 if (drained) repo.syncNotes(key, active)
-                if (key != account) return@withLock false
+                if (key != account || key != session.state.value.profile?.accountKey) return@withLock false
                 val notes = repo.queuedNotes(key)
                 val pending = repo.automaticWritesPending(key)
                 mutable.value = SyncUiState(
@@ -116,7 +123,7 @@ class SyncController internal constructor(
                         notes.any { it.conflictJson != null } -> SyncStatus.ATTENTION
                         !drained || pending -> SyncStatus.PENDING
                         else -> SyncStatus.CONNECTED
-                    }, notes)
+                    }, notes, repo.lastNoteSync(key))
                 if (foreground) onRefreshed()
                 privacy?.record("sync", when {
                     notes.any { it.conflictJson != null } -> "conflict"

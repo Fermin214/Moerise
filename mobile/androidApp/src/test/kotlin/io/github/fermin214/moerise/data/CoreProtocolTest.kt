@@ -5,6 +5,7 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 
 import io.github.fermin214.moerise.domain.IdentityChangedException
+import io.github.fermin214.moerise.domain.CoreException
 import io.ktor.client.engine.mock.*
 import io.ktor.http.*
 import kotlin.test.*
@@ -79,6 +80,27 @@ class CoreProtocolTest {
             assertEquals("{}", core.api(HttpMethod.Post, "/notes", body, "fixed"))
             assertEquals(2, writes)
             assertFailsWith<IdentityChangedException> { core.session() }
+        }
+    }
+
+    @Test
+    fun telemetryRejectsCsrfWithoutIssuingAnotherPostInTheSameWindow() = runBlocking<Unit> {
+        val routes = mutableListOf<String>()
+        val origin = "https://notes.example"
+        val engine = MockEngine { request ->
+            val path = request.url.encodedPath.substringAfter("/api/app/v1")
+            routes += path
+            when (path) {
+                "/session" -> respond("""{"instance_id":"one","user":{"name":"users/owner"},"timezone":"UTC","expires_at":"2027-01-01T00:00:00Z","csrf_token":"token"}""")
+                "/telemetry" -> respond("""{"error":{"code":"CSRF_REJECTED"}}""", HttpStatusCode.Forbidden)
+                else -> error(path)
+            }
+        }
+        CoreClient(origin, SessionCookies(origin, MemorySecrets()), engine).use { core ->
+            assertEquals("CSRF_REJECTED", assertFailsWith<CoreException> {
+                core.api(HttpMethod.Post, "/telemetry", "{}")
+            }.detail.code)
+            assertEquals(listOf("/session", "/telemetry"), routes)
         }
     }
 

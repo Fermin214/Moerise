@@ -164,17 +164,21 @@ class SearchController(
         val sourceState = state.value.query.state
         val stamp = ++filterGeneration
         filters?.cancel()
+        reads?.cached(sourceState, month)?.let { page ->
+            mutable.update { it.copy(tags = page.tags.tags, calendar = page.calendar, filtersLoading = false, filtersError = null) }
+            return
+        }
         mutable.update { it.copy(filtersLoading = true, filtersError = null, calendar = it.calendar?.takeIf { page -> page.month == month }) }
         filters = scope.launch {
             try {
-                coroutineScope {
-                    val tagPage = reads?.tags(sourceState) ?: CoreJson.decodeFromString<TagPage>(requireNotNull(active).api(HttpMethod.Get, "/tags?state=$sourceState"))
-                    val calendarPage = reads?.calendar(sourceState, month) ?: CoreJson.decodeFromString<CalendarPage>(requireNotNull(active).api(HttpMethod.Get,
-                        "/calendar?state=$sourceState&month=${month.encodeURLQueryComponent(encodeFull = true)}"))
-                    require(calendarPage.month == month)
-                    if (stamp == filterGeneration && key == account() && sourceState == state.value.query.state) mutable.update { it.copy(
-                        tags = tagPage.tags, calendar = calendarPage, filtersLoading = false) }
-                }
+                val page = reads?.filters(sourceState, month) ?: FilterPage(
+                    CoreJson.decodeFromString(requireNotNull(active).api(HttpMethod.Get, "/tags?state=$sourceState")),
+                    CoreJson.decodeFromString(requireNotNull(active).api(HttpMethod.Get,
+                        "/calendar?state=$sourceState&month=${month.encodeURLQueryComponent(encodeFull = true)}")),
+                )
+                require(page.calendar.month == month)
+                if (stamp == filterGeneration && key == account() && sourceState == state.value.query.state) mutable.update { it.copy(
+                    tags = page.tags.tags, calendar = page.calendar, filtersLoading = false) }
             } catch (error: Exception) {
                 if (error is CancellationException) throw error
                 if (stamp == filterGeneration) mutable.update { it.copy(filtersLoading = false, filtersError = errorCode(error)) }

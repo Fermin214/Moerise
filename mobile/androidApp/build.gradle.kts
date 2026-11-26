@@ -88,6 +88,7 @@ dependencies {
     testImplementation(libs.mockwebserver)
     testImplementation(libs.robolectric)
     testImplementation(libs.androidx.test.core)
+    testImplementation(libs.androidx.compose.test)
     implementation(libs.androidx.activity.compose)
     implementation(libs.androidx.core)
     implementation(libs.androidx.viewmodel)

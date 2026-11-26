@@ -491,6 +491,29 @@ test('mobile navigation, touch gestures, search and rotation preserve drafts and
   assert.deepEqual(errors, []);
 });
 
+test('mobile sync conflict has one cloud status and a distinct sidebar action', async t => {
+  const { page, state, url } = await fixture(t, 'zh-CN', {
+    viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true,
+  });
+  await page.goto(url); await login(page);
+  await page.locator('[data-name="memos/n00"]').waitFor();
+  await menu(page, 'n00', '编辑');
+  const editor = page.locator('form.editor');
+  await editor.locator('textarea').fill('引发冲突的修改');
+  state.conflict = true;
+  await editor.locator('textarea').press('Control+Enter');
+  const conflict = page.getByRole('img', { name: '同步冲突' });
+  await conflict.waitFor();
+  const statusPath = await conflict.locator('path').getAttribute('d');
+
+  await page.locator('#navigation-toggle').tap();
+  const action = page.getByRole('button', { name: '同步笔记', exact: true });
+  await action.waitFor();
+  assert.notEqual(await action.locator('path').getAttribute('d'), statusPath);
+  assert.equal(await action.locator('svg').getAttribute('aria-hidden'), 'true');
+  assert.equal(await page.locator('#sync-status[data-sync="conflict"]').count(), 1);
+});
+
 test('search composition, menu keyboard, route focus and refresh protection preserve input', async t => {
   const { page, state, url, errors } = await fixture(t);
   await page.goto(url); await login(page);

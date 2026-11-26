@@ -110,7 +110,7 @@ fun StarMapScreen(controller: StarMapController, core: CoreClient?, enabled: Boo
                 val readerHeight = minOf(maxHeight * .65f, 544.dp)
                 val readerWidth = (maxWidth * .28f).coerceIn(352.dp, 480.dp)
                 Row(Modifier.fillMaxSize(), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-                    Surface(Modifier.weight(1f).fillMaxHeight(),
+                    Surface(Modifier.weight(1f).fillMaxHeight().drawerGestureRegion(),
                         shape = RoundedCornerShape(if (state.fullScreen) 0.dp else 14.dp),
                         color = Color(0xFF030A14),
                         border = BorderStroke(1.dp, Color(0xFF172638))) {

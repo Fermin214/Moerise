@@ -11,16 +11,28 @@ import io.github.fermin214.moerise.presentation.SearchQuery
 import io.github.fermin214.moerise.presentation.TagCount
 import io.github.fermin214.moerise.presentation.TagPage
 import io.github.fermin214.moerise.presentation.displayServiceTime
+import java.time.YearMonth
+import java.time.ZoneId
 import kotlinx.serialization.json.*
 import kotlin.time.Instant
 import kotlin.time.ExperimentalTime
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 
 
 data class RestoredDraft(val draft: DraftEntity, val pending: PendingWriteEntity?)
+
+data class LocalRemovalCounts(val queued: Int, val conflicts: Int, val attachments: Int) {
+    val requiresConfirmation: Boolean get() = queued > 0 || conflicts > 0 || attachments > 0
+}
 
 private fun Note.toEntity(accountKey: String): NoteEntity = NoteEntity(
     accountKey = accountKey,
@@ -42,8 +54,27 @@ private fun NoteEntity.toNote(): Note = CoreJson.decodeFromString(noteJson)
 class NoteRepository(private val db: LocalDatabase, private val files: AttachmentFiles? = null) {
     private val recoveredAccounts = mutableSetOf<String>()
     private val syncLock = Mutex()
-    private suspend fun <T> transaction(block: suspend () -> T): T =
-        db.useWriterConnection { it.immediateTransaction { block() } }
+    private val removalLock = Mutex()
+    private val pendingRemoval = "pending-account-attachment-removal"
+    private val mutableProjection = MutableStateFlow(0L)
+    internal val projection = mutableProjection.asStateFlow()
+
+    private suspend fun <T> transaction(publishesNotes: Boolean = false, block: suspend () -> T): T {
+        val caller = currentCoroutineContext()
+        return db.useWriterConnection { connection ->
+            if (!publishesNotes) connection.immediateTransaction { block() }
+            else {
+                caller.ensureActive()
+                val result = withContext(NonCancellable) {
+                    val committed = connection.immediateTransaction { block() }
+                    mutableProjection.update { it + 1 }
+                    committed
+                }
+                caller.ensureActive()
+                result
+            }
+        }
+    }
 
     suspend fun restore(key: String, note: Note? = null): RestoredDraft = transaction {
         recoverOnce(key)
@@ -117,7 +148,7 @@ class NoteRepository(private val db: LocalDatabase, private val files: Attachmen
         RestoredDraft(home, db.dao().pending(home.id))
     }
 
-    suspend fun finishQueued(write: PendingWriteEntity, remote: Note) = transaction {
+    suspend fun finishQueued(write: PendingWriteEntity, remote: Note) = transaction(publishesNotes = true) {
         require(remote.instanceId == write.accountKey.split('\u0000')[1])
         db.dao().deleteWrite(write.id)
         db.dao().deleteDraft(write.draftId)
@@ -138,17 +169,54 @@ class NoteRepository(private val db: LocalDatabase, private val files: Attachmen
         RestoredDraft(next, null)
     }
 
-    suspend fun clearAccount(key: String) {
-        val owned = db.dao().drafts(key).flatMap { it.attachmentEdits().staged }
-        transaction {
+    private fun accountAttachments(drafts: List<DraftEntity>, writes: List<PendingWriteEntity>): List<StagedAttachment> =
+        (drafts + (drafts.mapNotNull { it.queuedRevisionJson } + writes.mapNotNull { it.submittedDraftJson })
+            .map { CoreJson.decodeFromString<DraftEntity>(it) })
+            .flatMap { it.attachmentEdits().staged }.distinctBy { it.id }
+
+    suspend fun localRemovalCounts(key: String): LocalRemovalCounts = transaction {
+        val drafts = db.dao().drafts(key)
+        val writes = db.dao().accountWrites(key)
+        val draftIds = drafts.map { it.id }.toSet()
+        val draftWrites = writes.filter { it.draftId in draftIds }
+        val conflicts = (drafts.filter { it.conflictJson != null }.map { it.id } +
+            draftWrites.filter { it.status == "conflict" }.map { it.draftId }).toSet()
+        val queued = (drafts.filter { it.queuedRevisionJson != null }.map { it.id } +
+            draftWrites.filter { it.status != "conflict" }.map { it.draftId }).toSet() - conflicts
+        LocalRemovalCounts(queued.size, conflicts.size, accountAttachments(drafts, writes).size)
+    }
+
+    suspend fun clearAccount(key: String) = removalLock.withLock {
+        transaction(publishesNotes = true) {
+            val attachments = pendingAttachmentRemoval(key) +
+                accountAttachments(db.dao().drafts(key), db.dao().accountWrites(key)).map { it.id }
             db.dao().deleteWrites(key); db.dao().deleteDrafts(key); db.dao().deleteSnapshots(key)
             db.dao().deleteFeatures(key); db.dao().deleteProfile(key)
             db.dao().deleteAllNoteTags(key); db.dao().deleteAllNotes(key)
             db.dao().deleteSyncState(key); db.dao().deleteCachedSnapshots(key)
+            if (attachments.isNotEmpty() && files != null) putFeature(key, pendingRemoval, CoreJson.encodeToString(attachments.distinct()))
         }
-        val remaining = attachmentIds()
-        owned.distinctBy { it.id }.filter { it.id !in remaining }.forEach { files?.remove(it) }
-        files?.collect(remaining, 0)
+        finishAttachmentRemoval(key)
+    }
+
+    private suspend fun pendingAttachmentRemoval(key: String): List<String> =
+        feature(key, pendingRemoval)?.let { CoreJson.decodeFromString<List<String>>(it) }.orEmpty()
+
+    private suspend fun finishAttachmentRemoval(key: String) {
+        val storage = files ?: return
+        val pending = pendingAttachmentRemoval(key)
+        if (pending.isEmpty()) return
+        val referenced = attachmentIds()
+        for ((index, id) in pending.withIndex()) {
+            if (id !in referenced) storage.remove(id)
+            val remaining = pending.drop(index + 1)
+            if (remaining.isEmpty()) db.dao().deleteFeature(key, pendingRemoval)
+            else putFeature(key, pendingRemoval, CoreJson.encodeToString(remaining))
+        }
+    }
+
+    suspend fun resumeAttachmentRemovals() = removalLock.withLock {
+        for (key in db.dao().featureAccounts(pendingRemoval)) finishAttachmentRemoval(key)
     }
 
     suspend fun prepare(draft: DraftEntity, stored: DraftEntity = draft): PendingWriteEntity = withContext(Dispatchers.Default) {
@@ -193,17 +261,18 @@ class NoteRepository(private val db: LocalDatabase, private val files: Attachmen
 
     suspend fun status(write: PendingWriteEntity, status: String) { db.dao().writeStatus(write.id, write.accountKey, status) }
 
-    suspend fun confirm(write: PendingWriteEntity, next: DraftEntity, remote: Note?, conflict: Boolean) = transaction {
-        require(next.accountKey == write.accountKey)
-        if (write.draftId != next.id) db.dao().deleteDraft(write.draftId)
-        db.dao().putDraft(next)
-        if (conflict) db.dao().putWrite(write.copy(status = "conflict"))
-        else db.dao().deleteWrite(write.id)
-        if (remote != null) {
-            upsertLocalNoteLocked(write.accountKey, remote)
-            updateSnapshot(write.accountKey, remote)
+    suspend fun confirm(write: PendingWriteEntity, next: DraftEntity, remote: Note?, conflict: Boolean) =
+        transaction(publishesNotes = remote != null) {
+            require(next.accountKey == write.accountKey)
+            if (write.draftId != next.id) db.dao().deleteDraft(write.draftId)
+            db.dao().putDraft(next)
+            if (conflict) db.dao().putWrite(write.copy(status = "conflict"))
+            else db.dao().deleteWrite(write.id)
+            if (remote != null) {
+                upsertLocalNoteLocked(write.accountKey, remote)
+                updateSnapshot(write.accountKey, remote)
+            }
         }
-    }
 
     private suspend fun upsertLocalNoteLocked(key: String, note: Note) {
         db.dao().deleteNoteTagsByName(key, listOf(note.name))
@@ -217,15 +286,16 @@ class NoteRepository(private val db: LocalDatabase, private val files: Attachmen
         db.dao().deleteNotesByName(key, listOf(name))
     }
 
-    suspend fun recordLocalNote(key: String, note: Note) = transaction {
+    suspend fun recordLocalNote(key: String, note: Note) = transaction(publishesNotes = true) {
         upsertLocalNoteLocked(key, note)
     }
 
-    suspend fun deleteLocalNote(key: String, name: String) = transaction {
+    suspend fun deleteLocalNote(key: String, name: String) = transaction(publishesNotes = true) {
         deleteLocalNoteLocked(key, name)
     }
 
     suspend fun isNotesSynced(key: String): Boolean = db.dao().syncState(key)?.initialized == true
+    suspend fun lastNoteSync(key: String): Long? = db.dao().syncState(key)?.updatedAt
 
     suspend fun syncNotes(key: String, core: CoreClient): Boolean = syncLock.withLock {
         val instance = key.split('\u0000').getOrNull(1).orEmpty()
@@ -252,7 +322,8 @@ class NoteRepository(private val db: LocalDatabase, private val files: Attachmen
         val deletions = changes.deletions
         val generation = changes.generation
         val now = epochMillis()
-        transaction {
+        val projectionChanged = reset || upserts.isNotEmpty() || deletions.isNotEmpty()
+        transaction(publishesNotes = projectionChanged) {
             if (reset) {
                 db.dao().deleteAllNoteTags(key)
                 db.dao().deleteAllNotes(key)
@@ -269,7 +340,7 @@ class NoteRepository(private val db: LocalDatabase, private val files: Attachmen
             }
             db.dao().putSyncState(SyncStateEntity(key, cursor, generation, initialized = true, updatedAt = now))
         }
-        reset || upserts.isNotEmpty() || deletions.isNotEmpty()
+        projectionChanged
     }
 
     suspend fun localWalkNote(key: String, visited: List<String>): Note? = db.dao().walkNote(key, visited)?.toNote()
@@ -286,13 +357,22 @@ class NoteRepository(private val db: LocalDatabase, private val files: Attachmen
         TagPage(db.dao().tagCounts(key, state).map { TagCount(it.tag, it.count) })
 
     suspend fun localCalendarPage(key: String, state: String, month: String, timezone: String): CalendarPage {
-        val counts = linkedMapOf<String, Int>()
-        db.dao().notesByState(key, state).forEach { entity ->
-            val note = entity.toNote()
-            val day = displayServiceTime(note.createTime, timezone).take(10)
-            if (day.startsWith("$month-")) counts[day] = (counts[day] ?: 0) + 1
+        val yearMonth = YearMonth.parse(month)
+        val zone = ZoneId.of(timezone)
+        val start = yearMonth.atDay(1).atStartOfDay(zone).toInstant()
+        val end = yearMonth.plusMonths(1).atDay(1).atStartOfDay(zone).toInstant()
+        val times = if (start.epochSecond < 0) db.dao().historicNoteTimes(key, state, start.epochSecond, end.epochSecond)
+        else {
+            val lower = sortableTime(start.toString())
+            val upper = sortableTime(end.toString())
+            if (state == "ALL") db.dao().noteTimes(key, lower, upper) else db.dao().noteTimes(key, state, lower, upper)
         }
-        return CalendarPage(month, counts.entries.sortedBy { it.key }.map { (date, count) -> DayCount(date, count) })
+        val counts = times.groupingBy { time ->
+            val seconds = time.substringBefore('.').trimStart('0').ifEmpty { "0" }.toLong()
+            val nanos = time.substringAfter('.').toLong()
+            java.time.Instant.ofEpochSecond(seconds, nanos).atZone(zone).toLocalDate().toString()
+        }.eachCount()
+        return CalendarPage(month, counts.toSortedMap().map { (date, count) -> DayCount(date, count) })
     }
 
     suspend fun localSearch(key: String, query: SearchQuery, timezone: String, limit: Int, offset: Int): Pair<List<Note>, Boolean> {
@@ -370,7 +450,7 @@ class NoteRepository(private val db: LocalDatabase, private val files: Attachmen
             "/notes/${name.removePrefix("memos/")}", body, 0).also { db.dao().putWrite(it) }
     }
 
-    suspend fun finishAction(write: PendingWriteEntity, remote: Note?, name: String) = transaction {
+    suspend fun finishAction(write: PendingWriteEntity, remote: Note?, name: String) = transaction(publishesNotes = true) {
         db.dao().deleteWrite(write.id)
         if (remote != null) {
             upsertLocalNoteLocked(write.accountKey, remote)

@@ -328,9 +328,6 @@ internal fun AndroidComposeTestRule<FixtureActivityRule, MainActivity>.navigate(
     dismissKeyboard()
     clickTag("open_menu")
     waitForTag("sidebar_scroll")
-    if (page == "archive") {
-        clickTag("account_menu")
-    }
     acceptanceStep("导航：进入$page")
     clickTag("nav_$page")
     waitUntil(20_000) { runCatching { onNodeWithTag("sidebar_scroll").assertIsNotDisplayed() }.isSuccess }

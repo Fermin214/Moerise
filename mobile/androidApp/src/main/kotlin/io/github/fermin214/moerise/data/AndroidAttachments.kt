@@ -31,7 +31,11 @@ class AttachmentFiles constructor(private val root: String) {
         require(sha256(bytes) == file.sha256) { "ATTACHMENT_CHANGED" }
         Base64.getEncoder().encodeToString(bytes)
     }
-    suspend fun remove(file: StagedAttachment) = withContext(Dispatchers.IO) { file(file.id).delete(); Unit }
+    suspend fun remove(file: StagedAttachment) = remove(file.id)
+    internal suspend fun remove(id: String) = withContext(Dispatchers.IO) {
+        java.nio.file.Files.deleteIfExists(file(id).toPath())
+        Unit
+    }
     suspend fun collect(referenced: Set<String>, minimumAgeMillis: Long = 24 * 60 * 60 * 1000L) = withContext(Dispatchers.IO) {
         val cutoff = System.currentTimeMillis() - minimumAgeMillis
         File(root).listFiles()?.filter { it.name !in referenced && it.lastModified() <= cutoff }?.forEach { it.delete() }
