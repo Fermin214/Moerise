@@ -65,6 +65,12 @@ button:disabled { cursor:default; opacity:.5; }
 .note-content h1,.note-content h2,.note-content h3,.note-content h4 { margin:10px 0; line-height:1.5; font-size:1.15em; }
 .note-content h1 { font-size:1.35em; }
 .note-content a { color:#2A5BB5; text-decoration:underline; }
+.inline-tag { color:#2A5BB5; }
+button.inline-tag { display:inline; padding:0; border:0; background:none; font:inherit; color:#2A5BB5; cursor:pointer; }
+button.inline-tag:hover { text-decoration:underline; }
+.clipboard-field { position:fixed; inset-block-start:0; inset-inline-start:0; opacity:0; pointer-events:none; }
+.clipboard-status { color:var(--muted); font-size:13px; }
+.clipboard-status:empty { position:absolute; }
 .note-content pre { overflow-x:auto; background:var(--surface-muted,#F0F4F9); padding:12px; border-radius:8px; white-space:pre; font-size:13px; }
 .note-content code { background:var(--surface-muted,#F0F4F9); border-radius:4px; padding:1px 4px; }
 .note-content pre code { padding:0; }

@@ -46,7 +46,8 @@ jobs:
           }
           core=(internal main.go go.mod go.sum ':(top,glob)web/*.go' scripts/testweb cmd/moerise-telemetry)
           select_check go "${core[@]}" ':(top,glob)*.go' tests services/layout .github/workflows/checks.yml
-          select_check web web scripts/lib ':(top,glob)scripts/acceptance/*.mjs' .github/workflows/checks.yml
+          select_check web web scripts/lib ':(top,glob)scripts/acceptance/*.mjs' .github/workflows/checks.yml \
+            mobile/core/markdown/src/test/resources/note-presentation.json
           android_scope=$(git diff --no-renames --name-only -z HEAD^1 HEAD | python3 scripts/android/ci-scope.py)
           if [[ "$android_scope" == build ]]; then
             echo "android=true" >> "$GITHUB_OUTPUT"

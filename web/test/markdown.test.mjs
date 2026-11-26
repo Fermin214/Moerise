@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { after, before, test } from 'node:test';
 import { performance } from 'node:perf_hooks';
+import { readFileSync } from 'node:fs';
 import { renderMarkdown, safeLink } from '../src/markdown.js';
 
 class Node {
@@ -27,6 +28,17 @@ after(() => {
 function elements(node, tag) {
   return [...(node.tag === tag ? [node] : []), ...node.children.flatMap(child => elements(child, tag))];
 }
+
+const shared = JSON.parse(readFileSync(new URL('../../mobile/core/markdown/src/test/resources/note-presentation.json', import.meta.url)));
+for (const sample of shared) test(`shared reading contract: ${sample.name}`, () => {
+  const renderedTags = new Set();
+  const result = renderMarkdown('甲'.repeat(sample.repeatPrefix || 0) + sample.content, sample, { renderedTags, onTag: () => {} });
+  assert.deepEqual([...renderedTags], sample.inline);
+  assert.deepEqual([...new Set(sample.tags)].filter(tag => !renderedTags.has(tag)), sample.footer);
+  assert.deepEqual(elements(result, 'button').map(node => node.textContent), sample.inline.map(tag => `#${tag}`));
+  if (sample.blocks) assert.deepEqual(result.children.map(node => [node.tag, node.textContent]), sample.blocks);
+  if (sample.repeatPrefix) assert.deepEqual(elements(result, 'code').map(node => node.textContent), ['代码 #日记 结束']);
+});
 
 const note = {
   name: 'memos/parent',
@@ -66,7 +78,7 @@ test('preserves supported Markdown blocks, inline delimiters and literal untrust
   assert.match(result.textContent, /\[bad\]\(javascript:alert\(1\)\)/);
 });
 
-test('shows native tags once outside the body while preserving Markdown headings and literal markers', () => {
+test('shows recognized inline tags while preserving Markdown headings and literal markers', () => {
   const result = renderMarkdown([
     '正文 #阅读 和 #工作/计划。',
     '',
@@ -88,7 +100,7 @@ test('shows native tags once outside the body while preserving Markdown headings
     '',
     '#工作/计划/后续 #未知',
   ].join('\n'), { tags: ['阅读', '工作/计划', '阅读'] });
-  assert.equal(elements(result, 'p')[0].textContent, '正文  和 。');
+  assert.equal(elements(result, 'p')[0].textContent, '正文 #阅读 和 #工作/计划。');
   assert.equal(elements(result, 'h1')[0].textContent, '阅读');
   assert.equal(elements(result, 'h2')[0].textContent, '标题');
   assert.equal(elements(result, 'pre')[0].textContent, '#阅读');
@@ -159,13 +171,13 @@ test('unmapped or invalid local attachments stay literal and cannot create links
   }
 });
 
-test('delimiter edge cases retain the original inline subset', () => {
+test('inline delimiters retain unmatched backticks as literal text', () => {
   const cases = [
     ['[[label](https://example.test)', '[label', 'a'],
     ['***bold**', '*bold', 'strong'],
     ['**em*', '*em', 'em'],
-    ['``code`', '`code', 'code'],
-    ['`code``', 'code`', 'code'],
+    ['``code`', '``code`', null],
+    ['`code``', '`code``', null],
     ['*** ___ ~~~ []() ` `', '*** ___ ~~~ []()  ', 'code'],
     ['[label\ntext](https://example.test)', '[label\ntext](https://example.test)', null],
     ['[bad](https://example.test/a b)', '[bad](https://example.test/a b)', null],
@@ -174,8 +186,18 @@ test('delimiter edge cases retain the original inline subset', () => {
     const result = renderMarkdown(input);
     assert.equal(result.textContent, output, input);
     if (tag) assert.equal(elements(result, tag).length, 1, input);
-    else assert.equal(elements(result, 'a').length, 0, input);
+    else assert.equal(elements(result, 'a').length + elements(result, 'code').length, 0, input);
   }
+});
+
+test('64 KiB of ASCII with a tag renders within a linear scan budget', { timeout: 5_000 }, () => {
+  const suffix = ' custom+scheme://example.test/#日记 #日记';
+  const input = 'A'.repeat(65_536 - Buffer.byteLength(suffix)) + suffix;
+  const start = performance.now();
+  const result = renderMarkdown(input, { tags: ['日记'] }, { onTag: () => {} });
+  assert.ok(performance.now() - start < 1_000);
+  assert.equal(result.textContent, input);
+  assert.deepEqual(elements(result, 'button').map(node => node.textContent), ['#日记']);
 });
 
 test('64 KiB unclosed inline inputs render within a linear scan budget', { timeout: 5_000 }, () => {

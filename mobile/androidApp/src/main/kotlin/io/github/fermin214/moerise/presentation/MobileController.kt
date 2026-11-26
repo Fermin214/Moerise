@@ -10,6 +10,8 @@ import kotlinx.serialization.json.*
 
 data class LogoutState(val account: String, val counts: LocalRemovalCounts? = null, val error: String? = null)
 
+enum class SaveOutcome { COMMITTED, NOT_COMMITTED }
+
 class MobileController(
     val session: SessionController,
     private val repository: suspend () -> NoteRepository,
@@ -39,11 +41,14 @@ class MobileController(
     fun consumeEditorFocus(editor: EditorController): Boolean =
         mutableEditorFocus.compareAndSet(editor, null)
     val noteEditor: EditorController get() = focusedEditor?.let(::getNoteEditor) ?: editor
-    val timeline = TimelineController(repository, { session.core }, scope)
-    val archive = TimelineController(repository, { session.core }, scope, "ARCHIVED")
+    private fun accountVisible(account: String) = session.state.value.let {
+        it.profile?.accountKey == account && !it.needsLogin && !clearing.value
+    }
+    val timeline = TimelineController(repository, { session.core }, scope, visible = ::accountVisible)
+    val archive = TimelineController(repository, { session.core }, scope, "ARCHIVED", ::accountVisible)
     val filterReads = FilterReads(repository, { session.core?.takeIf { session.state.value.connected } }, { session.state.value.profile?.takeUnless { session.state.value.needsLogin }?.accountKey },
         { session.state.value.profile?.timezone ?: "UTC" }, scope)
-    val search = SearchController({ session.core }, { session.state.value.profile?.accountKey }, scope, filterReads, privacy, repository) {
+    val search = SearchController({ session.core }, { session.state.value.profile?.accountKey?.takeIf(::accountVisible) }, scope, filterReads, privacy, repository) {
         session.state.value.profile?.timezone ?: "UTC"
     }
     val sidebar = SearchController({ session.core }, { session.state.value.profile?.accountKey }, scope, filterReads, repository = repository) {
@@ -71,25 +76,28 @@ class MobileController(
             editor.state.value.let { it.accountKey == key && it.draft != null }
         } }, privacy, onProjected = { key, previous, note ->
             if (session.state.value.profile?.accountKey == key) filterReads.changed(previous, note)
-        }) { key, note, draftId ->
-        timeline.onSaved(key, note, draftId); homeNote.acceptSaved(key, note)
+        }, onSaved = ::noteSaved, onCommitted = ::writeCommitted)
+    val sync: SyncController = SyncController(session, repository, writes, scope, { refreshTimelines() }, initialForeground, privacy,
+        draftLock = editorLock)
+    private fun noteSaved(key: String, note: Note, draftId: String?) {
+        if (!accountVisible(key)) return
+        val stableKey = if (draftId != null) {
+            sync.state.value.notes.firstOrNull { it.id == draftId }?.targetName?.let { previous ->
+                timeline.state.value.displayKeys[previous] ?: previous
+            } ?: "queued:$draftId"
+        } else null
+        timeline.onSaved(key, note, displayKey = stableKey)
+        archive.onSaved(key, note, displayKey = stableKey)
+        search.replaceNote(note, refresh = inForeground && visiblePage in setOf("home", "archive"))
+        homeNote.acceptSaved(key, note)
     }
-    val sync = SyncController(session, repository, writes, scope, {
-        scope.launch {
-            val account = session.state.value.profile?.accountKey ?: return@launch
-            val synced = runCatching { repository().isNotesSynced(account) }.getOrDefault(false)
-            if (synced) {
-                timeline.reloadLocal()
-                archive.reloadLocal()
-            } else {
-                timeline.refresh()
-                if (archive.state.value.fresh) archive.refresh()
-            }
-            runCatching { repository().collectFiles() }
-        }
-    }, initialForeground, privacy)
+
+    private fun writeCommitted(key: String, remaining: DraftEntity?, write: PendingWriteEntity) {
+        if (accountVisible(key)) sync.confirmEnqueued(write.draftId, remaining)
+    }
     private val mutableEditing = MutableStateFlow(false)
     val editing = mutableEditing.asStateFlow()
+    private val editorRestoreFinished = MutableStateFlow<String?>(null)
     private val editorFrameAccount = MutableStateFlow<String?>(null)
     private val mutableClearing = MutableStateFlow(false)
     val clearing = mutableClearing.asStateFlow()
@@ -102,10 +110,26 @@ class MobileController(
     private val inForeground get() = foregroundState.value
     private val prefetchAllowed = MutableStateFlow(initialForeground)
     private val filterSource = MutableStateFlow("NORMAL")
+    private var refreshJob: Job? = null
+
+    private fun refreshTimelines(active: String? = visiblePage) {
+        refreshJob?.cancel()
+        refreshJob = scope.launch {
+            suspend fun refresh(list: TimelineController, legacyFallback: Boolean) {
+                try { list.refreshProjection(legacyFallback) }
+                catch (error: Exception) { if (error is CancellationException) throw error }
+            }
+            if (editorFrameAccount.value != null || active != null && active != "home") refresh(timeline, active != "archive")
+            refresh(archive, active == "archive" || archive.state.value.fresh)
+        }
+    }
 
     fun page(value: String?) {
+        val switched = visiblePage != value
         visiblePage = value
+        if (switched && value in setOf("home", "archive")) refreshTimelines(value)
         if (value == "home" || value == "archive") filterSource.value = if (value == "home") "NORMAL" else "ARCHIVED"
+        refreshVisibleSearch()
         prefetchAllowed.value = inForeground && (value == null || value == "home")
         updateDiscovery()
         if (value == "drafts" && !clearing.value) scope.launch {
@@ -113,13 +137,20 @@ class MobileController(
         }
     }
     fun foreground(value: Boolean) {
+        if (value && !inForeground) refreshTimelines()
         foregroundState.value = value
         privacy.foreground(value)
         prefetchAllowed.value = value && (visiblePage == null || visiblePage == "home")
         sync.foreground(value)
         if (!value) search.leave()
+        else refreshVisibleSearch()
         if (!value) onQueueChanged()
         updateDiscovery()
+    }
+
+    private fun refreshVisibleSearch() {
+        if (inForeground && visiblePage in setOf("home", "archive") &&
+            search.state.value.query.state == filterSource.value) search.refreshIfNeeded()
     }
     private fun updateDiscovery() {
         val available = session.state.value.profile != null && !session.state.value.needsLogin && inForeground && !clearing.value
@@ -178,6 +209,7 @@ class MobileController(
                 filterSource.value = "NORMAL"
                 filterReads.clear(); sidebar.clear()
                 if (logoutState.value?.account != key) mutableLogout.value = null
+                editorRestoreFinished.value = null
                 editorFrameAccount.value = null
                 timeline.reset(key)
                 archive.reset(key)
@@ -190,8 +222,7 @@ class MobileController(
                 noteActions.clear()
                 closeEditors()
                 if (switched) clearDownloadsAfterSessionChange()
-                editor.open(key)
-                if (key != null) restoreEditing(key)
+                restoreEditors(key)
             }
         }
         scope.launch {
@@ -237,7 +268,10 @@ class MobileController(
                 }.distinctUntilChanged(),
             ) { connection, ready -> connection to ready }.collect { (connection, ready) ->
                 if (connection.third) { filterReads.clear(); sidebar.clear(); timeline.hideAccountData(); archive.hideAccountData(); search.clear(); review.clear(); walk.clear(); stars.clear(); settings.clear(); homeNote.clear(); clearDownloadsAfterSessionChange() }
-                else if (!clearing.value && connection.second && connection.first?.accountKey == ready && ready != null) timeline.refresh()
+                else if (!clearing.value) {
+                    timeline.revealAccountData(); archive.revealAccountData()
+                    if (connection.second && connection.first?.accountKey == ready && ready != null) refreshTimelines()
+                }
                 if (connection.first?.stargazingEnabled == false) stars.clear()
                 updateDiscovery()
             }
@@ -265,23 +299,22 @@ class MobileController(
             if (clearing.value) return@launch
             mutableLocalError.value = null
             val account = session.state.value.profile?.accountKey
-            editor.open(account)
-            if (account != null && mutableNoteEditors.value.isEmpty()) restoreEditing(account)
+            restoreEditors(account)
         }
     }
     fun save() {
         val key = focusedEditor
         if (key != null && getNoteEditor(key) != null) saveNote(key) else saveComposer()
     }
-    fun saveComposer() {
+    fun saveComposer(onResult: (SaveOutcome) -> Unit = {}) {
         scope.launch {
-            if (clearing.value) return@launch
+            if (clearing.value) { onResult(SaveOutcome.NOT_COMMITTED); return@launch }
             registryLock.withLock {
-                if (mutableNoteEditors.value.isNotEmpty()) return@withLock
                 if (enqueue(editor, true)) {
-                    sync.changed()
+                    sync.request(SyncTrigger.ENQUEUED)
+                    onResult(SaveOutcome.COMMITTED)
                     onQueueChanged()
-                }
+                } else onResult(SaveOutcome.NOT_COMMITTED)
             }
         }
     }
@@ -291,8 +324,9 @@ class MobileController(
             registryLock.withLock {
                 val active = getNoteEditor(key) ?: return@withLock
                 if (enqueue(active, false)) {
-                    if (!forgetEditing(active, persist = false)) return@withLock
-                    sync.changed()
+                    sync.request(SyncTrigger.ENQUEUED)
+                    removeEditor(active, persist = false)
+                    mutableLocalError.value = null
                     onQueueChanged()
                 }
             }
@@ -304,10 +338,15 @@ class MobileController(
     private suspend fun enqueue(editor: EditorController, returnHome: Boolean): Boolean {
         val draft = editor.state.value.draft ?: return false
         val started = epochMillis()
-        val queued = editor.enqueue(returnHome) { frozen -> privacy.beginWrite("${frozen.id}:${frozen.revision}", started) }
+        val queued = editor.enqueue(returnHome) { frozen ->
+            sync.publishEnqueued(frozen)
+            runCatching { privacy.beginWrite("${frozen.id}:${frozen.revision}", started) }
+        }
         val result = if (queued) "success" else "failure"
-        privacy.record(if (draft.targetName == null) "create" else "edit", result, started)
-        privacy.record("enqueue", result, started, code = editor.state.value.error)
+        runCatching {
+            privacy.record(if (draft.targetName == null) "create" else "edit", result, started)
+            privacy.record("enqueue", result, started, code = editor.state.value.error)
+        }
         return queued
     }
     fun changeNoteState(note: Note) {
@@ -340,13 +379,12 @@ class MobileController(
         homeNote.open(name, fallback, at, online = session.state.value.connected)
     }
     fun closeNote() { flush(); homeNote.clear() }
-    fun editNote(note: Note) {
-        openEditing(note.name, { controller, account, onRestored ->
-            val queued = repository().queuedNotes(account).firstOrNull { it.targetName == note.name }
-            if (queued != null) controller.openStored(account, queued.id, onRestored)
-            else controller.open(account, note, onRestored)
-        }) {
-            openNote(note.name, note)
+    fun editNote(note: Note, onComposer: () -> Unit = {}) {
+        openEditing(note.name, note, onComposer = onComposer) {
+            val query = search.state.value.query
+            if (visiblePage in setOf("home", "archive") &&
+                query.filtered) homeNote.clear()
+            else openNote(note.name, note)
         }
     }
     fun finishEditing() {
@@ -361,8 +399,8 @@ class MobileController(
         }
     }
 
-    fun openDraft(id: String, onOpened: () -> Unit) {
-        openEditing(id, { controller, account, onRestored -> controller.openStored(account, id, onRestored) }) {
+    fun openDraft(id: String, onComposer: () -> Unit = {}, onOpened: () -> Unit) {
+        openEditing(id, draftId = id, onComposer = onComposer) {
             homeNote.clear(); page("home"); onOpened()
         }
     }
@@ -375,6 +413,19 @@ class MobileController(
             }
     }
 
+    internal fun attachmentTarget(account: String, id: String): EditorController? =
+        if (!accountVisible(account)) null else (listOf(editor) + mutableNoteEditors.value.values).firstOrNull {
+            it.state.value.draft?.let { draft -> draft.accountKey == account && draft.id == id } == true
+        }
+
+    internal suspend fun awaitAttachmentTarget(account: String, id: String): EditorController? {
+        combine(session.state, editorRestoreFinished, clearing, editor.state, mutableNoteEditors) { connection, finished, removing, _, _ ->
+            !connection.loading && (connection.profile?.accountKey != account || connection.needsLogin ||
+                !connection.busy && !removing && (attachmentTarget(account, id) != null || finished == account))
+        }.first { it }
+        return attachmentTarget(account, id)
+    }
+
     fun focusNoteEditor(key: String) {
         getNoteEditor(key)?.let { active ->
             focusedEditor = mutableNoteEditors.value.entries.firstOrNull { it.value === active }?.key
@@ -383,7 +434,9 @@ class MobileController(
 
     private fun openEditing(
         key: String,
-        restore: suspend (EditorController, String, () -> Unit) -> Unit,
+        note: Note? = null,
+        draftId: String? = null,
+        onComposer: () -> Unit,
         onOpened: () -> Unit,
     ) {
         val focusRevision = editorFocusRevision
@@ -394,14 +447,29 @@ class MobileController(
                 try {
                     mutableLocalError.value = null
                     if (!editor.flushForLifecycle()) return@withLock
+                    val repo = repository()
+                    val stored = if (draftId != null) repo.storedDraftOrNull(account, draftId)?.draft
+                    else repo.queuedNotes(account).firstOrNull { it.targetName == note?.name }
+                    if (!accountVisible(account)) return@withLock
+                    if (stored?.slot == "home" || note != null && editor.state.value.draft?.let {
+                            it.accountKey == account && it.targetName == note.name
+                        } == true) {
+                        onComposer()
+                        return@withLock
+                    }
+                    if (draftId != null && stored == null) {
+                        mutableLocalError.value = "LOCAL_READ_FAILED"
+                        return@withLock
+                    }
                     val existing = getNoteEditor(key)
                     for (previous in mutableNoteEditors.value.values.distinct()) {
                         if (previous !== existing && !removeEditor(previous)) return@withLock
                     }
                     val active = existing ?: newEditor()
-                    if (existing == null) restore(active, account) {
-                        // 恢复与登记共享本机锁，避免同步确认遗漏编辑器。
-                        mutableNoteEditors.value = mapOf(key to active)
+                    if (existing == null) {
+                        val register = { mutableNoteEditors.value = mapOf(key to active) }
+                        if (stored != null) active.openStored(account, stored.id, register)
+                        else active.open(account, requireNotNull(note), register)
                     }
                     if (clearing.value || account != session.state.value.profile?.accountKey || active.state.value.draft == null) {
                         if (!clearing.value && account == session.state.value.profile?.accountKey)
@@ -423,19 +491,33 @@ class MobileController(
     }
 
     private suspend fun rememberEditing(account: String, key: String? = null, id: String? = null) {
-        repository().putFeature(account, "active-note-editor", buildJsonObject {
+        repository().putFeature(account, ACTIVE_NOTE_EDITOR, buildJsonObject {
             key?.let { put("key", it) }
             id?.let { put("draft_id", it) }
         }.toString())
     }
 
-    private suspend fun restoreEditing(account: String) = registryLock.withLock {
+    private suspend fun restoreEditors(account: String?) = registryLock.withLock {
+        editorRestoreFinished.value = null
+        editor.open(account)
+        if (account == null || account != session.state.value.profile?.accountKey) return@withLock
+        if (editor.state.value.let { it.accountKey == account && it.draft != null }) restoreEditing(account)
+        if (account == session.state.value.profile?.accountKey) editorRestoreFinished.value = account
+    }
+
+    private suspend fun restoreEditing(account: String) {
         try {
-            val saved = repository().feature(account, "active-note-editor")
-                ?.let { CoreJson.parseToJsonElement(it).jsonObject } ?: return@withLock
-            val id = saved["draft_id"]?.jsonPrimitive?.content ?: return@withLock
-            val key = saved["key"]?.jsonPrimitive?.content ?: return@withLock
-            if (clearing.value || account != session.state.value.profile?.accountKey) return@withLock
+            if (mutableNoteEditors.value.isNotEmpty()) return
+            val saved = repository().feature(account, ACTIVE_NOTE_EDITOR)
+                ?.let { CoreJson.parseToJsonElement(it).jsonObject } ?: return
+            val id = saved["draft_id"]?.jsonPrimitive?.content ?: return
+            val key = saved["key"]?.jsonPrimitive?.content ?: return
+            val stored = repository().storedDraftOrNull(account, id)
+            if (clearing.value || account != session.state.value.profile?.accountKey) return
+            if (stored == null || stored.draft.slot == "home") {
+                rememberEditing(account)
+                return
+            }
             val active = newEditor()
             active.openStored(account, id) { mutableNoteEditors.value = mapOf(key to active) }
             if (active.state.value.draft != null) {
@@ -540,6 +622,7 @@ class MobileController(
                 if (clearLocal) {
                     removing = true
                     mutableLocalError.value = null
+                    editorRestoreFinished.value = null
                     visiblePage = null
                     editorFrameAccount.value = null
                     updateDiscovery()
@@ -574,8 +657,8 @@ class MobileController(
                 if (currentCoroutineContext().isActive && stopped && !purged && account == session.state.value.profile?.accountKey) {
                     session.recoverAfterRemovalFailure()
                     if (removing) {
-                        timeline.reset(account); archive.reset(account); editor.open(account)
-                        restoreEditing(account)
+                        timeline.reset(account); archive.reset(account)
+                        restoreEditors(account)
                     }
                     if (inForeground) sync.foreground(true)
                 }

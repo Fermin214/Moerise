@@ -31,6 +31,12 @@ import kotlinx.coroutines.withContext
 
 data class RestoredDraft(val draft: DraftEntity, val pending: PendingWriteEntity?)
 
+internal data class QueuedDraft(val frozen: DraftEntity, val home: RestoredDraft)
+
+internal const val ACTIVE_NOTE_EDITOR = "active-note-editor"
+
+enum class SyncNotesOutcome { UPDATED, NO_CHANGES, UNSUPPORTED_LEGACY }
+
 data class LocalRemovalCounts(val queued: Int, val conflicts: Int, val attachments: Int) {
     val requiresConfirmation: Boolean get() = queued > 0 || conflicts > 0 || attachments > 0
 }
@@ -104,9 +110,12 @@ class NoteRepository(private val db: LocalDatabase, private val files: Attachmen
 
     suspend fun persist(draft: DraftEntity) { db.dao().putDraft(draft) }
 
-    suspend fun storedDraft(key: String, id: String): RestoredDraft = transaction {
+    suspend fun storedDraft(key: String, id: String): RestoredDraft =
+        requireNotNull(storedDraftOrNull(key, id)) { "DRAFT_NOT_FOUND" }
+
+    internal suspend fun storedDraftOrNull(key: String, id: String): RestoredDraft? = transaction {
         recoverOnce(key)
-        val draft = requireNotNull(db.dao().draft(id)) { "DRAFT_NOT_FOUND" }
+        val draft = db.dao().draft(id) ?: return@transaction null
         require(draft.accountKey == key) { "ACCOUNT_CHANGED" }
         RestoredDraft(draft, db.dao().pending(id))
     }
@@ -138,16 +147,34 @@ class NoteRepository(private val db: LocalDatabase, private val files: Attachmen
         return queuedNotes(key).any { it.conflictJson == null && (it.id in pending || it.queuedRevisionJson != null) }
     }
 
-    suspend fun enqueue(draft: DraftEntity, write: PendingWriteEntity): RestoredDraft = transaction {
+    internal suspend fun enqueue(draft: DraftEntity, write: PendingWriteEntity): QueuedDraft = transaction {
+        enqueueLocked(draft, write)
+    }
+
+    internal suspend fun submit(draft: DraftEntity, clearEditorRegistration: Boolean): QueuedDraft {
+        val prepared = db.dao().pending(draft.id) ?: prepareWrite(draft)
+        currentCoroutineContext().ensureActive()
+        return withContext(NonCancellable) {
+            transaction {
+                val write = db.dao().pending(draft.id) ?: prepared.also { db.dao().putWrite(it) }
+                enqueueLocked(draft, write).also {
+                    if (clearEditorRegistration) putFeature(draft.accountKey, ACTIVE_NOTE_EDITOR, "{}")
+                }
+            }
+        }
+    }
+
+    private suspend fun enqueueLocked(draft: DraftEntity, write: PendingWriteEntity): QueuedDraft {
         require(write.draftId == draft.id && write.accountKey == draft.accountKey)
         require(db.dao().pending(draft.id)?.id == write.id)
         val queued = draft.copy(slot = "queued:${draft.id}",
             createdAt = if (draft.slot.startsWith("queued:") && draft.createdAt > 0) draft.createdAt else epochMillis(),
             queuedRevisionJson = null)
-        db.dao().putDraft(queued.copy(queuedRevisionJson = CoreJson.encodeToString(queued)))
+        val frozen = queued.copy(queuedRevisionJson = CoreJson.encodeToString(queued))
+        db.dao().putDraft(frozen)
         val home = db.dao().homeDraft(draft.accountKey) ?: DraftEntity(newLocalId(), draft.accountKey, "", 0, createdAt = epochMillis())
         db.dao().putDraft(home)
-        RestoredDraft(home, db.dao().pending(home.id))
+        return QueuedDraft(frozen, RestoredDraft(home, db.dao().pending(home.id)))
     }
 
     suspend fun finishQueued(write: PendingWriteEntity, remote: Note) = transaction(publishesNotes = true) {
@@ -237,8 +264,19 @@ class NoteRepository(private val db: LocalDatabase, private val files: Attachmen
         for (key in db.dao().featureAccounts(pendingRemoval)) finishAttachmentRemoval(key)
     }
 
-    suspend fun prepare(draft: DraftEntity, stored: DraftEntity = draft): PendingWriteEntity = withContext(Dispatchers.Default) {
-        db.dao().pending(draft.id)?.let { return@withContext it }
+    suspend fun prepare(draft: DraftEntity, stored: DraftEntity = draft): PendingWriteEntity {
+        db.dao().pending(draft.id)?.let { return it }
+        val write = prepareWrite(draft)
+        return transaction {
+            db.dao().pending(draft.id)?.let { return@transaction it }
+            require(stored.id == draft.id && stored.accountKey == draft.accountKey)
+            db.dao().putDraft(stored)
+            db.dao().putWrite(write)
+            write
+        }
+    }
+
+    private suspend fun prepareWrite(draft: DraftEntity): PendingWriteEntity = withContext(Dispatchers.Default) {
         require(draft.conflictJson == null) { "SOURCE_CHANGED" }
         val edits = draft.attachmentEdits()
         val baseline = draft.baselineJson?.let { CoreJson.decodeFromString<Note>(it) }
@@ -265,16 +303,11 @@ class NoteRepository(private val db: LocalDatabase, private val files: Attachmen
             }
         }.toString()
         require(body.encodeToByteArray().size <= 12 * 1024 * 1024) { "ATTACHMENTS_TOO_LARGE" }
-        transaction {
-            db.dao().pending(draft.id)?.let { return@transaction it }
-            require(stored.id == draft.id && stored.accountKey == draft.accountKey)
-            db.dao().putDraft(stored)
-            PendingWriteEntity(newLocalId(), draft.id, draft.accountKey, newLocalId(),
+        PendingWriteEntity(newLocalId(), draft.id, draft.accountKey, newLocalId(),
                 if (target == null) "POST" else "PATCH", if (target == null) "/notes" else "/notes/${target.removePrefix("memos/")}",
                 body, draft.revision,
                 submittedDraftJson = CoreJson.encodeToString(draft.copy(queuedRevisionJson = null)),
-            ).also { db.dao().putWrite(it) }
-        }
+        )
     }
 
     suspend fun status(write: PendingWriteEntity, status: String) { db.dao().writeStatus(write.id, write.accountKey, status) }
@@ -317,7 +350,7 @@ class NoteRepository(private val db: LocalDatabase, private val files: Attachmen
     suspend fun isNotesSynced(key: String): Boolean = db.dao().syncState(key)?.initialized == true
     suspend fun lastNoteSync(key: String): Long? = db.dao().syncState(key)?.updatedAt
 
-    suspend fun syncNotes(key: String, core: CoreClient): Boolean = syncLock.withLock {
+    suspend fun syncNotes(key: String, core: CoreClient): SyncNotesOutcome = syncLock.withLock {
         val instance = key.split('\u0000').getOrNull(1).orEmpty()
         val initial = db.dao().syncState(key)
         var cursor = initial?.cursor.orEmpty()
@@ -330,11 +363,10 @@ class NoteRepository(private val db: LocalDatabase, private val files: Attachmen
                     cursor = page.nextCursor
                     break
                 }
-                
                 cursor = page.nextCursor
             }
         } catch (error: CoreException) {
-            if (error.status == 404 && initial == null) return@withLock false
+            if (error.status == 404 && initial == null) return@withLock SyncNotesOutcome.UNSUPPORTED_LEGACY
             throw error
         }
         val reset = changes.reset
@@ -360,7 +392,7 @@ class NoteRepository(private val db: LocalDatabase, private val files: Attachmen
             }
             db.dao().putSyncState(SyncStateEntity(key, cursor, generation, initialized = true, updatedAt = now))
         }
-        projectionChanged
+        if (projectionChanged) SyncNotesOutcome.UPDATED else SyncNotesOutcome.NO_CHANGES
     }
 
     suspend fun localWalkNote(key: String, visited: List<String>): Note? = db.dao().walkNote(key, visited)?.toNote()
@@ -396,14 +428,9 @@ class NoteRepository(private val db: LocalDatabase, private val files: Attachmen
     }
 
     suspend fun localSearch(key: String, query: SearchQuery, timezone: String, limit: Int, offset: Int): Pair<List<Note>, Boolean> {
-        val needle = query.text.trim()
         val filtered = db.dao().notesByState(key, query.state).asSequence()
             .map { it.toNote() }
-            .filter { note ->
-                (query.tags.isEmpty() || query.tags.all { tag -> tag in note.tags }) &&
-                    (query.date.isEmpty() || displayServiceTime(note.createTime, timezone).take(10) == query.date) &&
-                    (needle.isEmpty() || note.content.contains(needle, ignoreCase = true))
-            }
+            .filter { note -> query.matchesScope(note, timezone) && query.matchesKeyword(note) }
             .drop(offset)
             .take(limit + 1)
             .toList()

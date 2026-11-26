@@ -14,6 +14,7 @@ import io.github.fermin214.moerise.data.androidDatabase
 import io.github.fermin214.moerise.domain.CoreException
 import io.github.fermin214.moerise.presentation.MobileController
 import io.github.fermin214.moerise.presentation.SessionController
+import io.github.fermin214.moerise.presentation.SyncTrigger
 import io.github.fermin214.moerise.presentation.androidAttachmentFiles
 import io.github.fermin214.moerise.presentation.clearAttachmentCache
 import kotlinx.coroutines.CancellationException
@@ -103,7 +104,6 @@ class AndroidRuntime(application: MoeriseApplication) {
         inForeground = value
         mobile.foreground(value)
         queueChecks.trySend(Unit)
-        if (value) mobile.sync.request()
     }
 
     private suspend fun reconcileJob() {
@@ -173,8 +173,9 @@ class AndroidRuntime(application: MoeriseApplication) {
         val key = connection.profile?.accountKey ?: return@sync false
         if (connection.needsLogin) return@sync false
         val repo = repository.await()
-        if (!repo.automaticWritesPending(key)) return@sync false
-        mobile.sync.synchronizeOnce()
+        mobile.sync.synchronizeOnce(SyncTrigger.BACKGROUND_JOB) {
+            key == session.state.value.profile?.accountKey && !mobile.clearing.value
+        }
         val latest = session.state.value
         val activeKey = latest.profile?.accountKey
         activeKey != null && !latest.needsLogin && repo.automaticWritesPending(activeKey)
@@ -182,29 +183,15 @@ class AndroidRuntime(application: MoeriseApplication) {
 
     private fun observeNetwork(context: Context) {
         val connectivity = requireNotNull(context.getSystemService(ConnectivityManager::class.java))
+        val availability = NetworkAvailability<Network>(::networkChanged)
         val callback = object : ConnectivityManager.NetworkCallback() {
-            private var current: Network? = null
-            private var validated = false
-
-            override fun onAvailable(network: Network) {
-                current = network
-                validated = false
-                networkChanged()
-            }
+            override fun onAvailable(network: Network) = availability.available(network)
 
             override fun onCapabilitiesChanged(network: Network, capabilities: NetworkCapabilities) {
-                if (network != current) return
-                val ready = capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
-                if (ready && !validated) networkChanged()
-                validated = ready
+                availability.validation(network, capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED))
             }
 
-            override fun onLost(network: Network) {
-                if (network != current) return
-                current = null
-                validated = false
-                networkChanged()
-            }
+            override fun onLost(network: Network) = availability.lost(network)
         }
         try {
             connectivity.registerDefaultNetworkCallback(callback)
@@ -213,10 +200,31 @@ class AndroidRuntime(application: MoeriseApplication) {
         }
     }
 
-    private fun networkChanged() {
+    private fun networkChanged(ready: Boolean, recovered: Boolean) {
         scope.launch {
             queueChecks.trySend(Unit)
-            if (inForeground) mobile.sync.request()
+            if (!ready) mobile.sync.networkUnavailable()
+            if (recovered) mobile.sync.request(SyncTrigger.NETWORK_RECOVERED)
         }
+    }
+}
+
+internal class NetworkAvailability<T : Any>(private val changed: (ready: Boolean, recovered: Boolean) -> Unit) {
+    private var current: T? = null
+    private var validated = false
+
+    fun available(network: T) { current = network }
+
+    fun validation(network: T, ready: Boolean) {
+        if (network != current || ready == validated) return
+        validated = ready
+        changed(ready, ready)
+    }
+
+    fun lost(network: T) {
+        if (network != current) return
+        current = null
+        validated = false
+        changed(false, false)
     }
 }

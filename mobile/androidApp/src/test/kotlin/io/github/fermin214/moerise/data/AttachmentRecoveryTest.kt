@@ -66,7 +66,7 @@ class AttachmentRecoveryTest {
             editor = fixture.composer
             editor.open(key)
             failDownload = false
-            assertTrue(fixture.queue.drain(key, core))
+            assertEquals(1, fixture.queue.drain(key, core).committedCount)
             assertEquals(2, requests.size)
             assertEquals(requests[0], requests[1])
             assertTrue(repo.queuedNotes(key).isEmpty())

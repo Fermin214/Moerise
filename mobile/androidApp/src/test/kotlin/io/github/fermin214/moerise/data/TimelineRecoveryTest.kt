@@ -18,6 +18,46 @@ import kotlinx.coroutines.flow.first
 @Config(manifest = Config.NONE, sdk = [29])
 class TimelineRecoveryTest {
     @Test
+    fun projectionCommittedDuringReadIsDeliveredAndHiddenAccountCannotReload() = runBlocking<Unit> {
+        val folder = Files.createTempDirectory("moerise-timeline-projection-").toFile()
+        val db = testDatabase(folder.resolve("data.sqlite3").absolutePath)
+        val repo = NoteRepository(db)
+        val scope = CoroutineScope(coroutineContext + SupervisorJob())
+        val account = "https://notes.example\u0000one\u0000users/owner"
+        val first = Note("one", "memos/a", "A", "NORMAL", "hash-a")
+        val latest = first.copy(content = "B", sourceHash = "hash-b")
+        var canRead = true
+        var reads = 0
+        val timeline = TimelineController({ repo }, { null }, scope, visible = { canRead }, localPage = { repository, owner, state, size ->
+            val page = repository.localNotesPage(owner, state, size, 0)
+            if (++reads == 1) repository.recordLocalNote(owner, latest)
+            page
+        })
+        try {
+            db.dao().putSyncState(SyncStateEntity(account, "cursor", "generation", true, 1))
+            repo.recordLocalNote(account, first)
+            timeline.reset(account)
+            timeline.refreshProjection()
+            assertEquals(listOf(latest), timeline.state.value.notes)
+            assertEquals(2, reads)
+            timeline.refreshProjection()
+            assertEquals(2, reads)
+
+            canRead = false
+            timeline.hideAccountData()
+            timeline.refreshProjection()
+            timeline.readCache()
+            timeline.more()
+            assertTrue(timeline.state.value.notes.isEmpty())
+            assertEquals(2, reads)
+        } finally {
+            scope.coroutineContext[Job]!!.cancelAndJoin()
+            db.close()
+            folder.deleteRecursively()
+        }
+    }
+
+    @Test
     fun passiveRefreshKeepsCardsStableAndCancellationClearsUserRefresh() = runBlocking<Unit> {
         val folder = Files.createTempDirectory("moerise-timeline-").toFile()
         val db = testDatabase(folder.resolve("data.sqlite3").absolutePath)

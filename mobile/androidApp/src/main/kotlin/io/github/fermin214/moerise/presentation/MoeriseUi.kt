@@ -180,6 +180,7 @@ fun WebToolbar(
     title: String = "Moerise",
     syncStatus: SyncStatus? = null,
     onSync: (() -> Unit)? = null,
+    onCompose: (() -> Unit)? = null,
 ) {
     val searchExpanded = LocalWebSearchOpen.current
     val syncAction = onSync ?: LocalWebSyncAction.current
@@ -196,6 +197,9 @@ fun WebToolbar(
                 stateDescription = if (searchExpanded) strings.text("已展开", "Expanded") else strings.text("已收起", "Closed")
             }) {
                 WebIcon(WebIcon.Search, strings.text("搜索笔记", "Search notes"), Modifier.size(20.dp))
+            }
+            if (onCompose != null) IconButton(onClick = onCompose, modifier = Modifier.size(44.dp).testTag("quick_compose")) {
+                WebIcon(WebIcon.Plus, strings.text("新建笔记", "New note"), Modifier.size(20.dp))
             }
         }
         LocalWebSearchPanel.current?.invoke()

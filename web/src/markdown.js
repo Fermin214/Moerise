@@ -45,39 +45,118 @@ function linkTarget(value, attachments) {
 
 // 每个位置只计算一次后继分隔符，未闭合标记不会反复扫描剩余正文。
 function inlineIndex(text) {
-  const delimiters = ['`', ']', '*', '_', '~', '\n'];
+  const delimiters = [']', '*', '_', '~', '\n'];
   const next = {};
-  for (const key of [...delimiters, 'stop', 'ticks']) {
+  for (const key of [...delimiters, 'stop']) {
     next[key] = new Uint32Array(text.length + 1);
     next[key][text.length] = text.length;
   }
   for (let i = text.length - 1; i >= 0; i--) {
     for (const key of delimiters) next[key][i] = text[i] === key ? i : next[key][i + 1];
     next.stop[i] = /[)\s]/.test(text[i]) ? i : next.stop[i + 1];
-    next.ticks[i] = text[i] === '`' && text[i + 1] === '`' ? next.ticks[i + 1] : i + 1;
   }
   return next;
 }
 
 const emphasis = [['**', 'strong'], ['__', 'strong'], ['*', 'em'], ['~~', 'del']];
 
-function nativeTagText(tags = []) {
-  const names = [...new Set(tags)].filter(tag => typeof tag === 'string' && tag && !/\s/u.test(tag))
-    .sort((a, b) => b.length - a.length).map(tag => tag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
-  if (!names.length) return text => text;
-  const marker = new RegExp(
-    `\\\\[^\\n]|(?:[A-Za-z][A-Za-z0-9+.-]*:\\/\\/|www\\.)[^\\s<>]+|<[^>\\n]+>|!?\\[[^\\]\\n]*\\](?:\\[[^\\]\\n]*\\])?|(^|[\\s.,!?;:()\\[\\]{}<>"'，。！？；：、（）【】《》「」『』“”‘’…-])#(?:${names.join('|')})(?=$|[\\s.,!?;:()\\[\\]{}<>"'，。！？；：、（）【】《》「」『』“”‘’…])`, 'gu');
-  return text => text.split('\n').map(line => /^(?: {4}|\t)/.test(line) ? line :
-    line.replace(marker, (value, before) => before === undefined ? value : before)).join('\n');
+const tagBoundary = /[\s.,!?;:()[\]{}<>"'，。！？；：、（）【】《》「」『』“”‘’…*~`|]/u;
+const protectedText = /\\[^\n]|(?:(?<![A-Za-z0-9+.-])[A-Za-z][A-Za-z0-9+.-]*:\/\/|www\.)[^\s<>]+|<[^<>\n]*>|!?\[[^\[\]\n]*\](?:\([^()\n]*\)|\[[^\[\]\n]*\])?/gu;
+const fenced = /^ {0,3}(`{3,}|~{3,})/;
+const protectedLine = /^(?: {4}|\t| {0,3}(?:#{1,6}(?:\s|$)|\[[^\]]+]:))/;
+const paragraphBoundary = /^(?:#{1,6}\s|>| {0,3}`{3}| {0,3}~{3}|\s*[-+*]\s|\s*\d+\.\s)/;
+
+function fenceMarker(line) {
+  const match = fenced.exec(line);
+  if (match && (!match[1].startsWith('`') || !line.slice(match[0].length).includes('`'))) return match[1];
+}
+
+function tagSpans(text, tags) {
+  if (!tags.length || !text.includes('#') || protectedLine.test(text)) return [];
+  const protectedOffsets = new Uint8Array(text.length);
+  for (const match of text.matchAll(protectedText)) protectedOffsets.fill(1, match.index, match.index + match[0].length);
+  const spans = [];
+  for (let start = text.indexOf('#'); start >= 0; start = text.indexOf('#', start + 1)) {
+    if (protectedOffsets[start] || start && text[start - 1] !== '-' && !tagBoundary.test(text[start - 1])) continue;
+    const tag = tags.find(name => {
+      const end = start + name.length + 1;
+      return text.startsWith(name, start + 1) && (end === text.length || tagBoundary.test(text[end])) &&
+        !protectedOffsets.subarray(start, end).includes(1);
+    });
+    if (tag) spans.push({ start, end: start + tag.length + 1, tag });
+  }
+  return spans;
+}
+
+function removeTagLines(lines, tags) {
+  if (!tags.length) return lines;
+  const kept = lines.slice();
+  for (let start = 0; start < lines.length;) {
+    const marker = fenceMarker(lines[start]);
+    if (marker) {
+      const close = new RegExp(`^ {0,3}${marker[0]}{${marker.length},}\\s*$`);
+      start++;
+      while (start < lines.length && !close.test(lines[start])) start++;
+      start++;
+      continue;
+    }
+    let stop = start + 1;
+    if (lines[start].trim() && !paragraphBoundary.test(lines[start])) {
+      while (stop < lines.length && lines[stop].trim() && !paragraphBoundary.test(lines[stop])) stop++;
+    }
+    const spans = inlineSpans(lines.slice(start, stop).join('\n'), tags);
+    let offset = 0, index = 0;
+    for (let row = start; row < stop; row++) {
+      const line = lines[row], next = offset + line.length + 1;
+      let end = 0, onlyTags = true;
+      while (index < spans.length && spans[index].start < next) {
+        const span = spans[index++];
+        if (line.slice(end, span.start - offset).trim()) onlyTags = false;
+        end = span.end - offset;
+      }
+      if (end && onlyTags && !line.slice(end).trim()) kept[row] = null;
+      offset = next;
+    }
+    start = stop;
+  }
+  const result = [];
+  for (let index = 0; index < kept.length;) {
+    if (kept[index]?.trim()) { result.push(kept[index++]); continue; }
+    const start = index;
+    let removed = false, blank;
+    while (index < kept.length && !kept[index]?.trim()) {
+      if (kept[index] === null) removed = true;
+      else blank ??= kept[index];
+      index++;
+    }
+    if (!removed) result.push(...kept.slice(start, index));
+    else if (result.length && index < kept.length && blank !== undefined) result.push(blank);
+  }
+  return result;
+}
+
+function appendPlain(parent, text, start, end, spans, onTag, renderedTags) {
+  let low = 0, high = spans.length;
+  while (low < high) {
+    const middle = (low + high) >>> 1;
+    if (spans[middle].start < start) low = middle + 1;
+    else high = middle;
+  }
+  for (let index = low; index < spans.length && spans[index].end <= end; index++) {
+    const span = spans[index];
+    parent.append(document.createTextNode(text.slice(start, span.start)));
+    const control = document.createElement(onTag ? 'button' : 'span');
+    control.className = 'inline-tag';
+    control.textContent = `#${span.tag}`;
+    if (onTag) { control.type = 'button'; control.addEventListener('click', () => onTag(span.tag)); }
+    parent.append(control);
+    renderedTags.add(span.tag);
+    start = span.end;
+  }
+  parent.append(document.createTextNode(text.slice(start, end)));
 }
 
 function inlineMatch(text, i, next) {
-  if (text[i] === '`') {
-    const start = next.ticks[i], stop = next['`'][start];
-    if (start < stop && stop < next['\n'][start] && next.ticks[stop] - stop >= start - i) {
-      return { tag: 'code', start, stop, end: stop + start - i };
-    }
-  }
   const image = text[i] === '!' && text[i + 1] === '[';
   if (text[i] === '[' || image) {
     const start = i + (image ? 2 : 1), stop = next[']'][start];
@@ -100,18 +179,71 @@ function inlineMatch(text, i, next) {
   return null;
 }
 
-function inline(parent, text, attachments, cleanText, depth = 0) {
-  if (depth > 8 || !/[`*_~\[]/.test(text)) { parent.append(document.createTextNode(cleanText(text))); return; }
+function escapedAt(text, index) {
+  let slash = index;
+  while (slash > 0 && text[slash - 1] === '\\') slash--;
+  return (index - slash) % 2 !== 0;
+}
+
+function codeSpans(text) {
+  const nextRun = new Map(), matches = [], runs = [...text.matchAll(/`+/g)];
+  const blankLines = [...text.matchAll(/\n[ \t]*\n/g)];
+  let blank = blankLines.length - 1;
+  for (let index = runs.length - 1; index >= 0; index--) {
+    const run = runs[index];
+    while (blank >= 0 && run.index < blankLines[blank].index) {
+      nextRun.clear();
+      blank--;
+    }
+    const opening = run.index + Number(escapedAt(text, run.index));
+    const start = run.index + run[0].length;
+    const size = start - opening;
+    const stop = nextRun.get(size);
+    if (stop !== undefined) matches.push({ opening, tag: 'code', start, stop, end: stop + size });
+    nextRun.set(run[0].length, run.index);
+  }
+  const spans = [];
+  let end = 0;
+  for (const match of matches.reverse()) {
+    if (match.opening < end) continue;
+    spans.push(match);
+    end = match.end;
+  }
+  return spans;
+}
+
+function inlineSpans(text, tags) {
+  if (!tags.length || !text.includes('#')) return [];
+  const spans = [];
+  let offset = 0;
+  const code = codeSpans(text);
+  let protectedIndex = 0;
+  for (const line of text.split('\n')) {
+    for (const span of tagSpans(line, tags)) {
+      const start = span.start + offset, end = span.end + offset;
+      while (protectedIndex < code.length && code[protectedIndex].end <= start) protectedIndex++;
+      if (code[protectedIndex]?.opening < end) continue;
+      spans.push({ start, end, tag: span.tag });
+    }
+    offset += line.length + 1;
+  }
+  return spans;
+}
+
+function inline(parent, text, attachments, spans, onTag, renderedTags, depth = 0) {
+  const append = (start, end) => appendPlain(parent, text, start, end, spans, onTag, renderedTags);
+  if (depth > 8 || !/[`*_~\[]/.test(text)) { append(0, text.length); return; }
   const next = inlineIndex(text);
+  const code = new Map(codeSpans(text).map(span => [span.opening, span]));
   let last = 0;
   for (let i = 0; i < text.length;) {
-    const match = inlineMatch(text, i, next);
+    const match = code.get(i) ?? inlineMatch(text, i, next);
     if (!match) { i++; continue; }
-    parent.append(document.createTextNode(cleanText(text.slice(last, i))));
+    append(last, i);
     const content = text.slice(match.start, match.stop);
     if (match.tag === 'code') {
       const code = document.createElement('code');
-      code.textContent = content;
+      code.textContent = content.replaceAll('\n', ' ');
       parent.append(code);
     } else if (match.tag === 'a') {
       const target = linkTarget(text.slice(match.urlStart, match.urlStop), attachments);
@@ -133,26 +265,29 @@ function inline(parent, text, attachments, cleanText, depth = 0) {
       }
     } else {
       const node = document.createElement(match.tag);
-      inline(node, content, attachments, cleanText, depth + 1);
+      const nested = spans.filter(span => span.start >= match.start && span.end <= match.stop)
+        .map(span => ({ ...span, start: span.start - match.start, end: span.end - match.start }));
+      inline(node, content, attachments, nested, onTag, renderedTags, depth + 1);
       parent.append(node);
     }
     i = last = match.end;
   }
-  parent.append(document.createTextNode(cleanText(text.slice(last))));
+  append(last, text.length);
 }
 
-export function renderMarkdown(text, note) {
+export function renderMarkdown(text, note, { onTag, renderedTags = new Set() } = {}) {
   const attachments = attachmentLinks(note);
-  const cleanText = nativeTagText(note?.tags);
+  const tags = [...new Set(note?.tags || [])].filter(tag => typeof tag === 'string' && tag && !tag.startsWith('#') && !/\s/u.test(tag))
+    .sort((left, right) => right.length - left.length);
   const fragment = document.createDocumentFragment();
-  const lines = text.replace(/\r\n?/g, '\n').split('\n');
+  const lines = removeTagLines(text.replace(/\r\n?/g, '\n').split('\n'), tags);
   for (let i = 0; i < lines.length;) {
     const line = lines[i];
     if (!line.trim()) { i++; continue; }
-    const fence = /^ {0,3}(`{3,}|~{3,})/.exec(line);
+    const fence = fenceMarker(line);
     if (fence) {
       const content = [];
-      const closing = new RegExp(`^ {0,3}${fence[1][0]}{${fence[1].length},}\\s*$`);
+      const closing = new RegExp(`^ {0,3}${fence[0]}{${fence.length},}\\s*$`);
       i++;
       while (i < lines.length && !closing.test(lines[i])) content.push(lines[i++]);
       i++;
@@ -172,10 +307,8 @@ export function renderMarkdown(text, note) {
         const next = /^\s*(?:([-+*])|\d+\.)\s+(.+)$/.exec(lines[i]);
         if (!next || !!next[1] !== !!item[1]) break;
         const li = document.createElement('li');
-        if (cleanText(next[2]).trim()) {
-          inline(li, next[2], attachments, cleanText);
-          list.append(li);
-        }
+        inline(li, next[2], attachments, inlineSpans(next[2], tags), onTag, renderedTags);
+        list.append(li);
         i++;
       }
       if (list.children.length) fragment.append(list);
@@ -184,12 +317,14 @@ export function renderMarkdown(text, note) {
     const block = document.createElement(heading ? `h${heading[1].length}` : quote ? 'blockquote' : 'p');
     const content = [heading ? heading[2] : quote ? quote[1] : line];
     i++;
-    if (!heading && !quote) {
-      while (i < lines.length && lines[i].trim() && !/^(?:#{1,6}\s|>| {0,3}`{3}| {0,3}~{3}|\s*[-+*]\s|\s*\d+\.\s)/.test(lines[i])) content.push(lines[i++]);
+    if (quote) {
+      while (i < lines.length && /^>/.test(lines[i])) content.push(lines[i++].replace(/^>[ \t]?/, ''));
+    } else if (!heading) {
+      while (i < lines.length && lines[i].trim() && !paragraphBoundary.test(lines[i])) content.push(lines[i++]);
     }
     const value = content.join('\n');
-    if (!cleanText(value).trim()) continue;
-    inline(block, value, attachments, cleanText);
+    if (!value.trim()) continue;
+    inline(block, value, attachments, inlineSpans(value, heading ? [] : tags), onTag, renderedTags);
     fragment.append(block);
   }
   return fragment;

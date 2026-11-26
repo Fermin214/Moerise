@@ -23,7 +23,15 @@ import kotlinx.serialization.json.*
 data class SearchQuery(
     val text: String = "", val mode: String = "keyword", val tags: Set<String> = emptySet(),
     val state: String = "NORMAL", val date: String = "",
-)
+) {
+    internal val filtered: Boolean get() = text.isNotBlank() || tags.isNotEmpty() || date.isNotEmpty()
+
+    internal fun matchesScope(note: Note, timezone: String): Boolean =
+        (state == "ALL" || state == note.state) && tags.all { it in note.tags } &&
+            (date.isEmpty() || displayServiceTime(note.createTime, timezone).take(10) == date)
+
+    internal fun matchesKeyword(note: Note): Boolean = note.content.contains(text.trim(), ignoreCase = true)
+}
 
 data class SearchState(
     val query: SearchQuery = SearchQuery(), val notes: List<Note> = emptyList(), val next: String = "",
@@ -45,17 +53,20 @@ class SearchController(
     private var generation = 0L
     private var filterGeneration = 0L
     private var request: Job? = null
+    private var refreshPending = false
     private var filters: Job? = null
     private val cursors = mutableSetOf<String>()
 
     fun clear() {
         cursors.clear()
+        refreshPending = false
         ++generation; ++filterGeneration; request?.cancel(); filters?.cancel()
         mutable.value = SearchState()
     }
 
     fun change(query: SearchQuery) {
         if (query == state.value.query) return
+        refreshPending = false
         ++generation; request?.cancel()
         val stateChanged = query.state != state.value.query.state
         if (stateChanged) {
@@ -79,6 +90,26 @@ class SearchController(
     fun tab(value: Int) { mutable.update { it.copy(tab = value) } }
     fun month(value: String) { mutable.update { it.copy(month = value) } }
 
+    internal fun replaceNote(note: Note, refresh: Boolean) {
+        val zone = timezone()
+        ++generation
+        request?.cancel()
+        request = null
+        refreshPending = state.value.query.filtered
+        mutable.update { current ->
+            val matches = current.query.matchesScope(note, zone) &&
+                (current.query.mode != "keyword" || current.query.matchesKeyword(note))
+            current.copy(notes = current.notes.mapNotNull { previous ->
+                if (previous.name != note.name) previous else note.takeIf { matches }
+            }, next = "", loading = false)
+        }
+        if (refresh) refreshIfNeeded()
+    }
+
+    internal fun refreshIfNeeded() {
+        if (refreshPending && request?.isActive != true) search()
+    }
+
     fun search(append: Boolean = false) {
         val key = account() ?: return
         if (state.value.loading) return
@@ -101,6 +132,7 @@ class SearchController(
                         val (rows, hasMore) = repo.localSearch(key, query, timezone(), 20, offset)
                         if (stamp != generation || key != account()) return@launch
                         val next = if (hasMore) "local:${offset + rows.size}" else ""
+                        if (!append) refreshPending = false
                         mutable.update {
                             it.copy(
                                 notes = (if (append) it.notes + rows else rows).distinctBy { note -> note.name },
@@ -114,6 +146,7 @@ class SearchController(
                         if (!append) privacy?.record(operation, started = started)
                         return@launch
                     }
+                    if (stamp != generation || key != account()) return@launch
                     if (core() == null) return@launch
                     mutable.update { it.copy(loading = true, error = null) }
                 }
@@ -144,7 +177,10 @@ class SearchController(
                     it.state in setOf("NORMAL", "ARCHIVED") && (query.state == "ALL" || it.state == query.state)
                 }) { "ACCOUNT_CHANGED" }
                 if (stamp != generation || key != account()) return@launch
-                if (!append) cursors.clear()
+                if (!append) {
+                    cursors.clear()
+                    refreshPending = false
+                }
                 val next = page.nextPageToken.takeIf { it.isNotBlank() && cursors.add(it) }.orEmpty()
                 mutable.update { it.copy(notes = (if (append) it.notes + page.notes else page.notes).distinctBy { note -> note.name },
                     next = next, responseMode = page.mode, semantic = page.semantic, loading = false) }
@@ -152,7 +188,7 @@ class SearchController(
             } catch (error: Exception) {
                 if (!append && key == account()) privacy?.record(operation, usageResult(error), started, error = error)
                 if (error is CancellationException) throw error
-                if (stamp == generation) mutable.update { it.copy(loading = false, error = errorCode(error)) }
+                if (stamp == generation && key == account()) mutable.update { it.copy(loading = false, error = errorCode(error)) }
             }
         }
     }
@@ -193,5 +229,9 @@ class SearchController(
         }
     }
 
-    fun leave() { ++generation; ++filterGeneration; request?.cancel(); filters?.cancel(); mutable.update { it.copy(loading = false, filtersLoading = false) } }
+    fun leave() {
+        ++generation; ++filterGeneration; request?.cancel(); filters?.cancel()
+        request = null
+        mutable.update { it.copy(loading = false, filtersLoading = false) }
+    }
 }

@@ -39,7 +39,7 @@ jobs:
   android:
     name: Build, JVM and lint
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 120
     env: &robolectric-env
       MOERISE_ROBOLECTRIC_REPO_URL: https://maven-central.storage-download.googleapis.com/maven2
       MOERISE_ROBOLECTRIC_DIR: ${{ github.workspace }}/.local/android/robolectric

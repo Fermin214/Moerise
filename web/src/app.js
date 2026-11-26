@@ -84,7 +84,10 @@ function readCapabilities() {
   return capabilitiesRequest;
 }
 const searchInput = bindSearchInput($('q'), query => sidebarFilter({ query }));
-const discoveryCard = (note, review = false, className) => renderReadingCard(note, { review, className, formatTime, openNote });
+const discoveryCard = (note, review = false, className) => renderReadingCard(note, {
+  review, className, formatTime, openNote,
+  onTag: tag => navigate(timelineURL('/', { tags: [tag] })),
+});
 const pageDirty = () => settingsPage?.hasChanges();
 const leaveGuard = createLeaveGuard(() => !!identity && (pageDirty() || draft.locked || readingFiles ||
   !!draft.content.trim() || !!draft.attachments.length || [...editors.values()].some(editor => editor.hasChanges())));

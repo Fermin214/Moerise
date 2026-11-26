@@ -5,4 +5,5 @@ kotlin { jvmToolchain(17) }
 dependencies {
     implementation(libs.markdown.parser)
     testImplementation(kotlin("test"))
+    testImplementation(libs.serialization.json)
 }

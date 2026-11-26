@@ -2,17 +2,63 @@ package io.github.fermin214.moerise.presentation
 
 import kotlin.test.Test
 import kotlin.test.assertEquals
-import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.seconds
+import kotlin.time.measureTime
+import kotlinx.serialization.json.*
 
 class NotePresentationTest {
+    @Test
+    fun sharedReadingContract() {
+        val source = requireNotNull(javaClass.getResourceAsStream("/note-presentation.json"))
+        val cases = source.bufferedReader().use { Json.parseToJsonElement(it.readText()).jsonArray }
+        for (value in cases) {
+            val sample = value.jsonObject
+            fun text(key: String) = sample.getValue(key).jsonPrimitive.content
+            fun strings(key: String) = sample.getValue(key).jsonArray.map { it.jsonPrimitive.content }
+            val prefix = "甲".repeat(sample["repeatPrefix"]?.jsonPrimitive?.int ?: 0)
+            val result = notePresentation(prefix + text("content"), strings("tags"))
+            assertEquals(prefix + text("body"), result.body, text("name"))
+            assertEquals(strings("footer"), result.tags, text("name"))
+            assertEquals(strings("inline"), result.inlineTags, text("name"))
+            if (prefix.isNotEmpty()) assertEquals(listOf("收藏"), NoteTagScanner(prefix + text("content")).spans().map { it.tag })
+        }
+    }
+
+    @Test
+    fun longAsciiTextKeepsTheRealTagAndProtectsUrlFragments() {
+        val suffix = " custom+scheme://example.test/#日记 #日记"
+        val content = "A".repeat(65_536 - suffix.encodeToByteArray().size) + suffix
+        val elapsed = measureTime {
+            val spans = NoteTagScanner(content).spans()
+            assertEquals(listOf(NoteTagSpan(content.lastIndexOf('#'), content.length, "日记")), spans)
+        }
+        assertTrue(elapsed < 2.seconds, "64 KiB tag scan took $elapsed")
+        assertEquals(listOf("日记"), notePresentation(content, listOf("日记")).inlineTags)
+    }
+
+
+    @Test
+    fun writingPrefixSpansWholeWordAndSkipsProtectedTextEvenOnLongInput() {
+        val text = "left #abc right"
+        val span = NoteTagScanner(text).prefixAt("left #a".length)
+        assertEquals(NoteTagSpan(5, 9, "a"), span)
+        assertEquals("left #actual  right", text.replaceRange(span!!.start, span.end, "#actual "))
+        assertEquals(" #", tagMarkerAt("left", 4))
+        assertEquals("# ", tagMarkerAt("左 右", 2))
+        val long = "甲".repeat(17_000) + "\n`#code` \\#escape #real\n```\n#block\n```\nwww.example.com/#url"
+        assertEquals(listOf("real"), NoteTagScanner(long).spans().map { it.tag })
+        assertEquals(listOf("日记"), NoteTagScanner("左 `\n\n#日记\n\n` 右", lightweight = true).spans().map { it.tag })
+        assertEquals(listOf("日记"), NoteTagScanner("左 \\`\n#日记\n结尾`", lightweight = true).spans().map { it.tag })
+    }
     @Test
     fun knownTagsOnlyAndMetadataOrder() {
         val tags = listOf("阅读", "Work", "阅读", "Work/Child", "Work")
         val original = "#阅读 #未知 #Work/Child #WorkLong #Work-long #Work_suffix #Work/Other"
         val result = notePresentation(original, tags)
-        assertEquals(" #未知  #WorkLong #Work-long #Work_suffix #Work/Other", result.body)
-        assertEquals(listOf("阅读", "Work", "Work/Child"), result.tags)
+        assertEquals(original, result.body)
+        assertEquals(listOf("Work"), result.tags)
+        assertEquals(listOf("阅读", "Work/Child"), result.inlineTags)
         assertEquals("#阅读 #未知 #Work/Child #WorkLong #Work-long #Work_suffix #Work/Other", original)
         assertEquals(listOf("阅读", "Work", "阅读", "Work/Child", "Work"), tags)
         assertEquals(original, notePresentation(original, emptyList()).body)
@@ -21,8 +67,7 @@ class NotePresentationTest {
     @Test
     fun boundariesAndMarkdownHeadings() {
         val original = "# 阅读\n## 标题\n### Work\n\n#Work 标记，#阅读。 (#Work)；“#阅读” abc#Work #WorkLong #Work/Child\n# Work"
-        assertEquals("# 阅读\n## 标题\n### Work\n\n 标记，。 ()；“” abc#Work #WorkLong #Work/Child\n# Work",
-            notePresentation(original, listOf("阅读", "Work")).body)
+        assertEquals(original, notePresentation(original, listOf("阅读", "Work")).body)
         assertEquals("# 阅读\n## 标题", notePresentation("# 阅读\n## 标题", listOf(" 阅读", "#", "标题")).body)
     }
 
@@ -49,7 +94,7 @@ class NotePresentationTest {
 
             #Work
         """.trimIndent()
-        val expected = original.removeSuffix("\n#Work").replace("> #阅读 <", ">  <")
+        val expected = original.removeSuffix("\n#Work")
         assertEquals(expected, notePresentation(original, listOf("Work", "阅读")).body)
     }
 
@@ -79,15 +124,15 @@ class NotePresentationTest {
             https://example.com/#网址
         """.trimIndent()
         val result = localNotePresentation("$literal\n\n正文 #阅读 #工作/项目 #阅读")
-        assertEquals(listOf("阅读", "工作/项目"), result.tags)
-        assertEquals("$literal\n\n正文   ", result.body)
+        assertEquals(listOf("阅读", "工作/项目"), result.inlineTags)
+        assertEquals("$literal\n\n正文 #阅读 #工作/项目 #阅读", result.body)
     }
 
     @Test
     fun localTagsRespectPunctuationAndLiteralHashBoundaries() {
         val result = localNotePresentation("abc#正文 #阅读，(#工作) \\#字面 #未完成#相邻")
-        assertEquals(listOf("阅读", "工作"), result.tags)
-        assertEquals("abc#正文 ，() \\#字面 #未完成#相邻", result.body)
+        assertEquals(listOf("阅读", "工作"), result.inlineTags)
+        assertEquals("abc#正文 #阅读，(#工作) \\#字面 #未完成#相邻", result.body)
     }
 
     @Test

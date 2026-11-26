@@ -18,6 +18,32 @@ import org.robolectric.annotation.Config
 @Config(manifest = Config.NONE, sdk = [29])
 class SidebarFilterTest {
     @Test
+    fun coldWritingSuggestionsUseOnlyInitializedAccountLocalTags() = runBlocking<Unit> {
+        val folder = Files.createTempDirectory("moerise-writing-tags-").toFile()
+        val db = testDatabase(folder.resolve("data.sqlite3").absolutePath)
+        val scope = CoroutineScope(coroutineContext + SupervisorJob())
+        val repository = NoteRepository(db)
+        var owner = "https://notes.example\u0000instance\u0000users/owner"
+        val first = owner
+        val reads = FilterReads({ repository }, { error("Cold autocomplete must not use Core") }, { owner }, { "UTC" }, scope)
+        try {
+            assertTrue(reads.writingTags(first).isEmpty())
+            db.dao().putSyncState(SyncStateEntity(first, "cursor", "generation", true, 1))
+            val note = Note("instance", "memos/tagged", "#work", "NORMAL", "hash", tags = listOf("work"))
+            repository.recordLocalNote(first, note)
+            repository.recordLocalNote(first, note.copy(name = "memos/archived", state = "ARCHIVED", tags = listOf("archived")))
+            assertEquals(listOf(TagCount("work", 1)), reads.writingTags(first))
+            owner = "https://notes.example\u0000instance\u0000users/other"
+            assertTrue(reads.writingTags(first).isEmpty())
+            assertTrue(reads.writingTags(owner).isEmpty())
+        } finally {
+            scope.coroutineContext[Job]!!.cancelAndJoin()
+            db.close()
+            folder.deleteRecursively()
+        }
+    }
+
+    @Test
     fun calendarProjectsOnlyTheServiceMonthAcrossDaylightSavingChanges() = runBlocking {
         val folder = Files.createTempDirectory("moerise-calendar").toFile()
         val db = testDatabase(folder.resolve("data.sqlite3").absolutePath)
