@@ -164,7 +164,7 @@ def cluster(matrix, nearest):
     return guarded, manifold
 
 
-def describe(matrix, documents, coordinates, previous=None):
+def describe(matrix, documents, coordinates, previous=None, refresh_labels=False):
     import numpy as np
     from sklearn.cluster import HDBSCAN
 
@@ -220,18 +220,23 @@ def describe(matrix, documents, coordinates, previous=None):
         cores.add(int(members[np.argmax(scores)]))
         position = coordinates[members].mean(axis=0)
         member_list = members.tolist()
-        theme = {"id": group["id"], "label": group.get("label") or theme_label(
+        label = None if refresh_labels else group.get("label")
+        theme = {"id": group["id"], "label": label or theme_label(
                      documents, member_list, "未命名主题", class_members=theme_classes),
                  "x": float(position[0]), "y": float(position[1]),
                  "members": [documents[i]["name"] for i in members]}
         districts = []
         if previous:
             parent = set(theme["members"])
-            for district in group.get("districts", []):
-                local = [names[name] for name in district["members"] if name in parent]
+            district_classes = [[names[name] for name in district["members"] if name in parent]
+                                for district in group.get("districts", [])]
+            for district, local in zip(group.get("districts", []), district_classes):
                 if local:
                     at = coordinates[local].mean(axis=0)
-                    districts.append(dict(district, members=[documents[i]["name"] for i in local],
+                    label = district["label"] if not refresh_labels else theme_label(
+                        documents, local, theme["label"], scope=member_list,
+                        class_members=[members for members in district_classes if members])
+                    districts.append(dict(district, label=label, members=[documents[i]["name"] for i in local],
                                           x=float(at[0]), y=float(at[1])))
         elif manifold is not None and len(members) >= 32:
             children = HDBSCAN(min_cluster_size=max(5, min(12, len(members) // 9)),

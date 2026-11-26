@@ -1,0 +1,1 @@
+ALTER TABLE star_snapshots ADD COLUMN naming_version INTEGER NOT NULL DEFAULT 0;

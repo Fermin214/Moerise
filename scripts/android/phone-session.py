@@ -202,7 +202,12 @@ def validate_coverage(checks, selected, current, stopped, rows):
             if name not in current:
                 valid &= (status == row["ui_status"] == "not_run" and bool(row["not_run_reason"])
                           and row["reuse"] is None)
-            elif status in ("not_run", "skipped"):
+            elif status == "skipped":
+                recovery = current[name].get("editor_recovery")
+                valid &= (row["ui_status"] == "not_run" and row["reuse"] is None
+                          and isinstance(recovery, dict) and bool(recovery.get("cause"))
+                          and row["cause"] == recovery["cause"])
+            elif status == "not_run":
                 valid = False
             elif status in ("reused_baseline", "reused_pass"):
                 result = current[name]

@@ -15,7 +15,8 @@ import (
 )
 
 const (
-	starsAlgorithm = "umap-balanced-v1"
+	starsAlgorithm     = "umap-balanced-v1"
+	starsNamingVersion = 1
 )
 
 var (
@@ -40,21 +41,23 @@ type starPreviousPoint struct {
 }
 
 type starRequest struct {
-	Scope          string              `json:"scope"`
-	Dimensions     int                 `json:"dimensions"`
-	Matrix         []byte              `json:"matrix"`
-	Documents      []starDocument      `json:"documents"`
-	Frame          string              `json:"frame"`
-	PreviousPoints []starPreviousPoint `json:"previous_points"`
-	PreviousTopics []MapTopic          `json:"previous_topics"`
+	Scope                 string              `json:"scope"`
+	Dimensions            int                 `json:"dimensions"`
+	Matrix                []byte              `json:"matrix"`
+	Documents             []starDocument      `json:"documents"`
+	Frame                 string              `json:"frame"`
+	PreviousPoints        []starPreviousPoint `json:"previous_points"`
+	PreviousTopics        []MapTopic          `json:"previous_topics"`
+	PreviousNamingVersion int                 `json:"previous_naming_version"`
 }
 
 type starResult struct {
-	Algorithm string     `json:"algorithm"`
-	Frame     string     `json:"frame"`
-	Points    []MapPoint `json:"points"`
-	Topics    []MapTopic `json:"topics"`
-	Links     []MapLink  `json:"links"`
+	Algorithm     string     `json:"algorithm"`
+	NamingVersion int        `json:"naming_version"`
+	Frame         string     `json:"frame"`
+	Points        []MapPoint `json:"points"`
+	Topics        []MapTopic `json:"topics"`
+	Links         []MapLink  `json:"links"`
 }
 
 func (s *MapService) computeStars(ctx context.Context, snapshot mapSnapshot, previous *mapLayout) (*mapLayout, error) {
@@ -62,6 +65,7 @@ func (s *MapService) computeStars(ctx context.Context, snapshot mapSnapshot, pre
 		Dimensions: snapshot.dimensions, Documents: []starDocument{}, Matrix: []byte{}}
 	if previous != nil && previous.algorithm == starsAlgorithm {
 		input.Frame, input.PreviousTopics = previous.frame, previous.topics
+		input.PreviousNamingVersion = previous.namingVersion
 		for _, point := range previous.points {
 			if point.Semantic {
 				input.PreviousPoints = append(input.PreviousPoints,
@@ -99,6 +103,7 @@ func (s *MapService) computeStars(ctx context.Context, snapshot mapSnapshot, pre
 	}
 	decoder := json.NewDecoder(io.LimitReader(response.Body, 64<<20))
 	if err := decoder.Decode(&result); err != nil || result.Algorithm != starsAlgorithm ||
+		result.NamingVersion != starsNamingVersion ||
 		!starFramePattern.MatchString(result.Frame) || len(result.Points) != len(input.Documents) ||
 		result.Topics == nil || result.Links == nil {
 		return nil, failure("MAP_LAYOUT_INVALID", "Stars layout worker returned invalid data", 503, true)
@@ -114,7 +119,7 @@ func (s *MapService) computeStars(ctx context.Context, snapshot mapSnapshot, pre
 		}
 		byName[point.Name] = point
 	}
-	layout := &mapLayout{algorithm: starsAlgorithm, frame: result.Frame, topics: result.Topics, links: result.Links,
+	layout := &mapLayout{algorithm: starsAlgorithm, namingVersion: result.NamingVersion, frame: result.Frame, topics: result.Topics, links: result.Links,
 		points: make([]MapPoint, 0, len(snapshot.documents))}
 	for _, document := range snapshot.documents {
 		point, exists := byName[document.name]

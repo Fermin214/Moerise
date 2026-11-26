@@ -233,10 +233,12 @@ def source_ids():
         add("MoeriseApp.kt", "note_editor_${" + variable + "}_empty", '"${editorTag}_empty"')
     for page in ("review", "walk"):
         add("DiscoveryScreen.kt", page + "_page", 'testTag("${page}_page")')
-    for identifier in ("review_next", "walk_start", "walk_end", "walk_settings",
+    for identifier in ("review_next", "review_walk", "walk_start", "walk_next", "walk_end", "walk_settings",
                        "walk_configuration_error", "discovery_error"):
         add("DiscoveryScreen.kt", identifier)
     add("StarMapScreen.kt", "map_page")
+    add("StarMapScreen.kt", "map_status")
+    add("StarMapScreen.kt", "map_fit", 'tag = "map_fit"')
     add("StarMapScreen.kt", "map_fullscreen", 'tag = "map_fullscreen"')
     add("PlatformAttachments.kt", "add_attachment")
     return result
@@ -245,7 +247,7 @@ def source_ids():
 SOURCE_IDS = source_ids()
 NON_TAP_IDS = {
     "settings_page", "archive_page", "review_page", "walk_page",
-    "home", "map_page", "sidebar_account",
+    "home", "map_page", "map_status", "sidebar_account",
     "ime_visible", "ime_hidden",
     "walk_configuration_error", "discovery_error", "settings_stargazing_enabled",
 }
@@ -393,7 +395,7 @@ def commands(items, flow, refs, inline=False, hook=False, focused=None, ime_guar
                 "server_password": None,
             }
             require(keys == {"key"} and value["key"] == "Enter" and
-                    (flow in ("search.yaml", "test-source-resume.yaml") and focused == "search_query" or
+                    (flow in ("search.yaml", "test-source-resume.yaml", "baseline-compatibility.yaml") and focused == "search_query" or
                      flow == "subflows/ensure-login.yaml" and focused in login_next),
                     "Enter requires the focused search field or a login form field")
             focused = login_next[focused] if flow == "subflows/ensure-login.yaml" else None

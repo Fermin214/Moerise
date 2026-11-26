@@ -41,7 +41,8 @@ func testStarsService(t *testing.T, store *Store, wait func()) (*MapService, *at
 		if frame == "" {
 			frame = fmt.Sprintf("%032x", call)
 		}
-		result := starResult{Algorithm: starsAlgorithm, Frame: frame, Points: []MapPoint{}, Topics: []MapTopic{}, Links: []MapLink{}}
+		result := starResult{Algorithm: starsAlgorithm, NamingVersion: starsNamingVersion,
+			Frame: frame, Points: []MapPoint{}, Topics: []MapTopic{}, Links: []MapLink{}}
 		old := map[string]starPreviousPoint{}
 		for _, point := range input.PreviousPoints {
 			old[point.Name] = point
@@ -60,6 +61,78 @@ func testStarsService(t *testing.T, store *Store, wait func()) (*MapService, *at
 	service := NewMapService(store)
 	service.workerURL = worker.URL
 	return service, calls
+}
+
+func TestStarsHealthKeepsSnapshotDuringOutage(t *testing.T) {
+	service, _, _, calls := starsFixture(t, nil)
+	if err := service.Update(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	first, err := service.Read(t.Context())
+	if err != nil || first.Status != "ready" {
+		t.Fatalf("initial stars: %+v %v", first, err)
+	}
+	var probes, status atomic.Int32
+	worker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/health" {
+			t.Errorf("unexpected layout request: %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(404)
+			return
+		}
+		probes.Add(1)
+		w.WriteHeader(int(status.Load()))
+	}))
+	t.Cleanup(worker.Close)
+	service.workerURL = worker.URL
+	status.Store(503)
+	service.checkLayout(t.Context())
+	if err := service.Update(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	down, err := service.Read(t.Context())
+	if err != nil || down.UpdateState != "unavailable" || down.UnavailableReason != "layout" {
+		t.Fatalf("layout outage: %+v %v", down, err)
+	}
+	down.UpdateState, down.UnavailableReason = "", ""
+	if !reflect.DeepEqual(first, down) {
+		t.Fatal("layout outage changed the published snapshot")
+	}
+	status.Store(200)
+	service.checkLayout(t.Context())
+	restored, err := service.Read(t.Context())
+	if err != nil || !reflect.DeepEqual(first, restored) || calls.Load() != 1 {
+		t.Fatalf("layout recovery changed the snapshot: %+v %v", restored, err)
+	}
+	service.Store.Settings.Stargazing.Enabled = false
+	service.Reset()
+	service.checkLayout(t.Context())
+	if probes.Load() != 2 {
+		t.Fatalf("disabled stars issued a health request: %d", probes.Load())
+	}
+}
+
+func TestStarsLegacyNamingUpdatesWithoutIndexChanges(t *testing.T) {
+	service, _, _, calls := starsFixture(t, nil)
+	if err := service.Update(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	first := publishedStars(t, service)
+	if _, err := service.Store.index.Exec("UPDATE star_snapshots SET naming_version = 0"); err != nil {
+		t.Fatal(err)
+	}
+	restarted := NewMapService(service.Store)
+	restarted.workerURL = service.workerURL
+	if err := restarted.Update(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	second := publishedStars(t, restarted)
+	if calls.Load() != 2 || second.namingVersion != starsNamingVersion || first.frame != second.frame ||
+		!reflect.DeepEqual(first.points, second.points) {
+		t.Fatal("legacy naming did not republish the existing layout")
+	}
+	if err := restarted.Update(t.Context()); err != nil || calls.Load() != 2 {
+		t.Fatalf("current naming triggered an extra generation: %v", err)
+	}
 }
 
 func TestStarsSnapshotRestartIncrementalAndRebuild(t *testing.T) {

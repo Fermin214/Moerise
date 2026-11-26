@@ -262,6 +262,8 @@ func TestDeploymentSettingsIgnoreOnlyRetiredFields(t *testing.T) {
 		{`{"llm":{"retired":null},"insights":null,"stargazing":{"llm_naming":true}}`, false, false},
 		{`{"stargazing":{"enabled":false,"llm_naming":true}}`, true, false},
 		{`{"stargazing":{"enabled":true}}`, true, true},
+		{`{"LLM":{},"Insights":{},"STARGAZING":{"LLM_NAMING":true,"Enabled":true},"stargazing":{}}`, true, true},
+		{`{"stargazing":{"enabled":true,"Enabled":false}}`, true, false},
 	} {
 		settings := DefaultSettings()
 		if err := decodeDeploymentSettings([]byte(item.input), &settings); err != nil ||
@@ -271,7 +273,9 @@ func TestDeploymentSettingsIgnoreOnlyRetiredFields(t *testing.T) {
 		}
 	}
 	for _, input := range []string{`{"llms":{}}`, `{"stargazing":{"enable":true}}`,
-		`{"stargazing":{"LLM_naming":true}}`, `{"stargazing":null}`, `{"stargazing":{"enabled":null}}`, `{"llm":{}}{}`} {
+		`{"stargazing":{"enable":true},"stargazing":{"enabled":false}}`,
+		`{"stargazing":{"enabled":"true"},"stargazing":{"enabled":false}}`,
+		`{"stargazing":null}`, `{"stargazing":{"enabled":null}}`, `{"llm":{}}{}`} {
 		settings := DefaultSettings()
 		if err := decodeDeploymentSettings([]byte(input), &settings); err == nil {
 			t.Fatalf("invalid deployment settings accepted: %s", input)

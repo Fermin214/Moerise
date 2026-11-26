@@ -40,7 +40,7 @@ FLOW_CONTRACT_VERSIONS = {
     "upgrade-smoke": 1,
 }
 SERVER_FLOWS = CHANNEL_FLOWS | {
-    "editing", "release-smoke", "actions", "archive", "attachments",
+    "editing", "release-smoke", "baseline-compatibility", "actions", "archive", "attachments",
 }
 
 
@@ -530,7 +530,7 @@ class MaestroRunner:
             matches = self.api.matching_notes(values["NEW_NOTE_TEXT"])
             assert len(matches) == 1, "created_note_count"
             observed.update(edited_note=True, cancelled_edit_not_uploaded=True, created_note_count=len(matches))
-        elif flow == "release-smoke":
+        elif flow in ("release-smoke", "baseline-compatibility"):
             matches = self.api.matching_notes(values["NEW_NOTE_TEXT"])
             assert len(matches) == 1, "created_note_count"
             assert self.api.note(matches[0]["name"])["content"] == values["NEW_NOTE_TEXT"], "created_note_content"

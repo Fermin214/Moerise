@@ -112,6 +112,7 @@ jobs:
         run: |
           bash scripts/android/install-maestro.sh
           python3 -m pip install --disable-pip-version-check -r scripts/android/maestro/requirements.txt
+          docker build -t moerise-android-layout:fixture services/layout
       - name: Prepare 0.3.0 upgrade baseline
         env:
           MOERISE_ANDROID_KEYSTORE: ${{ runner.temp }}/moerise-release.jks

@@ -130,6 +130,7 @@ func (a *App) Run(ctx context.Context, server *http.Server) error {
 	start("channels", a.RunChannels)
 	start("vector index", a.runVector)
 	start("stars", a.runMap)
+	start("layout health", a.Map.monitorLayout)
 	go func() { done <- outcome{"HTTP", server.ListenAndServe()} }()
 	var result error
 	select {

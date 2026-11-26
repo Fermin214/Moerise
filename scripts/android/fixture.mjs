@@ -221,6 +221,7 @@ try {
       dimensions, batch_size: 20 };
   }
   config.notifications.enabled = false;
+  if (process.env.MOERISE_ANDROID_UPGRADE_FROM) config.review.min_age_hours = 0;
   tuneFixtureConfig(config);
   await writeFile(resolve(root, 'config.json'), JSON.stringify(config), { mode: 0o600 });
   const coreEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('MOERISE_')));

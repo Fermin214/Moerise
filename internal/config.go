@@ -247,35 +247,66 @@ func LoadSettings(path string) (Settings, error) {
 }
 
 func decodeDeploymentSettings(content []byte, settings *Settings) error {
-	var fields map[string]json.RawMessage
-	if err := json.Unmarshal(content, &fields); err != nil {
-		return err
-	}
-	delete(fields, "llm")
-	delete(fields, "insights")
-	for key, raw := range fields {
+	body, err := filterDeploymentObject(content, func(key string, raw json.RawMessage) (json.RawMessage, error) {
+		if strings.EqualFold(key, "llm") || strings.EqualFold(key, "insights") {
+			return nil, nil
+		}
 		if !strings.EqualFold(key, "stargazing") {
-			continue
+			return raw, nil
 		}
-		var stargazing map[string]json.RawMessage
-		if err := json.Unmarshal(raw, &stargazing); err != nil {
-			return err
-		}
-		for name := range stargazing {
+		return filterDeploymentObject(raw, func(name string, value json.RawMessage) (json.RawMessage, error) {
+			if strings.EqualFold(name, "llm_naming") {
+				return nil, nil
+			}
 			if strings.EqualFold(name, "enabled") {
 				settings.stargazingExplicit = true
 			}
-		}
-		if key == "stargazing" && stargazing != nil {
-			delete(stargazing, "llm_naming")
-			fields[key], _ = json.Marshal(stargazing)
-		}
-	}
-	body, err := json.Marshal(fields)
+			return value, nil
+		})
+	})
 	if err != nil {
 		return err
 	}
 	return strictJSON(bytes.NewReader(body), settings)
+}
+
+func filterDeploymentObject(data json.RawMessage, filter func(string, json.RawMessage) (json.RawMessage, error)) (json.RawMessage, error) {
+	if !json.Valid(data) {
+		return nil, errors.New("expected one JSON value")
+	}
+	if bytes.TrimSpace(data)[0] != '{' {
+		return data, nil
+	}
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	_, _ = decoder.Token()
+	body := bytes.NewBufferString("{")
+	for decoder.More() {
+		token, err := decoder.Token()
+		if err != nil {
+			return nil, err
+		}
+		var raw json.RawMessage
+		if err := decoder.Decode(&raw); err != nil {
+			return nil, err
+		}
+		key := token.(string)
+		value, err := filter(key, raw)
+		if err != nil {
+			return nil, err
+		}
+		if value == nil {
+			continue
+		}
+		if body.Len() > 1 {
+			body.WriteByte(',')
+		}
+		name, _ := json.Marshal(key)
+		body.Write(name)
+		body.WriteByte(':')
+		body.Write(value)
+	}
+	body.WriteByte('}')
+	return body.Bytes(), nil
 }
 
 var instancePattern = regexp.MustCompile(`^[a-zA-Z0-9_-]{8,128}$`)

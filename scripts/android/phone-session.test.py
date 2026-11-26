@@ -797,6 +797,7 @@ class FixedWindowsEntry(unittest.TestCase):
             ("login_failure", "verify", None, (), "environment_blocked", "environment_blocked", None, 1),
             ("offline_failure", "verify", None, (), "harness_error", "harness_error", None, 1),
             ("ui_failure", "verify", None, ("editing", "search"), "failed", "passed", None, 1),
+            ("draft_preserved", "verify", None, ("editing", "search"), "passed", "environment_blocked", None, 1),
             ("readback_failure", "run", None, ("editing", "search"), "failed", "passed", None, 1),
             ("retry_failure", "verify", None, ("editing", "search"), "failed", "passed", None, 1),
             ("retry_failure", "run", None, ("editing", "search"), "failed", "passed", None, 1),
@@ -875,6 +876,7 @@ class FixedWindowsEntry(unittest.TestCase):
                     return {}
 
                 real = maestro_runner.MaestroRunner
+                recoveries = [[], [], [{"status": "environment_blocked", "cause": "unknown_draft_preserved"}]]
                 with self.real_batch() as (api, offline, prepare, verify_observation, run_flow), ExitStack() as stack:
                     for patcher in (
                         mock.patch.object(real, "recover_editor_state", return_value=[]),
@@ -884,6 +886,8 @@ class FixedWindowsEntry(unittest.TestCase):
                         mock.patch.object(maestro_runner, "write_result", side_effect=write),
                     ):
                         stack.enter_context(patcher)
+                    if event == "draft_preserved":
+                        stack.enter_context(mock.patch.object(real, "recover_editor_state", side_effect=recoveries))
                     if event == "login_failure":
                         api.login.side_effect = maestro_runner.FixtureError(403, "FORBIDDEN")
                     if event == "offline_failure":
@@ -895,7 +899,8 @@ class FixedWindowsEntry(unittest.TestCase):
                     verify_observation.return_value = {}
                     run_flow.side_effect = execute
                     if entry == "verify":
-                        code, output = self.verify(*base_args, "--check", "editing", "--check", "search",
+                        extra = ("--check", "navigation-review") if event == "draft_preserved" else ()
+                        code, output = self.verify(*base_args, "--check", "editing", "--check", "search", *extra,
                                                    *retry, *baseline_args, *stop_args)
                     else:
                         code, output = self.cli("run", "--release", "--session", str(self.active()),
@@ -908,6 +913,10 @@ class FixedWindowsEntry(unittest.TestCase):
                 report = session.read_json(self.active() / "report.json")
                 rows = {row.get("id", row.get("flow")): row for row in report["items"]}
                 self.assertEqual((rows["editing"]["status"], rows["search"]["status"]), (first, following))
+                if event == "draft_preserved":
+                    skipped = rows["navigation-review"]
+                    self.assertEqual((skipped["status"], skipped["ui_status"], skipped["cause"]),
+                                     ("skipped", "not_run", "unknown_draft_preserved"))
                 self.assertEqual(report.get("stopped_at"), stopped)
                 self.assertEqual(state["coverage"].get("stopped"), stopped)
                 self.assertFalse((self.active() / "STOP_AFTER_CURRENT").exists())

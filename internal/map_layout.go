@@ -23,6 +23,7 @@ type mapSnapshot struct {
 
 type mapLayout struct {
 	algorithm     string
+	namingVersion int
 	frame         string
 	parentVersion string
 	rebuildToken  string

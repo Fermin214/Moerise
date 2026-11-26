@@ -21,6 +21,7 @@ for variable in ("NUMBA_NUM_THREADS", "OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS",
     os.environ.setdefault(variable, "2")
 
 ALGORITHM = "umap-balanced-v1"
+NAMING_VERSION = 1
 PARAMETERS = {"n_neighbors": 15, "min_dist": .12, "spread": 1.0, "metric": "cosine",
               "n_components": 2, "random_state": 42, "transform_seed": 42, "n_jobs": 1, "init": "spectral"}
 STATE = Path(os.environ.get("MOERISE_LAYOUT_STATE", "/data"))
@@ -137,7 +138,8 @@ def compute(request):
         if not np.isfinite(positions).all():
             raise ValueError("invalid coordinates")
         separate_points(positions, documents)
-        topics, attributes, links = describe(matrix, documents, positions, previous) if count else ([], [], [])
+        refresh_labels = request.get("previous_naming_version") != NAMING_VERSION
+        topics, attributes, links = describe(matrix, documents, positions, previous, refresh_labels) if count else ([], [], [])
     path.touch()
     for obsolete in sorted(root.glob("*.joblib"), key=lambda file: file.stat().st_mtime, reverse=True)[3:]:
         obsolete.unlink(missing_ok=True)
@@ -145,7 +147,8 @@ def compute(request):
                "y": round(float(positions[i, 1]), 7), "stellar": attributes[i]}
               for i, document in enumerate(documents)]
     usage = resource.getrusage(resource.RUSAGE_SELF)
-    return {"algorithm": ALGORITHM, "frame": frame, "points": points, "topics": topics, "links": links,
+    return {"algorithm": ALGORITHM, "naming_version": NAMING_VERSION,
+            "frame": frame, "points": points, "topics": topics, "links": links,
             "seconds": round(time.perf_counter() - started, 3),
             "peak_rss_bytes": usage.ru_maxrss * 1024,
             "cpu_seconds": round(usage.ru_utime + usage.ru_stime, 3)}

@@ -8,6 +8,7 @@ import { parseArgs } from 'node:util';
 const { values } = parseArgs({ options: {
   origin: { type: 'string' }, upstream: { type: 'string' },
   cert: { type: 'string' }, key: { type: 'string' },
+  'telemetry-port': { type: 'string' },
   'proxy-port': { type: 'string', default: '28080' },
 } });
 const origin = new URL(values.origin);
@@ -19,6 +20,9 @@ assert.equal(upstream.origin, values.upstream);
 assert.ok(['127.0.0.1', 'localhost', '[::1]'].includes(upstream.hostname));
 const proxyPort = Number(values['proxy-port']);
 assert.ok(Number.isInteger(proxyPort) && proxyPort > 0 && proxyPort <= 65535);
+const telemetryPort = values['telemetry-port'] === undefined ? null : Number(values['telemetry-port']);
+assert.ok(telemetryPort === null || Number.isInteger(telemetryPort) && telemetryPort > 0 && telemetryPort <= 65535);
+const telemetry = telemetryPort === null ? null : new URL(`http://127.0.0.1:${telemetryPort}`);
 const tlsPort = Number(origin.port || 443);
 const authority = `${origin.hostname}:${tlsPort}`;
 const sockets = new Set();
@@ -29,7 +33,8 @@ function track(socket) {
 const tls = https.createServer({
   cert: await readFile(values.cert), key: await readFile(values.key),
 }, (req, res) => {
-  const request = http.request(upstream, {
+  const target = telemetry && req.url === '/v1/batches' ? telemetry : upstream;
+  const request = http.request(target, {
     method: req.method, path: req.url, headers: req.headers,
   }, response => {
     res.writeHead(response.statusCode, response.headers);

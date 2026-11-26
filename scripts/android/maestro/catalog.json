@@ -10,6 +10,11 @@
       "timeout_seconds": 180,
       "seed_notes": false
     },
+    "baseline-compatibility": {
+      "file": "baseline-compatibility.yaml",
+      "timeout_seconds": 420,
+      "seed_notes": true
+    },
     "login": {
       "file": "login.yaml",
       "timeout_seconds": 180,

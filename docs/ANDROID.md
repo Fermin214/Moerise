@@ -335,8 +335,9 @@ scripts/android/release.sh --unsigned
 安装说明和第三方声明；R8 mapping 随构建保存。
 
 `verify-apk.py` 检查包名、版本、发行调试标志、签名、ZIP 和 native ELF 的
-16 KiB 对齐，并拒绝打包 SQLite 原生库。发行流程在全新安装和从 0.3.0 同签名 APK
-覆盖安装后分别检查 HTTPS 会话、草稿、待发队列及数据库迁移。具体操作见
+16 KiB 对齐，并拒绝打包 SQLite 原生库。发行流程在覆盖安装前用正式 0.3.0 APK
+连接隔离的新 Core，检查笔记读写与同步、搜索结果、回顾、漫步、观星和遥测入库。
+全新安装检查 HTTPS 会话。覆盖安装后检查会话、草稿、待发队列及数据库迁移。具体操作见
 [设备检查](android/DEVICE-CHECKS.md#发行与升级)。
 [安装与升级](android/INSTALL.md)可随发行包分发。
 

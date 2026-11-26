@@ -96,12 +96,15 @@ def android_release(root, sha, run_id):
         raise SystemExit('Android upgrade verification result is missing')
     upgrade_smoke = json.loads(upgrade_report.read_text())
     upgrade = upgrade_smoke.get('upgrade', {})
+    baseline = upgrade_smoke.get('flows', {}).get('baseline-compatibility', {})
     if (any(upgrade_smoke.get(key) != value for key, value in expected_report.items())
             or str(upgrade_smoke.get('api')) != min_sdk
             or upgrade_smoke.get('session_restored_without_login') is not True
             or upgrade_smoke.get('flows', {}).get('upgrade-smoke', {}).get('status') != 'passed'
+            or baseline.get('status') != 'passed' or baseline.get('server_assertions', {}).get('created_note_count') != 1
             or upgrade.get('from') != '0.3.0' or upgrade.get('pending_write_count') != 1
-            or any(upgrade.get(key) is not True for key in ('account', 'draft', 'keystore_session', 'local_database_restored'))):
+            or any(upgrade.get(key) is not True for key in ('account', 'draft', 'keystore_session',
+                                                            'local_database_restored', 'telemetry_received'))):
         raise SystemExit('Android APK does not match the successful upgrade test')
     files = [metadata.with_name(base + suffix) for suffix in ('.apk', '.apk.sha256', '.apk.json', '-notices.zip')]
     if files[1].read_text().split() != [digest, apk.name]:

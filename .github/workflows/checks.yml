@@ -113,6 +113,8 @@ jobs:
         if: matrix.suite == 'integration'
         run: |
           docker build -t moerise-layout:checks services/layout
+          docker run --rm --entrypoint python -v "$PWD/services/layout/test_semantic.py:/app/test_semantic.py:ro" \
+            moerise-layout:checks -B -m unittest test_semantic
           docker run -d --name moerise-layout --cpus=1 --memory=1g \
             -p 127.0.0.1:8766:8766 moerise-layout:checks
       - name: Run Memos acceptance scenarios
