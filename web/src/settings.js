@@ -551,7 +551,7 @@ export function createSettingsPage({ sessionRequest, handleFailure, onSaved = ()
     rebuildBox.append(mapRebuildButton, rebuildStatus);
     row(general, l("星图更新"), rebuildBox, l("每日 03:00 更新"));
 
-    const ai = section('ai', 'Embedding');
+    const ai = section('ai', 'AI');
     model(ai, 'embedding', 'Embedding');
     indexText = el('p', 'sub', l("正在读取索引状态…")); indexText.id = 'settings-index-status'; indexText.setAttribute('role', 'status');
     indexProgress = el('progress'); indexProgress.hidden = true; setAttr(indexProgress, 'aria-label', l("语义索引进度"));

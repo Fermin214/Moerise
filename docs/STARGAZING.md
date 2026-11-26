@@ -50,7 +50,7 @@ docker compose pull layout
 docker compose up -d layout
 ```
 
-在「设置 → Embedding」配置向量模型，再在「设置 → 通用」打开「启用观星」。布局服务不可用时，客户端会提示检查 `layout` 服务。
+在「设置 → AI」配置 Embedding 向量模型，再在「设置 → 通用」打开「启用观星」。布局服务不可用时，客户端会提示检查 `layout` 服务。
 
 停用时先关闭应用开关，执行 `docker compose stop layout`，再移除 profile。应用开关只控制 Core 的布局调度。
 

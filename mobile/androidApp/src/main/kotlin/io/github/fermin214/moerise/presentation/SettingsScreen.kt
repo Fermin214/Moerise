@@ -77,7 +77,7 @@ fun SettingsScreen(
                 WebTabs(
                     listOf(
                         strings.text("通用", "General"),
-                        "Embedding",
+                        "AI",
                         strings.text("回顾与推送", "Review & delivery"),
                         strings.text("隐私", "Privacy"),
                     ),

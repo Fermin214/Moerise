@@ -83,7 +83,7 @@ docker compose up -d
 
 基础记录、阅读、关键词筛选和每日回顾无需模型或消息渠道。可在「设置」中按需开启增强功能：
 
-- **Embedding**：在「设置 → Embedding」配置 OpenAI 兼容或阿里云百炼 DashScope 向量模型。向量索引就绪后可使用语义搜索、混合检索和漫步。
+- **Embedding**：在「设置 → AI」配置 OpenAI 兼容或阿里云百炼 DashScope 向量模型。向量索引就绪后可使用语义搜索、混合检索和漫步。
 - **观星**：在 `.env` 的 `COMPOSE_PROFILES` 追加 `,stargazing`（外接 Memos 时设为 `stargazing`），执行 `docker compose pull layout` 和 `docker compose up -d layout`。配好 Embedding 后，在「设置 → 通用」打开「启用观星」。详见[观星指南](STARGAZING.md)。
 - **消息渠道**：在「设置 → 回顾与推送」按需配置 [QQ](QQ.md)、[Telegram](TELEGRAM.md) 或 [飞书](FEISHU.md)，支持私聊速记、指令查回顾和定时推送。新安装默认不启用任何渠道。
 - **Android 客户端**：从 Releases 下载签名 APK 并填写对外 HTTPS 服务地址登录，详见 [Android 安装与升级](android/INSTALL.md)。
