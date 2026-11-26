@@ -2,6 +2,7 @@ package io.github.fermin214.moerise.presentation
 
 import android.app.Application
 import android.app.Activity
+import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.ComponentName
 import android.content.Intent
@@ -25,8 +26,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.toPixelMap
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.testTag
@@ -339,12 +338,9 @@ class AndroidUiRegressionTest {
         val draft = DraftEntity("one", account, body, 1, baseline.name, baseline.sourceHash, baselineJson = CoreJson.encodeToString(baseline))
         val entry = mutableStateOf<TimelineEntry>(TimelineEntry.Local(draft))
         val allowTailParse = CompletableDeferred<Unit>()
-        val image = compose.onNode(hasContentDescription("protected.png") and hasAnyAncestor(hasTestTag("note_card_body")), useUnmergedTree = true)
+        val image = compose.onNode(hasTestTag("decoded_attachment_image") and hasContentDescription("protected.png") and
+            hasAnyAncestor(hasTestTag("note_card_body")), useUnmergedTree = true)
         val tagInBody = hasText(tagLine) and hasAnyAncestor(hasTestTag("note_card_body"))
-        fun showsDecodedImage(): Boolean {
-            val pixels = image.captureToImage().toPixelMap()
-            return (0 until pixels.width).any { x -> (0 until pixels.height).any { y -> pixels[x, y] == Color.Red } }
-        }
         try {
             compose.runOnUiThread {
                 host.get().setContent {
@@ -357,7 +353,7 @@ class AndroidUiRegressionTest {
                     }
                 }
             }
-            compose.waitUntil(10_000) { image.isDisplayed() && showsDecodedImage() }
+            compose.waitUntil(10_000) { image.isDisplayed() }
             if (promoteToTail) {
                 compose.onNode(tagInBody, useUnmergedTree = true).assertExists()
                 compose.runOnIdle { entry.value = TimelineEntry.Remote(confirmed) }
@@ -367,11 +363,11 @@ class AndroidUiRegressionTest {
                 compose.runOnIdle { entry.value = TimelineEntry.Remote(confirmed) }
                 compose.mainClock.advanceTimeByFrame()
             }
-            assertTrue(showsDecodedImage())
+            image.assertIsDisplayed()
             compose.mainClock.autoAdvance = true
             allowTailParse.complete(Unit)
             compose.onNodeWithText(if (promoteToTail) text else "$text\n$tagLine", substring = true).assertExists()
-            assertTrue(showsDecodedImage())
+            image.assertIsDisplayed()
         } finally {
             allowTailParse.complete(Unit)
             compose.mainClock.autoAdvance = true
@@ -395,7 +391,7 @@ class AndroidUiRegressionTest {
         createHost()
         val folder = Files.createTempDirectory("moerise-picker").toFile()
         val db = testDatabase(folder.resolve("data.sqlite3").absolutePath)
-        val picked = Uri.parse("content://pick.test/only.txt")
+        val picked = Uri.fromFile(folder.resolve("only.txt").apply { writeText("attachment only") })
         val context = host.get().applicationContext
         val secrets = MemorySecrets()
         val origin = "http://127.0.0.1:1"
@@ -404,12 +400,21 @@ class AndroidUiRegressionTest {
         val repo = NoteRepository(db, library)
         runBlocking { secrets.write("selected-profile", CoreJson.encodeToString(ConnectionProfile(origin, account,
             "instance", "users/owner", "Owner", "UTC"))) }
-        val job = SupervisorJob()
-        val scope = CoroutineScope(Dispatchers.Main.immediate + job)
+        var job = SupervisorJob()
+        var scope = CoroutineScope(Dispatchers.Main.immediate + job)
         var session = SessionController(secrets, true, scope)
         var mobile = MobileController(session, { repo }, scope, initialForeground = false)
         val restore = CompletableDeferred<Unit>()
         var staged: StagedAttachment? = null
+        fun deliver(requestCode: Int) {
+            val result = Intent().apply { clipData = ClipData.newRawUri("only.txt", picked) }
+            assertTrue(host.get().activityResultRegistry.dispatchResult(requestCode, Activity.RESULT_OK, result))
+        }
+        fun nextPickerRequest(): Int {
+            val launched = requireNotNull(shadowOf(host.get()).nextStartedActivityForResult)
+            assertEquals(Intent.ACTION_OPEN_DOCUMENT, launched.intent.action)
+            return launched.requestCode
+        }
         try {
             compose.runOnUiThread { host.get().setContent { MoeriseApp(mobile) } }
             compose.waitUntil(10_000) { compose.onAllNodesWithTag("note_editor").fetchSemanticsNodes().size == 1 }
@@ -423,26 +428,27 @@ class AndroidUiRegressionTest {
                 compose.onNodeWithTag(tag)
             } else field
             target.performClick().assertIsFocused()
-            compose.onNodeWithTag("add_attachment").performClick()
+            compose.onNodeWithTag("add_attachment").assertIsEnabled()
+                .performSemanticsAction(SemanticsActions.OnClick) { assertTrue(it()) }
             if (inlineRestoreFails) runBlocking {
-                repo.putFeature(account, ACTIVE_NOTE_EDITOR, "invalid")
+                repo.putFeature(account, ACTIVE_NOTE_EDITOR, "[]")
             }
+            val requestCode = compose.runOnUiThread { nextPickerRequest() }
             compose.runOnUiThread {
-                val launched = requireNotNull(shadowOf(host.get()).nextStartedActivityForResult)
-                assertEquals(Intent.ACTION_OPEN_DOCUMENT, launched.intent.action)
-                shadowOf(context.contentResolver).registerInputStreamSupplier(picked) { "attachment only".byteInputStream() }
                 if (recreate) {
-                    host.recreate()
+                    host.recreate().visible()
+                    job.cancel()
                     session.close()
+                    job = SupervisorJob()
+                    scope = CoroutineScope(Dispatchers.Main.immediate + job)
                     session = SessionController(secrets, true, scope)
-                    mobile = MobileController(session, { restore.await(); repo }, scope, initialForeground = false)
-                    host.get().setContent { MoeriseApp(mobile) }
-                    assertTrue(host.get().activityResultRegistry.dispatchResult(
-                        launched.requestCode, Activity.RESULT_OK, Intent().setData(picked)))
+                    val restoredMobile = MobileController(session, { restore.await(); repo }, scope, initialForeground = false)
+                    mobile = restoredMobile
+                    host.get().setContent { MoeriseApp(restoredMobile) }
                 } else {
                     host.pause().stop()
-                    shadowOf(host.get()).receiveResult(launched.intent, Activity.RESULT_OK, Intent().setData(picked))
-                    host.restart().start().resume()
+                    deliver(requestCode)
+                    host.restart().start().resume().visible()
                 }
                 shadowOf(Looper.getMainLooper()).idle()
             }
@@ -450,6 +456,7 @@ class AndroidUiRegressionTest {
                 compose.waitForIdle()
                 compose.runOnIdle {
                     assertNull(mobile.editor.state.value.draft)
+                    deliver(requestCode)
                     restore.complete(Unit)
                 }
             }
@@ -458,17 +465,21 @@ class AndroidUiRegressionTest {
                 compose.waitForIdle()
                 assertTrue(mobile.editor.state.value.draft?.attachmentEdits()?.staged?.isEmpty() == true)
                 field.performClick().assertIsFocused()
-                compose.onNodeWithTag("add_attachment").performClick()
+                compose.onNodeWithTag("add_attachment").assertIsEnabled()
+                    .performSemanticsAction(SemanticsActions.OnClick) { assertTrue(it()) }
                 compose.runOnUiThread {
-                    val launched = requireNotNull(shadowOf(host.get()).nextStartedActivityForResult)
-                    assertEquals(Intent.ACTION_OPEN_DOCUMENT, launched.intent.action)
+                    val next = nextPickerRequest()
                     host.pause().stop()
-                    shadowOf(host.get()).receiveResult(launched.intent, Activity.RESULT_OK, Intent().setData(picked))
-                    host.restart().start().resume()
+                    deliver(next)
+                    host.restart().start().resume().visible()
                     shadowOf(Looper.getMainLooper()).idle()
                 }
             }
-            compose.waitUntil(10_000) { mobile.editor.state.value.draft?.attachmentEdits()?.staged?.size == 1 && !mobile.editor.state.value.importing }
+            compose.waitUntil(10_000) {
+                val state = mobile.editor.state.value
+                assertNull(state.error)
+                state.draft?.attachmentEdits()?.staged?.size == 1 && !state.importing
+            }
             staged = mobile.editor.state.value.draft?.attachmentEdits()?.staged?.single()
             field.assertIsNotFocused()
             compose.onNodeWithTag("save_note").assertIsEnabled().performSemanticsAction(SemanticsActions.OnClick) { assertTrue(it()) }
@@ -568,13 +579,15 @@ class AndroidUiRegressionTest {
             compose.onNodeWithTag("quick_compose").assertDoesNotExist()
             compose.waitUntil(10_000) { mobile.timeline.state.value.notes.any { it.name == "memos/home-10" } }
             checkQuickComposerPosition("home", "memos/home-10")
-            compose.onNodeWithTag("open_menu").performClick()
-            compose.onNodeWithTag("nav_archive").performClick()
+            compose.onNodeWithTag("open_menu").performSemanticsAction(SemanticsActions.OnClick) { assertTrue(it()) }
+            compose.onNodeWithTag("nav_archive").performScrollTo().assertIsDisplayed()
+                .performSemanticsAction(SemanticsActions.OnClick) { assertTrue(it()) }
             waitForTag("archive_timeline")
             compose.waitUntil(10_000) { mobile.archive.state.value.notes.any { it.name == "memos/archive-10" } }
             checkQuickComposerPosition("archive", "memos/archive-10")
-            compose.onNodeWithTag("open_menu").performClick()
-            compose.onNodeWithTag("nav_home").performClick()
+            compose.onNodeWithTag("open_menu").performSemanticsAction(SemanticsActions.OnClick) { assertTrue(it()) }
+            compose.onNodeWithTag("nav_home").performScrollTo().assertIsDisplayed()
+                .performSemanticsAction(SemanticsActions.OnClick) { assertTrue(it()) }
             waitForTag("home_timeline")
             compose.onNodeWithTag("home_timeline").performScrollToKey("composer")
             composer.performClick().assertIsFocused().performTextReplacement("New note")

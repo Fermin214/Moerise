@@ -29,6 +29,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.platform.UriHandler
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.LinkAnnotation
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextLinkStyles
@@ -201,7 +202,9 @@ fun MarkdownBody(content: String, modifier: Modifier = Modifier, note: Note? = n
                 ImageData(
                     painter = bitmap?.let(::BitmapPainter) ?: ColorPainter(MoeriseColors.Line),
                     contentDescription = item["filename"]?.jsonPrimitive?.content,
-                    modifier = Modifier.fillMaxWidth().height(220.dp).onGloballyPositioned { coordinates ->
+                    modifier = Modifier.fillMaxWidth().height(220.dp)
+                        .then(if (bitmap != null) Modifier.testTag("decoded_attachment_image") else Modifier)
+                        .onGloballyPositioned { coordinates ->
                         val bounds = coordinates.boundsInWindow()
                         visible = bounds.width > 0 && bounds.height > 0
                     },
@@ -312,7 +315,7 @@ fun MarkdownBody(content: String, modifier: Modifier = Modifier, note: Note? = n
                 val block = blocks[index]
                 key(defBlocks, index) {
                     val rendered = retainedBlocks[block] ?: rememberMarkdownState(block, flavour = flavour,
-                        parser = parser, referenceLinkHandler = refHandler, immediate = true).state.value as? MdState.Success
+                        parser = parser, referenceLinkHandler = refHandler, immediate = true).state.collectAsState().value as? MdState.Success
                     if (rendered != null) {
                         SideEffect { retainedBlocks[block] = rendered }
                         Markdown(
@@ -331,7 +334,7 @@ fun MarkdownBody(content: String, modifier: Modifier = Modifier, note: Note? = n
             key(defBlocks, blocks.lastIndex) {
                 val rendered = retainedBlocks[tail] ?: if (tail.length <= 4096) {
                     rememberMarkdownState(tail, flavour = flavour, parser = parser, referenceLinkHandler = refHandler,
-                        immediate = true).state.value as? MdState.Success
+                        immediate = true).state.collectAsState().value as? MdState.Success
                 } else {
                     val parse = LocalParseMarkdownTail.current
                     val parsed by produceState<MdState.Success?>(null, tail, refHandler, parse) {
@@ -348,7 +351,8 @@ fun MarkdownBody(content: String, modifier: Modifier = Modifier, note: Note? = n
                     for (image in images) {
                         val bitmap = bitmaps[image.identity] ?: continue
                         if (image.start > offset) Text(tail.substring(offset, image.start), Modifier.fillMaxWidth(), style = body)
-                        Image(bitmap, image.description, Modifier.fillMaxWidth().height(220.dp), contentScale = ContentScale.Fit)
+                        Image(bitmap, image.description, Modifier.fillMaxWidth().height(220.dp).testTag("decoded_attachment_image"),
+                            contentScale = ContentScale.Fit)
                         offset = image.end
                     }
                     if (offset < tail.length) Text(tail.substring(offset), Modifier.fillMaxWidth(), style = body)

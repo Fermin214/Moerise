@@ -386,6 +386,7 @@ class WritingSyncTest {
         val db = testDatabase(folder.resolve("data.sqlite3").absolutePath)
         val repo = NoteRepository(db)
         val scope = CoroutineScope(coroutineContext + SupervisorJob())
+        db.dao().putSyncState(SyncStateEntity(account, "cursor", "generation", true, 100L))
         val session = SessionController(selectedSecrets(), true, scope)
         val entered = CompletableDeferred<Unit>()
         val release = CompletableDeferred<Unit>()
@@ -398,7 +399,6 @@ class WritingSyncTest {
                 false
             })
         try {
-            db.dao().putSyncState(SyncStateEntity(account, "cursor", "generation", true, 100L))
             val draft = repo.restore(account).draft.copy(content = "Only for this account", revision = 1)
             repo.persist(draft)
             repo.submit(draft, clearEditorRegistration = false)
