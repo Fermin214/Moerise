@@ -70,55 +70,26 @@ node --test scripts/lib/*.test.mjs
 
 ---
 
-## 四、Android Windows 工具
+## 四、Android 构建、联调与发行
 
 Android 工程文件与生成产物的归属见[Android 文件与产物](../docs/ANDROID.md#文件与产物)。
 
-GitHub Actions 的 Android 检查通过 `android/ci-device-check.sh` 启动隔离 Core/Memos，
-复用设备用例验证登录、编辑、草稿和离线恢复。`Main CI` 构建签名 APK，检查最低系统版本
-的安装和应用流程。`Publish release` 将通过检查的 APK 和校验文件发布到对应版本。
-
-设备与构建入口见[设备检查](../docs/android/DEVICE-CHECKS.md)，发行与升级见
-[安装说明](../docs/android/INSTALL.md)。Windows 使用 PowerShell 7.2 以上和 JDK 17。
-所有 worktree 的 Gradle、安装、设备测试、Profile 和发行构建通过
-`android/with-device-lock.ps1` 串行执行，源码固定为 `C:\Projects\Moerise`。
-共享锁为 `C:\Projects\Moerise\.local\android\device-build.lock`，结果放在主仓库
-`.local/android/` 的独立任务目录。只读 `-Status` 显示持有者、源码提交和残留构建进程。
+GitHub Actions 运行 JVM 测试、Lint、APK 构建和真实 Core API 联调。`Main CI` 构建正式签名 APK，发布前按[真机检查清单](../docs/android/RELEASE-CHECKLIST.md)验证覆盖升级与交互。安装与升级见[安装说明](../docs/android/INSTALL.md)。
 
 | 入口 | 用途 |
 | --- | --- |
-| `environment.ps1` | 解析 JDK、共享 SDK/Gradle 缓存及 Go/Docker CLI；`-ResolveOnly` 只定义解析函数 |
-| `build.ps1` | 串行 Gradle 任务、统一 JVM 参数和构建日志；支持 `-Offline`、`-ValidateOnly` |
-| `phone.ps1` | 持久真机会话：目标 APK 复用、Maestro 默认回归、按需专项、人工接管与显式清理 |
-| `verify-phone.ps1` | Windows 正式包固定验收入口，从 `.local/phone/profile.json` 读取配置并自动续跑 |
-| `phone-session.py`、`phone-checks.json` | 真机验收生命周期、清单登记、证据复用、操作卡与设备恢复，详见 [Maestro](android/maestro/README.md#windows-正式包真机入口) |
-| `maestro_runner.py`、`maestro-run.py` | 共用 UI 执行、独立测试数据、服务端后验、JUnit 与脱敏产物 |
-| `adb_common.py` | 模拟器、真机和发行冒烟共用的 ADB、代理与反向端口检查 |
-| `maestro/` | 登录、编辑、搜索、归档删除、导航、附件和语言流程及静态校验 |
-| `acceptance.ps1` | 动态设备选择、隔离包安装、登录/笔记/输入法；`-Recovery` 增加离线和后台自动同步；`-SkipBuild` 复用 APK |
-| `ci-scope.py` | 读取 NUL 分隔的 Git 路径，判定 `none`、`host` 或 `full` |
-| `ci-device-check.sh` | 隔离模拟器按 `MOERISE_ANDROID_SUITE` 执行界面组或专项，逐次输出 ADB 探针、首错、清理与重试结果 |
-| `fixture-artifacts.py` | 记录 Android 源码与目标／测试 APK 摘要；纯界面组用 `verify --target-only`，需要升级包时用 `write --upgrade-apk <路径>` 和 `verify --require-upgrade` |
-| `device-recovery.py` | 分阶段 instrumentation、SQLite/WAL 落盘确认、杀进程重开及官方 API 无重复检查 |
-| `start-fixture.ps1` | 隐藏进程启动隔离 Core/Memos/模型；`-Resume` 复用语料、端口与索引 |
-| `fixture-control.ps1` | 单实例状态、保留数据停止、精确身份旧进程停止和显式销毁 |
-| `benchmark.ps1` | 同一真机的 Profile、启动与观星性能；发现模拟器即报错 |
-| `benchmark-device.py` | 显式安装性能 APK、运行 instrumentation 并拉取原始结果，供两平台入口共用 |
-| `trace-processor.py` | 为性能 runner 下载固定版本及摘要的官方 Perfetto 程序，输出到构建目录 |
-| `release.ps1` | 发行、签名、APK 对齐与许可归档；`-SigningFile` 读取仓库外签名档案 |
-| `usb-https.mjs` | 本机 TLS 与限定域名 CONNECT 代理，证书和私钥作为文件路径传入 |
+| `android/environment.sh`、`android/check.sh` | 配置工具链，运行 JVM 测试、Lint 和 Debug APK 构建 |
+| `android/live-check.sh`、`android/stars-check.sh` | 对隔离 Core/Memos 运行 JVM API 或观星专项联调 |
+| `android/start-fixture.sh` | 启动隔离服务，生成设备可用的连接信息 |
+| `android/ci-scope.py`、`android/ci-pr-gate.py` | 按 Git 路径判定 Android `none` 或 `build`，汇总适用的 PR 检查 |
+| `android/benchmark.sh` | 在 Linux 或 WSL2 的 USB 真机上采集 Profile，测量启动与观星 |
+| `android/release.sh`、`android/verify-apk.py`、`android/licenses.py` | 发行构建、签名、16 KiB 对齐和第三方许可检查 |
 
-锁与模型限流的专项检查无需 Gradle、ADB、Docker 或设备：
+CI 路径、联调策略和发布守护可在宿主机验证：
 
-```powershell
-pwsh -NoProfile -File scripts/android/device-lock.test.ps1
+```bash
+python3 -m pip install -r scripts/android/requirements.txt
+python3 -B scripts/android/ci-scope.test.py
 node --test scripts/android/fixture-policy.test.mjs
-python -B scripts/android/phone-session.test.py
-python -B scripts/android/maestro-runner.test.py
-python -B scripts/android/maestro/validate.py
-python -B scripts/android/device-recovery.test.py
+python3 -B -m unittest discover -s scripts/release -p 'test_*.py'
 ```
-
-这些宿主检查覆盖跨进程互斥、残留文件、PID 重用、令牌继承、模型排队、
-会话复用、安装取消恢复、代理只读检查和 SQLite/WAL 失败分类，不连接手机。
-Android 行为使用上述设备流程集中验证。

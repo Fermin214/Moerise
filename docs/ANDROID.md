@@ -23,14 +23,14 @@ Android 工程位于 `mobile/`，应用模块为 `androidApp`，纯 Kotlin 逻�
 
 ## Linux 工具链
 
-需要 Linux x86_64、Python 3.11 以上、curl 和 util-linux。安装脚本下载 Temurin JDK 17.0.21+9 与 Android 官方命令行工具，核验固定 SHA-256，然后安装 SDK 平台和构建工具：
+需要 Linux x86_64、JDK 17、Android SDK 命令行工具、Python 3.11 以上、curl 和 util-linux。设置 `JAVA_HOME` 和 `ANDROID_HOME`，用 SDK Manager 安装平台、构建工具和 ADB：
 
 ```bash
-scripts/android/setup.sh
+"$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" 'platforms;android-36' 'build-tools;36.0.0' platform-tools
 scripts/android/check.sh
 ```
 
-工具默认位于 `~/.local/share/moerise-android/`；可通过 `MOERISE_ANDROID_TOOLS` 改变目录。已有工具链时设置 `JAVA_HOME` 和 `ANDROID_HOME`，后者需包含 `platforms;android-36`、`build-tools;36.0.0` 与 `platform-tools`。
+未设置 `JAVA_HOME` 和 `ANDROID_HOME` 时，脚本从 `~/.local/share/moerise-android/` 查找工具链；可通过 `MOERISE_ANDROID_TOOLS` 指定工具目录。
 
 Gradle Wrapper 固定为 8.13，并校验发行包 SHA-256。依赖版本见 [版本目录](../mobile/gradle/libs.versions.toml)：Kotlin 2.2.20、Jetpack Compose 1.9.3、AGP 8.11.1、KSP 2.2.20-2.0.4、Room 2.8.3 和 SQLite 2.6.1。
 
@@ -51,8 +51,6 @@ source scripts/android/environment.sh
 adb devices
 adb install -r mobile/androidApp/build/outputs/apk/debug/androidApp-debug.apk
 ```
-
-提交后执行 `scripts/android/archive-debug.sh M2` 可按里程碑和提交号归档 debug APK，检查签名、APK 中 native 库的 16 KiB 对齐，以及 64 位 ELF LOAD 段对齐，并输出 SHA-256。归档入口要求已跟踪文件没有改动。
 
 发行配置只允许 HTTPS；debug 配置允许 localhost、127.0.0.1 和 IPv6 回环的 HTTP。凭据、数据库和受保护内容排除云备份及设备迁移，持久数据库使用 `noBackupFilesDir`。
 
@@ -90,14 +88,14 @@ GET 与只读 POST `/search` 遇到复用连接的 EOF 时，
 scripts/android/live-check.sh
 ```
 
-脚本构建独立 Core，启动受 CPU 和内存限制的 Memos 容器和内嵌 Web 服务，使用虚构账号检查登录、重开会话、同键创建、实时读回、删除与注销。观星夹具使用本机隔离 Embedding 模型。测试结束清理容器、来源数据和临时凭据；非敏感日志留在 `.local/android/live-*/`。Linux JVM 检查使用与 Android 相同的 OkHttp 引擎；Keystore、设备生命周期和触控通过 Android 设备流程检查。
+脚本构建独立 Core，启动受 CPU 和内存限制的 Memos 容器和内嵌 Web 服务，使用虚构账号检查登录、重开会话、同键创建、实时读回、删除与注销。观星夹具使用本机隔离 Embedding 模型。测试结束清理容器、来源数据和临时凭据。非敏感日志留在 `.local/android/live-*/`。Linux JVM 检查使用与 Android 相同的 OkHttp 引擎。
 
 隔离实例通过 Memos 官方 API 将 `contentLengthLimit` 设为 65,536，用于覆盖 Core 的
 64 KiB 内容上限。真实服务的笔记长度还受其 Memos 实例配置约束。
 
 单独联调设备时运行 `scripts/android/start-fixture.sh`。脚本输出 Web 来源、私有连接档案路径和 `adb reverse` 命令；连接档案只用于隔离环境，包含虚构账号和临时凭据。按 Ctrl+C 清理服务与来源数据。观星六类顶层状态及更新中的固定响应样本位于 `mobile/androidApp/src/test/resources/contracts/map/`。
 
-Windows 通过公共锁调用 `scripts/android/start-fixture.ps1`，命令见[设备检查](android/DEVICE-CHECKS.md#fixture-生命周期)。复用已有观星语料时，设置
+复用已有观星语料时，设置
 `MOERISE_ANDROID_CORPUS` 为笔记 JSON 数组路径、`MOERISE_ANDROID_VECTORS` 为按相同行序排列的
 Float32 小端向量文件、`MOERISE_ANDROID_DIMENSIONS` 为向量维度（默认 1024）。
 脚本通过 Memos 官方 API 导入正文，向量服务直接返回已有数据，Core 生成真实索引与 UMAP
@@ -112,11 +110,9 @@ Float32 小端向量文件、`MOERISE_ANDROID_DIMENSIONS` 为向量维度（默�
 和首次拟合数量；布局镜像摘要与结果保存在隔离服务日志目录。结束时清理专用容器、
 卷及凭据。该入口与 Gradle 构建串行执行。
 
-## 记录、同步与设备流程
+## 记录与同步
 
 手机窗口固定竖屏。Activity 重建、切入后台和进程重开时，编辑内容仍通过本机数据库恢复。
-自动化按输入法、编辑、搜索、归档删除和离线恢复分组，集中结果与定向重跑见
-[设备检查](android/DEVICE-CHECKS.md#集中检查与定向重跑)。
 
 已配置账号启动后异步恢复输入内容和检查会话；编辑器不等待网络，时间线读取安排在编辑器首帧之后。空正文显示浅色提示“今天想到了什么……”。输入在 300 毫秒防抖后落盘，持续输入最多等待约一秒合并落盘；切页和进入后台时立即刷入数据库。
 
@@ -134,15 +130,24 @@ Android Application 持有同一组会话、数据库和控制器；界面与系
 
 `note_editor_ready` 标记从 Activity 创建开始，到本机草稿恢复后编辑器完成首个可输入帧结束，同时调用 `reportFullyDrawn`。此标记用于设备启动测量。
 
-设备验收使用独立包 `io.github.fermin214.moerise.fixture`，数据与普通安装隔离。脚本会清空该验收包的数据；连接档案在设备测试后删除。隔离服务运行时执行：
+## 本地设备测试
+
+`mobile/androidApp/src/androidTest/` 的测试在本地设备运行。测试目标使用 `fixture` 变体 `io.github.fermin214.moerise.fixture`，与发行包数据隔离。GitHub Actions 的 Android 检查覆盖 JVM、Lint、APK 构建和真实 Core API。
+
+| 用例 | 运行前提 |
+| --- | --- |
+| `StarRenderingTest` | 使用 `.fixture` 包和内存 `MockEngine`，无需测试服或连接档案 |
+| `ImeLifecycleTest` | 使用 `.fixture` 包，设备必须能访问隔离服务，并在 `/data/local/tmp/moerise-android-fixture.json` 提供 `origin`、`username` 和 `password` |
+| `QuickNoteTest` | 使用和 `ImeLifecycleTest` 相同的连接配置。测试账号须预置至少 30 条可编辑的正常笔记。在新隔离实例中可运行 `MOERISE_ANDROID_FIXTURE=/绝对路径/connection.json node scripts/android/seed-benchmark.mjs`，也可通过 API 预置 |
+
+使用 `scripts/android/start-fixture.sh` 启动隔离服务时，先执行脚本给出的 `adb reverse` 命令，再把连接档案中的三个登录字段写入设备档案。运行完成后删除设备档案和本机的临时副本。
+
+连接单台设备后，可按类运行。下面的命令选择 `StarRenderingTest`：
 
 ```bash
-export ANDROID_SERIAL=设备序列号
-export MOERISE_ANDROID_FIXTURE=/绝对路径/connection.json
-scripts/android/acceptance.sh
+mobile/gradlew -p mobile :androidApp:connectedFixtureAndroidTest \
+  -Pandroid.testInstrumentationRunnerArguments.class=io.github.fermin214.moerise.StarRenderingTest
 ```
-
-设备流程覆盖登录、输入、Activity 重建、保存与时间线读回，结果写入 `.local/android/device-acceptance.log`。输入法、进程终止和后台恢复分别通过设备操作及持久化恢复检查补充。
 
 ## 笔记管理与附件
 
@@ -214,7 +219,7 @@ Android 将响应体积、解析、首绘、绘制和摘要请求计数写入 `M
 均检查签名、ZIP 和 64 位 native 库的 16 KiB 对齐。
 runner 的 Trace Processor 固定为官方 v59.1，`trace-processor.py` 校验各 ABI 的 SHA-256 并下载到忽略的构建目录。该版本可识别 Android 16 trace 中的 RenderThread 线程名；程序仅进入测试 runner。
 
-连接固定 arm64 真机和隔离服务后执行：
+在 Linux 或 WSL2 中通过 USB 连接固定 arm64 真机，确认 `adb devices` 能列出设备，并启动隔离服务后执行：
 
 ```bash
 export ANDROID_SERIAL=设备序列号
@@ -232,6 +237,7 @@ Profile 采集使用 API 33 及以上设备，
 `baseline-prof.txt` 和 `startup-prof.txt`；
 启动规则与星图规则分别采集；Baseline 规则合并两组路径，Startup 规则只保留启动路径。AGP 在构建时转写。更新规则后提交源文件，再构建
 发行包。Profile 为可选优化；同时存在两份非空规则时，发行脚本检查 APK 内的编译产物。
+`benchmark.sh startup-without-profile` 只测量无 Profile 的启动与前台恢复，无需预先生成规则。
 设备性能测试的最低 API 取自 [`moerise.minSdk`](../mobile/gradle.properties)，后续规划见[路线图](ROADMAP.md#1-android-客户端演进)。
 
 | 场景 | 采样与输出 |
@@ -252,75 +258,9 @@ Activity 创建开始，包含固定快照生成、JSON 解析和完整首绘，
 Core 请求累计数写入 `MoeriseStartup` 日志与 `moerise_network_requests` Trace 计数器，
 可按启动区间区分会话恢复和首帧后的列表请求。
 
-### Windows 性能入口
-
-Windows 使用 PowerShell 7.2 以上、JDK 17、Android API 36、Build Tools 36.0.0、
-Platform-Tools 和 Node.js 24 以上；性能汇总另需 Python 3.11 以上。工具路径按下述规则解析，
-在仓库根目录输入设备序列号和隔离连接档案路径后执行：
-
-```powershell
-$env:ANDROID_SERIAL = Read-Host '输入真机设备序列号'
-$env:MOERISE_ANDROID_FIXTURE = (Resolve-Path -LiteralPath (
-    Read-Host '输入隔离实例 connection.json 的绝对路径')).Path
-.\scripts\android\with-device-lock.ps1 -Owner android-performance -Task profile -Command {
-    param($context)
-    & "$($context.source_root)\scripts\android\benchmark.ps1" profile -SourceRoot $context.source_root
-}
-.\scripts\android\with-device-lock.ps1 -Owner android-performance -Task benchmark -Command {
-    param($context)
-    & "$($context.source_root)\scripts\android\benchmark.ps1" run -SourceRoot $context.source_root
-}
-```
-
-`profile` 采集并合并设备生成的 Baseline 与 Startup Profile；`run` 测量启动和星图，
-`startup` 仅测启动，`stars` 仅测星图。每次调用只启动一次 Gradle，限制单 worker、
-单 JVM 处理器，关闭并行构建与常驻进程。所有 Windows 构建和设备操作通过
-`with-device-lock.ps1` 共用主仓库的公共锁，子入口要求有效的锁令牌。Profile 采集至少需要 API 33，测量至少需要
-API 29。带 Profile 的测量要求已有非空的 `baseline-prof.txt`；`startup-without-profile` 只执行两组不带 Profile 的启动与前台恢复场景，无需源规则。完整对比要求两组使用同一 APK、设备、缓存数据和工具版本。
-
-设备和连接档案也可通过 `-Serial`、`-Fixture` 参数传入。档案必须来自
-`start-fixture.ps1` 或 `start-fixture.sh` 启动的隔离服务，包含 HTTP 回环来源、
-`android-owner` 账号与临时密码。
-服务在服务器运行时，先建立电脑到服务器的 SSH 本地端口转发并保持连接，端口与
-档案来源一致；脚本负责该设备的 `adb reverse`。数据准备复用 `seed-benchmark.mjs`，
-通过真实 Core/Memos 创建并检查后端固定数据集 100 篇笔记，同时核对启动首屏的
-20 条缓存包含 64 KiB 长文及其 10 个附件元数据。性能包登录后等待该缓存就绪再开始测量。
-
-Windows 的 `environment.ps1` 固定使用主仓库 `.local/android/tools/android-sdk`、
-`.local/android/gradle-home` 和 `.local/android/project-cache`。
-JDK 优先使用 `JAVA_HOME`，随后依次查找
-`C:\Program Files\Microsoft\jdk-17.0.12.7-hotspot`、
-`.local/android/tools/jdk-17.0.21+9` 和 PATH，并校验完整 JDK 17。
-性能脚本的 `MOERISE_ANDROID_ADB`、`MOERISE_ANDROID_NODE`、
-`MOERISE_ANDROID_PYTHON` 可分别指定程序的完整路径，支持路径中含空格。Python 的
-WindowsApps 商店别名不会作为解释器使用。脚本只为子进程配置环境，退出时恢复调用方
-会话，不写入用户或系统环境。
-
-`environment.ps1` 提供 `Get-MoeriseAndroidEnvironment`，返回工具链和缓存路径，
-并导出仓库根目录变量 `$androidRepoRoot`。点调用时初始化进程内的 `JAVA_HOME`、
-SDK、PATH 与 Gradle 缓存；加 `-ResolveOnly` 则只加载路径解析功能。
-Windows 入口使用上述共享 Gradle 缓存和工程缓存，
-`GRADLE_OPTS` 和 `JAVA_OPTS` 继续传给 Gradle。
-仅检查参数、档案格式、Profile 前置条件和工具路径时执行：
-
-```powershell
-pwsh -NoProfile -File scripts/android/benchmark.ps1 startup -ValidateOnly
-```
-
-该检查读取本机配置并查询 Node.js、Python 版本，不调用 ADB、Gradle 或数据准备脚本。
-正式执行会清空 `.benchmark` 包的数据，在结束或发生错误时删除设备上的临时连接档案。
-Windows 结果目录为公共锁任务目录下的 `benchmark-<模式>/`，可从
-`queue.json` 的 `output_root` 定位；目录保存运行日志、原始 JSON、
-系统 trace、测试报告、目标 APK 与 `device.json`。元数据包含提交号、工作区改动标记、
-设备序列号、系统、ABI、页大小、电池、温度、内存和 APK SHA-256，不复制连接档案。
-构建失败时也归档已生成的原始结果和错误信息；测量成功后复用
-`benchmark-report.py` 输出每项指标的 P50/P95 和 `summary.json`。报告支持 AndroidX `Mode.First` 的 `FirstMs` 字段，保留原字段名，并严格检查迭代数、非空 trace、成功的安装和 instrumentation 记录。缺失采样不能计作通过。
-
-完整设备操作见[设备检查](android/DEVICE-CHECKS.md)。
-
 ## 发行
 
-发行 ABI 为 `arm64-v8a`、`x86_64`。构建、R8、发行 lint、依赖许可检查和静态
+发行 ABI 为 `arm64-v8a`、`x86_64`。构建、R8、依赖许可检查和静态
 16 KiB 对齐检查共用以下入口：
 
 ```bash
@@ -331,15 +271,11 @@ scripts/android/release.sh --unsigned
 `MOERISE_ANDROID_STORE_PASSWORD` 和 `MOERISE_ANDROID_KEY_PASSWORD`，然后运行
 `scripts/android/release.sh --sign`。密码通过环境变量传给 `apksigner`，密钥放在
 私有目录或 CI Secret 中。入口要求 Git 工作区干净，产物归档到
-`.local/android/releases/v版本-提交号/`，包含 APK、SHA-256、构建信息、
+`.local/android/releases/v<版本>-code<versionCode>-<提交号前七位>/`，包含 APK、SHA-256、构建信息、
 安装说明和第三方声明；R8 mapping 随构建保存。
 
 `verify-apk.py` 检查包名、版本、发行调试标志、签名、ZIP 和 native ELF 的
-16 KiB 对齐，并拒绝打包 SQLite 原生库。发行流程在覆盖安装前用正式 0.3.0 APK
-连接隔离的新 Core，检查笔记读写与同步、搜索结果、回顾、漫步、观星和遥测入库。
-全新安装检查 HTTPS 会话。覆盖安装后检查会话、草稿、待发队列及数据库迁移。具体操作见
-[设备检查](android/DEVICE-CHECKS.md#发行与升级)。
-[安装与升级](android/INSTALL.md)可随发行包分发。
+16 KiB 对齐，并拒绝打包 SQLite 原生库。`Checks` 同时运行发行 Lint，并构建 `benchmark` 与 `profile` APK。
 
 运行时依赖来自 `:androidApp:exportReleaseDependencies`，第三方许可清单见
 [Android 第三方许可](android/THIRD_PARTY_NOTICES.md)。更新依赖后重新导出清单并执行
@@ -347,64 +283,6 @@ scripts/android/release.sh --unsigned
 
 Android 与 Linux 联合发布在同一个 `v<版本>` Release。合并后 `Main CI` 从 GitHub Actions Secrets 读取
 `ANDROID_SIGNING_KEYSTORE`（Base64 keystore）、`ANDROID_KEY_ALIAS`、
-`ANDROID_STORE_PASSWORD` 和 `ANDROID_KEY_PASSWORD`。发行构建在 API 29 模拟器全新安装签名 APK，
-检查登录、笔记保存与读回、应用重开后的会话；再从 0.3.0 同签名 APK 覆盖升级，检查中文草稿、冻结待发请求、账号和 Keystore。隔离 HTTPS 的临时 CA 安装到
-模拟器系统信任库，应用使用发行版证书校验与 Secure Cookie。结果归档为 `android-release-checks`。
-`Publish release` 校验该次构建的 APK 摘要与安装、升级结果一致，使用原产物发布 APK、SHA-256、
-构建 JSON 和许可 ZIP。具体步骤见[发布](DEVELOPMENT.md#发布)。
+`ANDROID_STORE_PASSWORD` 和 `ANDROID_KEY_PASSWORD`。正式 APK 的 `versionCode` 必须高于 `v0.3.0`，签名证书必须与该版本一致。手动运行 `Android release` 时使用临时密钥签名，并验证 APK 与发布附件。
 
-PR 的 Android 检查在 API 36 模拟器运行登录、记录、编辑、附件、草稿恢复与离线队列流程。
-手动运行 `Android release` 使用临时密钥签名并执行相同的设备检查。
-
-### Windows 发行入口
-
-Windows 使用 PowerShell 7.2 以上与 Python 3.11 以上，工具链及本机缓存路径由
-`environment.ps1` 解析。在仓库根目录执行：
-
-```powershell
-$env:MOERISE_ANDROID_PYTHON = 'C:\工具\Python\python.exe'
-.\scripts\android\with-device-lock.ps1 -Owner android-release -Task release-unsigned -Command {
-    param($context)
-    & "$($context.source_root)\scripts\android\release.ps1" unsigned -SourceRoot $context.source_root
-}
-```
-
-`unsigned` 是默认模式。签名模式读取已有的 `MOERISE_ANDROID_KEYSTORE`、
-`MOERISE_ANDROID_KEY_ALIAS`、`MOERISE_ANDROID_STORE_PASSWORD` 和
-`MOERISE_ANDROID_KEY_PASSWORD` 环境变量，然后执行：
-
-```powershell
-.\scripts\android\with-device-lock.ps1 -Owner android-release -Task release-sign -Command {
-    param($context)
-    & "$($context.source_root)\scripts\android\release.ps1" sign -SourceRoot $context.source_root
-}
-```
-
-也可在上述锁内调用 `release.ps1 sign -SigningFile <本机签名档案绝对路径>`。
-`signing.json` 保存本机签名档案，字段为 `keystore`、`alias`、`store_password`、
-`key_password`；`keystore` 指向已有发行密钥。签名档案和密钥保存在仓库外的私有目录，
-不随源码或发行产物分发。
-Windows 构建默认使用 Gradle 中的 `versionCode`，也可以用 `-VersionCode` 显式指定。
-
-密码通过 `apksigner` 的 `env:` 参数读取，不写入命令行参数或归档。脚本使用已有密钥，
-只进行本机构建、签名与归档。发行构建要求已跟踪文件没有修改，未跟踪文件不阻断。
-每次调用通过一次 Gradle 执行 release APK、发行 lint 和运行时依赖导出，限制
-单 worker、单 JVM 处理器，并关闭并行构建和常驻进程；多个构建顺序运行。
-随后执行许可检查、16 KiB ZIP 与 ELF 对齐检查；签名模式另检查 APK 签名。
-Windows SDK 工具按 `.exe`、`.bat`、无扩展名依次选择。
-
-版本名、版本号和源 APK 路径读取实际的 `output-metadata.json`。产物保存到
-公共锁任务目录下的 `releases/v<版本>-code<versionCode>-<提交号前七位>/`，包含 APK、SHA-256、构建元数据、
-原始输出元数据、构建和校验日志、第三方许可 ZIP、许可目录、安装说明及 R8 mapping；
-许可 ZIP 不包含 mapping。
-
-无设备检查使用：
-
-```powershell
-pwsh -NoProfile -File scripts/android/release.ps1 unsigned -ValidateOnly
-pwsh -NoProfile -File scripts/android/release.ps1 sign -ValidateOnly
-```
-
-该模式检查工具路径、Python 版本及签名配置，输出构建参数和 `tracked_clean`；
-正式构建才要求 `tracked_clean` 为 `true`。检查不运行 Gradle、ADB、签名或 APK 构建，
-不修改环境变量。
+发布前使用当次 `Main CI` 的正式签名 APK 按[发版前真机检查](android/RELEASE-CHECKLIST.md)验证覆盖升级和主要交互。`Publish release` 核对 APK 摘要、构建提交和产物完整性，再用原产物发布。具体步骤见[发布](DEVELOPMENT.md#发布)，随 APK 分发的说明见[安装与升级](android/INSTALL.md)。

@@ -87,7 +87,7 @@ go test -race ./...
 
 ## 四、Playwright 浏览器自动化测试
 
-发往 `main` 的 PR 按变更路径运行检查。Go 或 Layout 改动并行运行构建与单元测试、竞态检测和 Memos 集成测试。Web 或共用脚本改动运行 Web 检查。Android 客户端、Core 或内嵌静态服务改动还会运行 Android 检查。同一 PR 推送新提交会取消旧检查，`PR gate` 要求新提交的全部适用检查和发布预演通过。可按 PR 编号或运行 ID 查询失败步骤、耗时和产物，见 [CI 排查技能](../.agents/skills/moerise-ci/SKILL.md)。
+发往 `main` 的 PR 按变更路径运行检查。Go 或 Layout 改动并行运行构建与单元测试、竞态检测和 Memos 集成测试。Web 或其共用脚本改动运行 Web 检查。Android 客户端、Core 或隔离联调输入改动运行 Android JVM 测试、Lint、APK 构建与真实 Core API 联调。发布守护测试由 `scope` 按路径执行。手动运行 `Checks` 覆盖全部组及 Linux 发布预演。同一 PR 推送新提交会取消旧检查，`PR gate` 要求新提交的全部适用检查通过。失败步骤、耗时和产物的查询方法见 [CI 排查技能](../.agents/skills/moerise-ci/SKILL.md)。
 
 Moerise Web 前端使用 Playwright 覆盖真实的端到端浏览器交互：
 
@@ -189,9 +189,9 @@ python3 scripts/performance/evaluate-search.py --config .local/config.json --cre
 
 ## 发布
 
-PR 按改动范围复用发布流程。Linux 预演在 AMD64 和 ARM64 各自构建安装包和 Core、Layout 镜像，检查镜像能启动并提供服务。Android 预演使用临时密钥，在最低支持版本 Android 10（API 29）安装签名 APK，通过 HTTPS 登录，写入并读回笔记，重启后检查会话。Android 设备回归在 API 36 上覆盖完整编辑、附件与离线恢复。
+PR 按改动范围运行 Linux 发布预演。AMD64 和 ARM64 各自构建安装包和 Core、Layout 镜像，并验证镜像启动与服务探测。AMD64 还验证打包与外部布局服务两种 Compose 部署。手动运行 `Android release` 使用临时密钥，验证 APK 构建、签名、16 KiB 对齐和发布附件。
 
-合并后，`Main CI` 并行运行两个 Linux 架构任务和一个 Android 任务。Linux 任务保存安装包和镜像摘要。Android 任务使用生产密钥，对同一 APK 检查清单、签名、16 KiB 对齐及最低版本设备流程，并记录设备验证所用 APK 的 SHA-256。
+合并后，`Main CI` 并行运行两个 Linux 架构任务和一个 Android 任务。Linux 任务保存安装包和镜像摘要。Android 任务使用生产密钥签名，校验签名证书与 `v0.3.0` 一致、`versionCode` 高于 `v0.3.0`，并保存 APK、校验和及构建附件。发布前用该次运行的正式签名 APK 完成[发版前真机检查](android/RELEASE-CHECKLIST.md)。
 
 准备联合发版时，通过一个 PR 对齐 Core、Web 和 Android 的版本号，同时更新 OpenAPI、npm 锁文件、Compose 和 `.env.example` 中的版本。Core 与 Web 的版本以 `internal/config.go` 和 `web/package.json` 为准。Android 在 `mobile/androidApp/build.gradle.kts` 中更新 `versionName` 并递增 `versionCode`。
 

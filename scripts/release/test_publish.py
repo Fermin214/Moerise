@@ -1,5 +1,9 @@
 import json
+import os
 from pathlib import Path
+import re
+import subprocess
+import sys
 from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import patch
@@ -11,6 +15,42 @@ from publish_source import release_sha
 SHA = 'a' * 40
 REPO = 'owner/project'
 RUN = '123'
+ROOT = Path(__file__).resolve().parents[2]
+
+
+def write_android_artifact(root, sha, version='0.2.0'):
+    apk_dir = root / 'android/android-release' / f'v{version}-code123-{sha[:7]}'
+    apk_dir.mkdir(parents=True)
+    apk = apk_dir / f'moerise-android-v{version}.apk'
+    apk.write_bytes(b'APK')
+    digest = publish.checksum(apk)
+    apk.with_suffix('.apk.sha256').write_text(f'{digest}  {apk.name}\n')
+    properties = publish.output('git', '-C', str(ROOT), 'show', f'{sha}:mobile/gradle.properties')
+    min_sdk = int(re.search(r'^moerise\.minSdk=(\d+)$', properties, re.M)[1])
+    metadata = apk.with_suffix('.apk.json')
+    info = dict(version_name=version, signed=True, commit=sha, min_sdk=min_sdk,
+                version_code=123, sha256=digest, apk=apk.name)
+    metadata.write_text(json.dumps(info))
+    for name in (f'{apk.stem}-notices.zip', 'INSTALL.md', 'mapping.txt'):
+        (apk_dir / name).write_bytes(name.encode())
+    return metadata, info
+
+
+def write_linux_artifacts(root, version='0.2.0'):
+    for arch in publish.ARCHES:
+        artifact = root / f'linux-{arch}'
+        artifact.mkdir(exist_ok=True)
+        (artifact / f'version-{arch}.txt').write_text(version)
+        (artifact / f'moerise_{version}_linux_{arch}.tar.gz').write_bytes(arch.encode())
+        for component, suffix in [('core', ''), ('layout', '-layout')]:
+            (artifact / f'{component}-{arch}.txt').write_text(f'ghcr.io/{REPO}{suffix}@sha256:' + 'a' * 64)
+
+
+def verify_release(root, sha, component):
+    return subprocess.run(
+        [sys.executable, '-B', str(ROOT / 'scripts/release/publish.py'), str(root), sha, component, '--verify-only'],
+        cwd=ROOT, env=dict(os.environ, GH_REPO=REPO), capture_output=True, text=True,
+    )
 
 
 class PublishTests(unittest.TestCase):
@@ -24,57 +64,52 @@ class PublishTests(unittest.TestCase):
             with self.subTest(changes=changes), self.assertRaises(SystemExit):
                 release_sha(run | changes, REPO, '45', RUN)
 
-    def test_only_matching_device_evidence_can_release_signed_apk(self):
+    def test_verify_only_requires_downloaded_android_artifact_layout(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
-            artifacts = root / 'android/android-release/v0.1.0'
-            artifacts.mkdir(parents=True)
-            apk = artifacts / 'moerise-android-v0.1.0.apk'
-            apk.write_bytes(b'APK tested by the device')
-            digest = publish.checksum(apk)
-            apk.with_suffix('.apk.sha256').write_text(f'{digest}  {apk.name}\n')
-            metadata = apk.with_suffix('.apk.json')
-            info = dict(version_name='0.1.0', signed=True, commit=SHA, min_sdk=29, sha256=digest, apk=apk.name)
-            metadata.write_text(json.dumps(info))
-            result = root / 'android/android-release-checks/result.json'
-            result.parent.mkdir()
-            smoke = dict(run_id=RUN, status='passed', commit=SHA, api='29', apk_sha256=digest, secure_cookie=True,
-                         session_restored_without_login=True,
-                         flows={'release-smoke': {'status': 'passed', 'server_assertions': {'created_note_count': 1}}})
-            upgrade_report = result.parent / 'upgrade-smoke/result.json'
-            upgrade_report.parent.mkdir()
-            upgrade_smoke = smoke | dict(flows={'upgrade-smoke': {'status': 'passed'},
-                'baseline-compatibility': {'status': 'passed', 'server_assertions': {'created_note_count': 1}}},
-                upgrade={'from': '0.3.0', 'pending_write_count': 1, 'account': True, 'draft': True,
-                         'keystore_session': True, 'local_database_restored': True, 'telemetry_received': True})
-            with patch.object(publish, 'output', return_value='moerise.minSdk=29\n'):
-                with self.assertRaisesRegex(SystemExit, 'missing'):
-                    publish.android_release(root, SHA, RUN)
-                for changes in ({'status': 'failed'}, {'status': 'cancelled'}, {'apk_sha256': '0' * 64},
-                                {'commit': 'b' * 40}, {'run_id': '122'}, {'api': '36'}, {'flows': {}},
-                                {'session_restored_without_login': False}):
-                    result.write_text(json.dumps(smoke | changes))
-                    with self.subTest(changes=changes), self.assertRaises(SystemExit):
-                        publish.android_release(root, SHA, RUN)
-                result.write_text(json.dumps(smoke))
-                with self.assertRaisesRegex(SystemExit, 'upgrade verification result is missing'):
-                    publish.android_release(root, SHA, RUN)
-                for changes in ({'status': 'failed'}, {'apk_sha256': '0' * 64}, {'commit': 'b' * 40},
-                                {'run_id': '122'}, {'session_restored_without_login': False},
-                                {'flows': {'upgrade-smoke': {'status': 'passed'}}},
-                                {'upgrade': upgrade_smoke['upgrade'] | {'telemetry_received': False}},
-                                {'upgrade': upgrade_smoke['upgrade'] | {'from': '0.2.0'}},
-                                {'upgrade': upgrade_smoke['upgrade'] | {'local_database_restored': False}},
-                                {'upgrade': upgrade_smoke['upgrade'] | {'pending_write_count': 2}}):
-                    upgrade_report.write_text(json.dumps(upgrade_smoke | changes))
-                    with self.subTest(upgrade_changes=changes), self.assertRaises(SystemExit):
-                        publish.android_release(root, SHA, RUN)
-                upgrade_report.write_text(json.dumps(upgrade_smoke))
-                self.assertEqual(publish.android_release(root, SHA, RUN)[0], 'android-v0.1.0')
-                for changes in ({'min_sdk': 26}, {'signed': False}):
+            sha = publish.output('git', '-C', str(ROOT), 'rev-parse', 'HEAD')
+            metadata, _ = write_android_artifact(root, sha)
+            write_linux_artifacts(root)
+            for component in ('android', 'both'):
+                with self.subTest(component=component):
+                    result = verify_release(root, sha, component)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    for asset in sorted(metadata.parent.iterdir()):
+                        with self.subTest(missing=asset.name):
+                            moved = asset.rename(root / asset.name)
+                            try:
+                                result = verify_release(root, sha, component)
+                                self.assertEqual(result.returncode, 1, result.stderr)
+                                expected = 'Android APK metadata file' if asset == metadata else asset.name
+                                self.assertIn(expected, result.stderr)
+                            finally:
+                                moved.rename(asset)
+                    shallow = metadata.parent.rename(root / 'android' / metadata.parent.name)
+                    try:
+                        result = verify_release(root, sha, component)
+                        self.assertEqual(result.returncode, 1, result.stderr)
+                        self.assertIn('Android APK metadata file', result.stderr)
+                    finally:
+                        shallow.rename(metadata.parent)
+
+    def test_signed_android_metadata_must_match_package(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            sha = publish.output('git', '-C', str(ROOT), 'rev-parse', 'HEAD')
+            metadata, info = write_android_artifact(root, sha)
+            for changes in (
+                {'min_sdk': info['min_sdk'] + 1}, {'signed': False}, {'signed': 1},
+                {'commit': 'b' * 40}, {'sha256': '0' * 64}, {'apk': 'other.apk'},
+                {'version_code': 0}, {'version_code': -1}, {'version_code': True},
+                {'version_code': '123'}, {'version_code': 123.0},
+            ):
+                with self.subTest(changes=changes), self.assertRaises(SystemExit):
                     metadata.write_text(json.dumps(info | changes))
-                    with self.subTest(changes=changes), self.assertRaises(SystemExit):
-                        publish.android_release(root, SHA, RUN)
+                    publish.android_release(root, sha)
+            metadata.write_text(json.dumps(info))
+            metadata.with_suffix('.sha256').write_text('wrong checksum')
+            with self.assertRaisesRegex(SystemExit, 'checksum file'):
+                publish.android_release(root, sha)
 
     def test_reject_existing_version_on_another_commit_before_upload(self):
         tag = 'android-v0.1.0'
@@ -92,29 +127,21 @@ class PublishTests(unittest.TestCase):
     def test_joint_release_prepares_one_tag_with_both_platforms(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
-            for arch in publish.ARCHES:
-                linux = root / f'linux-{arch}'
-                linux.mkdir()
-                (linux / f'version-{arch}.txt').write_text('0.2.0')
-                (linux / f'moerise_0.2.0_linux_{arch}.tar.gz').write_bytes(arch.encode())
-                for component, suffix in [('core', ''), ('layout', '-layout')]:
-                    (linux / f'{component}-{arch}.txt').write_text(f'ghcr.io/{REPO}{suffix}@sha256:' + 'a' * 64)
-            android_files = [root / f'moerise-android-v0.2.0{suffix}'
+            sha = publish.output('git', '-C', str(ROOT), 'rev-parse', 'HEAD')
+            metadata, _ = write_android_artifact(root, sha)
+            android_files = [metadata.with_name(f'moerise-android-v0.2.0{suffix}')
                              for suffix in ('.apk', '.apk.sha256', '.apk.json', '-notices.zip')]
-            guide = root / 'INSTALL.md'
-            for asset in [*android_files, guide]:
-                asset.write_bytes(asset.name.encode())
+            guide = metadata.with_name('INSTALL.md')
             with patch.dict('os.environ', GH_REPO=REPO), \
-                    patch('sys.argv', ['publish.py', directory, SHA, 'both', '--run-id', RUN, '--dry-run']), \
-                    patch.object(publish, 'prepare', return_value=(None, {})) as prepare, \
-                    patch.object(publish, 'android_release') as android:
-                android.return_value = 'android-v0.1.0', android_files, {}, ['--notes-file', str(guide)]
+                    patch('sys.argv', ['publish.py', directory, sha, 'both', '--dry-run']), \
+                    patch.object(publish, 'prepare', return_value=(None, {})) as prepare:
+                write_linux_artifacts(root, '0.1.0')
                 with self.assertRaisesRegex(SystemExit, 'versions differ'):
                     publish.main()
                 prepare.assert_not_called()
-                android.return_value = 'android-v0.2.0', android_files, {}, ['--notes-file', str(guide)]
+                write_linux_artifacts(root)
                 publish.main()
-                prepare.assert_called_once_with(REPO, SHA, 'v0.2.0', [
+                prepare.assert_called_once_with(REPO, sha, 'v0.2.0', [
                     root / 'linux-amd64/moerise_0.2.0_linux_amd64.tar.gz',
                     root / 'linux-arm64/moerise_0.2.0_linux_arm64.tar.gz', *android_files, guide])
 

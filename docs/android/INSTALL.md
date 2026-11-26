@@ -12,7 +12,7 @@ Moerise Android 客户端支持 Android 10（API 29）及以上系统，发行 A
 adb install moerise-android-v0.3.0.apk
 ```
 
-首次启动填写服务地址与绑定的 Memos 用户名、密码，登录后即可在主页写作：
+首次启动时，欢迎页的遥测开关默认关闭。填写服务地址与绑定的 Memos 用户名、密码，登录后即可在主页写作：
 
 - 点击保存后，笔记写入本机队列并立即显示在时间线中，网络恢复后自动上传；未点击保存的草稿仅保留在本机，不会自动提交。
 - 完成本地索引同步后，时间线、标签、日历与关键词筛选均直接读取本机数据；顶部同步图标仅在同步中、待同步、离线、需重新登录或存在冲突时显示，手动同步位于侧栏底部账户区或列表下拉刷新。
@@ -37,4 +37,4 @@ adb install -r moerise-android-v0.3.0.apk
 
 ## 发行附件
 
-每个正式版本包含签名 APK、`.apk.sha256`、构建元数据 `.apk.json`、本安装说明以及第三方开源许可归档 `-notices.zip`。开发构建与本地签名流程见 [Android 开发指南](../ANDROID.md)。
+每个正式版本包含签名 APK、`.apk.sha256`、构建元数据 `.apk.json`、第三方开源许可归档 `-notices.zip` 和安装说明。开发构建与本地签名流程见 [Android 开发指南](https://github.com/Fermin214/Moerise/blob/main/docs/ANDROID.md)。

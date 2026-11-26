@@ -6,7 +6,7 @@ description: 核对 Moerise 验收分支与 PR 的范围、修改 CI 任务名�
 从仓库根目录运行。`scope` 只读本地 Git 对象，查询 GitHub 使用已登录的 `gh` 和 `jq`。
 
 - 并行功能共用开发目录时，从目标分支建独立工作树。推送验收分支前先 `git fetch origin main`，再运行 `bash .agents/skills/moerise-ci/inspect.sh scope origin/main <功能的第一个提交> [候选提交]`。首提交取自功能开发记录。命令列出候选 PR 的全部提交和文件，并指出混入的前置或旁支提交。对照交付内容核对文件，尤其是服务端、客户端、模板、文档和验收脚本。依赖另一项功能时，应显式选择对应的 PR 基线。
-- 定向设备验收尽量使用交付分支；已有 PR 全量运行覆盖同一 SHA 和用例时直接看该运行的设备结果。判断两个 PR 能否一起合入，使用 `git merge-tree --write-tree --name-only --no-messages <提交一> <提交二>`，记录对应提交和实际冲突文件。
+- 判断两个 PR 能否一起合入时，使用 `git merge-tree --write-tree --name-only --no-messages <提交一> <提交二>`，记录对应提交和实际冲突文件。
 
 - 拆分、矩阵化或重命名任务时，推送前运行 `bash .agents/skills/moerise-ci/inspect.sh workflow main`（需要 Python 3 和 PyYAML）。它读取目标分支生效的 ruleset，检查每个绑定 GitHub Actions 的必需名称在 `checks.yml` 中是否恰好有一个固定名称的普通任务。矩阵任务可并行执行，由固定名称的任务汇总结果。任一适用任务失败时，汇总也须失败。
 - 调整分组或矩阵成员后也运行 `bash .agents/skills/moerise-ci/inspect.sh workflow main`。CI 交接记录 `head SHA`、`run ID`、`attempt` 和 `PR gate` 状态。
@@ -15,9 +15,8 @@ description: 核对 Moerise 验收分支与 PR 的范围、修改 CI 任务名�
 
 - 预取、刷新或重连可能与用户操作并发。Web 和设备流程都通过用户入口触发操作，等待目标正文、月份、卡片位置或已保存的结果。模拟请求失败时按方法和目标资源注入一次故障。页签按名称或稳定 ID 选择。测试滚动位置时，记录可见卡片的键和偏移，操作后直接比较，别让测试自己滚回原位。
 - 草稿恢复用最少的笔记。跨页编辑用隔离服务预置超过一页的数据，再从界面滚动触发分页。等待超时时记录卡在哪一步、已加载多少条、还有没有下一页、同步是否在跑，再判断要改测试还是产品。
-- Android 设备失败时，下载对应 `android-device-<suite>` 或 `android-release-checks` 到 `.local/`。在同一次执行内按 `result.json` 的 `last_step` 找到 `commands.json`，按动作顺序查首错，再看 JUnit、UI 树和服务端读回结果。结束时截图也可能失败并出现在 JUnit 摘要里。目标笔记在列表中不可见时，先查同批数据的筛选条件、排序和分页。
-- 最低 API、测试 CA 或 ADB 流程有改动时，可对已推送的分支单跑 `gh workflow run android-release.yml --ref <分支>`。它使用临时签名和 APK 声明的最低 API，在 `google_apis` x86_64 镜像上执行 `scripts/android/release-smoke.sh`。检查 ADB 等待有上限、应用启动前 SELinux 已恢复 `Enforcing`，再用同一个 APK 完成 HTTPS 登录、写入读回和强停恢复。
-- 生命周期用例超时时，先从设备产物的 `*-threads.txt` 和 JUnit 找到首个异常及对应的测试操作，再查看清理阶段的异常。复测同一提交用 `gh run rerun <ID> --failed`。复测通过时保留首次失败的结论，只有定位原因并验证修复后才关闭缺陷。
+- Android JVM、Lint 或 Core API 失败时，下载对应的 `android-check-reports` 或 `android-api-reports`，用任务日志和 JUnit 找到首个异常。复测同一提交用 `gh run rerun <ID> --failed`。
+- 修改 Android 打包或发布校验后，可对已推送的分支运行 `gh workflow run android-release.yml --ref <分支>`。预演使用临时签名并校验 APK、16 KiB 对齐与发布附件。正式包真机检查使用同一次 `Main CI` 的签名 APK，步骤见 `docs/android/RELEASE-CHECKLIST.md`。
 - Linux 镜像失败时，从失败架构的步骤日志查找容器退出码与首个 HTTP 探测错误。用同一提交的 `scripts/release/build-images.sh` 复现，容器进程启动和健康端点返回成功是两个检查点。
 - 用日志区分产品错误、测试数据或断言错误、运行环境中断。证据缺失时指出缺哪份产物。评估提速时比较相同检查范围和缓存条件，分别记录单次关键路径，以及从首次触发到复测通过的总等待时间。
 - 对比耗时前固定 `scope`、套件覆盖和各项缓存的冷／热口径，再记录排队时间和墙钟时间。排查慢 CI 先沿 `needs` 与矩阵汇总找出决定 `PR gate` 完成时间的最长依赖链，再定位链上的最慢步骤。

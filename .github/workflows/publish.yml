@@ -49,11 +49,11 @@ jobs:
             gh run download "$MAIN_RUN" --dir "$RUNNER_TEMP/release" -p 'linux-*' -p 'image-*'
           fi
           if [[ "$COMPONENT" != core-web ]]; then
-            gh run download "$MAIN_RUN" --dir "$RUNNER_TEMP/release/android" -n android-release -n android-release-checks
+            gh run download "$MAIN_RUN" --dir "$RUNNER_TEMP/release/android/android-release" -n android-release
           fi
       - name: Publish verified packages and image tags
         run: |
           if [[ "$COMPONENT" != android ]]; then
             printf '%s' "$GH_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
           fi
-          python3 scripts/release/publish.py "$RUNNER_TEMP/release" "$RELEASE_SHA" "$COMPONENT" --run-id "$MAIN_RUN"
+          python3 scripts/release/publish.py "$RUNNER_TEMP/release" "$RELEASE_SHA" "$COMPONENT"
