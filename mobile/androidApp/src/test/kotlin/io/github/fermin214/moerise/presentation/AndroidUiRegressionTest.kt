@@ -26,6 +26,7 @@ import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createEmptyComposeRule
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.height
 import io.github.fermin214.moerise.MainActivity
 import io.github.fermin214.moerise.data.ConnectionProfile
 import io.github.fermin214.moerise.data.CoreJson
