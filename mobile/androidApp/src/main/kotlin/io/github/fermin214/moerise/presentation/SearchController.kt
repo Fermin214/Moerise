@@ -53,17 +53,20 @@ class SearchController(
     private var generation = 0L
     private var filterGeneration = 0L
     private var request: Job? = null
+    private var refreshPending = false
     private var filters: Job? = null
     private val cursors = mutableSetOf<String>()
 
     fun clear() {
         cursors.clear()
+        refreshPending = false
         ++generation; ++filterGeneration; request?.cancel(); filters?.cancel()
         mutable.value = SearchState()
     }
 
     fun change(query: SearchQuery) {
         if (query == state.value.query) return
+        refreshPending = false
         ++generation; request?.cancel()
         val stateChanged = query.state != state.value.query.state
         if (stateChanged) {
@@ -91,6 +94,8 @@ class SearchController(
         val zone = timezone()
         ++generation
         request?.cancel()
+        request = null
+        refreshPending = state.value.query.filtered
         mutable.update { current ->
             val matches = current.query.matchesScope(note, zone) &&
                 (current.query.mode != "keyword" || current.query.matchesKeyword(note))
@@ -98,7 +103,11 @@ class SearchController(
                 if (previous.name != note.name) previous else note.takeIf { matches }
             }, next = "", loading = false)
         }
-        if (refresh && state.value.query.filtered) search()
+        if (refresh) refreshIfNeeded()
+    }
+
+    internal fun refreshIfNeeded() {
+        if (refreshPending && request?.isActive != true) search()
     }
 
     fun search(append: Boolean = false) {
@@ -123,6 +132,7 @@ class SearchController(
                         val (rows, hasMore) = repo.localSearch(key, query, timezone(), 20, offset)
                         if (stamp != generation || key != account()) return@launch
                         val next = if (hasMore) "local:${offset + rows.size}" else ""
+                        if (!append) refreshPending = false
                         mutable.update {
                             it.copy(
                                 notes = (if (append) it.notes + rows else rows).distinctBy { note -> note.name },
@@ -167,7 +177,10 @@ class SearchController(
                     it.state in setOf("NORMAL", "ARCHIVED") && (query.state == "ALL" || it.state == query.state)
                 }) { "ACCOUNT_CHANGED" }
                 if (stamp != generation || key != account()) return@launch
-                if (!append) cursors.clear()
+                if (!append) {
+                    cursors.clear()
+                    refreshPending = false
+                }
                 val next = page.nextPageToken.takeIf { it.isNotBlank() && cursors.add(it) }.orEmpty()
                 mutable.update { it.copy(notes = (if (append) it.notes + page.notes else page.notes).distinctBy { note -> note.name },
                     next = next, responseMode = page.mode, semantic = page.semantic, loading = false) }
@@ -216,5 +229,9 @@ class SearchController(
         }
     }
 
-    fun leave() { ++generation; ++filterGeneration; request?.cancel(); filters?.cancel(); mutable.update { it.copy(loading = false, filtersLoading = false) } }
+    fun leave() {
+        ++generation; ++filterGeneration; request?.cancel(); filters?.cancel()
+        request = null
+        mutable.update { it.copy(loading = false, filtersLoading = false) }
+    }
 }

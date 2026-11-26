@@ -189,11 +189,13 @@ fun MoeriseApp(mobile: MobileController, onEditorReady: () -> Unit = {}) {
     }
     fun showFilter(value: SearchQuery, target: String = if (page in setOf("home", "archive")) page else sourceTimeline) {
         mobile.flush()
-        if (page != target) { page = target; mobile.page(target) }
+        val switched = page != target
+        page = target
         sourceTimeline = target
         mobile.homeNote.clear()
         mobile.search.change(value.copy(state = if (target == "archive") "ARCHIVED" else "NORMAL"))
         mobile.search.search()
+        if (switched) mobile.page(target)
         if (drawer.visible) drawer.close()
     }
     val tagFromReading: (String) -> Unit = { tag -> showFilter(SearchQuery(tags = setOf(tag)), "home") }

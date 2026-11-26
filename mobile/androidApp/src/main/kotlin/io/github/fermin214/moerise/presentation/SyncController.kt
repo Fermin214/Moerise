@@ -149,7 +149,11 @@ class SyncController internal constructor(
         mutable.update { SyncUiState(lastSyncAt = it.lastSyncAt) }
     }
 
-    internal suspend fun synchronizeOnce(trigger: SyncTrigger = SyncTrigger.ENQUEUED, shouldRun: () -> Boolean = { true }): Boolean = coroutineScope {
+    internal suspend fun synchronizeOnce(
+        trigger: SyncTrigger = SyncTrigger.ENQUEUED,
+        foregroundResume: Boolean = false,
+        shouldRun: () -> Boolean = { true },
+    ): Boolean = coroutineScope {
         cycleLock.withLock cycle@{
             if (!shouldRun()) return@cycle true
             val key = session.state.value.profile?.accountKey ?: return@cycle !session.state.value.loading
@@ -160,8 +164,13 @@ class SyncController internal constructor(
             val started = epochMillis()
             try {
                 val repo = repository()
-                if (trigger == SyncTrigger.BACKGROUND_JOB && !repo.automaticWritesPending(key)) return@cycle true
-                if (trigger == SyncTrigger.FOREGROUND_RESUME && !shouldResume(key, repo)) return@cycle true
+                when (trigger) {
+                    SyncTrigger.BACKGROUND_JOB -> if (!repo.automaticWritesPending(key)) return@cycle true
+                    SyncTrigger.ENQUEUED -> if (!repo.automaticWritesPending(key) &&
+                        (!foregroundResume || !resumeDue())) return@cycle true
+                    SyncTrigger.FOREGROUND_RESUME -> if (!resumeDue() && !repo.automaticWritesPending(key)) return@cycle true
+                    else -> Unit
+                }
                 if (!shouldRun() || !currentAccount(key)) return@cycle true
                 draftLock.withLock {
                     val queued = repo.queuedNotes(key)
@@ -225,16 +234,17 @@ class SyncController internal constructor(
             while (isActive && foreground && key == account) {
                 val immediate = when {
                     SyncTrigger.MANUAL in pendingTriggers -> SyncTrigger.MANUAL
-                    SyncTrigger.ENQUEUED in pendingTriggers -> SyncTrigger.ENQUEUED
                     SyncTrigger.NETWORK_RECOVERED in pendingTriggers -> SyncTrigger.NETWORK_RECOVERED
+                    SyncTrigger.ENQUEUED in pendingTriggers -> SyncTrigger.ENQUEUED
                     else -> null
                 }
                 val captured = pendingTriggers.toSet()
                 val trigger = immediate ?: if (resume) SyncTrigger.FOREGROUND_RESUME else null
+                val justResumed = resume
                 resume = false
                 if (trigger != null || retryAt?.let { it <= clockMillis() } == true) {
                     pendingTriggers.removeAll(captured)
-                    val drained = synchronizeOnce(trigger ?: SyncTrigger.PERIODIC_FALLBACK) {
+                    val drained = synchronizeOnce(trigger ?: SyncTrigger.PERIODIC_FALLBACK, foregroundResume = justResumed) {
                         trigger != null || retryAt?.let { it <= clockMillis() } == true
                     }
                     if (!drained && currentAccount(key)) {
@@ -250,11 +260,8 @@ class SyncController internal constructor(
         }
     }
 
-    private suspend fun shouldResume(key: String, repo: NoteRepository): Boolean {
-        val last = lastSuccessMonotonicMs ?: return true
-        if (clockMillis() - last >= 10_000L) return true
-        return repo.automaticWritesPending(key)
-    }
+    private fun resumeDue(): Boolean =
+        lastSuccessMonotonicMs?.let { clockMillis() - it >= 10_000L } ?: true
 }
 
 internal fun syncTelemetryResult(trigger: SyncTrigger, drain: DrainResult, outcome: SyncNotesOutcome?, success: Boolean): String? = when {

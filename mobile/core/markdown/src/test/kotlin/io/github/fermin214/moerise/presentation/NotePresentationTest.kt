@@ -2,6 +2,9 @@ package io.github.fermin214.moerise.presentation
 
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.seconds
+import kotlin.time.measureTime
 import kotlinx.serialization.json.*
 
 class NotePresentationTest {
@@ -21,6 +24,19 @@ class NotePresentationTest {
             if (prefix.isNotEmpty()) assertEquals(listOf("收藏"), NoteTagScanner(prefix + text("content")).spans().map { it.tag })
         }
     }
+
+    @Test
+    fun longAsciiTextKeepsTheRealTagAndProtectsUrlFragments() {
+        val suffix = " custom+scheme://example.test/#日记 #日记"
+        val content = "A".repeat(65_536 - suffix.encodeToByteArray().size) + suffix
+        val elapsed = measureTime {
+            val spans = NoteTagScanner(content).spans()
+            assertEquals(listOf(NoteTagSpan(content.lastIndexOf('#'), content.length, "日记")), spans)
+        }
+        assertTrue(elapsed < 2.seconds, "64 KiB tag scan took $elapsed")
+        assertEquals(listOf("日记"), notePresentation(content, listOf("日记")).inlineTags)
+    }
+
 
     @Test
     fun writingPrefixSpansWholeWordAndSkipsProtectedTextEvenOnLongInput() {

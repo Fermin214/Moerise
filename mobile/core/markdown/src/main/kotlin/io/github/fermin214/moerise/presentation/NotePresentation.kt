@@ -217,7 +217,7 @@ private val protectedTagNodes = setOf(
     MarkdownTokenTypes.HTML_TAG,
     MarkdownTokenTypes.ATX_HEADER,
 )
-private val bareTagURLs = Regex("""(?:[A-Za-z][A-Za-z0-9+.-]*://|www\.)[^\s<>]+""")
+private val bareTagURLs = Regex("""(?:(?<![A-Za-z0-9+.-])[A-Za-z][A-Za-z0-9+.-]*://|www\.)[^\s<>]+""")
 private const val tagPunctuation = ".,!?;:()[]{}<>\"'，。！？；：、（）【】《》「」『』“”‘’…*~`|"
 
 private fun tagBoundary(char: Char, before: Boolean): Boolean =

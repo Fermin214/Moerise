@@ -97,7 +97,7 @@ class MobileController(
     }
     private val mutableEditing = MutableStateFlow(false)
     val editing = mutableEditing.asStateFlow()
-    private val restoredEditorsAccount = MutableStateFlow<String?>(null)
+    private val editorRestoreFinished = MutableStateFlow<String?>(null)
     private val editorFrameAccount = MutableStateFlow<String?>(null)
     private val mutableClearing = MutableStateFlow(false)
     val clearing = mutableClearing.asStateFlow()
@@ -129,6 +129,7 @@ class MobileController(
         visiblePage = value
         if (switched && value in setOf("home", "archive")) refreshTimelines(value)
         if (value == "home" || value == "archive") filterSource.value = if (value == "home") "NORMAL" else "ARCHIVED"
+        refreshVisibleSearch()
         prefetchAllowed.value = inForeground && (value == null || value == "home")
         updateDiscovery()
         if (value == "drafts" && !clearing.value) scope.launch {
@@ -142,8 +143,14 @@ class MobileController(
         prefetchAllowed.value = value && (visiblePage == null || visiblePage == "home")
         sync.foreground(value)
         if (!value) search.leave()
+        else refreshVisibleSearch()
         if (!value) onQueueChanged()
         updateDiscovery()
+    }
+
+    private fun refreshVisibleSearch() {
+        if (inForeground && visiblePage in setOf("home", "archive") &&
+            search.state.value.query.state == filterSource.value) search.refreshIfNeeded()
     }
     private fun updateDiscovery() {
         val available = session.state.value.profile != null && !session.state.value.needsLogin && inForeground && !clearing.value
@@ -202,7 +209,7 @@ class MobileController(
                 filterSource.value = "NORMAL"
                 filterReads.clear(); sidebar.clear()
                 if (logoutState.value?.account != key) mutableLogout.value = null
-                restoredEditorsAccount.value = null
+                editorRestoreFinished.value = null
                 editorFrameAccount.value = null
                 timeline.reset(key)
                 archive.reset(key)
@@ -412,9 +419,9 @@ class MobileController(
         }
 
     internal suspend fun awaitAttachmentTarget(account: String, id: String): EditorController? {
-        combine(session.state, restoredEditorsAccount, clearing) { connection, restored, removing ->
-            !connection.loading && !connection.busy &&
-                (connection.profile?.accountKey != account || !removing && !connection.needsLogin && restored == account)
+        combine(session.state, editorRestoreFinished, clearing, editor.state, mutableNoteEditors) { connection, finished, removing, _, _ ->
+            !connection.loading && (connection.profile?.accountKey != account || connection.needsLogin ||
+                !connection.busy && !removing && (attachmentTarget(account, id) != null || finished == account))
         }.first { it }
         return attachmentTarget(account, id)
     }
@@ -490,41 +497,36 @@ class MobileController(
         }.toString())
     }
 
-    private suspend fun restoreEditors(account: String?) {
+    private suspend fun restoreEditors(account: String?) = registryLock.withLock {
+        editorRestoreFinished.value = null
         editor.open(account)
-        if (account != null && editor.state.value.let { it.accountKey == account && it.draft != null } &&
-            restoreEditing(account) && account == session.state.value.profile?.accountKey) {
-            restoredEditorsAccount.value = account
-        }
+        if (account == null || account != session.state.value.profile?.accountKey) return@withLock
+        if (editor.state.value.let { it.accountKey == account && it.draft != null }) restoreEditing(account)
+        if (account == session.state.value.profile?.accountKey) editorRestoreFinished.value = account
     }
 
-    private suspend fun restoreEditing(account: String): Boolean = registryLock.withLock {
+    private suspend fun restoreEditing(account: String) {
         try {
-            if (mutableNoteEditors.value.isNotEmpty()) return@withLock true
+            if (mutableNoteEditors.value.isNotEmpty()) return
             val saved = repository().feature(account, ACTIVE_NOTE_EDITOR)
-                ?.let { CoreJson.parseToJsonElement(it).jsonObject } ?: return@withLock true
-            val id = saved["draft_id"]?.jsonPrimitive?.content ?: return@withLock true
-            val key = saved["key"]?.jsonPrimitive?.content ?: return@withLock true
+                ?.let { CoreJson.parseToJsonElement(it).jsonObject } ?: return
+            val id = saved["draft_id"]?.jsonPrimitive?.content ?: return
+            val key = saved["key"]?.jsonPrimitive?.content ?: return
             val stored = repository().storedDraftOrNull(account, id)
-            if (clearing.value || account != session.state.value.profile?.accountKey) return@withLock false
+            if (clearing.value || account != session.state.value.profile?.accountKey) return
             if (stored == null || stored.draft.slot == "home") {
                 rememberEditing(account)
-                return@withLock true
+                return
             }
             val active = newEditor()
             active.openStored(account, id) { mutableNoteEditors.value = mapOf(key to active) }
             if (active.state.value.draft != null) {
                 focusedEditor = key
                 mutableEditing.value = true
-                true
-            } else {
-                mutableLocalError.value = "LOCAL_READ_FAILED"
-                false
-            }
+            } else mutableLocalError.value = "LOCAL_READ_FAILED"
         } catch (error: Exception) {
             if (error is CancellationException) throw error
             mutableLocalError.value = "LOCAL_READ_FAILED"
-            false
         }
     }
 
@@ -620,7 +622,7 @@ class MobileController(
                 if (clearLocal) {
                     removing = true
                     mutableLocalError.value = null
-                    restoredEditorsAccount.value = null
+                    editorRestoreFinished.value = null
                     visiblePage = null
                     editorFrameAccount.value = null
                     updateDiscovery()

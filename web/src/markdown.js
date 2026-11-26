@@ -45,16 +45,15 @@ function linkTarget(value, attachments) {
 
 // 每个位置只计算一次后继分隔符，未闭合标记不会反复扫描剩余正文。
 function inlineIndex(text) {
-  const delimiters = ['`', ']', '*', '_', '~', '\n'];
+  const delimiters = [']', '*', '_', '~', '\n'];
   const next = {};
-  for (const key of [...delimiters, 'stop', 'ticks']) {
+  for (const key of [...delimiters, 'stop']) {
     next[key] = new Uint32Array(text.length + 1);
     next[key][text.length] = text.length;
   }
   for (let i = text.length - 1; i >= 0; i--) {
     for (const key of delimiters) next[key][i] = text[i] === key ? i : next[key][i + 1];
     next.stop[i] = /[)\s]/.test(text[i]) ? i : next.stop[i + 1];
-    next.ticks[i] = text[i] === '`' && text[i + 1] === '`' ? next.ticks[i + 1] : i + 1;
   }
   return next;
 }
@@ -62,7 +61,7 @@ function inlineIndex(text) {
 const emphasis = [['**', 'strong'], ['__', 'strong'], ['*', 'em'], ['~~', 'del']];
 
 const tagBoundary = /[\s.,!?;:()[\]{}<>"'，。！？；：、（）【】《》「」『』“”‘’…*~`|]/u;
-const protectedText = /\\[^\n]|(?:[A-Za-z][A-Za-z0-9+.-]*:\/\/|www\.)[^\s<>]+|<[^<>\n]*>|!?\[[^\[\]\n]*\](?:\([^()\n]*\)|\[[^\[\]\n]*\])?/gu;
+const protectedText = /\\[^\n]|(?:(?<![A-Za-z0-9+.-])[A-Za-z][A-Za-z0-9+.-]*:\/\/|www\.)[^\s<>]+|<[^<>\n]*>|!?\[[^\[\]\n]*\](?:\([^()\n]*\)|\[[^\[\]\n]*\])?/gu;
 const fenced = /^ {0,3}(`{3,}|~{3,})/;
 const protectedLine = /^(?: {4}|\t| {0,3}(?:#{1,6}(?:\s|$)|\[[^\]]+]:))/;
 const paragraphBoundary = /^(?:#{1,6}\s|>| {0,3}`{3}| {0,3}~{3}|\s*[-+*]\s|\s*\d+\.\s)/;
@@ -158,12 +157,6 @@ function appendPlain(parent, text, start, end, spans, onTag, renderedTags) {
 }
 
 function inlineMatch(text, i, next) {
-  if (text[i] === '`' && !escapedAt(text, i)) {
-    const start = next.ticks[i], stop = next['`'][start];
-    if (start < stop && stop < next['\n'][start] && next.ticks[stop] - stop >= start - i) {
-      return { tag: 'code', start, stop, end: stop + start - i };
-    }
-  }
   const image = text[i] === '!' && text[i + 1] === '[';
   if (text[i] === '[' || image) {
     const start = i + (image ? 2 : 1), stop = next[']'][start];

@@ -171,13 +171,13 @@ test('unmapped or invalid local attachments stay literal and cannot create links
   }
 });
 
-test('delimiter edge cases retain the original inline subset', () => {
+test('inline delimiters retain unmatched backticks as literal text', () => {
   const cases = [
     ['[[label](https://example.test)', '[label', 'a'],
     ['***bold**', '*bold', 'strong'],
     ['**em*', '*em', 'em'],
-    ['``code`', '`code', 'code'],
-    ['`code``', 'code`', 'code'],
+    ['``code`', '``code`', null],
+    ['`code``', '`code``', null],
     ['*** ___ ~~~ []() ` `', '*** ___ ~~~ []()  ', 'code'],
     ['[label\ntext](https://example.test)', '[label\ntext](https://example.test)', null],
     ['[bad](https://example.test/a b)', '[bad](https://example.test/a b)', null],
@@ -186,8 +186,18 @@ test('delimiter edge cases retain the original inline subset', () => {
     const result = renderMarkdown(input);
     assert.equal(result.textContent, output, input);
     if (tag) assert.equal(elements(result, tag).length, 1, input);
-    else assert.equal(elements(result, 'a').length, 0, input);
+    else assert.equal(elements(result, 'a').length + elements(result, 'code').length, 0, input);
   }
+});
+
+test('64 KiB of ASCII with a tag renders within a linear scan budget', { timeout: 5_000 }, () => {
+  const suffix = ' custom+scheme://example.test/#日记 #日记';
+  const input = 'A'.repeat(65_536 - Buffer.byteLength(suffix)) + suffix;
+  const start = performance.now();
+  const result = renderMarkdown(input, { tags: ['日记'] }, { onTag: () => {} });
+  assert.ok(performance.now() - start < 1_000);
+  assert.equal(result.textContent, input);
+  assert.deepEqual(elements(result, 'button').map(node => node.textContent), ['#日记']);
 });
 
 test('64 KiB unclosed inline inputs render within a linear scan budget', { timeout: 5_000 }, () => {

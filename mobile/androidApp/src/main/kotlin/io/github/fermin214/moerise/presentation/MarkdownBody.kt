@@ -48,6 +48,7 @@ import io.github.fermin214.moerise.domain.Note
 import io.ktor.http.Url
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
@@ -65,6 +66,13 @@ private fun ASTNode.findChildOfTypeRecursive(type: IElementType): ASTNode? =
 
 private val protectedImages = Semaphore(2)
 private val protectedImageTypes = setOf("image/png", "image/jpeg", "image/webp", "image/gif")
+
+internal val LocalParseMarkdownTail = staticCompositionLocalOf<suspend (String, MarkdownParser, ReferenceLinkHandler) -> MdState.Success?> {
+    { content, parser, references ->
+        parseMarkdownFlow(content, parser = parser, referenceLinkHandler = references)
+            .first { it !is MdState.Loading } as? MdState.Success
+    }
+}
 
 private data class ManagedImage(val name: String, val url: String?, val type: String)
 
@@ -296,43 +304,41 @@ fun MarkdownBody(content: String, modifier: Modifier = Modifier, note: Note? = n
             },
         )
     }
+    val retainedBlocks = remember(originalContent, defBlocks) { mutableMapOf<String, MdState.Success>() }
     var retainedTail by remember(originalContent) { mutableStateOf<MdState.Success?>(null) }
     CompositionLocalProvider(LocalUriHandler provides safeUri) {
         Column(modifier, verticalArrangement = Arrangement.spacedBy(8.dp)) {
             for (index in 0 until blocks.lastIndex) {
                 val block = blocks[index]
                 key(defBlocks, index) {
-                    val markdownState = rememberMarkdownState(
-                        content = block,
-                        flavour = flavour,
-                        parser = parser,
-                        referenceLinkHandler = refHandler,
-                        immediate = true,
-                    )
-                    Markdown(
-                        markdownState = markdownState,
-                        modifier = Modifier.fillMaxWidth(),
-                        imageTransformer = transformer,
-                        annotator = annotator,
-                        typography = typography,
-                        components = components,
-                        animations = animations,
-                    )
+                    val rendered = retainedBlocks[block] ?: rememberMarkdownState(block, flavour = flavour,
+                        parser = parser, referenceLinkHandler = refHandler, immediate = true).state.value as? MdState.Success
+                    if (rendered != null) {
+                        SideEffect { retainedBlocks[block] = rendered }
+                        Markdown(
+                            state = rendered,
+                            modifier = Modifier.fillMaxWidth(),
+                            imageTransformer = transformer,
+                            annotator = annotator,
+                            typography = typography,
+                            components = components,
+                            animations = animations,
+                        )
+                    }
                 }
             }
             val tail = blocks.last()
             key(defBlocks, blocks.lastIndex) {
-                val tailState = rememberMarkdownState(
-                    content = tail,
-                    flavour = flavour,
-                    parser = parser,
-                    referenceLinkHandler = refHandler,
-                    immediate = tail.length <= 4096,
-                )
-                val parsed by tailState.state.collectAsState()
-                val ready = (parsed as? MdState.Success)?.takeIf { it.content == tail }
-                SideEffect { if (ready != null && retainedTail != ready) retainedTail = ready }
-                val rendered = ready ?: retainedTail?.takeIf { it.content == tail }
+                val rendered = retainedBlocks[tail] ?: if (tail.length <= 4096) {
+                    rememberMarkdownState(tail, flavour = flavour, parser = parser, referenceLinkHandler = refHandler,
+                        immediate = true).state.value as? MdState.Success
+                } else {
+                    val parse = LocalParseMarkdownTail.current
+                    val parsed by produceState<MdState.Success?>(null, tail, refHandler, parse) {
+                        value = parse(tail, parser, refHandler)
+                    }
+                    parsed?.takeIf { it.content == tail }
+                }
                 if (rendered == null) {
                     val previous = retainedTail
                     val images = if (previous != null && bitmaps.isNotEmpty()) {
@@ -347,15 +353,21 @@ fun MarkdownBody(content: String, modifier: Modifier = Modifier, note: Note? = n
                     }
                     if (offset < tail.length) Text(tail.substring(offset), Modifier.fillMaxWidth(), style = body)
                 }
-                else Markdown(
-                    state = rendered,
-                    modifier = Modifier.fillMaxWidth(),
-                    imageTransformer = transformer,
-                    annotator = annotator,
-                    typography = typography,
-                    components = components,
-                    animations = animations,
-                )
+                else {
+                    SideEffect {
+                        retainedBlocks[tail] = rendered
+                        if (retainedTail != rendered) retainedTail = rendered
+                    }
+                    Markdown(
+                        state = rendered,
+                        modifier = Modifier.fillMaxWidth(),
+                        imageTransformer = transformer,
+                        annotator = annotator,
+                        typography = typography,
+                        components = components,
+                        animations = animations,
+                    )
+                }
             }
         }
     }

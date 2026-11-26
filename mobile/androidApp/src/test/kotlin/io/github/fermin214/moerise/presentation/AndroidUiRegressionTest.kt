@@ -39,6 +39,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.height
 import androidx.test.platform.app.InstrumentationRegistry
 import io.github.fermin214.moerise.MainActivity
+import io.github.fermin214.moerise.data.ACTIVE_NOTE_EDITOR
 import io.github.fermin214.moerise.data.ConnectionProfile
 import io.github.fermin214.moerise.data.CoreClient
 import io.github.fermin214.moerise.data.CoreJson
@@ -300,7 +301,15 @@ class AndroidUiRegressionTest {
 
     @Test
     @GraphicsMode(GraphicsMode.Mode.NATIVE)
-    fun confirmedTagMetadataKeepsTheDecodedInlineImageOnTheFirstFrame() {
+    fun confirmedTagMetadataKeepsTheDecodedInlineImageOnTheFirstFrame() =
+        checkImageHandoff(promoteToTail = false)
+
+    @Test
+    @GraphicsMode(GraphicsMode.Mode.NATIVE)
+    fun longImageBlockKeepsTheDecodedImageWhenPromotedToTheTail() =
+        checkImageHandoff(promoteToTail = true)
+
+    private fun checkImageHandoff(promoteToTail: Boolean) {
         createHost()
         val origin = "http://127.0.0.1:1"
         val bitmap = Bitmap.createBitmap(20, 20, Bitmap.Config.ARGB_8888)
@@ -321,29 +330,50 @@ class AndroidUiRegressionTest {
         val attachment = CoreJson.parseToJsonElement(
             """{"name":"attachments/pic","filename":"protected.png","type":"image/png","content_url":"/api/app/v1/notes/one/attachments/pic/content"}""",
         ) as kotlinx.serialization.json.JsonObject
-        val body = "![protected](/file/attachments/pic/protected.png)\nNew text\n#pending"
+        val text = if (promoteToTail) "New text ".repeat(510).trimEnd() else "New text"
+        val tagLine = if (promoteToTail) "#work.log" else "#pending"
+        val breakBeforeTag = if (promoteToTail) "\n\n" else "\n"
+        val body = "![protected](/file/attachments/pic/protected.png)\n$text$breakBeforeTag$tagLine"
         val baseline = Note("instance", "memos/one", "Old text", "NORMAL", "before", attachments = listOf(attachment))
-        val confirmed = baseline.copy(content = body, sourceHash = "after")
+        val confirmed = baseline.copy(content = body, sourceHash = "after", tags = if (promoteToTail) listOf("work.log") else emptyList())
         val draft = DraftEntity("one", account, body, 1, baseline.name, baseline.sourceHash, baselineJson = CoreJson.encodeToString(baseline))
         val entry = mutableStateOf<TimelineEntry>(TimelineEntry.Local(draft))
+        val allowTailParse = CompletableDeferred<Unit>()
         val image = compose.onNode(hasContentDescription("protected.png") and hasAnyAncestor(hasTestTag("note_card_body")), useUnmergedTree = true)
+        val tagInBody = hasText(tagLine) and hasAnyAncestor(hasTestTag("note_card_body"))
         fun showsDecodedImage(): Boolean {
             val pixels = image.captureToImage().toPixelMap()
             return (0 until pixels.width).any { x -> (0 until pixels.height).any { y -> pixels[x, y] == Color.Red } }
         }
         try {
             compose.runOnUiThread {
-                host.get().setContent { MoeriseTheme { TimelineNoteCard(entry.value, "UTC", strings, client, {}, {}) } }
+                host.get().setContent {
+                    val parse = LocalParseMarkdownTail.current
+                    CompositionLocalProvider(LocalParseMarkdownTail provides { content, parser, references ->
+                        allowTailParse.await()
+                        parse(content, parser, references)
+                    }) {
+                        MoeriseTheme { TimelineNoteCard(entry.value, "UTC", strings, client, {}, {}) }
+                    }
+                }
             }
             compose.waitUntil(10_000) { image.isDisplayed() && showsDecodedImage() }
-            compose.mainClock.autoAdvance = false
-            compose.runOnIdle { entry.value = TimelineEntry.Remote(confirmed) }
-            compose.mainClock.advanceTimeByFrame()
+            if (promoteToTail) {
+                compose.onNode(tagInBody, useUnmergedTree = true).assertExists()
+                compose.runOnIdle { entry.value = TimelineEntry.Remote(confirmed) }
+                compose.waitUntil(10_000) { compose.onAllNodes(tagInBody, useUnmergedTree = true).fetchSemanticsNodes().isEmpty() }
+            } else {
+                compose.mainClock.autoAdvance = false
+                compose.runOnIdle { entry.value = TimelineEntry.Remote(confirmed) }
+                compose.mainClock.advanceTimeByFrame()
+            }
             assertTrue(showsDecodedImage())
             compose.mainClock.autoAdvance = true
-            compose.onNodeWithText("New text\n#pending", substring = true).assertExists()
+            allowTailParse.complete(Unit)
+            compose.onNodeWithText(if (promoteToTail) text else "$text\n$tagLine", substring = true).assertExists()
             assertTrue(showsDecodedImage())
         } finally {
+            allowTailParse.complete(Unit)
             compose.mainClock.autoAdvance = true
             client.close()
         }
@@ -357,7 +387,11 @@ class AndroidUiRegressionTest {
     fun attachmentResultDeliveredAfterRecreationWaitsForDraftRestoration() =
         checkAttachmentResult(recreate = true)
 
-    private fun checkAttachmentResult(recreate: Boolean) {
+    @Test
+    fun failedInlineRestorationReleasesThePickerForTheComposer() =
+        checkAttachmentResult(recreate = true, inlineRestoreFails = true)
+
+    private fun checkAttachmentResult(recreate: Boolean, inlineRestoreFails: Boolean = false) {
         createHost()
         val folder = Files.createTempDirectory("moerise-picker").toFile()
         val db = testDatabase(folder.resolve("data.sqlite3").absolutePath)
@@ -380,8 +414,19 @@ class AndroidUiRegressionTest {
             compose.runOnUiThread { host.get().setContent { MoeriseApp(mobile) } }
             compose.waitUntil(10_000) { compose.onAllNodesWithTag("note_editor").fetchSemanticsNodes().size == 1 }
             val field = compose.onNodeWithTag("note_editor")
-            field.performClick().assertIsFocused()
+            val inline = Note("instance", "memos/inline", "Original", "NORMAL", "hash")
+            val target = if (inlineRestoreFails) {
+                compose.runOnIdle { mobile.editNote(inline) }
+                val tag = "note_editor_${inline.name}"
+                compose.waitUntil(10_000) { compose.onAllNodesWithTag(tag).fetchSemanticsNodes().size == 1 }
+                compose.waitUntil(10_000) { runBlocking { repo.feature(account, ACTIVE_NOTE_EDITOR)?.contains(inline.name) == true } }
+                compose.onNodeWithTag(tag)
+            } else field
+            target.performClick().assertIsFocused()
             compose.onNodeWithTag("add_attachment").performClick()
+            if (inlineRestoreFails) runBlocking {
+                repo.putFeature(account, ACTIVE_NOTE_EDITOR, "invalid")
+            }
             compose.runOnUiThread {
                 val launched = requireNotNull(shadowOf(host.get()).nextStartedActivityForResult)
                 assertEquals(Intent.ACTION_OPEN_DOCUMENT, launched.intent.action)
@@ -406,6 +451,21 @@ class AndroidUiRegressionTest {
                 compose.runOnIdle {
                     assertNull(mobile.editor.state.value.draft)
                     restore.complete(Unit)
+                }
+            }
+            if (inlineRestoreFails) {
+                compose.waitUntil(10_000) { mobile.localError.value == "LOCAL_READ_FAILED" }
+                compose.waitForIdle()
+                assertTrue(mobile.editor.state.value.draft?.attachmentEdits()?.staged?.isEmpty() == true)
+                field.performClick().assertIsFocused()
+                compose.onNodeWithTag("add_attachment").performClick()
+                compose.runOnUiThread {
+                    val launched = requireNotNull(shadowOf(host.get()).nextStartedActivityForResult)
+                    assertEquals(Intent.ACTION_OPEN_DOCUMENT, launched.intent.action)
+                    host.pause().stop()
+                    shadowOf(host.get()).receiveResult(launched.intent, Activity.RESULT_OK, Intent().setData(picked))
+                    host.restart().start().resume()
+                    shadowOf(Looper.getMainLooper()).idle()
                 }
             }
             compose.waitUntil(10_000) { mobile.editor.state.value.draft?.attachmentEdits()?.staged?.size == 1 && !mobile.editor.state.value.importing }

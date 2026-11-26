@@ -255,13 +255,13 @@ class WritingSyncTest {
         try {
             val composer = withTimeout(10_000) { mobile.awaitAttachmentTarget(key, draft.id) }
             assertEquals(mobile.editor, composer)
-            assertTrue(mobile.noteEditors.value.isEmpty())
-            assertEquals("{}", repo.feature(key, ACTIVE_NOTE_EDITOR))
             val opened = CompletableDeferred<EditorController?>()
             mobile.openDraft(draft.id, onComposer = { opened.complete(mobile.editor) }) {
                 opened.complete(mobile.getNoteEditor(draft.id))
             }
             assertEquals(composer, withTimeout(10_000) { opened.await() })
+            assertTrue(mobile.noteEditors.value.isEmpty())
+            assertEquals("{}", repo.feature(key, ACTIVE_NOTE_EDITOR))
             val delivery = scope.async { mobile.sync.synchronizeOnce() }
             withTimeout(10_000) { postStarted.await() }
             mobile.editor.change(updated.content)
@@ -290,7 +290,14 @@ class WritingSyncTest {
     }
 
     @Test
-    fun savingInlineInvalidatesAnOlderSearchAndRemovesAnUnmatchedNoteOnConfirmation() = runBlocking<Unit> {
+    fun savingInlineInvalidatesAnOlderSearchAndRemovesAnUnmatchedNoteOnConfirmation() =
+        checkInlineSearchHandoff(background = false)
+
+    @Test
+    fun backgroundConfirmationRefreshesTheOriginalFilterAndRestoresPaginationOnResume() =
+        checkInlineSearchHandoff(background = true)
+
+    private fun checkInlineSearchHandoff(background: Boolean) = runBlocking<Unit> {
         val folder = Files.createTempDirectory("moerise-search-handoff-").toFile()
         val db = testDatabase(folder.resolve("data.sqlite3").absolutePath)
         val repo = NoteRepository(db)
@@ -302,20 +309,27 @@ class WritingSyncTest {
         val searches = AtomicInteger()
         val original = Note("instance", "memos/one", "Original #writing", "NORMAL", "hash", tags = listOf("writing"))
         val updated = original.copy(content = "New text", sourceHash = "edited", tags = emptyList())
+        val firstMatch = original.copy(name = "memos/first-match", content = "New match #writing")
+        val laterMatch = original.copy(name = "memos/later-match", content = "Later match #writing")
         server.dispatcher = object : Dispatcher() {
             override fun dispatch(request: RecordedRequest): MockResponse = when {
                 request.path == "/api/app/v1/session" -> MockResponse().setBody(identity)
                 request.path == "/api/app/v1/notes/one" && request.method == "PATCH" ->
                     MockResponse().setBody(CoreJson.encodeToString(updated))
                 request.requestUrl?.encodedPath == "/api/app/v1/notes" && request.requestUrl?.queryParameter("tag") == "writing" -> {
+                    val token = request.requestUrl?.queryParameter("page_token")
                     val attempt = searches.incrementAndGet()
                     if (attempt == 2) {
                         oldSearchStarted.complete(Unit)
                         check(releaseOldSearch.await(10, TimeUnit.SECONDS))
                     }
                     if (attempt > 2) refreshed.complete(Unit)
-                    val notes = if (attempt > 2) emptyList() else listOf(original)
-                    MockResponse().setBody(CoreJson.encodeToString(NotePage(notes)))
+                    val results = when {
+                        token == "fresh-page" -> NotePage(listOf(laterMatch))
+                        attempt > 2 -> NotePage(listOf(firstMatch), "fresh-page")
+                        else -> NotePage(listOf(original), "old-page")
+                    }
+                    MockResponse().setBody(CoreJson.encodeToString(results))
                 }
                 else -> MockResponse().setResponseCode(404)
             }
@@ -332,7 +346,7 @@ class WritingSyncTest {
             mobile.sync.foreground(false)
             mobile.search.change(SearchQuery(tags = setOf("writing")))
             mobile.search.search()
-            withTimeout(10_000) { mobile.search.state.first { it.notes == listOf(original) } }
+            withTimeout(10_000) { mobile.search.state.first { it.notes == listOf(original) && it.next == "old-page" } }
             mobile.search.search()
             withTimeout(10_000) { oldSearchStarted.await() }
 
@@ -342,12 +356,20 @@ class WritingSyncTest {
             mobile.saveNote(original.name)
             val queued = withTimeout(10_000) { mobile.sync.state.first { it.notes.any { note -> note.content == updated.content } } }
             assertEquals(updated.content, queued.notes.single().content)
-            assertTrue(mobile.sync.synchronizeOnce())
+            if (background) mobile.foreground(false)
+            assertTrue(mobile.sync.synchronizeOnce(SyncTrigger.BACKGROUND_JOB))
             assertTrue(mobile.sync.state.value.notes.isEmpty())
-            assertTrue(mobile.search.state.value.notes.isEmpty())
+            assertFalse(mobile.search.state.value.notes.any { it.name == original.name })
+            if (background) {
+                assertEquals(2, searches.get())
+                assertEquals("", mobile.search.state.value.next)
+                mobile.foreground(true)
+            }
             releaseOldSearch.countDown()
             withTimeout(10_000) { refreshed.await() }
-            withTimeout(10_000) { mobile.search.state.first { !it.loading && it.notes.isEmpty() } }
+            withTimeout(10_000) { mobile.search.state.first { it.notes == listOf(firstMatch) && it.next == "fresh-page" } }
+            mobile.search.search(append = true)
+            withTimeout(10_000) { mobile.search.state.first { !it.loading && it.notes == listOf(firstMatch, laterMatch) } }
         } finally {
             releaseOldSearch.countDown()
             session.close()
@@ -394,6 +416,75 @@ class WritingSyncTest {
             release.complete(Unit)
             session.close()
             scope.coroutineContext[Job]!!.cancelAndJoin()
+            db.close()
+            folder.deleteRecursively()
+        }
+    }
+
+    @OptIn(ExperimentalCoroutinesApi::class)
+    @Test
+    fun foregroundSkipsTheSaveTriggerWhenTheBackgroundJobAlreadyDeliveredIt() = runBlocking<Unit> {
+        val folder = Files.createTempDirectory("moerise-save-wake-").toFile()
+        val db = testDatabase(folder.resolve("data.sqlite3").absolutePath)
+        val repo = NoteRepository(db)
+        val scheduler = TestCoroutineScheduler()
+        val scope = CoroutineScope(SupervisorJob() + StandardTestDispatcher(scheduler))
+        val server = MockWebServer()
+        val postStarted = CompletableDeferred<Unit>()
+        val allowPost = CountDownLatch(1)
+        val cycles = AtomicInteger()
+        val created = Note("instance", "memos/created", "Saved from composer", "NORMAL", "hash")
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse = when (request.requestUrl?.encodedPath) {
+                "/api/app/v1/session" -> MockResponse().setBody(identity)
+                "/api/app/v1/notes" -> if (request.method == "POST") {
+                    postStarted.complete(Unit)
+                    check(allowPost.await(10, TimeUnit.SECONDS))
+                    MockResponse().setBody(CoreJson.encodeToString(created))
+                } else MockResponse().setResponseCode(404)
+                "/api/app/v1/sync/notes" -> {
+                    cycles.incrementAndGet()
+                    MockResponse().setResponseCode(404)
+                }
+                else -> MockResponse().setResponseCode(404)
+            }
+        }
+        server.start()
+        val session = SessionController(selectedSecrets(server.url("/").toString().removeSuffix("/")), true, scope)
+        val mobile = MobileController(session, { repo }, scope, initialForeground = false)
+        suspend fun pumpUntil(ready: () -> Boolean) = withTimeout(10_000) {
+            do {
+                scheduler.runCurrent()
+                if (!ready()) kotlinx.coroutines.delay(5)
+            } while (!ready())
+        }
+        try {
+            pumpUntil { session.state.value.connected && mobile.editor.state.value.draft != null }
+            mobile.editor.change(created.content)
+            val saved = CompletableDeferred<SaveOutcome>()
+            mobile.saveComposer { saved.complete(it) }
+            pumpUntil { saved.isCompleted }
+            assertEquals(SaveOutcome.COMMITTED, saved.await())
+            val background = scope.async { mobile.sync.synchronizeOnce(SyncTrigger.BACKGROUND_JOB) }
+            pumpUntil { postStarted.isCompleted }
+            mobile.foreground(true)
+            scheduler.runCurrent()
+            val behindForeground = scope.async { mobile.sync.synchronizeOnce(SyncTrigger.FOREGROUND_RESUME) }
+            scheduler.runCurrent()
+            assertFalse(behindForeground.isCompleted)
+            allowPost.countDown()
+            pumpUntil { background.isCompleted && behindForeground.isCompleted }
+            assertTrue(background.await())
+            assertTrue(behindForeground.await())
+            assertTrue(mobile.sync.state.value.notes.isEmpty())
+            assertEquals(1, cycles.get())
+        } finally {
+            allowPost.countDown()
+            session.close()
+            val job = scope.coroutineContext[Job]!!
+            job.cancel()
+            pumpUntil { job.isCompleted }
+            server.shutdown()
             db.close()
             folder.deleteRecursively()
         }
