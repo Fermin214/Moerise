@@ -93,7 +93,13 @@ scripts/android/live-check.sh
 隔离实例通过 Memos 官方 API 将 `contentLengthLimit` 设为 65,536，用于覆盖 Core 的
 64 KiB 内容上限。真实服务的笔记长度还受其 Memos 实例配置约束。
 
-单独联调设备时运行 `scripts/android/start-fixture.sh`。脚本输出 Web 来源、私有连接档案路径和 `adb reverse` 命令；连接档案只用于隔离环境，包含虚构账号和临时凭据。按 Ctrl+C 清理服务与来源数据。观星六类顶层状态及更新中的固定响应样本位于 `mobile/androidApp/src/test/resources/contracts/map/`。
+一次性设备联调使用以下命令启动隔离服务：
+
+```bash
+MOERISE_ANDROID_FIXTURE_DISPOSE_ON_EXIT=1 scripts/android/start-fixture.sh
+```
+
+脚本输出 Web 来源、私有连接档案路径和 `adb reverse` 命令。连接档案包含虚构账号和临时凭据。按 Ctrl+C 停止服务并清理容器、数据卷和本机连接档案。观星六类顶层状态及更新中的固定响应样本位于 `mobile/androidApp/src/test/resources/contracts/map/`。
 
 复用已有观星语料时，设置
 `MOERISE_ANDROID_CORPUS` 为笔记 JSON 数组路径、`MOERISE_ANDROID_VECTORS` 为按相同行序排列的
@@ -140,7 +146,7 @@ Android Application 持有同一组会话、数据库和控制器；界面与系
 | `ImeLifecycleTest` | 使用 `.fixture` 包，设备必须能访问隔离服务，并在 `/data/local/tmp/moerise-android-fixture.json` 提供 `origin`、`username` 和 `password` |
 | `QuickNoteTest` | 使用和 `ImeLifecycleTest` 相同的连接配置。测试账号须预置至少 30 条可编辑的正常笔记。在新隔离实例中可运行 `MOERISE_ANDROID_FIXTURE=/绝对路径/connection.json node scripts/android/seed-benchmark.mjs`，也可通过 API 预置 |
 
-使用 `scripts/android/start-fixture.sh` 启动隔离服务时，先执行脚本给出的 `adb reverse` 命令，再把连接档案中的三个登录字段写入设备档案。运行完成后删除设备档案和本机的临时副本。
+运行 `ImeLifecycleTest` 或 `QuickNoteTest` 前，若更换隔离实例，先用 `adb shell pm clear io.github.fermin214.moerise.fixture` 清除已安装测试包的数据，确保用例进入登录页并读取新档案。用[一次性联调命令](#core-连接与真实服务联调)启动隔离服务后，执行脚本给出的 `adb reverse` 命令，再把连接档案中的三个登录字段写入设备档案。运行完成后删除设备档案和本机的临时副本。
 
 连接单台设备后，可按类运行。下面的命令选择 `StarRenderingTest`：
 
