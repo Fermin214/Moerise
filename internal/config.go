@@ -258,7 +258,7 @@ func decodeDeploymentSettings(content []byte, settings *Settings) error {
 			if strings.EqualFold(name, "llm_naming") {
 				return nil, nil
 			}
-			if strings.EqualFold(name, "enabled") {
+			if strings.EqualFold(name, "enabled") && (bytes.Equal(value, []byte("true")) || bytes.Equal(value, []byte("false"))) {
 				settings.stargazingExplicit = true
 			}
 			return value, nil

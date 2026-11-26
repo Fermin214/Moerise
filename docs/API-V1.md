@@ -54,7 +54,7 @@ Moerise 服务端提供两组 RESTful API 以及一个 Model Context Protocol (M
 | `GET` | `/api/app/v1/map` | 读取观星快照，包含完整点集 `points`（含 `excerpt` 摘要与 `create_time`）、语义主题 `topics` 和笔记关联 `links`；主题可包含语义子主题 `districts`。 |
 | `POST` | `/api/app/v1/map/rebuild` | 排队重新生成星图与主题，返回 `202 {"status":"queued"}`；要求本人会话、同源与 CSRF 校验。 |
 
-观星使用均衡 UMAP，每日在服务时区 03:00 按需检查并调度更新（普通变化不再高频率自动重算），未变笔记复用坐标；星系和星团沿用关键词命名。`stellar` 定义可复现的星体属性；`layout_frame` 标识坐标框架，主动重建或更换向量空间时变化；更新期间 `update_state` 可为 `building` 或 `unavailable`，已发布快照继续可读。布局服务请求失败时，`unavailable_reason` 为 `layout`。字段定义由 [OpenAPI 生成器](../internal/openapi_gen.go) 产出并经 `/openapi.json` 提供，布局说明见[观星](STARGAZING.md)。
+观星使用均衡 UMAP，每日在服务时区 03:00 按需检查并调度更新（普通变化不再高频率自动重算），未变笔记复用坐标；星系和星团沿用关键词命名。`stellar` 定义可复现的星体属性；`layout_frame` 标识坐标框架，主动重建或更换向量空间时变化；`update_state` 为 `building` 或 `unavailable` 时表示生成正在进行或失败，已发布快照继续可读。`unavailable_reason` 为 `layout` 表示布局服务不可用，为 `layout_incompatible` 表示布局服务版本不兼容。后台健康告警可单独出现，不表示一次重建失败。字段定义由 [OpenAPI 生成器](../internal/openapi_gen.go) 产出并经 `/openapi.json` 提供，布局说明见[观星](STARGAZING.md)。
 
 `stargazing.enabled=false` 时，读取返回 `status: disabled`、`disabled_reason: stargazing` 和空点集；重建返回 `409 STARGAZING_DISABLED`。Embedding 关闭时对应 `disabled_reason: embedding` 与 `409 EMBEDDING_DISABLED`。关闭不删除已发布快照或向量。
 

@@ -17,6 +17,8 @@ import (
 const (
 	starsAlgorithm     = "umap-balanced-v1"
 	starsNamingVersion = 1
+	layoutUnavailable  = "layout"
+	layoutIncompatible = "layout_incompatible"
 )
 
 var (
@@ -58,6 +60,28 @@ type starResult struct {
 	Points        []MapPoint `json:"points"`
 	Topics        []MapTopic `json:"topics"`
 	Links         []MapLink  `json:"links"`
+}
+
+func (s *MapService) probeLayout(ctx context.Context) string {
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(s.workerURL, "/")+"/health", nil)
+	if err != nil {
+		return layoutUnavailable
+	}
+	response, err := (&http.Client{Timeout: 3 * time.Second}).Do(request)
+	if err != nil {
+		return layoutUnavailable
+	}
+	defer response.Body.Close()
+	var health struct {
+		NamingVersion int `json:"naming_version"`
+	}
+	if response.StatusCode != http.StatusOK || json.NewDecoder(io.LimitReader(response.Body, 4096)).Decode(&health) != nil {
+		return layoutUnavailable
+	}
+	if health.NamingVersion != starsNamingVersion {
+		return layoutIncompatible
+	}
+	return ""
 }
 
 func (s *MapService) computeStars(ctx context.Context, snapshot mapSnapshot, previous *mapLayout) (*mapLayout, error) {
@@ -102,9 +126,13 @@ func (s *MapService) computeStars(ctx context.Context, snapshot mapSnapshot, pre
 		return nil, failure("MAP_LAYOUT_UNAVAILABLE", "Stars layout generation failed", 503, true)
 	}
 	decoder := json.NewDecoder(io.LimitReader(response.Body, 64<<20))
-	if err := decoder.Decode(&result); err != nil || result.Algorithm != starsAlgorithm ||
-		result.NamingVersion != starsNamingVersion ||
-		!starFramePattern.MatchString(result.Frame) || len(result.Points) != len(input.Documents) ||
+	if err := decoder.Decode(&result); err != nil {
+		return nil, failure("MAP_LAYOUT_INVALID", "Stars layout worker returned invalid data", 503, true)
+	}
+	if result.Algorithm != starsAlgorithm || result.NamingVersion != starsNamingVersion {
+		return nil, failure("MAP_LAYOUT_INCOMPATIBLE", "Upgrade and restart the stars layout worker with Core", 503, true)
+	}
+	if !starFramePattern.MatchString(result.Frame) || len(result.Points) != len(input.Documents) ||
 		result.Topics == nil || result.Links == nil {
 		return nil, failure("MAP_LAYOUT_INVALID", "Stars layout worker returned invalid data", 503, true)
 	}

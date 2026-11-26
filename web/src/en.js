@@ -82,6 +82,7 @@ export const english = {
   "正在生成观星布局…": "Generating star map…",
   "观星暂时不可用，稍后重试。": "Stargazing is unavailable. Please try again shortly.",
   "观星布局服务不可用，请检查 layout 服务是否已启动。": "The stargazing layout service is unavailable. Check that the layout service is running.",
+  "观星布局服务版本不兼容，请与 Core 一起升级并重启。": "The stargazing layout service is incompatible. Upgrade and restart it alongside Core.",
   "启用观星": "Enable stargazing",
   "观星已关闭。": "Stargazing is disabled.",
   "未定位笔记": "Notes without positions",

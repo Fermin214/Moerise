@@ -5,10 +5,8 @@ import (
 	"database/sql"
 	"errors"
 	"log/slog"
-	"net/http"
 	"os"
 	"strconv"
-	"strings"
 	"sync/atomic"
 	"time"
 )
@@ -61,18 +59,23 @@ type mapActivity struct {
 	reason string
 }
 
+type layoutHealth struct {
+	key    string
+	reason string
+}
+
 type MapService struct {
-	Store       *Store
-	gate        chan struct{}
-	wake        chan struct{}
-	cache       atomic.Pointer[mapCache]
-	schedule    atomic.Pointer[mapSchedule]
-	lastFailure atomic.Pointer[mapSchedule]
-	activity    atomic.Pointer[mapActivity]
-	layoutDown  atomic.Pointer[string]
-	epoch       atomic.Uint64
-	workerURL   string
-	scope       string
+	Store        *Store
+	gate         chan struct{}
+	wake         chan struct{}
+	cache        atomic.Pointer[mapCache]
+	schedule     atomic.Pointer[mapSchedule]
+	lastFailure  atomic.Pointer[mapSchedule]
+	activity     atomic.Pointer[mapActivity]
+	layoutHealth atomic.Pointer[layoutHealth]
+	epoch        atomic.Uint64
+	workerURL    string
+	scope        string
 }
 
 func NewMapService(store *Store) *MapService {
@@ -99,7 +102,7 @@ func (s *MapService) Reset() {
 	s.schedule.Store(nil)
 	s.lastFailure.Store(nil)
 	s.activity.Store(nil)
-	s.layoutDown.Store(nil)
+	s.layoutHealth.Store(nil)
 	s.signal()
 }
 
@@ -108,9 +111,10 @@ func (s *MapService) readState(response MapResponse, key string) MapResponse {
 		response.UpdateState = activity.status
 		response.UnavailableReason = activity.reason
 	}
-	if unavailable := s.layoutDown.Load(); unavailable != nil && *unavailable == key {
-		response.UpdateState = "unavailable"
-		response.UnavailableReason = "layout"
+	if health := s.layoutHealth.Load(); health != nil && health.key == key && health.reason != "" {
+		if response.UnavailableReason == "" {
+			response.UnavailableReason = health.reason
+		}
 		if response.Status != "ready" && response.Status != "empty" {
 			response.Status = "unavailable"
 		}
@@ -250,8 +254,11 @@ func (s *MapService) update(ctx context.Context, now time.Time) error {
 		}
 		s.lastFailure.Store(&mapSchedule{job.key, now})
 		activity := &mapActivity{key: job.key, status: "unavailable"}
-		if errorCode(err) == "MAP_LAYOUT_UNAVAILABLE" {
-			activity.reason = "layout"
+		switch errorCode(err) {
+		case "MAP_LAYOUT_UNAVAILABLE":
+			activity.reason = layoutUnavailable
+		case "MAP_LAYOUT_INCOMPATIBLE":
+			activity.reason = layoutIncompatible
 		}
 		s.activity.Store(activity)
 		return err
@@ -262,6 +269,7 @@ func (s *MapService) update(ctx context.Context, now time.Time) error {
 	if !s.Store.Settings.Stargazing.Enabled || !s.Store.Settings.Embedding.Enabled || job.key != s.cacheKey() {
 		return mapIndexChanged()
 	}
+	s.layoutHealth.Store(&layoutHealth{key: job.key})
 	unlock, err := s.Store.lockBackground(ctx)
 	if err != nil {
 		return err
@@ -300,6 +308,10 @@ func (s *MapService) prepare(ctx context.Context, now time.Time) (*mapJob, error
 		return nil, nil
 	}
 	key := s.cacheKey()
+	if health := s.layoutHealth.Load(); health != nil && health.key == key && health.reason == layoutIncompatible {
+		s.schedule.Store(nil)
+		return nil, nil
+	}
 	if schedule := s.schedule.Load(); schedule != nil && schedule.key == key && now.Before(schedule.next) {
 		return nil, ctx.Err()
 	}
@@ -373,25 +385,17 @@ func (s *MapService) checkLayout(ctx context.Context) {
 		return
 	}
 	key := s.cacheKey()
+	previous := s.layoutHealth.Load()
 	unlock()
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(s.workerURL, "/")+"/health", nil)
-	healthy := false
-	if err == nil {
-		response, err := (&http.Client{Timeout: 3 * time.Second}).Do(request)
-		if err == nil {
-			response.Body.Close()
-			healthy = response.StatusCode == http.StatusOK
-		}
-	}
+	reason := s.probeLayout(ctx)
 	unlock = s.Store.lockRuntime()
 	defer unlock()
 	if ctx.Err() != nil || key != s.cacheKey() || !s.Store.Settings.Stargazing.Enabled || !s.Store.Settings.Embedding.Enabled {
 		return
 	}
-	if healthy {
-		s.layoutDown.Store(nil)
-	} else {
-		s.layoutDown.Store(&key)
+	if s.layoutHealth.CompareAndSwap(previous, &layoutHealth{key, reason}) && reason == "" &&
+		previous != nil && previous.key == key && previous.reason != "" {
+		s.signal()
 	}
 }
 

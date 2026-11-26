@@ -27,40 +27,42 @@ func testStarsService(t *testing.T, store *Store, wait func()) (*MapService, *at
 	store.Settings.Stargazing.Enabled = true
 	calls := &atomic.Int32{}
 	worker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var input starRequest
-		if json.NewDecoder(r.Body).Decode(&input) != nil {
-			t.Error("invalid worker request")
-			w.WriteHeader(400)
-			return
-		}
-		call := calls.Add(1)
 		if wait != nil {
 			wait()
 		}
-		frame := input.Frame
-		if frame == "" {
-			frame = fmt.Sprintf("%032x", call)
-		}
-		result := starResult{Algorithm: starsAlgorithm, NamingVersion: starsNamingVersion,
-			Frame: frame, Points: []MapPoint{}, Topics: []MapTopic{}, Links: []MapLink{}}
-		old := map[string]starPreviousPoint{}
-		for _, point := range input.PreviousPoints {
-			old[point.Name] = point
-		}
-		for i, document := range input.Documents {
-			point := MapPoint{Name: document.Name, X: float64(i) / 10, Y: float64(i) / 7,
-				Stellar: &MapStellar{Seed: .5, Role: "ordinary", Radius: 1, Luminosity: .7}}
-			if previous, ok := old[document.Name]; ok && previous.VectorHash == document.VectorHash {
-				point.X, point.Y, point.Stellar = previous.X, previous.Y, previous.Stellar
-			}
-			result.Points = append(result.Points, point)
-		}
-		_ = json.NewEncoder(w).Encode(result)
+		_ = json.NewEncoder(w).Encode(testStarsResult(t, r, calls.Add(1)))
 	}))
 	t.Cleanup(worker.Close)
 	service := NewMapService(store)
 	service.workerURL = worker.URL
 	return service, calls
+}
+
+func testStarsResult(t *testing.T, request *http.Request, call int32) starResult {
+	t.Helper()
+	var input starRequest
+	if err := json.NewDecoder(request.Body).Decode(&input); err != nil {
+		t.Errorf("invalid worker request: %v", err)
+	}
+	frame := input.Frame
+	if frame == "" {
+		frame = fmt.Sprintf("%032x", call)
+	}
+	result := starResult{Algorithm: starsAlgorithm, NamingVersion: starsNamingVersion,
+		Frame: frame, Points: []MapPoint{}, Topics: []MapTopic{}, Links: []MapLink{}}
+	old := map[string]starPreviousPoint{}
+	for _, point := range input.PreviousPoints {
+		old[point.Name] = point
+	}
+	for i, document := range input.Documents {
+		point := MapPoint{Name: document.Name, X: float64(i) / 10, Y: float64(i) / 7,
+			Stellar: &MapStellar{Seed: .5, Role: "ordinary", Radius: 1, Luminosity: .7}}
+		if previous, ok := old[document.Name]; ok && previous.VectorHash == document.VectorHash {
+			point.X, point.Y, point.Stellar = previous.X, previous.Y, previous.Stellar
+		}
+		result.Points = append(result.Points, point)
+	}
+	return result
 }
 
 func TestStarsHealthKeepsSnapshotDuringOutage(t *testing.T) {
@@ -81,6 +83,7 @@ func TestStarsHealthKeepsSnapshotDuringOutage(t *testing.T) {
 		}
 		probes.Add(1)
 		w.WriteHeader(int(status.Load()))
+		fmt.Fprintf(w, `{"status":"ready","naming_version":%d}`, starsNamingVersion)
 	}))
 	t.Cleanup(worker.Close)
 	service.workerURL = worker.URL
@@ -90,10 +93,10 @@ func TestStarsHealthKeepsSnapshotDuringOutage(t *testing.T) {
 		t.Fatal(err)
 	}
 	down, err := service.Read(t.Context())
-	if err != nil || down.UpdateState != "unavailable" || down.UnavailableReason != "layout" {
+	if err != nil || down.UpdateState != "" || down.UnavailableReason != layoutUnavailable {
 		t.Fatalf("layout outage: %+v %v", down, err)
 	}
-	down.UpdateState, down.UnavailableReason = "", ""
+	down.UnavailableReason = ""
 	if !reflect.DeepEqual(first, down) {
 		t.Fatal("layout outage changed the published snapshot")
 	}
@@ -108,6 +111,103 @@ func TestStarsHealthKeepsSnapshotDuringOutage(t *testing.T) {
 	service.checkLayout(t.Context())
 	if probes.Load() != 2 {
 		t.Fatalf("disabled stars issued a health request: %d", probes.Load())
+	}
+}
+
+func TestStarsOldLayoutReportsIncompatibilityAndResumesAfterUpgrade(t *testing.T) {
+	service, _, _, _ := starsFixture(t, nil)
+	var calls atomic.Int32
+	var upgraded atomic.Bool
+	worker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/health" {
+			if upgraded.Load() {
+				fmt.Fprintf(w, `{"status":"ready","naming_version":%d}`, starsNamingVersion)
+			} else {
+				fmt.Fprint(w, `{"status":"ready","last_job":{}}`)
+			}
+			return
+		}
+		result := testStarsResult(t, r, calls.Add(1))
+		if upgraded.Load() {
+			_ = json.NewEncoder(w).Encode(result)
+		} else {
+			_ = json.NewEncoder(w).Encode(map[string]any{"algorithm": result.Algorithm, "frame": result.Frame,
+				"points": result.Points, "topics": result.Topics, "links": result.Links})
+		}
+	}))
+	t.Cleanup(worker.Close)
+	service.workerURL = worker.URL
+	if err := service.Update(t.Context()); errorCode(err) != "MAP_LAYOUT_INCOMPATIBLE" {
+		t.Fatalf("old response not diagnosed: %v", err)
+	}
+	service.checkLayout(t.Context())
+	response, err := service.Read(t.Context())
+	if err != nil || response.Status != "unavailable" || response.UnavailableReason != layoutIncompatible {
+		t.Fatalf("unexpected old service state: %+v %v", response, err)
+	}
+	if err := service.update(t.Context(), time.Now().Add(time.Minute)); err != nil || calls.Load() != 1 {
+		t.Fatalf("incompatible worker retried: %v, calls=%d", err, calls.Load())
+	}
+	upgraded.Store(true)
+	service.checkLayout(t.Context())
+	select {
+	case <-service.wake:
+	default:
+		t.Fatal("compatible worker did not wake the scheduler")
+	}
+	if err := service.Update(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	response, err = service.Read(t.Context())
+	if err != nil || response.Status != "ready" || response.UnavailableReason != "" || response.UpdateState != "" {
+		t.Fatalf("unexpected upgraded service state: %+v %v", response, err)
+	}
+}
+
+func TestStarsRebuildClearsOutageBeforeNextHealthProbe(t *testing.T) {
+	service, _, _, _ := starsFixture(t, nil)
+	if err := service.Update(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	initial, err := service.Read(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	entered, release := make(chan struct{}), make(chan struct{})
+	var releaseOnce sync.Once
+	unblock := func() { releaseOnce.Do(func() { close(release) }) }
+	worker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/health" {
+			close(entered)
+			<-release
+			w.WriteHeader(503)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(testStarsResult(t, r, 2))
+	}))
+	t.Cleanup(worker.Close)
+	t.Cleanup(unblock)
+	service.workerURL = worker.URL
+	service.layoutHealth.Store(&layoutHealth{key: service.cacheKey(), reason: layoutUnavailable})
+	checked := make(chan struct{})
+	go func() { defer close(checked); service.checkLayout(t.Context()) }()
+	select {
+	case <-entered:
+	case <-time.After(3 * time.Second):
+		t.Fatal("layout health probe did not arrive")
+	}
+	if err := service.Rebuild(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Update(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	unblock()
+	<-checked
+	result, err := service.Read(t.Context())
+	if err != nil || result.Status != "ready" || result.LayoutFrame == initial.LayoutFrame ||
+		result.UpdateState != "" || result.UnavailableReason != "" {
+		t.Fatalf("stale outage masked a new frame: %+v %v", result, err)
 	}
 }
 

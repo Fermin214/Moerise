@@ -156,9 +156,16 @@ test('retry reads the published snapshot without starting a rebuild; rebuild but
   assert.equal(await page.locator('.map-dot').count(), 2);
 
   delete state.malformed.update_state;
+  state.malformed.unavailable_reason = 'layout_incompatible';
+  await refresh.click();
+  await page.getByRole('alert').filter({ hasText: '观星布局服务版本不兼容' }).waitFor();
+  assert.equal(await page.locator('.map-dot').count(), 2);
+
+  delete state.malformed.unavailable_reason;
   state.malformed.layout_frame = 'c'.repeat(64);
   state.malformed.layout_version = 'd'.repeat(64);
   await refresh.click(); await ready(page);
+  await refresh.waitFor({ state: 'hidden' });
   assert.equal(queued(), 0);
   await rebuild.click();
   await wait(() => queued() === 1);

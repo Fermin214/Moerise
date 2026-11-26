@@ -172,7 +172,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         self.reply(200 if self.path == "/health" else 404,
-                   {"status": "ready", "last_job": LAST_JOB})
+                   {"status": "ready", "naming_version": NAMING_VERSION, "last_job": LAST_JOB})
 
     def do_POST(self):
         global LAST_JOB

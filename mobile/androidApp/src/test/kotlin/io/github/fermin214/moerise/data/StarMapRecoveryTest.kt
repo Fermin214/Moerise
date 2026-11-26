@@ -104,8 +104,17 @@ class StarMapRecoveryTest {
             withTimeout(10_000) { controller.state.first { !it.loading && it.rebuild != null } }
             assertEquals(1, posts.get())
             assertEquals("unknown", controller.state.value.rebuild?.state)
+            remote.set(base.copy(status = "unavailable", layoutVersion = "", layoutFrame = "", vectorGeneration = "",
+                points = emptyList(), topics = emptyList(), links = emptyList(), unavailableReason = "layout"))
+            withContext(dispatcher) { controller.refresh() }
+            withTimeout(10_000) { controller.state.first { !it.loading && it.unavailableReason == "layout" } }
+            assertEquals("unknown", controller.state.value.rebuild?.state)
             withContext(dispatcher) { controller.transform(2.0, panX = 35.0) }
             val view = controller.state.value.view
+            remote.set(base.copy(updateState = "unavailable", unavailableReason = "layout"))
+            withContext(dispatcher) { controller.refresh() }
+            withTimeout(10_000) { controller.state.first { !it.loading && it.snapshot?.updateState == "unavailable" } }
+            assertEquals("unknown", controller.state.value.rebuild?.state)
             remote.set(base.copy(updateState = "building"))
             withContext(dispatcher) { controller.refresh() }
             withTimeout(10_000) { controller.state.first { !it.loading && it.snapshot?.updateState == "building" } }
@@ -119,7 +128,8 @@ class StarMapRecoveryTest {
             withTimeout(10_000) { oldEnded.await() }
             assertEquals("new body", controller.state.value.reader?.content)
             assertEquals(view, controller.state.value.view)
-            remote.set(remote.get().copy(layoutFrame = "f".repeat(64), layoutVersion = "1".repeat(64)))
+            remote.set(remote.get().copy(layoutFrame = "f".repeat(64), layoutVersion = "1".repeat(64),
+                updateState = "unavailable", unavailableReason = "layout"))
             withContext(dispatcher) { controller.refresh() }
             withTimeout(10_000) { controller.state.first { !it.loading && it.rebuild?.state == "complete" } }
             assertNotEquals(view, controller.state.value.view)

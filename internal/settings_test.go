@@ -264,6 +264,8 @@ func TestDeploymentSettingsIgnoreOnlyRetiredFields(t *testing.T) {
 		{`{"stargazing":{"enabled":true}}`, true, true},
 		{`{"LLM":{},"Insights":{},"STARGAZING":{"LLM_NAMING":true,"Enabled":true},"stargazing":{}}`, true, true},
 		{`{"stargazing":{"enabled":true,"Enabled":false}}`, true, false},
+		{`{"stargazing":{"Enabled":null}}`, false, false},
+		{`{"stargazing":{"Enabled": false},"Stargazing":{"Enabled":null}}`, true, false},
 	} {
 		settings := DefaultSettings()
 		if err := decodeDeploymentSettings([]byte(item.input), &settings); err != nil ||

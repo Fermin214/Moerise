@@ -354,6 +354,7 @@ func TestUpgradeV030RollbackAcceptance(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(h.settings.StateDir, "state.sqlite3"), snapshot, 0600); err != nil {
 			t.Fatal(err)
 		}
+		config["stargazing"].(map[string]any)["Enabled"] = nil
 		writeConfig()
 		checkBoot(true)
 		checkBoot(true)

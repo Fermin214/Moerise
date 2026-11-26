@@ -197,6 +197,8 @@ docker compose up -d --no-build moerise
 2. 保持 Compose 项目名、来源绑定、数据卷和状态加密密钥一致，将 `.env` 中的 `MOERISE_IMAGE_TAG` 设为目标版本。启用观星时，确保 `COMPOSE_PROFILES` 包含 `stargazing`，执行 `docker compose pull moerise layout`；停用观星时只拉取 `moerise`。独立 Web 容器部署升级为内嵌 Web 时，将 `MOERISE_PORT` 改为原 `WEB_PORT`（默认 `3000`），将 `MOERISE_BIND_ADDRESS` 设为原 `WEB_BIND_ADDRESS`，删除旧 `WEB_*` 配置；`MOERISE_PUBLIC_ORIGIN` 沿用对外地址。执行 `docker compose down --remove-orphans` 清除旧 Web 容器，再运行 `docker compose up -d`。`down` 不加 `--volumes`，命名卷保留。
 3. 先升级 Core，检查就绪状态、原文、附件、设置版本与回顾，再强制刷新 Web 或升级 Android APK。过渡期 `0.3.0` Android 仍可读写和同步笔记、检索、回顾、漫步、观星与上报遥测。洞察端点返回 404，旧设置页须升级客户端后使用。
 
+启用观星的原生或独立部署，须将 Core 和布局服务更新到同一发行版本并重启两者。原生部署使用目标版本的 `services/layout/` 和对应 Python 依赖，独立容器部署更新 Core 与 `layout` 镜像。保留布局服务的数据目录或卷。`0.3.0` 布局服务即使 `/health` 返回 `200`，也不支持新 Core 的命名协议；版本不兼容时 Core 保留已发布星图，待兼容服务上线后恢复生成。
+
 升级应用迁移 `010` 后，`0.3.0` 无法直接打开状态库。Core 读取原部署文件时忽略退役的 `llm`、`insights`、`stargazing.llm_naming`，其余配置字段仍须通过严格校验。历史对话表及旧版加密设置保留在状态库。
 
 回退 `0.3.0` 时先停止服务。使用升级后的 Core 执行 `moerise rollback --backup <快照文件>`，明确填写本次升级生成的 `auto-pre-*.sqlite3` 文件，或手工备份目录下的 `state.sqlite3` 文件。`--backup` 参数要求路径指向文件，且应使用升级前记录的目标快照。命令先生成 `pre-rollback-*` 安全副本，再替换状态库并清理同步进度与派生索引。

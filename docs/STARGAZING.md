@@ -50,7 +50,7 @@ docker compose pull layout
 docker compose up -d layout
 ```
 
-在「设置 → AI」配置 Embedding 向量模型，再在「设置 → 通用」打开「启用观星」。Core 在后台探测布局服务，停机期间保留已发布星图并提示检查 `layout`，恢复后自动更新提示。
+在「设置 → AI」配置 Embedding 向量模型，再在「设置 → 通用」打开「启用观星」。Core 在后台探测布局服务，停机或版本不兼容时保留已发布星图并显示对应提示。升级时按[升级与回滚](OPERATIONS.md#五升级与回滚)同步更新并重启 Core 和布局服务。
 
 停用时先关闭应用开关，执行 `docker compose stop layout`，再移除 profile。应用开关只控制 Core 的布局调度。
 
