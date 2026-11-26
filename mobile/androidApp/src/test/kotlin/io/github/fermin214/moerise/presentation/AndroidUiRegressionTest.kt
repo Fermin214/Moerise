@@ -377,8 +377,10 @@ class AndroidUiRegressionTest {
             image.assertIsDisplayed()
             compose.mainClock.autoAdvance = true
             allowTailParse.complete(Unit)
+            if (!promoteToTail) {
+                compose.waitUntil(10_000) { compose.onAllNodes(tagInBody, useUnmergedTree = true).fetchSemanticsNodes().size == 1 }
+            }
             compose.onNode(textInBody, useUnmergedTree = true).assertExists()
-            if (!promoteToTail) compose.onNode(tagInBody, useUnmergedTree = true).assertExists()
             image.assertIsDisplayed()
         } finally {
             allowTailParse.complete(Unit)
@@ -418,6 +420,9 @@ class AndroidUiRegressionTest {
         var mobile = MobileController(session, { repo }, scope, initialForeground = false)
         val restore = CompletableDeferred<Unit>()
         var staged: StagedAttachment? = null
+        fun showApp(controller: MobileController) {
+            host.get().setContent { MoeriseApp(controller) }
+        }
         fun deliver(requestCode: Int) {
             val result = Intent().apply { clipData = ClipData.newRawUri("only.txt", picked) }
             assertTrue(host.get().activityResultRegistry.dispatchResult(requestCode, Activity.RESULT_OK, result))
@@ -428,7 +433,7 @@ class AndroidUiRegressionTest {
             return launched.requestCode
         }
         try {
-            compose.runOnUiThread { host.get().setContent { MoeriseApp(mobile) } }
+            compose.runOnUiThread { showApp(mobile) }
             compose.waitUntil(10_000) { compose.onAllNodesWithTag("note_editor").fetchSemanticsNodes().size == 1 }
             val field = compose.onNodeWithTag("note_editor")
             val inline = Note("instance", "memos/inline", "Original", "NORMAL", "hash")
@@ -456,7 +461,7 @@ class AndroidUiRegressionTest {
                     session = SessionController(secrets, true, scope)
                     val restoredMobile = MobileController(session, { restore.await(); repo }, scope, initialForeground = false)
                     mobile = restoredMobile
-                    host.get().setContent { MoeriseApp(restoredMobile) }
+                    showApp(restoredMobile)
                 } else {
                     host.pause().stop()
                     deliver(requestCode)
@@ -633,7 +638,8 @@ class AndroidUiRegressionTest {
             waitForTag("note_editor")
             composer.assertIsNotFocused()
 
-            composer.performClick().assertIsFocused().performTextReplacement("left #writ right")
+            compose.onNodeWithTag("home_timeline").performScrollToKey("composer")
+            composer.assertIsDisplayed().performClick().assertIsFocused().performTextReplacement("left #writ right")
             composer.performSemanticsAction(SemanticsActions.SetSelection) { select ->
                 assertTrue(select("left #wr".length, "left #wr".length, false))
             }
