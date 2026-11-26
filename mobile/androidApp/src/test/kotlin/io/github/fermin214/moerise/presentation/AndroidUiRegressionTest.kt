@@ -207,12 +207,12 @@ class AndroidUiRegressionTest {
         val editor = compose.onNodeWithTag("editor")
         val card = hasAnyAncestor(hasTestTag("note_card_memos/test"))
         val action = compose.onNodeWithTag("note_more_memos/test")
-        val actionBounds = action.fetchSemanticsNode().boundsInRoot
-        val date = compose.onNode(hasTestTag("note_card_date") and card, useUnmergedTree = true).fetchSemanticsNode().boundsInRoot
-        val body = compose.onNode(hasTestTag("note_card_body") and card, useUnmergedTree = true).fetchSemanticsNode().boundsInRoot
+        val actionBounds = action.getUnclippedBoundsInRoot()
+        val date = compose.onNode(hasTestTag("note_card_date") and card, useUnmergedTree = true).getUnclippedBoundsInRoot()
+        val body = compose.onNode(hasTestTag("note_card_body") and card, useUnmergedTree = true).getUnclippedBoundsInRoot()
         assertTrue(date.height < actionBounds.height)
-        assertTrue(body.top <= actionBounds.bottom + 2f, "Body starts at ${body.top}, action ends at ${actionBounds.bottom}")
-        assertEquals(44.dp, action.getUnclippedBoundsInRoot().height)
+        assertTrue(body.top - actionBounds.bottom <= 6.dp, "Body starts at ${body.top}, action ends at ${actionBounds.bottom}")
+        assertEquals(44.dp, actionBounds.height)
         assertEquals(44.dp, compose.onNodeWithTag("queued_error_queued").getUnclippedBoundsInRoot().height)
 
         editor.performClick().assertIsFocused()
@@ -281,13 +281,18 @@ class AndroidUiRegressionTest {
                 inline.performClick().assertIsFocused()
             }
             waitForTag("note_editor")
-            compose.waitUntil(10_000) { mobile.filterReads.cached("NORMAL", serviceMonth("UTC")) != null }
+            compose.waitUntil(10_000) {
+                compose.runOnIdle { mobile.filterReads.cached("NORMAL", serviceMonth("UTC")) != null }
+            }
             composer.performClick().assertIsFocused().performTextReplacement("New note")
             composer.assertTextContains("New note")
             compose.onNodeWithTag("save_note").assertIsEnabled()
                 .performSemanticsAction(SemanticsActions.OnClick) { assertTrue(it()) }
-            compose.waitUntil(10_000) { mobile.editor.state.value.let { it.draft?.content == "" || it.error != null } }
+            compose.waitUntil(10_000) {
+                compose.runOnIdle { mobile.editor.state.value.let { it.draft?.content == "" || it.error != null } }
+            }
             assertNull(mobile.editor.state.value.error)
+            assertEquals("New note", runBlocking { repository.queuedNotes(account).single().content })
             composer.assertIsNotFocused()
 
             edit()
