@@ -81,7 +81,7 @@ class SettingsControllerTest {
         val engine = MockEngine { request ->
             when {
                 request.url.encodedPath.endsWith("/session") -> respond(identity)
-                request.url.encodedPath.endsWith("/settings") -> respond(settingsPayload(true))
+                request.url.encodedPath.endsWith("/settings") -> respond(settingsPayload())
                 request.url.encodedPath.endsWith("/models") -> {
                     modelsCalls.incrementAndGet()
                     respond("""{"version":2,"embedding":{"enabled":false},"index_status":"disabled"}""")
