@@ -52,6 +52,19 @@ onFlowComplete:
     timeout: 15000
     label: Wait for the empty search field
 - tapOn:
+    text: 关键词|Keyword
+    enabled: true
+    label: Open baseline search modes
+- extendedWaitUntil:
+    visible:
+      text: 混合|Hybrid
+    timeout: 15000
+    label: Wait for the server-backed hybrid mode
+- tapOn:
+    text: 混合|Hybrid
+    enabled: true
+    label: Select hybrid search to exercise the Core response
+- tapOn:
     id: search_query
     enabled: true
     label: Focus the search field
@@ -63,18 +76,28 @@ onFlowComplete:
     label: Remove the input suffix
 - pressKey:
     key: Enter
-    label: Submit baseline keyword search
-- extendedWaitUntil:
-    notVisible:
-      id: note_card_${PEER_NOTE_NAME}
-    timeout: 15000
-    label: Wait for the comparison note to leave the filtered results
+    label: Submit baseline hybrid search
+- runFlow:
+    file: subflows/hide-keyboard.yaml
+    label: Expose the search result body below the composer
 - extendedWaitUntil:
     visible:
+      text: 搜索结果按相关度排列。|Search results are ranked by relevance\.
+    timeout: 65000
+    label: Require a hybrid response rather than keyword fallback
+- scrollUntilVisible:
+    element:
       text: \Q${NOTE_TEXT}\E
       childOf:
         id: note_card_${NOTE_NAME}
-    timeout: 15000
+    direction: DOWN
+    timeout: 65000
+    centerElement: false
+    label: Bring the baseline search result body into view
+- assertVisible:
+    text: \Q${NOTE_TEXT}\E
+    childOf:
+      id: note_card_${NOTE_NAME}
     label: Verify the baseline client displays the matching result body
 - takeScreenshot:
     path: ${SCREENSHOT_PREFIX}-search
@@ -97,11 +120,13 @@ onFlowComplete:
     id: nav_review
     enabled: true
     label: Open the baseline review
-- extendedWaitUntil:
-    visible:
+- scrollUntilVisible:
+    element:
       id: review_next
       enabled: true
-    timeout: 15000
+    timeout: 65000
+    direction: DOWN
+    centerElement: false
     label: Require a populated review
 - tapOn:
     id: review_next
@@ -120,11 +145,13 @@ onFlowComplete:
     id: review_walk
     enabled: true
     label: Start walking from the review note
-- extendedWaitUntil:
-    visible:
+- scrollUntilVisible:
+    element:
       id: walk_next
       enabled: true
     timeout: 65000
+    direction: DOWN
+    centerElement: false
     label: Require a walk result with another step available
 - assertNotVisible:
     id: discovery_error

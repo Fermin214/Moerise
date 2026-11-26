@@ -68,6 +68,7 @@ LITERAL_TEXT = {
     "Show roots|显示根目录", "Downloads|下载",
     "浏览|Browse", "Download|下载",
     "关键词|Keyword", "混合|Hybrid", TIMESTAMP_TEXT,
+    r"搜索结果按相关度排列。|Search results are ranked by relevance\.",
     "Select all|Select All|全选",
     "回顾|Review", "漫步|Walk", "观星|Stargazing",
     "QQ 私聊|QQ private chat", "发送记录|Delivery history", "设置已保存。|Settings saved\\.",
