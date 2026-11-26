@@ -277,10 +277,6 @@ func NewStore(settings Settings) (*Store, error) {
 		store.Close()
 		return nil, err
 	}
-	if err := store.recoverChats(); err != nil {
-		store.Close()
-		return nil, err
-	}
 	return store, nil
 }
 

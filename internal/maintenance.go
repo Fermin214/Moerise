@@ -577,6 +577,8 @@ func Rollback(settings Settings, backup string) (RollbackResult, error) {
 		result.CrossVersion = true
 		if result.MaxSnapshotMigration <= "007" {
 			result.DowngradeVersion = "0.2.0"
+		} else if result.MaxSnapshotMigration == "009" {
+			result.DowngradeVersion = "0.3.0"
 		}
 	}
 

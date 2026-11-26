@@ -16,6 +16,16 @@ from adb_common import Adb, CommandError
 from maestro_runner import DRIVERS, MaestroRunner, ROOT, write_result, fresh_ui_dump
 
 
+def apk_version_name(apk):
+    executable = "aapt2.exe" if os.name == "nt" else "aapt2"
+    tool = Path(os.environ["ANDROID_HOME"]) / "build-tools" / "36.0.0" / executable
+    badging = subprocess.check_output([tool, "dump", "badging", apk], encoding="utf-8")
+    version = re.search(r"(?m)^package: name='[^']+' versionCode='\d+' versionName='([^']+)'", badging)
+    if version is None:
+        raise ValueError("无法读取基线 APK 的 versionName")
+    return version[1]
+
+
 def command_failure(error):
     output = error.output.decode("utf-8", "replace") if isinstance(error.output, bytes) else error.output
     return {"cause": error.code, "output": output}
@@ -76,10 +86,11 @@ def main():
             raise RuntimeError("发行检查要求尚未安装此包的模拟器")
         upgrade = None
         if args.upgrade_from:
+            baseline_version = apk_version_name(args.upgrade_from)
             adb.run("install", str(args.upgrade_from.resolve()), timeout=120)
             prior = runner.run_flow("release-smoke")
             if prior["status"] != "passed":
-                raise RuntimeError("0.2.0 preparation failed: " + str(prior.get("cause")))
+                raise RuntimeError(f"{baseline_version} preparation failed: {prior.get('cause')}")
             previous_note = json.loads((args.output / "maestro/release-smoke/test-data.json").read_text())["NEW_NOTE_TEXT"]
             spec = importlib.util.spec_from_file_location("upgrade_state", ROOT / "scripts/android/upgrade-state.py")
             upgrade_state = importlib.util.module_from_spec(spec)
@@ -110,8 +121,8 @@ def main():
             xml = require_restored_session(adb, runner.app, args.output / "upgrade/completed-window.xml", CommandError)
             assert upgrade["draft"] in xml, "upgraded draft missing"
             assert "welcome_enter" not in xml and "server_login" not in xml, "upgraded account or Keystore missing"
-            assert len(runner.api.matching_notes(previous_note)) == 1, "0.2.0 笔记丢失"
-            report["upgrade"] = {"from": "0.2.0", "account": True, "draft": True, "pending_write_count": 1,
+            assert len(runner.api.matching_notes(previous_note)) == 1, f"{baseline_version} 笔记丢失"
+            report["upgrade"] = {"from": baseline_version, "account": True, "draft": True, "pending_write_count": 1,
                                  "keystore_session": True, "previous_apk_sha256": hashlib.sha256(args.upgrade_from.read_bytes()).hexdigest()}
 
         for package in reversed(DRIVERS):

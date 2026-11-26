@@ -22,9 +22,9 @@ const evidence = { checks: [], pageErrors: [], modelChecks: [], sourceFailures: 
 const sourceStop = new AbortController();
 let browser, page, web, mock, sourceProxy, cookie = '', csrf = '', url, coreURL, sourceURL, pat;
 const username = 'models-owner', password = randomBytes(24).toString('hex');
-const embeddingKey = randomBytes(24).toString('hex'), llmKey = randomBytes(24).toString('hex');
+const embeddingKey = randomBytes(24).toString('hex');
 const machineKey = randomBytes(24).toString('hex');
-const fixture = { failure: 0, remaining: 1, successes: new Map(), llmModels: [], violations: [] };
+const fixture = { failure: 0, remaining: 1, successes: new Map(), violations: [] };
 const containers = new Set();
 let network = false, step = '初始化', success = false;
 
@@ -153,7 +153,7 @@ try {
     config.state_dir = '/data/state'; config.index_dir = '/data/index'; config.cursor_secret = randomBytes(32).toString('hex');
     config.access_tokens = [{ name: 'acceptance', token: machineKey, scopes: ['notes:read', 'sync:read'] }];
     config.sync = { ...config.sync, poll_seconds: 5, full_seconds: 60, retry_seconds: 3 };
-    config.embedding.enabled = config.llm.enabled = config.notifications.enabled = false;
+    config.embedding.enabled = config.notifications.enabled = false;
     await writeFile(resolve(root, 'config.json'), JSON.stringify(config));
     containers.add(core);
     await docker(['run', ...dockerUser, '-dt', '--name', core, '--network', name, '--mount', `type=bind,source=${root},target=/data`,
@@ -165,13 +165,6 @@ try {
   mock = http.createServer(async (req, res) => {
     const raw = await readRequestText(req);
     const body = JSON.parse(raw), json = value => { res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify(value)); };
-    if (req.url === '/v1/chat/completions') {
-      if (req.headers.authorization !== `Bearer ${llmKey}`) fixture.violations.push('LLM credential');
-      fixture.llmModels.push(body.model);
-      res.setHeader('Content-Type', 'text/event-stream');
-      const frame = (delta, finish_reason) => `data: ${JSON.stringify({ model: body.model, choices: [{ index: 0, delta, finish_reason }] })}\n\n`;
-      res.end(frame({ content: 'OK' }, null) + frame({}, 'stop') + 'data: [DONE]\n\n'); return;
-    }
     if (req.url !== '/v1/embeddings' || req.headers.authorization !== `Bearer ${embeddingKey}` ||
         body.encoding_format !== 'float' || !Array.isArray(body.input)) fixture.violations.push('Embedding request');
     const dimensions = body.model === 'embedding-b' ? 4 : 3;
@@ -197,10 +190,10 @@ try {
   page = await browser.newPage({ locale: 'zh-CN', viewport: { width: 1360, height: 960 } });
   page.on('pageerror', error => evidence.pageErrors.push(error.message));
   page.on('response', async response => {
-    if (!/\/models\/(embedding|llm)\/check$/.test(response.url())) return;
+    if (!response.url().endsWith('/models/embedding/check')) return;
     try {
       const body = await response.json();
-      evidence.modelChecks.push({ model: response.url().includes('/embedding/') ? 'embedding' : 'llm',
+      evidence.modelChecks.push({ model: 'embedding',
         status: response.status(), code: body.error?.code || body.status, version: body.version });
     } catch {}
   });
@@ -214,11 +207,10 @@ try {
     await page.getByRole('button', { name: '保存设置', exact: true }).click();
     await page.getByRole('status').filter({ hasText: '设置已保存' }).waitFor();
   };
-  const fillModel = async (group, model, key) => {
-    await field(`${group}.enabled`).check(); await field(`${group}.base_url`).fill(modelURL); await field(`${group}.model`).fill(model);
-    const label = group === 'llm' ? 'LLM API Key' : 'Embedding API Key';
-    await page.getByRole('combobox', { name: `${label}操作`, exact: true }).selectOption('replace');
-    await page.getByLabel(`${label}新值`, { exact: true }).fill(key);
+  const fillEmbedding = async (model, key) => {
+    await field('embedding.enabled').check(); await field('embedding.base_url').fill(modelURL); await field('embedding.model').fill(model);
+    await page.getByRole('combobox', { name: 'Embedding API Key操作', exact: true }).selectOption('replace');
+    await page.getByLabel('Embedding API Key新值', { exact: true }).fill(key);
   };
   await check('模型关闭时的真实笔记、搜索和浏览器登录', async () => {
     await api('POST', '/session', { username, password });
@@ -232,20 +224,14 @@ try {
     await page.getByRole('button', { name: '进入 Moerise', exact: true }).click();
     await page.locator('#settings-tab-ai').click();
     await page.locator('#settings-index-status').filter({ hasText: '已关闭' }).waitFor();
-    assert.equal((await models()).llm.enabled, false);
+    assert.equal((await models()).embedding.enabled, false);
     await request(url, '/api/app/v1/models', {}, 401);
     await request(url, '/api/app/v1/models', { headers: { Authorization: `Bearer ${machineKey}` } }, 403);
-  });
-  await check('仅 LLM 启用与真实流式连接检查', async () => {
-    await fillModel('llm', 'llm-a', llmKey); await save();
-    await page.getByRole('button', { name: '检查 LLM 连接', exact: true }).click();
-    await page.locator('#settings-llm-check-result').filter({ hasText: '连接正常' }).waitFor();
-    assert.equal((await models()).index_status, 'disabled'); assert.deepEqual(fixture.llmModels, ['llm-a']);
   });
   let initialID, firstChunk;
   await check('通用 Embedding 保存、部分构建与连接错误', async () => {
     await field('embedding.provider').selectOption('openai-compatible');
-    await fillModel('embedding', 'embedding-a', embeddingKey);
+    await fillEmbedding('embedding-a', embeddingKey);
     await field('embedding.dimensions').fill('3'); await field('embedding.batch_size').fill('1');
     await field('embedding.max_retries').fill('0'); await field('embedding.timeout_seconds').fill('5');
     await save();
@@ -304,15 +290,7 @@ try {
     fixture.failure = 0;
     const active = await readyIndex(); assert.notEqual(active.id, initialID); assert.equal(active.dimensions, 4); initialID = active.id;
   });
-  await check('更换 LLM 不重建向量，Embedding 可独立于 LLM', async () => {
-    const before = fixture.successes.size;
-    await field('llm.model').fill('llm-b'); await save();
-    await page.getByRole('button', { name: '检查 LLM 连接', exact: true }).click();
-    await page.locator('#settings-llm-check-result').filter({ hasText: '连接正常' }).waitFor();
-    assert.equal(fixture.llmModels.at(-1), 'llm-b');
-    assert.equal((await readyIndex()).id, initialID); assert.equal(fixture.successes.size, before);
-    await field('llm.enabled').uncheck(); await save();
-    assert.equal((await readyIndex()).id, initialID);
+  await check('Embedding 切换后连接检查正常', async () => {
     await page.getByRole('button', { name: '检查 Embedding 连接', exact: true }).click();
     await page.locator('#settings-embedding-check-result').filter({ hasText: '连接正常' }).waitFor();
   });

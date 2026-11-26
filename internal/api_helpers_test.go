@@ -3,6 +3,7 @@ package moerise
 import (
 	"encoding/json"
 	"net/http/httptest"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -46,4 +47,47 @@ func callMCP(t *testing.T, api *API, token, method string, params any) map[strin
 		t.Fatalf("MCP response: %d %s", response.Code, response.Body.String())
 	}
 	return rpc
+}
+
+func clientSchema(t *testing.T, name string) *jsonschema.Resolved {
+	t.Helper()
+	var spec struct {
+		Components struct {
+			Schemas map[string]json.RawMessage `json:"schemas"`
+		} `json:"components"`
+	}
+	if err := json.Unmarshal(openAPIJSON, &spec); err != nil {
+		t.Fatal(err)
+	}
+	defs := map[string]json.RawMessage{}
+	pending := []string{name}
+	references := regexp.MustCompile(`"#/components/schemas/([^"]+)"`)
+	for len(pending) > 0 {
+		key := pending[0]
+		pending = pending[1:]
+		if defs[key] != nil {
+			continue
+		}
+		value := spec.Components.Schemas[key]
+		if value == nil {
+			t.Fatalf("missing OpenAPI schema %s", key)
+		}
+		defs[key] = json.RawMessage(strings.ReplaceAll(string(value), "#/components/schemas/", "#/$defs/"))
+		for _, match := range references.FindAllStringSubmatch(string(value), -1) {
+			pending = append(pending, match[1])
+		}
+	}
+	data, err := json.Marshal(map[string]any{"$ref": "#/$defs/" + name, "$defs": defs})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var schema jsonschema.Schema
+	if err := json.Unmarshal(data, &schema); err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := schema.Resolve(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return resolved
 }

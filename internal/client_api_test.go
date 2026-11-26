@@ -38,8 +38,7 @@ func TestOpenAPIOperationIDsAreUnique(t *testing.T) {
 			Responses map[string]any `json:"responses"`
 		} `json:"paths"`
 		Components struct {
-			Responses map[string]any `json:"responses"`
-			Schemas   map[string]struct {
+			Schemas map[string]struct {
 				Properties map[string]map[string]any `json:"properties"`
 			} `json:"schemas"`
 		} `json:"components"`
@@ -47,13 +46,10 @@ func TestOpenAPIOperationIDsAreUnique(t *testing.T) {
 	if err := json.Unmarshal(openAPISpec(), &raw); err != nil {
 		t.Fatal(err)
 	}
-	if raw.Components.Responses["ChatError"] == nil {
-		t.Fatal("openapi missing ChatError response component")
-	}
 	for _, tc := range []struct{ path, method, code, media string }{
 		{"/api/app/v1/notes", "get", "200", "application/json"},
 		{"/api/app/v1/sync/notes", "get", "200", "application/json"},
-		{"/api/app/v1/chats/{chat_id}/messages", "post", "200", "text/event-stream"},
+		{"/api/app/v1/models/embedding/check", "post", "200", "application/json"},
 		{"/api/app/v1/notes/{memo_id}/attachments/{attachment_id}/content", "get", "200", "application/octet-stream"},
 		{"/api/app/v1/notes/{memo_id}/attachments/{attachment_id}/content", "get", "206", "application/octet-stream"},
 	} {

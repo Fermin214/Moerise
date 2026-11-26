@@ -10,6 +10,5 @@ description: 用于 Android 正式包真机交接、Windows 固定入口续跑�
 - 来源未知时先确认设备离线及账号界面，校验测试源、用户身份和探针笔记后才允许同步写回。还原网络前先停 App。探针失败时保留已成立复用和能力跳过项，记录待跑项的阻塞阶段。
 - 先恢复归属明确的输入法、网络、驱动、端口和测试渠道，再独立结算各项。独立后续项可在单项业务失败后执行。实际重跑的新失败取代同项历史通过，尚未执行的项保留历史有效记录。
 - `--stop-after` 和 `stop` 都在该项结果保存后响应。核对停止点、后续项 `not_run`、历史证据和清理结果，再解释退出码。
-- 流式证据依次核对 SSE 增量、同一业务 `request_id` 的 Core GET 持久化终态和正文，再按 `insights-stream` 操作卡核对真机 UI 渲染。[跨层验收命令](../../../scripts/README.md#流式对话) 负责前两层。
 
 宿主回归使用 `python -B scripts/android/phone-session.test.py`、`python -B scripts/android/maestro-runner.test.py` 和 `python -B scripts/android/maestro/validate.py`。

@@ -50,7 +50,6 @@ fun WebSidebar(
                         Triple("home", strings.text("主页", "Home"), WebIcon.Home),
                         Triple("review", strings.text("回顾", "Review"), WebIcon.Review),
                         Triple("walk", strings.text("漫步", "Walk"), WebIcon.Walk),
-                        Triple("insights", strings.text("洞察", "Insights"), WebIcon.Insights),
                         Triple("map", strings.text("观星", "Stargazing"), WebIcon.Map),
                     ).filter { it.first != "map" || stargazingEnabled }.forEach { (target, label, icon) ->
                         SidebarEntry(label, icon, page == target, Modifier.testTag("nav_$target")) { onNavigate(target) }

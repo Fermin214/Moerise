@@ -30,16 +30,6 @@
       "timeout_seconds": 780,
       "seed_notes": true
     },
-    "insights": {
-      "file": "insights.yaml",
-      "timeout_seconds": 420,
-      "seed_notes": true
-    },
-    "insights-disconnect": {
-      "file": "insights-disconnect.yaml",
-      "timeout_seconds": 240,
-      "seed_notes": true
-    },
     "navigation": {
       "file": "navigation.yaml",
       "timeout_seconds": 900,
@@ -85,11 +75,6 @@
       "timeout_seconds": 360,
       "seed_notes": true
     },
-    "insights-material": {
-      "file": "insights-material.yaml",
-      "timeout_seconds": 180,
-      "seed_notes": true
-    },
     "attachment-cancel": {
       "file": "attachment-cancel.yaml",
       "timeout_seconds": 120,
@@ -130,9 +115,6 @@
     ],
     "actions": [
       "actions"
-    ],
-    "insights": [
-      "insights"
     ],
     "navigation": [
       "navigation-review",

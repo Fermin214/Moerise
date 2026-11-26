@@ -15,6 +15,7 @@ data class StarMapState(
     val excerpts: Map<String, String> = emptyMap(), val photo: Boolean = true, val fullScreen: Boolean = false,
     val allFraming: Boolean = false, val tab: Int = 0, val compatible: Boolean = true, val unplacedOnly: Boolean = false,
     val disabledReason: String = "",
+    val unavailableReason: String = "",
 )
 data class MapMetric(val kind: String, val value: Long, val version: String)
 
@@ -205,7 +206,7 @@ class StarMapController(
                 }
                 if (snapshot?.layoutVersion != previousMap?.layoutVersion || pointChanges) cancelExcerpts()
                 mutable.update { it.copy(snapshot = snapshot, status = map.status, disabledReason = map.disabledReason,
-                    loading = false, compatible = true,
+                    unavailableReason = map.unavailableReason, loading = false, compatible = true,
                     view = if (map.readable && frameChanged) null else it.view,
                     selected = if (map.readable && (point == null || excerptCleared) || map.status == "disabled") null else it.selected,
                     reader = if (map.readable && readerInvalidated || map.status == "disabled") null else it.reader,

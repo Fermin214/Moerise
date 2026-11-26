@@ -8,6 +8,9 @@ import {
   unlinkSync, writeFileSync,
 } from 'node:fs';
 import { createServer } from 'node:net';
+import { createServer as createHTTPServer } from 'node:http';
+import { once } from 'node:events';
+import { text as requestText } from 'node:stream/consumers';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import assert from 'node:assert/strict';
@@ -258,14 +261,11 @@ async function runScenario(kind) {
     assert.ok(enabled.includes('layout'));
   });
   if (!skipBuild && !buildAttempted) {
-    await check('构建 Core、Web 与布局服务', async () => {
+    await check('构建 Core 与内嵌 Web', async () => {
       buildAttempted = true;
-      await compose(['build', 'moerise', 'layout'], { timeout: 1_200_000 });
-      evidence.images = {};
-      for (const image of [`ghcr.io/fermin214/moerise:${imageTag}`,
-        `ghcr.io/fermin214/moerise-layout:${imageTag}`]) {
-        evidence.images[image] = (await docker(['image', 'inspect', '--format', '{{.Id}}', image])).trim();
-      }
+      await compose(['build', 'moerise'], { timeout: 1_200_000 });
+      const image = `ghcr.io/fermin214/moerise:${imageTag}`;
+      evidence.images = { [image]: (await docker(['image', 'inspect', '--format', '{{.Id}}', image])).trim() };
     });
   }
   await check('启动独立 Memos 来源', async () => {
@@ -309,7 +309,7 @@ async function runScenario(kind) {
     values.MOERISE_MEMOS_USER = me.user.name;
     values.MOERISE_MEMOS_TOKEN = pat;
     writeEnv(values);
-    await compose(['up', '-d', '--no-build', 'moerise', 'layout']);
+    await compose(['up', '-d', '--no-build', 'moerise']);
     await ready(url);
   });
 
@@ -443,7 +443,7 @@ async function runScenario(kind) {
     await compose(['down', '--remove-orphans']);
     assert.equal((await docker(['ps', '-aq', '--filter', `label=com.docker.compose.project=${project}`,
       '--filter', 'label=com.docker.compose.service=web'])).trim(), '');
-    await compose(['up', '-d', '--no-build', 'memos', 'moerise', 'layout']);
+    await compose(['up', '-d', '--no-build', 'memos', 'moerise']);
     await ready(url);
     const restoredVolumes = JSON.parse(await docker(['inspect', '--format', '{{json .Mounts}}',
       (await compose(['ps', '--quiet', 'moerise'])).trim()]))
@@ -479,9 +479,9 @@ async function runScenario(kind) {
       screenshots.set(`browser-${kind}-desktop.png`, await page.screenshot({ fullPage: true }));
       await page.goto(url + '/review'); await page.locator('.review-page').waitFor();
       await page.goto(url + '/walk'); await page.locator('.walk-page').waitFor();
-      await page.goto(url + '/insights'); await page.locator('.insights-page').waitFor();
-      await page.goto(url + '/map'); await page.locator('.map-page').waitFor();
-      await page.getByRole('status').filter({ hasText: '请在设置中启用 Embedding' }).waitFor();
+      await page.goto(url + '/map');
+      await page.getByText('观星已关闭。', { exact: true }).waitFor();
+      assert.equal(await page.locator('nav a[href="/map"]').isVisible(), false);
       await page.goto(url + '/settings'); await page.locator('.settings-form').waitFor();
       const changeSettings = async () => {
         const response = page.waitForResponse(reply => reply.url().endsWith('/api/app/v1/settings') &&
@@ -542,18 +542,9 @@ async function runScenario(kind) {
       assert.deepEqual(pageErrors, []);
     } finally { await browser.close(); }
   });
-  await check('关闭观星并停用布局容器，Core/Web 继续运行且可以恢复', async () => {
-    const embedding = saved.settings.embedding;
-    saved = (await api('PATCH', '/api/app/v1/settings', {
-      version: saved.version, settings: { stargazing: { enabled: false } },
-    })).value;
-    assert.deepEqual(saved.settings.embedding, embedding);
-    await compose(['stop', 'layout']);
-    await compose(['up', '-d', '--no-build']);
-    await ready(url);
+  await check('默认关闭观星，按需启动布局服务并发布星图', async () => {
     const layout = (await compose(['--profile', 'stargazing', 'ps', '--all', '--quiet', 'layout'])).trim();
-    assert.ok(layout);
-    assert.equal((await docker(['inspect', '--format', '{{.State.Running}}', layout])).trim(), 'false');
+    assert.equal(layout, '');
     const map = (await api('GET', '/api/app/v1/map')).value;
     assert.equal(map.status, 'disabled');
     assert.equal(map.disabled_reason, 'stargazing');
@@ -561,12 +552,56 @@ async function runScenario(kind) {
     assert.equal((await api('GET', '/api/app/v1/session')).value.stargazing_enabled, false);
     assert.equal((await api('POST', '/api/app/v1/map/rebuild', {}, 409)).value.error.code, 'STARGAZING_DISABLED');
     await retained();
-    await compose(['--profile', 'stargazing', 'up', '-d', '--no-build', 'layout']);
+    const coreID = (await compose(['ps', '--quiet', 'moerise'])).trim();
+    const modelHost = process.platform === 'linux'
+      ? (await docker(['inspect', '--format', '{{range .NetworkSettings.Networks}}{{.Gateway}}{{end}}', coreID])).trim()
+      : 'host.docker.internal';
+    const key = randomBytes(24).toString('hex');
+    const model = createHTTPServer(async (req, res) => {
+      try {
+        assert.equal(req.url, '/v1/embeddings');
+        assert.equal(req.headers.authorization, `Bearer ${key}`);
+        const { input } = JSON.parse(await requestText(req));
+        const data = input.map((text, index) => ({ index, embedding: [1, text.length / 100, 0.1] }));
+        res.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({ data }));
+      } catch {
+        res.writeHead(400).end();
+      }
+    }).listen(0, process.platform === 'linux' ? modelHost : '0.0.0.0');
+    try {
+      await once(model, 'listening');
+      saved = (await api('PATCH', '/api/app/v1/settings', {
+        version: saved.version,
+        settings: {
+          embedding: { enabled: true, provider: 'openai-compatible', protocol: 'openai-compatible',
+            base_url: `http://${modelHost}:${model.address().port}/v1`, model: 'compose-fixture', dimensions: 3 },
+          stargazing: { enabled: true },
+        },
+        secrets: { embedding_api_key: { action: 'replace', value: key } },
+      })).value;
+      assert.equal((await api('GET', '/api/app/v1/session')).value.stargazing_enabled, true);
+      await waitFor('布局服务缺失状态', async () => {
+        const { value } = await api('GET', '/api/app/v1/map');
+        return value.status === 'unavailable' && value.unavailable_reason === 'layout';
+      }, 90_000);
+      const image = `ghcr.io/fermin214/moerise-layout:${imageTag}`;
+      if (!skipBuild && !evidence.images[image]) {
+        await compose(['--profile', 'stargazing', 'build', 'layout'], { timeout: 1_200_000 });
+        evidence.images[image] = (await docker(['image', 'inspect', '--format', '{{.Id}}', image])).trim();
+      }
+      await compose(['--profile', 'stargazing', 'up', '-d', '--no-build', 'layout']);
+      await api('POST', '/api/app/v1/map/rebuild', {}, 202);
+      await waitFor('布局服务发布星图', async () => {
+        const { value } = await api('GET', '/api/app/v1/map');
+        return value.status === 'ready' && value.points.some(point => point.name === note.name && point.semantic);
+      }, 180_000);
+    } finally {
+      await new Promise(resolve => { model.close(resolve); model.closeAllConnections(); });
+    }
     saved = (await api('PATCH', '/api/app/v1/settings', {
-      version: saved.version, settings: { stargazing: { enabled: true } },
+      version: saved.version, settings: { stargazing: { enabled: false }, embedding: { enabled: false } },
     })).value;
-    assert.equal((await api('GET', '/api/app/v1/session')).value.stargazing_enabled, true);
-    assert.equal((await api('GET', '/api/app/v1/map')).value.disabled_reason, 'embedding');
+    await compose(['--profile', 'stargazing', 'stop', 'layout']);
   });
   await check('停止 Core 并重建索引后保留产品状态', async () => {
     await compose(['stop', 'moerise']);

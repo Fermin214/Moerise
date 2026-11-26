@@ -10,7 +10,7 @@ import (
 )
 
 func TestClientSourceReadBudgetIncludesAuthenticationAndRuntimeWait(t *testing.T) {
-	for _, path := range []string{"/notes", "/tags", "/calendar?month=2026-11", "/chat-materials"} {
+	for _, path := range []string{"/notes", "/tags", "/calendar?month=2026-11"} {
 		t.Run(path, func(t *testing.T) {
 			api, _ := clientFixture(t)
 			cookie, _ := settingsSession(t, api)
@@ -25,7 +25,6 @@ func TestClientSourceReadBudgetIncludesAuthenticationAndRuntimeWait(t *testing.T
 				return 500, nil, nil
 			})
 			api.app.Notes.Source = source
-			api.app.Chat.Notes = api.app.Notes
 			var deadlines []time.Time
 			for _, client := range []*http.Client{api.app.Sessions.auth.client, source.client} {
 				client.Timeout = 0
@@ -88,7 +87,7 @@ func TestClientSourceReadCanceledWhileWaitingForSettings(t *testing.T) {
 }
 
 func TestClientSourceReadRateLimitDoesNotReturnPartialContent(t *testing.T) {
-	for _, path := range []string{"/notes", "/tags", "/calendar?month=2020-01", "/chat-materials"} {
+	for _, path := range []string{"/notes", "/tags", "/calendar?month=2020-01"} {
 		t.Run(path, func(t *testing.T) {
 			api, _ := clientFixture(t)
 			cookie, _ := settingsSession(t, api)
@@ -112,7 +111,6 @@ func TestClientSourceReadRateLimitDoesNotReturnPartialContent(t *testing.T) {
 				return 500, nil, nil
 			})
 			api.app.Notes.Source = source
-			api.app.Chat.Notes = api.app.Notes
 			w := clientCall(api, "GET", "/api/app/v1"+path, "", cookie, "", "")
 			if w.Code != 200 || pages != 0 {
 				t.Fatalf("local client read failed or called upstream: %d %s (%d pages)", w.Code, w.Body.String(), pages)
@@ -126,7 +124,7 @@ func TestClientSourceReadRateLimitDoesNotReturnPartialContent(t *testing.T) {
 }
 
 func TestClientSourceReadCancelsIndexConnectionWait(t *testing.T) {
-	for _, path := range []string{"/notes", "/chat-materials"} {
+	for _, path := range []string{"/notes", "/tags"} {
 		for _, deadline := range []bool{false, true} {
 			t.Run(path+map[bool]string{false: "/cancel", true: "/deadline"}[deadline], func(t *testing.T) {
 				api, _ := clientFixture(t)

@@ -4,7 +4,7 @@
 
 ## 入口与分组
 
-`catalog.json` 是入口、超时、笔记准备要求和分组的唯一清单。运行器逐个调用清单中的文件，不将目录作为测试集合。默认分组严格为 `editing`、`search`、`actions`、`insights`、`navigation`、`attachments`、`language`、`home`；`home` 对应 `home-smoke`。
+`catalog.json` 是入口、超时、笔记准备要求和分组的唯一清单。运行器逐个调用清单中的文件。默认分组为 `editing`、`search`、`actions`、`navigation`、`attachments`、`language`、`home`，其中 `home` 对应 `home-smoke`。
 
 | 入口 | 界面覆盖 | API 后验或结果约定 |
 | --- | --- | --- |
@@ -12,14 +12,12 @@
 | `editing` | 保留指定草稿、保存目标笔记修改、输入对照笔记修改后取消，检查对照原文与顶部草稿恢复，再新建保存 | `NOTE_NAME` 内容等于 `EDITED_TEXT`；peer 仍为 `PEER_NOTE_TEXT`；`NEW_NOTE_TEXT` 恰好一篇 |
 | `search` | 以 IME 动作提交关键词、切换到 hybrid 并再次提交；点击正文和时间戳后保持主页，检查详情路由缺席；清空搜索并检查两条笔记恢复 | `QUERY_TEXT` 与 `NOTE_TEXT` 完全相同 |
 | `actions` | 保留顶部草稿穿过归档、恢复和两次删除；先检查 peer 未受影响再删除 peer，检查草稿恢复后仅清该草稿 | `NOTE_NAME` 和 `PEER_NOTE_NAME` 均已删除 |
-| `insights` | 新建会话、选择材料、阅读来源、查看历史、生成洞察并保存回答 | 只使用隔离模型，检查笔记正文与回答一致 |
-| `insights-disconnect` | 选入独立素材，核对断流标记和普通追问的完整输入，同一会话连发两轮 | 首轮 `failed / LLM_PROTOCOL` 且保留部分正文，第二轮 `completed` 且有正文 |
 | `navigation-review`、`navigation-walk`、`navigation-map` | 各自从主页检查对应场景并返回 | 回顾有结果或明确空态；漫步检查禁用提示或开始与停止；地图检查开关和全屏往返 |
 | `navigation-settings` | 切换四页签，保存 QQ 渠道并检查凭据控件，返回主页验证独立草稿 | 读回 QQ 目标与 AppID、密钥保留状态；随后恢复测试渠道配置 |
 | `language` | 中文与英语切换，恢复原语言设置，包括跟随系统 | 只修改隔离账号使用的语言偏好 |
 | `attachments` | 打开／取消选择器，再选择唯一 txt 并保存新笔记 | `ATTACHMENT_NOTE_TEXT` 恰好一篇；附件名与字节均匹配运行器准备的文件 |
 
-兼容短流程保持独立入口：`home-smoke`、`archive`、`insights-material`、`attachment-cancel`。`navigation` 组按回顾、漫步、地图、设置的顺序运行，`navigation.yaml` 保留完整导航入口。`archive` 完成后恢复目标笔记；`insights-material` 先通过 UI 新建独立洞察。准备笔记以 `seed_notes` 标记为准。
+兼容短流程保持独立入口：`home-smoke`、`archive`、`attachment-cancel`。`navigation` 组按回顾、漫步、地图、设置的顺序运行，`navigation.yaml` 保留完整导航入口。`archive` 完成后恢复目标笔记。准备笔记以 `seed_notes` 标记为准。
 
 ## 变量与隔离数据
 
@@ -63,9 +61,8 @@
 
 `seed_notes: true` 的入口由运行器为每次场景独立创建两条正常笔记，并等待 Core 立即可读。主页执行同步后检查具体控件和笔记。不要在编辑、删除等场景之间复用同一组笔记。
 
-入口应处于普通页面，导航抽屉和弹窗关闭。编辑、动作、洞察、导航写草稿前要求输入器为空或已等于同一次场景的 `DRAFT_TEXT`；其他草稿会使流程明确失败。动作场景在归档恢复后、首次删除后和两次删除结束后检查同一草稿。结束时只清除逐字匹配的测试草稿。附件保存要求输入器为空。取消选择器短流程不修改已有草稿。
+入口应处于普通页面，导航抽屉和弹窗关闭。编辑、动作、导航写草稿前要求输入器为空或已等于同一次场景的 `DRAFT_TEXT`；其他草稿会使流程明确失败。动作场景在归档恢复后、首次删除后和两次删除结束后检查同一草稿。结束时只清除逐字匹配的测试草稿。附件保存要求输入器为空。取消选择器短流程不修改已有草稿。
 
-新建洞察通过 `chat_session_menu` → `chat_new` 重置独立的会话状态，再完成选材。`insights` 在隔离模型生成结束后，保存默认选中的回答。运行器从 Core 读取会话和已存笔记，比对完整正文。`insights-material` 只检查选材和阅读。
 
 地图首次进入全屏时，若 Android 的全屏介绍按钮 `com.android.systemui:id/ok` 出现，流程确认介绍后继续检查全屏退出控件。
 
@@ -137,13 +134,13 @@ Python、ADB 和 Maestro 应可从同一终端运行。安装 Python 依赖使�
 
 每项依次准备独立数据、运行界面、恢复编辑态、执行服务端后验并落盘。已登记的测试行内编辑或完全匹配的草稿最多恢复一次。未知草稿保留，需要干净编辑态的后续项标记跳过。测试渠道恢复检查点以规范化来源索引，下次执行任意模块前先恢复。编辑冲突探针读回 `409 SOURCE_CHANGED` 与远端正文。
 
-重复执行固定入口会续跑同一设备、APK、连接档案与测试源对应的活动会话。复用需要成功的 UI、适用的服务端后验、匹配的流指纹和仍可读取的证据文件。缺证据的旧结果进入待跑队列。`--check` 可重复指定检查 ID，`--retry` 强制重跑所选项，实跑的新失败取代同项旧通过。`--baseline` 或档案的 `baseline` 字段可导入已有证据。基线 JSON 包含 `apk_sha256`、`serial`、`test_origin` 和以检查 ID 为键的 `checks` 对象。每项填写 `ui_status`、`server_verification`、`manual_status`、`evidence_paths`，自动项还需匹配 `flow_sha256`。路径相对于基线文件。服务端后验 `pending` 的自动项只有在提供原始 `test_data_path` 且能补做完整只读后验时才可复用。`legacy_handoff: true` 使用固定的 0.3.0 等价证据映射。断流场景还需给档案设置 `fail_marker` 或传 `--fail-marker`，并确认独立模型代理能按该字面标记中断响应。
+重复执行固定入口会续跑同一设备、APK、连接档案与测试源对应的活动会话。复用需要成功的 UI、适用的服务端后验、匹配的流指纹和仍可读取的证据文件。缺证据的旧结果进入待跑队列。`--check` 可重复指定检查 ID，`--retry` 强制重跑所选项，实跑的新失败取代同项旧通过。`--baseline` 或档案的 `baseline` 字段可导入已有证据。基线 JSON 包含 `apk_sha256`、`serial`、`test_origin` 和以检查 ID 为键的 `checks` 对象。每项填写 `ui_status`、`server_verification`、`manual_status`、`evidence_paths`，自动项还需匹配 `flow_sha256`。路径相对于基线文件。服务端后验 `pending` 的自动项只有在提供原始 `test_data_path` 且能补做完整只读后验时才可复用。`legacy_handoff: true` 使用固定的 0.3.0 等价证据映射。
 
 `--stop-after <检查ID或场景>` 在该项落盘后停下，含已复用项。运行中可从另一个终端执行 `python -B scripts/android/phone-session.py stop --session <会话目录>`，请求在当前项完成后停下。退出码 `0` 表示适用的自动项已完成，`2` 表示到边界且此前执行无失败，`1` 表示失败、阻塞或资源恢复出错。Ctrl+C 立即中止并终止当前 Maestro 子进程树。
 
 `report.json` 与 `report.md` 列出整份清单的覆盖、UI、服务端及人工结果、证据与观测到的最后一步。`manual-cards.md` 按待确认项列出通过条件和可复制的 `record` 命令；可加 `--evidence <文件>`、`--note <说明>`。`--record` 为每个实跑场景保留最长 180 秒录像。服务请求使用 `Moerise-Android-Acceptance/1.0` 标识；准备失败保留脱敏的步骤、方法、路径和错误码，Cloudflare 1010 记为 `CLOUDFLARE_1010`。
 
-覆盖报告写出前核对检查清单、复用证据和停止顺序，会话终态保存成功后发布报告。`test_data_path` 提供后验所需输入，自动项复用还需执行证据。缺证据的人工基线会重新列入待取证操作卡，可导入有效证据替换。报告校验失败时，`session.json` 将该次运行记为失败，保留已结算结果和上一份报告。终态保存失败时也保留上一份报告，可用 `run_id` 对应会话与报告。流式证据先用 [流式对话脚本](../../README.md#流式对话) 核对 SSE 与 Core GET，再按 `insights-stream` 操作卡核对手机呈现。
+覆盖报告写出前核对检查清单、复用证据和停止顺序，会话终态保存成功后发布报告。`test_data_path` 提供后验所需输入，自动项复用还需执行证据。缺证据的人工基线会重新列入待取证操作卡，可导入有效证据替换。报告校验失败时，`session.json` 将该次运行记为失败，保留已结算结果和上一份报告。终态保存失败时也保留上一份报告，可用 `run_id` 对应会话与报告。
 
 设备和会话写操作共享主仓库 `.local/android/device-build.lock`。`status` 与 `stop` 可在运行时访问。退出时归还本次占用的设备状态、驱动与端口。主仓库保存按设备索引的未归还资源和输入法检查点，切换设备、APK、测试源或 worktree 后仍能找回原责任。执行 `python -B scripts/android/phone-session.py cleanup --release --session <会话目录>` 结束活动会话，保留已装 App、账号数据和历史报告。再次使用固定入口会建立新会话。已有调用方仍可使用 `prepare`、`accept`、`run`、`ui`、`manual`、`record` 和 `cleanup` 子命令。正式包的自动启动从 `verify` 进入。
 

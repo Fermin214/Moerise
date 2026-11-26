@@ -144,13 +144,6 @@ class SettingsController(
             error = if (it.conflict) "SETTINGS_CONFLICT" else null, status = null) }
     }
 
-    fun restorePrompt() {
-        if (!editable()) return
-        val prompt = (state.value.snapshot?.get("default_insight_prompt") as? JsonPrimitive)?.takeIf { it.isString } ?: return
-        change("insights.default_prompt", prompt.content)
-        mutable.update { it.copy(status = "SETTINGS_PROMPT_RESTORED") }
-    }
-
     fun selectTab(tab: Int) {
         if (settingsTab == tab) return
         settingsTab = tab

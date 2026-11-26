@@ -43,7 +43,6 @@ func (s *Settings) loadEnvironment() error {
 		{"NOTIFICATIONS_ENABLED", &s.Notifications.Enabled},
 		{"NOTIFICATIONS_TIMES", &s.Notifications.Times},
 		{"STARGAZING_ENABLED", &s.Stargazing.Enabled},
-		{"STARGAZING_LLM_NAMING", &s.Stargazing.LLMNaming},
 		{"CHANNEL_KIND", &s.Channel.Kind},
 		{"QQ_APP_ID", &s.Channel.QQAppID},
 		{"QQ_APP_SECRET", &s.Channel.QQAppSecret},
@@ -85,6 +84,9 @@ func (s *Settings) loadEnvironment() error {
 		}
 		if err != nil {
 			return fmt.Errorf("invalid environment variable %s", name)
+		}
+		if field.name == "STARGAZING_ENABLED" {
+			s.stargazingExplicit = true
 		}
 	}
 	if token := os.Getenv("MOERISE_ACCESS_TOKEN"); token != "" {

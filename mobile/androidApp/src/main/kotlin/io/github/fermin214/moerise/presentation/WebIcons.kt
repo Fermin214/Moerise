@@ -28,7 +28,6 @@ enum class WebIcon {
     Home,
     Review,
     Walk,
-    Insights,
     Map,
     Settings,
     User,
@@ -108,8 +107,6 @@ private fun WebIcon.svgPath(): String = when (this) {
     WebIcon.Review -> "M8 3v4M16 3v4M4 10h16M9 15l2 2 4-4"
     WebIcon.Walk -> "M4 8h3c4 0 6 8 10 8h3M4 16h3c1.6 0 2.8-1.2 3.8-2.6" +
         "M20 8h-3c-1.4 0-2.5.9-3.4 2M18 5l2 3-2 3M18 13l2 3-2 3"
-    WebIcon.Insights -> "M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z" +
-        "M18 16l.8 2.2L21 19l-2.2.8L18 22l-.8-2.2L15 19l2.2-.8z"
     WebIcon.Map -> "M8.3 8.3l2.4 7.4M15.9 8l-2.8 7.8M8.5 7h7"
     WebIcon.Settings -> "M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1" +
         "M16.3 16.3l2.1 2.1M18.4 5.6l-2.1 2.1M7.7 16.3l-2.1 2.1"

@@ -100,7 +100,7 @@ def android_release(root, sha, run_id):
             or str(upgrade_smoke.get('api')) != min_sdk
             or upgrade_smoke.get('session_restored_without_login') is not True
             or upgrade_smoke.get('flows', {}).get('upgrade-smoke', {}).get('status') != 'passed'
-            or upgrade.get('from') != '0.2.0' or upgrade.get('pending_write_count') != 1
+            or upgrade.get('from') != '0.3.0' or upgrade.get('pending_write_count') != 1
             or any(upgrade.get(key) is not True for key in ('account', 'draft', 'keystore_session', 'local_database_restored'))):
         raise SystemExit('Android APK does not match the successful upgrade test')
     files = [metadata.with_name(base + suffix) for suffix in ('.apk', '.apk.sha256', '.apk.json', '-notices.zip')]

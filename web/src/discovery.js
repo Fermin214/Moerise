@@ -23,7 +23,7 @@ function discoveryText(value) {
   }[code] || (typeof value === 'string' ? l("服务提示：{0}", { 0: value }) : errorText(value));
 }
 
-export function createDiscovery({ request, sessionRequest, getIdentity, localToday, formatTime, discoveryCard, navigate, startFromNote, expire }) {
+export function createDiscovery({ request, sessionRequest, getIdentity, localToday, formatTime, discoveryCard, startFromNote, expire }) {
   let reviewView = null, walkView = null, walkConfiguration = null, walkFloaters = null;
   function createPage(kind, { key: pageKey, seedName }) {
     let alive = true, sequence = 0, controller = null, busy = false, failure = null, retry = null;
@@ -98,7 +98,6 @@ export function createDiscovery({ request, sessionRequest, getIdentity, localTod
       const actions = el('div', 'discovery-actions'), current = batch.items[selected];
       if (!current.unavailable) {
         if (current.note.state === 'NORMAL') actions.append(button(l("从这条漫步"), 'ghost', () => startFromNote(current.note)));
-        actions.append(button(l("洞察这条"), 'ghost', () => navigate(`/insights?${new URLSearchParams({ note: current.note.name })}`)));
       }
       actions.append(button(selected + 1 < batch.items.length ? l("下一条") : l("再看一遍"), 'save', () => {
         reviewView.position = (selected + 1) % batch.items.length; render();

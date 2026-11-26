@@ -121,7 +121,6 @@ class CoreIntegrationTest {
                     reopened.api(HttpMethod.Post, "/walks/start", walkBody)
                 }.detail.code)
             }
-            checkLiveChat(reopened, live, File(field("modelStats")))
             val db = testDatabase(File(folder, "actions.sqlite3").absolutePath)
             try {
                 coroutineScope {

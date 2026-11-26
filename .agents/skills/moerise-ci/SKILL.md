@@ -15,7 +15,7 @@ description: 核对 Moerise 验收分支与 PR 的范围、修改 CI 任务名�
 
 - 预取、刷新或重连可能与用户操作并发。Web 和设备流程都通过用户入口触发操作，等待目标正文、月份、卡片位置或已保存的结果。模拟请求失败时按方法和目标资源注入一次故障。页签按名称或稳定 ID 选择。测试滚动位置时，记录可见卡片的键和偏移，操作后直接比较，别让测试自己滚回原位。
 - 草稿恢复用最少的笔记。跨页编辑用隔离服务预置超过一页的数据，再从界面滚动触发分页。等待超时时记录卡在哪一步、已加载多少条、还有没有下一页、同步是否在跑，再判断要改测试还是产品。
-- Android 设备失败时，下载对应 `android-device-<suite>` 或 `android-release-checks` 到 `.local/`。在同一次执行内按 `result.json` 的 `last_step` 找到 `commands.json`，按动作顺序查首错，再看 JUnit、UI 树和服务端读回结果。结束时截图也可能失败并出现在 JUnit 摘要里。洞察生成失败时，在 `device-fixture-fixture.log` 中查 `chat_message` 的 `api_request`、`api_response` 或 `api_interrupted`，与 UI 及 Core 中保存的回答对照。HTTP 完成后仍需核实回答的业务状态。目标笔记在列表中不可见时，先查同批数据的筛选条件、排序和分页。
+- Android 设备失败时，下载对应 `android-device-<suite>` 或 `android-release-checks` 到 `.local/`。在同一次执行内按 `result.json` 的 `last_step` 找到 `commands.json`，按动作顺序查首错，再看 JUnit、UI 树和服务端读回结果。结束时截图也可能失败并出现在 JUnit 摘要里。目标笔记在列表中不可见时，先查同批数据的筛选条件、排序和分页。
 - 最低 API、测试 CA 或 ADB 流程有改动时，可对已推送的分支单跑 `gh workflow run android-release.yml --ref <分支>`。它使用临时签名和 APK 声明的最低 API，在 `google_apis` x86_64 镜像上执行 `scripts/android/release-smoke.sh`。检查 ADB 等待有上限、应用启动前 SELinux 已恢复 `Enforcing`，再用同一个 APK 完成 HTTPS 登录、写入读回和强停恢复。
 - 生命周期用例超时时，先从设备产物的 `*-threads.txt` 和 JUnit 找到首个异常及对应的测试操作，再查看清理阶段的异常。复测同一提交用 `gh run rerun <ID> --failed`。复测通过时保留首次失败的结论，只有定位原因并验证修复后才关闭缺陷。
 - Linux 镜像失败时，从失败架构的步骤日志查找容器退出码与首个 HTTP 探测错误。用同一提交的 `scripts/release/build-images.sh` 复现，容器进程启动和健康端点返回成功是两个检查点。

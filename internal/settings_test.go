@@ -82,8 +82,8 @@ func TestProductSettingsNotificationTimesPatch(t *testing.T) {
 func TestProductSettingsPersistenceAndSecretBoundaries(t *testing.T) {
 	settings, store := settingsFixture(t)
 	key := "private-model-key-that-must-not-leak"
-	update := settingsChange(1, `{"review":{"count":8,"min_age_hours":36},"insights":{"default_prompt":"探索材料中的关联"}}`)
-	update.Secrets = map[string]SecretUpdate{"llm_api_key": {Action: "replace", Value: &key}}
+	update := settingsChange(1, `{"review":{"count":8,"min_age_hours":36}}`)
+	update.Secrets = map[string]SecretUpdate{"embedding_api_key": {Action: "replace", Value: &key}}
 	next, err := store.prepareSettings(update)
 	if err != nil {
 		t.Fatal(err)
@@ -94,7 +94,7 @@ func TestProductSettingsPersistenceAndSecretBoundaries(t *testing.T) {
 	store.Settings = next
 	view, _ := json.Marshal(store.settingsView())
 	if bytes.Contains(view, []byte(key)) || bytes.Contains(view, []byte(`"api_key"`)) ||
-		!store.settingsView().Secrets["llm_api_key"].Configured {
+		!store.settingsView().Secrets["embedding_api_key"].Configured {
 		t.Fatal("settings view exposes credentials or loses their status")
 	}
 	var ciphertext []byte
@@ -106,7 +106,7 @@ func TestProductSettingsPersistenceAndSecretBoundaries(t *testing.T) {
 	}
 	// 写连接未关闭时读取 WAL，覆盖进程中断后的恢复路径。
 	loaded, err := loadPersistedProduct(settings)
-	if err != nil || loaded.Review.Count != 8 || configured(loaded.LLM.APIKey) != key {
+	if err != nil || loaded.Review.Count != 8 || configured(loaded.Embedding.APIKey) != key {
 		t.Fatalf("persisted settings did not override deployment values: %v, %+v", err, loaded.Review)
 	}
 	if _, err := store.prepareSettings(update); errorCode(err) != "SETTINGS_CONFLICT" {
@@ -121,10 +121,10 @@ func TestProductSettingsPersistenceAndSecretBoundaries(t *testing.T) {
 func TestProductSettingsSecretOperationsAndValidation(t *testing.T) {
 	_, store := settingsFixture(t)
 	key := "a-private-key"
-	store.Settings.LLM.APIKey = &key
-	store.Settings.LLM.Model = new("original-model")
+	store.Settings.Embedding.APIKey = &key
+	store.Settings.Embedding.Model = new("original-model")
 	for _, body := range []string{
-		`{"memos":{"token":"bad"}}`, `{"llm":{"api_key":"bypass"}}`,
+		`{"memos":{"token":"bad"}}`, `{"embedding":{"api_key":"bypass"}}`,
 		`{"review":{"count":0}}`, `{"notifications":{"times":["09:00","09:00"]}}`,
 		`{"timezone":null}`, `{"insights":{"default_prompt":""}}`,
 	} {
@@ -132,19 +132,19 @@ func TestProductSettingsSecretOperationsAndValidation(t *testing.T) {
 			t.Fatalf("accepted invalid settings %s: %v", body, err)
 		}
 	}
-	if _, err := store.prepareSettings(settingsChange(1, `{"llm":{"model":"changed-model"},"review":{"count":0}}`)); errorCode(err) != "INVALID_ARGUMENT" ||
-		configured(store.Settings.LLM.Model) != "original-model" {
+	if _, err := store.prepareSettings(settingsChange(1, `{"embedding":{"model":"changed-model"},"review":{"count":0}}`)); errorCode(err) != "INVALID_ARGUMENT" ||
+		configured(store.Settings.Embedding.Model) != "original-model" {
 		t.Fatal("rejected settings mutated a pointer in the published version")
 	}
-	prepared, err := store.prepareSettings(settingsChange(1, `{"llm":{"model":"changed-model"}}`))
-	if err != nil || configured(prepared.LLM.Model) != "changed-model" || configured(store.Settings.LLM.Model) != "original-model" {
+	prepared, err := store.prepareSettings(settingsChange(1, `{"embedding":{"model":"changed-model"}}`))
+	if err != nil || configured(prepared.Embedding.Model) != "changed-model" || configured(store.Settings.Embedding.Model) != "original-model" {
 		t.Fatal("preparing a new model changed the existing model")
 	}
 	for _, operation := range []SecretUpdate{
 		{Action: "replace"}, {Action: "replace", Value: new("*****")},
 		{Action: "clear", Value: &key}, {Action: "keep", Value: &key}, {Action: "invalid"},
 	} {
-		if _, err := store.prepareSettings(SettingsUpdate{Version: 1, Secrets: map[string]SecretUpdate{"llm_api_key": operation}}); errorCode(err) != "INVALID_ARGUMENT" {
+		if _, err := store.prepareSettings(SettingsUpdate{Version: 1, Secrets: map[string]SecretUpdate{"embedding_api_key": operation}}); errorCode(err) != "INVALID_ARGUMENT" {
 			t.Fatalf("accepted invalid secret operation: %v", err)
 		}
 	}
@@ -153,12 +153,12 @@ func TestProductSettingsSecretOperationsAndValidation(t *testing.T) {
 		if action == "replace" {
 			operation.Value = new("replacement")
 		}
-		settings, err := store.prepareSettings(SettingsUpdate{Version: 1, Secrets: map[string]SecretUpdate{"llm_api_key": operation}})
+		settings, err := store.prepareSettings(SettingsUpdate{Version: 1, Secrets: map[string]SecretUpdate{"embedding_api_key": operation}})
 		if err != nil {
 			t.Fatal(err)
 		}
 		expected := map[string]string{"keep": key, "clear": "", "replace": "replacement"}[action]
-		if configured(settings.LLM.APIKey) != expected || configured(store.Settings.LLM.APIKey) != key {
+		if configured(settings.Embedding.APIKey) != expected || configured(store.Settings.Embedding.APIKey) != key {
 			t.Fatal("secret operation mutated the published settings")
 		}
 	}
@@ -251,5 +251,30 @@ func TestProductSettingsToleratesAndPreservesUnknownFields(t *testing.T) {
 	}
 	if got := roundTripped["stargazing"].(map[string]any); got["enabled"] != false || got["future_layout_mode"] != "galaxy-v2" {
 		t.Fatalf("unexpected stargazing payload after round-trip: %s", plain)
+	}
+}
+
+func TestDeploymentSettingsIgnoreOnlyRetiredFields(t *testing.T) {
+	for _, item := range []struct {
+		input             string
+		explicit, enabled bool
+	}{
+		{`{"llm":{"retired":null},"insights":null,"stargazing":{"llm_naming":true}}`, false, false},
+		{`{"stargazing":{"enabled":false,"llm_naming":true}}`, true, false},
+		{`{"stargazing":{"enabled":true}}`, true, true},
+	} {
+		settings := DefaultSettings()
+		if err := decodeDeploymentSettings([]byte(item.input), &settings); err != nil ||
+			settings.stargazingExplicit != item.explicit || settings.Stargazing.Enabled != item.enabled {
+			t.Fatalf("deployment settings %s: explicit=%v enabled=%v error=%v",
+				item.input, settings.stargazingExplicit, settings.Stargazing.Enabled, err)
+		}
+	}
+	for _, input := range []string{`{"llms":{}}`, `{"stargazing":{"enable":true}}`,
+		`{"stargazing":{"LLM_naming":true}}`, `{"stargazing":null}`, `{"stargazing":{"enabled":null}}`, `{"llm":{}}{}`} {
+		settings := DefaultSettings()
+		if err := decodeDeploymentSettings([]byte(input), &settings); err == nil {
+			t.Fatalf("invalid deployment settings accepted: %s", input)
+		}
 	}
 }

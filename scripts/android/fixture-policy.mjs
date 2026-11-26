@@ -1,25 +1,16 @@
 import assert from 'node:assert/strict';
 import { setTimeout as delay } from 'node:timers/promises';
 
-export const fixtureInsightReply = 'Android 洞察 🌌\n\n来自隔离模型的回复。';
-let chatRequestNumber = 0;
-
 export function observeFixtureApi(req, res, log = console.info) {
-  const chatMessage = req.method === 'POST' && /^\/api\/app\/v1\/chats\/[^/?]+\/messages(?:\?|$)/.test(req.url);
-  const family = chatMessage ? 'chat_message' : /^\/api\/app\/v1\/(search|notes)(?:[/?]|$)/.exec(req.url)?.[1];
+  const family = /^\/api\/app\/v1\/(search|notes)(?:[/?]|$)/.exec(req.url)?.[1];
   if (!family) return;
   const started = performance.now();
   const details = {};
-  if (chatMessage) details.request_no = ++chatRequestNumber;
   if (family === 'notes' && req.method === 'GET') details.paginated = new URL(req.url, 'http://localhost').searchParams.has('page_token');
   const record = event => log(JSON.stringify({
     source: 'fixture_web', time: new Date().toISOString(), event, family, method: req.method,
     status: res.headersSent ? res.statusCode : null, ...details, elapsed_ms: Math.round(performance.now() - started),
   }));
-  if (chatMessage) {
-    record('api_request');
-    res.once('close', () => { if (!res.writableFinished) record('api_interrupted'); });
-  }
   res.once('finish', () => record('api_response'));
 }
 
@@ -27,7 +18,6 @@ export function observeFixtureApi(req, res, log = console.info) {
 export function tuneFixtureConfig(config) {
   config.memos = { ...config.memos, page_size: 100 };
   config.sync = { ...config.sync, poll_seconds: 30, full_seconds: 21600, retry_seconds: 10 };
-  config.llm = { ...config.llm, max_concurrency: 1, max_retries: 2 };
   config.embedding = { ...config.embedding, batch_size: 20, max_concurrency: 1,
     max_retries: 3, timeout_seconds: 60 };
   return config;
@@ -61,7 +51,7 @@ export function createModelGate({ maxPending = 4, intervalMs = 300 } = {}) {
 }
 
 // 产品模型设置保存在 state.sqlite3，恢复实例时使用正式版本化接口更新。
-export async function applyModelPolicy(coreOrigin, publicOrigin, username, password) {
+export async function applyModelPolicy(coreOrigin, publicOrigin, username, password, stars) {
   let cookie = '', csrf = '';
   async function api(method, path, body) {
     const response = await fetch(coreOrigin + '/api/app/v1' + path, {
@@ -85,11 +75,11 @@ export async function applyModelPolicy(coreOrigin, publicOrigin, username, passw
       try {
         const view = await api('GET', '/settings');
         const settings = {
-          llm: { ...view.settings.llm, max_concurrency: 1, max_retries: 2 },
           embedding: { ...view.settings.embedding, batch_size: 20, max_concurrency: 1,
             max_retries: 3, timeout_seconds: 60 },
+          stargazing: { enabled: stars },
         };
-        if (JSON.stringify(settings.llm) !== JSON.stringify(view.settings.llm) ||
+        if (stars !== view.settings.stargazing.enabled ||
             JSON.stringify(settings.embedding) !== JSON.stringify(view.settings.embedding)) {
           for (const group of Object.values(settings)) {
             for (const [key, value] of Object.entries(group)) {

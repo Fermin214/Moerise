@@ -30,25 +30,21 @@ internal object SettingsForm {
     val groups = linkedMapOf(
         "review" to listOf("count", "min_age_hours", "recent_days", "include_archived"),
         "notifications" to listOf("enabled"),
-        "stargazing" to listOf("enabled", "llm_naming"),
-        "llm" to listOf("enabled", "protocol", "base_url", "model", "timeout_seconds",
-            "max_concurrency", "max_retries", "max_output_tokens"),
+        "stargazing" to listOf("enabled"),
         "embedding" to listOf("enabled", "provider", "protocol", "base_url", "model", "dimensions",
             "send_dimensions", "batch_size", "timeout_seconds", "max_concurrency", "max_retries", "query_instruction"),
         "channel" to listOf("kind", "app_id", "user_open_id", "destination", "qq_app_id", "feishu_mode", "webhook_images", "webhook_app_id"),
-        "insights" to listOf("default_prompt"),
     )
     val paths = setOf("timezone") + groups.flatMap { (group, names) -> names.map { "$group.$it" } }
-    val secretNames = setOf("llm_api_key", "embedding_api_key", "app_secret", "verification_token",
+    val secretNames = setOf("embedding_api_key", "app_secret", "verification_token",
         "encrypt_key", "webhook_url", "webhook_secret", "bot_token", "qq_app_secret", "webhook_app_secret")
-    val modelGroups = setOf("llm", "embedding")
+    val modelGroups = setOf("embedding")
     private val booleans = setOf("review.include_archived", "notifications.enabled",
-        "llm.enabled", "embedding.enabled", "embedding.send_dimensions", "stargazing.enabled", "stargazing.llm_naming", "channel.webhook_images")
-    private val nullable = setOf("llm.base_url", "llm.model", "embedding.base_url", "embedding.model",
+        "embedding.enabled", "embedding.send_dimensions", "stargazing.enabled", "channel.webhook_images")
+    private val nullable = setOf("embedding.base_url", "embedding.model",
         "embedding.query_instruction", "channel.app_id", "channel.user_open_id", "channel.destination",
         "channel.qq_app_id", "channel.webhook_app_id")
     private val choices = mapOf(
-        "llm.protocol" to setOf("openai-compatible", "openai-responses", "anthropic"),
         "embedding.provider" to setOf("bailian", "openai-compatible"),
         "embedding.protocol" to setOf("dashscope", "openai-compatible"),
         "channel.kind" to setOf("none", "qq", "feishu-app", "feishu-webhook", "telegram"),
@@ -58,10 +54,6 @@ internal object SettingsForm {
         "review.count" to 1.0..20.0,
         "review.min_age_hours" to 0.0..87600.0,
         "review.recent_days" to 0.0..3650.0,
-        "llm.timeout_seconds" to 1.0..110.0,
-        "llm.max_concurrency" to 1.0..8.0,
-        "llm.max_retries" to 0.0..3.0,
-        "llm.max_output_tokens" to 32.0..16384.0,
         "embedding.dimensions" to 1.0..16384.0,
         "embedding.batch_size" to 1.0..20.0,
         "embedding.timeout_seconds" to 1.0..120.0,
@@ -99,7 +91,6 @@ internal object SettingsForm {
                     "channel.qq_app_id", "channel.webhook_app_id" -> JsonNull
                     "channel.feishu_mode" -> JsonPrimitive("websocket")
                     "channel.webhook_images" -> JsonPrimitive(false)
-                    "stargazing.llm_naming" -> JsonPrimitive(true)
                     else -> invalid()
                 })
                 if (group == "notifications") {
@@ -138,9 +129,6 @@ internal object SettingsForm {
                 for (name in listOf("text", "images", "record"))
                     put(name, (source?.get(name) as? JsonPrimitive)?.takeUnless { it.isString }?.booleanOrNull == true)
             })
-            (response["default_insight_prompt"] as? JsonPrimitive)?.takeIf { it.isString }?.let {
-                put("default_insight_prompt", it)
-            }
         }
     }
 

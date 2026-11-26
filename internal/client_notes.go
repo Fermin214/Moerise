@@ -21,7 +21,7 @@ func isLiveListRead(r *http.Request) bool {
 		return false
 	}
 	switch r.URL.Path {
-	case "/api/app/v1/notes", "/api/app/v1/tags", "/api/app/v1/calendar", "/api/app/v1/chat-materials":
+	case "/api/app/v1/notes", "/api/app/v1/tags", "/api/app/v1/calendar":
 		return true
 	}
 	return false

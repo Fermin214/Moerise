@@ -28,7 +28,7 @@ func main() {
 
 func run(args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: moerise serve|check-config|check-embedding|check-llm|backup|restore|rollback|rebuild-index|healthcheck|version")
+		return errors.New("usage: moerise serve|check-config|check-embedding|backup|restore|rollback|rebuild-index|healthcheck|version")
 	}
 	if args[0] == "version" {
 		fmt.Println(moerise.Version)
@@ -42,7 +42,7 @@ func run(args []string) error {
 	output := options.String("output", "", "New backup directory")
 	source := options.String("source", "", "Backup directory")
 	safety := options.String("safety-backup", "", "New directory for the replaced state")
-	backup := options.String("backup", "", "Auto-backup sqlite3 file to roll back to")
+	backup := options.String("backup", "", "State SQLite snapshot file to roll back to")
 	if err := options.Parse(args[1:]); err != nil {
 		return err
 	}
@@ -85,18 +85,6 @@ func run(args []string) error {
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer stop()
 		result, err := moerise.CheckEmbedding(ctx, settings.Embedding)
-		if err != nil {
-			var service *moerise.ServiceError
-			if errors.As(err, &service) {
-				return fmt.Errorf("%s: %w", service.Code, err)
-			}
-			return err
-		}
-		return encode(result)
-	case "check-llm":
-		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-		defer stop()
-		result, err := moerise.CheckLLM(ctx, settings.LLM)
 		if err != nil {
 			var service *moerise.ServiceError
 			if errors.As(err, &service) {

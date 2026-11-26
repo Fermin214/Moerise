@@ -168,6 +168,7 @@ type MapResponse struct {
 	Links              []MapLink  `json:"links"`
 	UpdateState        string     `json:"update_state,omitempty"`
 	DisabledReason     string     `json:"disabled_reason,omitempty"`
+	UnavailableReason  string     `json:"unavailable_reason,omitempty"`
 }
 
 type CreateNote struct {
@@ -296,7 +297,6 @@ type ClientModelStatus struct {
 type ClientModels struct {
 	Version     int64              `json:"version"`
 	Embedding   ClientModelStatus  `json:"embedding"`
-	LLM         ClientModelStatus  `json:"llm"`
 	IndexStatus string             `json:"index_status"`
 	VectorIndex *VectorIndexStatus `json:"vector_index"`
 }

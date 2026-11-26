@@ -38,7 +38,6 @@ fun TimelineNoteCard(
     onState: ((Note) -> Unit)? = null,
     onDelete: ((Note) -> Unit)? = null,
     onWalk: ((Note) -> Unit)? = null,
-    onInsight: ((Note) -> Unit)? = null,
     online: Boolean = true,
     busy: Boolean = false,
     error: String? = null,
@@ -56,7 +55,6 @@ fun TimelineNoteCard(
             onState = onState?.let { fn -> { fn(entry.note) } },
             onDelete = onDelete?.let { fn -> { fn(entry.note) } },
             onWalk = onWalk?.let { fn -> { fn(entry.note) } },
-            onInsight = onInsight?.let { fn -> { fn(entry.note) } },
             online = online, busy = busy, error = error, pendingAction = pendingAction,
             deleteUnknown = deleteUnknown, onCheckDeletion = onCheckDeletion?.let { fn -> { fn(entry.note) } },
         )
@@ -119,7 +117,7 @@ fun WebNoteCard(
     note: Note, timezone: String, strings: Strings, core: CoreClient?,
     onTag: (String) -> Unit, modifier: Modifier = Modifier,
     onEdit: (() -> Unit)? = null, onState: (() -> Unit)? = null, onDelete: (() -> Unit)? = null,
-    onWalk: (() -> Unit)? = null, onInsight: (() -> Unit)? = null,
+    onWalk: (() -> Unit)? = null,
     online: Boolean = true, busy: Boolean = false, error: String? = null,
     pendingAction: Boolean = false, deleteUnknown: Boolean = false, onCheckDeletion: (() -> Unit)? = null,
 ) {
@@ -132,7 +130,6 @@ fun WebNoteCard(
             else if (note.state == "ARCHIVED") strings.text("恢复到主页", "Restore to home") else strings.text("归档", "Archive"),
             it, online && !busy && !deleteUnknown, tag = "archive_note_${note.name}")) }
         if (note.state == "NORMAL") onWalk?.let { add(NoteMenuAction(strings.text("从这条漫步", "Walk from this note"), it, online && !busy, tag = "walk_note_${note.name}")) }
-        onInsight?.let { add(NoteMenuAction(strings.text("洞察这条", "Explore this note"), it, online && !busy, tag = "insight_note_${note.name}")) }
         if (deleteUnknown) onCheckDeletion?.let { add(NoteMenuAction(strings.text("检查删除结果", "Check deletion"), it, online && !busy, tag = "check_delete_${note.name}")) }
         onDelete?.let { add(NoteMenuAction(strings.text("删除", "Delete"), { confirmDelete = true }, online && !busy && !pendingAction, danger = true, tag = "delete_note_${note.name}")) }
     }

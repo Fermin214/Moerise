@@ -4,14 +4,12 @@ import { l, setText, setAttr, resolveText, languagePreference, setLanguage } fro
 const fields = {
   review: ['count', 'min_age_hours', 'recent_days', 'include_archived'],
   notifications: ['enabled', 'times'],
-  llm: ['enabled', 'protocol', 'base_url', 'model', 'timeout_seconds', 'max_concurrency', 'max_retries', 'max_output_tokens'],
   embedding: ['enabled', 'provider', 'protocol', 'base_url', 'model', 'dimensions', 'send_dimensions', 'batch_size', 'timeout_seconds', 'max_concurrency', 'max_retries', 'query_instruction'],
-  stargazing: ['enabled', 'llm_naming'],
+  stargazing: ['enabled'],
   channel: ['kind', 'qq_app_id', 'app_id', 'user_open_id', 'destination', 'feishu_mode', 'webhook_images', 'webhook_app_id'],
-  insights: ['default_prompt'],
 };
 const secretLabels = {
-  llm_api_key: 'LLM API Key', embedding_api_key: 'Embedding API Key',
+  embedding_api_key: 'Embedding API Key',
   app_secret: 'App Secret', verification_token: 'Verification Token',
   encrypt_key: 'Encrypt Key', webhook_url: 'Webhook URL', webhook_secret: 'Webhook Secret',
   bot_token: 'Telegram Bot Token', qq_app_secret: 'QQ AppSecret', webhook_app_secret: 'Webhook App Secret',
@@ -384,17 +382,12 @@ export function createSettingsPage({ sessionRequest, handleFailure, onSaved = ()
   }
   function modelError(node, err) {
     const messages = {
-      EMBEDDING_DISABLED: l("请先启用并保存 Embedding。"), LLM_DISABLED: l("请先启用并保存 LLM。"),
+      EMBEDDING_DISABLED: l("请先启用并保存 Embedding。"),
       EMBEDDING_AUTH: l("Embedding 密钥被拒绝，请检查密钥和模型权限。"),
-      LLM_AUTH: l("LLM 密钥被拒绝，请检查密钥和模型权限。"),
       EMBEDDING_REJECTED: l("Embedding 请求被拒绝，请检查协议、地址、模型和维度。"),
-      LLM_REJECTED: l("LLM 请求被拒绝，请检查协议、地址和模型。"),
       EMBEDDING_PROTOCOL: l("Embedding 返回格式或维度不符合配置。"),
-      LLM_PROTOCOL: l("LLM 返回格式不符合所选协议。"),
       EMBEDDING_RATE_LIMITED: l("Embedding 调用受限，请稍后重试。"),
-      LLM_RATE_LIMITED: l("LLM 调用受限，请稍后重试。"),
       EMBEDDING_UNAVAILABLE: l("Embedding 连接失败，请检查服务和地址。"),
-      LLM_UNAVAILABLE: l("LLM 连接失败，请检查服务和地址。"),
       MODEL_CHECK_TIMEOUT: l("连接检查超时，请稍后重试。"),
       UPSTREAM_AUTH_UNAVAILABLE: l("Memos 连接失败，请恢复笔记服务后重试。"),
       UPSTREAM_UNAVAILABLE: l("Memos 连接失败，请恢复笔记服务后重试。"),
@@ -475,37 +468,29 @@ export function createSettingsPage({ sessionRequest, handleFailure, onSaved = ()
   function model(parent, group, title) {
     const block = el('div', 'settings-model'); block.append(el('h3', '', title)); parent.append(block);
     field(block, `${group}.enabled`, l("启用 {0}", { 0: title }), { type: 'checkbox' });
-    let provider;
-    if (group === 'embedding') provider = field(block, 'embedding.provider', l("供应商"), { options: [['bailian', l("百炼")], ['openai-compatible', l("OpenAI 兼容")]] });
-    const protocols = group === 'llm'
-      ? [['openai-compatible', 'OpenAI Chat Completions'], ['openai-responses', 'OpenAI Responses'], ['anthropic', 'Anthropic']]
-      : [['dashscope', 'DashScope'], ['openai-compatible', l("OpenAI 兼容 Embedding")]];
-    const protocol = field(block, `${group}.protocol`, l("接口协议"), { options: protocols });
+    const provider = field(block, 'embedding.provider', l("供应商"), { options: [['bailian', l("百炼")], ['openai-compatible', l("OpenAI 兼容")]] });
+    const protocol = field(block, 'embedding.protocol', l("接口协议"), { options: [['dashscope', 'DashScope'], ['openai-compatible', l("OpenAI 兼容 Embedding")]] });
     field(block, `${group}.base_url`, l("API 地址"), { type: 'url' });
     field(block, `${group}.model`, l("模型名称"));
     secret(block, `${group}_api_key`);
     const advanced = el('div', 'settings-advanced'); advanced.append(el('h4', 'sub', l("高级参数"))); block.append(advanced);
-    field(advanced, `${group}.timeout_seconds`, l("请求超时（秒）"), { type: 'number', min: 1, max: group === 'llm' ? 110 : 120, step: 'any' });
+    field(advanced, `${group}.timeout_seconds`, l("请求超时（秒）"), { type: 'number', min: 1, max: 120, step: 'any' });
     field(advanced, `${group}.max_concurrency`, l("并发数"), { type: 'number', min: 1, max: 8 });
     field(advanced, `${group}.max_retries`, l("重试次数"), { type: 'number', min: 0, max: 3 });
-    if (group === 'llm') {
-      field(advanced, 'llm.max_output_tokens', l("最大输出 Token"), { type: 'number', min: 32, max: 16384 });
-    } else {
-      field(advanced, 'embedding.dimensions', l("向量维度"), { type: 'number', min: 1, max: 16384 });
-      const send = field(advanced, 'embedding.send_dimensions', l("发送维度参数"), { type: 'checkbox',
-        hint: l("通用协议按需开启；固定维度模型可关闭，返回维度仍须一致。") });
-      field(advanced, 'embedding.batch_size', l("批量大小"), { type: 'number', min: 1, max: 20 });
-      const instruction = field(advanced, 'embedding.query_instruction', l("查询指令"), { type: 'textarea', hint: l("仅百炼 DashScope 支持。") });
-      const syncProtocol = () => {
-        const generic = protocol.value === 'openai-compatible';
-        instruction.disabled = generic; send.disabled = !generic;
-        if (generic) instruction.value = '';
-        else send.checked = false;
-      };
-      provider.addEventListener('change', () => { protocol.value = provider.value === 'bailian' ? 'dashscope' : 'openai-compatible'; syncProtocol(); });
-      protocol.addEventListener('change', () => { provider.value = protocol.value === 'dashscope' ? 'bailian' : 'openai-compatible'; syncProtocol(); });
-      syncProtocol();
-    }
+    field(advanced, 'embedding.dimensions', l("向量维度"), { type: 'number', min: 1, max: 16384 });
+    const send = field(advanced, 'embedding.send_dimensions', l("发送维度参数"), { type: 'checkbox',
+      hint: l("通用协议按需开启；固定维度模型可关闭，返回维度仍须一致。") });
+    field(advanced, 'embedding.batch_size', l("批量大小"), { type: 'number', min: 1, max: 20 });
+    const instruction = field(advanced, 'embedding.query_instruction', l("查询指令"), { type: 'textarea', hint: l("仅百炼 DashScope 支持。") });
+    const syncProtocol = () => {
+      const generic = protocol.value === 'openai-compatible';
+      instruction.disabled = generic; send.disabled = !generic;
+      if (generic) instruction.value = '';
+      else send.checked = false;
+    };
+    provider.addEventListener('change', () => { protocol.value = provider.value === 'bailian' ? 'dashscope' : 'openai-compatible'; syncProtocol(); });
+    protocol.addEventListener('change', () => { provider.value = protocol.value === 'dashscope' ? 'bailian' : 'openai-compatible'; syncProtocol(); });
+    syncProtocol();
     const config = el('p', 'sub', l("正在读取模型状态…")), result = el('p', 'sub');
     const check = button(l("检查 {0} 连接", { 0: title }), 'ghost', () => checkModel(group));
     result.setAttribute('role', 'status'); result.id = `settings-${group}-check-result`;
@@ -545,9 +530,6 @@ export function createSettingsPage({ sessionRequest, handleFailure, onSaved = ()
     row(general, l("语言"), language);
     field(general, 'timezone', l("时区"), { hint: l("使用 IANA 名称，例如 Asia/Hong_Kong。") });
     field(general, 'stargazing.enabled', l("启用观星"), { type: 'checkbox' });
-    field(general, 'stargazing.llm_naming', l("星系智能命名"), {
-      type: 'checkbox', hint: l("全量构建时由模型总结星系标题，关闭或超时时回退关键词提取。"),
-    });
     const rebuildBox = el('div', 'settings-inline-actions');
     rebuildBox.id = 'settings-map-rebuild-box';
     const rebuildStatus = el('span', 'sub'); rebuildStatus.setAttribute('role', 'status');
@@ -569,19 +551,11 @@ export function createSettingsPage({ sessionRequest, handleFailure, onSaved = ()
     rebuildBox.append(mapRebuildButton, rebuildStatus);
     row(general, l("星图更新"), rebuildBox, l("每日 03:00 更新"));
 
-    const ai = section('ai', 'AI');
-    model(ai, 'llm', 'LLM'); model(ai, 'embedding', 'Embedding');
+    const ai = section('ai', 'Embedding');
+    model(ai, 'embedding', 'Embedding');
     indexText = el('p', 'sub', l("正在读取索引状态…")); indexText.id = 'settings-index-status'; indexText.setAttribute('role', 'status');
     indexProgress = el('progress'); indexProgress.hidden = true; setAttr(indexProgress, 'aria-label', l("语义索引进度"));
     ai.append(indexText, indexProgress);
-    ai.append(el('h3', '', l("默认洞察 Prompt")));
-    const prompt = field(ai, 'insights.default_prompt', l("一键洞察使用的 Prompt"), { type: 'textarea' });
-    prompt.rows = 7;
-    const restore = button(l("恢复默认"), 'ghost', () => {
-      prompt.value = snapshot.default_insight_prompt; setText(status, l("已恢复默认 Prompt，保存后生效。"));
-      onDirtyChange();
-    });
-    restore.disabled = typeof snapshot.default_insight_prompt !== 'string'; ai.append(restore);
 
     const review = section('review', l("回顾与推送"));
     review.append(el('h3', '', l("每日回顾")));
@@ -669,8 +643,8 @@ export function createSettingsPage({ sessionRequest, handleFailure, onSaved = ()
       const data = await sessionRequest('/settings', { controller });
       if (!active || sequence !== ticket) return;
       if (!data?.settings || !Number.isSafeInteger(data.version) || !data.settings.review || !data.settings.notifications ||
-          !data.settings.llm || !data.settings.embedding || !data.settings.stargazing ||
-          !data.settings.channel || !data.settings.insights) {
+          !data.settings.embedding || !data.settings.stargazing ||
+          !data.settings.channel) {
         throw invalid(l("服务返回的设置不完整，请重新加载。"));
       }
       snapshot = data; render();

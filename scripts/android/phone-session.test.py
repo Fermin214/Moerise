@@ -575,7 +575,7 @@ class SessionLifecycle(unittest.TestCase):
             ("TestTimedOutException\nFAILURES!!!", "inconclusive", "instrumentation_timeout"),
             ("UiAutomationService already registered\nINSTRUMENTATION_FAILED", "harness_error",
              "uiautomation_conflict"),
-            ("Insight picker: CONNECTION_FAILED\nFAILURES!!!", "failed", "automation_assertion"),
+            ("Search fixture: CONNECTION_FAILED\nFAILURES!!!", "failed", "automation_assertion"),
         )
         for log, status, cause in cases:
             with self.subTest(cause=cause):
@@ -1024,13 +1024,13 @@ class FixedWindowsEntry(unittest.TestCase):
                 self.assertEqual(state["active_run_id"], state["coverage"]["run_id"])
                 self.assertEqual(state["coverage"]["results"]["language"]["status"], "reused_pass")
 
-    def test_probe_timeout_keeps_baselines_previous_pass_and_capability_skip(self):
+    def test_probe_timeout_keeps_baselines_and_previous_pass(self):
         evidence_path = self.root / "evidence.json"
         self.flow_results["home-smoke"] = {"evidence_paths": [str(evidence_path)], "log": None}
         self.assertEqual(self.verify("--non-interactive", "--already-launched", "--check", "home")[0], 0)
         baselines = ("navigation-review", "navigation-walk", "navigation-map", "language")
         baseline = self.record_baseline({name: self.evidence(name) for name in baselines})
-        args = [part for name in ("editing", "search", "insights-disconnect", "home", *baselines) for part in ("--check", name)]
+        args = [part for name in ("editing", "search", "home", *baselines) for part in ("--check", name)]
         with self.real_batch() as (api, _, prepare, _, execute):
             code, output = self.verify("--non-interactive", "--baseline", baseline, *args)
         self.assertEqual(code, 1, output)
@@ -1044,7 +1044,6 @@ class FixedWindowsEntry(unittest.TestCase):
         for name in baselines:
             self.assert_report_result(name, "reused_baseline", evidence=evidence_path)
         self.assert_report_result("home", "reused_pass", evidence=evidence_path)
-        self.assert_report_result("insights-disconnect", "skipped", "capability_missing")
 
     def test_batch_preparation_failure_keeps_local_results_without_pending_readback(self):
         session.write_json(self.root / "test-data.json", {"ATTACHMENT_SHA256": "a" * 64,
@@ -1060,8 +1059,7 @@ class FixedWindowsEntry(unittest.TestCase):
             with self.subTest(step=step), self.real_batch() as (api, offline, prepare, readback, execute):
                 {"session_login": api.login, "test_source_data": prepare, "phone_offline_identity": offline}[step].side_effect = error
                 code, output = self.verify("--non-interactive", "--already-launched", "--baseline", baseline,
-                                           "--check", "editing", "--check", "language", "--check", "attachments",
-                                           "--check", "insights-disconnect")
+                                           "--check", "editing", "--check", "language", "--check", "attachments")
                 self.assertEqual(code, 1, output)
                 api.login.assert_called_once()
                 readback.assert_not_called()
@@ -1072,14 +1070,13 @@ class FixedWindowsEntry(unittest.TestCase):
                     self.assertEqual(row["error_message"], str(error))
                 self.assert_report_result("language", "reused_pass" if index else "reused_baseline",
                                           evidence=self.root / "evidence.json")
-                self.assert_report_result("insights-disconnect", "skipped", "capability_missing")
 
     def test_probe_failure_stops_at_target_or_consumes_matching_run_marker(self):
         self.assertEqual(self.verify("--non-interactive", "--already-launched", "--check", "language")[0], 0)
         metadata = self.active() / "session.json"
         original = session.read_json(metadata)["flow_results"]
         marker = self.active() / "STOP_AFTER_CURRENT"
-        args = ("--check", "editing", "--check", "language", "--check", "insights-disconnect")
+        args = ("--check", "editing", "--check", "language")
         for stop in ("target", "probe_marker", "prompt_marker"):
             with self.subTest(stop=stop), self.real_batch() as (_, _, _, _, execute), \
                     mock.patch.object(session.sys.stdin, "isatty", return_value=True), \
@@ -1102,8 +1099,7 @@ class FixedWindowsEntry(unittest.TestCase):
                 self.assertEqual(code, 1, output)
                 self.assertEqual(session.read_json(self.active() / "report.json")["stopped_at"], "editing")
                 self.assert_report_result("editing", "environment_blocked", "phone_test_source_unverified")
-                for name in ("language", "insights-disconnect"):
-                    self.assertEqual(self.assert_report_result(name, "not_run")["not_run_reason"], "stopped_at_boundary")
+                self.assertEqual(self.assert_report_result("language", "not_run")["not_run_reason"], "stopped_at_boundary")
                 self.assertEqual(session.read_json(metadata)["flow_results"], original)
                 self.assertFalse(marker.exists())
 
@@ -1164,8 +1160,7 @@ class FixedWindowsEntry(unittest.TestCase):
 
                 with mock.patch.object(session.PhoneSession, "execution_digest", autospec=True, side_effect=digest) as fingerprints:
                     code, output = self.verify("--non-interactive", "--already-launched", "--baseline", baseline,
-                                               "--check", "editing", "--check", "search", "--check", "language",
-                                               "--check", "insights-disconnect")
+                                               "--check", "editing", "--check", "search", "--check", "language")
                 self.assertEqual(code, 1, output)
                 self.assertIsNone(output["error"])
                 row = self.assert_report_result(missing_flow, "harness_error", "batch_preparation")
@@ -1174,7 +1169,6 @@ class FixedWindowsEntry(unittest.TestCase):
                 self.assertEqual([call.args[1] for call in fingerprints.call_args_list].count(missing_flow), 1)
                 self.assert_report_result("language", "reused_baseline" if cause == "selection" else "reused_pass",
                                           evidence=self.root / "evidence.json")
-                self.assert_report_result("insights-disconnect", "skipped", "capability_missing")
                 self.assertEqual(api.login.call_count, int(cause == "probe"))
                 self.assertEqual(execute.call_count, int(cause == "probe"))
 
@@ -1332,11 +1326,6 @@ class FixedWindowsEntry(unittest.TestCase):
         self.assertNotEqual(self.active(), previous)
         self.assertNotIn(session.DRIVERS[0], self.adb.installed)
         self.assertFalse(session.read_json(metadata).get("resources_pending"))
-
-    def test_missing_fail_marker_skips_disconnect_without_preparing(self):
-        self.assertEqual(self.verify("--non-interactive", "--already-launched", "--check", "insights-disconnect")[0], 0)
-        self.assertEqual(self.executed, [])
-        self.assertEqual(self.rows()["insights-disconnect"]["cause"], "capability_missing")
 
     def test_device_owner_survives_switches_and_a_second_worktree_session_root(self):
         args = ("--non-interactive", "--already-launched", "--check", "home")

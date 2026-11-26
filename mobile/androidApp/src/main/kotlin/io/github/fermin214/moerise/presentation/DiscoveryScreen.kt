@@ -45,7 +45,7 @@ import kotlinx.serialization.json.*
 @Composable
 fun DiscoveryScreen(page: String, mobile: MobileController, strings: Strings, readingScroll: ScrollState,
     onMenu: () -> Unit, onSearch: () -> Unit,
-    onInsight: (Note) -> Unit, onWalk: (Note) -> Unit, onSettings: () -> Unit) {
+    onWalk: (Note) -> Unit, onSettings: () -> Unit) {
     val review by mobile.review.state.collectAsState()
     val walk by mobile.walk.state.collectAsState()
     val connection by mobile.session.state.collectAsState()
@@ -208,9 +208,6 @@ fun DiscoveryScreen(page: String, mobile: MobileController, strings: Strings, re
                                     if (note.state == "NORMAL") TextButton(
                                         onClick = { onWalk(note) }, enabled = connection.connected, modifier = Modifier.testTag("review_walk"),
                                     ) { Text(strings.text("从这条漫步", "Walk from here")) }
-                                    TextButton(onClick = { onInsight(note) }, enabled = connection.connected) {
-                                        Text(strings.text("洞察这条", "Discuss with AI"))
-                                    }
                                 }
                                 WebAction(
                                     if (review.position + 1 < batch.items.size) strings.text("下一条", "Next note") else strings.text("再看一遍", "Start again"),

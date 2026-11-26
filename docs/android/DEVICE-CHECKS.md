@@ -5,7 +5,7 @@
 SHA-256、签名证书摘要、设备型号、系统/API、ABI、页大小、界面语言和服务来源。
 日志、截图、数据库副本和 trace 放入 `.local/android/`。
 
-正式发行检查同时覆盖全新安装与从 `v0.2.0` 同签名 APK 覆盖升级，验证 Room v1 到 v2 迁移、账号、中文草稿、待发队列和 Keystore 会话恢复。GitHub 的恢复流程还使用同一签名、递增版本号的两份隔离 APK，在首次安装开启统计并带着离线笔记队列覆盖安装后，检查欢迎框、统计选择与草稿。
+正式发行检查同时覆盖全新安装与从 `v0.3.0` 同签名 APK 覆盖升级，验证 Room v2 数据、账号、中文草稿、待发队列和 Keystore 会话恢复。GitHub 的恢复流程还使用同一签名、递增版本号的两份隔离 APK，在首次安装开启统计并带着离线笔记队列覆盖安装后，检查欢迎框、统计选择与草稿。
 
 ## 隔离服务自动化
 
@@ -41,7 +41,6 @@ Linux 入口通过 `MOERISE_ANDROID_SUITE` 选择组；Maestro 场景时限由 `
 | --- | --- |
 | `records-edits` | `editing`、`actions`、`ime`、`recovery` |
 | `records-browse` | `search`、`attachments`、`home`、`lifecycle` |
-| `insights` | `insights` |
 | `explore` | `navigation`、`language`、`stars` |
 
 各分片使用同次构建的 Core 和目标 APK，各子项使用独立 Core/Memos 数据集。含原生专项的分片只额外下载一次测试 APK，含 `recovery` 的分片还下载升级 APK。分片失败时其他分片继续。结果页列出子项状态和耗时，`android-device-<组名>` 附件保存每次 `(suite, member, attempt)` 的 ADB 探针、首错、fixture 恢复、日志与诊断。首错确认是 transport 断链、证据齐全且 fixture 成功清理时，等待 ADB 和包管理探针通过后，用新建的隔离数据重跑该子项一次。
@@ -56,7 +55,7 @@ gh workflow run checks.yml --ref debug/android-device -f mode=android-device -f 
 gh workflow run checks.yml --ref debug/android-device -f mode=android-device -f suite=ime
 ```
 
-`suite` 支持 `all`、`records`、`records-edits`、`records-browse`、`explore`、`ui`、`editing`、`search`、`actions`、`insights`、`navigation`、
+`suite` 支持 `all`、`records`、`records-edits`、`records-browse`、`explore`、`ui`、`editing`、`search`、`actions`、`navigation`、
 `attachments`、`language`、`home`、`lifecycle`、`ime`、`recovery`、`stars`。
 `records` 对应两个记录分片，`ui` 运行全部 Maestro 界面组。
 `stars` 覆盖 1000/5000 点的星点与光晕模式、选中、平移、双指缩放、近景摘要和快照刷新，
@@ -117,7 +116,7 @@ Wi-Fi 代理、DNS、VPN 或移动网络。重连后重建该会话的单个映�
 正式签名包的 HTTPS 检查使用手机能直接到达、系统信任证书的服务；
 缺少该地址时不改写整台手机的代理来补齐环境。
 
-`run` 默认执行 Maestro 的编辑、搜索、归档删除、洞察、导航、附件、语言和主页八组。
+`run` 默认执行 Maestro 的编辑、搜索、归档删除、导航、附件、语言和主页七组。
 每组通过客户端 API 准备独立笔记；编辑、删除和附件保存另以服务端读回结果核对。
 新建和附件笔记按该组的唯一正文查询，逐页核对精确匹配数量。
 已通过且流程及执行脚本摘要一致的同会话结果自动复用；`-Retry` 显式重跑指定组。
@@ -160,8 +159,6 @@ Maestro MCP 用于读取实时控件层级、单步复现和查看截图。CLI �
 ```powershell
 scripts/android/phone.ps1 -Action ui -Session $session -Flow home-smoke
 scripts/android/phone.ps1 -Action ui -Session $session -Flow archive `
-    -NoteName 'memos/测试笔记ID'
-scripts/android/phone.ps1 -Action ui -Session $session -Flow insights-material `
     -NoteName 'memos/测试笔记ID'
 scripts/android/phone.ps1 -Action ui -Session $session -Flow attachment-cancel
 ```
@@ -252,8 +249,7 @@ $buildManifest = (Resolve-Path -LiteralPath (
 保存采用点击时的修订，取消不上传，保存或取消后恢复顶部输入。
 手机视口仅通过主页列表的滚动语义定位卡片，先等待页面和列表就绪；
 侧栏底部的设置、账号按钮与弹窗底部操作直接点击，不向无滚动祖先的控件发送滚动操作。
-搜索使用主页顶部输入及 IME 搜索操作；洞察材料与历史通过弹窗访问，
-选材按钮可用后再点击。材料阅读回主页的流程直接断言目标卡片可见，避免测试滚动掩盖定位错误。
+搜索使用主页顶部输入及 IME 搜索操作。来源阅读回主页的流程直接断言目标卡片可见。
 
 `FixtureActivityRule` 使用 UiAutomation shell 显式启动 `.fixture`，再交给
 ActivityScenario 管理重建与销毁，兼容限制后台 Activity 启动的设备系统。
@@ -264,10 +260,6 @@ ActivityScenario 管理重建与销毁，兼容限制后台 Activity 启动的�
 系统键盘的候选选择与切换操作见交互检查表。
 失败用例的截图、连接和操作状态、异常和全部 Java 线程栈、应用日志写入 `.local/android/device-diagnostics.tar`；
 CI 同时保存 `device-fixture-core.log` 和 `device-fixture-fixture.log`，用于区分界面状态与来源服务错误。
-后者用 `chat_message` 标出到达隔离代理的生成请求。同一个 `request_no` 的 `api_request` 和
-`api_response` 或 `api_interrupted` 分别记录开始和结束。中断时 `status` 为空表示代理尚未发出响应头。
-即使状态码为 200，也要从 Core 读回回答的完成状态。序号由隔离服务分配，日志省略会话 ID、请求正文和查询参数。
-
 恢复入口由 `acceptance.ps1 -Recovery` 调用，分阶段运行 `OfflineQueueTest`：
 
 1. 移除该 fixture 的单个反向端口；保存两篇笔记，验证输入框清空和时间线出现离线笔记，
@@ -360,7 +352,7 @@ Core 的 Memos 请求经过 fixture 回环代理，原文复查与同步共用�
 | 竖屏和后台 | 手机转动方向，输入正文并选附件，回主页、返回、终止进程重开 | 手机应用保持竖屏；已落盘内容和附件绑定恢复，不重复发送 |
 | 单条编辑 | 顶部输入未完成正文；依次编辑两条笔记，切换或重建、离页返回 | 同一时间只有一个编辑器；前一条先落盘，重新编辑恢复本机修订，顶部新建隐藏 |
 | 保存和取消 | 连续修改正文后立即保存；另一条的本机修订取消后重新编辑 | 保存只提交点击时修订；其他未保存内容不上传，保存或取消后顶部输入恢复 |
-| 主页阅读 | 点击卡片正文、时间戳和三点菜单，从回顾、漫步或洞察阅读来源 | 点击正文或时间戳留在列表，从来源入口回主页并定位对应卡片 |
+| 主页阅读 | 点击卡片正文、时间戳和三点菜单，从回顾或漫步阅读来源 | 点击正文或时间戳留在列表，从来源入口回主页并定位对应卡片 |
 | 系统文件 | 选择图片及普通文件，取消选择；读取过程中切到后台再返回；超限文件 | 有效文件保留，取消无新增，超限有错误且原草稿可用 |
 | 附件读取 | Markdown 含管理图片、外部图片、HTML、64 KiB 正文及 10 个附件；打开、移除附件 | 管理图片按可见区域读取，外部图片为链接，HTML 为文本，系统只获得只读 URI |
 | 长快照 | 分页加载至 100 篇；编辑 64 KiB 正文及 10 个附件，滚动列表；断开隔离服务后终止进程重开 | 100 条本机快照可恢复，读取快照和长文渲染不阻塞编辑器就绪或输入 |
@@ -379,7 +371,6 @@ Core 的 Memos 请求经过 fixture 回环代理，原文复查与同步共用�
 | 搜索 | 标签、服务日期、归档和三种搜索模式组合；翻页、更换条件、失效游标；主页原位编辑保持查询及滚动 |
 | 回顾 | 跨服务日期、空计划、不可用条目、同批次位置恢复 |
 | 漫步 | 随机与指定起点、连续下一条、模型禁用、请求失败重试和结束；路径不重复，离页不继续请求 |
-| 洞察 | 预算超限、正常/归档材料、15 秒静默后继续 SSE、停止、断线与后台恢复、追问、历史和回复存笔记；复查不再次调用模型 |
 | 观星 | 平移、双指缩放后连点两颗星，图内阅读卡显示第二篇原文。系统返回先关闭卡片，保留缩放和中心。用同一卡片阅读未定位笔记，检查全屏和回到全图 |
 | 星图更新 | 后台生成新快照期间仍可阅读旧图。重试只读取快照，检查布局替换和摘要更新后仍显示所选笔记的原文 |
 

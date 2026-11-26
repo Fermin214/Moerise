@@ -84,6 +84,7 @@ fun StarMapScreen(controller: StarMapController, core: CoreClient?, enabled: Boo
         if (state.unplacedOnly) noteScroll.scrollToItem(0)
     }
     val code = state.error ?: when {
+        state.unavailableReason == "layout" -> "MAP_LAYOUT_UNAVAILABLE"
         map?.updateState == "unavailable" -> "MAP_UPDATE_UNAVAILABLE"
         state.rebuild?.state in setOf("unknown", "observing") && state.status in setOf("ready", "empty") -> "MAP_REBUILD_OBSERVING"
         state.status !in setOf("", "ready") -> "MAP_${state.status.uppercase()}"
@@ -95,7 +96,7 @@ fun StarMapScreen(controller: StarMapController, core: CoreClient?, enabled: Boo
         else -> null
     }
     val messageError = state.error != null ||
-        code in setOf("MAP_UNAVAILABLE", "MAP_UPDATE_UNAVAILABLE", "MAP_INCOMPATIBLE", "MAP_PROTOCOL")
+        code in setOf("MAP_UNAVAILABLE", "MAP_UPDATE_UNAVAILABLE", "MAP_LAYOUT_UNAVAILABLE", "MAP_INCOMPATIBLE", "MAP_PROTOCOL")
 
     Column(Modifier.fillMaxSize().safeDrawingPadding().testTag("map_page")) {
         if (!state.fullScreen) WebToolbar(strings, onMenu, onSearch)
@@ -270,6 +271,8 @@ fun mapError(code: String, strings: Strings): String = when (code) {
     "MAP_WAITING" -> strings.text("语义索引正在等待同步或构建。", "The semantic index is waiting for sync or build.")
     "MAP_BUILDING" -> strings.text("正在生成观星布局…", "Generating star map…")
     "MAP_UNAVAILABLE" -> strings.text("观星暂时不可用，稍后重试。", "Stargazing is unavailable. Please try again shortly.")
+    "MAP_LAYOUT_UNAVAILABLE" -> strings.text("观星布局服务不可用，请检查 layout 服务是否已启动。",
+        "The stargazing layout service is unavailable. Check that the layout service is running.")
     "MAP_EMPTY" -> strings.text("还没有可显示的笔记。", "No notes to display yet.")
     "MAP_UPDATING" -> strings.text("正在更新，继续显示已有星图。", "Updating. The saved star map remains visible.")
     "MAP_UPDATE_UNAVAILABLE" -> strings.text("星图生成失败，请重试。", "Star map generation failed. Please try again.")

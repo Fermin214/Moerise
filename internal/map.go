@@ -53,6 +53,7 @@ type mapSchedule struct {
 type mapActivity struct {
 	key    string
 	status string
+	reason string
 }
 
 type MapService struct {
@@ -66,7 +67,6 @@ type MapService struct {
 	epoch       atomic.Uint64
 	workerURL   string
 	scope       string
-	acquireLLM  func() (LLMProvider, func())
 }
 
 func NewMapService(store *Store) *MapService {
@@ -99,6 +99,7 @@ func (s *MapService) Reset() {
 func (s *MapService) readState(response MapResponse, key string) MapResponse {
 	if activity := s.activity.Load(); activity != nil && activity.key == key {
 		response.UpdateState = activity.status
+		response.UnavailableReason = activity.reason
 	}
 	return response
 }
@@ -199,7 +200,7 @@ func (s *MapService) Read(ctx context.Context) (_ MapResponse, result error) {
 			response.Status = "unavailable"
 		}
 	}
-	return response, ctx.Err()
+	return s.readState(response, key), ctx.Err()
 }
 
 // Update prepares and publishes under short locks; layout computation owns no
@@ -222,14 +223,11 @@ func (s *MapService) update(ctx context.Context, now time.Time) error {
 	if job == nil {
 		return ctx.Err()
 	}
-	if job.releaseLLM != nil {
-		defer job.releaseLLM()
-	}
 	previous := job.previous
 	if job.token != "" {
 		previous = nil
 	}
-	s.activity.Store(&mapActivity{job.key, "building"})
+	s.activity.Store(&mapActivity{key: job.key, status: "building"})
 	started := time.Now()
 	layout, err := s.computeStars(ctx, job.snapshot, previous)
 	if err != nil {
@@ -237,13 +235,14 @@ func (s *MapService) update(ctx context.Context, now time.Time) error {
 			return ctx.Err()
 		}
 		s.lastFailure.Store(&mapSchedule{job.key, now})
-		s.activity.Store(&mapActivity{job.key, "unavailable"})
+		activity := &mapActivity{key: job.key, status: "unavailable"}
+		if errorCode(err) == "MAP_LAYOUT_UNAVAILABLE" {
+			activity.reason = "layout"
+		}
+		s.activity.Store(activity)
 		return err
 	}
 	slog.Info("stars layout computed", "points", len(layout.points), "elapsed", time.Since(started))
-	if previous == nil && job.llm != nil {
-		nameStarClusters(ctx, job.snapshot, layout, job.llm)
-	}
 	unlockRuntime := s.Store.lockRuntime()
 	defer unlockRuntime()
 	if !s.Store.Settings.Stargazing.Enabled || !s.Store.Settings.Embedding.Enabled || job.key != s.cacheKey() {
@@ -272,13 +271,11 @@ func (s *MapService) update(ctx context.Context, now time.Time) error {
 }
 
 type mapJob struct {
-	store      *Store
-	key        string
-	snapshot   mapSnapshot
-	previous   *mapLayout
-	token      string
-	llm        LLMProvider
-	releaseLLM func()
+	store    *Store
+	key      string
+	snapshot mapSnapshot
+	previous *mapLayout
+	token    string
 }
 
 func (s *MapService) prepare(ctx context.Context, now time.Time) (*mapJob, error) {
@@ -336,12 +333,7 @@ func (s *MapService) prepare(ctx context.Context, now time.Time) (*mapJob, error
 	if err != nil {
 		return nil, err
 	}
-	var llm LLMProvider
-	var releaseLLM func()
-	if (previous == nil || token != "") && store.Settings.LLM.Enabled && store.Settings.Stargazing.LLMNaming && s.acquireLLM != nil {
-		llm, releaseLLM = s.acquireLLM()
-	}
-	return &mapJob{store, key, snapshot, previous, token, llm, releaseLLM}, nil
+	return &mapJob{store, key, snapshot, previous, token}, nil
 }
 
 func (s *MapService) Rebuild(ctx context.Context) error {

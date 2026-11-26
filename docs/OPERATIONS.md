@@ -25,7 +25,7 @@ Moerise 支持 Linux 原生二进制运行以及 Docker 容器部署。本文档
 | `MOERISE_STATE_DIR` | `state_dir` | `/data/state` | 保存业务数据库 `state.sqlite3` 的持久化目录 |
 | `MOERISE_INDEX_DIR` | `index_dir` | `/data/index` | 保存可重建索引库 `index.sqlite3` 的持久化目录 |
 | `MOERISE_LAYOUT_URL` | — | 原生 `http://127.0.0.1:8766`；Compose `http://layout:8766` | Core 访问的私有布局服务地址 |
-| `MOERISE_STARGAZING_ENABLED` | `stargazing.enabled` | `true` | 观星开关，仅首次初始化读取，之后在设置页调整 |
+| `MOERISE_STARGAZING_ENABLED` | `stargazing.enabled` | 新实例为 `false` | 已保存设置优先，尚未保存时可用部署值显式启停 |
 | `MOERISE_LAYOUT_STATE` | — | `/data` | Python 布局服务的模型、缓存和任务目录 |
 | `LAYOUT_MEMORY_LIMIT` / `LAYOUT_CPU_LIMIT` | — | `1g` / `1.0` | Compose 布局服务的内存和 CPU 上限 |
 
@@ -57,7 +57,7 @@ docker compose up -d memos
 在浏览器打开 `http://localhost:5231` 创建账户并获取 PAT 与资源名，配置到 `.env` 后拉取镜像并启动整套服务。内嵌 Web 的 Core 使用 GHCR 中 `MOERISE_IMAGE_TAG` 对应的版本镜像，自动匹配 AMD64 或 ARM64：
 
 ```bash
-docker compose pull moerise layout
+docker compose pull moerise
 docker compose up -d
 docker compose ps
 ```
@@ -67,28 +67,24 @@ docker compose ps
 在已有自托管 Memos 实例的场景下，在 `.env` 中关闭内置 Memos profile 并指定已有地址：
 
 ```dotenv
-COMPOSE_PROFILES=stargazing
+COMPOSE_PROFILES=
 MOERISE_MEMOS_BASE_URL=https://memos.example.com
 MOERISE_MEMOS_PUBLIC_URL=https://memos.example.com
 ```
 
-已有实例需为 Memos 0.31.x，绑定账号与 PAT 须与 `.env` 中的资源名一致；容器内的 `localhost` 指容器自身。随后运行 `docker compose pull moerise layout` 和 `docker compose up -d` 完成对接。源码部署使用 `docker compose up -d --build`；Core 与布局服务使用同一版本的代码。
+已有实例需为 Memos 0.31.x，绑定账号与 PAT 须与 `.env` 中的资源名一致。容器内的 `localhost` 指容器自身。随后运行 `docker compose pull moerise` 和 `docker compose up -d` 完成对接。源码部署使用 `docker compose up -d --build`。
 
 ### 观星按需启用
 
-`COMPOSE_PROFILES` 中，`memos` 启动内置 Memos，`stargazing` 启动布局服务。默认模板为 `memos,stargazing`；外接 Memos 且启用观星时设为 `stargazing`。
+内置 Memos 默认使用 `COMPOSE_PROFILES=memos`，外接 Memos 时留空。启用观星时给内置 Memos 追加 `,stargazing`，外接 Memos 则设为 `stargazing`。执行 `docker compose pull layout` 和 `docker compose up -d layout`，配置 Embedding，再在「设置 → 通用」打开「启用观星」。
 
-不使用观星时，在「设置 → 通用」关闭「启用观星」，将 profile 设为 `memos`（内置 Memos）或留空（外接 Memos），再停止布局服务：
+停用观星时，在「设置 → 通用」关闭「启用观星」，停止布局服务，再从 `COMPOSE_PROFILES` 移除 `stargazing`：
 
 ```bash
 docker compose stop layout
-docker compose pull moerise
-docker compose up -d
 ```
 
-新安装可在 `.env` 中设置 `MOERISE_STARGAZING_ENABLED=false` 初始化开关。已有实例以持久设置为准。关闭后 Core 不再调度布局，已有快照、向量和模型卷保留，语义检索与漫步照常使用。
-
-恢复时在 profile 中加回 `stargazing`，执行 `docker compose pull moerise layout` 和 `docker compose up -d`，再开启应用开关。应用开关不会启停 Docker 容器；仅移除 profile 不会停止已运行的布局容器。保留 `layout-data` 卷可以复用 UMAP 模型。
+已有持久设置的实例沿用保存值。升级时，既无保存值也无显式部署值的旧实例继续开启观星。应用开关只控制 Core 布局调度。关闭后保留快照、向量和 `layout-data` 卷，语义检索与漫步照常使用。
 
 ### 3. HTTPS 与运行检查
 
@@ -149,7 +145,7 @@ Moerise 采用双库分离存储：
 ```
 /data/
 ├── state/
-│   └── state.sqlite3    <-- 核心业务数据 (配置、会话、回顾、AI记录) -> 必须备份！
+│   └── state.sqlite3    <-- 核心业务数据 (配置、会话、回顾) -> 必须备份！
 └── index/
     └── index.sqlite3    <-- 索引与地图数据 -> 可完全重建，无需备份
 ```
@@ -185,7 +181,7 @@ docker compose up -d --no-build moerise
 
 ### 3. 索引重建 (Reindex)
 
-重建索引需先停止 Core；同一产品目录只允许一个写入进程。操作清理派生索引及同步进度，重启后从 Memos 重新扫描与构建，保留 AI 会话、回顾计划、设置及写入幂等记录：
+重建索引需先停止 Core。同一产品目录只允许一个写入进程。操作清理派生索引及同步进度，重启后从 Memos 重新扫描与构建，保留回顾计划、设置及写入幂等记录：
 
 ```bash
 docker compose stop moerise
@@ -197,15 +193,19 @@ docker compose up -d --no-build moerise
 
 ## 五、升级与回滚
 
-1. 备份 Memos 数据、Moerise 产品状态及配置，记录源码提交或镜像摘要。服务启动且检测到 `state.sqlite3` 存在待执行的数据库迁移前，会自动使用 `VACUUM INTO` 将当前状态库热备份至 `<state_dir>/backups/auto-pre-<version>-<timestamp>.sqlite3`（校验完整性与外键后落盘，最多保留最近 5 份）。
+1. 升级前执行一次手工 `backup`，另存 Memos 数据、原 `config.json`、`.env` 和状态加密密钥，记录源码提交或镜像摘要。Core 启动时会在待执行迁移前使用 `VACUUM INTO` 热备 `state.sqlite3`，校验完整性和外键后保存到 `<state_dir>/backups/auto-pre-<version>-<timestamp>.sqlite3`，最多保留最近 5 份。`<version>` 取执行迁移的 Core 版本。
 2. 保持 Compose 项目名、来源绑定、数据卷和状态加密密钥一致，将 `.env` 中的 `MOERISE_IMAGE_TAG` 设为目标版本。启用观星时，确保 `COMPOSE_PROFILES` 包含 `stargazing`，执行 `docker compose pull moerise layout`；停用观星时只拉取 `moerise`。独立 Web 容器部署升级为内嵌 Web 时，将 `MOERISE_PORT` 改为原 `WEB_PORT`（默认 `3000`），将 `MOERISE_BIND_ADDRESS` 设为原 `WEB_BIND_ADDRESS`，删除旧 `WEB_*` 配置；`MOERISE_PUBLIC_ORIGIN` 沿用对外地址。执行 `docker compose down --remove-orphans` 清除旧 Web 容器，再运行 `docker compose up -d`。`down` 不加 `--volumes`，命名卷保留。
-3. 检查就绪状态、原文和附件、设置版本、回顾与聊天历史；启用 Embedding 时另查索引构建状态。
-4. 同版本或跨版本回滚可在停止 Core 后执行内置 `rollback` 命令（默认选取最近一份自动热备份，也可通过 `--backup <路径>` 指定历史快照；命令先为当前状态生成 `pre-rollback-*` 安全副本，再原子替换 `state.sqlite3` 并清理 `sync_state` 与 `index.sqlite3`，重启后自动重建派生索引）：
+3. 先升级 Core，检查就绪状态、原文、附件、设置版本与回顾，再强制刷新 Web 或升级 Android APK。过渡期 `0.3.0` Android 仍可读写和同步笔记、检索、回顾、漫步、观星与上报遥测。洞察端点返回 404，旧设置页须升级客户端后使用。
+
+升级应用迁移 `010` 后，`0.3.0` 无法直接打开状态库。Core 读取原部署文件时忽略退役的 `llm`、`insights`、`stargazing.llm_naming`，其余配置字段仍须通过严格校验。历史对话表及旧版加密设置保留在状态库。
+
+回退 `0.3.0` 时先停止服务。使用升级后的 Core 执行 `moerise rollback --backup <快照文件>`，明确填写本次升级生成的 `auto-pre-*.sqlite3` 文件，或手工备份目录下的 `state.sqlite3` 文件。`--backup` 参数要求路径指向文件，且应使用升级前记录的目标快照。命令先生成 `pre-rollback-*` 安全副本，再替换状态库并清理同步进度与派生索引。
 
 ```bash
 docker compose stop moerise
-docker compose run --rm --no-deps -T moerise rollback
+docker compose run --rm --no-deps -T moerise rollback --backup /backups/pre-upgrade/state.sqlite3
+# 然后恢复原配置并将 MOERISE_IMAGE_TAG 改回 0.3.0
 docker compose up -d --no-build moerise
 ```
 
-若跨版本降级至 `0.2.0`（镜像标签切换回 `0.2.0` 前已执行上述回滚），命令会提示将 Core 镜像或二进制切换为 `0.2.0` 后再启动；数据库结构变更不会随 Git 回滚自动逆向执行。Memos 镜像在 Compose 中独立固定版本与摘要，升级 Memos 前先验证 Moerise 对目标协议版本的支持。
+原生部署同样先指定快照回滚，再恢复原 `config.json`、状态加密密钥和 `0.3.0` 二进制。重启后派生索引从 Memos 重建。

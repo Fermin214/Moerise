@@ -23,6 +23,7 @@ import kotlin.math.*
     val points: List<StarPoint>, val topics: List<StarTopic>, val links: List<StarLink>,
     @SerialName("update_state") val updateState: String = "",
     @SerialName("disabled_reason") val disabledReason: String = "",
+    @SerialName("unavailable_reason") val unavailableReason: String = "",
 ) {
     val readable get() = status == "ready" || status == "empty"
     fun validate(): StarMap {

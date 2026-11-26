@@ -21,14 +21,10 @@ data class SessionIdentity(
 
 @Serializable
 data class Capabilities(@SerialName("login_methods") val loginMethods: List<String>, val notes: String,
-    val chat: ChatCapabilities = ChatCapabilities(), val version: String = "unknown",
+    val version: String = "unknown",
     val telemetry: TelemetryCapability = TelemetryCapability())
 
 @Serializable data class TelemetryCapability(val schema: Int = 0, val allowed: Boolean = false)
-
-@Serializable
-data class ChatCapabilities(@SerialName("material_selection") val materialSelection: Boolean = false,
-    @SerialName("save_selection") val saveSelection: Boolean = false)
 
 @Serializable
 data class AttachmentReceipt(

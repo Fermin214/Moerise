@@ -107,7 +107,6 @@ npm run test:browser
 - `web/test/settings-browser.mjs`：动态设置保存、凭据加密、版本冲突与时区热更新。
 - `web/test/discovery-browser.mjs`：每日回顾全天计划浏览、随机漫步路径步进与中断重试。
 - `web/test/map-browser.mjs`：旧快照迁移渲染、鼠标与键盘操作、节点点选阅读；正式星图与真实向量的联合流程见 `scripts/acceptance/check-stars.mjs`。
-- `web/test/insights-browser.mjs`：AI 洞察材料多选、SSE 流式打字机回复、追问与一键沉淀。
 
 ---
 
@@ -115,10 +114,10 @@ npm run test:browser
 
 当涉及 Memos 协议同步、数据库迁移、备份恢复或通知推送改动时，必须通过真实容器集成测试：
 
-观星集成场景要求布局服务已在 `MOERISE_LAYOUT_URL` 指定的地址运行。
+先解压正式 `v0.3.0` Linux 发行包，保留包内的 `moerise` 与同目录的 `config.example.json`。观星集成场景需要运行布局服务，默认地址为 `http://127.0.0.1:8766`，也可通过 `MOERISE_LAYOUT_URL` 指定。
 
 ```bash
-go test -tags=integration ./tests -v -count=1
+MOERISE_V030_BINARY=/path/to/moerise_0.3.0_linux_amd64/moerise go test -tags=integration ./tests -v -count=1
 ```
 
 测试流程会自动拉取 Memos 0.31.x 官方镜像，启动临时独立容器并完成初始化注册、PAT 签发、双向数据读写与断流容灾校验，并在测试结束后自动清理容器与匿名数据卷。
@@ -132,7 +131,6 @@ go test -tags=integration ./tests -v -count=1
 | 测试 | 必需环境变量 | 行为 |
 | --- | --- | --- |
 | `TestSearchQualityLiveAcceptance` | `MOERISE_SEARCH_QUALITY_CONFIG`、`MOERISE_SEARCH_QUALITY_OUTPUT` | Linux 下以仓库文档为材料调用真实 Embedding，测量检索质量、延迟与资源占用；可能产生模型费用 |
-| `TestChatQualityLiveAcceptance` | `MOERISE_CHAT_QUALITY_CONFIG`、`MOERISE_CHAT_QUALITY_OUTPUT` | 将虚构材料发送给真实 LLM，保存回复与协议检查结果，供人工评价；可能产生模型费用 |
 | `TestFeishuLiveReviewAcceptance` | `MOERISE_FEISHU_LIVE_CONFIG` | 向配置的真实飞书接收方发送虚构笔记与图片；可用 `MOERISE_FEISHU_LIVE_WEBHOOK` 提供含 `url`、`secret` 的 JSON 文件，追加群 Webhook 测试 |
 | `TestFourLiveBotDestinations` | `MOERISE_BOTS_LIVE_CONFIG` | 在独立 Memos 中核对三种私聊的笔记、回执和回顾，按真实时钟依次向四种目的地投递 |
 
@@ -150,7 +148,7 @@ go test -tags=integration ./tests -v -count=1
 go test -tags=integration ./tests -run '^TestSearchQualityLiveAcceptance$' -v -count=1 -timeout=30m
 ```
 
-检索评测读取 `tests/testdata/search-quality.json` 的来源列表和问题标注，并记录各篇材料的 SHA-256；修改文档标题时需同步标注引用。聊天数据集位于 `tests/testdata/chat-quality.json`。
+检索评测读取 `tests/testdata/search-quality.json` 的来源列表和问题标注，并记录各篇材料的 SHA-256；修改文档标题时需同步标注引用。
 
 ---
 
@@ -191,7 +189,7 @@ python3 scripts/performance/evaluate-search.py --config .local/config.json --cre
 
 ## 发布
 
-PR 按改动范围复用发布流程。Linux 预演在 AMD64 和 ARM64 各自构建安装包和 Core、Layout 镜像，检查镜像能启动并提供服务。Android 预演使用临时密钥，在最低支持版本 Android 10（API 29）安装签名 APK，通过 HTTPS 登录，写入并读回笔记，重启后检查会话。Android 设备回归在 API 36 上覆盖完整编辑、附件和洞察。
+PR 按改动范围复用发布流程。Linux 预演在 AMD64 和 ARM64 各自构建安装包和 Core、Layout 镜像，检查镜像能启动并提供服务。Android 预演使用临时密钥，在最低支持版本 Android 10（API 29）安装签名 APK，通过 HTTPS 登录，写入并读回笔记，重启后检查会话。Android 设备回归在 API 36 上覆盖完整编辑、附件与离线恢复。
 
 合并后，`Main CI` 并行运行两个 Linux 架构任务和一个 Android 任务。Linux 任务保存安装包和镜像摘要。Android 任务使用生产密钥，对同一 APK 检查清单、签名、16 KiB 对齐及最低版本设备流程，并记录设备验证所用 APK 的 SHA-256。
 

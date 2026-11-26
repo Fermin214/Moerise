@@ -54,19 +54,7 @@
     "query_instruction": null
   },
   "stargazing": {
-    "enabled": true,
-    "llm_naming": true
-  },
-  "llm": {
-    "enabled": false,
-    "protocol": "openai-compatible",
-    "base_url": null,
-    "api_key": null,
-    "model": null,
-    "timeout_seconds": 90,
-    "max_concurrency": 2,
-    "max_retries": 2,
-    "max_output_tokens": 2048
+    "enabled": false
   },
   "channel": {
     "kind": "none",
@@ -95,8 +83,5 @@
     "min_age_hours": 72,
     "recent_days": 7,
     "include_archived": false
-  },
-  "insights": {
-    "default_prompt": "请围绕所选笔记探索它们之间的联系、思想变化、潜在矛盾和新的可能性。区分笔记原意与新提出的联想和假设。"
   }
 }

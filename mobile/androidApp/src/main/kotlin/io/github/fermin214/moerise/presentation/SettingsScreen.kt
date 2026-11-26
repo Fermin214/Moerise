@@ -77,7 +77,7 @@ fun SettingsScreen(
                 WebTabs(
                     listOf(
                         strings.text("通用", "General"),
-                        "AI",
+                        "Embedding",
                         strings.text("回顾与推送", "Review & delivery"),
                         strings.text("隐私", "Privacy"),
                     ),
@@ -120,14 +120,6 @@ fun SettingsScreen(
                                 )
                                 SettingsCheckbox(controller, state, "stargazing.enabled",
                                     strings.text("启用观星", "Enable stargazing"))
-                                SettingsCheckbox(
-                                    controller, state, "stargazing.llm_naming",
-                                    strings.text("星系智能命名", "Name star clusters with AI"),
-                                    hint = strings.text(
-                                        "全量构建时由模型总结星系标题，关闭或超时时回退关键词提取。",
-                                        "Summarize cluster titles with the LLM on full rebuilds; falls back to keywords when off or timed out.",
-                                    ),
-                                )
                                 val mapEnabled = state.values["stargazing.enabled"] == "true" &&
                                     state.values["embedding.enabled"] == "true"
                                 SettingsRow(
@@ -152,20 +144,6 @@ fun SettingsScreen(
                             }
                             1 -> {
                                 SettingsModels(controller, state, strings)
-                                SettingsSection(strings.text("默认洞察 Prompt", "Default insight prompt")) {
-                                    SettingsField(
-                                        controller, state, "insights.default_prompt",
-                                        strings.text("一键洞察使用的 Prompt", "Prompt for Generate insight"),
-                                        multiline = true, minLines = 7, separator = false,
-                                    )
-                                    SettingsGhost(
-                                        strings.text("恢复默认", "Restore default"),
-                                        controller::restorePrompt,
-                                        enabled = !state.busy &&
-                                            state.snapshot.settingsText("default_insight_prompt") != null,
-                                        modifier = Modifier.testTag("settings_restore_prompt"),
-                                    )
-                                }
                             }
                             2 -> {
                                 SettingsReview(controller, state, strings)
@@ -295,8 +273,6 @@ private fun SettingsReview(controller: SettingsController, state: SettingsUiStat
 @Composable
 private fun SettingsModels(controller: SettingsController, state: SettingsUiState, strings: Strings) {
     SettingsSection(strings.text("模型", "Models")) {
-        SettingsModel(controller, state, strings, "llm", "LLM")
-        HorizontalDivider(Modifier.padding(top = 16.dp), color = MoeriseColors.Line)
         SettingsModel(controller, state, strings, "embedding", "Embedding")
         val models = state.models
         val building = models.settingsObject("vector_index").settingsObject("building")
@@ -341,20 +317,14 @@ private fun SettingsModel(
 ) {
     SettingsSubheading(title)
     SettingsCheckbox(controller, state, "$group.enabled", strings.text("启用 $title", "Enable $title"))
-    if (group == "embedding") SettingsChoiceField(
+    SettingsChoiceField(
         controller, state, "embedding.provider", strings.text("供应商", "Provider"),
         listOf("bailian" to strings.text("百炼", "Bailian"), "openai-compatible" to strings.text("OpenAI 兼容", "OpenAI compatible")),
     )
     SettingsChoiceField(
         controller, state, "$group.protocol", strings.text("接口协议", "API protocol"),
-        if (group == "llm") listOf(
-            "openai-compatible" to "OpenAI Chat Completions",
-            "openai-responses" to "OpenAI Responses",
-            "anthropic" to "Anthropic",
-        ) else listOf(
-            "dashscope" to "DashScope",
-            "openai-compatible" to strings.text("OpenAI 兼容 Embedding", "OpenAI compatible embeddings"),
-        ),
+        listOf("dashscope" to "DashScope",
+            "openai-compatible" to strings.text("OpenAI 兼容 Embedding", "OpenAI compatible embeddings")),
     )
     SettingsField(controller, state, "$group.base_url", strings.text("API 地址", "API URL"), keyboard = KeyboardType.Uri)
     SettingsField(controller, state, "$group.model", strings.text("模型名称", "Model name"))
@@ -379,38 +349,30 @@ private fun SettingsModel(
         controller, state, "$group.max_retries", strings.text("重试次数", "Retries"),
         keyboard = KeyboardType.Number,
     )
-    if (group == "llm") {
-        SettingsField(
-            controller, state, "llm.max_output_tokens", strings.text("最大输出 Token", "Maximum output tokens"),
-            keyboard = KeyboardType.Number,
-            separator = false,
-        )
-    } else {
-        val generic = state.values["embedding.protocol"] == "openai-compatible"
-        SettingsField(
-            controller, state, "embedding.dimensions", strings.text("向量维度", "Vector dimensions"),
-            keyboard = KeyboardType.Number,
-        )
-        SettingsCheckbox(
-            controller, state, "embedding.send_dimensions", strings.text("发送维度参数", "Send dimensions parameter"),
-            enabled = generic,
-            hint = strings.text(
-                "通用协议按需开启；固定维度模型可关闭，返回维度仍须一致。",
-                "Enable if your compatible API needs it. Fixed-dimension models can omit it; returned dimensions must still match.",
-            ),
-        )
-        SettingsField(
-            controller, state, "embedding.batch_size", strings.text("批量大小", "Batch size"),
-            keyboard = KeyboardType.Number,
-        )
-        SettingsField(
-            controller, state, "embedding.query_instruction", strings.text("查询指令", "Query instruction"),
-            multiline = true,
-            enabled = !generic,
-            hint = strings.text("仅百炼 DashScope 支持。", "Supported only by Bailian DashScope."),
-            separator = false,
-        )
-    }
+    val generic = state.values["embedding.protocol"] == "openai-compatible"
+    SettingsField(
+        controller, state, "embedding.dimensions", strings.text("向量维度", "Vector dimensions"),
+        keyboard = KeyboardType.Number,
+    )
+    SettingsCheckbox(
+        controller, state, "embedding.send_dimensions", strings.text("发送维度参数", "Send dimensions parameter"),
+        enabled = generic,
+        hint = strings.text(
+            "通用协议按需开启；固定维度模型可关闭，返回维度仍须一致。",
+            "Enable if your compatible API needs it. Fixed-dimension models can omit it; returned dimensions must still match.",
+        ),
+    )
+    SettingsField(
+        controller, state, "embedding.batch_size", strings.text("批量大小", "Batch size"),
+        keyboard = KeyboardType.Number,
+    )
+    SettingsField(
+        controller, state, "embedding.query_instruction", strings.text("查询指令", "Query instruction"),
+        multiline = true,
+        enabled = !generic,
+        hint = strings.text("仅百炼 DashScope 支持。", "Supported only by Bailian DashScope."),
+        separator = false,
+    )
     val model = state.models.settingsObject(group)
     SettingsHint(when {
         state.conflict -> strings.text("设置已变更，请重新加载。", "Settings changed. Please reload.")
@@ -871,22 +833,14 @@ private fun settingsMessage(code: String, strings: Strings): String = when (code
     "SETTINGS_SAVED" -> strings.text("设置已保存。", "Settings saved.")
     "SETTINGS_UNCHANGED" ->
         strings.text("没有需要保存的修改。", "No changes to save.")
-    "SETTINGS_PROMPT_RESTORED" ->
-        strings.text("已恢复默认 Prompt，保存后生效。", "Default prompt restored. Save to apply.")
     "SETTINGS_MAP_REBUILT" ->
         strings.text("已请求重新生成星图。", "Star map rebuild requested.")
-    "LLM_DISABLED" -> strings.text("请先启用并保存 LLM。", "Enable the LLM and save your settings first.")
     "EMBEDDING_DISABLED" ->
         strings.text("请先启用并保存 Embedding。", "Enable embeddings and save your settings first.")
-    "LLM_AUTH" -> strings.text("LLM 密钥被拒绝，请检查密钥和模型权限。", "The LLM API key was rejected. Check the key and model permissions.")
     "EMBEDDING_AUTH" -> strings.text("Embedding 密钥被拒绝，请检查密钥和模型权限。", "The embedding API key was rejected. Check the key and model permissions.")
-    "LLM_REJECTED" -> strings.text("LLM 请求被拒绝，请检查协议、地址和模型。", "The LLM request was rejected. Check the protocol, URL and model.")
     "EMBEDDING_REJECTED" -> strings.text("Embedding 请求被拒绝，请检查协议、地址、模型和维度。", "The embedding request was rejected. Check the protocol, URL, model and dimensions.")
-    "LLM_PROTOCOL" -> strings.text("LLM 返回格式不符合所选协议。", "The LLM response does not match the selected protocol.")
     "EMBEDDING_PROTOCOL" -> strings.text("Embedding 返回格式或维度不符合配置。", "The embedding response format or dimensions do not match your settings.")
-    "LLM_RATE_LIMITED" -> strings.text("LLM 调用受限，请稍后重试。", "LLM requests are rate limited. Please try again later.")
     "EMBEDDING_RATE_LIMITED" -> strings.text("Embedding 调用受限，请稍后重试。", "Embedding requests are rate limited. Please try again later.")
-    "LLM_UNAVAILABLE" -> strings.text("LLM 连接失败，请检查服务和地址。", "Could not connect to the LLM service. Check the service and URL.")
     "EMBEDDING_UNAVAILABLE" -> strings.text("Embedding 连接失败，请检查服务和地址。", "Could not connect to the embedding service. Check the service and URL.")
     "MODEL_CHECK_TIMEOUT" -> strings.text("连接检查超时，请稍后重试。", "The connection check timed out. Please try again later.")
     "UPSTREAM_AUTH_UNAVAILABLE", "UPSTREAM_UNAVAILABLE" ->

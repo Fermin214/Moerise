@@ -43,7 +43,7 @@ fun WelcomeDialog(controller: PrivacyController, strings: Strings) {
     var checked by remember { mutableStateOf(false) }
     var details by remember { mutableStateOf(false) }
     if (details) {
-        InsightOverlay(strings.text("统计说明", "About statistics"), strings, { details = false }, "privacy_details") {
+        InformationOverlay(strings.text("统计说明", "About statistics"), strings, { details = false }, "privacy_details") {
             Column(Modifier.verticalScroll(rememberScrollState())) { PrivacyDetails(strings); Feedback(strings) }
         }
         return

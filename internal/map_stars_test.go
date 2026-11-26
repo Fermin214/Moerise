@@ -24,6 +24,7 @@ func starsFixture(t *testing.T, wait func()) (*MapService, *VectorIndexService, 
 
 func testStarsService(t *testing.T, store *Store, wait func()) (*MapService, *atomic.Int32) {
 	t.Helper()
+	store.Settings.Stargazing.Enabled = true
 	calls := &atomic.Int32{}
 	worker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var input starRequest
@@ -191,125 +192,6 @@ func TestStarsDisableAndReenableRejectsInFlightResult(t *testing.T) {
 	restored, err := service.Read(t.Context())
 	if err != nil || !reflect.DeepEqual(first, restored) || calls.Load() != 2 {
 		t.Fatalf("saved snapshot changed: %+v %v", restored, err)
-	}
-}
-
-func TestStarsBatchLLMNamingFallbackBoundsAndExcerptInvalidation(t *testing.T) {
-	store, index, memos, _ := indexFixture(t)
-	longBody := "# 周末研究\n\n- **Rust** [tokio](https://tokio.rs) ![图](img.png) " + strings.Repeat("异步并发模型与运行时架构探讨。", 12)
-	edited, _ := normalizeMemo(rawMemo("a", longBody))
-	memos[edited.Name] = rawMemo("a", longBody)
-	if err := store.Refresh(edited.Name, &edited); err != nil {
-		t.Fatal(err)
-	}
-	finishIndex(t, index)
-
-	service := NewMapService(store)
-	worker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var input starRequest
-		if json.NewDecoder(r.Body).Decode(&input) != nil {
-			w.WriteHeader(400)
-			return
-		}
-		points := make([]MapPoint, len(input.Documents))
-		members := make([]string, len(input.Documents))
-		for i, doc := range input.Documents {
-			points[i] = MapPoint{Name: doc.Name, X: float64(i), Y: 0.5,
-				Stellar: &MapStellar{Seed: 0.5, Role: "ordinary", Radius: 1, Luminosity: 0.8}}
-			members[i] = doc.Name
-		}
-		topics := []MapTopic{{
-			ID: "topic-0123456789abcdef", Label: "tokio · rust", X: 1, Y: 0.5, Members: members,
-			Districts: []MapDistrict{{ID: "district-0123456789abcdef", Label: "runtime", X: 1, Y: 0.5, Members: members[:2]}},
-		}}
-		_ = json.NewEncoder(w).Encode(starResult{Algorithm: starsAlgorithm, Frame: strings.Repeat("a", 32), Points: points, Topics: topics, Links: []MapLink{}})
-	}))
-	defer worker.Close()
-	service.workerURL = worker.URL
-
-	llmCalls := atomic.Int32{}
-	var capturedPrompt string
-	var currentProvider LLMProvider = aiLLMFunc(func(ctx context.Context, messages []LLMMessage, _ func(string) error) (LLMResult, error) {
-		llmCalls.Add(1)
-		capturedPrompt = messages[1].Content
-		if _, hasDeadline := ctx.Deadline(); !hasDeadline {
-			t.Fatal("LLM cluster naming missed 15s deadline")
-		}
-		return LLMResult{Content: "```json\n{\"topic-0123456789abcdef\":\"异步运行时架构\"}\n```"}, nil
-	})
-	service.acquireLLM = func() (LLMProvider, func()) { return currentProvider, func() {} }
-	store.Settings.LLM.Enabled = true
-	store.Settings.Stargazing.LLMNaming = true
-
-	if err := service.Update(t.Context()); err != nil {
-		t.Fatal(err)
-	}
-	if llmCalls.Load() != 1 || strings.Contains(capturedPrompt, "https://tokio.rs") {
-		t.Fatalf("unexpected LLM naming calls=%d prompt=%s", llmCalls.Load(), capturedPrompt)
-	}
-	snap, err := service.Read(t.Context())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if snap.Topics[0].Label != "异步运行时架构" || snap.Topics[0].Districts[0].Label != "runtime" {
-		t.Fatalf("LLM naming or c-TF-IDF partial fallback failed: %+v", snap.Topics)
-	}
-	var pointA MapPoint
-	for _, p := range snap.Points {
-		if p.Name == "memos/a" {
-			pointA = p
-		}
-	}
-	if pointA.CreateTime == "" || len([]rune(pointA.Excerpt)) > 91 || strings.Contains(pointA.Excerpt, "**") || strings.Contains(pointA.Excerpt, "https://") {
-		t.Fatalf("unexpected excerpt formatting: %+v", pointA)
-	}
-
-	added := testMemo(t, "added", "增量笔记正文")
-	memos[added.Name] = rawMemo("added", "增量笔记正文")
-	if err := store.Refresh(added.Name, &added); err != nil {
-		t.Fatal(err)
-	}
-	finishIndex(t, index)
-	stamp, _ := time.Parse(time.RFC3339Nano, snap.GeneratedAt)
-	if err := service.update(t.Context(), nextMapSchedule(stamp, store.Settings.Timezone)); err != nil {
-		t.Fatal(err)
-	}
-	if llmCalls.Load() != 1 {
-		t.Fatalf("incremental update re-called LLM: %d", llmCalls.Load())
-	}
-
-	archived := rawMemo("a", longBody)
-	archived["state"] = "ARCHIVED"
-	archivedMemo, _ := normalizeMemo(archived)
-	if err := store.Refresh("memos/a", &archivedMemo); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.Refresh("memos/added", nil); err != nil {
-		t.Fatal(err)
-	}
-	afterDelete, err := NewMapService(store).Read(t.Context())
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, p := range afterDelete.Points {
-		if (p.Name == "memos/a" || p.Name == "memos/added") && p.Excerpt != "" {
-			t.Fatalf("deleted or archived note kept stale excerpt: %+v", p)
-		}
-	}
-
-	currentProvider = aiLLMFunc(func(context.Context, []LLMMessage, func(string) error) (LLMResult, error) {
-		llmCalls.Add(1)
-		return LLMResult{}, context.DeadlineExceeded
-	})
-	if err := service.Rebuild(t.Context()); err != nil {
-		t.Fatal(err)
-	}
-	if err := service.Update(t.Context()); err != nil {
-		t.Fatal(err)
-	}
-	fallbackSnap, err := service.Read(t.Context())
-	if err != nil || fallbackSnap.Topics[0].Label != "tokio · rust" {
-		t.Fatalf("timeout fallback failed: %+v %v", fallbackSnap.Topics, err)
 	}
 }
 

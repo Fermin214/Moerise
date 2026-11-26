@@ -4,7 +4,7 @@
 
 [English](README.en.md) · [快速上手](docs/GETTING-STARTED.md) · [运行与恢复](docs/OPERATIONS.md) · [API 文档](docs/API-V1.md) · [参与贡献](CONTRIBUTING.md)
 
-Moerise 使用 Memos 保存笔记原文、标签和附件，提供内嵌于服务端的双语 Web 界面、原生 Android 客户端、全文与语义混合检索，以及「回顾」「漫步」「洞察」「观星」四个模块，并支持通过 QQ、Telegram 和飞书机器人私聊速记与定时接收回顾。
+Moerise 使用 Memos 保存笔记原文、标签和附件，提供内嵌于服务端的双语 Web 界面、原生 Android 客户端、全文与语义混合检索，以及「回顾」「漫步」和可选的「观星」，并支持通过 QQ、Telegram 和飞书机器人私聊速记与定时接收回顾。
 
 所有写入都通过 Memos 官方 API 完成，原文、原生 `#标签` 和附件保持原样；日常读取走本地同步索引。
 
@@ -14,12 +14,11 @@ Moerise 使用 Memos 保存笔记原文、标签和附件，提供内嵌于服�
 - **全文与语义混合检索**：使用 SQLite FTS5 中文预分词索引实现关键词筛选；接入 OpenAI 兼容或阿里云百炼 Embedding 后，支持语义搜索和基于 RRF 的混合检索。
 - **漫步 (Walk)**：从指定笔记或随机起点出发，按向量相似度与受控随机抽样在历史笔记间跳转，单次漫步自动去重。
 - **观星 (Stargazing)**：使用均衡 UMAP 将笔记向量投影为二维星群，支持增量定位（未变笔记坐标固定）、主题聚类命名、平移缩放、全屏及点星阅读原文。布局由独立 Python 服务后台计算，页面直接读取快照，详见[观星指南](docs/STARGAZING.md)。
-- **洞察 (Insights)**：自由选择正常或归档笔记作为上下文材料，与大模型进行流式多轮对话与追问，支持 OpenAI Chat Completions、OpenAI Responses 与 Anthropic Messages 协议，可将选中的回复或对话保存回 Memos。
 - **每日回顾 (Review)**：按成熟等待期与近期去重规则随机抽取历史笔记，生成固定的全天回顾计划并按时段分配。不设未读红点或打卡计数，可按需推送至 QQ 私聊、Telegram、飞书应用私聊或飞书群 Webhook。
 - **只读外部接口与 MCP**：提供 `/api/ext/v1` 机器 REST API 与 `/mcp` 只读 MCP Server，供 Claude Desktop、Cursor 等外部工具检索和阅读笔记，服务端仅开放只读权限。
-- **单作者隔离与双库存储**：单个实例绑定一名 Memos 作者。`state.sqlite3` 保存设置、会话、AI 对话与回顾计划；`index.sqlite3` 保存可随时从 Memos 重建的检索、向量与星图索引。
+- **单作者隔离与双库存储**：单个实例绑定一名 Memos 作者。`state.sqlite3` 保存设置、会话与回顾计划；`index.sqlite3` 保存可随时从 Memos 重建的检索、向量与星图索引。
 
-基础记录、阅读、关键词检索和每日回顾不依赖外部模型。语义检索、漫步与观星需要 Embedding 模型，AI 洞察需要大语言模型；启用模型功能后，相关笔记正文会发往你配置的模型服务。
+基础记录、阅读、关键词检索和每日回顾不依赖外部模型。语义检索、漫步与观星需要 Embedding 模型。启用向量功能后，相关笔记正文会发往你配置的模型服务。
 
 ## 系统架构
 
@@ -33,9 +32,8 @@ flowchart LR
     Core -->|"官方 API 读写与轮询同步"| Memos["官方 Memos (0.31.x)"]
     Core --> State["state.sqlite3（业务状态）"]
     Core --> Index["index.sqlite3（可重建索引）"]
-    Core -->|"已有向量 / 后台布局"| Layout["私有 Python 布局服务"]
+    Core -.->|"已有向量 / 后台布局"| Layout["私有 Python 布局服务（可选）"]
     Core -.-> Embedding["向量服务（可选）"]
-    Core -.-> LLM["大语言模型（可选）"]
 ```
 
 ## 快速开始
@@ -83,13 +81,13 @@ openssl rand -hex 32     # MOERISE_ACCESS_TOKEN（可选）
 ### 2. 启动完整服务
 
 ```bash
-docker compose pull moerise layout
+docker compose pull moerise
 docker compose up -d
 ```
 
 从源码构建运行可使用 `docker compose up -d --build`。
 
-`.env.example` 默认通过 `COMPOSE_PROFILES=memos,stargazing` 同时启用内置 Memos 和观星布局服务。不需要观星时，可在「设置 → 通用」关闭「启用观星」，从 `COMPOSE_PROFILES` 移除 `stargazing` 并执行 `docker compose stop layout`，语义检索和漫步不受影响。
+默认部署启动内置 Memos 与 Core。观星是[可选扩展](docs/STARGAZING.md#部署与运行)。在 `.env` 的 `COMPOSE_PROFILES` 追加 `,stargazing`，启动 `layout` 服务并配置 Embedding，再在「设置 → 通用」打开「启用观星」。
 
 启动后访问 `http://localhost:3000`，使用绑定的 Memos 用户名和密码登录。Android 客户端可从 [Releases](https://github.com/Fermin214/Moerise/releases) 下载对应版本的签名 APK，安装步骤见 [Android 安装与升级](docs/android/INSTALL.md)。
 
@@ -111,7 +109,6 @@ docker compose up -d
 | | [飞书接入](docs/FEISHU.md) | 飞书应用私聊速记与群 Webhook 推送 |
 | | [QQ 接入](docs/QQ.md) | 私人 QQ 机器人私聊速记与回顾 |
 | | [Telegram 接入](docs/TELEGRAM.md) | Telegram 私聊速记与定时回顾推送 |
-| | [AI 洞察](docs/AI.md) | 大模型协议、材料预算、流式会话与连接检查 |
 | | [向量模型](docs/EMBEDDING.md) | Embedding 协议适配、分块与索引代次 |
 | | [检索与漫步](docs/SEARCH.md) | FTS5 分词、向量检索、RRF 融合与随机漫步 |
 | | [系统设置](docs/SETTINGS.md) | 分层配置、凭据加密与版本化热更新 |

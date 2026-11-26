@@ -10,13 +10,11 @@ import (
 const modelCheckTimeout = 55 * time.Second
 
 func isModelCheck(r *http.Request) bool {
-	return r.Method == http.MethodPost && (r.URL.Path == "/api/app/v1/models/embedding/check" ||
-		r.URL.Path == "/api/app/v1/models/llm/check")
+	return r.Method == http.MethodPost && r.URL.Path == "/api/app/v1/models/embedding/check"
 }
 
 func modelCheckError(ctx context.Context, err error) error {
-	if errors.Is(ctx.Err(), context.DeadlineExceeded) || errors.Is(err, context.DeadlineExceeded) ||
-		errorCode(err) == "LLM_TIMEOUT" {
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) || errors.Is(err, context.DeadlineExceeded) {
 		return failure("MODEL_CHECK_TIMEOUT", "Model connection check timed out", 503, true)
 	}
 	return err
@@ -24,14 +22,13 @@ func modelCheckError(ctx context.Context, err error) error {
 
 func (a *ClientAPI) modelsStatus() (ClientModels, error) {
 	s := a.app.Store
-	embedding, llm := s.Settings.Embedding, s.Settings.LLM
+	embedding := s.Settings.Embedding
 	model := func(enabled bool, protocol string, baseURL, key, name *string) ClientModelStatus {
 		return ClientModelStatus{enabled, configured(baseURL) != "" && configured(key) != "" && configured(name) != "",
 			protocol, configured(name)}
 	}
 	result := ClientModels{Version: s.productVersion,
 		Embedding:   model(embedding.Enabled, embedding.Protocol, embedding.BaseURL, embedding.APIKey, embedding.Model),
-		LLM:         model(llm.Enabled, llm.Protocol, llm.BaseURL, llm.APIKey, llm.Model),
 		IndexStatus: "disabled"}
 	var err error
 	result.VectorIndex, err = s.VectorStatus()
@@ -80,19 +77,10 @@ func (a *ClientAPI) modelsRoute(w http.ResponseWriter, r *http.Request) (any, in
 	}
 	ctx := r.Context()
 	started := time.Now()
-	var err error
-	if r.URL.Path == "/api/app/v1/models/embedding/check" {
-		if a.app.Search.Provider == nil {
-			return nil, 0, failure("EMBEDDING_DISABLED", "Embedding is disabled", 503, false)
-		}
-		_, err = checkEmbedding(ctx, a.app.Store.Settings.Embedding, a.app.Search.Provider)
-	} else {
-		if a.app.LLM == nil {
-			return nil, 0, failure("LLM_DISABLED", "LLM is disabled", 503, false)
-		}
-		_, err = checkLLM(ctx, a.app.Store.Settings.LLM, a.app.LLM)
+	if a.app.Search.Provider == nil {
+		return nil, 0, failure("EMBEDDING_DISABLED", "Embedding is disabled", 503, false)
 	}
-	if err != nil {
+	if _, err := checkEmbedding(ctx, a.app.Store.Settings.Embedding, a.app.Search.Provider); err != nil {
 		return nil, 0, err
 	}
 	return ClientModelCheck{body.Version, "ok", time.Since(started).Milliseconds()}, http.StatusOK, nil

@@ -35,7 +35,7 @@ func TestClientStargazingTogglePreservesIndexAndSnapshot(t *testing.T) {
 			t.Fatalf("toggle: %d %s", reply.Code, reply.Body)
 		}
 		version++
-		validateAPISchema(t, clientChatSchema(t, "SettingsView"), reply.Body.Bytes())
+		validateAPISchema(t, clientSchema(t, "SettingsView"), reply.Body.Bytes())
 	}
 	toggle(false)
 	reply := clientCall(api, "GET", "/api/app/v1/map", "", cookie, "", "")
@@ -44,7 +44,7 @@ func TestClientStargazingTogglePreservesIndexAndSnapshot(t *testing.T) {
 		disabled.Status != "disabled" || disabled.DisabledReason != "stargazing" || len(disabled.Points) != 0 {
 		t.Fatalf("disabled response: %d %s", reply.Code, reply.Body)
 	}
-	validateAPISchema(t, clientChatSchema(t, "MapResponse"), reply.Body.Bytes())
+	validateAPISchema(t, clientSchema(t, "MapResponse"), reply.Body.Bytes())
 	assertSettingsError(t, clientCall(api, "POST", "/api/app/v1/map/rebuild", "", cookie,
 		fixture.settings.Web.PublicOrigin, identity.CSRFToken), 409, "STARGAZING_DISABLED")
 	if err := api.app.Map.Update(t.Context()); err != nil || calls.Load() != 1 {
@@ -55,7 +55,7 @@ func TestClientStargazingTogglePreservesIndexAndSnapshot(t *testing.T) {
 	if reply.Code != 200 || json.Unmarshal(reply.Body.Bytes(), &session) != nil || session.StargazingEnabled {
 		t.Fatalf("disabled session: %d %s", reply.Code, reply.Body)
 	}
-	validateAPISchema(t, clientChatSchema(t, "ClientSession"), reply.Body.Bytes())
+	validateAPISchema(t, clientSchema(t, "ClientSession"), reply.Body.Bytes())
 	loaded, err := loadPersistedProduct(fixture.settings)
 	if err != nil || loaded.Stargazing.Enabled || !loaded.Embedding.Enabled {
 		t.Fatalf("persisted independent toggle: %+v %v", loaded.Stargazing, err)
@@ -81,7 +81,7 @@ func TestClientMapContractAndMachineIsolation(t *testing.T) {
 	if response.Code != 200 || json.Unmarshal(response.Body.Bytes(), &result) != nil || result.Status != "disabled" {
 		t.Fatalf("disabled response: %d %s", response.Code, response.Body)
 	}
-	validateAPISchema(t, clientChatSchema(t, "MapResponse"), response.Body.Bytes())
+	validateAPISchema(t, clientSchema(t, "MapResponse"), response.Body.Bytes())
 	clientMapIndex(t, api)
 	response = clientCall(api, "GET", path, "", cookie, "", "")
 	if response.Code != 200 || json.Unmarshal(response.Body.Bytes(), &result) != nil || result.Status != "ready" ||
@@ -90,7 +90,7 @@ func TestClientMapContractAndMachineIsolation(t *testing.T) {
 		len(response.Header().Values("Set-Cookie")) != 0 {
 		t.Fatalf("map contract: %d %s %v", response.Code, response.Body, response.Header())
 	}
-	validateAPISchema(t, clientChatSchema(t, "MapResponse"), response.Body.Bytes())
+	validateAPISchema(t, clientSchema(t, "MapResponse"), response.Body.Bytes())
 	for _, secret := range []string{fixture.settings.Memos.Token, fixture.settings.Web.StateEncryptionKey, "vector_hash", "base_url"} {
 		if strings.Contains(response.Body.String(), secret) {
 			t.Fatalf("map leaked credential or internal field: %s", secret)

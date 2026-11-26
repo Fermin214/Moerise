@@ -83,7 +83,6 @@ fun MoeriseApp(mobile: MobileController, onEditorReady: () -> Unit = {}) {
     val archiveScroll = key(account) { rememberLazyListState() }
     val reviewScroll = key(account, review.batch?.id, review.position) { rememberScrollState() }
     val walkScroll = key(account, walk.result?.item?.note?.name) { rememberScrollState() }
-    val insightScroll = key(account) { List(3) { rememberScrollState() } }
     val mapNotesScroll = key(account) { rememberLazyListState() }
     val bounds = remember(account) { mutableStateMapOf<String, Rect>() }
     val focused = remember(account) { mutableStateMapOf<String, Boolean>() }
@@ -159,7 +158,6 @@ fun MoeriseApp(mobile: MobileController, onEditorReady: () -> Unit = {}) {
         scope.launch { drawer.close() }
     }
     fun startWalk(note: Note) { navigate("walk"); mobile.walk.start(note.name) }
-    fun startInsight(note: Note) { navigate("insights"); mobile.insights.seed(note.name) }
     fun editNote(note: Note) { mobile.editNote(note) }
     LaunchedEffect(homeNote.name) {
         if (homeNote.name != null) {
@@ -258,10 +256,8 @@ fun MoeriseApp(mobile: MobileController, onEditorReady: () -> Unit = {}) {
                         page == "settings" -> SettingsScreen(mobile, strings, onMenu = ::openDrawer, onSearch = { searchOpen = !searchOpen })
                         page in setOf("review", "walk") -> DiscoveryScreen(page, mobile, strings,
                             if (page == "review") reviewScroll else walkScroll, onMenu = ::openDrawer,
-                            onSearch = { searchOpen = !searchOpen }, onInsight = ::startInsight, onWalk = ::startWalk,
+                            onSearch = { searchOpen = !searchOpen }, onWalk = ::startWalk,
                             onSettings = { navigate("settings") })
-                        page == "insights" -> InsightScreen(mobile, strings, insightScroll,
-                            onMenu = ::openDrawer, onSearch = { searchOpen = !searchOpen }, onSettings = { navigate("settings") })
                         page == "map" -> StarMapScreen(mobile, strings, mapNotesScroll,
                             onMenu = ::openDrawer, onSearch = { searchOpen = !searchOpen })
                         else -> Column(Modifier.safeDrawingPadding().imePadding().fillMaxSize().testTag("home")) {
@@ -326,7 +322,6 @@ fun MoeriseApp(mobile: MobileController, onEditorReady: () -> Unit = {}) {
                                             onState = { mobile.changeNoteState(it) },
                                             onDelete = { mobile.deleteNote(it) },
                                             onWalk = { startWalk(it) },
-                                            onInsight = { startInsight(it) },
                                             online = connection.connected,
                                             busy = noteAction.busy,
                                             error = noteAction.error,

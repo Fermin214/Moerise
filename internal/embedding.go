@@ -58,7 +58,7 @@ func (c EmbeddingConfig) Validate() error {
 	if key == "" || strings.ContainsFunc(key, func(r rune) bool { return r < 33 || r > 126 }) {
 		return bad("api_key")
 	}
-	if !validLLMName(configured(c.Model)) || (c.Protocol == "dashscope" && configured(c.Model) != "qwen3.7-text-embedding") {
+	if !validModelName(configured(c.Model)) || (c.Protocol == "dashscope" && configured(c.Model) != "qwen3.7-text-embedding") {
 		return bad("model")
 	}
 	if c.Dimensions < 1 || c.Dimensions > 16384 ||

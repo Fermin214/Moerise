@@ -16,15 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	"unicode/utf8"
 )
-
-const DefaultInsightPrompt = "请围绕所选笔记探索它们之间的联系、思想变化、潜在矛盾和新的可能性。区分笔记原意与新提出的联想和假设。"
-const DefaultInsightPromptEnglish = "Explore connections, changes in thinking, possible contradictions and new possibilities across the selected notes. Distinguish what the notes say from new associations and hypotheses."
-
-type InsightsConfig struct {
-	DefaultPrompt string `json:"default_prompt"`
-}
 
 type ProductSettings struct {
 	Timezone      string             `json:"timezone"`
@@ -32,9 +24,7 @@ type ProductSettings struct {
 	Notifications NotificationConfig `json:"notifications"`
 	Embedding     EmbeddingConfig    `json:"embedding"`
 	Stargazing    StargazingConfig   `json:"stargazing"`
-	LLM           LLMConfig          `json:"llm"`
 	Channel       ChannelConfig      `json:"channel"`
-	Insights      InsightsConfig     `json:"insights"`
 
 	Daily                *dailySettings             `json:"daily,omitempty"`
 	NotificationChannels map[string]ChannelConfig   `json:"notification_channels,omitempty"`
@@ -71,21 +61,20 @@ type ChannelCapabilities struct {
 }
 
 type SettingsView struct {
-	Version              int64                   `json:"version"`
-	Settings             map[string]any          `json:"settings"`
-	Secrets              map[string]SecretStatus `json:"secrets"`
-	ChannelCapabilities  ChannelCapabilities     `json:"channel_capabilities"`
-	DefaultInsightPrompt string                  `json:"default_insight_prompt"`
-	ChannelStatus        map[string]botStatus    `json:"channel_status"`
+	Version             int64                   `json:"version"`
+	Settings            map[string]any          `json:"settings"`
+	Secrets             map[string]SecretStatus `json:"secrets"`
+	ChannelCapabilities ChannelCapabilities     `json:"channel_capabilities"`
+	ChannelStatus       map[string]botStatus    `json:"channel_status"`
 }
 
 func productSettings(s Settings) ProductSettings {
-	return ProductSettings{s.Timezone, s.Review, s.Notifications, s.Embedding, s.Stargazing, s.LLM, s.Channel, s.Insights, s.daily, s.notificationChannels, cloneRawMap(s.productExtras)}
+	return ProductSettings{s.Timezone, s.Review, s.Notifications, s.Embedding, s.Stargazing, s.Channel, s.daily, s.notificationChannels, cloneRawMap(s.productExtras)}
 }
 
 func (p ProductSettings) apply(s Settings) Settings {
 	s.Timezone, s.Review, s.Notifications = p.Timezone, p.Review, p.Notifications
-	s.Embedding, s.LLM, s.Channel, s.Insights = p.Embedding, p.LLM, p.Channel, p.Insights
+	s.Embedding, s.Channel = p.Embedding, p.Channel
 	s.Stargazing = p.Stargazing
 	s.daily = p.Daily
 	s.notificationChannels = p.NotificationChannels
@@ -95,7 +84,7 @@ func (p ProductSettings) apply(s Settings) Settings {
 
 var productExtraSectionKeys = map[string]bool{
 	"review": true, "notifications": true, "embedding": true,
-	"stargazing": true, "llm": true, "channel": true, "insights": true, "daily": true,
+	"stargazing": true, "channel": true, "daily": true,
 }
 
 func cloneRawMap(source map[string]json.RawMessage) map[string]json.RawMessage {
@@ -265,7 +254,7 @@ func decryptProduct(settings Settings, version int64, body []byte) (Settings, er
 	if err != nil {
 		return settings, bad
 	}
-	product := ProductSettings{Stargazing: StargazingConfig{Enabled: true, LLMNaming: true}}
+	product := ProductSettings{Stargazing: StargazingConfig{Enabled: true}}
 	if tolerantJSON(bytes.NewReader(plain), &product) != nil {
 		return settings, bad
 	}
@@ -291,22 +280,19 @@ func storedProduct(db *sql.DB, settings Settings) (Settings, int64, error) {
 }
 
 func deploymentProduct(db *sql.DB, settings Settings) (Settings, error) {
+	if !settings.stargazingExplicit && !settings.Stargazing.Enabled {
+		legacy, err := legacyDeployment(db, "legacy_stargazing_deployments", settings.Memos.InstanceID)
+		if err != nil {
+			return settings, err
+		}
+		settings.Stargazing.Enabled = legacy
+	}
 	if settings.Channel.FeishuMode != "" {
 		return settings, nil
 	}
-	var migrated, bound, legacy bool
-	if err := db.QueryRow(`SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='legacy_channel_deployments'),
-		EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='bindings')`).Scan(&migrated, &bound); err != nil {
+	legacy, err := legacyDeployment(db, "legacy_channel_deployments", settings.Memos.InstanceID)
+	if err != nil {
 		return settings, err
-	}
-	if bound {
-		query := `SELECT EXISTS(SELECT 1 FROM bindings WHERE instance_id=?)`
-		if migrated {
-			query = `SELECT EXISTS(SELECT 1 FROM legacy_channel_deployments WHERE instance_id=?)`
-		}
-		if err := db.QueryRow(query, settings.Memos.InstanceID).Scan(&legacy); err != nil {
-			return settings, err
-		}
 	}
 	if legacy {
 		product := productSettings(settings)
@@ -315,6 +301,24 @@ func deploymentProduct(db *sql.DB, settings Settings) (Settings, error) {
 	}
 	settings.Channel.FeishuMode = "websocket"
 	return settings, nil
+}
+
+func legacyDeployment(db *sql.DB, marker, instance string) (bool, error) {
+	var migrated, bound, legacy bool
+	if err := db.QueryRow(`SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?),
+		EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='bindings')`, marker).Scan(&migrated, &bound); err != nil {
+		return false, err
+	}
+	if bound {
+		query := `SELECT EXISTS(SELECT 1 FROM bindings WHERE instance_id=?)`
+		if migrated {
+			query = `SELECT EXISTS(SELECT 1 FROM ` + marker + ` WHERE instance_id=?)`
+		}
+		if err := db.QueryRow(query, instance).Scan(&legacy); err != nil {
+			return false, err
+		}
+	}
+	return legacy, nil
 }
 
 // 部署值只初始化一次，后续读取持久版本。
@@ -376,8 +380,8 @@ func (s *Store) initializeProductSettings() error {
 
 func secretFields(product *ProductSettings) map[string]**string {
 	return map[string]**string{
-		"llm_api_key": &product.LLM.APIKey, "embedding_api_key": &product.Embedding.APIKey,
-		"app_secret": &product.Channel.AppSecret, "verification_token": &product.Channel.VerificationToken,
+		"embedding_api_key": &product.Embedding.APIKey,
+		"app_secret":        &product.Channel.AppSecret, "verification_token": &product.Channel.VerificationToken,
 		"encrypt_key": &product.Channel.EncryptKey, "webhook_url": &product.Channel.WebhookURL,
 		"webhook_secret": &product.Channel.WebhookSecret,
 		"bot_token":      &product.Channel.BotToken,
@@ -395,9 +399,7 @@ func publicProduct(product ProductSettings) map[string]any {
 	notifications := result["notifications"].(map[string]any)
 	clocks := product.Notifications.Clocks()
 	notifications["times"] = clocks
-	for _, section := range []string{"llm", "embedding"} {
-		delete(result[section].(map[string]any), "api_key")
-	}
+	delete(result["embedding"].(map[string]any), "api_key")
 	channel := result["channel"].(map[string]any)
 	for _, key := range []string{"app_secret", "verification_token", "encrypt_key", "webhook_url", "webhook_secret", "bot_token", "qq_app_secret", "webhook_app_secret"} {
 		delete(channel, key)
@@ -431,7 +433,7 @@ func (s *Store) settingsView() SettingsView {
 		channel.Kind == "feishu-webhook" && configured(channel.WebhookURL) != ""
 	images := text && (channel.Kind == "feishu-app" || channel.Kind == "telegram" || channel.Kind == "feishu-webhook" && product.Channel.WebhookImages)
 	return SettingsView{s.productVersion, publicProduct(product), secrets,
-		ChannelCapabilities{text, images, record}, DefaultInsightPrompt, s.botStatuses()}
+		ChannelCapabilities{text, images, record}, s.botStatuses()}
 }
 
 func mergeSettings(target map[string]any, changes map[string]json.RawMessage) error {
@@ -514,10 +516,6 @@ func (s *Store) prepareSettings(update SettingsUpdate) (Settings, error) {
 		}
 	}
 	result := product.apply(s.Settings)
-	if !utf8.ValidString(result.Insights.DefaultPrompt) || strings.TrimSpace(result.Insights.DefaultPrompt) == "" ||
-		utf8.RuneCountInString(result.Insights.DefaultPrompt) > 16000 {
-		return s.Settings, bad
-	}
 	if err := result.Validate(); err != nil {
 		return s.Settings, bad
 	}

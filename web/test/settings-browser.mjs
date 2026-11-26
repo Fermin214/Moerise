@@ -14,23 +14,20 @@ const runtime = process.env.MOERISE_PLAYWRIGHT_MODULE;
 const { [process.env.MOERISE_PLAYWRIGHT_ENGINE || 'chromium']: browserType } = runtime ? await import(pathToFileURL(runtime).href) : await import('playwright');
 function settings() {
   return {
-    version: 1, default_insight_prompt: '内置默认洞察 Prompt',
+    version: 1,
     settings: {
       timezone: 'Asia/Hong_Kong',
       review: { count: 3, min_age_hours: 72, recent_days: 7, include_archived: false },
       notifications: { enabled: false, times: ['09:00'] },
-      llm: { enabled: false, protocol: 'openai-compatible', base_url: null, model: null, timeout_seconds: 90,
-        max_concurrency: 2, max_retries: 2, max_output_tokens: 2048 },
       embedding: { enabled: false, provider: 'bailian', protocol: 'dashscope', base_url: null,
         model: 'qwen3.7-text-embedding', dimensions: 1024, send_dimensions: false, batch_size: 20, timeout_seconds: 30,
         max_concurrency: 2, max_retries: 2, query_instruction: null },
       channel: { kind: 'none', app_id: null, user_open_id: null, destination: null, feishu_mode: 'websocket',
         qq_app_id: null, webhook_images: false, webhook_app_id: null },
-      insights: { default_prompt: '用户自定义 Prompt' },
-      stargazing: { enabled: true, llm_naming: true },
+      stargazing: { enabled: true },
     },
-    secrets: Object.fromEntries(['llm_api_key', 'embedding_api_key', 'app_secret', 'verification_token',
-      'encrypt_key', 'webhook_url', 'webhook_secret', 'bot_token', 'qq_app_secret', 'webhook_app_secret'].map(name => [name, { configured: name === 'llm_api_key' }])),
+    secrets: Object.fromEntries(['embedding_api_key', 'app_secret', 'verification_token',
+      'encrypt_key', 'webhook_url', 'webhook_secret', 'bot_token', 'qq_app_secret', 'webhook_app_secret'].map(name => [name, { configured: name === 'embedding_api_key' }])),
     channel_status: {},
     channel_capabilities: { text: false, images: false, record: false },
   };
@@ -64,7 +61,7 @@ async function fixture(t, language = 'zh-CN', returning = true) {
       const model = group => ({ enabled: state.value.settings[group].enabled,
         configured: state.value.secrets[`${group}_api_key`].configured,
         protocol: state.value.settings[group].protocol, model: state.value.settings[group].model });
-      json({ version: state.value.version, llm: model('llm'), embedding: model('embedding'), index_status: state.index,
+      json({ version: state.value.version, embedding: model('embedding'), index_status: state.index,
         vector_index: { ready: state.index === 'ready', active: null, building: state.index === 'building'
           ? { chunks: 12, completed_chunks: 4, last_error: null } : null } });
       return;
@@ -81,7 +78,7 @@ async function fixture(t, language = 'zh-CN', returning = true) {
         algorithm: 'umap-balanced-v1', projection_revision: 0, layout_version: '', layout_frame: '', vector_generation: '', points: [] });
       return;
     }
-    if (/^\/api\/app\/v1\/models\/(embedding|llm)\/check$/.test(path)) {
+    if (/^\/api\/app\/v1\/models\/embedding\/check$/.test(path)) {
       assert.equal(req.headers['x-csrf-token'], 'csrf-settings');
       const body = JSON.parse(raw); state.checks.push({ path, ...body });
       if (body.version !== state.value.version) { error('SETTINGS_CONFLICT', 409); return; }
@@ -90,7 +87,6 @@ async function fixture(t, language = 'zh-CN', returning = true) {
       json({ version: body.version, status: 'ok', duration_ms: 17 }); return;
     }
     if (path === '/api/app/v1/notes') { json({ notes: [], next_page_token: '' }); return; }
-    if (path === '/api/app/v1/chats' && req.method === 'GET') { json({ chats: [], next_page_token: '' }); return; }
     if (path === '/api/app/v1/admin/notifications') {
       if (new URL(req.url, 'http://localhost').searchParams.get('kind') !== 'review') { error('INVALID_ARGUMENT', 422); return; }
       json({ notifications: state.deliveries }); return;
@@ -287,7 +283,7 @@ test('lazy page modules isolate navigation during loading and recover from a fai
   const { page, state, url, errors } = await fixture(t);
   const modules = [];
   page.on('request', request => {
-    if (/\/(?:settings|insights|map)\.js$/.test(request.url())) modules.push(request.url());
+    if (/\/(?:settings|map)\.js$/.test(request.url())) modules.push(request.url());
   });
   await page.goto(url); await login(page);
   await page.locator('#empty').waitFor({ state: 'visible' });
@@ -317,7 +313,7 @@ test('lazy page modules isolate navigation during loading and recover from a fai
   assert.deepEqual(errors, []);
 });
 
-test('settings browser saves public fields, explicit secrets, prompt and multi-slot times with session CSRF', { timeout: 60_000 }, async t => {
+test('settings browser saves public fields, explicit secrets and multi-slot times with session CSRF', { timeout: 60_000 }, async t => {
   const { page, state, url, errors } = await fixture(t);
   await page.clock.setFixedTime(new Date('2026-10-31T18:00:00Z'));
   await page.goto(url); await login(page);
@@ -327,7 +323,7 @@ test('settings browser saves public fields, explicit secrets, prompt and multi-s
   assert.equal(state.gets, 1);
   assert.equal(await page.locator('#settings-page input[type="password"]:visible').count(), 0);
   await setting(page, 'timezone').fill('UTC');
-  await setting(page, 'stargazing.llm_naming').uncheck();
+  await setting(page, 'stargazing.enabled').uncheck();
   await tab(page, 'review');
   await setting(page, 'review.count').fill('5');
   await setting(page, 'review.min_age_hours').fill('48');
@@ -338,22 +334,19 @@ test('settings browser saves public fields, explicit secrets, prompt and multi-s
   await page.getByRole('button', { name: '添加时段' }).click();
   await page.getByLabel('推送时段 2', { exact: true }).fill('18:30');
   await tab(page, 'ai');
-  await setting(page, 'llm.enabled').check();
-  await setting(page, 'llm.base_url').fill('https://llm.example.test/v1');
-  await setting(page, 'llm.model').fill('test-llm');
-  await operation(page, 'LLM API Key').selectOption('replace');
-  await secret(page, 'LLM API Key').fill('••••••••');
+  await setting(page, 'embedding.enabled').check();
+  await setting(page, 'embedding.base_url').fill('https://embedding.example.test/v1');
+  await setting(page, 'embedding.model').fill('test-embedding');
+  await operation(page, 'Embedding API Key').selectOption('replace');
+  await secret(page, 'Embedding API Key').fill('••••••••');
   await page.getByRole('button', { name: '保存设置', exact: true }).click();
   await page.getByRole('alert').filter({ hasText: '真实的新值' }).waitFor();
   assert.equal(state.patches.length, 0);
-  await secret(page, 'LLM API Key').fill('new-llm-key');
-  await operation(page, 'Embedding API Key').selectOption('clear');
+  await secret(page, 'Embedding API Key').fill('new-embedding-key');
   await tab(page, 'review');
   assert.equal(await operation(page, 'Webhook URL').isVisible(), false);
   await secret(page, 'Webhook URL').fill('https://hook.example.test/token');
   await tab(page, 'ai');
-  await page.getByRole('button', { name: '恢复默认', exact: true }).click();
-  assert.equal(await setting(page, 'insights.default_prompt').inputValue(), state.value.default_insight_prompt);
   state.csrf = true;
   await page.getByRole('button', { name: '保存设置', exact: true }).click();
   await page.getByRole('status').filter({ hasText: '设置已保存' }).waitFor();
@@ -361,17 +354,16 @@ test('settings browser saves public fields, explicit secrets, prompt and multi-s
   await page.locator('#calendar button.today[aria-label^="2026-10-31"]').waitFor();
   const patch = state.patches[0];
   assert.equal(patch.version, 1);
-  assert.deepEqual(patch.settings.stargazing, { llm_naming: false });
+  assert.deepEqual(patch.settings.stargazing, { enabled: false });
   assert.deepEqual(patch.settings.review, { count: 5, min_age_hours: 48, recent_days: 14, include_archived: true });
   assert.deepEqual(patch.settings.notifications, { enabled: true, times: ['09:00', '18:30'] });
-  assert.deepEqual(patch.secrets.llm_api_key, { action: 'replace', value: 'new-llm-key' });
-  assert.deepEqual(patch.secrets.embedding_api_key, { action: 'clear' });
+  assert.deepEqual(patch.secrets.embedding_api_key, { action: 'replace', value: 'new-embedding-key' });
   assert.equal(patch.secrets.webhook_url.action, 'replace');
   assert.equal(patch.secrets.app_secret, undefined);
-  assert.equal(patch.settings.llm.api_key, undefined);
+  assert.equal(patch.settings.embedding.api_key, undefined);
   assert.equal(await page.locator('#settings-page input[type="password"]:visible').count(), 0);
   await tab(page, 'ai');
-  assert.equal(await operation(page, 'LLM API Key').inputValue(), 'keep');
+  assert.equal(await operation(page, 'Embedding API Key').inputValue(), 'keep');
   await tab(page, 'review');
   assert.equal(await operation(page, 'Webhook URL').inputValue(), 'keep');
   assert.equal(await setting(page, 'channel.webhook_app_id').isVisible(), false);
@@ -414,15 +406,15 @@ test('injected requests cannot publish late success or expiry after settings dis
     view.destroy(); lateGET.resolve(initial); await first;
     const lateGETIgnored = host.childElementCount === 0 && lateGET.options.controller.signal.aborted;
     const second = view.mount(host); requests.shift().resolve(initial); await second;
-    const action = host.querySelector('#settings-secret-llm_api_key');
+    const action = host.querySelector('#settings-secret-embedding_api_key');
     action.value = 'replace'; action.dispatchEvent(new Event('change'));
-    const input = host.querySelector('[aria-label="LLM API Key新值"]');
+    const input = host.querySelector('[aria-label="Embedding API Key新值"]');
     input.value = 'transient-secret';
     host.querySelector('form').requestSubmit();
     const latePATCH = requests.shift();
-    const submittedRealSecret = latePATCH.options.body.secrets.llm_api_key.value === 'transient-secret';
+    const submittedRealSecret = latePATCH.options.body.secrets.embedding_api_key.value === 'transient-secret';
     view.destroy();
-    const removedSecret = input.value === '' && latePATCH.options.body.secrets.llm_api_key.value === undefined;
+    const removedSecret = input.value === '' && latePATCH.options.body.secrets.embedding_api_key.value === undefined;
     latePATCH.resolve({ ...initial, version: 2 });
     await new Promise(resolve => setTimeout(resolve, 0));
     const third = view.mount(host), lateExpiry = requests.shift();
@@ -444,7 +436,7 @@ test('model polling stays single after saving and invalidates results on version
     const originalSetTimeout = window.setTimeout, originalClearTimeout = window.clearTimeout;
     const timers = new Map(), models = [], checks = [];
     let nextTimer = -1, snapshot = structuredClone(initial);
-    for (const group of ['llm', 'embedding']) snapshot.settings[group].enabled = true;
+    snapshot.settings.embedding.enabled = true;
     window.setTimeout = (callback, delay, ...args) => {
       if (delay !== 5000) return originalSetTimeout(callback, delay, ...args);
       const id = nextTimer--; timers.set(id, () => callback(...args)); return id;
@@ -459,7 +451,7 @@ test('model polling stays single after saving and invalidates results on version
     };
     const status = (version, index_status) => ({
       version, index_status,
-      llm: { enabled: true, configured: true }, embedding: { enabled: true, configured: true },
+      embedding: { enabled: true, configured: true },
       vector_index: { building: { chunks: 12, completed_chunks: 4, last_error: 'EMBEDDING_AUTH' } },
     });
     const view = createSettingsPage({
@@ -490,8 +482,8 @@ test('model polling stays single after saving and invalidates results on version
       const modelBlocks = host.querySelectorAll('.settings-model');
       modelBlocks[0].querySelector('button').click();
       checks[0].resolve({ version: 2, duration_ms: 17 }); await settle();
-      const successfulCheckShown = host.querySelector('#settings-llm-check-result').textContent.includes('连接正常');
-      modelBlocks[1].querySelector('button').click();
+      const successfulCheckShown = host.querySelector('#settings-embedding-check-result').textContent.includes('连接正常');
+      modelBlocks[0].querySelector('button').click();
       const pendingCheckShown = host.querySelector('#settings-embedding-check-result').textContent.includes('正在检查');
       poll(); models[3].resolve(status(3, 'ready')); await settle();
       const conflictClearsResults = [...host.querySelectorAll('[id$="-check-result"]')].every(node => !node.textContent) &&
@@ -523,11 +515,6 @@ test('model settings pair protocols, check saved versions and discard obsolete r
   await page.goto(`${url}/settings`); await login(page); await pageReady(page);
   await tab(page, 'ai');
   await page.locator('#settings-index-status').filter({ hasText: '已关闭' }).waitFor();
-  await page.locator('a[data-route][href="/insights"]').click();
-  await page.locator('.insights-page[aria-busy="false"]').waitFor();
-  assert.ok(await page.locator('[data-chat="send"]').isDisabled());
-  await page.locator('a[data-route][href="/settings"]').click(); await pageReady(page);
-  await tab(page, 'ai');
   const check = page.getByRole('button', { name: '检查 Embedding 连接', exact: true });
   assert.ok(await check.isDisabled());
   await setting(page, 'embedding.enabled').check();
@@ -591,17 +578,17 @@ test('conflict requires reload, busy can retry, and leaving or expiring removes 
   const { page, state, url, errors } = await fixture(t);
   await page.goto(`${url}/settings`); await login(page); await pageReady(page);
   await tab(page, 'ai');
-  await operation(page, 'LLM API Key').selectOption('replace'); await secret(page, 'LLM API Key').fill('temporary-key');
-  await operation(page, 'LLM API Key').selectOption('keep');
-  assert.equal(await secret(page, 'LLM API Key').inputValue(), '');
-  await operation(page, 'LLM API Key').selectOption('replace'); await secret(page, 'LLM API Key').fill('conflict-key');
+  await operation(page, 'Embedding API Key').selectOption('replace'); await secret(page, 'Embedding API Key').fill('temporary-key');
+  await operation(page, 'Embedding API Key').selectOption('keep');
+  assert.equal(await secret(page, 'Embedding API Key').inputValue(), '');
+  await operation(page, 'Embedding API Key').selectOption('replace'); await secret(page, 'Embedding API Key').fill('conflict-key');
   await tab(page, 'review');
   await setting(page, 'review.count').fill('4'); state.fail = 'SETTINGS_CONFLICT';
   await page.getByRole('button', { name: '保存设置', exact: true }).click();
   await page.getByRole('alert').filter({ hasText: '其他页面更新' }).waitFor();
   assert.ok(await page.getByRole('button', { name: '保存设置', exact: true }).isDisabled());
   assert.equal(await setting(page, 'review.count').inputValue(), '4');
-  assert.equal(await secret(page, 'LLM API Key').inputValue(), '');
+  assert.equal(await secret(page, 'Embedding API Key').inputValue(), '');
   await page.getByRole('button', { name: '重新加载设置' }).click();
   await page.getByRole('button', { name: '放弃修改', exact: true }).click();
   await pageReady(page);
@@ -613,7 +600,7 @@ test('conflict requires reload, busy can retry, and leaving or expiring removes 
   await page.getByRole('button', { name: '保存设置', exact: true }).click();
   await page.getByRole('status').filter({ hasText: '设置已保存' }).waitFor();
   await tab(page, 'ai');
-  await operation(page, 'LLM API Key').selectOption('replace'); await secret(page, 'LLM API Key').fill('route-key');
+  await operation(page, 'Embedding API Key').selectOption('replace'); await secret(page, 'Embedding API Key').fill('route-key');
   await page.locator('a[data-route][href="/review"]').click();
   await page.getByRole('button', { name: '放弃修改', exact: true }).click();
   await page.locator('#settings-page').waitFor({ state: 'detached' });
@@ -629,7 +616,7 @@ test('conflict requires reload, busy can retry, and leaving or expiring removes 
   assert.equal(await page.locator('#settings-page').count(), 0);
   await page.locator('a[data-route][href="/settings"]').click(); await pageReady(page);
   await tab(page, 'ai');
-  await operation(page, 'LLM API Key').selectOption('replace'); await secret(page, 'LLM API Key').fill('logout-key');
+  await operation(page, 'Embedding API Key').selectOption('replace'); await secret(page, 'Embedding API Key').fill('logout-key');
   state.hold = true;
   await page.getByRole('button', { name: '保存设置', exact: true }).click();
   await page.waitForFunction(() => document.querySelector('.settings-form')?.getAttribute('aria-busy') === 'true');
@@ -641,7 +628,7 @@ test('conflict requires reload, busy can retry, and leaving or expiring removes 
   assert.equal(await page.locator('#settings-page').count(), 0);
   await login(page); await pageReady(page);
   await tab(page, 'ai');
-  await operation(page, 'LLM API Key').selectOption('replace'); await secret(page, 'LLM API Key').fill('expired-key');
+  await operation(page, 'Embedding API Key').selectOption('replace'); await secret(page, 'Embedding API Key').fill('expired-key');
   state.session = false;
   await page.getByRole('button', { name: '重新加载设置' }).click();
   await page.getByRole('button', { name: '放弃修改', exact: true }).click();
@@ -729,11 +716,6 @@ test('settings button changes enable refresh protection and returning to saved v
     const reload = page.reload({ timeout: 1500 }).catch(() => {});
     await shown; await reload;
   };
-  await tab(page, 'ai');
-  await page.getByRole('button', { name: '恢复默认', exact: true }).click();
-  await rejectReload();
-  assert.equal(await setting(page, 'insights.default_prompt').inputValue(), '内置默认洞察 Prompt');
-  await setting(page, 'insights.default_prompt').fill('用户自定义 Prompt');
   await tab(page, 'review');
   await page.getByRole('button', { name: '移除', exact: true }).nth(1).click();
   await rejectReload();
@@ -750,7 +732,6 @@ test('settings button changes enable refresh protection and returning to saved v
   await page.reload(); await pageReady(page);
   page.off('dialog', unexpected);
   assert.deepEqual(dialogs, []);
-  assert.equal(await setting(page, 'insights.default_prompt').inputValue(), '用户自定义 Prompt');
   assert.equal(await page.locator('input[type="time"]').count(), 2);
   assert.deepEqual(errors, []);
 });
@@ -762,21 +743,20 @@ test('English settings switch language without clearing secrets, changing values
   await tab(page, 'review');
   await setting(page, 'review.count').fill('7');
   await tab(page, 'ai');
-  await page.getByRole('combobox', { name: 'LLM API Key operation', exact: true }).selectOption('replace');
-  await page.getByLabel('New LLM API Key value', { exact: true }).fill('new-private-key');
+  await page.getByRole('combobox', { name: 'Embedding API Key operation', exact: true }).selectOption('replace');
+  await page.getByLabel('New Embedding API Key value', { exact: true }).fill('new-private-key');
   await tab(page, 'general');
   await page.locator('#settings-language').selectOption('zh-CN');
   assert.equal(await setting(page, 'review.count').inputValue(), '7');
-  assert.equal(await secret(page, 'LLM API Key').inputValue(), 'new-private-key');
-  assert.equal(await setting(page, 'insights.default_prompt').inputValue(), '用户自定义 Prompt');
+  assert.equal(await secret(page, 'Embedding API Key').inputValue(), 'new-private-key');
   assert.equal(state.patches.length, 0);
   await page.locator('#settings-language').selectOption('en');
   await page.getByRole('button', { name: 'Save settings', exact: true }).click();
   await page.getByText('Settings saved.', { exact: true }).waitFor();
   assert.equal(state.patches.length, 1);
   assert.equal(state.patches[0].settings.review.count, 7);
-  assert.equal(state.patches[0].secrets.llm_api_key.value, 'new-private-key');
-  assert.equal(await page.getByLabel('New LLM API Key value', { exact: true }).inputValue(), '');
+  assert.equal(state.patches[0].secrets.embedding_api_key.value, 'new-private-key');
+  assert.equal(await page.getByLabel('New Embedding API Key value', { exact: true }).inputValue(), '');
   await page.locator('#settings-language').selectOption('auto');
   assert.equal(await page.locator('html').getAttribute('lang'), 'en');
   assert.equal(await page.evaluate(() => localStorage.getItem('moerise.language')), null);
@@ -796,11 +776,11 @@ test('settings tabs retain edits, expose advanced fields and reveal invalid fiel
   assert.equal(await page.locator('#settings-page [role="tab"]').count(), 4);
   await tab(page, 'ai');
   assert.equal(await page.locator('#settings-page details').count(), 0);
-  assert.ok(await setting(page, 'llm.timeout_seconds').isVisible());
+  assert.ok(await setting(page, 'embedding.timeout_seconds').isVisible());
   assert.ok(await setting(page, 'embedding.batch_size').isVisible());
-  await setting(page, 'llm.timeout_seconds').fill('');
-  await operation(page, 'LLM API Key').selectOption('replace');
-  await secret(page, 'LLM API Key').fill('retained-across-tabs');
+  await setting(page, 'embedding.timeout_seconds').fill('');
+  await operation(page, 'Embedding API Key').selectOption('replace');
+  await secret(page, 'Embedding API Key').fill('retained-across-tabs');
   await tab(page, 'review');
   await setting(page, 'review.count').fill('7');
   await page.locator('#settings-tab-review').focus();
@@ -810,18 +790,18 @@ test('settings tabs retain edits, expose advanced fields and reveal invalid fiel
   assert.equal(await page.locator('#settings-tab-privacy').getAttribute('aria-selected'), 'true');
   await tab(page, 'review');
   assert.equal(await setting(page, 'review.count').inputValue(), '7');
-  assert.equal(await secret(page, 'LLM API Key').inputValue(), 'retained-across-tabs');
+  assert.equal(await secret(page, 'Embedding API Key').inputValue(), 'retained-across-tabs');
   assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
   await page.getByRole('button', { name: '保存设置', exact: true }).click();
   assert.equal(await page.locator('#settings-tab-ai').getAttribute('aria-selected'), 'true');
-  assert.ok(await setting(page, 'llm.timeout_seconds').evaluate(node => node === document.activeElement));
+  assert.ok(await setting(page, 'embedding.timeout_seconds').evaluate(node => node === document.activeElement));
   assert.equal(state.patches.length, 0);
-  await setting(page, 'llm.timeout_seconds').fill('91');
+  await setting(page, 'embedding.timeout_seconds').fill('91');
   await page.getByRole('button', { name: '保存设置', exact: true }).click();
   await page.getByText('设置已保存。', { exact: true }).waitFor();
   assert.equal(state.patches[0].settings.review.count, 7);
-  assert.equal(state.patches[0].settings.llm.timeout_seconds, 91);
-  assert.equal(state.patches[0].secrets.llm_api_key.value, 'retained-across-tabs');
+  assert.equal(state.patches[0].settings.embedding.timeout_seconds, 91);
+  assert.equal(state.patches[0].secrets.embedding_api_key.value, 'retained-across-tabs');
   assert.deepEqual(errors, []);
 });
 

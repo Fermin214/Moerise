@@ -25,20 +25,18 @@ CREDENTIALS = {
 DATA_VARIABLES = {
     "APP_ID", "SCREENSHOT_PREFIX", "INPUT_SUFFIX", "NOTE_NAME", "PEER_NOTE_NAME", "NOTE_TEXT",
     "PEER_NOTE_TEXT", "EDITED_TEXT", "PEER_EDITED_TEXT", "DRAFT_TEXT", "QUERY_TEXT", "ATTACHMENT_NAME",
-    "NEW_NOTE_TEXT", "ATTACHMENT_NOTE_TEXT", "CHAT_TITLE", "EXPECTED_ACCOUNT",
-    "ATTACHMENT_SHA256", "DISCONNECT_MARKER", "FOLLOWUP_TEXT",
+    "NEW_NOTE_TEXT", "ATTACHMENT_NOTE_TEXT", "EXPECTED_ACCOUNT",
+    "ATTACHMENT_SHA256",
 }
 TEXT_VARIABLES = {
     "NOTE_TEXT", "PEER_NOTE_TEXT", "EDITED_TEXT", "PEER_EDITED_TEXT", "DRAFT_TEXT", "QUERY_TEXT",
-    "NEW_NOTE_TEXT", "ATTACHMENT_NOTE_TEXT", "CHAT_TITLE", "ATTACHMENT_NAME",
-    "DISCONNECT_MARKER", "FOLLOWUP_TEXT",
+    "NEW_NOTE_TEXT", "ATTACHMENT_NOTE_TEXT", "ATTACHMENT_NAME",
 }
 INPUT_FIELDS = {
     **CREDENTIALS, "EDITED_TEXT": "note_editor_${NOTE_NAME}",
     "PEER_EDITED_TEXT": "note_editor_${PEER_NOTE_NAME}",
     "DRAFT_TEXT": "note_editor", "QUERY_TEXT": "search_query",
     "NEW_NOTE_TEXT": "note_editor", "ATTACHMENT_NOTE_TEXT": "note_editor",
-    "DISCONNECT_MARKER": "chat_question", "FOLLOWUP_TEXT": "chat_question",
 }
 VARIABLE = re.compile(r"\$\{([A-Z][A-Z0-9_]*)\}")
 TIMESTAMP_TEXT = r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}"
@@ -138,7 +136,7 @@ def validate_catalog(value):
         require(isinstance(names, list) and names and all(isinstance(name, str) for name in names),
                 "Groups must contain flow names")
         require(len(set(names)) == len(names) and set(names) <= flows.keys(), "Invalid group membership")
-    require(set(groups) == {"editing", "search", "actions", "insights", "navigation",
+    require(set(groups) == {"editing", "search", "actions", "navigation",
                             "attachments", "language", "home"},
             "Catalog must expose exactly the eight UI groups")
     for group, names in groups.items():
@@ -168,10 +166,9 @@ def validate_phone_checks(value, catalog):
                     for number in item["handoff_items"]), "Phone check requires handoff references")
         coverage.update(item["handoff_items"])
         if kind == "auto":
-            require(set(item) <= fields | {"flow", "requires_capability"} and phase == "post_run"
+            require(set(item) == fields | {"flow"} and phase == "post_run"
                     and item.get("flow") in catalog["flows"] and item["flow"] not in flows,
                     "Automatic phone check must select one distinct catalog flow")
-            require(item.get("requires_capability") in (None, "fail_marker"), "Unknown phone capability")
             flows.add(item["flow"])
         else:
             card = item.get("manual_card")
@@ -182,8 +179,8 @@ def validate_phone_checks(value, catalog):
                     all(isinstance(text, str) and text.strip() for text in
                         (card["start_state"], card["pass_criteria"], card["evidence_hint"], *card["steps"])),
                     "Operation card must describe steps, evidence and pass criteria")
-    require(set(range(1, 19)) | {"upgrade", "offline", "telemetry"} <= coverage,
-            "Phone checklist must cover the complete 0.3.0 handoff")
+    require(coverage == {3, *range(6, 19), "upgrade", "offline", "telemetry"},
+            "Phone checklist must cover the supported handoff checks")
 
 
 def source_ids():
@@ -198,7 +195,7 @@ def source_ids():
     add("MoeriseUi.kt", "search_query_empty", '"search_query_empty"')
     for identifier in ("account_menu", "nav_settings", "nav_archive", "sidebar_account", "sidebar_sync"):
         add("WebSidebar.kt", identifier)
-    for target in ("home", "review", "walk", "insights", "map"):
+    for target in ("home", "review", "walk", "map"):
         add("WebSidebar.kt", "nav_" + target, 'testTag("nav_$target")')
     add("SettingsScreen.kt", "settings_page")
     add("SettingsScreen.kt", "settings_language", 'tag = "settings_language"')
@@ -234,21 +231,6 @@ def source_ids():
                                ("cancel_note", 'cancelTag = "cancel_note_$id"')):
             add("MoeriseApp.kt", prefix + "_${" + variable + "}", source)
         add("MoeriseApp.kt", "note_editor_${" + variable + "}_empty", '"${editorTag}_empty"')
-    for identifier in ("insights_page", "chat_session_menu", "chat_new", "chat_delete", "chat_history",
-                       "chat_add_materials", "chat_material_summary", "chat_error", "chat_insight",
-                       "chat_save_selection", "chat_save_confirm", "chat_question", "chat_send"):
-        add("InsightScreen.kt", identifier)
-    for status in ("completed", "failed"):
-        add("InsightScreen.kt", "chat_reply_" + status, 'testTag("chat_reply_${turn.assistant.status}")')
-    add("InsightScreen.kt", "chat_save_dialog", 'close, "chat_save_dialog")')
-    add("InsightScreen.kt", "chat_history_dialog", 'closeDialog, "chat_history_dialog")')
-    add("InsightPickerDialog.kt", "chat_material_dialog", 'back, "chat_material_dialog")')
-    add("InsightScreen.kt", "chat_history_dialog_close", 'testTag("${tag}_close")')
-    add("InsightPickerDialog.kt", "chat_picker_tab_1", 'tagPrefix = "chat_picker_tab"')
-    for identifier in ("chat_picker_candidates_ready", "chat_picker_all_tags", "chat_apply_materials", "chat_picker_selected"):
-        add("InsightPickerDialog.kt", identifier)
-    for prefix in ("chat_picker_note", "chat_picker_read"):
-        add("InsightPickerDialog.kt", prefix + "_${NOTE_NAME}", f'testTag("{prefix}_${{note.name}}")')
     for page in ("review", "walk"):
         add("DiscoveryScreen.kt", page + "_page", 'testTag("${page}_page")')
     for identifier in ("review_next", "walk_start", "walk_end", "walk_settings",
@@ -262,10 +244,10 @@ def source_ids():
 
 SOURCE_IDS = source_ids()
 NON_TAP_IDS = {
-    "settings_page", "insights_page", "archive_page", "review_page", "walk_page",
-    "home", "map_page", "sidebar_account", "chat_material_dialog", "chat_history_dialog",
+    "settings_page", "archive_page", "review_page", "walk_page",
+    "home", "map_page", "sidebar_account",
     "ime_visible", "ime_hidden",
-    "chat_error", "walk_configuration_error", "discovery_error", "settings_stargazing_enabled",
+    "walk_configuration_error", "discovery_error", "settings_stargazing_enabled",
 }
 
 
@@ -506,7 +488,7 @@ def validate_source_ids():
             path = REPO / "mobile/androidApp/src/main/kotlin/io/github/fermin214/moerise/presentation" / filename
         require(fragment in path.read_text(encoding="utf-8"), "Allowlisted ID fragment is absent from source")
     sidebar = (PRESENTATION / "WebSidebar.kt").read_text(encoding="utf-8")
-    for target in ("home", "review", "walk", "insights", "map"):
+    for target in ("home", "review", "walk", "map"):
         require(f'Triple("{target}",' in sidebar, "Navigation target is absent from source")
     require('testTag("${tagPrefix}_$index")' in (PRESENTATION / "MoeriseUi.kt").read_text(encoding="utf-8"),
             "Indexed tab ID is absent from source")

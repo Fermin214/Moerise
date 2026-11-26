@@ -202,16 +202,13 @@ def validate_coverage(checks, selected, current, stopped, rows):
             if name not in current:
                 valid &= (status == row["ui_status"] == "not_run" and bool(row["not_run_reason"])
                           and row["reuse"] is None)
-            elif status == "not_run":
+            elif status in ("not_run", "skipped"):
                 valid = False
             elif status in ("reused_baseline", "reused_pass"):
                 result = current[name]
                 fingerprint = result.get("flow_sha256")
                 valid &= (row["reuse"] == status and bool(fingerprint)
                           and compatible_pass(result, item["flow"], fingerprint))
-            elif row["cause"] == "capability_missing":
-                valid &= (status == "skipped" and row["ui_status"] == "not_run"
-                          and bool(item.get("requires_capability")) and row["reuse"] is None)
         else:
             valid = (status == row["manual_status"] and status in {
                 "pending", "passed", "failed", "inconclusive", "not_applicable", "environment_blocked"
@@ -1185,7 +1182,6 @@ class PhoneSession:
         runner = MaestroRunner(self.repo, self.adb, self.state["fixture"], self.output / "maestro",
             self.maestro, release=True, phone=True, test_origin=self.state["test_origin"],
             allow_production=self.state["allow_production"], record=self.record_video)
-        runner.fail_marker = args.fail_marker
         self.configure_phone_runner(runner)
         runner.on_test_file = self.mark_test_file
         runner.on_phone_access = before_phone
@@ -1196,8 +1192,6 @@ class PhoneSession:
         def select(flow, engine, *, local_only=False):
             item = by_flow[flow]
             name = item["id"]
-            if item.get("requires_capability") and not getattr(args, item["requires_capability"]):
-                return {"status": "skipped", "cause": "capability_missing", "ui_status": "not_run"}
             fingerprint = self.execution_digest(flow)
             if not args.retry:
                 previous = self.previous_check(item)
@@ -1409,7 +1403,7 @@ def profile_args(args):
     for field in ("apk", "fixture", "sessions_root", "baseline"):
         if getattr(args, field) is None and profile.get(field):
             setattr(args, field, (path.parent / profile[field]).resolve())
-    for field in ("test_origin", "record", "fail_marker", "serial", "confirm_ready", "already_launched",
+    for field in ("test_origin", "record", "serial", "confirm_ready", "already_launched",
                   "non_interactive", "install", "adb", "maestro"):
         if getattr(args, field) is None and field in profile:
             setattr(args, field, profile[field])
@@ -1418,10 +1412,6 @@ def profile_args(args):
     args.sessions_root = Path(args.sessions_root or Path(args.repo) / ".local/phone/sessions").resolve()
     connection = read_json(args.fixture)
     args.test_origin = (args.test_origin or connection["origin"]).rstrip("/")
-    if args.fail_marker and not re.fullmatch(r"[A-Za-z0-9_-]+(?: [A-Za-z0-9_-]+)*", args.fail_marker):
-        raise ValueError("fail_marker 需使用可直接输入的 ASCII 标记")
-    if args.fail_marker and len(args.fail_marker) > 90:
-        raise ValueError("fail_marker 最多 90 字符")
     FixtureAPI(connection, trusted_https=True, test_origin=args.test_origin, allow_production=args.allow_production)
     if urllib.parse.urlsplit(args.test_origin).scheme != "https":
         raise ValueError("正式包真机需要独立 HTTPS 测试服务")
@@ -1653,8 +1643,7 @@ def verify(args, adb):
         if auto:
             results = session.run_checks(auto, baseline, args, run_id, lambda text: prompt(text).lower() == "y", before_phone)
             incomplete = len(results) != len(auto) and not view.get("stopped")
-            code = int(bool(incomplete) or any(result["status"] not in REUSABLE and result.get("cause") != "capability_missing"
-                                              for result in results.values()))
+            code = int(bool(incomplete) or any(result["status"] not in REUSABLE for result in results.values()))
         else:
             code = 0
     except KeyboardInterrupt:
@@ -1738,7 +1727,6 @@ def main():
     parser.add_argument("--profile")
     parser.add_argument("--sessions-root")
     parser.add_argument("--baseline")
-    parser.add_argument("--fail-marker")
     parser.add_argument("--already-launched", action=argparse.BooleanOptionalAction)
     parser.add_argument("--non-interactive", action=argparse.BooleanOptionalAction)
     parser.add_argument("--stop-after")

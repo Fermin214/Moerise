@@ -57,19 +57,10 @@ func writeClientError(w http.ResponseWriter, err error, id string) {
 	detail := map[string]any{
 		"code": service.Code, "message": service.Message, "retryable": service.Retryable, "request_id": id,
 	}
-	var changed *chatSourceChanges
-	if errors.As(err, &changed) {
-		detail["changed_names"] = changed.names
-	}
 	writeJSON(w, service.Status, map[string]any{"error": detail})
 }
 
 func (a *ClientAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if isChatStream(r) {
-		request, cancel := chatRequestContext(r)
-		defer cancel()
-		r = request
-	}
 	check, mapRead, liveRead := isModelCheck(r), isMapRead(r), isLiveListRead(r)
 	if check || mapRead || liveRead {
 		// 认证、运行资源等待及业务调用共享代理超时以内的预算。
@@ -108,7 +99,7 @@ func (a *ClientAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		defer a.app.runtimeMu.RUnlock()
-	} else if !isChatStream(r) && (r.URL.Path != "/api/app/v1/settings" || r.Method != http.MethodPatch) {
+	} else if r.URL.Path != "/api/app/v1/settings" || r.Method != http.MethodPatch {
 		a.app.runtimeMu.RLock()
 		defer a.app.runtimeMu.RUnlock()
 	}
@@ -267,6 +258,27 @@ func (a *ClientAPI) allowLogin(r *http.Request, username string) bool {
 	return true
 }
 
+func clientQueryError(r *http.Request) error {
+	if r.URL.RawQuery == "" {
+		return nil
+	}
+	switch r.URL.Path {
+	case "/api/app/v1/notes", "/api/app/v1/sync/notes", "/api/app/v1/tags", "/api/app/v1/calendar", "/api/app/v1/admin/notifications":
+		if r.Method == http.MethodGet {
+			return nil
+		}
+	case "/api/app/v1/capabilities", "/api/app/v1/session", "/api/app/v1/settings", "/api/app/v1/telemetry",
+		"/api/app/v1/models", "/api/app/v1/models/embedding/check", "/api/app/v1/map", "/api/app/v1/map/rebuild",
+		"/api/app/v1/search", "/api/app/v1/reviews/daily", "/api/app/v1/walks/start", "/api/app/v1/walks/next":
+	default:
+		if !strings.HasPrefix(r.URL.Path, "/api/app/v1/notes/") &&
+			!strings.HasPrefix(r.URL.Path, "/api/app/v1/admin/notifications/") {
+			return nil
+		}
+	}
+	return failure("INVALID_ARGUMENT", "Unexpected query parameters", 422, false)
+}
+
 func (a *ClientAPI) route(w http.ResponseWriter, r *http.Request) (any, int, error) {
 	notFound := failure("NOT_FOUND", "Not Found", 404, false)
 	if !a.app.startup.Web.Enabled || a.app.Sessions == nil {
@@ -275,9 +287,8 @@ func (a *ClientAPI) route(w http.ResponseWriter, r *http.Request) (any, int, err
 	if len(r.Header.Values("Authorization")) != 0 {
 		return nil, 0, failure("FORBIDDEN", "Client requests require a browser session", 403, false)
 	}
-	if r.URL.RawQuery != "" && !(slices.Contains([]string{"/api/app/v1/notes", "/api/app/v1/sync/notes", "/api/app/v1/tags", "/api/app/v1/calendar", "/api/app/v1/chats", "/api/app/v1/chat-materials"}, r.URL.Path) && r.Method == http.MethodGet) &&
-		!(r.URL.Path == "/api/app/v1/admin/notifications" && r.Method == http.MethodGet) {
-		return nil, 0, failure("INVALID_ARGUMENT", "Unexpected query parameters", 422, false)
+	if err := clientQueryError(r); err != nil {
+		return nil, 0, err
 	}
 	path, method := r.URL.Path, r.Method
 	if method != http.MethodGet && method != http.MethodHead {
@@ -291,7 +302,6 @@ func (a *ClientAPI) route(w http.ResponseWriter, r *http.Request) (any, int, err
 		}
 		return map[string]any{"login_methods": []string{"password"}, "notes": "ready",
 			"version": Version, "telemetry": map[string]any{"schema": 1, "allowed": telemetryEnabled(a.app.Store.Settings)},
-			"chat": map[string]bool{"material_selection": true, "save_selection": true},
 			"sync": map[string]bool{"notes": true}}, 200, nil
 	}
 	if path == "/api/app/v1/session" && method == http.MethodPost {
@@ -368,7 +378,7 @@ func (a *ClientAPI) route(w http.ResponseWriter, r *http.Request) (any, int, err
 		}
 	case "/api/app/v1/settings":
 		return a.settingsRoute(w, r)
-	case "/api/app/v1/models", "/api/app/v1/models/embedding/check", "/api/app/v1/models/llm/check":
+	case "/api/app/v1/models", "/api/app/v1/models/embedding/check":
 		return a.modelsRoute(w, r)
 	case "/api/app/v1/map", "/api/app/v1/map/rebuild":
 		return a.mapRoute(r)
@@ -426,10 +436,6 @@ func (a *ClientAPI) route(w http.ResponseWriter, r *http.Request) (any, int, err
 		days, err := a.app.Notes.CalendarLocal(r.Context(), query.Get("state"), query.Get("month"))
 		return map[string]any{"month": query.Get("month"), "days": days}, 200, err
 	default:
-		if path == "/api/app/v1/chats" || strings.HasPrefix(path, "/api/app/v1/chats/") ||
-			path == "/api/app/v1/chat-materials" || path == "/api/app/v1/chat-materials/resolve" {
-			return a.chatRoute(w, r, identity)
-		}
 		if strings.HasPrefix(path, "/api/app/v1/notes/") {
 			return a.noteRoute(w, r)
 		}

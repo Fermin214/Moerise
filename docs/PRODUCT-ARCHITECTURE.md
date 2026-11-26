@@ -7,7 +7,7 @@ Moerise 是基于 Memos 的单用户自托管笔记系统。Moerise Core 负责�
 1. **Memos 权威存储**：Memos 保存原始 Markdown 正文、原生 `#标签`、图片附件与用户账户。Moerise 仅通过 Memos 官方 API 读写和同步，按用户输入原样保存内容。
 2. **单实例单作者绑定**：每个 Moerise 实例绑定 Memos 中的一名作者。即使配置了管理员 PAT，所有读写、同步与检索也只作用于该绑定作者的数据。
 3. **状态与索引分离（双 SQLite 架构）**：
-   - `state.sqlite3`：保存需要备份的产品状态（加密凭据、用户设置、会话、每日回顾计划、AI 对话与通知发送记录）。
+   - `state.sqlite3`：保存需要备份的产品状态（加密凭据、用户设置、会话、每日回顾计划与通知发送记录）。
    - `index.sqlite3`：保存可随时从 Memos 完整重建的派生数据（本地笔记投影、变更日志、FTS5 全文索引、向量语义索引与观星快照）。
 4. **外部接口只读**：面向外部 AI 工具与脚本的 REST API（`/api/ext/v1`）和 MCP Server（`/mcp`）在服务端限制为只读白名单，不开放写入或修改接口。
 
@@ -16,8 +16,8 @@ Moerise 是基于 Memos 的单用户自托管笔记系统。Moerise Core 负责�
 | 组件 | 职责 | 存储与运行形态 |
 | --- | --- | --- |
 | **官方 Memos (0.31.x)** | 笔记原文、标签、附件与账户认证底座。 | 独立服务与数据库 |
-| **Moerise Core（含内嵌 Web）** | 轮询同步 Memos，提供内嵌 Web 静态资源、客户端 `/api/app/v1`、只读 `/api/ext/v1` 与 `/mcp`、本地索引检索、回顾调度、AI 对话编排与机器人收发。 | Go 单体二进制、`state.sqlite3`、`index.sqlite3` |
-| **Android 客户端** | 原生 Jetpack Compose 应用，支持离线写入队列、增量同步、本地索引直读、漫步、洞察与观星。 | Android APK、Room（系统 SQLite）、Keystore |
+| **Moerise Core（含内嵌 Web）** | 轮询同步 Memos，提供内嵌 Web 静态资源、客户端 `/api/app/v1`、只读 `/api/ext/v1` 与 `/mcp`、本地索引检索、回顾调度与机器人收发。 | Go 单体二进制、`state.sqlite3`、`index.sqlite3` |
+| **Android 客户端** | 原生 Jetpack Compose 应用，支持离线写入队列、增量同步、本地索引直读、漫步与观星。 | Android APK、Room（系统 SQLite）、Keystore |
 | **布局服务** | 基于已有笔记向量计算均衡 UMAP、语义主题、增量坐标与星体属性。 | 私有 Python HTTP 服务、`layout-data` 缓存卷 |
 | **消息渠道适配器** | QQ 私人机器人、Telegram 机器人、飞书应用机器人（私聊速记、查询回顾与定时推送）及飞书群 Webhook（定时推送）。 | Core 内部常驻协程驱动 |
 
@@ -53,7 +53,6 @@ flowchart LR
     Worker -->|"已有笔记向量"| Layout["私有 Python 布局服务"]
     Core -.->|"查询向量"| Embedding["Embedding（可选）"]
     Worker -.->|"正文向量"| Embedding
-    Core -.->|"流式对话"| LLM["LLM（可选）"]
 ```
 
 ## 四、核心子系统设计
@@ -72,7 +71,7 @@ flowchart LR
 
 ### 2. 笔记读写与幂等保障
 
-- **本地直读与写直通**：客户端时间线、详情、标签、日历、检索、回顾、漫步、观星及洞察选材直接读取 `index.sqlite3`，并通过 `/api/app/v1/sync/notes` 按游标拉取增量变更与删除墓碑。笔记创建、编辑、归档与删除直通 Memos 官方 API，写成功后即时刷新本地投影并返回 `attachment_receipts`。
+- **本地直读与写直通**：客户端时间线、详情、标签、日历、检索、回顾、漫步及观星直接读取 `index.sqlite3`，并通过 `/api/app/v1/sync/notes` 按游标拉取增量变更与删除墓碑。笔记创建、编辑、归档与删除直通 Memos 官方 API，写成功后即时刷新本地投影并返回 `attachment_receipts`。
 - **防重复创建（幂等键）**：
   - 创建和编辑请求提交 `Idempotency-Key`，Core 将幂等键、内容摘要和已分配的 `memoId` 持久化在 `state.sqlite3`。
   - 网络超时或连接中断后，客户端沿用相同幂等键和请求体重试，避免在 Memos 中生成重复笔记；编辑与删除同时校验 `source_hash` 防止覆盖外部改动。
@@ -84,7 +83,7 @@ flowchart LR
   - 语义通道通过配置的 Embedding 模型生成分块向量，在内存中计算余弦相似度。
   - 混合模式用 Reciprocal Rank Fusion（RRF，k=60）融合关键词、标签与语义通道得分。
 - **观星布局**：
-  - 使用均衡 UMAP 将聚合后的笔记向量降为二维；独立 10 维 UMAP 与 HDBSCAN 识别主题，结合 c-TF-IDF 关键词与可选单次 LLM 调用生成星系名称。
+  - 使用均衡 UMAP 将聚合后的笔记向量降为二维；独立 10 维 UMAP 与 HDBSCAN 识别主题，结合 c-TF-IDF 关键词生成星系名称。
   - 向量索引首次就绪时触发初次布局，之后在每日服务时区 `03:00` 按需检查增量变化或重建，也可手动触发重新生成。增量更新复用未变笔记的坐标与星体属性；计算期间旧快照保持可读。
   - 细节见[观星指南](STARGAZING.md)。
 
@@ -98,12 +97,6 @@ flowchart LR
 - **发送记录与重试**：
   - 通知发送记录使用 `pending`、`running`、`sent`、`failed` 四种状态，长文按平台限制顺序分片发送。
   - 仅平台明确限流时自动退避重试；其余失败保留在发送记录中，由用户在设置页核对后手动重试，沿用原平台幂等标识。
-
-### 5. 上下文 AI 洞察
-
-- **自由选材**：可在正常与归档笔记中按日期、标签或逐条选材，支持上限 20,000 Unicode 码点、最多 1,000 条来源。
-- **多协议适配**：支持 OpenAI Chat Completions、OpenAI Responses 与 Anthropic Messages 流式接口，自动过滤思维链片段，流式期间热更新设置不中断当前生成。
-- **持久化与保存**：会话与消息保存在 `state.sqlite3`。服务重启后未完成生成标记为 `interrupted`，达到输出上限标记为 `truncated`，均保留已生成正文，不自动续调模型。支持将选中的单条或多条消息按顺序保存回 Memos。
 
 ## 五、代码结构与模块职责
 
@@ -121,7 +114,7 @@ flowchart LR
 | `internal/search*.go`、`discovery*.go`、`related.go` | FTS5、向量检索、RRF 融合与随机漫步 |
 | `internal/embedding.go`、`vector_index.go` | 分块、Embedding 适配与增量向量维护 |
 | `internal/map*.go`、`services/layout/` | 观星调度、UMAP 布局服务与快照管理 |
-| `internal/reviews*.go`、`chat*.go`、`llm*.go` | 每日回顾计划、AI 流式会话与多协议模型客户端 |
+| `internal/reviews*.go` | 每日回顾计划 |
 | `internal/notifications.go`、`bot_*.go`、`feishu*.go`、`telegram_*.go` | 通知调度、分片推送与 QQ/Telegram/飞书私聊收发 |
 | `internal/maintenance.go` | 自动热备份、手动备份、恢复、回滚与索引重建 |
 | `web/` | 无第三方运行依赖的原生 JS/HTML/CSS 前端，构建后内嵌进 Core |

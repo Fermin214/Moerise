@@ -32,15 +32,15 @@ USER_AGENT = "Moerise-Android-Acceptance/1.0"
 CHANNEL_FLOWS = {"navigation", "navigation-settings"}
 FLOW_CONTRACT_VERSIONS = {
     "actions": 1, "archive": 1, "attachments": 1, "attachment-cancel": 1,
-    "editing": 1, "home-smoke": 1, "insights": 1, "insights-material": 1,
-    "insights-disconnect": 1, "language": 1, "login": 1, "navigation": 1,
+    "editing": 1, "home-smoke": 1,
+    "language": 1, "login": 1, "navigation": 1,
     "navigation-review": 1, "navigation-walk": 1, "navigation-map": 1, "navigation-settings": 1,
     "recover-draft": 1, "editor-home": 1, "release-smoke": 1, "search": 1, "test-source": 2,
     "test-source-resume": 1, "test-source-welcome": 1,
     "upgrade-smoke": 1,
 }
 SERVER_FLOWS = CHANNEL_FLOWS | {
-    "editing", "release-smoke", "actions", "archive", "attachments", "insights", "insights-disconnect",
+    "editing", "release-smoke", "actions", "archive", "attachments",
 }
 
 
@@ -448,7 +448,6 @@ class MaestroRunner:
                               allow_production=allow_production)
         self.phone = phone
         self.record = record
-        self.fail_marker = None
         self.on_app_launch = None
         self.on_app_launch_attempt = None
         self.on_test_file = None
@@ -493,7 +492,7 @@ class MaestroRunner:
             "NOTE_TEXT": f"Maestro {flow} {marker}", "PEER_NOTE_TEXT": f"Maestro peer {marker}",
             "PEER_EDITED_TEXT": f"Maestro cancelled {marker}",
             "EDITED_TEXT": f"Maestro edited {marker}", "DRAFT_TEXT": f"Maestro draft {marker}",
-            "NEW_NOTE_TEXT": f"Maestro created {marker}", "CHAT_TITLE": f"Maestro chat {marker}",
+            "NEW_NOTE_TEXT": f"Maestro created {marker}",
             "ATTACHMENT_NOTE_TEXT": f"Maestro file {marker}",
             "ATTACHMENT_NAME": f"moerise-maestro-{marker}.txt",
         }
@@ -507,8 +506,6 @@ class MaestroRunner:
                 note = self.api.create(values["NOTE_TEXT"], "maestro-seed-" + marker)
             peer = self.api.create(values["PEER_NOTE_TEXT"], "maestro-peer-" + marker)
             values.update(NOTE_NAME=note["name"], PEER_NOTE_NAME=peer["name"])
-        if flow == "insights-disconnect":
-            values.update(DISCONNECT_MARKER=self.fail_marker, FOLLOWUP_TEXT=f"Maestro followup {marker}")
         if flow == "attachments":
             data = f"Moerise attachment {marker}\n".encode()
             local = self.output / values["ATTACHMENT_NAME"]
@@ -567,53 +564,13 @@ class MaestroRunner:
             content = self.api.request("GET", files[0]["content_url"], binary=True)
             assert hashlib.sha256(content).hexdigest() == values["ATTACHMENT_SHA256"], "attachment_bytes"
             observed.update(attachment_note_count=1, attachment_bytes_match=True)
-        elif flow in ("insights", "insights-disconnect"):
-            token, seen = "", set()
-            matches = []
-            while True:
-                query = urllib.parse.urlencode({"page_size": 100, **({"page_token": token} if token else {})})
-                page = self.api.request("GET", "/api/app/v1/chats?" + query)
-                for summary in page["chats"]:
-                    if summary["material_count"] != 1:
-                        continue
-                    identifier = summary["id"]
-                    if not re.fullmatch(r"[a-f0-9-]{36}", identifier):
-                        raise ValueError("隔离洞察会话 ID 无效")
-                    chat = self.api.request("GET", "/api/app/v1/chats/" + identifier)
-                    if [item["name"] for item in chat["materials"]] == [values["NOTE_NAME"]]:
-                        matches.append(chat)
-                token = page.get("next_page_token")
-                if not token:
-                    break
-                if token in seen or len(seen) >= 100:
-                    raise ValueError("隔离洞察分页无效")
-                seen.add(token)
-            assert len(matches) == 1, "insight_material_count"
-            turns = matches[0]["turns"]
-            if flow == "insights-disconnect":
-                assert len(turns) == 2, "disconnect_turn_count"
-                first, second = turns
-                failed, completed = first["assistant"], second["assistant"]
-                assert first["user"]["content"] == values["DISCONNECT_MARKER"], "disconnect_question"
-                assert (failed["status"] == "failed" and failed["error_code"] == "LLM_PROTOCOL"
-                        and failed["content"].strip()), "disconnect_partial_output"
-                assert second["user"]["content"] == values["FOLLOWUP_TEXT"], "followup_question"
-                assert completed["status"] == "completed" and completed["content"].strip(), "followup_incomplete"
-                return {"failed_partial_reply": True, "completed_followup": True, "turn_count": 2}
-            assert len(turns) == 1 and turns[0]["kind"] == "insight", "insight_generation_count"
-            answer = turns[0]["assistant"]
-            assert answer["status"] == "completed" and answer["content"], "insight_incomplete"
-            assert self.api.note(answer["saved_name"])["content"] == answer["content"], "saved_insight_text"
-            assert self.api.note(values["NOTE_NAME"])["content"] == values["NOTE_TEXT"], "insight_source_mismatch"
-            observed.update(independent_chat_with_exact_material=True, source_text_matches=True, model_request_count=1,
-                            saved_reply_matches=True)
         return observed
 
     def wait_verify(self, flow, values, timeout=30):
         deadline = time.monotonic() + timeout
         pending_assertions = {
             "edited_note_mismatch", "created_note_count", "deleted_note_still_present",
-            "attachment_note_count", "attachment_count", "insight_material_count", "disconnect_turn_count",
+            "attachment_note_count", "attachment_count",
         }
         while True:
             try:

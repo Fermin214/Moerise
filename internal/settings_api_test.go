@@ -116,8 +116,8 @@ func TestClientSettingsViewHidesEverySecret(t *testing.T) {
 	if response.Code != 200 || json.Unmarshal(response.Body.Bytes(), &view) != nil {
 		t.Fatalf("settings read: %d %s", response.Code, response.Body.String())
 	}
-	if view.Version != 1 || view.DefaultInsightPrompt != DefaultInsightPrompt ||
-		len(view.Secrets) != len(secretFields(&product)) || len(view.Settings) != 8 || len(view.ChannelStatus) != 3 {
+	if view.Version != 1 ||
+		len(view.Secrets) != len(secretFields(&product)) || len(view.Settings) != 6 || len(view.ChannelStatus) != 3 {
 		t.Fatalf("incomplete settings view: %s", response.Body.String())
 	}
 	for name := range secretFields(&product) {
@@ -130,10 +130,8 @@ func TestClientSettingsViewHidesEverySecret(t *testing.T) {
 			t.Fatalf("unexpected infrastructure or credential field %s", name)
 		}
 	}
-	for _, section := range []string{"llm", "embedding"} {
-		if _, exists := view.Settings[section].(map[string]any)["api_key"]; exists {
-			t.Fatal("model view includes api_key")
-		}
+	if _, exists := view.Settings["embedding"].(map[string]any)["api_key"]; exists {
+		t.Fatal("model view includes api_key")
 	}
 	for _, name := range []string{"app_secret", "verification_token", "encrypt_key", "webhook_url", "webhook_secret"} {
 		if _, exists := view.Settings["channel"].(map[string]any)[name]; exists {
@@ -155,17 +153,15 @@ func TestClientSettingsSaveConflictAndSecretOperations(t *testing.T) {
 		return clientCall(api, "PATCH", clientSettingsPath, body, cookie,
 			fixture.settings.Web.PublicOrigin, identity.CSRFToken)
 	}
-	body := `{"version":1,"settings":{"timezone":"UTC","review":{"count":6},"notifications":{"times":["18:00"]},"insights":{"default_prompt":"custom prompt"}},"secrets":{"llm_api_key":{"action":"replace","value":"private-new-llm-key"}}}`
+	body := `{"version":1,"settings":{"timezone":"UTC","review":{"count":6},"notifications":{"times":["18:00"]}},"secrets":{"embedding_api_key":{"action":"replace","value":"private-new-embedding-key"}}}`
 	response := call(body)
 	var view SettingsView
 	if response.Code != 200 || json.Unmarshal(response.Body.Bytes(), &view) != nil ||
 		view.Version != 2 || view.Settings["timezone"] != "UTC" ||
-		!view.Secrets["llm_api_key"].Configured || strings.Contains(response.Body.String(), "private-new-llm-key") ||
-		view.DefaultInsightPrompt != DefaultInsightPrompt {
+		!view.Secrets["embedding_api_key"].Configured || strings.Contains(response.Body.String(), "private-new-embedding-key") {
 		t.Fatalf("settings save: %d %s", response.Code, response.Body.String())
 	}
 	if api.app.Store.Settings.Review.Count != 6 || api.app.Store.Settings.Review.MinAgeHours != 72 ||
-		api.app.Store.Settings.Insights.DefaultPrompt != "custom prompt" ||
 		api.app.Store.Settings.Notifications.Clocks()[0] != "18:00" ||
 		strings.Join(api.app.Store.Settings.Notifications.Clocks(), ",") != "18:00" {
 		t.Fatal("save did not merge product settings")
@@ -180,13 +176,13 @@ func TestClientSettingsSaveConflictAndSecretOperations(t *testing.T) {
 		}
 	}
 	assertSettingsError(t, call(body), 409, "SETTINGS_CONFLICT")
-	response = call(`{"version":2,"settings":{"review":{"count":7}},"secrets":{"llm_api_key":{"action":"keep"}}}`)
-	if response.Code != 200 || configured(api.app.Store.Settings.LLM.APIKey) != "private-new-llm-key" {
+	response = call(`{"version":2,"settings":{"review":{"count":7}},"secrets":{"embedding_api_key":{"action":"keep"}}}`)
+	if response.Code != 200 || configured(api.app.Store.Settings.Embedding.APIKey) != "private-new-embedding-key" {
 		t.Fatalf("keep secret: %d %s", response.Code, response.Body.String())
 	}
-	response = call(`{"version":3,"secrets":{"llm_api_key":{"action":"clear"}}}`)
+	response = call(`{"version":3,"secrets":{"embedding_api_key":{"action":"clear"}}}`)
 	if response.Code != 200 || json.Unmarshal(response.Body.Bytes(), &view) != nil ||
-		view.Version != 4 || view.Secrets["llm_api_key"].Configured || configured(api.app.Store.Settings.LLM.APIKey) != "" {
+		view.Version != 4 || view.Secrets["embedding_api_key"].Configured || configured(api.app.Store.Settings.Embedding.APIKey) != "" {
 		t.Fatalf("clear secret: %d %s", response.Code, response.Body.String())
 	}
 	response = clientCall(api, "GET", clientSettingsPath, "", cookie, "", "")
@@ -228,19 +224,19 @@ func TestClientSettingsRejectInvalidJSONAndFields(t *testing.T) {
 		`{"version":1,"settings":{"review":{"count":0}}}`,
 		`{"version":1,"secrets":null}`,
 		`{"version":1,"secrets":{"unknown":{"action":"clear"}}}`,
-		`{"version":1,"secrets":{"llm_api_key":null}}`,
-		`{"version":1,"secrets":{"llm_api_key":{}}}`,
-		`{"version":1,"secrets":{"llm_api_key":{"Action":"clear"}}}`,
-		`{"version":1,"secrets":{"llm_api_key":{"action":"clear","extra":true}}}`,
-		`{"version":1,"secrets":{"llm_api_key":{"action":"clear","action":"keep"}}}`,
-		`{"version":1,"secrets":{"llm_api_key":{"action":"clear"},"llm_api_key":{"action":"keep"}}}`,
-		`{"version":1,"secrets":{"llm_api_key":{"action":"replace"}}}`,
-		`{"version":1,"secrets":{"llm_api_key":{"action":"replace","value":null}}}`,
-		`{"version":1,"secrets":{"llm_api_key":{"action":"replace","value":""}}}`,
-		`{"version":1,"secrets":{"llm_api_key":{"action":"replace","value":"*****"}}}`,
-		`{"version":1,"secrets":{"llm_api_key":{"action":"clear","value":null}}}`,
-		`{"version":1,"secrets":{"llm_api_key":{"action":"keep","value":"private-injected-secret"}}}`,
-		`{"version":1,"secrets":{"llm_api_key":{"action":"clear","value":"private-injected-secret"}}}`,
+		`{"version":1,"secrets":{"embedding_api_key":null}}`,
+		`{"version":1,"secrets":{"embedding_api_key":{}}}`,
+		`{"version":1,"secrets":{"embedding_api_key":{"Action":"clear"}}}`,
+		`{"version":1,"secrets":{"embedding_api_key":{"action":"clear","extra":true}}}`,
+		`{"version":1,"secrets":{"embedding_api_key":{"action":"clear","action":"keep"}}}`,
+		`{"version":1,"secrets":{"embedding_api_key":{"action":"clear"},"embedding_api_key":{"action":"keep"}}}`,
+		`{"version":1,"secrets":{"embedding_api_key":{"action":"replace"}}}`,
+		`{"version":1,"secrets":{"embedding_api_key":{"action":"replace","value":null}}}`,
+		`{"version":1,"secrets":{"embedding_api_key":{"action":"replace","value":""}}}`,
+		`{"version":1,"secrets":{"embedding_api_key":{"action":"replace","value":"*****"}}}`,
+		`{"version":1,"secrets":{"embedding_api_key":{"action":"clear","value":null}}}`,
+		`{"version":1,"secrets":{"embedding_api_key":{"action":"keep","value":"private-injected-secret"}}}`,
+		`{"version":1,"secrets":{"embedding_api_key":{"action":"clear","value":"private-injected-secret"}}}`,
 		"{\"version\":1,\"settings\":{\"timezone\":\"\xff\"}}",
 	} {
 		response := clientCall(api, "PATCH", clientSettingsPath, body, cookie,
