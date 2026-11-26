@@ -179,86 +179,15 @@ onFlowComplete:
 - assertNotVisible:
     id: open_note_${NOTE_NAME}
     label: Reject a note details route after reading
-- runFlow:
-    when:
-      notVisible:
-        id: search_query
-    commands:
-    - assertNotVisible:
-        id: search_query
-        label: Check whether reading closed the search field
-    - tapOn:
-        id: open_search
-        enabled: true
-        label: Reopen search when reading closed it
-    label: Keep the open search or reopen it after reading
 - extendedWaitUntil:
     visible:
       id: search_query
+      text: \Q${QUERY_TEXT}\E
     timeout: 15000
-    label: Wait for the reopened search field
-- runFlow:
-    when:
-      notVisible:
-        id: search_query_empty
-    commands:
-    - assertNotVisible:
-        id: search_query_empty
-        label: Require the known input to contain text
-    - longPressOn:
-        id: search_query
-        enabled: true
-        label: Open text selection for the known input
-    - runFlow:
-        when:
-          notVisible:
-            text: Select all|Select All|全选
-        commands:
-        - assertNotVisible:
-            text: Select all|Select All|全选
-            label: Require the full-selection action to be outside the toolbar
-        - assertVisible:
-            id: android:id/overflow
-            enabled: true
-            label: Require the observed Android text toolbar overflow
-        - tapOn:
-            id: android:id/overflow
-            enabled: true
-            label: Reveal the remaining text selection actions
-        label: Open text toolbar overflow only when full selection is hidden
-    - extendedWaitUntil:
-        visible:
-          text: Select all|Select All|全选
-        timeout: 15000
-        label: Wait for the text selection action
-    - tapOn:
-        text: Select all|Select All|全选
-        enabled: true
-        label: Select the complete fixture input
-    - eraseText:
-        charactersToErase: 1
-        label: Delete the selected fixture text
-    label: Clear the known input regardless of caret position
-- tapOn:
-    id: search_query
-    enabled: true
-    label: Focus the empty fixture input
-- inputText:
-    text: ${QUERY_TEXT}${INPUT_SUFFIX}
-    label: Enter the exact fixture value through the test input method
-- eraseText:
-    charactersToErase: 1
-    label: Remove only the temporary input suffix
-- pressKey:
-    key: Enter
-    label: Submit search through the focused IME search field
-- scrollUntilVisible:
-    element:
-      id: note_card_${NOTE_NAME}
-    direction: DOWN
-    timeout: 65000
-    centerElement: false
-    label: Require the target keyword result before changing mode
+    label: Require the original keyword query after reading on home
+- assertVisible:
+    id: note_card_${NOTE_NAME}
+    label: Require the original keyword result before changing mode
 - tapOn:
     text: 关键词|Keyword
     enabled: true
