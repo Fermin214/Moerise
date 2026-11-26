@@ -13,6 +13,10 @@
 #sync-status { position:fixed; z-index:4; right:max(16px,env(safe-area-inset-right)); top:max(12px,env(safe-area-inset-top)); display:inline-flex; align-items:center; justify-content:center; width:28px; height:28px; color:var(--focus); background:var(--paper); border-radius:50%; pointer-events:none; }
 #sync-status[hidden] { display:none; }
 #sync-status .sync-dot { position:absolute; right:2px; top:2px; width:7px; height:7px; border-radius:50%; background:transparent; }
+@keyframes sync-breathe { 50% { transform:scale(.86); opacity:.55; } }
+@media (prefers-reduced-motion:no-preference) {
+  #sync-status[data-sync="transfer"] svg { animation:sync-breathe 1100ms cubic-bezier(.4,0,.2,1) infinite; }
+}
 #sync-status[data-sync="offline"] .sync-dot,#sync-status[data-sync="failure"] .sync-dot,#sync-status[data-sync="conflict"] .sync-dot,#sync-status[data-sync="unknown"] .sync-dot { background:#E86A5D; }
 #sync-status[data-sync="offline"],#sync-status[data-sync="failure"],#sync-status[data-sync="conflict"],#sync-status[data-sync="unknown"] { color:var(--muted); }
 @media (prefers-reduced-motion:no-preference) {
@@ -65,3 +69,9 @@ dialog::backdrop { overflow:hidden; overscroll-behavior:contain; }
 .map-tools .focus-tool:not(:focus-visible) { position:absolute; width:1px; height:1px; padding:0; clip-path:inset(50%); overflow:hidden; }
 .map-reader > p { margin:12px 20px 20px; }
 .map-page .map-retry { position:absolute; left:1rem; top:1rem; z-index:5; }
+.snackbar { position:fixed; left:50%; bottom:max(16px,env(safe-area-inset-bottom)); z-index:30; translate:-50% 0; width:max-content; max-width:calc(100vw - 32px); display:flex; align-items:center; gap:12px; padding:8px 14px; min-height:44px; border-radius:12px; background:var(--ink); color:var(--surface); box-shadow:0 8px 24px #1f23282a; animation:snackbar-enter var(--motion-responsive-duration) var(--motion-responsive-easing); }
+.snackbar .ghost { height:32px; color:#DCE8FB; }
+.snackbar .ghost:hover { background:#ffffff20; }
+@keyframes snackbar-enter { from { opacity:0; transform:translateY(8px); } }
+@keyframes moerise-fade { from { opacity:0; } }
+@media (prefers-reduced-motion:reduce) { .snackbar { animation:moerise-fade 80ms linear; } }

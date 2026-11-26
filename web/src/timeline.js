@@ -3,7 +3,7 @@ import { validNote, compareNotes } from './notes.js';
 import { filters, listQuery, enhancedSearch, searchBody } from './routes.js';
 import { usage, resultOf } from './privacy.js';
 
-export function createTimeline({ key, url, snapshots, request, sessionRequest, render, showError, handleFailure }) {
+export function createTimeline({ key, url, snapshots, request, sessionRequest, render, showError, handleFailure, onSynced }) {
   const path = location.pathname, values = filters(location.search);
   const enhanced = enhancedSearch(values), state = path === '/archived' ? 'ARCHIVED' : 'NORMAL';
   const element = id => document.getElementById(id);
@@ -41,12 +41,12 @@ export function createTimeline({ key, url, snapshots, request, sessionRequest, r
     element('notes').setAttribute('aria-busy', String(!!active));
     element('load-more').hidden = !nextToken; element('load-more').disabled = !!active;
   }
-  function display(anchor = false) {
+  function display(anchor = false, entering) {
     const cards = anchor && window.scrollY > 0 ? [...element('notes').children] : [];
     const first = cards.findIndex(card => card.getBoundingClientRect().bottom > 0);
     const nearby = first < 0 ? [] : [cards[first], cards[first + 1], cards[first - 1]].filter(Boolean)
       .map(card => [card.dataset.name, card.getBoundingClientRect().top]);
-    render(items);
+    render(items, entering);
     setText(element('capability'), status); element('capability').hidden = !status;
     element('empty').hidden = !!items.length || !!nextToken;
     for (const [name, top] of nearby) {
@@ -67,7 +67,7 @@ export function createTimeline({ key, url, snapshots, request, sessionRequest, r
     }
     return page;
   }
-  async function load({ reset = false, targetPages = 1, scroll } = {}) {
+  async function load({ reset = false, targetPages = 1, scroll, record = true } = {}) {
     if (closed || (!reset && (active || !nextToken))) return;
     active?.abort();
     const owner = active = new AbortController();
@@ -101,8 +101,10 @@ export function createTimeline({ key, url, snapshots, request, sessionRequest, r
       pages = reset ? loaded : pages + loaded; nextToken = token;
       cursors.clear(); for (const cursor of seenTokens) cursors.add(cursor);
       display(true); remember(false, true);
+      if (record) onSynced?.();
       if (scroll != null) restoreScroll(scroll);
       if (nextToken) observer.observe(element('page-end'));
+      return true;
     } catch (error) {
       if (measure) usage(`search_${values.mode}`, resultOf(error), performance.now() - started);
       if (owner !== active) return;
@@ -137,17 +139,17 @@ export function createTimeline({ key, url, snapshots, request, sessionRequest, r
       }
     },
     loadMore: () => load(),
-    refresh: () => load({ reset: true, targetPages: pages || 1 }),
+    refresh: ({ record = true } = {}) => load({ reset: true, targetPages: pages || 1, record }),
     retry: () => retryOptions?.reset
       ? load({ reset: true, targetPages: pages || 1 }) : load(),
-    async update(name, note) {
+    async update(name, note, inserted = false) {
       active?.abort(); active = null;
       const filtered = values.query || values.date || values.tags.length;
       if (!filtered || items.some(item => item.name === name)) {
         items = items.filter(item => item.name !== name);
         if (note?.state === state) items.push(note);
         if (!enhanced) items.sort(compareNotes);
-        display(true); controls(); remember(false, !filtered);
+        display(true, inserted ? name : undefined); controls(); remember(false, !filtered);
       }
       if (filtered || !pages) await load({ reset: true, targetPages: pages || 1 });
       else if (nextToken) observer.observe(element('page-end'));

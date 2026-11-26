@@ -491,6 +491,11 @@ func (s *Store) prepareSettings(update SettingsUpdate) (Settings, error) {
 	if strictJSON(bytes.NewReader(body), &product) != nil {
 		return s.Settings, bad
 	}
+	keyAction := update.Secrets["embedding_api_key"].Action
+	if (keyAction == "keep" || keyAction == "" && configured(s.Settings.Embedding.APIKey) != "") &&
+		embeddingOriginChanged(s.Settings.Embedding.BaseURL, product.Embedding.BaseURL) {
+		return s.Settings, failure("EMBEDDING_KEY_ORIGIN", "Replace or clear the embedding key when changing server origin", 422, false)
+	}
 	fields := secretFields(&product)
 	for name, operation := range update.Secrets {
 		field, exists := fields[name]
@@ -520,6 +525,16 @@ func (s *Store) prepareSettings(update SettingsUpdate) (Settings, error) {
 		return s.Settings, bad
 	}
 	return result, nil
+}
+
+func embeddingOriginChanged(previous, candidate *string) bool {
+	oldAddress, newAddress := configured(previous), configured(candidate)
+	if oldAddress == newAddress {
+		return false
+	}
+	oldURL, oldErr := url.Parse(oldAddress)
+	newURL, newErr := url.Parse(newAddress)
+	return oldErr != nil || newErr != nil || !sameURLOrigin(oldURL, newURL)
 }
 
 func (s *Store) persistSettings(settings Settings) error {

@@ -1,6 +1,10 @@
 package io.github.fermin214.moerise.presentation
 
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.VectorConverter
+import androidx.compose.animation.core.exponentialDecay
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.background
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
@@ -10,6 +14,7 @@ import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.layout.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.*
@@ -18,6 +23,7 @@ import androidx.compose.ui.graphics.drawscope.*
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.input.key.*
 import androidx.compose.ui.input.pointer.*
+import androidx.compose.ui.input.pointer.util.VelocityTracker
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
@@ -95,6 +101,27 @@ fun StarCanvas(
 ) {
     val map = state.snapshot ?: return
     val density = LocalDensity.current.density
+    val reduced = LocalReducedMotion.current
+    val scope = rememberCoroutineScope()
+    val camera = remember(map.layoutFrame) { mutableStateOf(state.view) }
+    val cameraJob = remember(map.layoutFrame) { mutableStateOf<Job?>(null) }
+    val transform by rememberUpdatedState(onTransform)
+    LaunchedEffect(state.view, reduced) {
+        val goal = state.view ?: return@LaunchedEffect
+        cameraJob.value?.cancel()
+        val start = camera.value
+        if (reduced || start == null || start == goal) camera.value = goal
+        else cameraJob.value = scope.launch {
+            Animatable(0f).animateTo(1f, MoeriseMotion.spatial()) {
+                camera.value = StarView(
+                    start.x + (goal.x - start.x) * value,
+                    start.y + (goal.y - start.y) * value,
+                    start.scale * (goal.scale / start.scale).pow(value.toDouble()),
+                )
+            }
+            camera.value = goal
+        }
+    }
     val measurer = rememberTextMeasurer(cacheSize = 128)
     val stars = remember(map.layoutVersion, map.points, map.topics) {
         val groups = map.topics.flatMap { topic ->
@@ -186,9 +213,16 @@ fun StarCanvas(
         return Offset(position.x.toFloat(), position.y.toFloat())
     }
     fun hit(position: Offset): PaintedStar? {
-        val view = live.view ?: return null
-        return stars.minByOrNull { (screen(it.point, view) - position).getDistanceSquared() }
-            ?.takeIf { (screen(it.point, view) - position).getDistance() <= 24 * density }
+        val view = camera.value ?: live.view ?: return null
+        var nearest: PaintedStar? = null
+        var distance = (24 * density).pow(2)
+        for (star in stars) {
+            val point = screen(star.point, view)
+            if (point.x < 0 || point.x >= width || point.y < 0 || point.y >= height) continue
+            val candidate = (point - position).getDistanceSquared()
+            if (candidate <= distance) { nearest = star; distance = candidate }
+        }
+        return nearest
     }
     fun select(name: String) {
         if (onSelect != null) onSelect(name)
@@ -199,7 +233,11 @@ fun StarCanvas(
             onPick(position.x, position.y, 24.0 * density)
         }
     }
-    Box(Modifier.fillMaxSize()
+    fun finishCamera(base: StarView, next: StarView) {
+        camera.value = next
+        transform(next.scale / base.scale, 0.0, 0.0, (base.x - next.x) * next.scale, (base.y - next.y) * next.scale)
+    }
+    Box(Modifier.fillMaxSize().clipToBounds().background(Color(0xFF030A14))
         .onSizeChanged { size ->
             width = size.width.toDouble(); height = size.height.toDouble()
             onSize(width, height)
@@ -211,24 +249,52 @@ fun StarCanvas(
             contentDescription = strings.text("观星，拖动平移，双指缩放。Tab 选星，Enter 阅读。",
                 "Star map. Drag to pan; pinch to zoom. Tab to choose a star, Enter to read.")
         }
-            .pointerInput(map.layoutVersion, density) {
+            .pointerInput(map.layoutVersion, density, reduced) {
                 awaitEachGesture {
                     val down = awaitFirstDown(requireUnconsumed = false)
+                    val base = live.view ?: return@awaitEachGesture
+                    cameraJob.value?.cancel()
+                    val tracker = VelocityTracker()
+                    tracker.addPosition(down.uptimeMillis, down.position)
                     val candidate = hit(down.position)?.point?.name
                     var moved = false
+                    var pinched = false
                     while (true) {
                         val event = awaitPointerEvent()
                         val change = event.changes.firstOrNull { it.id == down.id } ?: break
                         if (!change.pressed) {
                             if (!moved) {
-                                val label = livePlacements.firstOrNull { it.bounds.contains(down.position) }
+                                val rendered = camera.value ?: base
+                                val mapped = Offset(
+                                    ((down.position.x - size.width / 2.0) * base.scale / rendered.scale +
+                                        (rendered.x - base.x) * base.scale + size.width / 2.0).toFloat(),
+                                    ((down.position.y - size.height / 2.0) * base.scale / rendered.scale +
+                                        (rendered.y - base.y) * base.scale + size.height / 2.0).toFloat(),
+                                )
+                                val label = livePlacements.firstOrNull { it.bounds.contains(mapped) }
                                 if (label != null) onFocus(label.label.members)
                                 else if (candidate != null) select(candidate)
                                 else onBlank()
+                            } else {
+                                val from = camera.value ?: base
+                                val velocity = tracker.calculateVelocity()
+                                val speed = Offset(velocity.x, velocity.y)
+                                if (reduced || pinched || speed.getDistance() < 90.dp.toPx()) finishCamera(base, from)
+                                else cameraJob.value = scope.launch {
+                                    val drift = Animatable(Offset.Zero, Offset.VectorConverter)
+                                    drift.updateBounds(Offset(-size.width.toFloat(), -size.height.toFloat()),
+                                        Offset(size.width.toFloat(), size.height.toFloat()))
+                                    drift.animateDecay(speed, exponentialDecay(frictionMultiplier = 2.2f)) {
+                                        camera.value = from.transform(1.0, 0.0, 0.0, value.x.toDouble(), value.y.toDouble())
+                                    }
+                                    finishCamera(base, camera.value ?: from)
+                                }
                             }
                             break
                         }
                         val multi = event.changes.count { it.pressed } > 1
+                        pinched = pinched || multi
+                        tracker.addPosition(change.uptimeMillis, change.position)
                         val movement = change.position - down.position
                         val started = !moved
                         if (multi || movement.getDistance() > viewConfiguration.touchSlop) moved = true
@@ -236,15 +302,23 @@ fun StarCanvas(
                         val centroid = event.calculateCentroid(useCurrent = false)
                         val pan = if (started && !multi) movement else event.calculatePan()
                         val zoom = event.calculateZoom()
-                        onTransform(zoom.toDouble(), centroid.x - size.width / 2.0, centroid.y - size.height / 2.0,
-                            pan.x.toDouble(), pan.y.toDouble())
+                        camera.value = (camera.value ?: base).transform(zoom.toDouble(),
+                            centroid.x - size.width / 2.0, centroid.y - size.height / 2.0, pan.x.toDouble(), pan.y.toDouble())
                         event.changes.forEach { if (it.positionChanged()) it.consume() }
                     }
+                }
+            }.graphicsLayer {
+                val base = state.view
+                val next = camera.value
+                if (base != null && next != null) {
+                    scaleX = (next.scale / base.scale).toFloat()
+                    scaleY = scaleX
+                    translationX = ((base.x - next.x) * next.scale).toFloat()
+                    translationY = ((base.y - next.y) * next.scale).toFloat()
                 }
             },
         ) {
             val started = epochMillis()
-            drawRect(Color(0xFF030A14))
             val view = state.view ?: return@Canvas
             val zoom = view.scale / state.fitScale
             val growth = (1 + .30 * log2(max(1.0, zoom))).toFloat()
@@ -269,8 +343,6 @@ fun StarCanvas(
             }
             for (star in stars) {
                 val position = at(star.point)
-                if (position.x < -30 * density || position.y < -30 * density ||
-                    position.x > size.width + 30 * density || position.y > size.height + 30 * density) continue
                 val active = star.point.name == state.selected || star.point.name == activePreview
                 val radius = (star.radius * growth + if (active) .45f else 0f) * density
                 if (state.photo || star.special || active) {

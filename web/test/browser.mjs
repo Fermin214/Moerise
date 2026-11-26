@@ -186,7 +186,7 @@ test('inline tags filter within the timeline and copy preserves the source even 
   assert.equal(await current.locator('.note-tags button').allTextContents().then(tags => tags.join()), '#灵感');
   await more.click();
   await current.getByRole('menuitem', { name: '复制', exact: true }).click();
-  await current.getByText('已复制', { exact: true }).waitFor();
+  await page.locator('.snackbar').getByText('已复制', { exact: true }).waitFor();
   assert.equal(await page.evaluate(() => navigator.clipboard.readText()), original);
 
   await setUILanguage(page, 'en');
@@ -196,12 +196,12 @@ test('inline tags filter within the timeline and copy preserves the source even 
   });
   await more.click();
   await current.getByRole('menuitem', { name: 'Copy', exact: true }).click();
-  await current.getByText('Copied', { exact: true }).waitFor();
+  await page.locator('.snackbar').getByText('Copied', { exact: true }).waitFor();
   assert.equal(await page.evaluate(() => navigator.clipboard.readText()), original);
   await page.evaluate(() => { document.execCommand = () => false; });
   await more.click();
   await current.getByRole('menuitem', { name: 'Copy', exact: true }).click();
-  await current.getByText('Copy failed', { exact: true }).waitFor();
+  await page.locator('.snackbar').getByText('Copy failed', { exact: true }).waitFor();
 
   await inline.click();
   await page.waitForURL(value => value.pathname === '/' && value.searchParams.get('tag') === '想法');
@@ -209,6 +209,33 @@ test('inline tags filter within the timeline and copy preserves the source even 
   const old = page.locator('#notes article[data-name="memos/old"]');
   await old.getByRole('button', { name: '#灵感', exact: true }).click();
   await page.waitForURL(value => value.pathname === '/archived' && value.searchParams.get('tag') === '灵感');
+});
+
+test('archive undo uses the returned hash and expires after three seconds', async t => {
+  const { page, state, url } = await fixture(t);
+  await page.goto(url); await login(page);
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  const note = state.notes.get('n00');
+  const originalHash = note.source_hash;
+  const card = page.locator('#notes [data-name="memos/n00"]');
+  const archive = async () => {
+    await card.locator('.more').click();
+    await card.getByRole('menuitem', { name: '归档', exact: true }).click();
+    await page.locator('.snackbar').getByRole('button', { name: '撤销' }).waitFor();
+  };
+  await archive();
+  assert.notEqual(note.source_hash, originalHash);
+  const archivedHash = note.source_hash;
+  const restoring = page.waitForRequest(request => request.method() === 'PATCH' && request.postDataJSON()?.state === 'NORMAL');
+  await page.locator('.snackbar').getByRole('button', { name: '撤销' }).click();
+  assert.equal((await restoring).postDataJSON().source_hash, archivedHash);
+  await card.waitFor();
+  assert.equal(note.state, 'NORMAL');
+  await page.clock.install();
+  await archive();
+  await page.clock.fastForward(3001);
+  assert.equal(await page.locator('.snackbar button').count(), 0);
+  assert.equal(note.state, 'ARCHIVED');
 });
 
 test('CSRF renewal discards drafts and never replays a note after an instance or author change', async t => {

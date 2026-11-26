@@ -5,7 +5,6 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
@@ -36,6 +35,8 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import java.time.ZoneId
+import java.util.TimeZone
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
@@ -55,10 +56,21 @@ fun SettingsScreen(
     val sync by mobile.sync.state.collectAsState()
     val connection by mobile.session.state.collectAsState()
     var tab by rememberSaveable { mutableIntStateOf(0) }
+    var editor by remember { mutableStateOf<String?>(null) }
+    var discard by remember { mutableStateOf(false) }
     val scroll = rememberScrollState()
+    val haptic = rememberMoeriseHaptic()
+    fun edit(target: String) { controller.discardDraft(); editor = target }
+    fun close() {
+        if (state.busy) return
+        if (controller.dirty()) discard = true else editor = null
+    }
 
     LaunchedEffect(controller) { controller.load() }
     LaunchedEffect(controller, tab) { controller.selectTab(tab) }
+    LaunchedEffect(state.status) {
+        if (state.status in setOf("SETTINGS_SAVED", "SETTINGS_UNCHANGED")) editor = null
+    }
     DisposableEffect(controller) { onDispose { controller.leave() } }
 
     Column(Modifier.fillMaxSize().safeDrawingPadding().testTag("settings_page")) {
@@ -79,7 +91,7 @@ fun SettingsScreen(
                 WebTabs(
                     listOf(
                         strings.text("通用", "General"),
-                        "AI",
+                        strings.text("检索与观星", "Search & stargazing"),
                         strings.text("回顾与推送", "Review & delivery"),
                         strings.text("隐私", "Privacy"),
                     ),
@@ -126,30 +138,7 @@ fun SettingsScreen(
                                         tag = "settings_language",
                                     ) { value -> mobile.session.language(UiLanguage.valueOf(value)) }
                                 }
-                                SettingsField(
-                                    controller, state, "timezone", strings.text("时区", "Timezone"),
-                                    hint = strings.text(
-                                        "使用 IANA 名称，例如 Asia/Hong_Kong。",
-                                        "Use an IANA name, such as Europe/London.",
-                                    ),
-                                )
-                                SettingsCheckbox(controller, state, "stargazing.enabled",
-                                    strings.text("启用观星", "Enable stargazing"))
-                                val mapEnabled = state.values["stargazing.enabled"] == "true" &&
-                                    state.values["embedding.enabled"] == "true"
-                                SettingsRow(
-                                    strings.text("星图更新", "Star map updates"),
-                                    hint = strings.text("每日 03:00 更新", "Updates daily at 03:00"),
-                                    separator = false,
-                                ) {
-                                    SettingsGhost(
-                                        if (state.rebuildingMap) strings.text("正在重新生成星图…", "Rebuilding star map…")
-                                        else strings.text("重新生成星图", "Rebuild star map"),
-                                        controller::rebuildMap,
-                                        enabled = !state.busy && !state.rebuildingMap && !state.conflict && mapEnabled,
-                                        modifier = Modifier.testTag("settings_rebuild_map"),
-                                    )
-                                }
+                                SettingsSummary(strings.text("时区", "Timezone"), state.values["timezone"].orEmpty(), strings) { edit("timezone") }
                                 if (preferencesError != null) SettingsMessage(
                                     strings.text(
                                         "语言设置未能保存，请重新选择。",
@@ -158,64 +147,130 @@ fun SettingsScreen(
                                 )
                             }
                             1 -> {
-                                SettingsModels(controller, state, strings)
+                                SettingsModels(state, strings) { edit("embedding") }
+                                SettingsSection(strings.text("观星", "Stargazing")) {
+                                    SettingsCheckbox(controller, state, "stargazing.enabled",
+                                        strings.text("启用观星", "Enable stargazing"), atomic = true)
+                                    if (state.values["stargazing.enabled"] == "true" && state.values["embedding.enabled"] == "true") {
+                                        SettingsRow(strings.text("星图更新", "Star map updates"),
+                                            hint = strings.text("每日 03:00 更新", "Updates daily at 03:00"), separator = false) {
+                                            SettingsGhost(strings.text("重新生成星图", "Rebuild star map"), controller::rebuildMap,
+                                                enabled = !state.rebuildingMap && !state.conflict,
+                                                modifier = Modifier.testTag("settings_rebuild_map"))
+                                        }
+                                    }
+                                }
                             }
                             2 -> {
-                                SettingsReview(controller, state, strings)
-                                SettingsChannel(controller, state, strings)
-                                SettingsSaveBar(controller, state, strings)
+                                SettingsReview(controller, state, strings, ::edit)
+                                SettingsChannels(state, strings, ::edit)
                                 SettingsHistory(controller, state, strings)
                             }
                         }
-                        if (tab != 2) SettingsSaveBar(controller, state, strings)
+                        if (editor == null) state.error?.let { SettingsMessage(settingsMessage(it, strings), error = true) }
+                        if (editor == null && state.conflict) SettingsGhost(strings.text("重新加载设置", "Reload settings"),
+                            controller::reload, enabled = !state.loading, modifier = Modifier.testTag("settings_reload"))
                     }
                 }
             }
         }
     }
+    editor?.let { target ->
+        val title = when (target) {
+            "timezone" -> strings.text("时区", "Timezone")
+            "review" -> strings.text("每日回顾", "Daily review")
+            "times" -> strings.text("推送时段", "Delivery times")
+            "embedding" -> strings.text("向量模型", "Embedding model")
+            else -> channelLabel(target, strings)
+        }
+        val primarySecret = SettingsForm.channelSecrets[target]
+        val check = when {
+            target == "embedding" -> state.values["embedding.enabled"] == "true" && state.secrets["embedding_api_key"]?.action != "clear"
+            primarySecret != null -> state.secrets[primarySecret]?.action == "replace" ||
+                state.secrets[primarySecret]?.action != "clear" &&
+                state.snapshot.settingsObject("secrets").settingsObject(primarySecret).settingsBoolean("configured")
+            else -> false
+        }
+        AlertDialog(onDismissRequest = ::close, title = { Text(title) }, text = {
+            Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState())) {
+                when (target) {
+                    "timezone" -> SettingsTimezone(controller, state, strings)
+                    "review" -> SettingsReviewFields(controller, state, strings)
+                    "times" -> SettingsTimes(controller, state, strings)
+                    "embedding" -> SettingsModel(controller, state, strings)
+                    else -> SettingsChannelFields(target, controller, state, strings)
+                }
+                if (state.busy) LinearProgressIndicator(Modifier.fillMaxWidth())
+                state.error?.let { SettingsMessage(settingsMessage(it, strings), error = true) }
+                if (state.conflict) SettingsGhost(strings.text("重新加载设置", "Reload settings"),
+                    controller::reload, enabled = !state.loading, modifier = Modifier.testTag("settings_reload"))
+            }
+        }, confirmButton = {
+            WebAction(if (check) strings.text("测试并保存", "Test and save") else strings.text("保存", "Save"),
+                { haptic(); controller.save(target.takeIf { it == "embedding" || it in SettingsForm.channelSecrets }) },
+                enabled = !state.busy && !state.conflict && !state.loading, modifier = Modifier.testTag("settings_save"))
+        }, dismissButton = { SettingsGhost(strings.text("关闭", "Close"), ::close, enabled = !state.busy) })
+    }
+    if (discard) AlertDialog(onDismissRequest = { discard = false },
+        title = { Text(strings.text("放弃未保存的修改？", "Discard unsaved changes?")) },
+        confirmButton = { TextButton({ controller.discardDraft(); discard = false; editor = null }) {
+            Text(strings.text("放弃修改", "Discard changes"))
+        } }, dismissButton = { TextButton({ discard = false }) { Text(strings.text("继续编辑", "Keep editing")) } })
 }
 
 @Composable
-private fun SettingsSaveBar(
-    controller: SettingsController,
-    state: SettingsUiState,
-    strings: Strings,
-) {
-    Column(
-        Modifier.fillMaxWidth().padding(top = 4.dp, bottom = 12.dp),
-        verticalArrangement = Arrangement.spacedBy(8.dp),
-    ) {
-        val error = if (state.conflict) "SETTINGS_CONFLICT" else state.error
-        error?.let { SettingsMessage(settingsMessage(it, strings), error = true) }
-        state.status?.takeIf { it.isNotBlank() }?.let {
-            SettingsMessage(settingsMessage(it, strings))
+private fun SettingsSummary(label: String, detail: String, strings: Strings, edit: () -> Unit) {
+    Row(Modifier.fillMaxWidth().padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.weight(1f)) {
+            Text(label, fontSize = 14.sp)
+            if (detail.isNotBlank()) SettingsHint(detail)
         }
-        Row(
-            Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Box(Modifier.weight(1f)) {
-                SettingsGhost(
-                    strings.text("重新加载设置", "Reload settings"),
-                    controller::load,
-                    enabled = !state.busy,
-                    modifier = Modifier.testTag("settings_reload"),
-                )
+        SettingsGhost(strings.text("编辑", "Edit"), edit)
+    }
+    HorizontalDivider(color = Color(0xFFF0F4F9))
+}
+
+@Composable
+private fun SettingsTimezone(controller: SettingsController, state: SettingsUiState, strings: Strings) {
+    val zones = remember { ZoneId.getAvailableZoneIds().sorted() }
+    val value = state.values["timezone"].orEmpty()
+    SettingsField(controller, state, "timezone", strings.text("时区", "Timezone"))
+    SettingsGhost(strings.text("采用设备时区", "Use device timezone"),
+        { controller.change("timezone", TimeZone.getDefault().id) }, enabled = !state.busy)
+    val suggestions = remember(value) { zones.asSequence().filter { value.isBlank() || it.contains(value, ignoreCase = true) }
+        .filter { it != value }.take(6).toList() }
+    for (zone in suggestions) SettingsGhost(zone, { controller.change("timezone", zone) }, enabled = !state.busy)
+}
+
+@Composable
+private fun SettingsReview(controller: SettingsController, state: SettingsUiState, strings: Strings, edit: (String) -> Unit) {
+    SettingsSection(strings.text("每日回顾", "Daily review")) {
+        SettingsSummary(strings.text("回顾规则", "Review rules"), strings.text("${state.values["review.count"]} 条",
+            "${state.values["review.count"]} notes"), strings) { edit("review") }
+        val kind = (state.atomicValues["channel.kind"] ?: state.values["channel.kind"]).orEmpty()
+        SettingsCheckbox(controller, state, "notifications.enabled", strings.text("开启回顾推送", "Enable review delivery"),
+            enabled = kind != "none", atomic = true,
+            hint = if (kind == "none") strings.text("请先选择定时推送渠道。", "Choose a scheduled delivery channel first.") else "")
+        val haptic = rememberMoeriseHaptic()
+        SettingsRow(strings.text("定时回顾发往", "Send scheduled reviews to")) {
+            SettingsSelect(kind, channelChoices(strings), strings.text("定时回顾发往", "Send scheduled reviews to"),
+                enabled = !state.conflict, tag = "settings_channel_kind") {
+                haptic(); controller.saveAtomic("channel.kind", it)
             }
-            WebAction(
-                strings.text("保存设置", "Save settings"),
-                controller::save,
-                enabled = !state.busy && !state.conflict,
-                modifier = Modifier.testTag("settings_save"),
-            )
         }
+        val target = when (kind) {
+            "telegram" -> state.values["channel.destination"]
+            "feishu-app" -> state.values["channel.user_open_id"]
+            else -> null
+        }?.takeIf { it.isNotBlank() } ?: state.snapshot.settingsObject("channel_status").settingsObject(kind).settingsText("peer")
+        if (!target.isNullOrBlank()) SettingsHint(strings.text("接收会话：$target", "Receiving chat: $target"))
+        else if (kind !in setOf("none", "feishu-webhook")) SettingsHint(strings.text("等待建立私聊", "Waiting for a private chat"))
+        SettingsSummary(strings.text("推送时段", "Delivery times"), state.times.joinToString(" · "), strings) { edit("times") }
     }
 }
 
 @Composable
-private fun SettingsReview(controller: SettingsController, state: SettingsUiState, strings: Strings) {
-    SettingsSection(strings.text("每日回顾", "Daily review")) {
+private fun SettingsReviewFields(controller: SettingsController, state: SettingsUiState, strings: Strings) {
         SettingsField(
             controller, state, "review.count", strings.text("每次数量（条）", "Notes per review"),
             keyboard = KeyboardType.Number,
@@ -229,18 +284,10 @@ private fun SettingsReview(controller: SettingsController, state: SettingsUiStat
             keyboard = KeyboardType.Number,
         )
         SettingsCheckbox(controller, state, "review.include_archived", strings.text("包含归档笔记", "Include archived notes"))
-        SettingsCheckbox(controller, state, "notifications.enabled", strings.text("开启回顾推送", "Enable review delivery"))
-        SettingsChoiceField(controller, state, "channel.kind", strings.text("定时回顾发往", "Send scheduled reviews to"),
-            channelChoices(strings))
-        val kind = state.values["channel.kind"].orEmpty()
-        val target = when (kind) {
-            "telegram" -> state.values["channel.destination"]
-            "feishu-app" -> state.values["channel.user_open_id"]
-            else -> null
-        }?.takeIf { it.isNotBlank() } ?: state.snapshot.settingsObject("channel_status").settingsObject(kind).settingsText("peer")
-        if (!target.isNullOrBlank()) SettingsHint(strings.text("接收会话：$target", "Receiving chat: $target"))
-        else if (kind !in setOf("none", "feishu-webhook")) SettingsHint(strings.text("等待建立私聊", "Waiting for a private chat"))
-        SettingsSubheading(strings.text("推送时段", "Delivery times"))
+}
+
+@Composable
+private fun SettingsTimes(controller: SettingsController, state: SettingsUiState, strings: Strings) {
         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
             state.times.forEachIndexed { index, value ->
                 Row(
@@ -275,20 +322,14 @@ private fun SettingsReview(controller: SettingsController, state: SettingsUiStat
                 "Each time schedules one daily delivery with a different set of notes.",
             ))
         }
-        SettingsHint(
-            strings.text(
-                "回顾参数、时段和时区从后续日期生效，已固定的当天计划保持不变。",
-                "Review settings, times and timezone apply to future days. Today's planned review stays the same.",
-            ),
-            Modifier.padding(top = 10.dp),
-        )
-    }
 }
 
 @Composable
-private fun SettingsModels(controller: SettingsController, state: SettingsUiState, strings: Strings) {
-    SettingsSection(strings.text("模型", "Models")) {
-        SettingsModel(controller, state, strings, "embedding", "Embedding")
+private fun SettingsModels(state: SettingsUiState, strings: Strings, edit: () -> Unit) {
+    SettingsSection(strings.text("检索", "Search")) {
+        SettingsSummary(strings.text("向量模型", "Embedding model"),
+            if (state.values["embedding.enabled"] == "true") state.values["embedding.model"].orEmpty()
+            else strings.text("已关闭", "Disabled"), strings, edit)
         val models = state.models
         val building = models.settingsObject("vector_index").settingsObject("building")
         val indexState = models.settingsText("index_status")
@@ -327,41 +368,35 @@ private fun SettingsModel(
     controller: SettingsController,
     state: SettingsUiState,
     strings: Strings,
-    group: String,
-    title: String,
 ) {
-    SettingsSubheading(title)
-    SettingsCheckbox(controller, state, "$group.enabled", strings.text("启用 $title", "Enable $title"))
+    var advanced by remember { mutableStateOf(false) }
+    LaunchedEffect(state.error) { if (state.error != null && !state.conflict) advanced = true }
+    SettingsCheckbox(controller, state, "embedding.enabled", strings.text("启用 Embedding", "Enable embeddings"))
     SettingsChoiceField(
-        controller, state, "embedding.provider", strings.text("供应商", "Provider"),
-        listOf("bailian" to strings.text("百炼", "Bailian"), "openai-compatible" to strings.text("OpenAI 兼容", "OpenAI compatible")),
-    )
-    SettingsChoiceField(
-        controller, state, "$group.protocol", strings.text("接口协议", "API protocol"),
+        controller, state, "embedding.protocol", strings.text("接口协议", "API protocol"),
         listOf("dashscope" to "DashScope",
             "openai-compatible" to strings.text("OpenAI 兼容 Embedding", "OpenAI compatible embeddings")),
     )
-    SettingsField(controller, state, "$group.base_url", strings.text("API 地址", "API URL"), keyboard = KeyboardType.Uri)
-    SettingsField(controller, state, "$group.model", strings.text("模型名称", "Model name"))
-    SettingsSecret(controller, state, strings, "${group}_api_key", "$title API Key")
-    Text(
-        strings.text("高级参数", "Advanced settings"),
-        color = MoeriseColors.Muted,
-        fontSize = 13.sp,
-        lineHeight = 20.8.sp,
-        fontWeight = FontWeight.Medium,
-        modifier = Modifier.padding(top = 16.dp, bottom = 2.dp).semantics { heading() },
-    )
+    SettingsField(controller, state, "embedding.base_url", strings.text("API 地址", "API URL"), keyboard = KeyboardType.Uri)
+    SettingsField(controller, state, "embedding.model", strings.text("模型名称", "Model name"))
+    SettingsSecret(controller, state, strings, "embedding_api_key", "Embedding API Key")
+    if (state.snapshot.settingsObject("settings").settingsObject("embedding").settingsBoolean("enabled")) {
+        SettingsGhost(strings.text("检查 Embedding 连接", "Check Embedding connection"),
+            { controller.checkModel("embedding") }, enabled = controller.canCheckModel("embedding"))
+        state.checkErrors["embedding"]?.let { SettingsMessage(settingsMessage(it, strings), error = true) }
+    }
+    SettingsGhost(strings.text("高级参数", "Advanced settings"), { advanced = !advanced })
+    if (!advanced) return
     SettingsField(
-        controller, state, "$group.timeout_seconds", strings.text("请求超时（秒）", "Request timeout (seconds)"),
+        controller, state, "embedding.timeout_seconds", strings.text("请求超时（秒）", "Request timeout (seconds)"),
         keyboard = KeyboardType.Decimal,
     )
     SettingsField(
-        controller, state, "$group.max_concurrency", strings.text("并发数", "Concurrency"),
+        controller, state, "embedding.max_concurrency", strings.text("并发数", "Concurrency"),
         keyboard = KeyboardType.Number,
     )
     SettingsField(
-        controller, state, "$group.max_retries", strings.text("重试次数", "Retries"),
+        controller, state, "embedding.max_retries", strings.text("重试次数", "Retries"),
         keyboard = KeyboardType.Number,
     )
     val generic = state.values["embedding.protocol"] == "openai-compatible"
@@ -369,57 +404,24 @@ private fun SettingsModel(
         controller, state, "embedding.dimensions", strings.text("向量维度", "Vector dimensions"),
         keyboard = KeyboardType.Number,
     )
-    SettingsCheckbox(
+    if (generic) SettingsCheckbox(
         controller, state, "embedding.send_dimensions", strings.text("发送维度参数", "Send dimensions parameter"),
-        enabled = generic,
         hint = strings.text(
-            "通用协议按需开启；固定维度模型可关闭，返回维度仍须一致。",
-            "Enable if your compatible API needs it. Fixed-dimension models can omit it; returned dimensions must still match.",
+            "让模型按你填写的维度生成向量。模型只支持固定维度时可以关闭。",
+            "Ask the model to generate vectors at your chosen size. Leave this off for a fixed-size model.",
         ),
     )
     SettingsField(
         controller, state, "embedding.batch_size", strings.text("批量大小", "Batch size"),
         keyboard = KeyboardType.Number,
     )
-    SettingsField(
+    if (!generic) SettingsField(
         controller, state, "embedding.query_instruction", strings.text("查询指令", "Query instruction"),
         multiline = true,
-        enabled = !generic,
-        hint = strings.text("仅百炼 DashScope 支持。", "Supported only by Bailian DashScope."),
+        hint = strings.text("在搜索词前加一句任务提示，帮助模型理解你想找什么。",
+            "Add a short instruction before the search text to tell the model what to look for."),
         separator = false,
     )
-    val model = state.models.settingsObject(group)
-    SettingsHint(when {
-        state.conflict -> strings.text("设置已变更，请重新加载。", "Settings changed. Please reload.")
-        model == null -> strings.text("正在读取模型状态…", "Loading model status…")
-        !model.settingsBoolean("enabled") -> strings.text("已关闭", "Disabled")
-        model.settingsBoolean("configured") -> strings.text("已启用 · 已配置", "Enabled · Configured")
-        else -> strings.text("配置不完整", "Configuration incomplete")
-    })
-    val dirty = controller.modelDirty(group)
-    val checking = group in state.checking
-    SettingsGhost(
-        strings.text("检查 $title 连接", "Check $title connection"),
-        { controller.checkModel(group) },
-        enabled = controller.canCheckModel(group),
-        modifier = Modifier.testTag("settings_${group}_check"),
-    )
-    when {
-        state.conflict -> Unit
-        dirty -> SettingsMessage(strings.text("模型设置有修改，请保存后检查。", "Model settings changed. Save before checking."))
-        checking -> SettingsMessage(strings.text("正在检查已保存配置…", "Checking saved configuration…"))
-        state.checkErrors[group] != null -> SettingsMessage(
-            settingsMessage(state.checkErrors.getValue(group), strings), error = true,
-        )
-        state.checks[group] != null -> {
-            val duration = state.checks[group].settingsText("duration_ms").orEmpty()
-            SettingsMessage(strings.text("连接正常 · $duration 毫秒", "Connected · $duration ms"))
-        }
-    }
-    SettingsHint(strings.text(
-        "连接检查使用已保存配置，会产生少量模型用量。",
-        "Connection checks use saved settings and make a small model request.",
-    ))
 }
 
 private fun channelChoices(strings: Strings) = listOf(
@@ -432,6 +434,7 @@ private fun channelChoices(strings: Strings) = listOf(
 
 private fun channelLabel(value: String?, strings: Strings) = when (value) {
     "disabled" -> strings.text("未配置", "Not configured")
+    "configured" -> strings.text("已配置", "Configured")
     "connecting" -> strings.text("连接中", "Connecting")
     "awaiting_verification" -> strings.text("等待回调验证", "Waiting for callback verification")
     "connected" -> strings.text("已连接", "Connected")
@@ -454,36 +457,42 @@ private fun channelLabel(value: String?, strings: Strings) = when (value) {
 }
 
 @Composable
-private fun SettingsConnection(status: JsonObject?, strings: Strings) {
-    SettingsHint(listOf(channelLabel(status.settingsText("state") ?: "disabled", strings),
-        channelLabel(status.settingsText("detail"), strings), status.settingsText("peer").orEmpty())
-        .filter { it.isNotBlank() }.joinToString(" · "))
-}
-
-@Composable
-private fun SettingsChannel(controller: SettingsController, state: SettingsUiState, strings: Strings) {
+private fun SettingsChannels(state: SettingsUiState, strings: Strings, edit: (String) -> Unit) {
     val channels = state.snapshot.settingsObject("channel_status")
     val uri = LocalUriHandler.current
     SettingsSection(strings.text("消息渠道", "Messaging channel")) {
         if ("channels" in state.checkErrors) SettingsMessage(strings.text("连接状态不可用", "Connection status unavailable"), error = true)
-        SettingsSubheading(strings.text("QQ 私聊", "QQ private chat"))
-        SettingsHint(strings.text("支持随时私聊速记与查回顾。", "Supports quick notes and checking reviews in private chat."))
-        SettingsField(controller, state, "channel.qq_app_id", "QQ AppID", keyboard = KeyboardType.Ascii)
-        SettingsSecret(controller, state, strings, "qq_app_secret", "QQ AppSecret")
-        SettingsConnection(channels.settingsObject("qq"), strings)
-        SettingsSubheading("Telegram")
-        SettingsSecret(controller, state, strings, "bot_token", "Telegram Bot Token")
-        SettingsField(controller, state, "channel.destination", strings.text("Telegram 接收会话", "Telegram delivery chat"),
-            hint = strings.text("留空使用本人私聊，也可填写群或频道的 Chat ID。", "Leave blank for your private chat, or enter a group or channel Chat ID."),
-            keyboard = KeyboardType.Ascii)
+        for ((kind, secret) in SettingsForm.channelSecrets) {
+            val status = channels.settingsObject(kind)
+            val configured = state.snapshot.settingsObject("secrets").settingsObject(secret).settingsBoolean("configured")
+            val detail = listOf(channelLabel(status.settingsText("state") ?: if (configured) "configured" else "disabled", strings),
+                channelLabel(status.settingsText("detail"), strings), status.settingsText("peer").orEmpty())
+                .filter { it.isNotBlank() }.joinToString(" · ")
+            SettingsSummary(channelLabel(kind, strings), detail, strings) { edit(kind) }
+        }
         val telegram = channels.settingsObject("telegram")
         val link = telegram.settingsText("link").orEmpty()
         if (Regex("https://t\\.me/[A-Za-z0-9_]+(?:\\?start=[A-Za-z0-9_-]{1,64})?").matches(link)) {
             SettingsGhost(strings.text("打开机器人", "Open bot"), { runCatching { uri.openUri(link) } },
                 modifier = Modifier.testTag("settings_open_telegram"))
         }
-        SettingsConnection(telegram, strings)
-        SettingsSubheading(strings.text("飞书应用机器人", "Feishu app bot"))
+    }
+}
+
+@Composable
+private fun SettingsChannelFields(target: String, controller: SettingsController, state: SettingsUiState, strings: Strings) {
+    when (target) {
+        "qq" -> {
+            SettingsField(controller, state, "channel.qq_app_id", "QQ AppID", keyboard = KeyboardType.Ascii)
+            SettingsSecret(controller, state, strings, "qq_app_secret", "QQ AppSecret")
+        }
+        "telegram" -> {
+            SettingsSecret(controller, state, strings, "bot_token", "Telegram Bot Token")
+            SettingsField(controller, state, "channel.destination", strings.text("Telegram 接收会话", "Telegram delivery chat"),
+                hint = strings.text("留空使用本人私聊，也可填写群或频道的 Chat ID。", "Leave blank for your private chat, or enter a group or channel Chat ID."),
+                keyboard = KeyboardType.Ascii)
+        }
+        "feishu-app" -> {
         SettingsChoiceField(controller, state, "channel.feishu_mode", strings.text("接收方式", "Receive messages via"),
             listOf("websocket" to strings.text("长连接", "WebSocket"), "callback" to strings.text("公网回调", "Public callback")))
         SettingsField(controller, state, "channel.app_id", "App ID")
@@ -494,8 +503,8 @@ private fun SettingsChannel(controller: SettingsController, state: SettingsUiSta
             SettingsSecret(controller, state, strings, "verification_token", "Verification Token")
             SettingsSecret(controller, state, strings, "encrypt_key", "Encrypt Key")
         }
-        SettingsConnection(channels.settingsObject("feishu-app"), strings)
-        SettingsSubheading(strings.text("飞书群 Webhook", "Feishu group webhook"))
+        }
+        "feishu-webhook" -> {
         SettingsSecret(controller, state, strings, "webhook_url", "Webhook URL")
         SettingsSecret(controller, state, strings, "webhook_secret", "Webhook Secret")
         SettingsCheckbox(controller, state, "channel.webhook_images", strings.text("推送图片", "Include images"))
@@ -503,6 +512,7 @@ private fun SettingsChannel(controller: SettingsController, state: SettingsUiSta
         if (images) SettingsField(controller, state, "channel.webhook_app_id", "Webhook App ID")
         if (images || state.snapshot.settingsObject("secrets").settingsObject("webhook_app_secret").settingsBoolean("configured")) {
             SettingsSecret(controller, state, strings, "webhook_app_secret", "Webhook App Secret", allowReplace = images)
+        }
         }
     }
 }
@@ -545,14 +555,6 @@ private fun SettingsSection(title: String, content: @Composable ColumnScope.() -
             content()
         }
     }
-}
-
-@Composable
-private fun SettingsSubheading(title: String) {
-    Text(
-        title, fontSize = 14.sp, lineHeight = 22.4.sp, fontWeight = FontWeight.SemiBold,
-        modifier = Modifier.padding(top = 12.dp, bottom = 4.dp).semantics { heading() },
-    )
 }
 
 @Composable
@@ -626,26 +628,21 @@ private fun SettingsCheckbox(
     label: String,
     hint: String = "",
     enabled: Boolean = true,
+    atomic: Boolean = false,
 ) {
-    SettingsRow(label, hint) {
-        val checked = state.values[path] == "true"
-        Box(
-            modifier = Modifier.testTag("settings_${path.replace('.', '_')}")
-                .fillMaxWidth().heightIn(min = 44.dp)
-                .semantics { contentDescription = label }
-                .toggleable(
-                    value = checked, enabled = enabled && !state.busy, role = Role.Checkbox,
-                    onValueChange = { controller.change(path, it.toString()) },
-                ),
-            contentAlignment = Alignment.CenterStart,
-        ) {
-            Checkbox(
-                checked = checked, onCheckedChange = null, enabled = enabled && !state.busy,
-                modifier = Modifier.size(18.dp),
-                colors = CheckboxDefaults.colors(checkedColor = Color(0xFF5B8DEF)),
-            )
+    val haptic = rememberMoeriseHaptic()
+    Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.weight(1f)) {
+            Text(label, fontSize = 14.sp)
+            if (hint.isNotBlank()) SettingsHint(hint)
         }
+        Switch(checked = (if (atomic) state.atomicValues[path] ?: state.values[path] else state.values[path]) == "true", onCheckedChange = {
+            haptic()
+            if (atomic) controller.saveAtomic(path, it.toString()) else controller.change(path, it.toString())
+        }, enabled = enabled && (!atomic || !state.conflict),
+            modifier = Modifier.testTag("settings_${path.replace('.', '_')}").semantics { contentDescription = label })
     }
+    HorizontalDivider(color = Color(0xFFF0F4F9))
 }
 
 @Composable
@@ -806,11 +803,12 @@ private fun SettingsGhost(
     modifier: Modifier = Modifier,
     enabled: Boolean = true,
 ) {
-    TextButton(
+    OutlinedButton(
         onClick, enabled = enabled, modifier = modifier.heightIn(min = 44.dp),
         shape = RoundedCornerShape(10.dp),
+        border = BorderStroke(1.dp, MoeriseColors.Line),
         contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
-        colors = ButtonDefaults.textButtonColors(contentColor = MoeriseColors.Muted),
+        colors = ButtonDefaults.outlinedButtonColors(contentColor = MoeriseColors.Muted),
     ) { Text(label, fontSize = 14.sp, lineHeight = 22.4.sp, fontWeight = FontWeight.Normal) }
 }
 
@@ -834,22 +832,30 @@ private fun JsonObject?.settingsObject(key: String): JsonObject? = this?.get(key
 private fun JsonObject?.settingsText(key: String): String? = (this?.get(key) as? JsonPrimitive)?.contentOrNull
 private fun JsonObject?.settingsBoolean(key: String): Boolean = (this?.get(key) as? JsonPrimitive)?.booleanOrNull == true
 
-private fun settingsMessage(code: String, strings: Strings): String = when (code) {
+internal fun settingsMessage(code: String, strings: Strings): String = when (code) {
     "SETTINGS_CONFLICT" -> strings.text(
-        "设置已在其他页面更新。重新加载后再编辑；重新加载会丢弃表单中的修改。",
-        "Settings changed in another page. Reload to edit; this discards your unsaved changes.",
+        "设置已在其他页面更新。重新加载后再编辑。",
+        "Settings changed in another page. Reload to continue editing.",
     )
     "SETTINGS_BUSY" ->
         strings.text("设置服务繁忙，请稍后重新保存。", "The settings service is busy. Please save again later.")
+    "FEISHU_CALLBACK_CLEAR_REQUIRES_APP_SECRET" ->
+        strings.text("清空飞书回调令牌前，请明确选择清空 App Secret，以停用飞书应用机器人。",
+            "To clear the Feishu verification token, explicitly choose to clear the App Secret and disable the bot.")
     "INVALID_ARGUMENT", "SETTINGS_INPUT_INVALID" ->
         strings.text("设置不合法，请检查字段、时段和密钥配置。", "Check your settings, delivery times and secrets.")
     "SETTINGS_RESPONSE_INVALID" ->
         strings.text("服务返回的设置不完整，请重新加载。", "The server returned incomplete settings. Reload settings.")
     "SETTINGS_SAVED" -> strings.text("设置已保存。", "Settings saved.")
+    "SETTINGS_SAVED_TOMORROW" -> strings.text("已保存，次日生效。", "Saved. Takes effect tomorrow.")
+    "SETTINGS_PUSH_STOPPED" -> strings.text("已保存，回顾推送已关闭。", "Saved. Review delivery is off.")
+    "EMBEDDING_KEY_ORIGIN" -> strings.text("API 地址更换了域名、协议或端口，请替换或清空密钥。",
+        "Replace or clear the key when the API server’s host, scheme or port changes.")
     "SETTINGS_UNCHANGED" ->
         strings.text("没有需要保存的修改。", "No changes to save.")
     "SETTINGS_MAP_REBUILT" ->
         strings.text("已请求重新生成星图。", "Star map rebuild requested.")
+    "SETTINGS_MODEL_CONNECTED" -> strings.text("连接正常。", "Connection successful.")
     "EMBEDDING_DISABLED" ->
         strings.text("请先启用并保存 Embedding。", "Enable embeddings and save your settings first.")
     "EMBEDDING_AUTH" -> strings.text("Embedding 密钥被拒绝，请检查密钥和模型权限。", "The embedding API key was rejected. Check the key and model permissions.")
@@ -857,7 +863,10 @@ private fun settingsMessage(code: String, strings: Strings): String = when (code
     "EMBEDDING_PROTOCOL" -> strings.text("Embedding 返回格式或维度不符合配置。", "The embedding response format or dimensions do not match your settings.")
     "EMBEDDING_RATE_LIMITED" -> strings.text("Embedding 调用受限，请稍后重试。", "Embedding requests are rate limited. Please try again later.")
     "EMBEDDING_UNAVAILABLE" -> strings.text("Embedding 连接失败，请检查服务和地址。", "Could not connect to the embedding service. Check the service and URL.")
-    "MODEL_CHECK_TIMEOUT" -> strings.text("连接检查超时，请稍后重试。", "The connection check timed out. Please try again later.")
+    "MODEL_CHECK_TIMEOUT", "CHANNEL_CHECK_TIMEOUT" -> strings.text("连接检查超时，请稍后重试。", "The connection check timed out. Please try again later.")
+    "BOT_CREDENTIALS", "BOT_CONNECTION", "BOT_RATE_LIMITED", "BOT_PROTOCOL" -> channelLabel(code, strings)
+    "CHANNEL_AUTH" -> strings.text("飞书拒绝了应用凭据，请检查 App ID 和 App Secret。",
+        "Feishu rejected the credentials. Check the App ID and App Secret.")
     "UPSTREAM_AUTH_UNAVAILABLE", "UPSTREAM_UNAVAILABLE" ->
         strings.text("Memos 连接失败，请恢复笔记服务后重试。", "Could not connect to Memos. Restore the note service and try again.")
     else -> connectionError(code, strings)

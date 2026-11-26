@@ -1,7 +1,7 @@
 import { l, setText, setAttr, resolveText, locale, monthLabel, weekdays, initI18n } from './i18n.js';
 import { Draft, readAttachments } from './draft.js';
 import { errorMessage as errorText } from './errors.js';
-import { pages, notePath, filters, timelineURL, safeFrom, detailURL, noteID, attachmentURL, rasterImage } from './routes.js';
+import { pages, notePath, filters, listQuery, timelineURL, safeFrom, detailURL, noteID, attachmentURL, rasterImage } from './routes.js';
 import { el, button } from './dom.js';
 import { validNote, renderNoteCard, renderReadingCard } from './notes.js';
 import { createTimeline } from './timeline.js';
@@ -14,6 +14,8 @@ import { clearMedia } from './media.js';
 import { initShell } from './shell.js';
 import { connectPrivacy, disconnectPrivacy, diagnose, resultOf, usage } from './privacy.js';
 import { syncStatus } from './sync-status.js';
+import { dismissSnackbar, snackbar } from './snackbar.js';
+import { animateMotion, motionPositions, moveFrom } from './motion.js';
 
 const $ = id => document.getElementById(id);
 const shell = initShell(loadSidebar);
@@ -53,9 +55,10 @@ let identity = null, logoutSession = null, authBusy = false, saving = false, rea
 let draftOwner = null;
 let timeline = null;
 let month = '', routeReturnKey = null;
+let monthDirection = 0, lastSyncAt = null;
 let moduleReload = false;
 let lastTimeline = { path: '/', values: filters('') };
-let settingsPage = null;
+let settingsPage = null, sessionSettings = null;
 let mapPage = null, mapView = null, mapSnapshot = null;
 let discoveryPage = null, discovery = null;
 const client = createClient({
@@ -106,10 +109,11 @@ function stale(generation) { if (generation !== epoch) throw aborted(); }
 function invalidate() {
   epoch++; viewSequence++;
   syncStatus.reset();
+  dismissSnackbar(); lastSyncAt = null;
   capabilitiesRequest = null;
   stopPreload();
   timeline?.destroy(); timeline = null;
-  settingsPage?.destroy(); settingsPage = null;
+  sessionSettings?.dispose(); settingsPage = sessionSettings = null;
   mapPage?.destroy(); mapPage = null;
   discoveryPage?.destroy(); discoveryPage = null;
   invalidateSidebar();
@@ -205,6 +209,10 @@ function sidebarFilter(change) {
   const source = sourceTimeline();
   navigate(timelineURL(source.path, { ...source.values, query: $('q').value, ...change }));
 }
+function recordSync() {
+  lastSyncAt = Date.now();
+  window.dispatchEvent(new Event('moerisesync'));
+}
 function rememberView(writeHistory = true) {
   if (writeHistory && identity && (mapPage || notePath.test(location.pathname))) {
     const state = mapPage ? { mapView } : { returnKey: routeReturnKey };
@@ -288,21 +296,38 @@ async function logout() {
 
 function renderFilters() {
   const values = filters(location.search), box = $('filters');
+  const previous = [...box.querySelectorAll('.fc')];
+  box.hidden = false;
+  const positions = motionPositions(previous);
   box.replaceChildren();
   const chips = [
     ...values.tags.map(tag => ({ label: `#${tag}`, remove: () => sidebarFilter({ tags: values.tags.filter(item => item !== tag) }) })),
     ...(values.date ? [{ label: values.date, remove: () => sidebarFilter({ date: '' }) }] : []),
   ];
   box.hidden = !chips.length;
-  if (!chips.length) return;
-  box.append(el('span', '', l("筛选")));
+  if (chips.length) box.append(el('span', '', l("筛选")));
   for (const chip of chips) {
     const span = el('span', 'fc', chip.label);
+    span.dataset.name = chip.label;
     const remove = button('×', '', chip.remove);
     setAttr(remove, 'aria-label', l("移除筛选 {0}", { 0: chip.label }));
     span.append(remove); box.append(span);
   }
-  box.append(button(l("清除全部"), 'ghost', () => sidebarFilter({ tags: [], date: '' })));
+  if (chips.length) box.append(button(l("清除全部"), 'ghost', () => sidebarFilter({ tags: [], date: '' })));
+  const next = box.querySelectorAll('.fc');
+  moveFrom(next, positions);
+  for (const chip of next) if (!previous.some(node => node.dataset.name === chip.dataset.name)) {
+    animateMotion(chip, [{ transform: 'scale(.92)', opacity: 0 }, { transform: 'none', opacity: 1 }], 'tactile');
+  }
+  for (const chip of previous) {
+    const position = positions.get(chip.dataset.name);
+    if (!position || [...next].some(node => node.dataset.name === chip.dataset.name)) continue;
+    chip.inert = true;
+    Object.assign(chip.style, { position: 'fixed', inset: 'auto', top: `${position.top}px`, left: `${position.left}px`, zIndex: '11' });
+    document.body.append(chip);
+    animateMotion(chip, [{ transform: 'none', opacity: 1 }, { transform: 'scale(.92)', opacity: 0 }], 'tactile')
+      .finished.catch(() => {}).then(() => chip.remove());
+  }
 }
 function invalidateSidebar() {
   sidebarSequence++;
@@ -465,12 +490,17 @@ function renderCalendar(days, selected, disabled = false) {
     cell.setAttribute('aria-pressed', String(selected === date));
     calendar.append(cell);
   }
+  if (monthDirection) {
+    animateMotion(calendar, [{ transform: `translateX(${monthDirection * 12}px)`, opacity: .45 }, { transform: 'none', opacity: 1 }]);
+    monthDirection = 0;
+  }
 }
 function changeMonth(delta) {
   const [year, number] = month.split('-').map(Number), date = new Date(year, number - 1 + delta, 1);
   if (date.getFullYear() < 1000 || date.getFullYear() > 9999) return;
   if (sidebarCalendars.get(sidebarCalendarKey)?.controller) discard(sidebarCalendars, sidebarCalendarKey);
   month = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+  monthDirection = delta;
   loadSidebar();
 }
 function renderNote(note, detail = false) {
@@ -495,8 +525,9 @@ function renderNote(note, detail = false) {
   if (failure) appendNoteError(card, note, failure);
   return card;
 }
-function renderList(items) {
+function renderList(items, entering) {
   const list = $('notes'), names = new Set(items.map(note => note.name));
+  const positions = entering ? motionPositions(list.children) : null;
   cardObserver.disconnect();
   const focusedEditor = list.contains(document.activeElement) ? document.activeElement.closest('form.editor') : null;
   const existing = new Map([...list.children].map(node => [node.dataset.name, node]));
@@ -534,10 +565,24 @@ function renderList(items) {
       cardObserver.observe(card);
     });
   }
+  if (positions) {
+    moveFrom(list.children, positions);
+    const created = [...list.children].find(node => node.dataset.name === entering);
+    if (created && !positions.has(entering)) animateMotion(created, [
+      { transform: 'translateY(-18px) scale(.985)', opacity: .4 }, { transform: 'none', opacity: 1 },
+    ], 'spatial');
+  }
 }
 function replaceCard(note) {
   const card = [...$('notes').children].find(node => node.dataset.name === note.name);
-  if (card) card.replaceWith(renderNote(note, notePath.test(location.pathname)));
+  if (card) {
+    const next = renderNote(note, notePath.test(location.pathname));
+    if (card === next) return;
+    card.replaceWith(next);
+    if (card.matches('.editor') !== next.matches('.editor')) animateMotion(next, [
+      { transform: 'scale(.99)', opacity: .7 }, { transform: 'none', opacity: 1 },
+    ]);
+  }
 }
 function appendNoteError(card, note, err) {
   const box = el('div', 'note-error'), message = el('p', 'error');
@@ -573,6 +618,7 @@ function confirmDelete(card, note) {
   controls.append(cancel, remove); confirm.append(controls);
   confirm.addEventListener('keydown', event => { if (event.key === 'Escape') { event.preventDefault(); cancel.click(); } });
   card.append(confirm); cancel.focus();
+  animateMotion(confirm, [{ transform: 'scaleY(.92)', opacity: 0 }, { transform: 'none', opacity: 1 }]);
 }
 function changeState(note) {
   if (pendingWrites.has(note.name)) return;
@@ -599,6 +645,15 @@ async function performWrite(note) {
     stale(generation);
     if (operation.method !== 'DELETE' && !validNote(updated)) throw Object.assign(new Error('Invalid save response'), { code: 'NOTE_SAVE_UNCONFIRMED' });
     transfer('success');
+    if (operation.body.state === 'ARCHIVED' && updated.state === 'ARCHIVED') snackbar(l("笔记已归档。"), {
+      label: l("撤销"),
+      action: () => {
+        if (generation !== epoch || pendingWrites.has(note.name)) return;
+        changeState(updated);
+      },
+    });
+    else if (operation.body.state === 'NORMAL') snackbar(l("笔记已恢复。"));
+    else if (editor) snackbar(l("笔记已保存。"));
     if (editor) { usage('edit', 'success'); usage('save_ack', 'success', performance.now() - started); }
     editor?.draft.clear(); editors.delete(note.name); pendingWrites.delete(note.name); failures.delete(note.name); dirtySnapshots();
     if (timeline) await timeline.update(note.name, updated);
@@ -766,7 +821,7 @@ async function showRoute({ focus = false, returning = false } = {}) {
     if (location.pathname === '/archived') { $('view-title').hidden = false; setText($('view-title'), l("归档笔记")); }
     renderFilters();
     timeline = createTimeline({ key: router.key, url: router.url, snapshots, request, sessionRequest,
-      render: renderList, showError, handleFailure });
+      render: renderList, showError, handleFailure, onSynced: recordSync });
     await timeline.open(returning);
     if (sequence === viewSequence) schedulePreload();
   } else if (detail) {
@@ -828,16 +883,22 @@ async function showRoute({ focus = false, returning = false } = {}) {
     window.scrollTo(0, 0);
     const module = await routeModule(() => import('./settings.js'), generation, sequence);
     if (!module) return;
-    settingsPage = module.createSettingsPage({
+    settingsPage = sessionSettings ||= module.createSettingsPage({
       sessionRequest, handleFailure, onDirtyChange: () => leaveGuard.update(),
       confirmDiscard: dirty => leaveGuard.confirm(dirty),
-      onSaved: data => {
-        capabilitiesRequest = null;
+      sync: synchronize, lastSync: () => lastSyncAt,
+      onSaved: (data, previous, body) => {
+        const before = previous.settings;
         identity.timezone = data.settings.timezone;
         updateStargazing(data.settings.stargazing.enabled);
-        discovery?.invalidate({ settings: true });
-        month = sourceTimeline().values.date?.slice(0, 7) || localToday().slice(0, 7);
-        dirtySnapshots(); invalidateSidebar(); loadSidebar();
+        if (body?.secrets.embedding_api_key || JSON.stringify(before.embedding) !== JSON.stringify(data.settings.embedding) ||
+            JSON.stringify(previous.secrets.embedding_api_key) !== JSON.stringify(data.secrets.embedding_api_key)) {
+          discovery?.invalidate({ settings: true });
+        }
+        if (before.timezone !== data.settings.timezone) {
+          month = sourceTimeline().values.date?.slice(0, 7) || localToday().slice(0, 7);
+          dirtySnapshots(); invalidateSidebar(); loadSidebar();
+        }
       },
     });
     await settingsPage.mount($('workspace'));
@@ -856,22 +917,34 @@ function updateComposer() {
   leaveGuard.update();
 }
 $('content').addEventListener('input', () => { draft.content = $('content').value; updateComposer(); });
-$('sync-trigger').addEventListener('click', async () => {
-  if (!identity) return;
+async function synchronize() {
   const trigger = $('sync-trigger');
+  if (!identity || trigger.disabled) return;
+  const generation = epoch, view = viewSequence;
   trigger.disabled = true;
   const transfer = syncStatus.start();
   try {
     dirtySnapshots(); invalidateSidebar();
-    await Promise.all([loadSidebar(), isTimeline() ? timeline?.open(true) : Promise.resolve()]);
+    const [, refreshed] = await Promise.all([loadSidebar(), timeline ? timeline.refresh({ record: false }) :
+      request(`/notes?${listQuery('/', { tags: [] })}`).then(page => {
+        if (!Array.isArray(page?.notes) || page.notes.some(note => !validNote(note) || note.state !== 'NORMAL')) {
+          throw Object.assign(new Error('Invalid note list response'), { code: 'NOTE_LIST_INVALID' });
+        }
+        return true;
+      })]);
+    stale(generation);
+    if (view !== viewSequence || !refreshed) { transfer(view === viewSequence ? 'failure' : 'canceled'); return; }
     transfer('success');
+    recordSync();
+    snackbar(l("已从 Core 刷新笔记。"));
   } catch (err) {
     transfer(resultOf(err));
-    handleFailure($('list-error'), err);
+    if (generation === epoch && (view === viewSequence || err.status === 401)) handleFailure($('list-error'), err);
   } finally {
     trigger.disabled = false;
   }
-});
+}
+$('sync-trigger').addEventListener('click', synchronize);
 $('content').addEventListener('keydown', event => {
   if ((event.ctrlKey || event.metaKey) && event.key === 'Enter' && !event.isComposing) {
     event.preventDefault(); if (!$('save').disabled) $('composer').requestSubmit();
@@ -903,7 +976,8 @@ $('composer').addEventListener('submit', async event => {
     if (!validNote(note)) throw Object.assign(new Error('Invalid create response'), { code: 'NOTE_SAVE_UNCONFIRMED' });
     transfer('success'); usage('create', 'success'); usage('save_ack', 'success', performance.now() - started);
     draft.confirm(attempt); $('content').value = draft.content; dirtySnapshots();
-    timeline?.update(note.name, note);
+    timeline?.update(note.name, note, true);
+    snackbar(l("笔记已保存。"));
     sidebarChanged(null, note);
     if (returnFocus && [document.body, $('content'), $('save')].includes(document.activeElement) && !$('composer').hidden) $('content').focus({ preventScroll: true });
   } catch (err) {

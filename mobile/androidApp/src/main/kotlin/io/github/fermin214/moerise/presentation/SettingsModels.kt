@@ -24,6 +24,7 @@ data class SettingsUiState(
     val deliveries: List<JsonObject>? = null,
     val resending: Set<String> = emptySet(),
     val rebuildingMap: Boolean = false,
+    val atomicValues: Map<String, String> = emptyMap(),
 )
 
 internal object SettingsForm {
@@ -39,6 +40,8 @@ internal object SettingsForm {
     val secretNames = setOf("embedding_api_key", "app_secret", "verification_token",
         "encrypt_key", "webhook_url", "webhook_secret", "bot_token", "qq_app_secret", "webhook_app_secret")
     val modelGroups = setOf("embedding")
+    val channelSecrets = mapOf("qq" to "qq_app_secret", "telegram" to "bot_token",
+        "feishu-app" to "app_secret", "feishu-webhook" to "webhook_url")
     private val booleans = setOf("review.include_archived", "notifications.enabled",
         "embedding.enabled", "embedding.send_dimensions", "stargazing.enabled", "channel.webhook_images")
     private val nullable = setOf("embedding.base_url", "embedding.model",
@@ -188,7 +191,8 @@ internal object SettingsForm {
         return first == second
     }
 
-    fun patch(snapshot: JsonObject, state: SettingsUiState): JsonObject {
+    fun patch(snapshot: JsonObject, draft: SettingsUiState): JsonObject {
+        val state = draft.copy(values = normalize(draft.values))
         val version = version(snapshot)
         val timezone = state.values["timezone"] ?: invalid()
         require(zoneName.matches(timezone) && runCatching { serviceMonth(timezone) }.isSuccess) { "SETTINGS_INPUT_INVALID" }
@@ -241,6 +245,53 @@ internal object SettingsForm {
                     })
                 }
             })
+        }
+    }
+
+    fun linkedPatch(snapshot: JsonObject, patch: JsonObject, target: String?): JsonObject {
+        val settings = patch.getValue("settings").jsonObject.toMutableMap()
+        val secrets = patch.getValue("secrets").jsonObject.toMutableMap()
+        fun clear(name: String) = secrets[name]?.jsonObject?.get("action")?.jsonPrimitive?.contentOrNull == "clear"
+        fun put(group: String, field: String, value: JsonElement) {
+            settings[group] = JsonObject((settings[group] as? JsonObject).orEmpty() + (field to value))
+        }
+        fun effective(group: String, field: String) = (settings[group] as? JsonObject)?.get(field) ?: original(snapshot, "$group.$field")
+        if (clear("embedding_api_key")) put("embedding", "enabled", JsonPrimitive(false))
+        if (clear("webhook_app_secret")) put("channel", "webhook_images", JsonPrimitive(false))
+        val appSecretInUse = snapshot["secrets"]?.jsonObject?.get("app_secret")?.jsonObject?.get("configured")?.jsonPrimitive?.booleanOrNull == true ||
+            secrets["app_secret"]?.jsonObject?.get("action")?.jsonPrimitive?.contentOrNull == "replace"
+        require(!appSecretInUse || !clear("verification_token") || effective("channel", "feishu_mode")?.jsonPrimitive?.contentOrNull != "callback" ||
+            clear("app_secret")) { "FEISHU_CALLBACK_CLEAR_REQUIRES_APP_SECRET" }
+        val kind = effective("channel", "kind")?.jsonPrimitive?.contentOrNull
+        if (kind == "none" || kind == target && channelSecrets[kind]?.let(::clear) == true) {
+            if (effective("notifications", "enabled")?.jsonPrimitive?.booleanOrNull == true)
+                put("notifications", "enabled", JsonPrimitive(false))
+        }
+        return buildJsonObject {
+            put("version", version(snapshot))
+            put("settings", JsonObject(settings))
+            put("secrets", JsonObject(secrets))
+        }
+    }
+
+    fun candidate(snapshot: JsonObject, patch: JsonObject, target: String?): Pair<String, JsonObject>? {
+        val settings = patch.getValue("settings").jsonObject
+        val secrets = patch.getValue("secrets").jsonObject
+        val group = if (target == "embedding") "embedding" else "channel"
+        val primary = if (target == "embedding") "embedding_api_key" else channelSecrets[target] ?: return null
+        val candidate = settings[group] as? JsonObject ?: JsonObject(emptyMap())
+        val operation = secrets[primary]?.jsonObject?.get("action")?.jsonPrimitive?.contentOrNull
+        val configured = snapshot["secrets"]?.jsonObject?.get(primary)?.jsonObject?.get("configured")?.jsonPrimitive?.booleanOrNull == true
+        val enabled = if (target == "embedding") {
+            (candidate["enabled"] ?: original(snapshot, "embedding.enabled"))?.jsonPrimitive?.booleanOrNull == true
+        } else operation == "replace" || operation != "clear" && configured
+        if (!enabled) return null
+        val endpoint = if (group == "embedding") "/models/embedding/check" else "/channels/check"
+        return endpoint to buildJsonObject {
+            put("version", patch.getValue("version"))
+            put("settings", buildJsonObject { put(group, candidate) })
+            put("secrets", secrets)
+            if (group == "channel") put("target", requireNotNull(target))
         }
     }
 

@@ -11,4 +11,10 @@
   --danger:#B42318;
   --radius:14px;
   --font-body:'PingFang SC','Noto Sans SC','Hiragino Sans GB','Microsoft YaHei',sans-serif;
+  --motion-tactile-duration:140ms;
+  --motion-tactile-easing:cubic-bezier(.2,.8,.2,1);
+  --motion-responsive-duration:240ms;
+  --motion-responsive-easing:cubic-bezier(.22,1,.36,1);
+  --motion-spatial-duration:340ms;
+  --motion-spatial-easing:cubic-bezier(.25,1,.5,1);
 }

@@ -8,12 +8,16 @@ import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.json.*
 
 class SettingsController(
     private val core: () -> CoreClient?,
     private val account: () -> String?,
     private val scope: CoroutineScope,
+    private val onChanged: (JsonObject, JsonObject, Set<String>) -> Unit = { _, _, _ -> },
+    private val onFeedback: (String) -> Unit = {},
 ) {
     private val mutable = MutableStateFlow(SettingsUiState())
     val state = mutable.asStateFlow()
@@ -21,6 +25,7 @@ class SettingsController(
     private var generation = 0L
     private var owner: String? = null
     private var client: CoreClient? = null
+    private var sessionSnapshot: JsonObject? = null
     private var operation: Job? = null
     private var polling: Job? = null
     private var settingsTab = 0
@@ -30,15 +35,25 @@ class SettingsController(
     private val fieldRevisions = mutableMapOf<String, Long>()
     private val secretRevisions = mutableMapOf<String, Long>()
     private var timesRevision = 0L
+    private val submitLock = Mutex()
+    private val submissions = mutableMapOf<Job, Boolean>()
+    private val atomicRevisions = mutableMapOf<String, Long>()
+    private var atomicRevision = 0L
 
-    fun load() {
+    fun load() = load(false)
+
+    fun reload() = load(true)
+
+    private fun load(preserveDraft: Boolean) {
+        if (owner != account() || client !== core()) clear()
+        val draft = state.value.takeIf { preserveDraft && it.snapshot != null }
         val stamp = ++generation
         cancelWork()
         visible = true
         owner = account()
         client = core()
-        resetRevisions()
-        mutable.value = SettingsUiState(loading = true)
+        if (draft == null) resetRevisions()
+        mutable.value = draft?.copy(loading = true, error = null, atomicValues = emptyMap()) ?: SettingsUiState(loading = true)
         val active = client
         val key = owner
         if (active == null || key == null || !key.startsWith("${active.origin}\u0000")) {
@@ -47,11 +62,20 @@ class SettingsController(
         }
         operation = scope.launch(start = CoroutineStart.LAZY) {
             try {
-                val response = read(active.api(HttpMethod.Get, "/settings"))
-                if (!owns(stamp, active, key)) return@launch
-                val snapshot = SettingsForm.readSnapshot(response)
-                mutable.value = SettingsUiState(snapshot = snapshot, values = SettingsForm.values(snapshot),
-                    secrets = SettingsForm.secretNames.associateWith { SecretEdit() }, times = SettingsForm.times(snapshot))
+                submitLock.withLock {
+                    val response = read(active.api(HttpMethod.Get, "/settings"))
+                    if (!owns(stamp, active, key)) return@withLock
+                    val snapshot = SettingsForm.readSnapshot(response)
+                    val previous = sessionSnapshot
+                    sessionSnapshot = snapshot
+                    val values = SettingsForm.values(snapshot)
+                    val oldValues = draft?.snapshot?.let(SettingsForm::values).orEmpty()
+                    val retained = draft?.values.orEmpty().filter { (path, value) -> value != oldValues[path] }
+                    mutable.value = SettingsUiState(snapshot = snapshot, values = values + retained,
+                        secrets = draft?.secrets ?: SettingsForm.secretNames.associateWith { SecretEdit() },
+                        times = draft?.times?.takeIf { it != SettingsForm.times(draft.snapshot!!) } ?: SettingsForm.times(snapshot))
+                    previous?.let { onChanged(it, snapshot, emptySet()) }
+                }
             } catch (error: Exception) {
                 if (error is CancellationException) throw error
                 if (owns(stamp, active, key)) mutable.update { it.copy(error = errorCode(error)) }
@@ -72,13 +96,17 @@ class SettingsController(
         cancelWork()
         mutable.update { it.copy(loading = false, busy = false,
             secrets = it.secrets.mapValues { SecretEdit() }, checking = emptySet(), resending = emptySet(),
-            checks = emptyMap(), checkErrors = emptyMap(), status = null) }
+            checks = emptyMap(), checkErrors = emptyMap(), status = null, atomicValues = emptyMap()) }
     }
 
     fun clear() {
         leave()
+        submissions.keys.toList().forEach { it.cancel() }
+        submissions.clear()
+        atomicRevisions.clear()
         owner = null
         client = null
+        sessionSnapshot = null
         resetRevisions()
         mutable.value = SettingsUiState()
     }
@@ -91,11 +119,6 @@ class SettingsController(
                 if (value == "bailian") "dashscope" else "openai-compatible"
             "embedding.protocol" -> changes["embedding.provider"] =
                 if (value == "dashscope") "bailian" else "openai-compatible"
-        }
-        val next = state.value.values + changes
-        if (path.startsWith("embedding.")) {
-            if (next["embedding.protocol"] == "openai-compatible") changes["embedding.query_instruction"] = ""
-            else changes["embedding.send_dimensions"] = "false"
         }
         if (path == "channel.kind" && value == "none") changes["notifications.enabled"] = "false"
         val changed = changes.filter { (name, text) -> state.value.values[name] != text }
@@ -149,7 +172,7 @@ class SettingsController(
         settingsTab = tab
         val active = client ?: return
         val key = owner ?: return
-        if (visible && state.value.snapshot != null && !state.value.busy && !state.value.conflict) {
+        if (visible && state.value.snapshot != null && submissions.isEmpty() && !state.value.conflict) {
             poll(generation, active, key)
         }
     }
@@ -184,10 +207,42 @@ class SettingsController(
         if (owns(stamp, active, key)) mutable.update { it.copy(deliveries = items) }
     }
 
-    fun save() {
+    fun dirty(): Boolean {
+        val draft = state.value
+        val snapshot = draft.snapshot ?: return false
+        return draft.values != SettingsForm.values(snapshot) || draft.times != SettingsForm.times(snapshot) ||
+            draft.secrets.values.any { it.action != "keep" }
+    }
+
+    fun discardDraft() {
+        val snapshot = state.value.snapshot ?: return
+        mutable.update { it.copy(values = SettingsForm.values(snapshot), times = SettingsForm.times(snapshot),
+            secrets = SettingsForm.secretNames.associateWith { SecretEdit() }, status = null,
+            error = if (it.conflict) "SETTINGS_CONFLICT" else null) }
+        ++editRevision
+    }
+
+    fun saveAtomic(path: String, value: String) {
+        if (path !in setOf("channel.kind", "notifications.enabled", "stargazing.enabled") || !editable() || state.value.conflict) return
+        val stamp = ++atomicRevision
+        atomicRevisions[path] = stamp
+        mutable.update { it.copy(atomicValues = it.atomicValues + (path to value)) }
+        val patch = buildJsonObject {
+            put("settings", buildJsonObject {
+                put(path.substringBefore('.'), buildJsonObject { put(path.substringAfter('.'), SettingsForm.value(path, value)) })
+            })
+            put("secrets", buildJsonObject {})
+        }
+        submit(patch, target = null, editing = false) {
+            if (atomicRevisions[path] == stamp) {
+                atomicRevisions.remove(path)
+                mutable.update { it.copy(atomicValues = it.atomicValues - path) }
+            }
+        }
+    }
+
+    fun save(target: String? = null) {
         if (!editable() || state.value.busy || state.value.conflict) return
-        val active = client ?: return
-        val key = owner ?: return
         val submitted = state.value
         val snapshot = submitted.snapshot ?: return
         val patch = try { SettingsForm.patch(snapshot, submitted) }
@@ -195,56 +250,92 @@ class SettingsController(
             mutable.update { it.copy(error = errorCode(error), status = null) }
             return
         }
-        val secretOperations = patch.getValue("secrets").jsonObject
         if (patch.getValue("settings").jsonObject.isEmpty() &&
-            secretOperations.values.all { it.jsonObject.getValue("action").jsonPrimitive.content == "keep" }) {
+            patch.getValue("secrets").jsonObject.isEmpty()) {
             mutable.update { it.copy(error = null, status = "SETTINGS_UNCHANGED") }
             return
         }
+        submit(patch, target, editing = true)
+    }
+
+    private fun submit(patch: JsonObject, target: String?, editing: Boolean, finished: () -> Unit = {}) {
+        val active = client ?: return
+        val key = owner ?: return
+        val revision = editRevision
         val fieldsAtSubmit = fieldRevisions.toMap()
         val secretsAtSubmit = secretRevisions.toMap()
         val timesAtSubmit = timesRevision
-        val stamp = ++generation
+        val stamp = generation
+        fun activeSubmission() = if (editing) owns(stamp, active, key) else ownsSession(active, key)
         cancelModels()
-        mutable.update { it.copy(busy = true, error = null, status = null, checks = emptyMap(), checkErrors = emptyMap()) }
-        operation = scope.launch(start = CoroutineStart.LAZY) {
+        mutable.update { it.copy(busy = editing || it.busy, error = null, status = null, checks = emptyMap(), checkErrors = emptyMap()) }
+        val job = scope.launch(start = CoroutineStart.LAZY) {
             try {
-                val response = read(active.api(HttpMethod.Patch, "/settings", patch.toString()))
-                if (!owns(stamp, active, key)) return@launch
-                val saved = SettingsForm.readSnapshot(response)
-                require(SettingsForm.version(saved) > SettingsForm.version(snapshot)) { "SETTINGS_RESPONSE_INVALID" }
-                val savedValues = SettingsForm.values(saved)
-                // 只回填提交后未再编辑的字段，修订号也区分改回相同文字的操作。
-                mutable.update { live ->
-                    live.copy(snapshot = saved,
-                        values = savedValues.mapValues { (path, value) ->
-                            if (fieldRevisions[path] == fieldsAtSubmit[path]) value else live.values[path] ?: value
-                        },
-                        times = if (timesRevision == timesAtSubmit) SettingsForm.times(saved) else live.times,
-                        secrets = live.secrets.mapValues { (name, edit) ->
-                            if (name in secretOperations && secretRevisions[name] == secretsAtSubmit[name]) SecretEdit() else edit
-                        },
-                        models = null, conflict = false, error = null, status = "SETTINGS_SAVED")
+                submitLock.withLock {
+                    if (!activeSubmission() || state.value.conflict || editing && revision != editRevision) return@withLock
+                    val snapshot = sessionSnapshot ?: return@withLock
+                    val body = SettingsForm.linkedPatch(snapshot, patch, target)
+                    val changes = body.getValue("settings").jsonObject
+                    val secrets = body.getValue("secrets").jsonObject
+                    val candidate = SettingsForm.candidate(snapshot, body, target)
+                    if (candidate != null) {
+                        val result = read(active.api(HttpMethod.Post, candidate.first, candidate.second.toString()))
+                        if (!owns(stamp, active, key) || revision != editRevision) return@withLock
+                        if (!versionMatches(result, SettingsForm.version(snapshot))) { conflict(); return@withLock }
+                        require(result["status"]?.jsonPrimitive?.contentOrNull == "ok") { "MODEL_CHECK_PROTOCOL" }
+                    }
+                    val response = read(active.api(HttpMethod.Patch, "/settings", body.toString()))
+                    if (!activeSubmission()) return@withLock
+                    val saved = SettingsForm.readSnapshot(response)
+                    require(SettingsForm.version(saved) > SettingsForm.version(snapshot)) { "SETTINGS_RESPONSE_INVALID" }
+                    sessionSnapshot = saved
+                    val savedValues = SettingsForm.values(saved)
+                    val baseline = SettingsForm.values(snapshot)
+                    val nextDay = "timezone" in changes || "review" in changes || "times" in
+                        ((changes["notifications"] as? JsonObject) ?: emptyMap<String, JsonElement>())
+                    val stopped = baseline["notifications.enabled"] == "true" && savedValues["notifications.enabled"] == "false" &&
+                        (target in SettingsForm.channelSecrets || changes["channel"]?.jsonObject?.get("kind")?.jsonPrimitive?.content == "none")
+                    if (state.value.snapshot != null) mutable.update { live ->
+                        live.copy(snapshot = saved,
+                            values = savedValues.mapValues { (path, value) ->
+                                val submittedField = changes[path.substringBefore('.')]?.let { group ->
+                                    if (path == "timezone") true else path.substringAfter('.') in group.jsonObject
+                                } == true
+                                if (editing && submittedField && fieldRevisions[path] == fieldsAtSubmit[path] ||
+                                    live.values[path] == baseline[path]) value else live.values[path] ?: value
+                            },
+                            times = if (editing && timesRevision == timesAtSubmit) SettingsForm.times(saved) else live.times,
+                            secrets = live.secrets.mapValues { (name, edit) ->
+                                if (editing && name in secrets && secretRevisions[name] == secretsAtSubmit[name]) SecretEdit() else edit
+                            },
+                            conflict = false, error = null, status = if (editing && revision == editRevision) "SETTINGS_SAVED" else null)
+                    }
+                    onChanged(snapshot, saved, secrets.keys)
+                    onFeedback(when {
+                        stopped -> "SETTINGS_PUSH_STOPPED"
+                        nextDay -> "SETTINGS_SAVED_TOMORROW"
+                        else -> "SETTINGS_SAVED"
+                    })
                 }
             } catch (error: Exception) {
                 if (error is CancellationException) throw error
-                if (owns(stamp, active, key)) {
-                    if (error is CoreException && error.detail.code == "SETTINGS_CONFLICT") conflict()
-                    else mutable.update { it.copy(error = errorCode(error)) }
+                if (activeSubmission()) {
+                    val code = errorCode(error)
+                    if (code == "SETTINGS_CONFLICT") conflict()
+                    else mutable.update { it.copy(error = code) }
+                    if (!visible) onFeedback(code)
                 }
             } finally {
-                if (owns(stamp, active, key)) {
-                    operation = null
-                    mutable.update { live ->
-                        live.copy(busy = false, secrets = live.secrets.mapValues { (name, edit) ->
-                            if (name in secretOperations && secretRevisions[name] == secretsAtSubmit[name]) SecretEdit() else edit
-                        })
-                    }
-                    if (!state.value.conflict) poll(stamp, active, key)
+                submissions.remove(currentCoroutineContext()[Job])
+                finished()
+                if (editing && owns(stamp, active, key)) mutable.update { it.copy(busy = false) }
+                if (visible && ownsSession(active, key) && submissions.isEmpty() && !state.value.conflict && operation == null) {
+                    poll(generation, active, key)
                 }
             }
         }
-        operation?.start()
+        submissions[job] = editing
+        job.start()
     }
 
     fun modelDirty(group: String): Boolean {
@@ -292,6 +383,7 @@ class SettingsController(
                     (result["duration_ms"] as? JsonPrimitive)?.takeUnless { it.isString }
                         ?.longOrNull?.let { it >= 0 } == true) { "MODEL_CHECK_PROTOCOL" }
                 mutable.update { it.copy(checks = it.checks + (group to result), checkErrors = it.checkErrors - group) }
+                onFeedback("SETTINGS_MODEL_CONNECTED")
             } catch (error: Exception) {
                 if (error is CancellationException && error !is TimeoutCancellationException) throw error
                 if (owns(stamp, active, key) && checkJobs[group] === currentCoroutineContext()[Job]) {
@@ -319,7 +411,10 @@ class SettingsController(
         scope.launch {
             try {
                 active.api(HttpMethod.Post, "/map/rebuild", "{}")
-                if (owns(stamp, active, key)) mutable.update { it.copy(status = "SETTINGS_MAP_REBUILT") }
+                if (owns(stamp, active, key)) {
+                    mutable.update { it.copy(status = "SETTINGS_MAP_REBUILT") }
+                    onFeedback("SETTINGS_MAP_REBUILT")
+                }
             } catch (error: Exception) {
                 if (error is CancellationException) throw error
                 if (owns(stamp, active, key)) mutable.update { it.copy(error = errorCode(error)) }
@@ -331,7 +426,7 @@ class SettingsController(
 
     private fun poll(stamp: Long, active: CoreClient, key: String) {
         polling?.cancel()
-        if (settingsTab == 3) return
+        if (settingsTab !in 1..2) return
         polling = scope.launch(start = CoroutineStart.LAZY) {
             while (owns(stamp, active, key) && !state.value.conflict) {
                 if (settingsTab == 2) {
@@ -357,7 +452,7 @@ class SettingsController(
                         if (!owns(stamp, active, key)) return@launch
                         mutable.update { it.copy(checkErrors = it.checkErrors + ("history" to errorCode(error))) }
                     }
-                } else if (settingsTab in 0..1) {
+                } else if (settingsTab == 1) {
                     val target = "models"
                     try {
                         val version = state.value.snapshot?.let { SettingsForm.version(it, positive = false) } ?: return@launch
@@ -394,8 +489,11 @@ class SettingsController(
     private fun owns(stamp: Long, active: CoreClient, key: String): Boolean {
         if (!visible || stamp != generation) return false
         if (key != account() || active !== core()) { clear(); return false }
-        return owner == key && client === active
+        return ownsSession(active, key)
     }
+
+    private fun ownsSession(active: CoreClient, key: String) =
+        owner == key && client === active && key == account() && active === core()
 
     private fun cancelCheck(group: String) {
         checkJobs.remove(group)?.cancel()
@@ -414,6 +512,7 @@ class SettingsController(
     private fun cancelWork() {
         operation?.cancel()
         operation = null
+        submissions.filterValues { it }.keys.forEach { it.cancel() }
         resendJobs.values.toList().forEach { it.cancel() }
         resendJobs.clear()
         cancelModels()

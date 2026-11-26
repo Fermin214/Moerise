@@ -82,8 +82,7 @@ def android_release(root, sha):
         metadata.with_name(base + suffix) for suffix in ('.apk', '.apk.sha256', '.apk.json', '-notices.zip')
     )
     guide = metadata.with_name('INSTALL.md')
-    files = [apk, digest_file, expected_metadata, notices]
-    for path in [*files, guide, metadata.with_name('mapping.txt')]:
+    for path in [apk, digest_file, expected_metadata, notices, guide, metadata.with_name('mapping.txt')]:
         if not path.is_file() or not path.stat().st_size:
             raise SystemExit(f'Missing or empty Android release file: {path}')
     digest = checksum(apk)
@@ -97,7 +96,7 @@ def android_release(root, sha):
         raise SystemExit('Android APK metadata does not match the signed package and source commit')
     if digest_file.read_text().split() != [digest, apk.name]:
         raise SystemExit('Android APK checksum file does not match the package')
-    return f'android-v{value}', files, {}, ['--notes-file', str(guide)]
+    return f'android-v{value}', [apk], {}, ['--notes-file', str(guide)]
 
 
 def release_package(root, repo, sha, component):
@@ -105,10 +104,10 @@ def release_package(root, repo, sha, component):
         return android_release(root, sha)
     tag, files, images, notes = linux_release(root, repo)
     if component == 'both':
-        android_tag, android_files, _, android_notes = android_release(root, sha)
+        android_tag, android_files, _, _ = android_release(root, sha)
         if android_tag != f'android-{tag}':
             raise SystemExit(f'Linux and Android versions differ: {tag}, {android_tag}')
-        files.extend([*android_files, Path(android_notes[1])])
+        files.extend(android_files)
     return tag, files, images, notes
 
 

@@ -53,7 +53,9 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import io.github.fermin214.moerise.data.*
 import io.github.fermin214.moerise.domain.Note
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.*
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -88,6 +90,28 @@ fun MoeriseApp(mobile: MobileController, onEditorReady: () -> Unit = {}) {
     val manualSync by mobile.sync.manualSync.collectAsState()
     val search by mobile.search.state.collectAsState()
     val account = connection.profile?.accountKey
+    val newTimelineKey by mobile.newTimelineKey.collectAsState()
+    val reducedMotion = rememberReducedMotion()
+    val snackbar = remember(account) { SnackbarHostState() }
+    val currentStrings by rememberUpdatedState(strings)
+    LaunchedEffect(mobile, account, snackbar) {
+        mobile.notices.collectLatest { notice ->
+            val labels = currentStrings
+            val message = when (notice.code) {
+                "NOTE_ARCHIVED" -> labels.text("笔记已归档。", "Note archived.")
+                "NOTE_UNDO_CONFLICT" -> labels.text("笔记已在服务器上变化，无法撤销归档。", "The note changed on the server. Archiving could not be undone.")
+                "NOTE_UNDO_FAILED" -> labels.text("撤销归档失败，请刷新笔记后重试。", "Undo failed. Refresh the note and try again.")
+                "NOTE_SAVED" -> labels.text("笔记已保存。", "Note saved.")
+                "COPIED" -> labels.text("已复制", "Copied")
+                "COPY_FAILED" -> labels.text("复制失败", "Copy failed")
+                else -> settingsMessage(notice.code, labels)
+            }
+            val result = withTimeoutOrNull(3000) {
+                snackbar.showSnackbar(message, notice.undo?.let { labels.text("撤销", "Undo") }, duration = SnackbarDuration.Indefinite)
+            }
+            if (result == SnackbarResult.ActionPerformed) notice.undo?.invoke()
+        }
+    }
     val timezone = connection.profile?.timezone ?: "UTC"
     var page by rememberSaveable(account) { mutableStateOf("home") }
     var searchOpen by rememberSaveable(account) { mutableStateOf(false) }
@@ -259,11 +283,15 @@ fun MoeriseApp(mobile: MobileController, onEditorReady: () -> Unit = {}) {
     MoeriseTheme {
         WelcomeDialog(mobile.privacy, strings)
         CompositionLocalProvider(
+            LocalReducedMotion provides reducedMotion,
+            LocalMobileNotice provides { mobile.notice(it) },
             LocalLeaveWriting provides leaveWriting,
             LocalWebSyncAction provides { if (sync.status == SyncStatus.SIGN_IN) navigate("connect") else mobile.synchronize() },
             LocalWebSearchOpen provides searchOpen, LocalWebSearchPanel provides {
-            if (searchOpen) WebSearchPanel(query, strings, onChange = mobile.search::change,
-                onClose = { leaveWriting(); searchOpen = false }, onSubmit = { showFilter(query) })
+            if (searchOpen) Box(Modifier.motionEnter("search", distance = -8f)) {
+                WebSearchPanel(query, strings, onChange = mobile.search::change,
+                    onClose = { leaveWriting(); searchOpen = false }, onSubmit = { showFilter(query) })
+            }
         }) {
             NavigationDrawer(
                 drawer, account != null && !clearing && conflictKey == null && logout == null && page != "connect", strings,
@@ -281,6 +309,7 @@ fun MoeriseApp(mobile: MobileController, onEditorReady: () -> Unit = {}) {
                 }
             ) {
                 Surface(Modifier.fillMaxSize().platformTestTags(), color = MoeriseColors.Paper) {
+                    Box(Modifier.fillMaxSize()) {
                     when {
                         connection.loading -> Box(Modifier.safeDrawingPadding().padding(24.dp)) { CircularProgressIndicator() }
                         account == null || page == "connect" -> Box(Modifier.safeDrawingPadding().imePadding()) {
@@ -329,6 +358,11 @@ fun MoeriseApp(mobile: MobileController, onEditorReady: () -> Unit = {}) {
                                         }
                                     }
                                     items(if (connection.needsLogin || clearing) emptyList() else entries, key = { it.key }) { entry ->
+                                        Box(if (reducedMotion) Modifier else Modifier.animateItem(
+                                            fadeInSpec = MoeriseMotion.tactile(),
+                                            placementSpec = MoeriseMotion.responsive(),
+                                            fadeOutSpec = MoeriseMotion.tactile(),
+                                        )) {
                                         val noteId = when (entry) {
                                             is TimelineEntry.Local -> entry.draft.id
                                             is TimelineEntry.Remote -> entry.note.name
@@ -339,6 +373,10 @@ fun MoeriseApp(mobile: MobileController, onEditorReady: () -> Unit = {}) {
                                             else homeNote.takeIf { it.name == remote.name } ?: NoteDetailState()
                                         } else NoteDetailState()
                                         val controller = editorsByKey[noteId]
+                                        val recent = entry.key == newTimelineKey
+                                        Box(if (recent) Modifier.motionEnter(entry.key, distance = -18f, initialScale = .985f, spatial = true)
+                                            else Modifier.motionEnter(entry.key to (controller != null), initialScale = .992f,
+                                                distance = 0f, animateInitial = false)) {
                                         if (controller != null) renderEditor(noteId, controller)
                                         else TimelineNoteCard(
                                             entry = entry,
@@ -368,6 +406,8 @@ fun MoeriseApp(mobile: MobileController, onEditorReady: () -> Unit = {}) {
                                             deleteUnknown = noteAction.deleteUnknown,
                                             onCheckDeletion = { mobile.checkNoteDeletion(it.name) },
                                         )
+                                        }
+                                        }
                                     }
                                     items(if (connection.needsLogin || clearing) emptyList() else orphanEditors, key = { "editor:$it" }) { id ->
                                         noteEditors[id]?.let { renderEditor(id, it) }
@@ -401,6 +441,8 @@ fun MoeriseApp(mobile: MobileController, onEditorReady: () -> Unit = {}) {
                             }
                             timelineActions.value?.render?.invoke()
                         }
+                    }
+                    SnackbarHost(snackbar, Modifier.align(Alignment.BottomCenter).safeDrawingPadding().imePadding())
                     }
                 }
             }
@@ -498,6 +540,7 @@ private fun HomeEditor(
     editorTag: String = "note_editor", saveTag: String = "save_note", cancelTag: String? = null,
     actions: MutableState<WritingActions?>, pick: (DraftEntity) -> Unit, filters: FilterReads, filterRevision: Long,
 ) {
+    val haptic = rememberMoeriseHaptic()
     val draft = state.draft ?: return
     val leaveWriting = LocalLeaveWriting.current
     val editorFocus = remember(draft.id) { FocusRequester() }
@@ -590,7 +633,7 @@ private fun HomeEditor(
                     modifier = cancelTag?.let { tag -> Modifier.testTag(tag) } ?: Modifier) { Text(strings.text("取消", "Cancel")) } }
                 if (draft.conflictJson != null) {
                     WebAction(strings.text("处理冲突", "Resolve conflict"), onClick = { leaveWriting(); onConflict() })
-                } else WebAction(strings.text("保存", "Save"), onClick = { leaveWriting(); onSave() },
+                } else WebAction(strings.text("保存", "Save"), onClick = { leaveWriting(); haptic(); onSave() },
                     modifier = Modifier.testTag(saveTag), enabled = canSave)
             }
         }
@@ -613,7 +656,7 @@ private fun HomeEditor(
                         if (it.type == KeyEventType.KeyDown && it.key == Key.Escape && onCancel != null) {
                             leaveWriting(); onCancel(); true
                         } else if (it.type == KeyEventType.KeyDown && it.key == Key.Enter &&
-                            (it.isCtrlPressed || it.isMetaPressed) && canSave) { leaveWriting(); onSave(); true } else false
+                            (it.isCtrlPressed || it.isMetaPressed) && canSave) { leaveWriting(); haptic(); onSave(); true } else false
                     }.focusRequester(editorFocus).onFocusChanged { focused = it.isFocused; onFocus(it.isFocused) }.semantics {
                         contentDescription = strings.text("写点什么", "Write a note")
                 },

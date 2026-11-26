@@ -3,6 +3,7 @@ import { el, button } from './dom.js';
 import { noteID, listQuery } from './routes.js';
 import { validNote } from './notes.js';
 import { errorMessage as errorText } from './errors.js';
+import { animateMotion, reducedMotion } from './motion.js';
 
 function discoveryText(value) {
   const code = typeof value === 'string' ? value : value?.code;
@@ -28,7 +29,8 @@ export function createDiscovery({ request, sessionRequest, getIdentity, localTod
   function createPage(kind, { key: pageKey, seedName }) {
     let alive = true, sequence = 0, controller = null, busy = false, failure = null, retry = null;
     let modelHint = '', configured = walkConfiguration?.enabled === true, modelController = null;
-    let floaters = walkFloaters || [], floaterController, floaterFailure, animatedNote, preparedNext = null;
+    let floaters = walkFloaters || [], floaterController, floaterFailure, animatedNote, preparedNext = null, enteredFloaters = false;
+    let positions, positionedBatch, moveReview;
     let seedPending = kind === 'walk' && !!seedName && walkView?.key !== pageKey;
     const root = el('div', `stage discovery-page ${kind}-page`);
     root.id = 'discovery-page';
@@ -53,10 +55,32 @@ export function createDiscovery({ request, sessionRequest, getIdentity, localTod
     }
     function render() {
       if (!alive) return;
-      content.replaceChildren(); controls.replaceChildren();
+      const outgoing = content.querySelector('.walk-cards > .discovery-note');
+      const footprint = outgoing?.getBoundingClientRect();
+      content.replaceChildren();
+      for (const child of [...controls.children]) {
+        if (child !== positions || positionedBatch !== reviewView?.batch) child.remove();
+      }
       updateBusy();
       if (kind === 'review') renderReview();
       else renderWalk();
+      if (outgoing && footprint && outgoing.dataset.name !== animatedNote && walkView?.previous) {
+        const slot = content.querySelector('.walk-trail');
+        if (slot) {
+          const cards = slot.parentElement, bounds = cards.getBoundingClientRect(), destination = slot.getBoundingClientRect();
+          const overlay = el('div', 'card walk-outgoing');
+          overlay.append(...outgoing.childNodes);
+          overlay.setAttribute('aria-hidden', 'true'); overlay.inert = true;
+          overlay.style.top = `${footprint.top - bounds.top}px`; overlay.style.height = `${footprint.height}px`;
+          cards.append(overlay);
+          const transition = animateMotion(overlay, [
+            { transform: 'none', opacity: 1 },
+            { transform: `translateY(${destination.top - footprint.top}px) scale(${destination.width / footprint.width},${destination.height / footprint.height})`, opacity: 0 },
+          ], 'spatial', { fill: 'forwards' });
+          transition.finished.catch(() => {}).then(() => overlay.remove());
+          animateMotion(slot, [{ opacity: 0 }, { opacity: .6 }], 'spatial');
+        }
+      }
       if (failure) {
         message(discoveryText(failure), true);
         content.append(button(l("重试"), 'ghost discovery-retry', () => retry?.()));
@@ -80,30 +104,120 @@ export function createDiscovery({ request, sessionRequest, getIdentity, localTod
           card = el('article', 'card big rv discovery-note');
           card.append(el('p', 'sub', l("这条笔记已不存在或无法访问。")));
         } else card = discoveryCard(item.note, true);
-        if (index === selected && animatedNote !== `${batch.id}:${selected}`) card.classList.add(selected % 2 ? 'wb' : 'wa');
         card.hidden = index !== selected; card.dataset.reviewIndex = String(index); stack.append(card);
       });
-      animatedNote = `${batch.id}:${selected}`;
       content.append(stack);
-      const positions = el('div', 'pg review-positions');
-      positions.setAttribute('role', 'group'); setAttr(positions, 'aria-label', l("回顾条目"));
-      batch.items.forEach((_, index) => {
-        const dot = button('', `dt${index === selected ? ' on' : ''}`, () => {
-          reviewView.position = index; render();
-          root.querySelectorAll('.review-positions button')[index].focus({ preventScroll: true });
+      if (!positions?.isConnected) {
+        positionedBatch = batch;
+        positions = el('div', 'pg review-positions');
+        positions.setAttribute('role', 'group'); setAttr(positions, 'aria-label', l("回顾条目"));
+        batch.items.forEach((_, index) => {
+          const dot = button('', 'dt', () => moveReview(index, index > reviewView.position ? -1 : 1, index));
+          setAttr(dot, 'aria-label', l("第 {0} / {1} 条", { 0: index + 1, 1: batch.items.length }));
+          positions.append(dot);
         });
-        setAttr(dot, 'aria-label', l("第 {0} / {1} 条", { 0: index + 1, 1: batch.items.length }));
-        dot.setAttribute('aria-pressed', String(index === selected)); positions.append(dot);
-      });
+        controls.append(positions);
+      }
+      for (const [index, dot] of [...positions.children].entries()) {
+        dot.classList.toggle('on', index === selected);
+        dot.setAttribute('aria-pressed', String(index === selected));
+      }
       const actions = el('div', 'discovery-actions'), current = batch.items[selected];
       if (!current.unavailable) {
         if (current.note.state === 'NORMAL') actions.append(button(l("从这条漫步"), 'ghost', () => startFromNote(current.note)));
       }
       actions.append(button(selected + 1 < batch.items.length ? l("下一条") : l("再看一遍"), 'save', () => {
-        reviewView.position = (selected + 1) % batch.items.length; render();
-        root.querySelector('.discovery-actions .save').focus({ preventScroll: true });
+        move((selected + 1) % batch.items.length, -1, 'next');
       }));
-      controls.append(positions, actions);
+      controls.append(actions);
+      const card = stack.querySelector(`[data-review-index="${selected}"]`);
+      let drag, animation;
+      moveReview = move;
+      function move(index, direction, focus, from = 0) {
+        if (selected === index || !alive || !stack.isConnected) return;
+        const scroll = card.scrollTop;
+        reviewView.position = index; render();
+        const nextStack = content.querySelector('.review-stack');
+        const next = nextStack.querySelector(`[data-review-index="${index}"]`);
+        const visual = el('div', card.className);
+        visual.classList.remove('discovery-note');
+        visual.classList.add('review-outgoing');
+        visual.inert = true; visual.setAttribute('aria-hidden', 'true');
+        visual.append(...card.childNodes);
+        nextStack.append(visual);
+        visual.scrollTop = scroll;
+        const leaving = animateMotion(visual, [
+          { transform: `translateX(${from}px)`, opacity: 1 },
+          { transform: `translateX(${from + direction * 42}px)`, opacity: 0 },
+        ], 'responsive', { fill: 'forwards' });
+        animateMotion(next, [
+          { transform: 'translateY(12px) scale(.955)', opacity: .72 },
+          { transform: 'none', opacity: 1 },
+        ]);
+        leaving.finished.catch(() => {}).then(() => visual.remove());
+        if (focus === 'next') root.querySelector('.discovery-actions .save')?.focus({ preventScroll: true });
+        else if (focus != null) root.querySelectorAll('.review-positions button')[focus]?.focus({ preventScroll: true });
+      }
+      function startDrag(target, x, y, id) {
+        if (batch.items.length < 2 || target.closest('button,a,input,pre')) return;
+        animation?.cancel();
+        drag = { id, x, y, offset: 0 };
+      }
+      function dragTo(x, y, id) {
+        if (!drag || drag.id !== id) return false;
+        const offset = x - drag.x, vertical = y - drag.y;
+        if (drag.offset === 0 && Math.abs(vertical) > Math.abs(offset) && Math.abs(vertical) > 10) { drag = null; return false; }
+        if (Math.abs(offset) < 9 && drag.offset === 0) return false;
+        if (drag.offset === 0 && !reducedMotion()) {
+          const index = (selected - Math.sign(offset) + batch.items.length) % batch.items.length;
+          drag.preview = stack.querySelector(`[data-review-index="${index}"]`).cloneNode(true);
+          drag.preview.hidden = false; drag.preview.inert = true;
+          drag.preview.classList.remove('discovery-note'); drag.preview.classList.add('review-preview');
+          drag.preview.removeAttribute('data-review-index');
+          stack.prepend(drag.preview);
+        }
+        drag.offset = offset;
+        if (!reducedMotion()) {
+          const progress = Math.min(1, Math.abs(offset) / stack.clientWidth);
+          card.style.transform = `translateX(${offset}px)`;
+          if (drag.preview) drag.preview.style.transform = `translateY(${12 * (1 - progress)}px) scale(${.955 + .045 * progress})`;
+        }
+        return true;
+      }
+      function settle(id, released) {
+        if (!drag || drag.id !== id) return;
+        const { offset, preview } = drag; drag = null;
+        preview?.remove();
+        const direction = Math.sign(offset);
+        const next = (selected - direction + batch.items.length) % batch.items.length;
+        if (released && Math.abs(offset) >= Math.min(96, stack.clientWidth / 4)) move(next, direction, null, offset);
+        else if (offset) {
+          card.style.transform = '';
+          animation = animateMotion(card, [{ transform: `translateX(${offset}px)` }, { transform: 'none' }], 'tactile');
+        }
+      }
+      stack.addEventListener('pointerdown', event => {
+        if (event.pointerType === 'touch' || event.button !== 0 || event.target.closest('.note-content')) return;
+        startDrag(event.target, event.clientX, event.clientY, event.pointerId);
+      });
+      stack.addEventListener('pointermove', event => {
+        if (event.pointerType !== 'touch' && dragTo(event.clientX, event.clientY, event.pointerId)) stack.setPointerCapture(event.pointerId);
+      });
+      stack.addEventListener('pointerup', event => { if (event.pointerType !== 'touch') settle(event.pointerId, true); });
+      stack.addEventListener('pointercancel', event => { if (event.pointerType !== 'touch') settle(event.pointerId, false); });
+      stack.addEventListener('touchstart', event => {
+        if (event.touches.length !== 1) { if (drag) settle(drag.id, false); return; }
+        const touch = event.touches[0];
+        startDrag(event.target, touch.clientX, touch.clientY, touch.identifier);
+      }, { passive: true });
+      stack.addEventListener('touchmove', event => {
+        if (!drag || event.touches.length !== 1) return;
+        const touch = event.touches[0];
+        if (dragTo(touch.clientX, touch.clientY, touch.identifier) && event.cancelable) event.preventDefault();
+      }, { passive: false });
+      for (const type of ['touchend', 'touchcancel']) stack.addEventListener(type, event => {
+        for (const touch of event.changedTouches) settle(touch.identifier, type === 'touchend');
+      }, { passive: true });
     }
     async function loadReview() {
       const started = performance.now();
@@ -139,7 +253,7 @@ export function createDiscovery({ request, sessionRequest, getIdentity, localTod
     }
     function stopWalk() {
       cancel(); seedPending = false; walkView = { key: pageKey, result: null, previous: null };
-      animatedNote = null; failure = retry = null; render();
+      animatedNote = null; enteredFloaters = false; failure = retry = null; render();
     }
     function renderWalk() {
       if (modelHint) {
@@ -149,27 +263,35 @@ export function createDiscovery({ request, sessionRequest, getIdentity, localTod
       const result = walkView?.result;
       if (result?.item) {
         const notes = el('div', 'walk-cards');
+        const previous = el('div', 'card walk-trail');
+        previous.setAttribute('aria-hidden', 'true');
         if (walkView.previous) {
-          const previous = el('div', 'card walk-trail');
           previous.append(el('span', 'sub', formatTime(walkView.previous.create_time)),
             el('div', 'walk-trail-text', walkView.previous.content));
-          previous.setAttribute('aria-hidden', 'true'); notes.append(previous);
-        }
+        } else previous.classList.add('walk-trail-empty');
+        notes.append(previous);
         const current = discoveryCard(result.item.note);
-        if (animatedNote !== result.item.note.name) current.classList.add(result.path.length % 2 ? 'wa' : 'wb');
+        const entering = animatedNote !== result.item.note.name;
         animatedNote = result.item.note.name;
         notes.append(current); content.append(notes);
+        if (entering) animateMotion(current, [
+          { transform: 'translateY(18px) scale(.975)', opacity: 0 }, { transform: 'none', opacity: 1 },
+        ], 'spatial');
       } else if (!result?.exhausted) {
         const start = el('div', 'walk-start');
-        floaters.forEach(note => {
+        floaters.forEach((note, index) => {
           const preview = [...note.content.replace(/\s+/gu, ' ').trim()].slice(0, 64).join('') || note.attachments?.[0]?.filename || l("笔记");
-          const floater = button('', 'flc fl walk-floater', () => walkRequest('/walks/start', { name: note.name }));
+          const floater = button('', 'flc walk-floater', () => walkRequest('/walks/start', { name: note.name }));
           floater.append(el('span', '', preview));
           floater.dataset.name = note.name;
           setAttr(floater, 'aria-label', l("从这条笔记开始：{0}", { 0: preview }));
           floater.disabled = busy || !configured;
           start.append(floater);
+          if (!enteredFloaters) animateMotion(floater, [
+            { transform: 'translateY(-12px)', opacity: 0 }, { transform: 'none', opacity: 1 },
+          ], 'responsive', { delay: index * 36, fill: 'backwards' });
         });
+        enteredFloaters ||= floaters.length > 0;
         const control = button(busy || (modelController && !walkConfiguration) ? l("翻找中…") : l("随机开始"), 'save', () => walkRequest('/walks/start', {}));
         control.disabled = busy || !configured; start.append(control); content.append(start);
         if (floaterFailure) {
@@ -346,8 +468,8 @@ export function createDiscovery({ request, sessionRequest, getIdentity, localTod
     createPage,
     clear() { reviewView = walkView = walkConfiguration = walkFloaters = null; },
     invalidate({ settings = false } = {}) {
-      reviewView = walkView = walkFloaters = null;
-      if (settings) walkConfiguration = null;
+      if (settings) walkView = walkFloaters = walkConfiguration = null;
+      else reviewView = walkView = walkFloaters = null;
     },
   };
 }

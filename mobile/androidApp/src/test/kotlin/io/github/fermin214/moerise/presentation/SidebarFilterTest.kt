@@ -4,6 +4,8 @@ import io.github.fermin214.moerise.data.*
 import io.github.fermin214.moerise.domain.Note
 import io.github.fermin214.moerise.domain.SyncNotesResponse
 import io.ktor.client.engine.mock.*
+import io.ktor.http.HttpStatusCode
+import io.ktor.http.content.OutgoingContent
 import java.nio.file.Files
 import kotlin.test.*
 import kotlinx.coroutines.*
@@ -259,6 +261,63 @@ class SidebarFilterTest {
             val unavailable = withTimeout(5_000) { sidebar.state.first { it.filtersError != null } }
             assertTrue(unavailable.tags.isEmpty())
             assertNull(unavailable.calendar)
+        } finally {
+            scope.coroutineContext[Job]!!.cancelAndJoin()
+            core.close(); db.close(); folder.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun queuedArchiveUndoUsesItsOwnHashAndReportsAStaleHash() = runBlocking<Unit> {
+        val folder = Files.createTempDirectory("moerise-queued-undo").toFile()
+        val db = testDatabase(folder.resolve("data.sqlite3").absolutePath)
+        val repository = NoteRepository(db)
+        val scope = CoroutineScope(coroutineContext + SupervisorJob())
+        val origin = "https://notes.example"
+        val account = "$origin\u0000instance\u0000users/owner"
+        val archived = Note("instance", "memos/archived", "entry", "ARCHIVED", "archive-response-hash")
+        val other = Note("instance", "memos/other", "other", "NORMAL", "other-hash")
+        val stale = archived.copy(name = "memos/stale", sourceHash = "stale-archive-response-hash")
+        val otherStarted = CompletableDeferred<Unit>()
+        val resume = CompletableDeferred<Unit>()
+        val undoBody = CompletableDeferred<String>()
+        val staleBody = CompletableDeferred<String>()
+        val core = CoreClient(origin, SessionCookies(origin, MemorySecrets()), MockEngine { request ->
+            when (request.url.encodedPath) {
+                "/api/app/v1/session" -> respond("""{"instance_id":"instance","user":{"name":"users/owner"},"timezone":"UTC","expires_at":"2027-01-01T00:00:00Z","csrf_token":"token"}""")
+                "/api/app/v1/notes/other" -> {
+                    otherStarted.complete(Unit)
+                    resume.await()
+                    respond(CoreJson.encodeToString(other.copy(state = "ARCHIVED", sourceHash = "other-archived")))
+                }
+                "/api/app/v1/notes/archived" -> {
+                    undoBody.complete((request.body as OutgoingContent.ByteArrayContent).bytes().decodeToString())
+                    respond(CoreJson.encodeToString(archived.copy(state = "NORMAL", sourceHash = "restored")))
+                }
+                "/api/app/v1/notes/stale" -> {
+                    staleBody.complete((request.body as OutgoingContent.ByteArrayContent).bytes().decodeToString())
+                    respond("""{"error":{"code":"SOURCE_CHANGED","message":"Note changed"}}""", HttpStatusCode.Conflict)
+                }
+                else -> error(request.url.encodedPath)
+            }
+        })
+        try {
+            val restored = CompletableDeferred<Note>()
+            val failure = CompletableDeferred<String>()
+            val controller = NoteDetailController({ repository }, { account }, { core }, scope) { name, _, note ->
+                if (name == archived.name && note != null) restored.complete(note)
+            }
+            controller.changeState(other)
+            withTimeout(5_000) { otherStarted.await() }
+            controller.undoArchive(archived) { failure.complete(it) }
+            controller.undoArchive(stale) { failure.complete(it) }
+            assertFalse(undoBody.isCompleted)
+            resume.complete(Unit)
+            assertEquals("NORMAL", withTimeout(5_000) { restored.await() }.state)
+            assertEquals("""{"source_hash":"archive-response-hash","state":"NORMAL"}""", undoBody.await())
+            assertEquals("SOURCE_CHANGED", withTimeout(5_000) { failure.await() })
+            assertEquals("""{"source_hash":"stale-archive-response-hash","state":"NORMAL"}""", staleBody.await())
+            assertEquals("restored", repository.localNote(account, archived.name)?.sourceHash)
         } finally {
             scope.coroutineContext[Job]!!.cancelAndJoin()
             core.close(); db.close(); folder.deleteRecursively()

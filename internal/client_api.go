@@ -24,10 +24,11 @@ type loginWindow struct {
 }
 
 type ClientAPI struct {
-	app             *App
-	telemetryClient *http.Client
-	mu              sync.Mutex
-	limits          map[string]loginWindow
+	app                   *App
+	telemetryClient       *http.Client
+	channelCheckTransport http.RoundTripper
+	mu                    sync.Mutex
+	limits                map[string]loginWindow
 }
 
 func NewClientAPI(app *App) *ClientAPI {
@@ -61,7 +62,7 @@ func writeClientError(w http.ResponseWriter, err error, id string) {
 }
 
 func (a *ClientAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	check, mapRead, liveRead := isModelCheck(r), isMapRead(r), isLiveListRead(r)
+	check, mapRead, liveRead := isCandidateCheck(r), isMapRead(r), isLiveListRead(r)
 	if check || mapRead || liveRead {
 		// 认证、运行资源等待及业务调用共享代理超时以内的预算。
 		timeout := modelCheckTimeout
@@ -86,26 +87,24 @@ func (a *ClientAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			writeClientError(w, errors.New("client handler panic"), id)
 		}
 	}()
-	if check || mapRead || liveRead {
+	if mapRead || liveRead {
 		if err := a.lockTimedRequest(r.Context()); err != nil {
 			if mapRead {
 				err = mapRequestError(r.Context(), err)
-			} else if liveRead {
-				err = liveListRequestError(r.Context(), err)
 			} else {
-				err = modelCheckError(r.Context(), err)
+				err = liveListRequestError(r.Context(), err)
 			}
 			writeClientError(w, err, id)
 			return
 		}
 		defer a.app.runtimeMu.RUnlock()
-	} else if r.URL.Path != "/api/app/v1/settings" || r.Method != http.MethodPatch {
+	} else if !check && (r.URL.Path != "/api/app/v1/settings" || r.Method != http.MethodPatch) {
 		a.app.runtimeMu.RLock()
 		defer a.app.runtimeMu.RUnlock()
 	}
 	result, status, err := a.route(w, r)
 	if check {
-		err = modelCheckError(r.Context(), err)
+		err = candidateCheckError(r, err)
 	}
 	if mapRead {
 		err = mapRequestError(r.Context(), err)
@@ -268,7 +267,7 @@ func clientQueryError(r *http.Request) error {
 			return nil
 		}
 	case "/api/app/v1/capabilities", "/api/app/v1/session", "/api/app/v1/settings", "/api/app/v1/telemetry",
-		"/api/app/v1/models", "/api/app/v1/models/embedding/check", "/api/app/v1/map", "/api/app/v1/map/rebuild",
+		"/api/app/v1/models", "/api/app/v1/models/embedding/check", "/api/app/v1/channels/check", "/api/app/v1/map", "/api/app/v1/map/rebuild",
 		"/api/app/v1/search", "/api/app/v1/reviews/daily", "/api/app/v1/walks/start", "/api/app/v1/walks/next":
 	default:
 		if !strings.HasPrefix(r.URL.Path, "/api/app/v1/notes/") &&
@@ -380,6 +379,8 @@ func (a *ClientAPI) route(w http.ResponseWriter, r *http.Request) (any, int, err
 		return a.settingsRoute(w, r)
 	case "/api/app/v1/models", "/api/app/v1/models/embedding/check":
 		return a.modelsRoute(w, r)
+	case "/api/app/v1/channels/check":
+		return a.channelsCheckRoute(w, r)
 	case "/api/app/v1/map", "/api/app/v1/map/rebuild":
 		return a.mapRoute(r)
 	case "/api/app/v1/search":

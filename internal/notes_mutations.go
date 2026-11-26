@@ -255,7 +255,7 @@ func (m *MemosClient) CheckAttachmentRemoval(ctx context.Context, content string
 				if instance != nil {
 					withScheme.Scheme = instance.Scheme
 				}
-				if instance == nil || sameAttachmentOrigin(&withScheme, instance) {
+				if instance == nil || sameURLOrigin(&withScheme, instance) {
 					return attachmentDeleteRejected()
 				}
 				continue
@@ -263,7 +263,7 @@ func (m *MemosClient) CheckAttachmentRemoval(ctx context.Context, content string
 			if instance == nil {
 				return attachmentDeleteRejected()
 			}
-			if !sameAttachmentOrigin(parsed, instance) {
+			if !sameURLOrigin(parsed, instance) {
 				continue
 			}
 		}
@@ -283,7 +283,7 @@ func (m *MemosClient) CheckAttachmentRemoval(ctx context.Context, content string
 	return nil
 }
 
-func sameAttachmentOrigin(a, b *url.URL) bool {
+func sameURLOrigin(a, b *url.URL) bool {
 	port := func(u *url.URL) string {
 		if value := u.Port(); value != "" {
 			return value

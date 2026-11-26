@@ -11,11 +11,12 @@ const names = {
   failure: l("请求失败，请重试。"),
 };
 let pending = 0, last = '', generation = 0;
+let hideSuccess;
 
 function render() {
   const node = document.getElementById('sync-status');
   if (!node) return;
-  const state = pending ? 'transfer' : !navigator.onLine ? 'offline' : last === 'success' ? '' : last;
+  const state = pending ? 'transfer' : !navigator.onLine ? 'offline' : last;
   node.hidden = !state;
   if (!state) {
     node.removeAttribute('data-sync');
@@ -27,25 +28,28 @@ function render() {
   node.dataset.sync = state;
   setAttr(node, 'aria-label', names[state]);
   setAttr(node, 'title', names[state]);
-  node.replaceChildren(icon(syncCloud), dot);
+  node.replaceChildren(icon(state === 'success' ? 'M5 12l4 4L19 6' : syncCloud), dot);
 }
 
 export const syncStatus = {
   start() {
     const stamp = generation;
     let done = false;
+    clearTimeout(hideSuccess);
     pending++;
     render();
     return result => {
       if (done || stamp !== generation) return;
       done = true;
       pending = Math.max(0, pending - 1);
-      last = names[result] ? result : 'unknown';
+      last = result === 'canceled' ? '' : names[result] ? result : 'unknown';
       render();
+      if (last === 'success') hideSuccess = setTimeout(() => { if (last === 'success') last = ''; render(); }, 1200);
     };
   },
   reset() {
     generation++;
+    clearTimeout(hideSuccess);
     pending = 0;
     last = '';
     render();

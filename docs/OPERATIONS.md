@@ -201,7 +201,7 @@ docker compose up -d --no-build moerise
 
 升级应用迁移 `010` 后，`0.3.0` 无法直接打开状态库。Core 读取原部署文件时忽略退役的 `llm`、`insights`、`stargazing.llm_naming`，其余配置字段仍须通过严格校验。历史对话表及旧版加密设置保留在状态库。
 
-回退 `0.3.0` 时先停止服务。使用升级后的 Core 执行 `moerise rollback --backup <快照文件>`，明确填写本次升级生成的 `auto-pre-*.sqlite3` 文件，或手工备份目录下的 `state.sqlite3` 文件。`--backup` 参数要求路径指向文件，且应使用升级前记录的目标快照。命令先生成 `pre-rollback-*` 安全副本，再替换状态库并清理同步进度与派生索引。
+回退 `0.3.0` 时先停止服务。使用升级后的 Core 执行 `moerise rollback --backup <快照文件>`，明确填写升级生成的 `auto-pre-0.4.0-*.sqlite3` 文件，或手工备份目录下的 `state.sqlite3` 文件。`--backup` 参数要求路径指向文件，且应使用升级前记录的目标快照。命令先生成 `pre-rollback-*` 安全副本，再替换状态库并清理同步进度与派生索引。
 
 ```bash
 docker compose stop moerise

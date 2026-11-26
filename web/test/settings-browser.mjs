@@ -1,40 +1,41 @@
 import assert from 'node:assert/strict';
-import { returningBrowser } from './browser-helpers.mjs';
 import http from 'node:http';
 import { once } from 'node:events';
 import { text as readRequestText } from 'node:stream/consumers';
 import { pathToFileURL, fileURLToPath } from 'node:url';
-import { readFile, mkdtemp, cp, writeFile, rm, mkdir } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import { test } from 'node:test';
+import { returningBrowser } from './browser-helpers.mjs';
 import { createWebServer } from './fixture-server.mjs';
 
 const runtime = process.env.MOERISE_PLAYWRIGHT_MODULE;
-const { [process.env.MOERISE_PLAYWRIGHT_ENGINE || 'chromium']: browserType } = runtime ? await import(pathToFileURL(runtime).href) : await import('playwright');
+const { [process.env.MOERISE_PLAYWRIGHT_ENGINE || 'chromium']: browserType } = runtime
+  ? await import(pathToFileURL(runtime).href) : await import('playwright');
+const dates = ['09:00'];
+
 function settings() {
   return {
     version: 1,
     settings: {
       timezone: 'Asia/Hong_Kong',
       review: { count: 3, min_age_hours: 72, recent_days: 7, include_archived: false },
-      notifications: { enabled: false, times: ['09:00'] },
+      notifications: { enabled: false, times: [...dates] },
       embedding: { enabled: false, provider: 'bailian', protocol: 'dashscope', base_url: null,
-        model: 'qwen3.7-text-embedding', dimensions: 1024, send_dimensions: false, batch_size: 20, timeout_seconds: 30,
-        max_concurrency: 2, max_retries: 2, query_instruction: null },
+        model: 'qwen3.7-text-embedding', dimensions: 1024, send_dimensions: false, batch_size: 20,
+        timeout_seconds: 30, max_concurrency: 2, max_retries: 2, query_instruction: null },
       channel: { kind: 'none', app_id: null, user_open_id: null, destination: null, feishu_mode: 'websocket',
         qq_app_id: null, webhook_images: false, webhook_app_id: null },
       stargazing: { enabled: true },
     },
-    secrets: Object.fromEntries(['embedding_api_key', 'app_secret', 'verification_token',
-      'encrypt_key', 'webhook_url', 'webhook_secret', 'bot_token', 'qq_app_secret', 'webhook_app_secret'].map(name => [name, { configured: name === 'embedding_api_key' }])),
-    channel_status: {},
-    channel_capabilities: { text: false, images: false, record: false },
+    secrets: Object.fromEntries(['embedding_api_key', 'app_secret', 'verification_token', 'encrypt_key', 'webhook_url',
+      'webhook_secret', 'bot_token', 'qq_app_secret', 'webhook_app_secret'].map(name => [name, { configured: false }])),
+    channel_status: {}, channel_capabilities: { text: false, images: false, record: false },
   };
 }
-async function fixture(t, language = 'zh-CN', returning = true) {
-  const state = { value: settings(), session: false, gets: 0, patches: [], fail: null, hold: false, pending: [], csrf: false,
-    checks: [], checkFail: null, holdCheck: false, modelPending: [], index: 'disabled', mapReads: 0, rebuilds: 0, deliveries: [], resolutions: [] };
+
+async function fixture(t, { language = 'zh-CN', mobile = false, returning = true } = {}) {
+  const state = { value: settings(), session: false, gets: 0, patches: [], checks: [], telemetry: false, batches: [],
+    index: 'disabled', mapReads: 0, rebuilds: 0, deliveries: [], retries: [], fail: null, checkFail: null,
+    hold: null, holdCheck: null, holdNotes: null, notesFail: null, nextSettingsRead: null, csrf: false };
   const core = http.createServer(async (req, res) => {
     const path = new URL(req.url, 'http://localhost').pathname;
     const raw = await readRequestText(req);
@@ -43,835 +44,443 @@ async function fixture(t, language = 'zh-CN', returning = true) {
       res.writeHead(status, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(data));
     };
     const error = (code, status) => json({ error: { code } }, status);
-    const identity = { user: { name: 'users/1', display_name: '设置测试' }, timezone: state.value.settings.timezone,
-      stargazing_enabled: state.value.settings.stargazing.enabled, csrf_token: 'csrf-settings' };
     if (path === '/api/app/v1/session') {
       if (req.method === 'POST') state.session = true;
       if (req.method === 'DELETE') { state.session = false; res.writeHead(204); res.end(); return; }
       if (!state.session) { error('SESSION_UNAUTHORIZED', 401); return; }
-      json(identity); return;
-    }
-    if (!state.session) { error('SESSION_UNAUTHORIZED', 401); return; }
-    if (path === '/api/app/v1/capabilities') { json({ version: '1.2.3', telemetry: { schema: 1, allowed: state.telemetry === true } }); return; }
-    if (path === '/api/app/v1/telemetry') {
-      assert.equal(req.headers['x-csrf-token'], 'csrf-settings');
-      state.batches ||= []; state.batches.push(JSON.parse(raw)); res.writeHead(204); res.end(); return;
-    }
-    if (path === '/api/app/v1/models') {
-      const model = group => ({ enabled: state.value.settings[group].enabled,
-        configured: state.value.secrets[`${group}_api_key`].configured,
-        protocol: state.value.settings[group].protocol, model: state.value.settings[group].model });
-      json({ version: state.value.version, embedding: model('embedding'), index_status: state.index,
-        vector_index: { ready: state.index === 'ready', active: null, building: state.index === 'building'
-          ? { chunks: 12, completed_chunks: 4, last_error: null } : null } });
+      json({ user: { name: 'users/1', display_name: '设置测试' }, timezone: state.value.settings.timezone,
+        stargazing_enabled: state.value.settings.stargazing.enabled, csrf_token: 'csrf-settings' });
       return;
     }
-    if (path === '/api/app/v1/map/rebuild') {
-      assert.equal(req.method, 'POST');
+    if (!state.session) { error('SESSION_UNAUTHORIZED', 401); return; }
+    if (path === '/api/app/v1/capabilities') {
+      json({ version: '1.2.3', telemetry: { schema: 1, allowed: state.telemetry } }); return;
+    }
+    if (path === '/api/app/v1/telemetry') {
       assert.equal(req.headers['x-csrf-token'], 'csrf-settings');
-      state.rebuilds++;
-      json({ status: 'queued' }); return;
+      state.batches.push(JSON.parse(raw)); res.writeHead(204); res.end(); return;
+    }
+    if (path === '/api/app/v1/models') {
+      json({ version: state.value.version, embedding: state.value.settings.embedding, index_status: state.index,
+        vector_index: { building: state.index === 'building' ? { chunks: 12, completed_chunks: 4 } : null } }); return;
     }
     if (path === '/api/app/v1/map') {
       state.mapReads++;
-      json({ status: state.value.settings.embedding.enabled ? state.index === 'building' ? 'building' : 'waiting' : 'disabled',
-        algorithm: 'umap-balanced-v1', projection_revision: 0, layout_version: '', layout_frame: '', vector_generation: '', points: [] });
-      return;
+      json({ status: 'disabled', algorithm: 'umap-balanced-v1', projection_revision: 0, layout_version: '',
+        layout_frame: '', vector_generation: '', points: [] }); return;
     }
-    if (/^\/api\/app\/v1\/models\/embedding\/check$/.test(path)) {
+    if (path === '/api/app/v1/map/rebuild') {
       assert.equal(req.headers['x-csrf-token'], 'csrf-settings');
-      const body = JSON.parse(raw); state.checks.push({ path, ...body });
+      state.rebuilds++; json({ status: 'queued' }); return;
+    }
+    if (['/api/app/v1/models/embedding/check', '/api/app/v1/channels/check'].includes(path)) {
+      assert.equal(req.headers['x-csrf-token'], 'csrf-settings');
+      const body = JSON.parse(raw);
+      state.checks.push({ path, ...body });
       if (body.version !== state.value.version) { error('SETTINGS_CONFLICT', 409); return; }
+      await state.holdCheck;
       if (state.checkFail) { error(state.checkFail, 503); return; }
-      if (state.holdCheck) { state.modelPending.push(() => json({ version: body.version, status: 'ok', duration_ms: 17 })); return; }
       json({ version: body.version, status: 'ok', duration_ms: 17 }); return;
     }
-    if (path === '/api/app/v1/notes') { json({ notes: [], next_page_token: '' }); return; }
-    if (path === '/api/app/v1/admin/notifications') {
-      if (new URL(req.url, 'http://localhost').searchParams.get('kind') !== 'review') { error('INVALID_ARGUMENT', 422); return; }
-      json({ notifications: state.deliveries }); return;
-    }
-    const resolveId = /^\/api\/app\/v1\/admin\/notifications\/([^/]+)\/retry$/.exec(path)?.[1];
-    if (resolveId) {
-      assert.equal(req.headers['x-csrf-token'], 'csrf-settings');
-      const item = state.deliveries.find(entry => entry.id === resolveId);
-      const body = JSON.parse(raw); state.resolutions.push({ id: resolveId, ...body });
-      assert.deepEqual(body, {}); item.status = 'pending'; json({ notification: item }); return;
+    if (path === '/api/app/v1/notes') {
+      await state.holdNotes;
+      if (state.notesFail) { error('NOTE_LIST_INVALID', state.notesFail); return; }
+      json({ notes: [], next_page_token: '' }); return;
     }
     if (path === '/api/app/v1/tags') { json({ tags: [] }); return; }
-    if (path === '/api/app/v1/calendar') { json({ month: new URL(req.url, 'http://localhost').searchParams.get('month'), days: [] }); return; }
+    if (path === '/api/app/v1/calendar') {
+      json({ month: new URL(req.url, 'http://localhost').searchParams.get('month'), days: [] }); return;
+    }
+    if (path === '/api/app/v1/admin/notifications') { json({ notifications: state.deliveries }); return; }
+    if (path.endsWith('/retry')) {
+      const id = path.split('/').at(-2);
+      state.retries.push(id); state.deliveries.find(item => item.id === id).status = 'pending';
+      json({ notification: state.deliveries.find(item => item.id === id) }); return;
+    }
     if (path !== '/api/app/v1/settings') { error('SOURCE_NOT_FOUND', 404); return; }
     if (req.method === 'GET') {
       state.gets++;
-      const reply = structuredClone(state.value);
-      if (state.hold) { state.pending.push(() => json(reply)); return; }
+      const reply = structuredClone(state.nextSettingsRead || state.value);
+      state.nextSettingsRead = null;
+      await state.hold;
       json(reply); return;
     }
     assert.equal(req.method, 'PATCH');
     assert.equal(req.headers['x-csrf-token'], 'csrf-settings');
     if (state.csrf) { state.csrf = false; error('CSRF_REJECTED', 403); return; }
-    const body = JSON.parse(raw); state.patches.push(body);
+    const body = JSON.parse(raw);
+    state.patches.push(body);
     if (state.fail) {
       const code = state.fail; state.fail = null;
       error(code, code === 'SETTINGS_CONFLICT' ? 409 : code === 'SETTINGS_BUSY' ? 503 : 422); return;
     }
     if (body.version !== state.value.version) { error('SETTINGS_CONFLICT', 409); return; }
     for (const [key, value] of Object.entries(body.settings)) {
-      if (typeof value === 'object' && !Array.isArray(value)) Object.assign(state.value.settings[key], value);
+      if (typeof value === 'object') Object.assign(state.value.settings[key], value);
       else state.value.settings[key] = value;
     }
     for (const [key, operation] of Object.entries(body.secrets)) {
       if (operation.action !== 'keep') state.value.secrets[key].configured = operation.action === 'replace';
     }
     state.value.version++;
-    const kind = state.value.settings.channel.kind;
-    const webhook = kind === 'feishu-webhook' && state.value.secrets.webhook_url.configured;
-    const telegram = kind === 'telegram' && state.value.secrets.bot_token.configured && !!state.value.settings.channel.destination;
-    state.value.channel_capabilities = { text: webhook || telegram, images: telegram, record: false };
     const reply = structuredClone(state.value);
-    if (state.hold) { state.pending.push(() => json(reply)); return; }
+    await state.hold;
     json(reply);
   });
   core.listen(0, '127.0.0.1'); await once(core, 'listening');
-  const dist = await mkdtemp(join(tmpdir(), 'moerise-settings-'));
-  await cp(fileURLToPath(new URL('../src/', import.meta.url)), dist, { recursive: true });
-  // 沿用生产构建的内联样式转换规则。
-  const rules = [];
-  const html = (await readFile(join(dist, 'index.html'), 'utf8')).replace(/<[^>]+\sstyle="[^"]*"[^>]*>/g, tag => {
-    const style = /\sstyle="([^"]*)"/.exec(tag)[1], name = `layout-${rules.length}`;
-    rules.push(`#app .${name}{${style}}`);
-    const cleaned = tag.replace(/\sstyle="[^"]*"/, '');
-    return /\sclass="/.test(cleaned)
-      ? cleaned.replace(/\sclass="([^"]*)"/, ` class="$1 ${name}"`) : cleaned.replace(/^<([^\s>]+)/, `<$1 class="${name}"`);
-  });
-  await writeFile(join(dist, 'layout.css'), rules.join('\n'));
-  await writeFile(join(dist, 'index.html'), html.replace('</head>', '<link rel="stylesheet" href="/layout.css"></head>'));
   const probe = http.createServer(); probe.listen(0, '127.0.0.1'); await once(probe, 'listening');
-  const port = probe.address().port; await new Promise(resolve => probe.close(resolve));
+  const port = probe.address().port;
+  await new Promise(resolve => probe.close(resolve));
   const url = `http://127.0.0.1:${port}`;
-  const web = createWebServer({ coreOrigin: `http://127.0.0.1:${core.address().port}`, publicOrigin: url, dist });
+  const web = createWebServer({ coreOrigin: `http://127.0.0.1:${core.address().port}`, publicOrigin: url,
+    dist: fileURLToPath(new URL('../dist/', import.meta.url)) });
   web.listen(port, '127.0.0.1'); await once(web, 'listening');
   let browser;
   t.after(async () => {
-    for (const release of [...state.pending.splice(0), ...state.modelPending.splice(0)]) release();
     await browser?.close();
     await Promise.all([web, core].map(server => new Promise(resolve => { server.close(resolve); server.closeAllConnections(); })));
-    await rm(dist, { recursive: true, force: true });
   });
-  browser = await browserType.launch({
-    headless: true, channel: process.env.MOERISE_PLAYWRIGHT_CHANNEL || undefined,
-    args: process.env.MOERISE_PLAYWRIGHT_ENGINE ? [] : [`--log-file=${join(dist, 'chromium.log')}`],
-    env: { ...process.env, CHROME_LOG_FILE: join(dist, 'chromium.log') },
-  });
-  const context = await browser.newContext({ locale: language, viewport: { width: 1360, height: 960 } });
+  browser = await browserType.launch({ headless: true, channel: process.env.MOERISE_PLAYWRIGHT_CHANNEL || undefined });
+  const context = await browser.newContext({ locale: language, viewport: mobile ? { width: 390, height: 844 } : { width: 1360, height: 960 } });
   const page = await context.newPage(), errors = [];
   if (returning) await returningBrowser(page);
   page.on('pageerror', err => errors.push(err.message));
   return { page, state, url, errors };
 }
-async function login(page) {
-  await page.locator('#login-form').waitFor({ state: 'visible' });
+
+async function login(page, url, path = '/settings') {
+  await page.goto(url + path);
   await page.locator('#username').fill('test'); await page.locator('#password').fill('test');
-  await page.locator('#login').click(); await page.locator('#workspace').waitFor({ state: 'visible' });
+  await page.locator('#login').click();
+  await page.locator('#workspace').waitFor();
 }
-const pageReady = page => page.getByRole('button', { name: '保存设置', exact: true }).waitFor();
-const setting = (page, path) => page.locator(`[name="${path}"]`);
-const operation = (page, label) => page.getByRole('combobox', { name: `${label}操作`, exact: true });
-const secret = (page, label) => page.getByLabel(`${label}新值`, { exact: true });
+
+const tabs = page => page.getByRole('tablist');
 const tab = (page, id) => page.locator(`#settings-tab-${id}`).click();
+const settingsField = (page, path) => page.locator(`[name="${path}"]`);
+const edit = (page, title) => page.locator('.settings-row').filter({ hasText: title }).getByRole('button', { name: /^(编辑|Edit)$/ }).click();
+const dialog = page => page.locator('dialog.settings-edit[open]');
+const save = page => dialog(page).locator('button.save').click();
+const operation = (page, label) => dialog(page).getByRole('combobox', { name: `${label}操作`, exact: true });
+const newSecret = (page, label) => dialog(page).getByLabel(`${label}新值`, { exact: true });
+const confirmation = (page, text) => page.locator('.snackbar').getByText(text, { exact: true }).waitFor();
 
-test('consent controls cross-tab reporting while a redacted diagnostic remains available offline', async t => {
-  const { page, state, url } = await fixture(t, 'zh-CN', false);
-  state.telemetry = true;
-  await page.goto(url + '/settings'); await login(page);
-  const welcome = page.getByRole('dialog', { name: '欢迎使用 Moerise' });
-  const consent = welcome.getByRole('switch');
-  assert.equal(await consent.isChecked(), false);
-  const owner = () => page.evaluate(() => localStorage.getItem('moerise.aggregate-owner.v1'));
-  assert.equal(await owner(), null);
-  assert.equal(await welcome.locator('button.save').count(), 1);
-  await consent.check();
-  assert.equal(await page.evaluate(() => localStorage.getItem('moerise.privacy.v1')), null);
-  await page.keyboard.press('Escape');
-  await tab(page, 'privacy');
-  const sharing = page.getByRole('switch', { name: '分享使用与故障统计' });
-  assert.equal(await sharing.isChecked(), false);
-  assert.equal(await owner(), null);
-  await page.evaluate(() => dispatchEvent(new ErrorEvent('error', { message: 'secret-text' })));
-  await page.getByRole('button', { name: '预览诊断摘要' }).click();
-  const preview = page.getByRole('dialog', { name: '诊断摘要' });
-  assert.doesNotMatch(await preview.locator('textarea').inputValue(), /secret-text|users\/1|https?:\/\//);
-  const edited = '{"platform":"web"}', summary = preview.getByRole('textbox');
-  await page.context().grantPermissions(['clipboard-read', 'clipboard-write'], { origin: url });
-  await summary.fill(edited);
-  await preview.getByRole('button', { name: '复制诊断摘要' }).click();
-  assert.equal(await page.evaluate(() => navigator.clipboard.readText()), edited);
-  await preview.getByRole('button', { name: '关闭' }).click();
-  assert.deepEqual(state.batches || [], []);
-  await sharing.check();
-  assert.match(await owner(), /^[a-f0-9]{64}$/);
-  const notify = target => target.evaluate(() => dispatchEvent(new ErrorEvent('error', { message: 'secret-text' })));
-  const sent = page.waitForEvent('response', response => response.url().endsWith('/telemetry'));
-  await notify(page); await sent;
-  assert.equal(state.batches.length, 1);
-  const body = state.batches[0];
-  assert.deepEqual(Object.keys(body).sort(), ['client_version', 'core_version', 'platform', 'rows', 'schema', 'system_major']);
-  assert.equal(body.core_version, '1.2.3');
-  assert.equal(body.platform, 'web');
-  assert.ok(body.rows.every(row => row.operation === 'client_error' && row.result === 'failure' && row.count > 0));
-  assert.doesNotMatch(JSON.stringify(body), /secret-text|users\/1|https?:\/\//);
-  await notify(page);
-  await page.waitForFunction(() => JSON.parse(localStorage.getItem('moerise.aggregate.v1'))?.rows?.length);
-  await sharing.uncheck();
-  assert.equal(await owner(), null);
-  await notify(page);
-  assert.equal(await page.evaluate(() => localStorage.getItem('moerise.aggregate.v1')), null);
-  assert.equal(state.batches.length, 1);
-  await sharing.check();
-  state.telemetry = false;
-  await page.reload(); await tab(page, 'privacy'); await page.waitForFunction(() => document.querySelector('[data-privacy]').disabled);
-  await notify(page);
-  assert.equal(await owner(), null);
-  assert.equal(await page.evaluate(() => localStorage.getItem('moerise.aggregate.v1')), null);
-  assert.equal(state.batches.length, 1);
-});
-
-for (const language of ['zh-CN', 'en-US']) {
-  for (const mobile of [false, true]) {
-    test(`stargazing toggle hides navigation and restores it independently of embedding (${language}, ${mobile ? 'mobile' : 'desktop'})`, async t => {
-      const { page, state, url, errors } = await fixture(t, language);
-      if (mobile) await page.setViewportSize({ width: 390, height: 844 });
-      const saveLabel = language === 'zh-CN' ? '保存设置' : 'Save settings';
-      const savedLabel = language === 'zh-CN' ? '设置已保存。' : 'Settings saved.';
-      const disabledLabel = language === 'zh-CN' ? '观星已关闭。' : 'Stargazing is disabled.';
-      const navigate = async path => {
-        if (mobile) await page.locator('#navigation-toggle').click();
-        await page.locator(`a[data-route][href="${path}"]`).click();
-      };
-      await page.goto(url + '/settings'); await login(page);
-      const save = page.getByRole('button', { name: saveLabel, exact: true });
-      await save.waitFor();
-      const link = page.locator('a[data-route][href="/map"]');
-      assert.equal(await link.evaluate(node => node.hidden), false);
-      const embedding = structuredClone(state.value.settings.embedding);
-      await tab(page, 'general');
-      await setting(page, 'stargazing.enabled').uncheck();
-      await save.click(); await page.getByText(savedLabel, { exact: true }).waitFor();
-      assert.equal(await link.evaluate(node => node.hidden), true);
-      assert.deepEqual(state.patches.at(-1).settings, { stargazing: { enabled: false } });
-      await page.goto(url + '/map');
-      await page.locator('#capability').filter({ hasText: disabledLabel }).waitFor();
-      await page.reload();
-      await page.locator('#capability').filter({ hasText: disabledLabel }).waitFor();
-      assert.equal(await page.locator('.map-page').count(), 0);
-      assert.equal(state.mapReads, 0);
-      assert.equal(await link.evaluate(node => node.hidden), true);
-      await navigate('/settings'); await save.waitFor();
-      await tab(page, 'general'); await setting(page, 'stargazing.enabled').check();
-      await save.click(); await page.getByText(savedLabel, { exact: true }).waitFor();
-      assert.equal(await link.evaluate(node => node.hidden), false);
-      assert.deepEqual(state.value.settings.embedding, embedding);
-      await navigate('/map'); await page.locator('#map-field').waitFor();
-      assert.equal(state.mapReads, 1);
-      assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
-      assert.deepEqual(errors, []);
-    });
-  }
+for (const language of ['zh-CN', 'en-US']) for (const mobile of [false, true]) {
+  test(`stargazing is atomic and independent of embeddings (${language}, ${mobile ? 'mobile' : 'desktop'})`, async t => {
+    const { page, state, url, errors } = await fixture(t, { language, mobile });
+    await login(page, url);
+    await tab(page, 'search');
+    const saved = language === 'zh-CN' ? '设置已保存。' : 'Settings saved.';
+    const link = page.locator('nav a[href="/map"]');
+    const embedding = structuredClone(state.value.settings.embedding);
+    await settingsField(page, 'stargazing.enabled').uncheck();
+    await confirmation(page, saved);
+    assert.equal(await link.evaluate(node => node.hidden), true);
+    assert.deepEqual(state.patches[0], { version: 1, settings: { stargazing: { enabled: false } }, secrets: {} });
+    assert.equal(await page.locator('#settings-rebuild-map').isVisible(), false);
+    await page.goto(`${url}/map`);
+    await page.locator('#capability').filter({ hasText: language === 'zh-CN' ? '观星已关闭。' : 'Stargazing is disabled.' }).waitFor();
+    assert.equal(state.mapReads, 0);
+    await page.goto(`${url}/settings`); await tab(page, 'search');
+    await settingsField(page, 'stargazing.enabled').check();
+    await confirmation(page, saved);
+    assert.equal(await link.evaluate(node => node.hidden), false);
+    assert.deepEqual(state.value.settings.embedding, embedding);
+    assert.equal(state.patches[1].version, 2);
+    assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+    assert.deepEqual(errors, []);
+  });
 }
 
-test('lazy page modules isolate navigation during loading and recover from a failed download', { timeout: 60_000 }, async t => {
-  const { page, state, url, errors } = await fixture(t);
-  const modules = [];
-  page.on('request', request => {
-    if (/\/(?:settings|map)\.js$/.test(request.url())) modules.push(request.url());
-  });
-  await page.goto(url); await login(page);
-  await page.locator('#empty').waitFor({ state: 'visible' });
-  assert.deepEqual(modules, []);
-  let release, requested;
-  const held = new Promise(resolve => { release = resolve; });
-  const loading = new Promise(resolve => { requested = resolve; });
-  await page.route('**/settings.js', async route => { requested(); await held; await route.continue(); });
-  await page.locator('a[data-route][href="/settings"]').click(); await loading;
-  await page.locator('nav a[href="/"]').click();
-  const delivered = page.waitForResponse('**/settings.js');
-  release(); await (await delivered).finished();
-  await page.evaluate(() => new Promise(requestAnimationFrame));
-  assert.equal(await page.locator('#settings-page').count(), 0);
-  assert.equal(state.gets, 0);
-  await page.unroute('**/settings.js');
-  await page.locator('a[data-route][href="/settings"]').click(); await pageReady(page);
-  assert.equal(state.gets, 1);
-  await page.locator('nav a[href="/"]').click();
-  let attempts = 0;
-  await page.route('**/map.js', route => ++attempts === 1 ? route.abort() : route.continue());
-  await page.locator('nav a[href="/map"]').click();
-  await page.locator('#list-error').waitFor({ state: 'visible' });
-  await page.locator('#list-retry').click();
-  await page.locator('#map-field').waitFor();
-  assert.equal(attempts, 2);
-  assert.deepEqual(errors, []);
-});
-
-test('settings browser saves public fields, explicit secrets and multi-slot times with session CSRF', { timeout: 60_000 }, async t => {
-  const { page, state, url, errors } = await fixture(t);
-  await page.clock.setFixedTime(new Date('2026-10-31T18:00:00Z'));
-  await page.goto(url); await login(page);
-  await page.locator('#calendar-title').filter({ hasText: '2026年11月' }).waitFor();
-  assert.equal(state.gets, 0);
-  await page.locator('a[data-route][href="/settings"]').click(); await pageReady(page);
-  assert.equal(state.gets, 1);
-  assert.equal(await page.locator('#settings-page input[type="password"]:visible').count(), 0);
-  await setting(page, 'timezone').fill('UTC');
-  await setting(page, 'stargazing.enabled').uncheck();
-  await tab(page, 'review');
-  await setting(page, 'review.count').fill('5');
-  await setting(page, 'review.min_age_hours').fill('48');
-  await setting(page, 'review.recent_days').fill('14');
-  await setting(page, 'review.include_archived').check();
-  await setting(page, 'notifications.enabled').check();
-  await setting(page, 'channel.kind').selectOption('feishu-webhook');
-  await page.getByRole('button', { name: '添加时段' }).click();
-  await page.getByLabel('推送时段 2', { exact: true }).fill('18:30');
-  await tab(page, 'ai');
-  await setting(page, 'embedding.enabled').check();
-  await setting(page, 'embedding.base_url').fill('https://embedding.example.test/v1');
-  await setting(page, 'embedding.model').fill('test-embedding');
-  await operation(page, 'Embedding API Key').selectOption('replace');
-  await secret(page, 'Embedding API Key').fill('••••••••');
-  await page.getByRole('button', { name: '保存设置', exact: true }).click();
-  await page.getByRole('alert').filter({ hasText: '真实的新值' }).waitFor();
-  assert.equal(state.patches.length, 0);
-  await secret(page, 'Embedding API Key').fill('new-embedding-key');
-  await tab(page, 'review');
-  assert.equal(await operation(page, 'Webhook URL').isVisible(), false);
-  await secret(page, 'Webhook URL').fill('https://hook.example.test/token');
-  await tab(page, 'ai');
+test('atomic saves advance versions, restore CSRF and keep daily settings in their own commits', async t => {
+  const { page, state, url } = await fixture(t);
+  await login(page, url);
   state.csrf = true;
-  await page.getByRole('button', { name: '保存设置', exact: true }).click();
-  await page.getByRole('status').filter({ hasText: '设置已保存' }).waitFor();
-  await page.locator('#calendar-title').filter({ hasText: '2026年10月' }).waitFor();
-  await page.locator('#calendar button.today[aria-label^="2026-10-31"]').waitFor();
-  const patch = state.patches[0];
-  assert.equal(patch.version, 1);
-  assert.deepEqual(patch.settings.stargazing, { enabled: false });
-  assert.deepEqual(patch.settings.review, { count: 5, min_age_hours: 48, recent_days: 14, include_archived: true });
-  assert.deepEqual(patch.settings.notifications, { enabled: true, times: ['09:00', '18:30'] });
-  assert.deepEqual(patch.secrets.embedding_api_key, { action: 'replace', value: 'new-embedding-key' });
-  assert.equal(patch.secrets.webhook_url.action, 'replace');
-  assert.equal(patch.secrets.app_secret, undefined);
-  assert.equal(patch.settings.embedding.api_key, undefined);
-  assert.equal(await page.locator('#settings-page input[type="password"]:visible').count(), 0);
-  await tab(page, 'ai');
-  assert.equal(await operation(page, 'Embedding API Key').inputValue(), 'keep');
+  await edit(page, '时区');
+  await settingsField(page, 'timezone').fill('UTC');
+  await save(page); await confirmation(page, '已保存，次日生效。');
   await tab(page, 'review');
-  assert.equal(await operation(page, 'Webhook URL').inputValue(), 'keep');
-  assert.equal(await setting(page, 'channel.webhook_app_id').isVisible(), false);
-  await setting(page, 'review.count').fill('6');
-  await page.getByRole('button', { name: '保存设置', exact: true }).click();
-  await page.getByRole('status').filter({ hasText: '设置已保存' }).waitFor();
-  assert.equal(state.patches.at(-1).version, 2);
-  assert.deepEqual(state.patches.at(-1).settings, { review: { count: 6 } });
-  assert.ok(Object.values(state.patches.at(-1).secrets).every(value => value.action === 'keep' && !('value' in value)));
-  if (process.env.MOERISE_SCREENSHOT_DIR) {
-    await mkdir(process.env.MOERISE_SCREENSHOT_DIR, { recursive: true });
-    await page.screenshot({ path: join(process.env.MOERISE_SCREENSHOT_DIR, 'settings-desktop.png'), fullPage: true });
-  }
-  await page.setViewportSize({ width: 390, height: 844 });
-  assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
-  if (process.env.MOERISE_SCREENSHOT_DIR) {
-    await mkdir(process.env.MOERISE_SCREENSHOT_DIR, { recursive: true });
-    await page.screenshot({ path: join(process.env.MOERISE_SCREENSHOT_DIR, 'settings-mobile.png'), fullPage: true });
-  }
-  assert.deepEqual(errors, []);
+  assert.equal(await settingsField(page, 'notifications.enabled').isDisabled(), true);
+  await edit(page, '每日回顾');
+  await settingsField(page, 'review.count').fill('5');
+  await settingsField(page, 'review.include_archived').check();
+  await save(page); await dialog(page).waitFor({ state: 'hidden' });
+  await edit(page, '推送时段');
+  await page.getByRole('button', { name: '添加时段' }).click();
+  await page.getByLabel('推送时段 2').fill('18:00');
+  await save(page); await dialog(page).waitFor({ state: 'hidden' });
+  assert.deepEqual(state.patches.map(({ version, settings }) => [version, settings]), [
+    [1, { timezone: 'UTC' }], [2, { review: { count: 5, include_archived: true } }],
+    [3, { notifications: { times: ['09:00', '18:00'] } }],
+  ]);
+  await tab(page, 'search');
+  let release;
+  state.hold = new Promise(resolve => { release = resolve; });
+  const submitting = page.waitForRequest(request => request.method() === 'PATCH' && request.url().endsWith('/settings'));
+  await settingsField(page, 'stargazing.enabled').uncheck();
+  await settingsField(page, 'stargazing.enabled').check();
+  await submitting;
+  const next = page.waitForResponse(response => response.url().endsWith('/settings') &&
+    response.request().method() === 'PATCH' && response.request().postDataJSON().version === 5);
+  release(); state.hold = null;
+  await next;
+  await confirmation(page, '设置已保存。');
+  assert.deepEqual(state.patches.slice(-2).map(({ version, settings }) => [version, settings.stargazing.enabled]), [[4, false], [5, true]]);
 });
 
-test('injected requests cannot publish late success or expiry after settings disposal', { timeout: 60_000 }, async t => {
-  const { page, url } = await fixture(t);
-  await page.goto(url);
-  const result = await page.evaluate(async initial => {
-    const { createSettingsPage } = await import('/settings.js');
-    const host = document.createElement('div'); document.body.append(host);
-    let saved = 0, failed = 0;
-    const requests = [];
-    const view = createSettingsPage({
-      sessionRequest(path, options) {
-        if (path === '/models') return new Promise(() => {});
-        return new Promise((resolve, reject) => requests.push({ path, options, resolve, reject }));
-      },
-      onSaved() { saved++; },
-      handleFailure() { failed++; },
-    });
-    const first = view.mount(host), lateGET = requests.shift();
-    view.destroy(); lateGET.resolve(initial); await first;
-    const lateGETIgnored = host.childElementCount === 0 && lateGET.options.controller.signal.aborted;
-    const second = view.mount(host); requests.shift().resolve(initial); await second;
-    const action = host.querySelector('#settings-secret-embedding_api_key');
-    action.value = 'replace'; action.dispatchEvent(new Event('change'));
-    const input = host.querySelector('[aria-label="Embedding API Key新值"]');
-    input.value = 'transient-secret';
-    host.querySelector('form').requestSubmit();
-    const latePATCH = requests.shift();
-    const submittedRealSecret = latePATCH.options.body.secrets.embedding_api_key.value === 'transient-secret';
-    view.destroy();
-    const removedSecret = input.value === '' && latePATCH.options.body.secrets.embedding_api_key.value === undefined;
-    latePATCH.resolve({ ...initial, version: 2 });
-    await new Promise(resolve => setTimeout(resolve, 0));
-    const third = view.mount(host), lateExpiry = requests.shift();
-    view.destroy();
-    lateExpiry.reject(Object.assign(new Error('Expired'), { status: 401, code: 'SESSION_UNAUTHORIZED' }));
-    await third;
-    const result = { lateGETIgnored, submittedRealSecret, removedSecret, saved, failed, nodes: host.childElementCount };
-    host.remove(); return result;
-  }, settings());
-  assert.deepEqual(result, { lateGETIgnored: true, submittedRealSecret: true, removedSecret: true, saved: 0, failed: 0, nodes: 0 });
-});
-
-test('model polling stays single after saving and invalidates results on version change', { timeout: 60_000 }, async t => {
-  const { page, url, errors } = await fixture(t);
-  await page.goto(url);
-  const result = await page.evaluate(async initial => {
-    const { createSettingsPage } = await import('/settings.js');
-    const host = document.createElement('div'); document.body.append(host);
-    const originalSetTimeout = window.setTimeout, originalClearTimeout = window.clearTimeout;
-    const timers = new Map(), models = [], checks = [];
-    let nextTimer = -1, snapshot = structuredClone(initial);
-    snapshot.settings.embedding.enabled = true;
-    window.setTimeout = (callback, delay, ...args) => {
-      if (delay !== 5000) return originalSetTimeout(callback, delay, ...args);
-      const id = nextTimer--; timers.set(id, () => callback(...args)); return id;
-    };
-    window.clearTimeout = id => {
-      if (!timers.delete(id)) originalClearTimeout(id);
-    };
-    const settle = () => new Promise(resolve => originalSetTimeout(resolve, 0));
-    const poll = () => {
-      if (timers.size !== 1) throw new Error(`Expected one model poll, got ${timers.size}`);
-      const [id, callback] = timers.entries().next().value; timers.delete(id); callback();
-    };
-    const status = (version, index_status) => ({
-      version, index_status,
-      embedding: { enabled: true, configured: true },
-      vector_index: { building: { chunks: 12, completed_chunks: 4, last_error: 'EMBEDDING_AUTH' } },
-    });
-    const view = createSettingsPage({
-      sessionRequest(path, options = {}) {
-        if (path === '/models') return new Promise((resolve, reject) => models.push({ ...options, resolve, reject }));
-        if (path.endsWith('/check')) return new Promise(resolve => checks.push({ ...options, resolve }));
-        if (options.method === 'PATCH') {
-          snapshot = { ...snapshot, version: snapshot.version + 1 };
-          snapshot.settings.review.count = options.body.settings.review.count;
-        }
-        return Promise.resolve(structuredClone(snapshot));
-      },
-    });
-    try {
-      await view.mount(host);
-      host.querySelector('[name="review.count"]').value = '4';
-      host.querySelector('form').requestSubmit(); await settle();
-      const requestsAfterSave = models.length, abortedOldPoll = models[0].controller.signal.aborted;
-      models[0].reject(new DOMException('Aborted', 'AbortError')); await settle();
-      const timersAfterCancelledPoll = timers.size;
-      models[1].resolve(status(2, 'waiting')); await settle();
-      const waitingHidesOldBuild = host.querySelector('progress').hidden &&
-        !host.querySelector('#settings-index-status').textContent.includes('4/12') &&
-        !host.querySelector('#settings-index-status').textContent.includes('EMBEDDING_AUTH');
-      poll(); models[2].resolve(status(2, 'building')); await settle();
-      const freshBuildShown = !host.querySelector('progress').hidden &&
-        host.querySelector('#settings-index-status').textContent.includes('4/12');
-      const modelBlocks = host.querySelectorAll('.settings-model');
-      modelBlocks[0].querySelector('button').click();
-      checks[0].resolve({ version: 2, duration_ms: 17 }); await settle();
-      const successfulCheckShown = host.querySelector('#settings-embedding-check-result').textContent.includes('连接正常');
-      modelBlocks[0].querySelector('button').click();
-      const pendingCheckShown = host.querySelector('#settings-embedding-check-result').textContent.includes('正在检查');
-      poll(); models[3].resolve(status(3, 'ready')); await settle();
-      const conflictClearsResults = [...host.querySelectorAll('[id$="-check-result"]')].every(node => !node.textContent) &&
-        host.querySelector('progress').hidden && host.querySelector('#settings-index-status').textContent.includes('已失效');
-      checks[1].resolve({ version: 2, duration_ms: 17 }); await settle();
-      const lateCheckIgnored = !host.querySelector('#settings-embedding-check-result').textContent &&
-        checks[1].controller.signal.aborted;
-      const conflictStopsPolling = timers.size === 0 &&
-        [...host.querySelectorAll('.settings-model button, button.save')].every(node => node.disabled);
-      await view.mount(host);
-      const last = models.at(-1);
-      view.destroy(); last.resolve(status(2, 'building')); await settle();
-      return { requestsAfterSave, abortedOldPoll, timersAfterCancelledPoll, waitingHidesOldBuild, freshBuildShown,
-        successfulCheckShown, pendingCheckShown, conflictClearsResults, lateCheckIgnored, conflictStopsPolling,
-        destroyedStopsPolling: timers.size === 0 && last.controller.signal.aborted };
-    } finally {
-      view.destroy(); host.remove();
-      window.setTimeout = originalSetTimeout; window.clearTimeout = originalClearTimeout;
-    }
-  }, settings());
-  assert.deepEqual(result, { requestsAfterSave: 2, abortedOldPoll: true, timersAfterCancelledPoll: 0,
-    waitingHidesOldBuild: true, freshBuildShown: true, successfulCheckShown: true, pendingCheckShown: true,
-    conflictClearsResults: true, lateCheckIgnored: true, conflictStopsPolling: true, destroyedStopsPolling: true });
-  assert.deepEqual(errors, []);
-});
-
-test('model settings pair protocols, check saved versions and discard obsolete results', { timeout: 60_000 }, async t => {
-  const { page, state, url, errors } = await fixture(t);
-  await page.goto(`${url}/settings`); await login(page); await pageReady(page);
-  await tab(page, 'ai');
-  await page.locator('#settings-index-status').filter({ hasText: '已关闭' }).waitFor();
-  const check = page.getByRole('button', { name: '检查 Embedding 连接', exact: true });
-  assert.ok(await check.isDisabled());
-  await setting(page, 'embedding.enabled').check();
-  await setting(page, 'embedding.provider').selectOption('openai-compatible');
-  assert.equal(await setting(page, 'embedding.protocol').inputValue(), 'openai-compatible');
-  await setting(page, 'embedding.base_url').fill('https://vectors.example.test/v1');
-  await setting(page, 'embedding.model').fill('custom-embedding');
+test('embedding tests a frozen candidate, preserves an edited draft and disables with a cleared key', async t => {
+  const { page, state, url, errors } = await fixture(t, { mobile: true });
+  await login(page, url); await tab(page, 'search'); await edit(page, '向量模型');
+  await settingsField(page, 'embedding.enabled').check();
+  await settingsField(page, 'embedding.protocol').selectOption('openai-compatible');
+  await settingsField(page, 'embedding.base_url').fill('https://embedding.example/v1');
+  await settingsField(page, 'embedding.model').fill('fixture-embedding');
   await operation(page, 'Embedding API Key').selectOption('replace');
-  await secret(page, 'Embedding API Key').fill('generic-key');
-  await setting(page, 'embedding.dimensions').fill('768');
-  await setting(page, 'embedding.send_dimensions').check();
-  assert.ok(await setting(page, 'embedding.query_instruction').isDisabled());
-  assert.ok(await check.isDisabled());
-  state.index = 'building';
-  await page.getByRole('button', { name: '保存设置', exact: true }).click();
-  await page.getByRole('status').filter({ hasText: '设置已保存' }).waitFor();
-  await page.locator('#settings-index-status').filter({ hasText: '4/12' }).waitFor();
-  assert.ok(await check.isEnabled());
-  assert.equal(state.patches[0].settings.embedding.send_dimensions, true);
-  await check.click();
-  await page.locator('#settings-embedding-check-result').filter({ hasText: '连接正常' }).waitFor();
-  assert.equal(state.checks[0].version, 2);
-  state.checkFail = 'EMBEDDING_AUTH';
-  await check.click();
-  await page.locator('#settings-embedding-check-result').filter({ hasText: '密钥被拒绝' }).waitFor();
-  state.checkFail = 'UPSTREAM_AUTH_UNAVAILABLE';
-  await check.click();
-  await page.locator('#settings-embedding-check-result').filter({ hasText: 'Memos 连接失败' }).waitFor();
-  state.checkFail = null; state.holdCheck = true;
-  await check.click();
-  await page.locator('#settings-embedding-check-result').filter({ hasText: '正在检查' }).waitFor();
-  await setting(page, 'embedding.model').fill('new-model');
-  for (const release of state.modelPending.splice(0)) release();
-  await page.locator('#settings-embedding-check-result').filter({ hasText: '保存后检查' }).waitFor();
-  assert.ok(await check.isDisabled());
-  await setting(page, 'embedding.protocol').selectOption('dashscope');
-  assert.equal(await setting(page, 'embedding.provider').inputValue(), 'bailian');
-  assert.equal(await setting(page, 'embedding.send_dimensions').isChecked(), false);
-  await page.locator('a[data-route][href="/review"]').click();
-  await page.getByRole('button', { name: '放弃修改', exact: true }).click();
-  await page.locator('#settings-page').waitFor({ state: 'detached' });
-  assert.equal(await page.locator('#settings-page').count(), 0);
-  await page.locator('a[data-route][href="/map"]').click();
-  await page.locator('.map-page [role="status"]').filter({ hasText: '正在生成观星布局' }).waitFor();
-  state.holdCheck = false;
-  await page.locator('a[data-route][href="/settings"]').click(); await pageReady(page);
-  await tab(page, 'general');
+  await newSecret(page, 'Embedding API Key').fill('candidate-key');
+  let release;
+  state.holdCheck = new Promise(resolve => { release = resolve; });
+  const checked = page.waitForResponse('**/models/embedding/check');
+  await save(page);
+  await settingsField(page, 'embedding.model').fill('replacement-model');
+  release(); state.holdCheck = null;
+  await checked;
+  await dialog(page).locator('button.save:enabled').waitFor();
+  assert.equal(state.patches.length, 0);
+  assert.equal(state.checks[0].settings.embedding.model, 'fixture-embedding');
+  assert.equal(await newSecret(page, 'Embedding API Key').inputValue(), 'candidate-key');
+  state.checkFail = 'EMBEDDING_REJECTED';
+  await save(page);
+  await dialog(page).getByRole('alert').waitFor();
+  assert.equal(await dialog(page).locator('details').getAttribute('open'), '');
+  assert.equal(state.patches.length, 0);
+  state.checkFail = null;
+  await save(page); await dialog(page).waitFor({ state: 'hidden' });
+  const { path, ...candidate } = state.checks.at(-1);
+  assert.match(path, /embedding\/check$/);
+  assert.deepEqual(state.patches[0], candidate);
+  assert.equal(candidate.settings.embedding.model, 'replacement-model');
   await page.locator('#settings-rebuild-map').click();
-  await page.locator('#settings-map-rebuild-box').filter({ hasText: '已请求重新生成星图' }).waitFor();
+  await confirmation(page, '已请求重新生成星图。');
   assert.equal(state.rebuilds, 1);
-  await tab(page, 'ai');
-  state.value.version++;
-  await check.click();
-  await page.getByRole('alert').filter({ hasText: '其他页面更新' }).waitFor();
-  assert.ok(await check.isDisabled());
-  assert.ok(await page.getByRole('button', { name: '保存设置', exact: true }).isDisabled());
+  await edit(page, '向量模型');
+  await operation(page, 'Embedding API Key').selectOption('clear');
+  const total = state.checks.length;
+  await save(page); await dialog(page).waitFor({ state: 'hidden' });
+  assert.equal(state.checks.length, total);
+  assert.deepEqual(state.patches.at(-1), { version: 2, settings: { embedding: { enabled: false } },
+    secrets: { embedding_api_key: { action: 'clear' } } });
   assert.deepEqual(errors, []);
 });
 
-test('conflict requires reload, busy can retry, and leaving or expiring removes sensitive inputs', { timeout: 60_000 }, async t => {
-  const { page, state, url, errors } = await fixture(t);
-  await page.goto(`${url}/settings`); await login(page); await pageReady(page);
-  await tab(page, 'ai');
-  await operation(page, 'Embedding API Key').selectOption('replace'); await secret(page, 'Embedding API Key').fill('temporary-key');
-  await operation(page, 'Embedding API Key').selectOption('keep');
-  assert.equal(await secret(page, 'Embedding API Key').inputValue(), '');
-  await operation(page, 'Embedding API Key').selectOption('replace'); await secret(page, 'Embedding API Key').fill('conflict-key');
-  await tab(page, 'review');
-  await setting(page, 'review.count').fill('4'); state.fail = 'SETTINGS_CONFLICT';
-  await page.getByRole('button', { name: '保存设置', exact: true }).click();
-  await page.getByRole('alert').filter({ hasText: '其他页面更新' }).waitFor();
-  assert.ok(await page.getByRole('button', { name: '保存设置', exact: true }).isDisabled());
-  assert.equal(await setting(page, 'review.count').inputValue(), '4');
-  assert.equal(await secret(page, 'Embedding API Key').inputValue(), '');
-  await page.getByRole('button', { name: '重新加载设置' }).click();
-  await page.getByRole('button', { name: '放弃修改', exact: true }).click();
-  await pageReady(page);
-  assert.equal(await setting(page, 'review.count').inputValue(), '3');
-  await setting(page, 'review.count').fill('4'); state.fail = 'SETTINGS_BUSY';
-  await page.getByRole('button', { name: '保存设置', exact: true }).click();
-  await page.getByRole('alert').filter({ hasText: '服务繁忙' }).waitFor();
-  assert.ok(await page.getByRole('button', { name: '保存设置', exact: true }).isEnabled());
-  await page.getByRole('button', { name: '保存设置', exact: true }).click();
-  await page.getByRole('status').filter({ hasText: '设置已保存' }).waitFor();
-  await tab(page, 'ai');
-  await operation(page, 'Embedding API Key').selectOption('replace'); await secret(page, 'Embedding API Key').fill('route-key');
-  await page.locator('a[data-route][href="/review"]').click();
-  await page.getByRole('button', { name: '放弃修改', exact: true }).click();
-  await page.locator('#settings-page').waitFor({ state: 'detached' });
-  assert.equal(await page.locator('#settings-page').count(), 0);
-  assert.equal(await page.locator('input[type="password"]').count(), 1);
-  state.hold = true;
-  await page.locator('a[data-route][href="/settings"]').click();
-  await page.waitForFunction(() => document.querySelector('#settings-page')?.textContent.includes('正在加载'));
-  await page.locator('#q').fill('筛选');
-  await page.waitForURL(url => url.searchParams.get('query') === '筛选');
-  for (const release of state.pending.splice(0)) release();
-  state.hold = false;
-  assert.equal(await page.locator('#settings-page').count(), 0);
-  await page.locator('a[data-route][href="/settings"]').click(); await pageReady(page);
-  await tab(page, 'ai');
-  await operation(page, 'Embedding API Key').selectOption('replace'); await secret(page, 'Embedding API Key').fill('logout-key');
-  state.hold = true;
-  await page.getByRole('button', { name: '保存设置', exact: true }).click();
-  await page.waitForFunction(() => document.querySelector('.settings-form')?.getAttribute('aria-busy') === 'true');
-  await page.locator('#user-menu').click(); await page.locator('#logout').click();
-  await page.getByRole('button', { name: '放弃修改', exact: true }).click();
-  await page.locator('#login-form').waitFor({ state: 'visible' });
-  for (const release of state.pending.splice(0)) release();
-  state.hold = false;
-  assert.equal(await page.locator('#settings-page').count(), 0);
-  await login(page); await pageReady(page);
-  await tab(page, 'ai');
-  await operation(page, 'Embedding API Key').selectOption('replace'); await secret(page, 'Embedding API Key').fill('expired-key');
-  state.session = false;
-  await page.getByRole('button', { name: '重新加载设置' }).click();
-  await page.getByRole('button', { name: '放弃修改', exact: true }).click();
-  await page.locator('#login-form').waitFor({ state: 'visible' });
-  assert.equal(await page.locator('#settings-page').count(), 0);
-  assert.deepEqual(errors, []);
-});
-
-test('settings leave confirmation covers navigation, browser history and reload without storing fields', async t => {
-  const { page, url, errors } = await fixture(t);
-  await page.goto(url); await login(page);
-  await page.locator('a[data-route][href="/settings"]').click(); await pageReady(page);
-  await tab(page, 'review');
-  await setting(page, 'review.count').fill('7');
-  const mounted = await setting(page, 'review.count').elementHandle();
-  await page.locator('.skip-link').focus(); await page.keyboard.press('Enter');
-  await page.waitForURL(value => value.hash === '#main');
-  assert.equal(await mounted.evaluate(node => node.isConnected), true);
-  assert.equal(await setting(page, 'review.count').inputValue(), '7');
-  assert.equal(await page.getByRole('dialog').count(), 0);
-  await page.goBack(); await page.waitForURL(value => !value.hash);
-  assert.equal(await mounted.evaluate(node => node.isConnected), true);
-  await page.goForward(); await page.waitForURL(value => value.hash === '#main');
-  assert.equal(await setting(page, 'review.count').inputValue(), '7');
-  await page.goBack(); await page.waitForURL(value => !value.hash);
-  await page.locator('a[data-route][href="/review"]').click();
-  await page.getByRole('button', { name: '继续编辑', exact: true }).click();
-  assert.equal(new URL(page.url()).pathname, '/settings');
-  assert.equal(await setting(page, 'review.count').inputValue(), '7');
-  await page.goBack();
-  await page.getByRole('button', { name: '继续编辑', exact: true }).click();
-  assert.equal(new URL(page.url()).pathname, '/settings');
-  await page.getByRole('button', { name: '重新加载设置', exact: true }).click();
-  await page.getByRole('button', { name: '继续编辑', exact: true }).click();
-  assert.equal(await setting(page, 'review.count').inputValue(), '7');
-  await page.goBack();
-  await page.getByRole('button', { name: '放弃修改', exact: true }).click();
-  await page.waitForURL(value => value.pathname === '/');
-  assert.equal(await page.locator('#settings-page').count(), 0);
-  assert.deepEqual(await page.evaluate(() => [...Object.keys(localStorage), ...Object.keys(sessionStorage)]), ['moerise.privacy.v1']);
-  assert.deepEqual(errors, []);
-});
-
-for (const noNavigation of [false, true]) for (const step of [-1, 1, -2]) test(`legacy settings history keeps the form and URL together: step ${step}, navigation fallback ${noNavigation}`, async t => {
-  const { page, url } = await fixture(t);
-  if (noNavigation) await page.addInitScript(() => Object.defineProperty(window, 'navigation', { value: undefined }));
-  await page.goto(url); await login(page);
-  await page.evaluate(step => {
-    history.replaceState({ webKey: 'legacy-home' }, '', '/');
-    if (step > 0) {
-      history.pushState({ webKey: 'legacy-settings' }, '', '/settings');
-      history.pushState({ webKey: 'legacy-map' }, '', '/map');
-      history.back();
-    } else {
-      history.pushState({ webKey: 'legacy-map' }, '', '/map');
-      history.pushState({ webKey: 'legacy-settings' }, '', '/settings');
-    }
-  }, step);
-  await page.waitForURL(url + '/settings'); await page.reload(); await pageReady(page);
-  const nativeKey = await page.evaluate(() => window.navigation?.currentEntry?.key);
-  await tab(page, 'review'); await setting(page, 'review.count').fill('7');
-  const mounted = await setting(page, 'review.count').elementHandle();
-  await page.evaluate(step => history.go(step), step);
-  await page.getByRole('button', { name: '继续编辑', exact: true }).click();
-  assert.equal(new URL(page.url()).pathname, '/settings');
-  assert.equal(await mounted.evaluate(node => node.isConnected), true);
-  assert.equal(await setting(page, 'review.count').inputValue(), '7');
-  assert.equal(await page.evaluate(() => history.state.webKey), 'legacy-settings');
-  if (nativeKey) assert.equal(await page.evaluate(() => navigation.currentEntry.key), nativeKey);
-  await page.evaluate(step => history.go(step), nativeKey ? step : -1);
-  await page.getByRole('button', { name: '放弃修改', exact: true }).click();
-  await page.waitForURL(url + (step === -2 ? '/' : '/map'));
-  await page.locator('#settings-page').waitFor({ state: 'detached' });
-  assert.deepEqual(await page.evaluate(() => [...Object.keys(localStorage), ...Object.keys(sessionStorage)]), ['moerise.privacy.v1']);
-});
-
-test('settings button changes enable refresh protection and returning to saved values clears it', async t => {
-  const { page, url, errors, state } = await fixture(t);
-  state.value.settings.notifications.times = ['09:00', '18:00'];
-  await page.goto(url + '/settings'); await login(page); await pageReady(page);
-  const rejectReload = async () => {
-    const shown = page.waitForEvent('dialog').then(dialog => {
-      assert.equal(dialog.type(), 'beforeunload'); return dialog.dismiss();
-    });
-    const reload = page.reload({ timeout: 1500 }).catch(() => {});
-    await shown; await reload;
-  };
-  await tab(page, 'review');
-  await page.getByRole('button', { name: '移除', exact: true }).nth(1).click();
-  await rejectReload();
-  assert.equal(await page.locator('input[type="time"]').count(), 1);
-  await page.getByRole('button', { name: '添加时段', exact: true }).click();
-  await page.locator('input[type="time"]').nth(1).fill('18:00');
-  await page.getByRole('button', { name: '添加时段', exact: true }).click();
-  await rejectReload();
-  assert.equal(await page.locator('input[type="time"]').count(), 3);
-  await page.getByRole('button', { name: '移除', exact: true }).nth(2).click();
-  const dialogs = [];
-  const unexpected = dialog => { dialogs.push(dialog.type()); dialog.accept(); };
-  page.on('dialog', unexpected);
-  await page.reload(); await pageReady(page);
-  page.off('dialog', unexpected);
-  assert.deepEqual(dialogs, []);
-  assert.equal(await page.locator('input[type="time"]').count(), 2);
-  assert.deepEqual(errors, []);
-});
-
-test('English settings switch language without clearing secrets, changing values or saving implicitly', async t => {
-  const { page, state, errors, url } = await fixture(t, 'en-US');
-  await page.goto(url + '/settings'); await login(page);
-  await page.getByRole('button', { name: 'Save settings', exact: true }).waitFor();
-  await tab(page, 'review');
-  await setting(page, 'review.count').fill('7');
-  await tab(page, 'ai');
-  await page.getByRole('combobox', { name: 'Embedding API Key operation', exact: true }).selectOption('replace');
-  await page.getByLabel('New Embedding API Key value', { exact: true }).fill('new-private-key');
-  await tab(page, 'general');
-  await page.locator('#settings-language').selectOption('zh-CN');
-  assert.equal(await setting(page, 'review.count').inputValue(), '7');
-  assert.equal(await secret(page, 'Embedding API Key').inputValue(), 'new-private-key');
-  assert.equal(state.patches.length, 0);
-  await page.locator('#settings-language').selectOption('en');
-  await page.getByRole('button', { name: 'Save settings', exact: true }).click();
-  await page.getByText('Settings saved.', { exact: true }).waitFor();
-  assert.equal(state.patches.length, 1);
-  assert.equal(state.patches[0].settings.review.count, 7);
-  assert.equal(state.patches[0].secrets.embedding_api_key.value, 'new-private-key');
-  assert.equal(await page.getByLabel('New Embedding API Key value', { exact: true }).inputValue(), '');
-  await page.locator('#settings-language').selectOption('auto');
-  assert.equal(await page.locator('html').getAttribute('lang'), 'en');
-  assert.equal(await page.evaluate(() => localStorage.getItem('moerise.language')), null);
-  assert.equal(state.patches.length, 1);
-  await mkdir('.local/i18n-review', { recursive: true });
-  await page.screenshot({ path: '.local/i18n-review/settings-en.png', fullPage: true });
-  await page.setViewportSize({ width: 390, height: 844 });
-  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
-  await page.screenshot({ path: '.local/i18n-review/settings-en-mobile.png', fullPage: true });
-  assert.deepEqual(errors, []);
-});
-
-test('settings tabs retain edits, expose advanced fields and reveal invalid fields before saving on small screens', async t => {
-  const { page, state, errors, url } = await fixture(t);
-  await page.setViewportSize({ width: 320, height: 568 });
-  await page.goto(url + '/settings'); await login(page); await pageReady(page);
-  assert.equal(await page.locator('#settings-page [role="tab"]').count(), 4);
-  await tab(page, 'ai');
-  assert.equal(await page.locator('#settings-page details').count(), 0);
-  assert.ok(await setting(page, 'embedding.timeout_seconds').isVisible());
-  assert.ok(await setting(page, 'embedding.batch_size').isVisible());
-  await setting(page, 'embedding.timeout_seconds').fill('');
-  await operation(page, 'Embedding API Key').selectOption('replace');
-  await secret(page, 'Embedding API Key').fill('retained-across-tabs');
-  await tab(page, 'review');
-  await setting(page, 'review.count').fill('7');
-  await page.locator('#settings-tab-review').focus();
-  await page.keyboard.press('Home');
-  assert.equal(await page.locator('#settings-tab-general').getAttribute('aria-selected'), 'true');
-  await page.keyboard.press('End');
-  assert.equal(await page.locator('#settings-tab-privacy').getAttribute('aria-selected'), 'true');
-  await tab(page, 'review');
-  assert.equal(await setting(page, 'review.count').inputValue(), '7');
-  assert.equal(await secret(page, 'Embedding API Key').inputValue(), 'retained-across-tabs');
-  assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
-  await page.getByRole('button', { name: '保存设置', exact: true }).click();
-  assert.equal(await page.locator('#settings-tab-ai').getAttribute('aria-selected'), 'true');
-  assert.ok(await setting(page, 'embedding.timeout_seconds').evaluate(node => node === document.activeElement));
-  assert.equal(state.patches.length, 0);
-  await setting(page, 'embedding.timeout_seconds').fill('91');
-  await page.getByRole('button', { name: '保存设置', exact: true }).click();
-  await page.getByText('设置已保存。', { exact: true }).waitFor();
-  assert.equal(state.patches[0].settings.review.count, 7);
-  assert.equal(state.patches[0].settings.embedding.timeout_seconds, 91);
-  assert.equal(state.patches[0].secrets.embedding_api_key.value, 'retained-across-tabs');
-  assert.deepEqual(errors, []);
-});
-
-test('independent channel secrets, review routing, connection status and manual resend work in both languages', async t => {
-  const { page, state, errors, url } = await fixture(t, 'en-US');
-  state.value.channel_status.telegram = { state: 'connected', peer: '123', link: 'https://t.me/fixture_bot?start=local' };
-  state.value.channel_status.qq = { state: 'error', detail: 'BOT_CREDENTIALS' };
-  state.value.channel_status['feishu-app'] = { state: 'awaiting_verification' };
-  state.value.secrets.webhook_app_secret.configured = true;
-  state.deliveries.push({ id: 'first', kind: 'review', date: '2026-10-01', clock: '08:00', channel_kind: 'telegram', status: 'failed' });
-  state.deliveries.push({ id: 'second', kind: 'review', date: '2026-10-01', clock: '12:00', channel_kind: 'feishu-app', status: 'failed' });
-  state.deliveries.push({ id: 'third', kind: 'review', date: '2026-10-01', clock: '18:00', channel_kind: 'qq', status: 'failed' });
-  await page.goto(url + '/settings'); await login(page);
-  await page.getByRole('button', { name: 'Save settings', exact: true }).waitFor();
-  await tab(page, 'review');
-  await page.getByText(/Check the bot credentials/).waitFor();
-  await page.getByText('Waiting for callback verification', { exact: true }).waitFor();
-  assert.equal(await page.getByRole('link', { name: 'Open bot' }).getAttribute('href'), state.value.channel_status.telegram.link);
-  assert.equal(await setting(page, 'channel.kind').isVisible(), true);
-  await setting(page, 'channel.qq_app_id').fill('12345');
-  await page.getByLabel('New QQ AppSecret value').fill('private-qq');
-  await setting(page, 'channel.feishu_mode').selectOption('callback');
-  assert.ok(await page.getByLabel('New Verification Token value').isVisible());
-  await setting(page, 'channel.feishu_mode').selectOption('websocket');
-  assert.equal(await page.getByLabel('New Verification Token value').isVisible(), false);
-  await setting(page, 'channel.webhook_images').check();
-  assert.ok(await setting(page, 'channel.webhook_app_id').isVisible());
-  await setting(page, 'channel.webhook_images').uncheck();
-  await page.getByRole('combobox', { name: 'Webhook App Secret operation', exact: true }).selectOption('clear');
-  await setting(page, 'channel.destination').fill('789');
-  await page.getByLabel('New Telegram Bot Token value', { exact: true }).fill('123456:abcdefghijklmnopqrstuvwxyz_0123456789');
-  await tab(page, 'general');
-  await page.locator('#settings-language').selectOption('zh-CN');
-  assert.equal(await secret(page, 'Telegram Bot Token').inputValue(), '123456:abcdefghijklmnopqrstuvwxyz_0123456789');
-  await tab(page, 'review');
-  await setting(page, 'channel.kind').selectOption('telegram');
-  await page.getByText('接收会话：789', { exact: true }).waitFor();
-  await setting(page, 'notifications.enabled').check();
-  await page.getByRole('button', { name: '保存设置', exact: true }).click();
-  await page.getByText('设置已保存。', { exact: true }).waitFor();
-  const patch = state.patches[0];
-  assert.deepEqual(patch.settings.channel, { kind: 'telegram', destination: '789', qq_app_id: '12345' });
-  assert.equal(patch.settings.notifications.enabled, true);
-  assert.deepEqual(patch.secrets.bot_token, { action: 'replace', value: '123456:abcdefghijklmnopqrstuvwxyz_0123456789' });
-  assert.deepEqual(patch.secrets.webhook_app_secret, { action: 'clear' });
-  assert.equal(patch.secrets.app_secret, undefined);
-  await tab(page, 'review');
-  assert.equal(await operation(page, 'QQ AppSecret').inputValue(), 'keep');
+test('settings conflicts preserve secrets across reload and require confirmation to discard the dialog', async t => {
+  const { page, state, url } = await fixture(t);
+  await login(page, url); await tab(page, 'review'); await edit(page, 'QQ 私聊');
+  await settingsField(page, 'channel.qq_app_id').fill('12345');
   await operation(page, 'QQ AppSecret').selectOption('replace');
-  await secret(page, 'QQ AppSecret').fill('rotated-qq');
-  await page.getByRole('button', { name: '保存设置', exact: true }).click();
-  await page.getByText('设置已保存。', { exact: true }).waitFor();
-  assert.deepEqual(state.patches.at(-1).secrets, { qq_app_secret: { action: 'replace', value: 'rotated-qq' } });
-  assert.equal(await secret(page, 'Telegram Bot Token').inputValue(), '');
-  assert.equal(await page.locator('body').textContent().then(text => text.includes('123456:abcdefghijklmnopqrstuvwxyz_0123456789')), false);
-  await page.setViewportSize({ width: 390, height: 844 });
-  assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
-  await tab(page, 'review'); await setting(page, 'channel.kind').selectOption('none');
-  assert.equal(await setting(page, 'notifications.enabled').isChecked(), false);
-  await page.getByRole('button', { name: '保存设置', exact: true }).click();
-  await page.getByText('设置已保存。', { exact: true }).waitFor();
-  assert.deepEqual(state.patches.at(-1).settings.channel, { kind: 'none' });
-  assert.deepEqual(state.patches.at(-1).settings.notifications, { enabled: false });
-  assert.equal(state.patches.at(-1).secrets.bot_token, undefined);
-  assert.equal(await page.locator('#settings-history-card .settings-footer').count(), 0);
-  const row = clock => page.locator('#settings-history-card .settings-row').filter({ hasText: clock });
-  for (const clock of ['08:00', '12:00', '18:00']) {
-    await row(clock).getByRole('button', { name: '重试', exact: true }).click();
-    await row(clock).getByText(/等待发送/).waitFor();
-  }
-  assert.deepEqual(state.resolutions, [{ id: 'first' }, { id: 'second' }, { id: 'third' }]);
+  await newSecret(page, 'QQ AppSecret').fill('uncommitted-credential');
+  state.fail = 'SETTINGS_CONFLICT';
+  await save(page); await dialog(page).getByRole('alert').waitFor();
+  assert.equal(await dialog(page).locator('button.save').isDisabled(), true);
+  assert.equal(await newSecret(page, 'QQ AppSecret').inputValue(), 'uncommitted-credential');
+  await dialog(page).getByRole('button', { name: '重新加载设置' }).click();
+  assert.equal(await settingsField(page, 'channel.qq_app_id').inputValue(), '12345');
+  await page.keyboard.press('Escape');
+  const discard = page.getByRole('dialog', { name: '放弃未保存的修改？' });
+  await discard.getByRole('button', { name: '继续编辑' }).click();
+  assert.equal(await newSecret(page, 'QQ AppSecret').inputValue(), 'uncommitted-credential');
+  await dialog(page).getByRole('button', { name: '关闭' }).click();
+  await discard.getByRole('button', { name: '放弃修改' }).click();
+  await dialog(page).waitFor({ state: 'hidden' });
+  assert.equal(await page.getByLabel('QQ AppSecret新值').count(), 0);
+  assert.doesNotMatch(await page.evaluate(() => JSON.stringify(localStorage)), /uncommitted-credential/);
+});
+
+test('channel checks are isolated and disabling the selected destination turns off review delivery atomically', async t => {
+  const { page, state, url } = await fixture(t);
+  state.value.settings.channel.kind = 'telegram';
+  state.value.settings.notifications.enabled = true;
+  state.value.secrets.bot_token.configured = true;
+  state.value.secrets.app_secret.configured = true;
+  state.value.channel_status = { telegram: { state: 'connected', detail: '', peer: '42', link: 'https://t.me/MoeriseBot?start=sample' } };
+  state.deliveries.push({ id: 'delivery', status: 'failed', date: '2026-11-25', clock: '09:00', channel_kind: 'telegram' });
+  await login(page, url); await tab(page, 'review');
+  await page.getByRole('link', { name: '打开机器人' }).waitFor();
+  await page.getByRole('button', { name: '重试', exact: true }).click();
+  assert.deepEqual(state.retries, ['delivery']);
+  await edit(page, 'QQ 私聊');
+  await settingsField(page, 'channel.qq_app_id').fill('12345');
+  await operation(page, 'QQ AppSecret').selectOption('replace');
+  await newSecret(page, 'QQ AppSecret').fill('qq-credential');
+  await save(page); await dialog(page).waitFor({ state: 'hidden' });
+  assert.deepEqual(state.checks[0], { path: '/api/app/v1/channels/check', target: 'qq', version: 1,
+    settings: { channel: { qq_app_id: '12345' } }, secrets: { qq_app_secret: { action: 'replace', value: 'qq-credential' } } });
+  assert.equal(state.value.secrets.app_secret.configured, true);
+  await edit(page, 'Telegram');
+  await operation(page, 'Telegram Bot Token').selectOption('clear');
+  await save(page); await confirmation(page, '已保存，回顾推送已关闭。');
+  assert.equal(state.checks.length, 1);
+  assert.deepEqual(state.patches.at(-1), { version: 2, settings: { notifications: { enabled: false } },
+    secrets: { bot_token: { action: 'clear' } } });
+  assert.equal(state.value.secrets.qq_app_secret.configured, true);
+  assert.equal(state.value.secrets.app_secret.configured, true);
+});
+
+test('local language and privacy stay local and diagnostics can still be edited or copied offline', async t => {
+  const { page, state, url } = await fixture(t, { returning: false });
+  state.telemetry = true;
+  await login(page, url);
+  const welcome = page.getByRole('dialog', { name: '欢迎使用 Moerise' });
+  assert.equal(await welcome.getByRole('switch').isChecked(), false);
+  await page.keyboard.press('Escape');
+  await page.locator('#settings-language').selectOption('en');
+  await tabs(page).getByRole('tab', { name: 'Privacy' }).click();
+  const sharing = page.getByRole('switch', { name: 'Share usage and error statistics' });
+  assert.equal(await sharing.isChecked(), false);
+  assert.equal(state.patches.length, 0);
+  await page.context().grantPermissions(['clipboard-read', 'clipboard-write'], { origin: url });
+  await page.context().setOffline(true);
+  await page.getByRole('button', { name: 'Preview diagnostic summary' }).click();
+  const preview = page.getByRole('dialog', { name: 'Diagnostic summary' });
+  assert.doesNotMatch(await preview.locator('textarea').inputValue(), /users\/1|https?:\/\//);
+  await preview.getByRole('textbox').fill('{"platform":"web"}');
+  await preview.getByRole('button', { name: 'Copy diagnostic summary' }).click();
+  assert.equal(await page.evaluate(() => navigator.clipboard.readText()), '{"platform":"web"}');
+  await preview.getByRole('button', { name: 'Close' }).click();
+  await page.getByRole('button', { name: 'Copy diagnostic summary' }).click();
+  assert.match(await page.evaluate(() => navigator.clipboard.readText()), /"platform"/);
+  assert.equal(state.patches.length, 0);
+  assert.equal(state.batches.length, 0);
+});
+
+test('leaving settings during a read discards the old response', async t => {
+  const { page, state, url, errors } = await fixture(t);
+  await login(page, url, '/');
+  await page.locator('#empty').waitFor();
+  let release;
+  state.hold = new Promise(resolve => { release = resolve; });
+  const reading = page.waitForRequest('**/api/app/v1/settings');
+  await page.locator('a[data-route][href="/settings"]').click(); await reading;
+  await page.locator('nav a[href="/"]').click(); release(); state.hold = null;
+  await page.locator('#empty').waitFor();
+  assert.equal(await page.locator('#settings-page').count(), 0);
+  await page.locator('a[data-route][href="/settings"]').click(); await tabs(page).waitFor();
+  assert.deepEqual(errors, []);
+});
+
+test('a queued push disable completes after navigating away from settings', async t => {
+  const { page, state, url } = await fixture(t);
+  state.value.settings.channel.kind = 'telegram';
+  state.value.settings.notifications.enabled = true;
+  await login(page, url); await tab(page, 'search');
+  let release;
+  state.hold = new Promise(resolve => { release = resolve; });
+  const first = page.waitForRequest(request => request.method() === 'PATCH' && request.url().endsWith('/settings'));
+  await settingsField(page, 'stargazing.enabled').uncheck(); await first;
+  await tab(page, 'review');
+  await settingsField(page, 'notifications.enabled').uncheck();
+  await page.locator('nav a[href="/"]').click();
+  await page.locator('#settings-page').waitFor({ state: 'detached' });
+  assert.equal(state.patches.length, 1);
+  const disabled = page.waitForResponse(response => response.url().endsWith('/settings') &&
+    response.request().method() === 'PATCH' && response.request().postDataJSON().version === 2);
+  release(); state.hold = null;
+  assert.equal((await disabled).status(), 200);
+  assert.deepEqual(state.patches[1], { version: 2, settings: { notifications: { enabled: false } }, secrets: {} });
+  assert.equal(state.value.settings.notifications.enabled, false);
+});
+
+test('Feishu callback token clear preserves a replacement until App Secret clear is explicit', async t => {
+  const { page, state, url } = await fixture(t);
+  Object.assign(state.value.settings.channel, { kind: 'feishu-app', feishu_mode: 'callback', app_id: 'cli_configured' });
+  state.value.settings.notifications.enabled = true;
+  state.value.secrets.app_secret.configured = state.value.secrets.verification_token.configured = true;
+  await login(page, url); await tab(page, 'review'); await edit(page, '飞书应用机器人');
+  await operation(page, 'App Secret').selectOption('replace');
+  await newSecret(page, 'App Secret').fill('replacement-secret');
+  await operation(page, 'Verification Token').selectOption('clear');
+  await save(page);
+  await dialog(page).getByRole('alert').getByText(/明确选择清空 App Secret/).waitFor();
+  assert.equal(await newSecret(page, 'App Secret').inputValue(), 'replacement-secret');
+  assert.deepEqual(state.patches, []);
+  assert.deepEqual(state.checks, []);
+  await operation(page, 'App Secret').selectOption('clear');
+  await save(page);
+  await confirmation(page, '已保存，回顾推送已关闭。');
+  assert.deepEqual(state.patches, [{ version: 1, settings: { notifications: { enabled: false } },
+    secrets: { app_secret: { action: 'clear' }, verification_token: { action: 'clear' } } }]);
+});
+
+test('an in-flight model PATCH locks the draft until the saved baseline is available', async t => {
+  const { page, state, url } = await fixture(t);
+  state.value.settings.embedding.enabled = true;
+  state.value.secrets.embedding_api_key.configured = true;
+  await login(page, url); await tab(page, 'search'); await edit(page, '向量模型');
+  const original = state.value.settings.embedding.model;
+  await settingsField(page, 'embedding.model').fill('new-model');
+  let release;
+  state.hold = new Promise(resolve => { release = resolve; });
+  const submitting = page.waitForRequest(request => request.method() === 'PATCH' && request.url().endsWith('/settings'));
+  await save(page); await submitting;
+  assert.equal(await settingsField(page, 'embedding.model').isDisabled(), true);
+  release(); state.hold = null;
+  await dialog(page).waitFor({ state: 'hidden' });
+  await edit(page, '向量模型');
+  assert.equal(await settingsField(page, 'embedding.model').inputValue(), 'new-model');
+  await settingsField(page, 'embedding.model').fill(original);
+  await save(page); await dialog(page).waitFor({ state: 'hidden' });
+  assert.deepEqual(state.patches.map(patch => [patch.version, patch.settings.embedding.model]), [[1, 'new-model'], [2, original]]);
+});
+
+test('settings reload is single-flight and an older response cannot replace the current version', async t => {
+  const { page, state, url } = await fixture(t);
+  await login(page, url);
+  const original = structuredClone(state.value);
+  await edit(page, '时区'); await settingsField(page, 'timezone').fill('Asia/Tokyo');
+  await save(page); await dialog(page).waitFor({ state: 'hidden' });
+  await edit(page, '时区'); await settingsField(page, 'timezone').fill('UTC');
+  state.fail = 'SETTINGS_CONFLICT';
+  await save(page); await dialog(page).getByRole('alert').waitFor();
+  const reload = dialog(page).getByRole('button', { name: '重新加载设置' });
+  let release;
+  state.nextSettingsRead = original;
+  state.hold = new Promise(resolve => { release = resolve; });
+  const before = state.gets;
+  const request = page.waitForRequest(request => request.method() === 'GET' && request.url().endsWith('/settings'));
+  await reload.evaluate(button => { button.click(); button.click(); button.click(); });
+  await request;
+  const response = page.waitForResponse(response => response.request().method() === 'GET' && response.url().endsWith('/settings'));
+  release(); state.hold = null; await response;
+  await dialog(page).locator('button.ghost:enabled').filter({ hasText: '重新加载设置' }).waitFor();
+  assert.equal(await dialog(page).locator('button.save').isDisabled(), true);
+  assert.equal(state.gets, before + 1);
+  assert.equal(await settingsField(page, 'timezone').inputValue(), 'UTC');
+  await reload.click(); await dialog(page).locator('button.save:enabled').waitFor();
+  await save(page); await dialog(page).waitFor({ state: 'hidden' });
+  assert.equal(state.patches.at(-1).version, 2);
+});
+
+test('manual refresh waits for a successful notes read and safely handles navigation and expiry', async t => {
+  const { page, state, url, errors } = await fixture(t);
+  await login(page, url, '/'); await page.locator('#empty').waitFor();
+  state.notesFail = 503;
+  const trigger = page.locator('#sync-trigger');
+  await trigger.click();
+  await page.locator('#list-error').waitFor();
+  assert.equal(await page.locator('#sync-status').getAttribute('data-sync'), 'failure');
+  await page.locator('a[data-route][href="/settings"]').click();
+  const sync = page.getByRole('button', { name: '立即同步' });
+  state.notesFail = null;
+  let release;
+  state.holdNotes = new Promise(resolve => { release = resolve; });
+  const reading = page.waitForRequest('**/api/app/v1/notes?*');
+  await sync.click(); await reading;
+  await page.locator('nav a[href="/"]').click();
+  await page.locator('#settings-page').waitFor({ state: 'detached' });
+  release(); state.holdNotes = null;
+  await page.locator('#empty').waitFor();
+  await page.locator('a[data-route][href="/settings"]').click();
+  state.notesFail = 401;
+  await sync.click();
+  await page.locator('#login-form').waitFor();
   assert.deepEqual(errors, []);
 });

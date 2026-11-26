@@ -81,13 +81,19 @@ fun PrivacySettings(controller: PrivacyController, strings: Strings) {
     var preview by remember { mutableStateOf(false) }
     var text by remember { mutableStateOf("") }
     val clipboard = LocalClipboardManager.current
+    val haptic = rememberMoeriseHaptic()
+    val notice = LocalMobileNotice.current
+    fun copy(summary: String) { clipboard.setText(AnnotatedString(summary)); haptic(); notice("COPIED") }
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
         ShareChoice(state.enabled && state.allowed != false, state.allowed != false, strings,
-            enabled = !state.choiceSaveFailed, change = controller::choose)
+            enabled = !state.choiceSaveFailed, change = { haptic(); controller.choose(it) })
         if (state.choiceSaveFailed) PrivacyChoiceRetry(controller, strings)
         PrivacyDetails(strings)
         Feedback(strings)
         TextButton({ text = controller.diagnosticSummary(strings); preview = true }, modifier = Modifier.testTag("diagnostic_summary")) {
+            Text(strings.text("预览诊断摘要", "Preview diagnostic summary"))
+        }
+        TextButton({ copy(controller.diagnosticSummary(strings)) }) {
             Text(strings.text("复制诊断摘要", "Copy diagnostic summary"))
         }
     }
@@ -97,7 +103,7 @@ fun PrivacySettings(controller: PrivacyController, strings: Strings) {
             Text(strings.text("公开 GitHub Issue 的内容会被其他人看到。请检查并删减后再复制。", "Other people can see public GitHub Issues. Review and edit this text before copying it."))
             OutlinedTextField(text, { text = it }, modifier = Modifier.fillMaxWidth(), minLines = 3)
         } }, dismissButton = { TextButton({ preview = false }) { Text(strings.text("取消", "Cancel")) } },
-        confirmButton = { TextButton({ clipboard.setText(AnnotatedString(text)); preview = false }) { Text(strings.text("复制", "Copy")) } })
+        confirmButton = { TextButton({ copy(text); preview = false }) { Text(strings.text("复制", "Copy")) } })
 }
 
 @Composable
