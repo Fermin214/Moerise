@@ -191,6 +191,32 @@ class SidebarFilterTest {
     }
 
     @Test
+    fun archivedSidebarPublishesTheOfflineNormalCalendarWithoutATagSnapshot() = runBlocking<Unit> {
+        val folder = Files.createTempDirectory("moerise-calendar-only").toFile()
+        val db = testDatabase(folder.resolve("data.sqlite3").absolutePath)
+        val repo = NoteRepository(db)
+        val scope = CoroutineScope(coroutineContext + SupervisorJob())
+        val month = "2026-03"
+        val normal = CalendarPage(month, listOf(DayCount("$month-01", 2)))
+        try {
+            repo.putSnapshot(SnapshotEntity("owner", "UTC:calendar:NORMAL:$month", CoreJson.encodeToString(normal), 1))
+            repo.putSnapshot(SnapshotEntity("owner", "UTC:calendar:ARCHIVED:$month",
+                CoreJson.encodeToString(CalendarPage(month, listOf(DayCount("$month-02", 9)))), 1))
+            val reads = FilterReads({ repo }, { null }, { "owner" }, { "UTC" }, scope)
+            val sidebar = SearchController({ null }, { "owner" }, scope, reads)
+            sidebar.change(SearchQuery(state = "ARCHIVED"))
+            sidebar.filters(month)
+            val visible = withTimeout(5_000) { sidebar.state.first { !it.filtersLoading && it.filtersError != null } }
+            assertEquals(normal, visible.calendar)
+            assertTrue(visible.tags.isEmpty())
+            assertEquals(normal, reads.cachedCalendar(month))
+        } finally {
+            scope.coroutineContext[Job]!!.cancelAndJoin()
+            db.close(); folder.deleteRecursively()
+        }
+    }
+
+    @Test
     fun committedIncrementAndQueuedSaveInvalidatePrewarmedCountsEvenIfTheirCallersAreCancelled() = runBlocking<Unit> {
         val folder = Files.createTempDirectory("moerise-filter-cancel").toFile()
         val db = testDatabase(folder.resolve("data.sqlite3").absolutePath)

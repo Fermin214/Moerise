@@ -323,6 +323,7 @@ export function createDiscovery({ request, sessionRequest, getIdentity, localTod
     async function loadFloaters() {
       floaterController?.abort();
       const pending = new AbortController(); floaterController = pending; floaterFailure = null;
+      if (!walkView?.result) render();
       try {
         const page = await request(`/notes?${listQuery('/', { tags: [] })}`, { controller: pending });
         if (!alive || floaterController !== pending) return;

@@ -6,6 +6,8 @@ import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.seconds
 import kotlin.time.measureTime
 import kotlinx.serialization.json.*
+import org.intellij.markdown.MarkdownTokenTypes
+import org.intellij.markdown.ast.ASTNode
 
 class NotePresentationTest {
     @Test
@@ -260,6 +262,22 @@ class NotePresentationTest {
             val tags = sample.getValue("tags").jsonArray.map { it.jsonPrimitive.content }
             assertEquals(text("summary"), walkSummaryBody(text("content"), tags), text("name"))
         }
+    }
+
+    @Test
+    fun walkSummaryFenceOffsetsAreMeasuredAgainstTheCroppedBody() {
+        val input = "```\nx\n```\n#a\n\n"
+        val (body, tree) = walkSummarySource(input, listOf("a"))
+        assertEquals("```\nx\n```\n\n", body)
+        val root = requireNotNull(tree)
+        assertEquals(body.length, root.endOffset)
+        fun checkOffsets(node: ASTNode) {
+            assertTrue(node.startOffset in 0..node.endOffset && node.endOffset <= body.length)
+            if (node.type == MarkdownTokenTypes.CODE_FENCE_CONTENT) assertEquals("x", body.substring(node.startOffset, node.endOffset))
+            node.children.forEach(::checkOffsets)
+        }
+        checkOffsets(root)
+        assertEquals("x", walkSummaryBody(input, listOf("a")))
     }
 
     @Test

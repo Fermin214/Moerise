@@ -54,6 +54,31 @@ class SessionPreferencesTest {
     }
 
     @Test
+    @Config(sdk = [31], qualifiers = "notnight")
+    fun failedThemeSaveKeepsThePersistedApplicationNightMode() {
+        val context = RuntimeEnvironment.getApplication()
+        val manager = shadowOf(context.getSystemService(UiModeManager::class.java))
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+        val store = object : UiThemeStore {
+            override fun read() = UiTheme.DARK
+            override fun write(theme: UiTheme) { error("storage unavailable") }
+        }
+        try {
+            applyApplicationNightMode(context, store.read())
+            SessionController(MemorySecrets(), false, scope, themeStore = store,
+                onThemeChange = { applyApplicationNightMode(context, it) }).use { session ->
+                session.theme(UiTheme.LIGHT)
+                assertEquals(UiTheme.LIGHT, session.theme.value)
+                assertEquals("LOCAL_PREFERENCES_FAILED", session.themeError.value)
+                assertEquals(UiModeManager.MODE_NIGHT_YES, manager.applicationNightMode)
+            }
+            SessionController(MemorySecrets(), false, scope, themeStore = store).use {
+                assertEquals(UiTheme.DARK, it.theme.value)
+            }
+        } finally { scope.cancel() }
+    }
+
+    @Test
     @Config(qualifiers = "notnight")
     fun legacyWindowUsesSavedPaletteBeforeCompositionAndKeepsThemeOnWriteFailure() {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)

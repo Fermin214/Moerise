@@ -33,6 +33,7 @@ function setLogoutCSRF(token) {
 const shell = initShell(loadSidebar);
 const draft = new Draft(), snapshots = new Map();
 const editors = new Map(), pendingWrites = new Map(), failures = new Map();
+const refreshSync = Symbol('refresh');
 const noteSizes = new Map();
 const expandedNotes = new Set();
 const measuredCards = new Map();
@@ -284,12 +285,23 @@ function sidebarFilter(change) {
   navigate(timelineURL(source.path, { ...source.values, query: $('q').value, ...change }));
 }
 function sidebarTagContext() {
-  const from = new URL(safeFrom(new URLSearchParams(location.search).get('from')), location.origin);
   if (isTimeline()) return { path: location.pathname, values: filters(location.search) };
-  if (notePath.test(location.pathname) && from.pathname === '/archived') {
-    return { path: from.pathname, values: filters(from.search) };
+  if (notePath.test(location.pathname)) {
+    const from = new URL(safeFrom(new URLSearchParams(location.search).get('from')), location.origin);
+    if (from.pathname === '/' || from.pathname === '/archived') return { path: from.pathname, values: filters(from.search) };
   }
   return { path: '/', values: filters('') };
+}
+function setSidebarTagScope(path) {
+  const state = path === '/archived' ? 'ARCHIVED' : 'NORMAL';
+  if (sidebarTagState !== state) {
+    sidebarTagSequence++;
+    const host = $('tags');
+    sidebarCommits.delete(host);
+    host.replaceChildren();
+    sidebarTagState = state;
+  }
+  return state;
 }
 const sidebarDate = () => location.pathname === '/' ? filters(location.search).date : '';
 function recordSync() {
@@ -527,20 +539,16 @@ async function loadSidebar(owner, { calendarOnly = false, preserveFocus = false 
   if (!identity) return;
   const generation = epoch;
   const { path } = sidebarTagContext();
-  const state = path === '/archived' ? 'ARCHIVED' : 'NORMAL', selectedMonth = month;
+  const state = setSidebarTagScope(path), selectedMonth = month;
   const calendarKey = `NORMAL:${selectedMonth}`;
   const tagsHost = $('tags'), calendarHost = $('calendar');
-  calendarOnly = calendarOnly && sidebarTagState === state && tagsHost.hasChildNodes();
+  calendarOnly = calendarOnly && tagsHost.hasChildNodes();
   const tagSequence = calendarOnly ? null : ++sidebarTagSequence;
   const calendarSequence = ++sidebarCalendarSequence;
   const contextCurrent = () => generation === epoch && sidebarTagContext().path === path;
   const tagsCurrent = () => tagSequence === sidebarTagSequence && contextCurrent();
   const calendarCurrent = () => calendarSequence === sidebarCalendarSequence && selectedMonth === month && generation === epoch;
   showError($('sidebar-error'), null); $('sidebar-retry').hidden = true;
-  if (sidebarTagState !== state) {
-    $('tags').replaceChildren();
-    sidebarTagState = state;
-  }
   if (sidebarCalendarKey !== calendarKey && (!preserveFocus || !calendarHost.contains(document.activeElement))) {
     renderCalendar([], sidebarDate(), true);
     sidebarCalendarKey = calendarKey;
@@ -723,12 +731,14 @@ function appendNoteError(card, note, err) {
 }
 async function refreshNote(note) {
   const generation = epoch, sequence = viewSequence;
+  const operation = pendingWrites.get(note.name);
   try {
     const updated = await request(`/notes/${noteID(note.name)}`);
     stale(generation);
-    if (sequence !== viewSequence) return;
+    if (sequence !== viewSequence || operation !== pendingWrites.get(note.name) || operation?.busy) return;
     if (!validNote(updated)) throw Object.assign(new Error('Invalid note'), { code: 'NOTE_LIST_INVALID' });
     editors.get(note.name)?.draft.clear(); editors.delete(note.name); pendingWrites.delete(note.name); failures.delete(note.name);
+    syncStatus.clear(note.name);
     replaceCard(updated);
     dirtySnapshots();
     if (timeline) await timeline.update(note.name, updated);
@@ -764,7 +774,7 @@ async function performWrite(note) {
   if (!operation || operation.busy) return;
   const generation = epoch;
   const started = performance.now();
-  const transfer = syncStatus.start();
+  const transfer = syncStatus.start(note.name, { write: true });
   operation.busy = true; failures.delete(note.name);
   const editor = editors.get(note.name);
   editor?.update();
@@ -833,7 +843,10 @@ function startEdit(note) {
   const cancel = button(l("取消"), 'secondary', () => {
     if (pendingWrites.get(note.name)?.busy) return;
     readSequence++; model.clear(); editors.delete(note.name);
-    if (!pendingWrites.has(note.name)) failures.delete(note.name);
+    if (!pendingWrites.has(note.name)) {
+      failures.delete(note.name);
+      syncStatus.clear(note.name);
+    }
     replaceCard(note); leaveGuard.update();
   });
   const save = button(l("保存"), 'save', () => form.requestSubmit()); save.append(el('small', '', 'Ctrl ↵'));
@@ -916,6 +929,7 @@ async function routeModule(load, generation, sequence) {
 }
 async function showRoute({ focus = false, returning = false } = {}) {
   if (!identity) return;
+  setSidebarTagScope(sidebarTagContext().path);
   timelineRefresh?.abort();
   stopPreload();
   shell.closeNavigation();
@@ -1061,7 +1075,7 @@ async function synchronize() {
   if (!identity || trigger.disabled) return;
   const generation = epoch, view = viewSequence;
   trigger.disabled = true;
-  const transfer = syncStatus.start();
+  const transfer = syncStatus.start(refreshSync);
   try {
     dirtySnapshots(); invalidateSidebar();
     const [, refreshed] = await Promise.all([loadSidebar(), timeline ? timeline.refresh({ record: false }) : refreshTimelineSnapshot()]);
@@ -1117,7 +1131,7 @@ $('composer').addEventListener('submit', async event => {
   let attempt;
   try { attempt = draft.begin(); } catch (err) { showError($('save-error'), err); return; }
   const generation = epoch;
-  const started = performance.now(), transfer = syncStatus.start();
+  const started = performance.now(), transfer = syncStatus.start(draft, { write: true });
   const returnFocus = document.activeElement === $('content') || document.activeElement === $('save');
   saving = true; updateComposer(); showError($('save-error'), null);
   try {

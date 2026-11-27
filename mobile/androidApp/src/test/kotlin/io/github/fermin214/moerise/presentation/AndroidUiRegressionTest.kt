@@ -342,6 +342,41 @@ class AndroidUiRegressionTest {
     }
 
     @Test
+    @GraphicsMode(GraphicsMode.Mode.NATIVE)
+    fun largeFontExpandsTheDateWithoutShrinkingColophonActions() {
+        createHost()
+        compose.runOnUiThread {
+            host.get().setContent {
+                val density = androidx.compose.ui.platform.LocalDensity.current.density
+                CompositionLocalProvider(androidx.compose.ui.platform.LocalDensity provides androidx.compose.ui.unit.Density(density, 2f)) {
+                    MoeriseTheme {
+                        TimelineNoteCard(TimelineEntry.Local(DraftEntity("scaled", "account", "正文", 1, conflictJson = "{}",
+                            createdAt = 1_795_620_000_000L)), "UTC", strings, null, {}, {}, today = "2026-11-26")
+                    }
+                }
+            }
+        }
+        val card = compose.onNodeWithTag("queued_note_scaled").getUnclippedBoundsInRoot()
+        val body = compose.onNodeWithTag("note_card_body").getUnclippedBoundsInRoot()
+        val date = compose.onNodeWithTag("note_card_date").getUnclippedBoundsInRoot()
+        assertTrue(date.height >= 32.dp)
+        assertTrue(date.top - body.bottom in 9.dp..11.dp)
+        assertTrue(card.bottom - body.bottom > 44.dp)
+        val layouts = mutableListOf<androidx.compose.ui.text.TextLayoutResult>()
+        compose.onNode(SemanticsMatcher.keyIsDefined(SemanticsActions.GetTextLayoutResult) and
+            hasAnyAncestor(hasTestTag("note_card_date")), useUnmergedTree = true)
+            .performSemanticsAction(SemanticsActions.GetTextLayoutResult) { assertTrue(it(layouts)) }
+        val layout = layouts.single()
+        assertFalse(layout.hasVisualOverflow, "${layout.layoutInput.text}: ${layout.size}; width=${layout.didOverflowWidth}, height=${layout.didOverflowHeight}")
+        for (tag in listOf("note_more_scaled", "queued_error_scaled")) {
+            val action = compose.onNodeWithTag(tag).getUnclippedBoundsInRoot()
+            assertEquals(44.dp, action.width)
+            assertEquals(44.dp, action.height)
+            assertTrue(action.top >= body.bottom)
+        }
+    }
+
+    @Test
     fun copyingBothCardKindsKeepsOriginalMarkdownWhitespaceAndPureTagLine() {
         createHost()
         val original = "  正文 **强调** #日记\n后文\n\n#想法\n "

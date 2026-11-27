@@ -729,6 +729,40 @@ test('archive tags stay scoped to archive while calendar dates always filter hom
   assert.ok(state.requests.filter(request => request.path === '/calendar').every(request => request.query.get('state') === 'NORMAL'));
 });
 
+test('scope switches clear stale tag buttons immediately and home detail preserves source filters', async t => {
+  const { page, state, url } = await fixture(t);
+  state.notes.get('old').tags = ['归档专属'];
+  await page.goto(url); await login(page);
+  const normal = page.locator('#tags button[title="#想法"]');
+  const archived = page.locator('#tags button[title="#归档专属"]');
+  for (const [path, scope, oldTag, newTag] of [
+    ['/archived', 'ARCHIVED', normal, archived], ['/', 'NORMAL', archived, normal],
+  ]) {
+    await oldTag.waitFor();
+    const gate = Promise.withResolvers();
+    t.after(() => gate.resolve());
+    const endpoint = `**/api/app/v1/notes?state=${scope}&*`;
+    const hold = async route => { await gate.promise; await route.continue(); };
+    await page.route(endpoint, hold);
+    const requested = page.waitForRequest(endpoint);
+    await page.locator(`nav a[href="${path}"]`).click();
+    await requested;
+    assert.equal(await oldTag.count(), 0);
+    gate.resolve();
+    await newTag.waitFor();
+    await page.unroute(endpoint, hold);
+  }
+  const parameters = new URLSearchParams({ query: '笔记', mode: 'hybrid', tag: '想法', date: '2026-10-29' });
+  await page.goto(`${url}/?${parameters}`);
+  await page.locator('#notes .note-colophon .dlink').first().click();
+  await page.locator('article.note').waitFor();
+  await page.locator('#tags button[title="#灵感"]').click();
+  await page.waitForURL(value => value.pathname === '/' && value.searchParams.getAll('tag').includes('灵感'));
+  const applied = new URL(page.url()).searchParams;
+  assert.deepEqual(applied.getAll('tag'), ['想法', '灵感']);
+  for (const key of ['query', 'mode', 'date']) assert.equal(applied.get(key), parameters.get(key));
+});
+
 test('timeline colophons align with full touch targets below both tagged and untagged bodies', async t => {
   const { page, state, url } = await fixture(t);
   state.notes.get('n00').content = '带标签正文\n\n#想法';
@@ -782,6 +816,39 @@ test('note images center independently of file attachments', async t => {
   const inline = card.locator('.note-content img');
   await inline.waitFor();
   assert.equal(await inline.evaluate(centered), true);
+
+  const portrait = await page.evaluate(() => {
+    const canvas = document.createElement('canvas'); canvas.width = 80; canvas.height = 160;
+    return canvas.toDataURL('image/png').split(',')[1];
+  });
+  const endpoint = '/api/app/v1/notes/n02/attachments/portrait/content';
+  await page.route(`**${endpoint}`, route => route.fulfill({ contentType: 'image/png', body: Buffer.from(portrait, 'base64') }));
+  note.content = '多图与文件';
+  note.attachments.push({ name: 'attachments/portrait', filename: 'portrait.png', type: 'image/png', content_url: endpoint });
+  await page.reload();
+  const grid = card.locator('.attachment-grid');
+  const tall = grid.getByAltText('portrait.png');
+  await tall.waitFor();
+  await page.waitForFunction(() => document.querySelector('.attachment-grid img[alt="portrait.png"]')?.naturalHeight === 160);
+  assert.equal(await grid.evaluate(centered), true);
+  assert.deepEqual(await tall.evaluate(node => {
+    const style = getComputedStyle(node);
+    const width = parseFloat(style.width) - 2, height = parseFloat(style.height) - 2;
+    return [style.objectFit, Math.abs(height / width - node.naturalHeight / node.naturalWidth) < .03];
+  }), ['contain', true]);
+});
+
+test('dark note headings and strong text use the optical weight', async t => {
+  const { page, state, url } = await fixture(t);
+  state.notes.get('n00').content = '# 一级\n\n## 二级\n\n### 三级\n\n**加粗**';
+  await page.goto(url); await login(page);
+  const ink = page.locator('[data-name="memos/n00"] .note-content :is(h1,h2,h3,strong)');
+  await ink.first().waitFor();
+  const weights = () => ink.evaluateAll(nodes => nodes.map(node => getComputedStyle(node).fontWeight));
+  assert.deepEqual(await weights(), Array(4).fill('600'));
+  await page.emulateMedia({ colorScheme: 'dark' });
+  await page.waitForFunction(() => document.documentElement.dataset.theme === 'dark');
+  assert.deepEqual(await weights(), Array(4).fill('500'));
 });
 async function menu(page, id, label) {
   const card = page.locator(`[data-name="memos/${id}"]`);
@@ -970,7 +1037,7 @@ test('successful writes are silent, failed and unconfirmed writes use the warnin
   assert.equal(await status.isHidden(), true);
   await page.unroute(endpoint, delayed);
   await page.locator('#content').fill('测试失败与重试');
-  for (const [error, mode] of [['UPSTREAM_UNAVAILABLE', 'failure'], ['WRITE_OUTCOME_UNKNOWN', 'unknown']]) {
+  for (const [error, mode] of [['UPSTREAM_UNAVAILABLE', 'failure'], ['REQUEST_TIMEOUT', 'unknown']]) {
     const fail = route => writes(route) ? route.fulfill({ status: 503, json: { error: { code: error } } }) : route.continue();
     await page.route(endpoint, fail);
     await page.locator('#save').click();
@@ -982,6 +1049,37 @@ test('successful writes are silent, failed and unconfirmed writes use the warnin
   await status.and(page.locator('[data-sync="offline"]')).waitFor();
   assert.equal(await status.locator('.sync-dot').count(), 0);
   await context.setOffline(false);
+});
+
+test('a conflicting write stays visible during another write and after its success', async t => {
+  const { page, url } = await fixture(t);
+  await page.goto(url); await login(page);
+  await menu(page, 'n00', '编辑');
+  const editor = page.locator('form.editor[data-name="memos/n00"]');
+  await editor.locator('textarea').fill('相同笔记重试');
+  const gate = Promise.withResolvers();
+  t.after(() => gate.resolve());
+  await page.route('**/api/app/v1/notes', async route => {
+    if (route.request().method() === 'POST') await gate.promise;
+    await route.continue();
+  });
+  const endpoint = '**/api/app/v1/notes/n00';
+  const conflict = route => route.fulfill({ status: 409, json: { error: { code: 'WRITE_CONFLICT' } } });
+  await page.route(endpoint, conflict);
+  const create = page.waitForRequest(request => request.url().endsWith('/notes') && request.method() === 'POST');
+  await page.locator('#content').fill('另一条写入');
+  await page.locator('#save').click();
+  await create;
+  await editor.locator('textarea').press('Control+Enter');
+  const warning = page.locator('#sync-status[data-sync="conflict"]');
+  await warning.waitFor();
+  gate.resolve();
+  await page.locator('[data-name="memos/created-1"]').waitFor();
+  assert.equal(await warning.isVisible(), true);
+  await page.unroute(endpoint, conflict);
+  await editor.getByRole('button', { name: /^保存/ }).click();
+  await page.locator('article[data-name="memos/n00"]').filter({ hasText: '相同笔记重试' }).waitFor();
+  assert.equal(await page.locator('#sync-status').isHidden(), true);
 });
 
 test('search composition, menu keyboard, route focus and refresh protection preserve input', async t => {

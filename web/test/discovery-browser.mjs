@@ -852,12 +852,32 @@ test('single-column starts, top-aligned titles and reduced motion work across de
 
 test('floating previews retry source failures without disabling random start or publishing a departed response', async t => {
   const { page, state, url } = await fixture(t);
+  const initialNotes = Promise.withResolvers(), initialModels = Promise.withResolvers();
+  t.after(() => { initialNotes.resolve(); initialModels.resolve(); });
+  const holdNotes = async route => { await initialNotes.promise; await route.continue(); };
+  const holdModels = async route => { await initialModels.promise; await route.continue(); };
+  const notes = '**/api/app/v1/notes?*', models = '**/api/app/v1/models';
+  await page.route(notes, holdNotes);
+  await page.route(models, holdModels);
   state.notesError = 'UPSTREAM_UNAVAILABLE';
   await login(page, url, '/walk');
-  await page.getByRole('button', { name: '重试加载笔记', exact: true }).waitFor();
-  assert.ok(await page.getByRole('button', { name: '随机开始', exact: true }).isEnabled());
+  const loading = page.locator('.walk-start-loading'), retry = page.getByRole('button', { name: '重试加载笔记', exact: true });
+  await loading.waitFor();
+  initialNotes.resolve(); initialModels.resolve();
+  await retry.waitFor();
+  const random = page.getByRole('button', { name: '随机开始', exact: true });
+  await random.waitFor();
+  assert.ok(await random.isEnabled());
+  await page.unroute(notes, holdNotes);
+  await page.unroute(models, holdModels);
   state.notesError = null;
-  await page.getByRole('button', { name: '重试加载笔记', exact: true }).click();
+  state.hold = '/notes';
+  await retry.click();
+  await waitFor(() => state.pending.length === 1);
+  await loading.waitFor();
+  assert.equal(await retry.count(), 0);
+  assert.equal(await page.locator('.walk-page .error').count(), 0);
+  state.hold = null; state.pending.shift().release();
   await page.locator('.walk-floater').nth(5).waitFor();
   await page.locator('nav a[href="/"]').click();
   state.hold = '/notes';

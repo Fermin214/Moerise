@@ -7,10 +7,19 @@ import org.intellij.markdown.ast.ASTNode
 private val summaryPrefix = Regex("""^ {0,3}(?:#{1,6}[ \t]+|>[ \t]?|[-+*][ \t]+|\d+[.)][ \t]+)""", RegexOption.MULTILINE)
 private val summaryRuns = Regex("""\*+|_+|~+|\n""")
 
-fun walkSummaryBody(content: String, tags: List<String>): String {
+internal data class WalkSummarySource(val body: String, val tree: ASTNode?)
+
+internal fun walkSummarySource(content: String, tags: List<String>): WalkSummarySource {
     val normalized = content.replace("\r\n", "\n").replace('\r', '\n')
     val tagTree = if (tags.isNotEmpty() && '#' in normalized) markdownTree(normalized, parseInlines = true) else null
     val body = trailingTagPresentation(normalized, tags, tagTree).body
+    val tree = if ("```" !in body && "~~~" !in body) null
+        else if (body == normalized && tagTree != null) tagTree else markdownTree(body, parseInlines = false)
+    return WalkSummarySource(body, tree)
+}
+
+fun walkSummaryBody(content: String, tags: List<String>): String {
+    val (body, tree) = walkSummarySource(content, tags)
     val parts = mutableListOf<String>()
     var offset = 0
     fun visit(node: ASTNode) {
@@ -28,10 +37,7 @@ fun walkSummaryBody(content: String, tags: List<String>): String {
             node.children.forEach(::visit)
         }
     }
-    if ("```" in body || "~~~" in body) {
-        val bodyTree = if (body == normalized && tagTree != null) tagTree else markdownTree(body, parseInlines = false)
-        visit(bodyTree)
-    }
+    tree?.let(::visit)
     parts += summarizeProse(body.substring(offset))
     return foldSummaryWhitespace(parts.joinToString(" "))
 }

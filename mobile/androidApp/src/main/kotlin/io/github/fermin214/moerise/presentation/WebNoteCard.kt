@@ -22,6 +22,7 @@ import androidx.compose.ui.layout.HorizontalAlignmentLine
 import androidx.compose.ui.layout.SubcomposeLayout
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -29,6 +30,7 @@ import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.LineHeightStyle
 import androidx.compose.ui.unit.Constraints
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import io.github.fermin214.moerise.data.CoreClient
@@ -119,10 +121,10 @@ fun TimelineNoteCard(
         expanded = expanded,
         onExpand = onExpand,
         first = first,
-        colophonActions = {
+        colophonActions = { offset ->
             if (hasFailure) {
                 Box(
-                    Modifier.size(44.dp).clickable(role = Role.Button) { leaveWriting(); onOpenLocal(draft) }
+                    Modifier.padding(top = offset).size(44.dp).clickable(role = Role.Button) { leaveWriting(); onOpenLocal(draft) }
                         .testTag("queued_error_${draft.id}")
                         .semantics { contentDescription = strings.text("同步失败或冲突", "Sync failed or conflicted") },
                     contentAlignment = Alignment.TopCenter,
@@ -135,7 +137,7 @@ fun TimelineNoteCard(
                     }
                 }
             }
-            WebNoteMenu(strings, menuActions, tag = "note_more_$id")
+            WebNoteMenu(strings, menuActions, tag = "note_more_$id", modifier = Modifier.padding(top = offset))
         },
         stagedAttachments = {
             edits?.staged.orEmpty().forEach {
@@ -175,7 +177,7 @@ private fun NoteCardScaffold(
     expanded: Boolean?,
     onExpand: (Boolean) -> Unit,
     first: Boolean,
-    colophonActions: @Composable RowScope.() -> Unit,
+    colophonActions: @Composable RowScope.(Dp) -> Unit,
     stagedAttachments: @Composable () -> Unit,
     extraContent: @Composable ColumnScope.() -> Unit,
 ) {
@@ -194,15 +196,20 @@ private fun NoteCardScaffold(
                     }
                 }
             }
-            Row(Modifier.fillMaxWidth().height(44.dp), verticalAlignment = Alignment.Top) {
-                Box(Modifier.weight(1f).padding(top = 10.dp).height(16.dp).testTag("note_card_date")
+            val density = LocalDensity.current
+            val scaledLineHeight = with(density) { 16.sp.toDp() }.coerceAtLeast(16.dp)
+            val enlarged = density.fontScale > 1f
+            val dateHeight = if (enlarged) Modifier.heightIn(min = scaledLineHeight) else Modifier.height(16.dp)
+            Row(Modifier.fillMaxWidth().heightIn(min = 44.dp), verticalAlignment = Alignment.Top) {
+                Box(Modifier.weight(1f).padding(top = 10.dp).then(dateHeight).testTag("note_card_date")
                     .semantics(mergeDescendants = true) {},
                     contentAlignment = Alignment.CenterStart) {
-                    Text(date, style = MaterialTheme.typography.labelSmall.copy(lineHeight = 16.sp, fontFeatureSettings = "tnum",
+                    Text(date, modifier = Modifier.fillMaxWidth(),
+                        style = MaterialTheme.typography.labelSmall.copy(lineHeight = 16.sp, fontFeatureSettings = "tnum",
                         lineHeightStyle = LineHeightStyle(LineHeightStyle.Alignment.Center, LineHeightStyle.Trim.None)),
-                        color = MoeriseColors.InkColophon, maxLines = 1)
+                        color = MoeriseColors.InkColophon, maxLines = if (enlarged) Int.MAX_VALUE else 1)
                 }
-                colophonActions()
+                colophonActions((scaledLineHeight - 16.dp) / 2)
             }
             extraContent()
         }
@@ -257,10 +264,10 @@ data class NoteMenuAction(val label: String, val onClick: () -> Unit, val enable
     val tag: String? = null)
 
 @Composable
-fun WebNoteMenu(strings: Strings, actions: List<NoteMenuAction>, tag: String = "note_more") {
+fun WebNoteMenu(strings: Strings, actions: List<NoteMenuAction>, tag: String = "note_more", modifier: Modifier = Modifier) {
     val leaveWriting = LocalLeaveWriting.current
     var open by remember { mutableStateOf(false) }
-    Box {
+    Box(modifier) {
         Box(Modifier.size(44.dp).clip(CircleShape).clickable(role = Role.Button) {
             if (!open) leaveWriting()
             open = !open

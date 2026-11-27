@@ -8,12 +8,14 @@ const names = {
   offline: l("离线"),
   failure: l("请求失败，请重试。"),
 };
-let pending = 0, last = '', generation = 0;
+const alerts = new Map();
+let generation = 0;
 
 function render() {
   const node = document.getElementById('sync-status');
   if (!node) return;
-  const state = !navigator.onLine ? 'offline' : pending ? '' : last;
+  const active = new Set(alerts.values());
+  const state = !navigator.onLine ? 'offline' : ['conflict', 'unknown', 'failure'].find(value => active.has(value));
   node.hidden = !state;
   if (!state) {
     node.removeAttribute('data-sync');
@@ -29,24 +31,25 @@ function render() {
 }
 
 export const syncStatus = {
-  start() {
+  start(operation, { write = false } = {}) {
     const stamp = generation;
     let done = false;
-    pending++;
-    render();
     return result => {
       if (done || stamp !== generation) return;
       done = true;
-      pending = Math.max(0, pending - 1);
-      last = result === 'canceled' || result === 'success' ? '' : result === 'timeout' ? 'failure' :
-        Object.hasOwn(names, result) ? result : 'unknown';
+      if (result === 'canceled') return;
+      if (result === 'success') alerts.delete(operation);
+      else alerts.set(operation, result === 'timeout' ? (write ? 'unknown' : 'failure') :
+        Object.hasOwn(names, result) ? result : 'unknown');
       render();
     };
   },
+  clear(operation) {
+    if (alerts.delete(operation)) render();
+  },
   reset() {
     generation++;
-    pending = 0;
-    last = '';
+    alerts.clear();
     render();
   },
 };

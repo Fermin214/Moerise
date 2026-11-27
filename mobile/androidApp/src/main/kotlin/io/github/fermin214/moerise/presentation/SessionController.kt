@@ -90,8 +90,8 @@ class SessionController(
     fun theme(value: UiTheme) {
         mutableTheme.value = value
         val saved = runCatching { themeStore.write(value) }.isSuccess
-        val applied = runCatching { onThemeChange(value) }.isSuccess
-        mutableThemeError.value = if (saved && applied) null else "LOCAL_PREFERENCES_FAILED"
+        val applied = saved && runCatching { onThemeChange(value) }.isSuccess
+        mutableThemeError.value = if (applied) null else "LOCAL_PREFERENCES_FAILED"
     }
 
     private fun client(origin: String, stamp: Long): CoreClient =
