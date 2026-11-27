@@ -535,7 +535,7 @@ async function runScenario(kind) {
       screenshots.set(`browser-${kind}-mobile.png`, await page.screenshot({ fullPage: true }));
       await page.reload(); await card.waitFor();
       await page.locator('#navigation-toggle').click();
-      await page.locator('#user-menu').click(); await page.locator('#logout').click();
+      await page.locator('#account-settings').click(); await page.locator('#logout').click();
       await page.locator('#login-form').waitFor({ state: 'visible' });
       assert.equal(await page.locator('#notes article').count(), 0);
       assert.deepEqual(pageErrors, []);

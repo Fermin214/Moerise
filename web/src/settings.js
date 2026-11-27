@@ -1,5 +1,5 @@
 import { el, button } from './dom.js';
-import { l, setText, setAttr, resolveText, languagePreference, setLanguage } from './i18n.js';
+import { l, setText, setAttr, resolveText, languagePreference, setLanguage, locale } from './i18n.js';
 import { createModal } from './modal.js';
 import { privacySettings } from './privacy.js';
 import { snackbar } from './snackbar.js';
@@ -129,7 +129,7 @@ function checksCandidate(snapshot, body, target) {
 
 export function createSettingsPage({ sessionRequest, handleFailure, onSaved = () => {}, onDirtyChange = () => {},
   confirmDiscard = () => Promise.resolve(true), sync = async () => {}, lastSync = () => null }) {
-  let root, snapshot, lifecycle, editor, pageError, reload, timer, poll, unbindPrivacy, form, indexText, indexProgress, history;
+  let root, snapshot, lifecycle, editor, pageError, reload, timer, poll, unbindPrivacy, form, indexText, indexProgress, history, account;
   let currentTab = 'general', queue = Promise.resolve(), pending = 0, conflict = false, reloading = null, disposed = false;
   let refreshView = () => {};
   let tabs = new Map(), panels = new Map(), summaries = new Map();
@@ -489,7 +489,7 @@ export function createSettingsPage({ sessionRequest, handleFailure, onSaved = ()
           check.disabled = true;
           try {
             const result = await requestWhile(lifecycle, '/models/embedding/check', { method: 'POST', body: { version: ticket } });
-            if (check.isConnected && snapshot.version === result.version) snackbar(l("连接正常 · {0} 毫秒", { 0: result.duration_ms }));
+            if (check.isConnected && snapshot.version === result.version) snackbar(l("连接正常，{0} 毫秒", { 0: result.duration_ms }));
           } catch (err) {
             if (check.isConnected) {
               if (err.code === 'SETTINGS_CONFLICT') markConflict();
@@ -615,7 +615,7 @@ export function createSettingsPage({ sessionRequest, handleFailure, onSaved = ()
     for (const item of rows) {
       const line = el('div', 'row settings-row');
       line.append(el('span', '', () => [item.date, item.clock, resolveText(channels[item.channel_kind]?.[0]),
-        resolveText(deliveryLabels[item.status] || item.status), item.last_error].filter(Boolean).join(' · ')));
+        resolveText(deliveryLabels[item.status] || item.status), item.last_error].filter(Boolean).join('，')));
       if (item.status === 'failed') {
         const retry = button(l("重试"), 'ghost', async () => {
           if (retrying.has(item.id)) return;
@@ -657,7 +657,7 @@ export function createSettingsPage({ sessionRequest, handleFailure, onSaved = ()
         }
         setText(indexText, () => [resolveText(labels[data.index_status] || l("索引状态不可用")),
           !indexProgress.hidden && resolveText(l("{0}/{1} 个片段", { 0: generation.completed_chunks, 1: generation.chunks })),
-          !indexProgress.hidden && generation.last_error].filter(Boolean).join(' · '));
+          !indexProgress.hidden && generation.last_error].filter(Boolean).join('，'));
       } else {
         const [data, deliveries] = await Promise.all([
           requestWhile(request, '/settings'),
@@ -712,7 +712,7 @@ export function createSettingsPage({ sessionRequest, handleFailure, onSaved = ()
     row(general, l("语言"), language);
     summary(general, l("时区"), () => snapshot.settings.timezone, editTimezone);
     const syncActions = el('div', 'settings-inline-actions'), synced = el('span', 'sub');
-    const syncButton = button(l("立即同步"), 'ghost', async () => {
+    const syncButton = button(l("同步"), 'ghost', async () => {
       const page = lifecycle;
       syncButton.disabled = true;
       try { await sync(); } finally {
@@ -722,10 +722,11 @@ export function createSettingsPage({ sessionRequest, handleFailure, onSaved = ()
     syncActions.append(synced, syncButton); row(general, l("上次同步"), syncActions);
     summaries.set(synced, () => lastSync() ? new Date(lastSync()).toLocaleString() : l("尚未同步"));
     window.addEventListener('moerisesync', () => { if (synced.isConnected) setText(synced, summaries.get(synced)()); }, { signal: lifecycle.signal });
+    general.append(account);
 
     const search = section('search', l("检索与观星"));
     const embeddingStatus = summary(search, l("向量模型"), () => snapshot.settings.embedding.enabled ?
-      snapshot.settings.embedding.model || l("已启用 · 已配置") : l("已关闭"), editEmbedding);
+      snapshot.settings.embedding.model || l("已启用，已配置") : l("已关闭"), editEmbedding);
     embeddingStatus.id = 'settings-embedding-status';
     indexText = el('p', 'sub'); indexText.id = 'settings-index-status'; indexText.setAttribute('role', 'status');
     indexProgress = el('progress'); indexProgress.hidden = true; setAttr(indexProgress, 'aria-label', l("语义索引进度"));
@@ -757,14 +758,14 @@ export function createSettingsPage({ sessionRequest, handleFailure, onSaved = ()
     destination.addEventListener('change', () => commit({ draft: { channel: { kind: destination.value } } }));
     row(review, l("定时回顾发往"), destination);
     const destinationHint = el('p', 'sub settings-hint'); review.append(destinationHint);
-    summary(review, l("推送时段"), () => snapshot.settings.notifications.times.join(' · '), editTimes);
+    summary(review, l("推送时段"), () => () => snapshot.settings.notifications.times.join(locale() === 'en' ? ", " : "、"), editTimes);
     review.append(el('h3', '', l("消息渠道")));
     const telegramLink = el('a', 'dlink', l("打开机器人")); telegramLink.target = '_blank'; telegramLink.rel = 'noreferrer';
     for (const [kind, [label, secret]] of Object.entries(channels)) {
       summary(review, label, () => {
         const { state, detail, peer } = snapshot.channel_status?.[kind] || {};
         return [resolveText(connectionLabels[state] || (snapshot.secrets[secret]?.configured ? l("已配置") : l("未配置"))),
-          resolveText(connectionLabels[detail] || detail), peer].filter(Boolean).join(' · ');
+          resolveText(connectionLabels[detail] || detail), peer].filter(Boolean).join('，');
       }, () => editChannel(kind));
       if (kind === 'telegram') review.append(telegramLink);
     }
@@ -824,6 +825,7 @@ export function createSettingsPage({ sessionRequest, handleFailure, onSaved = ()
       if (owner.signal.aborted) return;
       if (!form) {
         pageError = el('p', 'error sub');
+        pageError.setAttribute('role', 'alert');
         reload = button(l("重新加载设置"), 'ghost', reloadSettings);
         root.replaceChildren(pageError, reload);
       }
@@ -837,9 +839,10 @@ export function createSettingsPage({ sessionRequest, handleFailure, onSaved = ()
     }
   }
   return {
-    async mount(container) {
+    async mount(container, accountSection) {
       const owner = lifecycle = new AbortController();
       currentTab = 'general';
+      account = accountSection;
       root = el('div', 'settings-page'); root.id = 'settings-page';
       root.append(el('p', 'sub', l("正在加载设置…"))); container.append(root);
       document.addEventListener('visibilitychange', () => document.hidden ? stopPoll() : refresh(), { signal: lifecycle.signal });
@@ -849,7 +852,7 @@ export function createSettingsPage({ sessionRequest, handleFailure, onSaved = ()
     },
     destroy() {
       lifecycle?.abort(); reloading = null; stopPoll(); editor?.modal.destroy(); unbindPrivacy?.();
-      root?.remove(); root = form = pageError = reload = history = indexText = indexProgress = unbindPrivacy = null;
+      root?.remove(); root = form = pageError = reload = history = indexText = indexProgress = unbindPrivacy = account = null;
       tabs.clear(); panels.clear(); summaries.clear();
       refreshView = () => {};
     },

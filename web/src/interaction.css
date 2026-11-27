@@ -3,8 +3,8 @@
   outline-offset:3px;
 }
 .privacy-dialog { margin:auto; width:min(26rem,calc(100% - 32px)); max-height:85dvh; overflow:auto; padding:24px; color:var(--ink); font:inherit; font-family:system-ui,sans-serif; }
-.privacy-dialog::backdrop { background:#15233755; }
-.privacy-dialog h2 { margin-block:0 .6rem; font-size:1.35rem; }
+.privacy-dialog::backdrop { background:var(--scrim); }
+.privacy-dialog h2 { margin-block:0 .6rem; font-size:var(--t1); }
 .privacy-dialog textarea { width:100%; resize:vertical; }
 .privacy-dialog > .save { display:block; margin:16px 0; }
 .privacy-links,.privacy-switch { display:flex; align-items:center; gap:16px; flex-wrap:wrap; }
@@ -17,7 +17,7 @@
 @media (prefers-reduced-motion:no-preference) {
   #sync-status[data-sync="transfer"] svg { animation:sync-breathe 1100ms cubic-bezier(.4,0,.2,1) infinite; }
 }
-#sync-status[data-sync="offline"] .sync-dot,#sync-status[data-sync="failure"] .sync-dot,#sync-status[data-sync="conflict"] .sync-dot,#sync-status[data-sync="unknown"] .sync-dot { background:#E86A5D; }
+#sync-status[data-sync="offline"] .sync-dot,#sync-status[data-sync="failure"] .sync-dot,#sync-status[data-sync="conflict"] .sync-dot,#sync-status[data-sync="unknown"] .sync-dot { background:var(--danger); }
 #sync-status[data-sync="offline"],#sync-status[data-sync="failure"],#sync-status[data-sync="conflict"],#sync-status[data-sync="unknown"] { color:var(--muted); }
 @media (prefers-reduced-motion:no-preference) {
   #sync-status[data-sync="transfer"] svg { animation:sync-pulse 1.4s ease-in-out infinite; }
@@ -45,13 +45,12 @@
 }
 @supports (position-area:block-end) {
   .menu[popover] { position-area:block-end span-inline-start; position-try-fallbacks:flip-block,flip-inline,flip-block flip-inline; }
-  #account-menu[popover] { position-area:block-start span-inline-start; }
 }
 dialog:modal { overscroll-behavior:contain; }
 dialog::backdrop { overflow:hidden; overscroll-behavior:contain; }
 .leave-dialog { margin:auto; max-width:calc(100vw - 32px); color:var(--ink); font-family:var(--font-body); }
-.leave-dialog::backdrop { background:rgb(31 35 40 / .28); }
-.leave-dialog h2 { margin:0 0 20px; font-size:18px; }
+.leave-dialog::backdrop { background:var(--scrim); }
+.leave-dialog h2 { margin:0 0 20px; font-size:var(--t2); }
 .leave-dialog .editor-actions { justify-content:flex-end; flex-wrap:wrap; }
 .stargazing { --focus:#c9def4; }
 .timeline-deferred:not(:focus-within) { content-visibility:auto; contain-intrinsic-block-size:auto 220px; }
@@ -69,9 +68,9 @@ dialog::backdrop { overflow:hidden; overscroll-behavior:contain; }
 .map-tools .focus-tool:not(:focus-visible) { position:absolute; width:1px; height:1px; padding:0; clip-path:inset(50%); overflow:hidden; }
 .map-reader > p { margin:12px 20px 20px; }
 .map-page .map-retry { position:absolute; left:1rem; top:1rem; z-index:5; }
-.snackbar { position:fixed; left:50%; bottom:max(16px,env(safe-area-inset-bottom)); z-index:30; translate:-50% 0; width:max-content; max-width:calc(100vw - 32px); display:flex; align-items:center; gap:12px; padding:8px 14px; min-height:44px; border:1px solid #D5E1F7; border-radius:14px; background:var(--surface); color:var(--ink); box-shadow:0 8px 24px #1f232814; animation:snackbar-enter var(--motion-responsive-duration) var(--motion-responsive-easing); }
-.snackbar .ghost { height:32px; color:#2A5BB5; }
-.snackbar .ghost:hover { background:#EAF1FD; }
+.snackbar { position:fixed; left:50%; bottom:max(16px,env(safe-area-inset-bottom)); z-index:30; translate:-50% 0; width:max-content; max-width:calc(100vw - 32px); display:flex; align-items:center; gap:12px; padding:8px 14px; min-height:44px; border:1px solid var(--line); border-radius:14px; background:var(--surface); color:var(--ink); box-shadow:0 8px 24px rgb(31 30 28 / .08); animation:snackbar-enter var(--motion-responsive-duration) var(--motion-responsive-easing); }
+.snackbar .ghost { height:32px; color:var(--accent); }
+.snackbar .ghost:hover { background:var(--accent-surface); }
 @keyframes snackbar-enter { from { opacity:0; transform:translateY(8px); } }
 @keyframes moerise-fade { from { opacity:0; } }
 @media (prefers-reduced-motion:reduce) { .snackbar { animation:moerise-fade 80ms linear; } }

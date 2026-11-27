@@ -409,9 +409,9 @@ class AndroidUiRegressionTest {
         val entry = mutableStateOf<TimelineEntry>(TimelineEntry.Local(draft))
         val allowTailParse = CompletableDeferred<Unit>()
         val image = compose.onNode(hasTestTag("decoded_attachment_image") and hasContentDescription("protected.png") and
-            hasAnyAncestor(hasTestTag("note_card_body")), useUnmergedTree = true)
-        val tagInBody = hasText(tagLine, substring = true) and hasAnyAncestor(hasTestTag("note_card_body"))
-        val textInBody = hasText(text, substring = true) and hasAnyAncestor(hasTestTag("note_card_body"))
+            hasAnyAncestor(hasTestTag("note_markdown")), useUnmergedTree = true)
+        val tagInBody = hasText(tagLine, substring = true) and hasAnyAncestor(hasTestTag("note_markdown"))
+        val textInBody = hasText(text, substring = true) and hasAnyAncestor(hasTestTag("note_markdown"))
         try {
             compose.runOnUiThread {
                 host.get().setContent {
@@ -644,11 +644,55 @@ class AndroidUiRegressionTest {
         val body = compose.onNodeWithTag("note_card_body")
         val expand = compose.onNodeWithText("Expand")
         compose.waitUntil(10_000) { expand.isDisplayed() }
-        assertTrue(body.getUnclippedBoundsInRoot().height in 325.dp..350.dp)
+        assertTrue(body.getUnclippedBoundsInRoot().height in 316.dp..330.dp)
         expand.performClick()
         compose.waitUntil(10_000) { body.getUnclippedBoundsInRoot().height > 400.dp }
         compose.onNodeWithText("Collapse").performScrollTo().performClick()
         compose.waitUntil(10_000) { body.getUnclippedBoundsInRoot().height <= 350.dp }
+    }
+
+    @Test
+    @GraphicsMode(GraphicsMode.Mode.NATIVE)
+    fun decodedAttachmentGrowthFoldsTheWholeCard() {
+        createHost()
+        val bitmap = Bitmap.createBitmap(220, 240, Bitmap.Config.ARGB_8888)
+        val png = ByteArrayOutputStream().use { output ->
+            assertTrue(bitmap.compress(Bitmap.CompressFormat.PNG, 100, output)); output.toByteArray()
+        }
+        bitmap.recycle()
+        val release = CompletableDeferred<Unit>()
+        val origin = "https://image-growth.example"
+        val client = CoreClient(origin, SessionCookies(origin, MemorySecrets()), MockEngine { request ->
+            if (request.url.encodedPath.endsWith("/session"))
+                respond("""{"instance_id":"instance","user":{"name":"users/owner"},"timezone":"UTC","expires_at":"2099-01-01T00:00:00Z","csrf_token":"token"}""")
+            else { release.await(); respond(png) }
+        }).also { it.bindAccount("$origin\u0000instance\u0000users/owner") }
+        val item = CoreJson.parseToJsonElement("""{"name":"attachments/square","type":"image/png","filename":"image.png"}""")
+            as kotlinx.serialization.json.JsonObject
+        val content = (1..8).joinToString("\n\n") { "Paragraph $it" }
+        val note = Note("instance", "memos/growth", content, "NORMAL", "before", tags = listOf("end"), attachments = listOf(item))
+        try {
+            compose.runOnUiThread {
+                host.get().setContent {
+                    val expanded = remember { mutableStateOf(false) }
+                    MoeriseTheme {
+                        Column(Modifier.verticalScroll(rememberScrollState())) {
+                            TimelineNoteCard(TimelineEntry.Remote(note), "UTC", strings, client, {}, {},
+                                expanded = expanded.value, onExpand = { expanded.value = it })
+                        }
+                    }
+                }
+            }
+            val body = compose.onNodeWithTag("note_card_body")
+            compose.onNodeWithText("Expand").assertDoesNotExist()
+            release.complete(Unit)
+            val expand = compose.onNodeWithText("Expand")
+            compose.waitUntil(10_000) { expand.isDisplayed() }
+            assertTrue(body.getUnclippedBoundsInRoot().height in 316.dp..330.dp)
+            expand.performClick()
+            compose.onNodeWithText("#end").performScrollTo().assertIsDisplayed()
+            assertTrue(body.getUnclippedBoundsInRoot().height > 400.dp)
+        } finally { release.complete(Unit); client.close() }
     }
 
     @Test
@@ -661,6 +705,8 @@ class AndroidUiRegressionTest {
                 override fun dispatch(request: RecordedRequest): MockResponse = when (request.path) {
                     "/api/app/v1/capabilities" -> MockResponse().setBody("""{"login_methods":["password"],"notes":"ready"}""")
                     "/api/app/v1/session" -> {
+                        val credentials = CoreJson.parseToJsonElement(request.body.readUtf8())
+                        assertEquals(CoreJson.parseToJsonElement("""{"username":"owner","password":"fixture-pass"}"""), credentials)
                         if (attempts.incrementAndGet() == 1) {
                             check(release.await(10, TimeUnit.SECONDS))
                             MockResponse().setResponseCode(401).setBody("""{"error":{"code":"INVALID_CREDENTIALS"}}""")
@@ -678,7 +724,7 @@ class AndroidUiRegressionTest {
             var connected = false
             compose.runOnUiThread { host.get().setContent { MoeriseTheme { ConnectionScreen(session, strings) { connected = true } } } }
             compose.onNodeWithTag("server_origin").performTextReplacement(server.url("/").toString().removeSuffix("/"))
-            compose.onNodeWithTag("server_username").performTextReplacement("owner")
+            compose.onNodeWithTag("server_username").performTextReplacement(" owner ")
             val password = compose.onNodeWithTag("server_password")
             password.performTextReplacement("fixture-pass")
             compose.onNodeWithTag("toggle_password").performClick()
@@ -830,16 +876,44 @@ class AndroidUiRegressionTest {
                 .performSemanticsAction(SemanticsActions.OnClick) { assertTrue(it()) }
             waitForTag("home_timeline")
             openComposer()
-            composer.performClick().assertIsFocused().performTextReplacement("New note")
-            composer.assertTextContains("New note")
+            val queuedBody = (1..24).joinToString("\n\n") { "New note $it" }
+            composer.performClick().assertIsFocused().performTextReplacement(queuedBody)
+            composer.assertTextContains(queuedBody)
             compose.onNodeWithTag("quick_save").assertIsEnabled()
                 .performSemanticsAction(SemanticsActions.OnClick) { assertTrue(it()) }
             waitForMainCondition("the composer clears after the local commit") {
                 mobile.editor.state.value.let { it.draft?.content == "" || it.error != null }
             }
             assertNull(mobile.editor.state.value.error)
-            assertEquals("New note", runBlocking { repository.queuedNotes(account).single().content })
+            val queued = runBlocking { repository.queuedNotes(account).single() }
+            assertEquals(queuedBody, queued.content)
             closed()
+            val queuedKey = "queued:${queued.id}"
+            val timeline = compose.onNodeWithTag("home_timeline")
+            timeline.performScrollToKey(queuedKey)
+            compose.onNodeWithText("Expand").performClick()
+            val confirmed = note.copy(name = "memos/confirmed", content = queuedBody, tags = emptyList(), sourceHash = "confirmed")
+            compose.runOnIdle {
+                mobile.timeline.onSaved(account, confirmed, displayKey = queuedKey)
+                mobile.sync.confirmEnqueued(queued.id, null)
+            }
+            waitForTag("note_card_${confirmed.name}")
+            val confirmedCard = "note_card_${confirmed.name}"
+            fun toggle(label: String, card: String) = compose.onNode(hasText(label) and hasAnyAncestor(hasTestTag(card)))
+            toggle("Collapse", confirmedCard).performScrollTo().performSemanticsAction(SemanticsActions.OnClick) { assertTrue(it()) }
+            compose.waitUntil(10_000) { toggle("Expand", confirmedCard).isDisplayed() }
+            assertTrue(compose.onNodeWithTag(confirmedCard).isDisplayed())
+            val edited = queued.copy(id = "edit-confirmed", targetName = confirmed.name, content = "$queuedBody\n\nEdited offline")
+            compose.runOnIdle { mobile.sync.publishEnqueued(edited) }
+            waitForTag("queued_note_${edited.id}")
+            timeline.performScrollToKey(queuedKey)
+            compose.waitUntil(10_000) { toggle("Expand", "queued_note_${edited.id}").isDisplayed() }
+            compose.runOnIdle {
+                mobile.timeline.onSaved(account, confirmed.copy(content = edited.content, sourceHash = "edited"), displayKey = queuedKey)
+                mobile.sync.confirmEnqueued(edited.id, null)
+            }
+            waitForTag("note_card_${confirmed.name}")
+            toggle("Expand", confirmedCard).assertExists()
 
             edit()
             inline.performTextReplacement("Local edit")

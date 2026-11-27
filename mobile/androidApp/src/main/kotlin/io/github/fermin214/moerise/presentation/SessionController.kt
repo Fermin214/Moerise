@@ -282,6 +282,7 @@ class SessionController(
     }
 
     suspend fun stopForRemoval() {
+        core?.pauseAttachmentCommits()
         ++generation
         mutableState.update { it.copy(connected = false, busy = true) }
         operation?.cancelAndJoin()

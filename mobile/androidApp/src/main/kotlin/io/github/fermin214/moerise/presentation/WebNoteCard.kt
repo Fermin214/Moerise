@@ -2,9 +2,10 @@ package io.github.fermin214.moerise.presentation
 
 import android.content.ClipData
 import android.content.ClipboardManager
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -17,15 +18,16 @@ import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.Layout
-import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.layout.HorizontalAlignmentLine
+import androidx.compose.ui.layout.SubcomposeLayout
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import io.github.fermin214.moerise.data.CoreClient
@@ -87,7 +89,7 @@ fun TimelineNoteCard(
             onEdit?.let { add(NoteMenuAction(strings.text("编辑", "Edit"), { it(remote) }, !busy && !pendingAction, tag = "edit_note_$id")) }
             onState?.let { add(NoteMenuAction(
                 if (pendingAction && !deleteUnknown) strings.text("重试操作", "Retry action")
-                else if (remote.state == "ARCHIVED") strings.text("恢复到主页", "Restore to home") else strings.text("归档", "Archive"),
+                else if (remote.state == "ARCHIVED") strings.text("恢复", "Restore") else strings.text("归档", "Archive"),
                 { it(remote) }, online && !busy && !stateActionSending && !deleteUnknown, tag = "archive_note_$id")) }
             if (remote.state == "NORMAL") onWalk?.let { add(NoteMenuAction(strings.text("从这条漫步", "Walk from this note"), { it(remote) }, online && !busy, tag = "walk_note_$id")) }
             if (deleteUnknown) onCheckDeletion?.let { add(NoteMenuAction(strings.text("检查删除结果", "Check deletion"), { it(remote) }, online && !busy, tag = "check_delete_$id")) }
@@ -122,10 +124,10 @@ fun TimelineNoteCard(
                     contentAlignment = Alignment.Center,
                 ) {
                     Box(
-                        Modifier.size(20.dp).background(Color(0xFFB42318), CircleShape),
+                        Modifier.size(20.dp).background(MoeriseColors.Danger, CircleShape),
                         contentAlignment = Alignment.Center,
                     ) {
-                        Text("!", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold, lineHeight = 12.sp)
+                        Text("!", color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Bold, lineHeight = 12.sp)
                     }
                 }
             }
@@ -171,22 +173,24 @@ private fun NoteCardScaffold(
     extraContent: @Composable ColumnScope.() -> Unit,
 ) {
     Surface(modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(14.dp), color = Color.White,
-        border = BorderStroke(1.dp, MoeriseColors.Line)) {
+        shape = RoundedCornerShape(12.dp), color = MoeriseColors.Surface) {
         Box {
-            Column(Modifier.padding(start = 18.dp, end = 18.dp, bottom = 14.dp)) {
-                Box(Modifier.fillMaxWidth().heightIn(min = if (headerActions > 0) 42.dp else 0.dp)
+            Column(Modifier.padding(start = 16.dp, end = 16.dp, bottom = 16.dp)) {
+                Box(Modifier.fillMaxWidth()
                     .padding(top = 10.dp, end = (headerActions * 44).dp)) {
-                    Text(date, fontSize = 13.sp, color = MoeriseColors.Muted, modifier = Modifier.testTag("note_card_date"))
+                    Text(date, style = MaterialTheme.typography.bodySmall, color = MoeriseColors.Muted, modifier = Modifier.testTag("note_card_date"))
                 }
-                if (presentation.body.isNotBlank()) Box(Modifier.fillMaxWidth().padding(top = 2.dp, bottom = 8.dp).testTag("note_card_body")) {
-                    FoldableNoteBody(content, expanded, onExpand, strings) {
-                        MarkdownBody(presentation.body, note = note, core = core, tags = presentation.inlineTags, onTag = onTag,
-                            originalContent = content, strings = strings)
+                Box(Modifier.fillMaxWidth().padding(top = 4.dp).testTag("note_card_body")) {
+                    FoldableNoteBody(expanded, onExpand, strings) {
+                        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                            if (presentation.body.isNotBlank()) MarkdownBody(presentation.body, note = note, core = core,
+                                tags = presentation.inlineTags, onTag = onTag, originalContent = content, strings = strings,
+                                modifier = Modifier.testTag("note_markdown"))
+                            if (note != null) NoteAttachments(note, core, strings = strings)
+                            NoteTags(presentation.tags, onTag = onTag)
+                        }
                     }
                 }
-                if (note != null) NoteAttachments(note, core, strings = strings)
-                NoteTags(presentation.tags, onTag = onTag)
                 extraContent()
             }
             if (headerActions > 0) {
@@ -198,31 +202,47 @@ private fun NoteCardScaffold(
 
 @Composable
 private fun FoldableNoteBody(
-    text: String, expanded: Boolean?, onExpand: (Boolean) -> Unit, strings: Strings, body: @Composable () -> Unit,
+    expanded: Boolean?, onExpand: (Boolean) -> Unit, strings: Strings, body: @Composable () -> Unit,
 ) {
     if (expanded == null) {
         body()
         return
     }
-    var height by remember(text) { mutableIntStateOf(0) }
-    val long = height > with(LocalDensity.current) { 400.dp.roundToPx() }
-    Column {
-        Box(Modifier.fillMaxWidth()) {
-            Layout(content = { Box(Modifier.onSizeChanged { height = it.height }) { body() } },
-                modifier = Modifier.fillMaxWidth().clipToBounds()) { measurables, constraints ->
-                val note = measurables.single().measure(constraints.copy(minHeight = 0))
-                val visibleHeight = if (long && !expanded) minOf(note.height, 280.dp.roundToPx()) else note.height
-                layout(note.width, visibleHeight) { note.placeRelative(0, 0) }
+    SubcomposeLayout(Modifier.fillMaxWidth()) { constraints ->
+        val content = subcompose(FoldSlot.Body) {
+            Layout(content = { Box { body() } }, modifier = Modifier.clipToBounds()) { measurables, available ->
+                val note = measurables.single().measure(available.copy(minHeight = 0, maxHeight = Constraints.Infinity))
+                val long = note.height > 400.dp.roundToPx()
+                val height = if (long && !expanded) 280.dp.roundToPx() else note.height
+                layout(note.width, height, if (long) mapOf(LongBody to 0) else emptyMap()) { note.placeRelative(0, 0) }
             }
-            if (long && !expanded) Box(Modifier.align(Alignment.BottomCenter).fillMaxWidth().height(36.dp)
-                .background(Brush.verticalGradient(listOf(Color.White.copy(alpha = 0f), Color.White))))
-        }
-        if (long) TextButton(onClick = { onExpand(!expanded) },
-            colors = ButtonDefaults.textButtonColors(contentColor = MoeriseColors.Blue)) {
-            Text(if (expanded) strings.text("收起", "Collapse") else strings.text("展开全文", "Expand"))
+        }.single().measure(constraints.copy(minHeight = 0))
+        val long = content[LongBody] == 0
+        val shade = if (long && !expanded) subcompose(FoldSlot.Shade) {
+            Box(Modifier.fillMaxWidth().height(36.dp).background(Brush.verticalGradient(
+                listOf(Color.Transparent, MoeriseColors.Surface))))
+        }.single().measure(constraints.copy(minHeight = 0)) else null
+        val toggle = if (long) subcompose(FoldSlot.Toggle) {
+            val interactions = remember { MutableInteractionSource() }
+            val pressed by interactions.collectIsPressedAsState()
+            Box(Modifier.heightIn(min = 36.dp).clip(RoundedCornerShape(6.dp))
+                .background(if (pressed) MoeriseColors.AccentSurface else Color.Transparent)
+                .clickable(interactionSource = interactions, indication = null, role = Role.Button) { onExpand(!expanded) },
+                contentAlignment = Alignment.CenterStart) {
+                Text(if (expanded) strings.text("收起", "Collapse") else strings.text("展开", "Expand"),
+                    style = MaterialTheme.typography.bodySmall, color = MoeriseColors.Accent)
+            }
+        }.single().measure(constraints.copy(minWidth = 0, minHeight = 0)) else null
+        layout(content.width, content.height + (toggle?.height ?: 0)) {
+            content.placeRelative(0, 0)
+            shade?.placeRelative(0, content.height - shade.height)
+            toggle?.placeRelative(0, content.height)
         }
     }
 }
+
+private val LongBody = HorizontalAlignmentLine(::minOf)
+private enum class FoldSlot { Body, Shade, Toggle }
 
 data class NoteMenuAction(val label: String, val onClick: () -> Unit, val enabled: Boolean = true, val danger: Boolean = false,
     val tag: String? = null)

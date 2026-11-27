@@ -17,6 +17,7 @@ import io.github.fermin214.moerise.presentation.SessionController
 import io.github.fermin214.moerise.presentation.SyncTrigger
 import io.github.fermin214.moerise.presentation.androidAttachmentFiles
 import io.github.fermin214.moerise.presentation.clearAttachmentCache
+import io.github.fermin214.moerise.presentation.recoverGalleryExports
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
@@ -80,6 +81,7 @@ class AndroidRuntime(application: MoeriseApplication) {
     private var inForeground = false
 
     init {
+        scope.launch(Dispatchers.IO) { recoverGalleryExports(application) }
         onClientFailure = { error -> mainHandler.post {
             mobile.privacy.record("client_error", "failure", source = if (inForeground) "user" else "background", error = error)
         } }

@@ -6,7 +6,7 @@ import { el, button } from './dom.js';
 import { validNote, observeFoldedBodies, renderNoteCard, renderReadingCard } from './notes.js';
 import { createTimeline, readTimeline, storeTimelineSnapshot } from './timeline.js';
 import { createClient, validIdentity, sessionOwner } from './client.js';
-import { bindMenu, closeMenus } from './menus.js';
+import { closeMenus } from './menus.js';
 import { bindSearchInput } from './search-input.js';
 import { createLeaveGuard } from './leave-guard.js';
 import { createRouter } from './router.js';
@@ -61,6 +61,7 @@ let moduleReload = false;
 let lastTimeline = { key: null, url: '/', path: '/', values: filters('') };
 let projectionRevision = 0, timelineRefresh = null;
 let settingsPage = null, sessionSettings = null;
+let settingsAccount = null;
 let mapPage = null, mapView = null, mapSnapshot = null;
 let discoveryPage = null, discovery = null;
 const client = createClient({
@@ -116,6 +117,7 @@ function invalidate() {
   stopPreload();
   timeline?.destroy(); timeline = null;
   sessionSettings?.dispose(); settingsPage = sessionSettings = null;
+  settingsAccount?.remove(); settingsAccount = null;
   mapPage?.destroy(); mapPage = null;
   discoveryPage?.destroy(); discoveryPage = null;
   invalidateSidebar();
@@ -173,6 +175,7 @@ function authControls({ busy = false, login = true } = {}) {
   authBusy = busy;
   $('auth').setAttribute('aria-busy', String(busy));
   $('login-form').hidden = !login;
+  $('retry-logout').hidden = !logoutSession || busy;
   for (const id of ['username', 'password', 'login']) $(id).disabled = busy;
 }
 function expire(err, resume = true) {
@@ -275,10 +278,9 @@ async function restore() {
 $('login-form').addEventListener('submit', async event => {
   event.preventDefault();
   if (authBusy) return;
-  if (logoutSession) { await logout(); if (logoutSession) return; }
   const generation = invalidate();
   authControls({ busy: true }); showError($('auth-error'), null);
-  const body = { username: $('username').value, password: $('password').value };
+  const body = { username: $('username').value.trim(), password: $('password').value };
   $('password').value = '';
   try {
     const value = await request('/session', { method: 'POST', body });
@@ -292,6 +294,7 @@ $('login-form').addEventListener('submit', async event => {
 async function logout() {
   if (authBusy) return;
   if (identity && !(await leaveGuard.confirm())) return;
+  if (authBusy) return;
   logoutSession ||= identity;
   if (!logoutSession) return;
   disconnectPrivacy(true);
@@ -303,7 +306,7 @@ async function logout() {
     stale(generation); logoutSession = null; authControls(); $('username').focus();
   } catch (err) {
     if (generation !== epoch || err.name === 'AbortError') return;
-    authControls(); showError($('auth-error'), err);
+    authControls({ login: false }); showError($('auth-error'), err); $('retry-logout').focus();
   }
 }
 
@@ -500,7 +503,7 @@ function renderCalendar(days, selected, disabled = false) {
     const cell = button(String(day), [selected === date ? 'sel' : count > 1 ? 'h2' : count ? 'h1' : '', date === today ? 'today' : ''].join(' '),
       () => sidebarFilter({ date: sourceTimeline().values.date === date ? '' : date }));
     cell.disabled = disabled;
-    setAttr(cell, 'aria-label', l("{0} · {1} 条笔记", { 0: date, 1: count }));
+    setAttr(cell, 'aria-label', l("{0}，{1} 条笔记", { 0: date, 1: count }));
     cell.setAttribute('aria-pressed', String(selected === date));
     calendar.append(cell);
   }
@@ -523,7 +526,7 @@ function renderNote(note, detail = false) {
   const actions = [
     [l("编辑"), () => startEdit(note), ''],
     ...(!detail ? [[l("打开笔记"), () => openNote(note), '']] : []),
-    [note.state === 'ARCHIVED' ? l("恢复到主页") : l("归档"), () => changeState(note), ''],
+    [note.state === 'ARCHIVED' ? l("恢复") : l("归档"), () => changeState(note), ''],
     ...(note.state === 'NORMAL' ? [[l("从这条漫步"), () => startFromNote(note), '']] : []),
     [l("删除"), () => confirmDelete(card, note), 'dg'],
   ];
@@ -670,7 +673,6 @@ async function performWrite(note) {
       },
     });
     else if (operation.body.state === 'NORMAL') snackbar(l("笔记已恢复。"));
-    else if (editor) snackbar(l("笔记已保存。"));
     if (editor) { usage('edit', 'success'); usage('save_ack', 'success', performance.now() - started); }
     editor?.draft.clear(); editors.delete(note.name); pendingWrites.delete(note.name); failures.delete(note.name); dirtySnapshots();
     if (timeline) await timeline.update(note.name, updated);
@@ -808,6 +810,7 @@ async function showRoute({ focus = false, returning = false } = {}) {
   shell.closeNavigation();
   timeline?.destroy(); timeline = null;
   settingsPage?.destroy(); settingsPage = null;
+  settingsAccount?.remove(); settingsAccount = null;
   mapPage?.destroy(); mapPage = null;
   discoveryPage?.destroy(); discoveryPage = null;
   cardObserver.disconnect();
@@ -822,7 +825,7 @@ async function showRoute({ focus = false, returning = false } = {}) {
   showError($('list-error'), null); $('composer').hidden = location.pathname !== '/';
   const detail = notePath.exec(location.pathname);
   const title = detail ? l("笔记") : pages.get(location.pathname) || l("页面不存在");
-  setText(document.querySelector('title'), () => `${resolveText(title)} · Moerise`);
+  setText(document.querySelector('title'), () => `${resolveText(title)} - Moerise`);
   setAttr($('main'), 'aria-label', title);
   $('view-title').classList.toggle('sr', location.pathname === '/' || !!detail);
   if (location.pathname === '/' || detail) { setText($('view-title'), title); $('view-title').hidden = false; }
@@ -900,6 +903,11 @@ async function showRoute({ focus = false, returning = false } = {}) {
   } else if (location.pathname === '/settings') {
     setText($('view-title'), l("设置")); $('view-title').hidden = false;
     window.scrollTo(0, 0);
+    const account = settingsAccount = el('section', 'card settings-card settings-account');
+    account.id = 'settings-account';
+    const signOut = button(l("退出登录"), 'ghost', logout); signOut.id = 'logout';
+    account.append(el('span', '', $('account-name').textContent), signOut);
+    $('workspace').append(account);
     const module = await routeModule(() => import('./settings.js'), generation, sequence);
     if (!module) return;
     settingsPage = sessionSettings ||= module.createSettingsPage({
@@ -920,7 +928,7 @@ async function showRoute({ focus = false, returning = false } = {}) {
         }
       },
     });
-    await settingsPage.mount($('workspace'));
+    await settingsPage.mount($('workspace'), account);
   } else {
     setText($('view-title'), pages.get(location.pathname) || l("页面不存在")); $('view-title').hidden = false;
     setText($('capability'), pages.has(location.pathname) ? l("{0}尚未开放。", { 0: pages.get(location.pathname) }) : l("请从侧栏打开主页。"));
@@ -1007,7 +1015,6 @@ $('composer').addEventListener('submit', async event => {
     transfer('success'); usage('create', 'success'); usage('save_ack', 'success', performance.now() - started);
     draft.confirm(attempt); $('content').value = draft.content; dirtySnapshots();
     timeline?.update(note.name, note, true);
-    snackbar(l("笔记已保存。"));
     sidebarChanged(null, note);
     if (returnFocus && [document.body, $('content'), $('save')].includes(document.activeElement) && !$('composer').hidden) $('content').focus({ preventScroll: true });
   } catch (err) {
@@ -1034,8 +1041,7 @@ $('back').addEventListener('click', () => {
   if (routeReturnKey) history.back();
   else navigate(safeFrom(new URLSearchParams(location.search).get('from')));
 });
-$('logout').addEventListener('click', logout);
-bindMenu($('user-menu'), $('account-menu'));
+$('retry-logout').addEventListener('click', logout);
 document.addEventListener('click', event => {
   const link = event.target.closest('a[data-route]');
   if (link && !event.ctrlKey && !event.metaKey && !event.shiftKey && !event.altKey && event.button === 0) {

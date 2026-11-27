@@ -47,6 +47,8 @@ class CoreClient(
     )
 
     private val sessionLock = Mutex()
+    private val attachmentCommitLock = Any()
+    private var attachmentCommitsPaused = false
     private val attachmentDownloads = Semaphore(2)
     private val sessionState = AtomicReference(SessionState())
     private val client = HttpClient(engine) {
@@ -60,7 +62,10 @@ class CoreClient(
         }
     }
 
-    fun bindAccount(accountKey: String) { sessionState.updateAndGet { it.copy(account = accountKey) } }
+    fun bindAccount(accountKey: String) = synchronized(attachmentCommitLock) {
+        sessionState.updateAndGet { it.copy(account = accountKey, generation = if (it.account == accountKey) it.generation else it.generation + 1) }
+        Unit
+    }
     internal val sessionGeneration get() = sessionState.get().generation
     internal fun isSessionCurrent(generation: Long): Boolean =
         sessionState.get().let { it.generation == generation && !it.revoked }
@@ -72,13 +77,37 @@ class CoreClient(
         return current.account ?: session().accountKey(origin)
     }
 
+    internal data class AttachmentAccess(val account: String, val generation: Long)
+
+    internal suspend fun imageExportAccess(note: Note, item: JsonObject): AttachmentAccess {
+        attachmentResource(note, item)
+        require(item in note.attachments && item["type"]?.jsonPrimitive?.content?.matches(imageMimeType) == true)
+        val account = attachmentAccount()
+        val generation = sessionGeneration
+        return withAttachmentAccess(AttachmentAccess(account, generation)) {
+            require(account.split('\u0000', limit = 3).getOrNull(1) == note.instanceId)
+            AttachmentAccess(account, generation)
+        }
+    }
+
+    internal fun <T> withAttachmentAccess(access: AttachmentAccess, action: () -> T): T = synchronized(attachmentCommitLock) {
+        val current = sessionState.get()
+        if (attachmentCommitsPaused || current.revoked || current.generation != access.generation || current.account != access.account)
+            throw CancellationException("Attachment session changed")
+        action()
+    }
+
+    internal fun pauseAttachmentCommits() = synchronized(attachmentCommitLock) { attachmentCommitsPaused = true }
+
     private suspend fun invalidateSession() {
         val previous = revokeLocalSession()
         previous.account?.let { onUnauthorized(it) }
     }
 
-    private fun revokeLocalSession(clearAccount: Boolean = false) = sessionState.getAndUpdate {
-        it.copy(account = if (clearAccount) null else it.account, identity = null, generation = it.generation + 1, revoked = true)
+    private fun revokeLocalSession(clearAccount: Boolean = false) = synchronized(attachmentCommitLock) {
+        sessionState.getAndUpdate {
+            it.copy(account = if (clearAccount) null else it.account, identity = null, generation = it.generation + 1, revoked = true)
+        }
     }
 
     private fun sessionUnauthorized() = CoreException(401, ApiError("SESSION_UNAUTHORIZED"))
@@ -93,7 +122,10 @@ class CoreClient(
         val body = buildJsonObject { put("username", username); put("password", password) }.toString()
         val next = CoreJson.decodeFromString<SessionIdentity>(send(HttpMethod.Post, "/session", body))
         require(next.csrfToken.isNotBlank() && next.instanceId.isNotBlank() && next.user.name.isNotBlank())
-        if (!sessionState.compareAndSet(before, before.copy(account = next.accountKey(origin), identity = next, revoked = false)))
+        if (!synchronized(attachmentCommitLock) {
+                sessionState.compareAndSet(before, before.copy(account = next.accountKey(origin), identity = next,
+                    generation = before.generation + 1, revoked = false))
+            })
             throw sessionUnauthorized()
         next
     }
@@ -142,7 +174,8 @@ class CoreClient(
             invalidateSession()
             throw IdentityChangedException()
         }
-        if (!sessionState.compareAndSet(before, before.copy(account = key, identity = next))) throw sessionUnauthorized()
+        if (!synchronized(attachmentCommitLock) { sessionState.compareAndSet(before, before.copy(account = key, identity = next)) })
+            throw sessionUnauthorized()
         return next
     }
 
@@ -184,16 +217,21 @@ class CoreClient(
         }
     }
 
+    private fun attachmentResource(note: Note, attachment: JsonObject): String {
+        require(noteResource.matches(note.name))
+        val name = attachment["name"]?.jsonPrimitive?.content ?: error("INVALID_ATTACHMENT")
+        require(attachmentResourceName.matches(name) &&
+            note.attachments.any { it["name"]?.jsonPrimitive?.content == name })
+        return name
+    }
+
     suspend fun downloadAttachment(
         note: Note,
         attachment: JsonObject,
         maximumBytes: Long = 128L * 1024 * 1024,
         onChunk: suspend (ByteArray, Int) -> Unit,
     ) = attachmentDownloads.withPermit {
-        require(Regex("^memos/[A-Za-z0-9_-]+$").matches(note.name))
-        val name = attachment["name"]?.jsonPrimitive?.content ?: error("INVALID_ATTACHMENT")
-        require(Regex("^attachments/[A-Za-z0-9_-]+$").matches(name) &&
-            note.attachments.any { it["name"]?.jsonPrimitive?.content == name })
+        val name = attachmentResource(note, attachment)
         val current = sessionLock.withLock { sessionState.get().identity ?: refreshSession() }
         require(note.instanceId == current.instanceId)
         val path = "/notes/${note.name.removePrefix("memos/")}/attachments/${name.removePrefix("attachments/")}/content"
@@ -302,4 +340,10 @@ class CoreClient(
     }
 
     override fun close() { revokeLocalSession(clearAccount = true); client.close() }
+
+    private companion object {
+        val noteResource = Regex("^memos/[A-Za-z0-9_-]+$")
+        val attachmentResourceName = Regex("^attachments/[A-Za-z0-9_-]+$")
+        val imageMimeType = Regex("^image/[a-z0-9!#&^_.+-]+$")
+    }
 }

@@ -2,7 +2,6 @@ package io.github.fermin214.moerise.presentation
 
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
@@ -35,6 +34,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.withLink
 import com.mikepenz.markdown.compose.components.markdownComponents
 import com.mikepenz.markdown.m3.Markdown
+import com.mikepenz.markdown.m3.markdownColor
 import com.mikepenz.markdown.m3.markdownTypography
 import com.mikepenz.markdown.model.*
 import com.mikepenz.markdown.model.State as MdState
@@ -71,10 +71,9 @@ fun NoteTags(tags: List<String>, modifier: Modifier = Modifier, onTag: ((String)
     FlowRow(modifier, horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
         tags.distinct().forEach { tag ->
             if (onTag != null) WebTag(tag, { onTag(tag) })
-            else Surface(color = MoeriseColors.TagSurface, shape = RoundedCornerShape(50),
-                border = BorderStroke(1.dp, MoeriseColors.TagLine)) {
-                Text("#${tag.removePrefix("#")}", fontSize = 13.sp, lineHeight = 22.sp,
-                    color = Color(0xFF2A5BB5), modifier = Modifier.padding(horizontal = 9.dp))
+            else Surface(color = MoeriseColors.AccentSurface, shape = RoundedCornerShape(6.dp)) {
+                Text("#${tag.removePrefix("#")}", style = MaterialTheme.typography.bodySmall,
+                    color = MoeriseColors.Accent, modifier = Modifier.padding(horizontal = 8.dp, vertical = 1.dp))
             }
         }
     }
@@ -207,7 +206,7 @@ fun MarkdownBody(content: String, modifier: Modifier = Modifier, note: Note? = n
     } else null
     val renderedSpans = asynchronousSpans?.value ?: immediateSpans
     val annotator = remember(note, renderedSpans, onTag != null) {
-        val tagStyle = SpanStyle(color = Color(0xFF2A5BB5))
+        val tagStyle = SpanStyle(color = MoeriseColors.Accent)
         markdownAnnotator(markdownAnnotatorConfig(eolAsNewLine = true)) { text, child ->
             when {
                 child.type == MarkdownTokenTypes.TEXT && renderedSpans[text]?.isNotEmpty() == true -> {
@@ -246,16 +245,18 @@ fun MarkdownBody(content: String, modifier: Modifier = Modifier, note: Note? = n
         }
     }
     val body = MaterialTheme.typography.bodyLarge
-    val heading = body.copy(fontSize = 18.4.sp, lineHeight = 27.6.sp, fontWeight = FontWeight.Bold)
+    val heading = MaterialTheme.typography.titleMedium
+    val minorHeading = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold)
+    val colors = markdownColor(inlineCodeBackground = Color.Transparent, codeBackground = MoeriseColors.SurfaceMuted)
     val typography = markdownTypography(
-        h1 = heading.copy(fontSize = 21.6.sp, lineHeight = 32.4.sp),
+        h1 = MaterialTheme.typography.titleLarge,
         h2 = heading, h3 = heading, h4 = heading,
-        h5 = body.copy(fontWeight = FontWeight.Bold),
-        h6 = body.copy(fontWeight = FontWeight.Bold),
+        h5 = minorHeading,
+        h6 = minorHeading,
         text = body, paragraph = body, quote = body.copy(color = MoeriseColors.Muted),
         list = body, ordered = body, bullet = body,
-        code = body.copy(fontFamily = FontFamily.Monospace, fontSize = 13.sp, lineHeight = 20.8.sp),
-        inlineCode = body.copy(fontFamily = FontFamily.Monospace, fontSize = 13.sp),
+        code = body.copy(fontFamily = FontFamily.Monospace, fontSize = 13.sp, lineHeight = 19.5.sp),
+        inlineCode = body.copy(fontFamily = FontFamily.Monospace, fontSize = 13.sp, color = MoeriseColors.Accent),
         table = body,
     )
     val animations = markdownAnimations(animateTextSize = { this })
@@ -282,7 +283,7 @@ fun MarkdownBody(content: String, modifier: Modifier = Modifier, note: Note? = n
     var retainedTail by remember(originalContent) { mutableStateOf<MdState.Success?>(null) }
     CompositionLocalProvider(LocalUriHandler provides safeUri) {
         Column(modifier.then(if (attachments.isEmpty()) Modifier else Modifier.onSizeChanged { markdownWidth = it.width }),
-            verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            verticalArrangement = Arrangement.spacedBy(6.dp)) {
             for (index in 0 until blocks.lastIndex) {
                 val block = blocks[index]
                 key(defBlocks, index) {
@@ -298,6 +299,7 @@ fun MarkdownBody(content: String, modifier: Modifier = Modifier, note: Note? = n
                             inlineContent = inlineContent,
                             annotator = annotator,
                             typography = typography,
+                            colors = colors,
                             components = components,
                             animations = animations,
                         )
@@ -344,6 +346,7 @@ fun MarkdownBody(content: String, modifier: Modifier = Modifier, note: Note? = n
                         inlineContent = inlineContent,
                         annotator = annotator,
                         typography = typography,
+                        colors = colors,
                         components = components,
                         animations = animations,
                     )

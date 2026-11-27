@@ -249,11 +249,12 @@ test('long timeline notes fold by height and collapse beneath the mobile sticky 
   await page.goto(url); await login(page);
   const card = page.locator('#notes [data-name="memos/n09"]');
   const preview = card.locator('.note-fold-body');
-  const expand = card.getByRole('button', { name: '展开全文', exact: true });
+  const expand = card.getByRole('button', { name: '展开', exact: true });
   const collapse = card.getByRole('button', { name: '收起', exact: true });
   await expand.waitFor();
   assert.equal(await preview.evaluate(element => element.offsetHeight), 260);
-  assert.equal(await card.locator('.attachment-list a').count(), 4);
+  assert.equal(await preview.locator('.attachment-list a').count(), 4);
+  assert.equal(await preview.locator('.note-tags').count(), 1);
   await expand.click();
   assert.ok(await preview.evaluate(element => element.offsetHeight) > 380);
   await page.evaluate(() => scrollTo(0, 0));
@@ -334,7 +335,7 @@ test('large tag lists share sidebar scrolling and reveal account controls on upw
       assert.equal(await page.locator('#tags').evaluate(node => node.scrollTop), 0);
       assert.ok((await page.locator('#account').boundingBox()).y > viewport.height - 140);
       if (language === 'en') {
-        assert.equal(await page.locator('#account a[href="/settings"]').innerText(), 'Settings');
+        assert.equal(await page.locator('#account-settings').getAttribute('aria-label'), 'Settings');
         assert.equal(await page.locator('#account').evaluate(node => getComputedStyle(node).transitionDuration), '0s');
       }
 
@@ -362,7 +363,7 @@ test('large tag lists share sidebar scrolling and reveal account controls on upw
       await accountVisible(true);
       await page.locator('#tags button').last().focus();
       await page.keyboard.press('Tab');
-      assert.equal(await page.locator('#account a[href="/settings"]').evaluate(node => node === document.activeElement), true);
+      assert.equal(await page.locator('#account-settings').evaluate(node => node === document.activeElement), true);
       await accountVisible(false);
       assert.equal(await page.locator('.sidebar-content').evaluate(node => node.scrollTop), 0);
       await page.keyboard.press('Shift+Tab');
@@ -371,11 +372,7 @@ test('large tag lists share sidebar scrolling and reveal account controls on upw
       assert.ok(focusedTag.y + focusedTag.height <= (await page.locator('#account').boundingBox()).y);
       await page.keyboard.press('Tab');
       await page.keyboard.press('Tab');
-      assert.equal(await page.locator('#user-menu').evaluate(node => node === document.activeElement), true);
-      await page.keyboard.press('Enter');
-      await page.locator('#account-menu').waitFor({ state: 'visible' });
-      await page.keyboard.press('Escape');
-      assert.equal(await page.locator('#user-menu').evaluate(node => node === document.activeElement), true);
+      assert.equal(await page.locator('#sync-trigger').evaluate(node => node === document.activeElement), true);
 
       await page.locator('#tags button').last().focus();
       await page.keyboard.press('Control+Home');
@@ -494,7 +491,7 @@ test('mobile navigation, touch gestures, search and rotation preserve drafts and
   await page.locator('#calendar').waitFor({ state: 'visible' });
   await drawer.evaluate(node => Promise.all(node.getAnimations().map(animation => animation.finished)));
   await screenshot(page, 'navigation-mobile.png');
-  await page.locator('#user-menu').focus();
+  await page.locator('#account-settings').focus();
   await page.keyboard.press('Tab');
   assert.equal(await page.evaluate(() => document.activeElement === document.body ||
     document.querySelector('#navigation-dialog').contains(document.activeElement)), true);
@@ -575,8 +572,8 @@ test('mobile navigation, touch gestures, search and rotation preserve drafts and
   }
   await screenshot(page, 'home-landscape.png');
   await toggle.tap();
-  await page.locator('#user-menu').scrollIntoViewIfNeeded();
-  assert.ok((await page.locator('#user-menu').boundingBox()).y < 430);
+  await page.locator('#account-settings').scrollIntoViewIfNeeded();
+  assert.ok((await page.locator('#account-settings').boundingBox()).y < 430);
   await page.getByRole('button', { name: 'Close navigation', exact: true }).tap();
   await page.setViewportSize({ width: 1280, height: 900 });
   await search.waitFor({ state: 'visible' });
@@ -614,7 +611,7 @@ test('mobile sync conflict has one cloud status and a distinct sidebar action', 
   const statusPath = await conflict.locator('path').getAttribute('d');
 
   await page.locator('#navigation-toggle').tap();
-  const action = page.getByRole('button', { name: '同步笔记', exact: true });
+  const action = page.locator('#sync-trigger');
   await action.waitFor();
   assert.notEqual(await action.locator('path').getAttribute('d'), statusPath);
   assert.equal(await action.locator('svg').getAttribute('aria-hidden'), 'true');
@@ -663,7 +660,7 @@ test('search composition, menu keyboard, route focus and refresh protection pres
   const reload = page.reload({ timeout: 1500 }).catch(() => {});
   await rejected; await reload;
   assert.equal(await page.locator('#content').inputValue(), '刷新保护正文');
-  await page.locator('#user-menu').click(); await page.locator('#logout').click();
+  await page.locator('#account-settings').click(); await page.locator('#logout').click();
   await page.getByRole('button', { name: '继续编辑', exact: true }).click();
   assert.equal(state.session, true);
   assert.equal(await page.locator('#content').inputValue(), '刷新保护正文');
@@ -801,10 +798,9 @@ test('browser timeline management, attachment retries, history, conflicts and pr
   await page.locator('[data-name="memos/n00"] .note-content', { hasText: '外部修改' }).waitFor();
   await menu(page, 'n00', '归档');
   await page.locator('[data-name="memos/n00"]').waitFor({ state: 'detached' });
-  await page.getByRole('button', { name: '用户菜单' }).click();
   await page.locator('a[href="/archived"]').click();
   await page.locator('[data-name="memos/n00"]').waitFor();
-  await menu(page, 'n00', '恢复到主页');
+  await menu(page, 'n00', '恢复');
   await page.locator('[data-name="memos/n00"]').waitFor({ state: 'detached' });
   await page.locator('a[href="/"]').click();
   await page.locator('[data-name="memos/n00"]').waitFor();
@@ -853,7 +849,7 @@ test('browser timeline management, attachment retries, history, conflicts and pr
   await page.locator('#content').fill('退出应清理的草稿');
   await page.locator('#attachment-input').setInputFiles({ name: 'private.txt', mimeType: 'text/plain', buffer: Buffer.from('private') });
   await page.locator('#navigation-toggle').click();
-  await page.locator('#user-menu').click();
+  await page.locator('#account-settings').click();
   await page.locator('#logout').click();
   await page.getByRole('button', { name: '放弃修改', exact: true }).click();
   await page.locator('#login-form').waitFor({ state: 'visible' });
@@ -861,6 +857,8 @@ test('browser timeline management, attachment retries, history, conflicts and pr
   assert.equal(await page.locator('#content').inputValue(), '');
   assert.equal(await page.locator('#draft-attachments').textContent(), '');
   await login(page);
+  await page.locator('#navigation-toggle').click();
+  await page.locator('nav a[href="/"]').click();
   await page.locator('[data-name="memos/n00"]').waitFor();
   assert.equal(await page.locator('#draft-attachments').textContent(), '');
   assert.deepEqual(await page.evaluate(() => [...Object.keys(localStorage), ...Object.keys(sessionStorage)]), ['moerise.privacy.v1']);
@@ -885,7 +883,6 @@ test('late list and file reads cannot restore private data or overwrite a newer 
   await page.locator('#q').fill('slow');
   await page.locator('#q').press('Enter');
   await hasRequest;
-  await page.getByRole('button', { name: '用户菜单' }).click();
   await page.locator('a[href="/archived"]').click();
   await page.locator('[data-name="memos/old"]').waitFor();
   release();
@@ -901,12 +898,13 @@ test('late list and file reads cannot restore private data or overwrite a newer 
     };
   });
   await page.locator('#attachment-input').setInputFiles({ name: 'late.txt', mimeType: 'text/plain', buffer: Buffer.from('private late bytes') });
-  await page.locator('#user-menu').click();
+  await page.locator('#account-settings').click();
   await page.locator('#logout').click();
   await page.getByRole('button', { name: '放弃修改', exact: true }).click();
   await page.locator('#login-form').waitFor({ state: 'visible' });
   await page.evaluate(() => { globalThis.releaseFile(); File.prototype.arrayBuffer = globalThis.originalRead; });
   await login(page);
+  await page.locator('nav a[href="/"]').click();
   await page.locator('[data-name="memos/n00"]').waitFor();
   assert.equal(await page.locator('#draft-attachments').textContent(), '');
   assert.equal(await page.locator('#content').inputValue(), '');
@@ -1138,7 +1136,7 @@ test('sidebar background refresh preserves tags and calendar through slow reques
   await page.locator('#tags button', { hasText: '#后台标签' }).waitFor();
   assert.equal(await page.locator('#tags button.on').count(), 1);
   const normalCount = [...state.notes.values()].filter(note => note.state === 'NORMAL').length;
-  assert.equal(await page.locator('#calendar .h2').getAttribute('aria-label'), `2026-10-29 · ${normalCount} 条笔记`);
+  assert.equal(await page.locator('#calendar .h2').getAttribute('aria-label'), `2026-10-29，${normalCount} 条笔记`);
   displayed = await snapshot();
   delayed = new Promise(resolve => { release = resolve; }); fail = true;
   await page.clock.setFixedTime(new Date('2026-10-30T04:02:02Z'));
@@ -1156,7 +1154,7 @@ test('sidebar background refresh preserves tags and calendar through slow reques
   await page.locator('#tags button.on').waitFor();
   assert.equal(requests.length, 6);
   assert.deepEqual(await page.locator('.app, .side, #account').evaluateAll(nodes =>
-    nodes.map(node => getComputedStyle(node).backgroundColor)), Array(3).fill('rgb(247, 249, 252)'));
+    nodes.map(node => getComputedStyle(node).backgroundColor)), Array(3).fill('rgb(245, 244, 240)'));
   assert.deepEqual(errors, []);
 });
 

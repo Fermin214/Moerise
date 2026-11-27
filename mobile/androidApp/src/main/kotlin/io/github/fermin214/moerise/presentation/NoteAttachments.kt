@@ -1,6 +1,7 @@
 package io.github.fermin214.moerise.presentation
 
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -10,6 +11,7 @@ import androidx.compose.foundation.gestures.transformable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -34,6 +36,9 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import io.github.fermin214.moerise.data.CoreClient
 import io.github.fermin214.moerise.domain.Note
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.launch
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonPrimitive
 
@@ -67,19 +72,19 @@ internal fun ProtectedAttachmentImage(note: Note, item: JsonObject, core: CoreCl
     modifier: Modifier = Modifier, square: Boolean = false, onRatio: ((Float) -> Unit)? = null) {
     val context = LocalContext.current.applicationContext
     val epoch by ProtectedImageCache.epoch.collectAsState()
-    key(epoch, core, item["name"], item["content_url"]) {
+    key(epoch, core, note.name, item["name"], item["content_url"]) {
         var retry by remember { mutableIntStateOf(0) }
         var preview by remember { mutableStateOf(false) }
         var visible by remember { mutableStateOf(false) }
         var result by remember {
-            mutableStateOf<ProtectedImageResult?>(ProtectedImageCache.peek(core, item, epoch)?.let { ProtectedImageResult.Loaded(it) })
+            mutableStateOf<ProtectedImageResult?>(ProtectedImageCache.peek(core, note, item, epoch)?.let { ProtectedImageResult.Loaded(it) })
         }
         LaunchedEffect(visible, retry) {
             if (visible && result !is ProtectedImageResult.Loaded) {
                 result = ProtectedImageCache.load(context, core, note, item, epoch)
             }
         }
-        val shape = RoundedCornerShape(10.dp)
+        val shape = RoundedCornerShape(8.dp)
         val width = modifier.widthIn(max = 320.dp)
         val filename = item["filename"]?.jsonPrimitive?.content ?: strings.text("图片", "Image")
         val externalLabel = strings.text("外部打开", "Open externally")
@@ -89,7 +94,7 @@ internal fun ProtectedAttachmentImage(note: Note, item: JsonObject, core: CoreCl
                 Column(Modifier.padding(6.dp)) {
                     Text(filename, Modifier.padding(horizontal = 6.dp), color = MoeriseColors.Muted,
                         maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 13.sp)
-                    OpenAttachmentButton(note, item, core, strings, externalLabel)
+                    if (image.external) OpenAttachmentButton(note, item, core, strings, externalLabel)
                     if (image.retryable) TextButton(onClick = { result = null; retry++ }) { Text(strings.text("重试", "Retry")) }
                 }
             }
@@ -117,20 +122,51 @@ internal fun ProtectedAttachmentImage(note: Note, item: JsonObject, core: CoreCl
 @Composable
 private fun ImagePreviewDialog(bitmap: ImageBitmap, filename: String, note: Note, item: JsonObject, core: CoreClient,
     strings: Strings, close: () -> Unit) {
-    Dialog(close, properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) {
+    var menu by remember { mutableStateOf(false) }
+    Dialog({ if (menu) menu = false else close() }, properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) {
+        val context = LocalContext.current.applicationContext
+        val scope = rememberCoroutineScope()
+        val haptic = rememberMoeriseHaptic()
+        val saveLabel = strings.text("保存到相册", "Save to gallery")
+        var saving by remember { mutableStateOf(false) }
+        var feedback by remember { mutableStateOf<Boolean?>(null) }
+        LaunchedEffect(feedback) { if (feedback != null) { delay(3_000); feedback = null } }
+        fun save() {
+            if (saving) return
+            saving = true
+            menu = false
+            feedback = null
+            scope.launch {
+                try {
+                    saveImageToGallery(context, note, item, core)
+                    feedback = true
+                    haptic()
+                } catch (failure: Exception) {
+                    coroutineContext.ensureActive()
+                    feedback = false
+                } finally { saving = false }
+            }
+        }
         var zoom by remember { mutableFloatStateOf(1f) }
         var pan by remember { mutableStateOf(Offset.Zero) }
+        val imageSize = remember { mutableStateOf(Offset.Zero) }
+        fun boundPan(value: Offset): Offset {
+            val horizontal = imageSize.value.x * (zoom - 1f) / 2
+            val vertical = imageSize.value.y * (zoom - 1f) / 2
+            return Offset(value.x.coerceIn(-horizontal, horizontal), value.y.coerceIn(-vertical, vertical))
+        }
         val transforms = rememberTransformableState { scale, move, _ ->
             zoom = (zoom * scale).coerceIn(1f, 4f)
-            pan = if (zoom == 1f) Offset.Zero else pan + move
+            pan = boundPan(pan + move)
         }
-        BoxWithConstraints(Modifier.fillMaxSize().background(Color.Black.copy(alpha = .92f))
-            .pointerInput(close) { detectTapGestures(onTap = { close() }) }.safeDrawingPadding()) {
+        val dismiss by rememberUpdatedState { if (menu) menu = false else close() }
+        BoxWithConstraints(Modifier.fillMaxSize().background(Color.Black.copy(alpha = .94f))
+            .pointerInput(Unit) { detectTapGestures(onTap = { dismiss() }) }.safeDrawingPadding()) {
             val ratio = bitmap.width.toFloat() / bitmap.height
-            val maxImageHeight = (maxHeight - 56.dp).coerceAtLeast(1.dp)
-            val imageWidth = minOf(maxWidth, maxImageHeight * ratio)
+            val imageWidth = minOf(maxWidth, maxHeight * ratio)
             Image(bitmap, filename, Modifier.align(Alignment.Center)
                 .size(imageWidth, imageWidth / ratio)
+                .onGloballyPositioned { imageSize.value = Offset(it.size.width.toFloat(), it.size.height.toFloat()) }
                 .graphicsLayer {
                     scaleX = zoom
                     scaleY = zoom
@@ -141,16 +177,33 @@ private fun ImagePreviewDialog(bitmap: ImageBitmap, filename: String, note: Note
                 }
                 .transformable(transforms)
                 .pointerInput(Unit) {
-                    detectTapGestures(onTap = {}, onDoubleTap = {
+                    detectTapGestures(onTap = { dismiss() }, onLongPress = { if (!saving) { haptic(); menu = true } }, onDoubleTap = {
                         zoom = if (zoom == 1f) 2.5f else 1f
                         pan = Offset.Zero
                     })
                 }.testTag("attachment_preview"), contentScale = ContentScale.Fit)
-            Surface(Modifier.align(Alignment.TopCenter).fillMaxWidth(), color = Color(0xE6222222), contentColor = Color.White) {
-                Row(Modifier.padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                    IconButton(onClick = close) { WebIcon(WebIcon.Close, strings.text("关闭图片", "Close image"), tint = Color.White) }
-                    Text(filename, Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    OpenAttachmentButton(note, item, core, strings, strings.text("外部打开", "Open externally"), textColor = Color.White)
+            IconButton(onClick = close, modifier = Modifier.align(Alignment.TopEnd).padding(8.dp)
+                .background(Color.Black.copy(alpha = .45f), CircleShape)) {
+                WebIcon(WebIcon.Close, strings.text("关闭图片", "Close image"), tint = Color.White)
+            }
+            IconButton(onClick = ::save, enabled = !saving, modifier = Modifier.align(Alignment.BottomEnd).padding(8.dp)
+                .background(Color.Black.copy(alpha = .45f), CircleShape).testTag("attachment_save")) {
+                WebIcon(WebIcon.Download, saveLabel, tint = Color.White.copy(alpha = if (saving) .55f else 1f))
+            }
+            if (saving) LinearProgressIndicator(Modifier.align(Alignment.BottomCenter).fillMaxWidth())
+            feedback?.let { success ->
+                Surface(Modifier.align(Alignment.BottomCenter).padding(bottom = 58.dp, start = 16.dp, end = 16.dp),
+                    color = MoeriseColors.Surface, shape = RoundedCornerShape(12.dp)) {
+                    Text(if (success) strings.text("已保存到相册", "Saved to gallery")
+                        else strings.text("保存失败，请重试。", "Could not save. Try again."),
+                        Modifier.padding(horizontal = 14.dp, vertical = 10.dp).testTag("attachment_save_feedback"))
+                }
+            }
+            if (menu) Surface(Modifier.align(Alignment.BottomCenter).fillMaxWidth().padding(8.dp),
+                color = MoeriseColors.Surface, shape = RoundedCornerShape(12.dp)) {
+                Column(Modifier.fillMaxWidth().padding(4.dp)) {
+                    TextButton(onClick = ::save, enabled = !saving, modifier = Modifier.fillMaxWidth()) { Text(saveLabel) }
+                    TextButton(onClick = { menu = false }, modifier = Modifier.fillMaxWidth()) { Text(strings.text("取消", "Cancel")) }
                 }
             }
         }

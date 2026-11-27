@@ -421,7 +421,6 @@ class MobileController(
                     mutableComposerOpen.value = false
                     if (draft?.targetName == null && draft != null) mutableNewTimelineKey.value = "queued:${draft.id}"
                     sync.request(SyncTrigger.ENQUEUED)
-                    notice("NOTE_SAVED")
                     onResult(SaveOutcome.COMMITTED)
                     onQueueChanged()
                 } else onResult(SaveOutcome.NOT_COMMITTED)
@@ -435,7 +434,6 @@ class MobileController(
                 val active = getNoteEditor(key) ?: return@withLock
                 if (enqueue(active, false)) {
                     sync.request(SyncTrigger.ENQUEUED)
-                    notice("NOTE_SAVED")
                     removeEditor(active, persist = false)
                     mutableLocalError.value = null
                     onQueueChanged()

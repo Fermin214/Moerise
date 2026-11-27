@@ -55,22 +55,22 @@ fun WebSidebar(
                     }
                 }
                 Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    Text(strings.text("标签", "Tags"), fontSize = 12.sp, color = MoeriseColors.Muted,
+                    Text(strings.text("标签", "Tags"), fontSize = 13.sp, color = MoeriseColors.Muted,
                         modifier = Modifier.padding(start = 10.dp))
                     filters.tags.sortedWith(compareByDescending<TagCount> { it.tag in selectedTags }.thenByDescending { it.count }).forEach { tag ->
                         Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp))
-                            .background(if (tag.tag in selectedTags) MoeriseColors.Selected else Color.Transparent)
+                            .background(if (tag.tag in selectedTags) MoeriseColors.AccentSurface else Color.Transparent)
                             .clickable(role = Role.Button) { onTag(tag.tag) }.heightIn(min = 44.dp).padding(horizontal = 10.dp),
                             verticalAlignment = Alignment.CenterVertically) {
                             Text("#${tag.tag.removePrefix("#")}", fontSize = 13.sp,
                                 modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
-                            Text(tag.count.toString(), fontSize = 12.sp, color = MoeriseColors.Muted)
+                            Text(tag.count.toString(), fontSize = 13.sp, color = MoeriseColors.Muted)
                         }
                     }
                     if (filters.filtersLoading && filters.tags.isEmpty()) LinearProgressIndicator(
                         Modifier.fillMaxWidth().padding(horizontal = 10.dp).height(2.dp))
                     filters.filtersError?.let {
-                        Text(searchError(it, strings), fontSize = 12.sp, color = MaterialTheme.colorScheme.error,
+                        Text(searchError(it, strings), fontSize = 13.sp, color = MaterialTheme.colorScheme.error,
                             modifier = Modifier.padding(horizontal = 10.dp))
                     }
                 }
@@ -80,13 +80,13 @@ fun WebSidebar(
                 val settings = strings.text("设置", "Settings")
                 Row(Modifier.padding(top = 8.dp).testTag("nav_settings").fillMaxWidth()
                     .clip(RoundedCornerShape(10.dp))
-                    .background(if (page == "settings") MoeriseColors.Selected else Color.Transparent)
+                    .background(if (page == "settings") MoeriseColors.AccentSurface else Color.Transparent)
                     .clickable(role = Role.Button, onClickLabel = settings) { onNavigate("settings") }
                     .semantics { contentDescription = settings; selected = page == "settings" }
                     .heightIn(min = 44.dp).padding(horizontal = 10.dp),
                     verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     WebIcon(WebIcon.User)
-                    Text(userName.removePrefix("users/"), fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                    Text(userName.removePrefix("users/"), fontSize = 15.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.weight(1f))
                     WebIcon(WebIcon.Settings)
                 }
@@ -146,12 +146,12 @@ private fun SidebarEntry(
     label: String, icon: WebIcon, selected: Boolean, modifier: Modifier = Modifier, onClick: () -> Unit,
 ) {
     Row(modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp))
-        .background(if (selected) MoeriseColors.Selected else Color.Transparent)
+        .background(if (selected) MoeriseColors.AccentSurface else Color.Transparent)
         .clickable(role = Role.Button, onClick = onClick).heightIn(min = 44.dp).padding(horizontal = 10.dp),
         verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-        val color = if (selected) MoeriseColors.Blue else Color(0xFF3A4049)
+        val color = if (selected) MoeriseColors.Accent else MoeriseColors.Ink
         WebIcon(icon, tint = color)
-        Text(label, fontSize = 14.sp, fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal, color = color)
+        Text(label, fontSize = 15.sp, fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal, color = color)
     }
 }
 
@@ -177,7 +177,7 @@ private fun SidebarCalendar(
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(3.dp)) {
             strings.text("一,二,三,四,五,六,日", "M,T,W,T,F,S,S").split(',').forEach {
                 Box(Modifier.weight(1f).height(18.dp), contentAlignment = Alignment.Center) {
-                    Text(it, fontSize = 11.sp, color = Color(0xFF8A909A), lineHeight = 18.sp)
+                    Text(it, fontSize = 13.sp, color = MoeriseColors.Muted, lineHeight = 18.sp)
                 }
             }
         }
@@ -195,12 +195,12 @@ private fun SidebarCalendar(
                         contentDescription = "$date, $count " + strings.text("条笔记", "notes")
                     } else Modifier),
                     shape = RoundedCornerShape(6.dp),
-                    border = if (valid && date == today) BorderStroke(1.dp, Color(0xFF5B8DEF)) else null,
-                    color = if (selectedDate == date) MoeriseColors.Blue else if (count > 1) Color(0xFFA9C4F0)
-                        else if (count > 0) MoeriseColors.BlueSurface else Color.Transparent) {
+                    border = if (valid && date == today) BorderStroke(1.dp, MoeriseColors.Accent) else null,
+                    color = if (selectedDate == date) MoeriseColors.Accent else if (count > 1) MoeriseColors.HeatmapMedium
+                        else if (count > 0) MoeriseColors.AccentSurface else Color.Transparent) {
                     Box(contentAlignment = Alignment.Center) {
-                        if (valid) Text(day.toString(), fontSize = 11.sp,
-                            color = if (selectedDate == date) Color.White else if (count > 0) MoeriseColors.Blue else Color(0xFF8A909A),
+                        if (valid) Text(day.toString(), fontSize = 13.sp,
+                            color = if (selectedDate == date) Color.White else if (count > 0) MoeriseColors.Accent else MoeriseColors.Muted,
                             fontWeight = if (date == today) FontWeight.Bold else FontWeight.Normal)
                     }
                 }

@@ -333,7 +333,7 @@ try {
     await api('DELETE', '/session', undefined, 204);
     await request(url, '/api/app/v1/reviews/daily', { headers: { Cookie: oldCookie } }, 401);
     await page.locator('#navigation-toggle').click();
-    await page.locator('#user-menu').click(); await page.locator('#logout').click();
+    await page.locator('#account-settings').click(); await page.locator('#logout').click();
     await page.locator('#login-form').waitFor({ state: 'visible' });
     assert.equal(await page.locator('#discovery-page').count(), 0);
   });

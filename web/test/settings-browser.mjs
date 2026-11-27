@@ -167,6 +167,33 @@ const operation = (page, label) => dialog(page).getByRole('combobox', { name: `$
 const newSecret = (page, label) => dialog(page).getByLabel(`${label}新值`, { exact: true });
 const confirmation = (page, text) => page.locator('.snackbar').getByText(text, { exact: true }).waitFor();
 
+test('first offline settings visit offers logout and retries without restoring private content', async t => {
+  const { page, state, url } = await fixture(t);
+  await login(page, url, '/');
+  await page.locator('#empty').waitFor();
+  await page.context().setOffline(true);
+  await page.locator('#account-settings').click();
+  await page.locator('#logout').click();
+  await page.locator('#retry-logout').waitFor();
+  assert.equal(await page.locator('#app').isHidden(), true);
+  assert.equal(state.session, true);
+  await page.context().setOffline(false);
+  await page.locator('#retry-logout').click();
+  await page.locator('#login-form').waitFor();
+  assert.equal(state.session, false);
+});
+
+test('settings request failure leaves the account and logout usable', async t => {
+  const { page, state, url } = await fixture(t);
+  await page.route('**/api/app/v1/settings', route => route.fulfill({ status: 500, json: { error: { code: 'HTTP_500' } } }));
+  await login(page, url);
+  await page.locator('#settings-page').getByRole('alert').waitFor();
+  await page.locator('#settings-account').getByText('设置测试').waitFor();
+  await page.locator('#logout').click();
+  await page.locator('#login-form').waitFor();
+  assert.equal(state.session, false);
+});
+
 for (const language of ['zh-CN', 'en-US']) for (const mobile of [false, true]) {
   test(`stargazing is atomic and independent of embeddings (${language}, ${mobile ? 'mobile' : 'desktop'})`, async t => {
     const { page, state, url, errors } = await fixture(t, { language, mobile });
@@ -361,11 +388,11 @@ test('leaving settings during a read discards the old response', async t => {
   let release;
   state.hold = new Promise(resolve => { release = resolve; });
   const reading = page.waitForRequest('**/api/app/v1/settings');
-  await page.locator('a[data-route][href="/settings"]').click(); await reading;
+  await page.locator('#account-settings').click(); await reading;
   await page.locator('nav a[href="/"]').click(); release(); state.hold = null;
   await page.locator('#empty').waitFor();
   assert.equal(await page.locator('#settings-page').count(), 0);
-  await page.locator('a[data-route][href="/settings"]').click(); await tabs(page).waitFor();
+  await page.locator('#account-settings').click(); await tabs(page).waitFor();
   assert.deepEqual(errors, []);
 });
 
@@ -469,8 +496,8 @@ test('manual refresh waits for a successful notes read and safely handles naviga
   await trigger.click();
   await page.locator('#list-error').waitFor();
   assert.equal(await page.locator('#sync-status').getAttribute('data-sync'), 'failure');
-  await page.locator('a[data-route][href="/settings"]').click();
-  const sync = page.getByRole('button', { name: '立即同步' });
+  await page.locator('#account-settings').click();
+  const sync = page.locator('#settings-panel-general').getByRole('button', { name: '同步' });
   state.notesFail = null;
   let release;
   state.holdNotes = new Promise(resolve => { release = resolve; });
@@ -480,7 +507,7 @@ test('manual refresh waits for a successful notes read and safely handles naviga
   await page.locator('#settings-page').waitFor({ state: 'detached' });
   release(); state.holdNotes = null;
   await page.locator('#empty').waitFor();
-  await page.locator('a[data-route][href="/settings"]').click();
+  await page.locator('#account-settings').click();
   state.notesFail = 401;
   await sync.click();
   await page.locator('#login-form').waitFor();
@@ -569,9 +596,9 @@ test('refreshing from settings updates the filtered timeline snapshot for offlin
   await login(page, url, '/archived?tag=work');
   const card = page.locator('#notes article[data-name="memos/archived"]');
   await card.getByText('Old archived content').waitFor();
-  await page.locator('a[data-route][href="/settings"]').click();
+  await page.locator('#account-settings').click();
   state.notes = [{ ...note, content: 'Refreshed archived content', source_hash: 'next-hash' }];
-  await page.getByRole('button', { name: '立即同步' }).click();
+  await page.locator('#settings-panel-general').getByRole('button', { name: '同步' }).click();
   await confirmation(page, '已从 Core 刷新笔记。');
   assert.equal(state.notesReads.at(-1).tag, 'work');
   assert.equal(state.notesReads.at(-1).state, 'ARCHIVED');

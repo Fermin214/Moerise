@@ -18,10 +18,11 @@
       <p class="memos-welcome" data-i18n="欢迎回来。">欢迎回来。</p>
       <p id="auth-error" class="error" role="alert" hidden></p>
       <form id="login-form" hidden>
-        <div><label for="username" data-i18n="用户名">用户名</label><input id="username" name="username" placeholder="用户名" autocomplete="username" required autocapitalize="off" spellcheck="false" data-i18n-placeholder="用户名"></div>
+        <div><label for="username" data-i18n="用户名">用户名</label><input id="username" name="username" placeholder="用户名" autocomplete="username" required autocapitalize="off" autocorrect="off" spellcheck="false" data-i18n-placeholder="用户名"></div>
         <div><label for="password" data-i18n="密码">密码</label><input id="password" name="password" type="password" placeholder="密码" autocomplete="current-password" required data-i18n-placeholder="密码"></div>
         <button id="login" type="submit" data-i18n="登录">登录</button>
       </form>
+      <button id="retry-logout" class="ghost" type="button" data-i18n="重试退出登录" hidden>重试退出登录</button>
     </div>
   </section>
   <div id="app" class="app" hidden>
@@ -35,13 +36,13 @@
     <dialog id="navigation-dialog" class="navigation-dialog" aria-label="主导航" data-i18n-aria-label="主导航"></dialog>
     <aside id="sidebar" class="side">
       <div class="sidebar-heading">
-        <b style="font-size:17px">Moerise</b>
+        <b>Moerise</b>
         <button id="navigation-close" class="btn mobile-only" type="button" aria-label="关闭导航" data-i18n-aria-label="关闭导航"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M6 18 18 6"></path></svg></button>
       </div>
       <div class="sidebar-content">
       <div class="sidebar-body">
       <section id="sidebar-calendar" aria-label="日历" style="display:flex;flex-direction:column;gap:4px" data-i18n-aria-label="日历">
-        <div class="lab"><b id="calendar-title" style="font-size:13px;font-weight:600;color:#3A4049"></b><span style="display:flex">
+        <div class="lab"><b id="calendar-title"></b><span style="display:flex">
           <button id="month-prev" class="btn calendar-month" type="button" aria-label="上个月" data-i18n-aria-label="上个月"><svg class="i" style="width:16px;height:16px" viewBox="0 0 24 24" aria-hidden="true"><path d="M14 6l-6 6 6 6"></path></svg></button>
           <button id="month-next" class="btn calendar-month" type="button" aria-label="下个月" data-i18n-aria-label="下个月"><svg class="i" style="width:16px;height:16px" viewBox="0 0 24 24" aria-hidden="true"><path d="M10 6l6 6-6 6"></path></svg></button>
         </span></div>
@@ -52,6 +53,7 @@
         <a class="ent" href="/review" data-route data-i18n="回顾"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="5" width="16" height="15" rx="3"></rect><path d="M8 3v4M16 3v4M4 10h16M9 15l2 2 4-4"></path></svg>回顾</a>
         <a class="ent" href="/walk" data-route data-i18n="漫步"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8h3c4 0 6 8 10 8h3M4 16h3c1.6 0 2.8-1.2 3.8-2.6M20 8h-3c-1.4 0-2.5.9-3.4 2M18 5l2 3-2 3M18 13l2 3-2 3"></path></svg>漫步</a>
         <a class="ent" href="/map" hidden data-route data-i18n="观星"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><circle cx="6" cy="7" r="2.5"></circle><circle cx="18" cy="6" r="2.5"></circle><circle cx="12" cy="18" r="2.5"></circle><path d="M8.3 8.3l2.4 7.4M15.9 8l-2.8 7.8M8.5 7h7"></path></svg>观星</a>
+        <a class="ent" href="/archived" data-route data-i18n="归档"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8h16v12H4zM3 4h18v4H3zM10 12h4"></path></svg>归档</a>
       </nav>
       <section id="search-panel" class="search-panel" aria-label="搜索笔记" data-i18n-aria-label="搜索笔记">
         <div class="search-row">
@@ -77,18 +79,13 @@
       </section>
       </div>
       <div id="account" hidden>
-        <a class="ent" href="/settings" data-route data-i18n="设置"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"></circle><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M18.4 5.6l-2.1 2.1M7.7 16.3l-2.1 2.1"></path></svg>设置</a>
         <div class="account-row">
-          <button id="user-menu" class="ent" type="button" aria-haspopup="menu" aria-expanded="false" aria-label="用户菜单" style="border:0;background:transparent;width:100%;cursor:pointer;font-size:14px" data-i18n-aria-label="用户菜单">
+          <a id="account-settings" class="ent" href="/settings" data-route aria-label="设置" data-i18n-aria-label="设置">
             <svg class="i" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="3.5"></circle><path d="M5 20c1-4 4-5.5 7-5.5s6 1.5 7 5.5"></path></svg>
             <span id="account-name"></span>
-            <svg class="i dots" style="margin-left:auto;width:16px;height:16px" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5h.01M12 12h.01M12 19h.01"></path></svg>
-          </button>
-          <button id="sync-trigger" class="btn s account-sync" type="button" aria-label="同步笔记" data-i18n-aria-label="同步笔记" title="同步笔记" data-i18n-title="同步笔记"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 4v5h-5M4 20v-5h5M5 10a7 7 0 0 1 12-4l3 3M19 14a7 7 0 0 1-12 4l-3-3"></path></svg></button>
-        </div>
-        <div id="account-menu" class="menu" role="menu" hidden>
-          <a class="mi" href="/archived" data-route role="menuitem" data-i18n="归档">归档</a>
-          <button id="logout" class="mi" type="button" role="menuitem" data-i18n="退出登录">退出登录</button>
+            <svg class="i account-gear" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"></circle><path d="M9.6 3H14.4L15 5.6L16.6 6.5L19.1 5.7L21.5 9.8L19.6 11.6V13.4L21.5 15.2L19.1 19.3L16.6 18.5L15 19.4L14.4 22H9.6L9 19.4L7.4 18.5L4.9 19.3L2.5 15.2L4.4 13.4V11.6L2.5 9.8L4.9 5.7L7.4 6.5L9 5.6Z"></path></svg>
+          </a>
+          <button id="sync-trigger" class="btn s account-sync" type="button" aria-label="同步" data-i18n-aria-label="同步" title="同步" data-i18n-title="同步"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 4v5h-5M4 20v-5h5M5 10a7 7 0 0 1 12-4l3 3M19 14a7 7 0 0 1-12 4l-3-3"></path></svg></button>
         </div>
       </div>
       </div>

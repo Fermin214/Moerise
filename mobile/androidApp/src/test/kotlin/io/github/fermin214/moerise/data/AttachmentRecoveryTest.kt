@@ -73,7 +73,7 @@ class AttachmentRecoveryTest {
             release.complete(Unit)
             assertFailsWith<CancellationException> { withTimeout(10_000) { pending.await() } }
             assertFalse(root.exists())
-            assertNull(ProtectedImageCache.peek(core, blocked, ProtectedImageCache.epoch.value))
+            assertNull(ProtectedImageCache.peek(core, note, blocked, ProtectedImageCache.epoch.value))
             val active = ProtectedImageCache.epoch.value
             val first = async { ProtectedImageCache.load(context, core, note, ready, active) }
             val second = async { ProtectedImageCache.load(context, core, note, ready, active) }
@@ -81,8 +81,8 @@ class AttachmentRecoveryTest {
             assertSame(loaded.bitmap, assertIs<ProtectedImageResult.Loaded>(second.await()).bitmap)
             assertEquals(1, requests.get())
             assertEquals(1, root.walkTopDown().count { it.isFile })
-            assertEquals(ProtectedImageResult.Failed(false), ProtectedImageCache.load(context, core, note, large, active))
-            assertEquals(ProtectedImageResult.Failed(false), ProtectedImageCache.load(context, core, note, malformed, active))
+            assertEquals(ProtectedImageResult.Failed(false, external = true), ProtectedImageCache.load(context, core, note, large, active))
+            assertEquals(ProtectedImageResult.Failed(false, external = true), ProtectedImageCache.load(context, core, note, malformed, active))
             assertEquals(1, requests.get())
         } finally {
             release.complete(Unit)
