@@ -64,6 +64,7 @@ let sidebarTagState = '', sidebarCalendarKey = '';
 let sidebarFocusTimer = null, sidebarFocusRefresh = null;
 let epoch = 0, viewSequence = 0, sidebarSequence = 0;
 let identity = null, authBusy = false, saving = false, readingFiles = false;
+let loginAutofillTimer;
 let draftOwner = null;
 let timeline = null;
 let month = '', routeReturnKey = null;
@@ -184,6 +185,13 @@ function hidePrivate({ resume = false } = {}) {
 }
 function loginReady() { return !!$('username').value.trim() && !!$('password').value; }
 function updateLoginButton() { $('login').disabled = authBusy || !loginReady(); }
+function monitorLoginAutofill() {
+  clearInterval(loginAutofillTimer);
+  updateLoginButton();
+  if (!authBusy && !$('auth').hidden && !$('login-form').hidden && !document.hidden) {
+    loginAutofillTimer = setInterval(updateLoginButton, 150);
+  }
+}
 function authControls({ busy = false, login = true } = {}) {
   authBusy = busy;
   $('auth').setAttribute('aria-busy', String(busy));
@@ -191,7 +199,7 @@ function authControls({ busy = false, login = true } = {}) {
   $('retry-logout').hidden = !logoutCSRF || busy;
   for (const id of ['username', 'password']) $(id).disabled = busy;
   $('auth').querySelector('[data-language]').disabled = busy;
-  updateLoginButton();
+  monitorLoginAutofill();
 }
 function expire(err, resume = true) {
   disconnectPrivacy(true);
@@ -219,12 +227,20 @@ function refreshServiceDay(timezoneChanged = false) {
   try { day = serviceDate(timezone, now); }
   catch { timezone = 'UTC'; day = serviceDate(timezone, now); }
   const changed = serviceDay !== day;
+  const previous = serviceDay;
   if (changed) {
-    if (month === serviceDay.slice(0, 7)) month = day.slice(0, 7);
     serviceDay = day;
+    const calendar = $('calendar');
+    calendar.querySelector('.today')?.classList.remove('today');
+    calendar.querySelector(`[data-date="${day}"]`)?.classList.add('today');
+    if (!timezoneChanged && month === previous.slice(0, 7) && month && month !== day.slice(0, 7) &&
+        !sourceTimeline().values.date && !calendar.contains(document.activeElement)) {
+      month = day.slice(0, 7);
+      loadSidebar(null, { calendarOnly: true });
+    }
   }
   if (changed || timezoneChanged) $('notes').querySelectorAll('.note-colophon time').forEach(localize);
-  if (!document.hidden) serviceDayTimer = setTimeout(() => { if (refreshServiceDay()) loadSidebar(); },
+  if (!document.hidden) serviceDayTimer = setTimeout(refreshServiceDay,
     Math.max(1, nextServiceDay(timezone, now, day) - Date.now()));
   return changed;
 }
@@ -295,6 +311,7 @@ async function enter(value, restored = false) {
   $('auth').hidden = true;
   $('app').hidden = $('workspace').hidden = false;
   $('password').value = '';
+  monitorLoginAutofill();
   setText($('account-name'), identity.user.display_name?.trim() || identity.user.name.replace(/^users\//, ''));
   $('account').hidden = false;
   refreshServiceDay(); month = serviceDay.slice(0, 7);
@@ -323,6 +340,9 @@ async function restore() {
 }
 $('login-form').addEventListener('input', updateLoginButton);
 $('login-form').addEventListener('change', updateLoginButton);
+$('login-form').addEventListener('keydown', event => {
+  if (event.key === 'Enter') updateLoginButton();
+});
 $('login-form').addEventListener('submit', async event => {
   event.preventDefault();
   if (authBusy || logoutCSRF || !loginReady()) return;
@@ -472,45 +492,50 @@ function schedulePreload() {
   }, 250);
 }
 function refreshSidebarOnFocus() {
-  refreshServiceDay();
+  const dayChanged = refreshServiceDay();
   if (document.hidden) { stopPreload(); return; }
-  if (!identity || sidebarFocusRefresh) return;
+  if (!identity || sidebarFocusRefresh || dayChanged) return;
   clearTimeout(sidebarFocusTimer);
   sidebarFocusTimer = setTimeout(() => {
     sidebarFocusTimer = null;
     if (!identity || document.visibilityState !== 'visible') return;
-    const pending = loadSidebar();
+    const pending = loadSidebar(null, { preserveFocus: true });
     sidebarFocusRefresh = pending;
     pending.finally(() => { if (sidebarFocusRefresh === pending) sidebarFocusRefresh = null; });
   }, 100);
 }
-async function loadSidebar(owner) {
+async function loadSidebar(owner, { calendarOnly = false, preserveFocus = false } = {}) {
   if (!(owner instanceof AbortController)) owner = null;
   if (!identity) return;
   const sequence = ++sidebarSequence, generation = epoch;
   const { path, values } = sourceTimeline();
   const state = path === '/archived' ? 'ARCHIVED' : 'NORMAL', selectedMonth = month;
   const calendarKey = `${state}:${selectedMonth}`;
+  const tagsHost = $('tags'), calendarHost = $('calendar');
+  calendarOnly = calendarOnly && sidebarTagState === state && tagsHost.hasChildNodes();
   showError($('sidebar-error'), null); $('sidebar-retry').hidden = true;
   if (sidebarTagState !== state) {
     $('tags').replaceChildren();
     sidebarTagState = state;
   }
-  if (sidebarCalendarKey !== calendarKey) {
+  if (sidebarCalendarKey !== calendarKey && (!preserveFocus || !calendarHost.contains(document.activeElement))) {
     renderCalendar([], values.date, true);
     sidebarCalendarKey = calendarKey;
   }
   try {
-    const [tags, calendar] = owner
+    const [tags, calendar] = calendarOnly ? [null, await readCalendar(state, selectedMonth)] : owner
       ? [await readTags(state, owner), await readCalendar(state, selectedMonth, owner)]
       : await Promise.all([readTags(state), readCalendar(state, selectedMonth)]);
     if (generation !== epoch || sequence !== sidebarSequence) return;
-    if (!Array.isArray(tags?.tags) || !Array.isArray(calendar?.days) || calendar.month !== selectedMonth) {
+    if ((!calendarOnly && !Array.isArray(tags?.tags)) || !Array.isArray(calendar?.days) || calendar.month !== selectedMonth) {
       sidebarTags.delete(state); sidebarCalendars.delete(calendarKey);
       throw Object.assign(new Error('Invalid sidebar data'), { code: 'NOTE_LIST_INVALID' });
     }
-    renderTags(tags.tags, values.tags);
-    renderCalendar(calendar.days, values.date);
+    if (!calendarOnly && (!preserveFocus || !tagsHost.contains(document.activeElement))) renderTags(tags.tags, values.tags);
+    if (!preserveFocus || !calendarHost.contains(document.activeElement)) {
+      renderCalendar(calendar.days, values.date);
+      sidebarCalendarKey = calendarKey;
+    }
   } catch (err) {
     if (generation !== epoch || sequence !== sidebarSequence || err.name === 'AbortError') return;
     handleFailure($('sidebar-error'), err);
@@ -552,6 +577,7 @@ function renderCalendar(days, selected, disabled = false) {
     const cell = button(String(day), [selected === date ? 'sel' : count > 1 ? 'h2' : count ? 'h1' : '', date === today ? 'today' : ''].join(' '),
       () => sidebarFilter({ date: sourceTimeline().values.date === date ? '' : date }));
     cell.disabled = disabled;
+    cell.dataset.date = date;
     setAttr(cell, 'aria-label', l("{0}，{1} 条笔记", { 0: date, 1: count }));
     cell.setAttribute('aria-pressed', String(selected === date));
     calendar.append(cell);
@@ -1103,9 +1129,10 @@ document.addEventListener('click', event => {
   }
 });
 $('navigation-dialog').addEventListener('close', closeMenus);
-window.addEventListener('pagehide', () => { disconnectPrivacy(); invalidate(); hidePrivate(); });
+window.addEventListener('pagehide', () => { clearInterval(loginAutofillTimer); disconnectPrivacy(); invalidate(); hidePrivate(); });
 window.addEventListener('pageshow', event => { if (event.persisted) restore(); });
 window.addEventListener('focus', refreshSidebarOnFocus);
 document.addEventListener('visibilitychange', refreshSidebarOnFocus);
+document.addEventListener('visibilitychange', monitorLoginAutofill);
 initI18n();
 restore();

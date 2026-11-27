@@ -461,20 +461,21 @@ fun MoeriseApp(mobile: MobileController, onHomeReady: () -> Unit = {}) {
                             }
                         }
                     }
-                    if (capsuleVisible && (bottomAction.currentState == null || bottomAction.targetState == null)) {
-                        val navigationBottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
-                        Box(Modifier.align(Alignment.BottomCenter).fillMaxWidth().height(88.dp + navigationBottom)
-                            .background(Brush.verticalGradient(0f to Color.Transparent, .65f to MoeriseColors.ScrollPaper)))
-                    }
-                    Box(Modifier.align(Alignment.BottomCenter).safeDrawingPadding().imePadding()
-                        .padding(horizontal = 16.dp, vertical = 12.dp).widthIn(max = 560.dp).fillMaxWidth()) {
-                        bottomAction.AnimatedContent(transitionSpec = {
-                            if (reducedMotion) fadeIn(tween(0)) togetherWith fadeOut(tween(0))
-                            else fadeIn(tween(120, delayMillis = 90)) togetherWith fadeOut(tween(90))
-                        }) { data ->
-                            when {
-                                data != null -> MobileSnackbar(data)
-                                capsuleVisible -> ComposerCapsule(composer.draft?.content.orEmpty(), strings, capsuleEnabled, mobile::openComposer)
+                    Box(Modifier.align(Alignment.BottomCenter).fillMaxWidth().safeDrawingPadding().imePadding(),
+                        contentAlignment = Alignment.BottomCenter) {
+                        if (capsuleVisible && (bottomAction.currentState == null || bottomAction.targetState == null)) {
+                            Box(Modifier.fillMaxWidth().height(88.dp).testTag("compose_feather")
+                                .background(Brush.verticalGradient(0f to Color.Transparent, .65f to MoeriseColors.ScrollPaper)))
+                        }
+                        Box(Modifier.padding(horizontal = 16.dp, vertical = 12.dp).widthIn(max = 560.dp).fillMaxWidth()) {
+                            bottomAction.AnimatedContent(transitionSpec = {
+                                if (reducedMotion) fadeIn(tween(0)) togetherWith fadeOut(tween(0))
+                                else fadeIn(tween(120, delayMillis = 90)) togetherWith fadeOut(tween(90))
+                            }) { data ->
+                                when {
+                                    data != null -> MobileSnackbar(data)
+                                    capsuleVisible -> ComposerCapsule(composer.draft?.content.orEmpty(), strings, capsuleEnabled, mobile::openComposer)
+                                }
                             }
                         }
                     }

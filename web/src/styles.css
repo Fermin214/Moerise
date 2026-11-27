@@ -29,6 +29,7 @@
 .note-colophon .dlink { color:var(--ink-colophon); font-size:.75rem; font-variant-numeric:tabular-nums; }
 .note-colophon .dlink:is(:hover,:active) { color:var(--accent); }
 .note-colophon .more { width:44px; height:44px; color:var(--field-border); }
+@media (any-pointer:coarse) { .note-colophon .more { opacity:1; } }
 .note-colophon .menu { top:100%; }
 #workspace > #empty, #workspace > .error { margin: 0; }
 #page-end { height: 1px; }

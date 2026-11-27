@@ -241,7 +241,7 @@ test('archive undo uses the returned hash and expires after three seconds', asyn
 });
 
 test('long timeline notes fold by height and collapse beneath the mobile sticky header', async t => {
-  const { page, state, url } = await fixture(t, 'zh-CN', { viewport: { width: 390, height: 844 }, isMobile: true });
+  const { page, state, url } = await fixture(t, 'zh-CN', { viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
   const note = state.notes.get('n09');
   note.content = Array.from({ length: 35 }, (_, index) => `正文 ${index} · 长卡片回归`).join('\n\n');
   note.attachments = Array.from({ length: 4 }, (_, index) => ({
@@ -259,7 +259,24 @@ test('long timeline notes fold by height and collapse beneath the mobile sticky 
   assert.equal(await preview.locator('.note-tags').count(), 1);
   const colophon = card.locator(':scope > .note-colophon');
   assert.equal(await colophon.locator('time').innerText(), '10月29日');
-  assert.equal(await colophon.getByRole('button', { name: '更多操作' }).isVisible(), true);
+  const more = colophon.getByRole('button', { name: '更多操作' });
+  assert.equal(await more.evaluate(node => getComputedStyle(node).opacity), '1');
+  const removed = await more.evaluate(element => {
+    element.style.transition = 'none';
+    let count = 0;
+    function removeHoverFallback(container) {
+      for (let index = container.cssRules.length - 1; index >= 0; index--) {
+        const rule = container.cssRules[index];
+        if (rule.conditionText === '(hover: none)' && rule.cssRules[0]?.selectorText === '.more') {
+          container.deleteRule(index); count++;
+        } else if (rule.cssRules) removeHoverFallback(rule);
+      }
+    }
+    for (const sheet of document.styleSheets) removeHoverFallback(sheet);
+    return count;
+  });
+  assert.equal(removed, 1);
+  assert.equal(await more.evaluate(node => getComputedStyle(node).opacity), '1');
   await expand.click();
   assert.ok(await preview.evaluate(element => element.offsetHeight) > 380);
   await page.evaluate(() => scrollTo(0, 0));
@@ -298,9 +315,10 @@ test('paper login disables incomplete and submitting forms, retaining rejected i
     return [style.backgroundColor, style.borderColor, style.height];
   }), ['rgb(252, 251, 248)', 'rgb(145, 139, 128)', '44px']);
   assert.equal(await submit.isDisabled(), true);
-  await username.fill(' owner ');
+  await username.evaluate(node => { node.value = ' owner '; });
   assert.equal(await submit.isDisabled(), true);
-  await password.fill('sample-password');
+  await password.evaluate(node => { node.value = 'sample-password'; });
+  await page.waitForFunction(() => !document.getElementById('login').disabled);
   assert.equal(await submit.isEnabled(), true);
   const { promise: arrived, resolve: captured } = Promise.withResolvers();
   const { promise: hold, resolve: release } = Promise.withResolvers();
@@ -310,7 +328,7 @@ test('paper login disables incomplete and submitting forms, retaining rejected i
     await route.fulfill({ status: 401, json: { error: { code: 'INVALID_CREDENTIALS' } } });
   }, { times: 1 });
   try {
-    await submit.click(); await arrived;
+    await password.press('Enter'); await arrived;
     for (const control of [username, password, submit, language]) assert.equal(await control.isDisabled(), true);
   } finally { release(); }
   await page.locator('#auth-error').waitFor();
@@ -364,6 +382,51 @@ test('mounted timeline colophons roll over in place without refetching or moving
   assert.equal(await page.locator('.editor textarea').inputValue(), '未提交的编辑');
   assert.equal(await page.locator('#content').inputValue(), '未提交的新笔记');
   assert.equal(state.requests.filter(item => item.path === '/notes').length, reads);
+});
+
+test('service midnight keeps sidebar focus and an active date filter', async t => {
+  const { page, state, url } = await fixture(t);
+  await page.clock.install({ time: new Date('2026-10-29T15:58:00Z') });
+  await page.clock.setSystemTime(new Date('2026-10-29T15:58:00Z'));
+  await page.goto(url); await login(page);
+  const day = value => page.locator(`#calendar [data-date="${value}"]`);
+  const aggregates = () => state.requests.filter(({ path }) => path === '/calendar' || path === '/tags').length;
+  await page.locator('#tags .tag-row').first().waitFor();
+  const today = day('2026-10-29');
+  assert.match(await today.getAttribute('class'), /\btoday\b/);
+  await today.focus();
+  const before = aggregates();
+  await page.clock.fastForward(121_000);
+  assert.match(await day('2026-10-30').getAttribute('class'), /\btoday\b/);
+  assert.doesNotMatch(await today.getAttribute('class'), /\btoday\b/);
+  assert.equal(await today.evaluate(node => node === document.activeElement), true);
+  assert.equal(aggregates(), before);
+
+  await page.clock.setSystemTime(new Date('2026-10-31T15:58:00Z'));
+  await page.goto(`${url}/?date=2026-10-31`);
+  const selected = day('2026-10-31');
+  await page.locator('#calendar .today.sel').waitFor();
+  await page.locator('#tags .tag-row').first().waitFor();
+  await selected.focus();
+  const filtered = aggregates();
+  await page.clock.fastForward(121_000);
+  assert.equal(new URL(page.url()).searchParams.get('date'), '2026-10-31');
+  assert.equal(await page.locator('#calendar-title').textContent(), '2026年10月');
+  assert.equal(await selected.getAttribute('aria-pressed'), 'true');
+  assert.doesNotMatch(await selected.getAttribute('class'), /\btoday\b/);
+  assert.equal(await selected.evaluate(node => node === document.activeElement), true);
+  assert.equal(aggregates(), filtered);
+
+  await page.clock.setSystemTime(new Date('2026-10-31T15:58:00Z'));
+  await page.goto(url);
+  await page.locator('#calendar .today').waitFor();
+  const tag = page.locator('#tags .tag-row').first();
+  await tag.focus();
+  const unfiltered = aggregates();
+  await page.clock.fastForward(121_000);
+  await day('2026-11-01').and(page.locator('.today:enabled')).waitFor();
+  assert.equal(await tag.evaluate(node => node === document.activeElement), true);
+  assert.equal(aggregates(), unfiltered + 1);
 });
 
 test('CSRF renewal discards drafts and never replays a note after an instance or author change', async t => {

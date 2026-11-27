@@ -9,6 +9,8 @@ import android.content.Intent
 import android.graphics.Bitmap
 import android.net.Uri
 import android.os.Looper
+import android.view.View
+import android.view.WindowInsets
 import android.view.WindowManager.LayoutParams
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -95,6 +97,7 @@ import org.robolectric.Shadows.shadowOf
 import org.robolectric.android.controller.ActivityController
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
+import org.robolectric.shadows.ShadowDialog
 
 @RunWith(RobolectricTestRunner::class)
 @Config(application = Application::class, sdk = [29], qualifiers = "w360dp-h640dp")
@@ -512,26 +515,25 @@ class AndroidUiRegressionTest {
         it.config.getOrElse(SemanticsProperties.TestTag) { "" }.startsWith(prefix)
     }
 
-    private fun assertButtonPalette(node: SemanticsNodeInteraction, fill: Color, frame: Color) {
-        withNodeBitmap(node) { pixels ->
+    private fun assertButtonPalette(node: SemanticsNodeInteraction, fill: Color, frame: Color, window: View = host.get().window.decorView) {
+        withNodeBitmap(node, window) { pixels ->
             assertTrue((0 until pixels.width).any { x -> Color(pixels.getPixel(x, pixels.height / 4)) == fill })
             assertTrue((0 until pixels.width).any { x -> Color(pixels.getPixel(x, pixels.height / 2)) == frame })
         }
     }
 
-    private fun activityBitmap(waitForIdle: Boolean = true): Bitmap {
+    private fun activityBitmap(waitForIdle: Boolean = true, window: View = host.get().window.decorView): Bitmap {
         if (waitForIdle) compose.waitForIdle()
         return compose.runOnUiThread {
-            val window = host.get().window.decorView
             Bitmap.createBitmap(window.width, window.height, Bitmap.Config.ARGB_8888).apply {
                 window.draw(android.graphics.Canvas(this))
             }
         }
     }
 
-    private fun <Result> withNodeBitmap(node: SemanticsNodeInteraction, read: (Bitmap) -> Result): Result {
+    private fun <Result> withNodeBitmap(node: SemanticsNodeInteraction, window: View = host.get().window.decorView, read: (Bitmap) -> Result): Result {
         val bounds = node.fetchSemanticsNode().boundsInWindow
-        val frame = activityBitmap()
+        val frame = activityBitmap(window = window)
         try {
             val pixels = Bitmap.createBitmap(frame, bounds.left.toInt(), bounds.top.toInt(), bounds.width.toInt(), bounds.height.toInt())
             try { return read(pixels) }
@@ -1194,6 +1196,7 @@ class AndroidUiRegressionTest {
     }
 
     @Test
+    @GraphicsMode(GraphicsMode.Mode.NATIVE)
     fun floatingComposerPreservesTheTimelineAndFirstScreenPrewarmsFilters() {
         createHost()
         val folder = Files.createTempDirectory("moerise-composer-focus").toFile()
@@ -1244,6 +1247,25 @@ class AndroidUiRegressionTest {
             waitForTag("compose_capsule")
             compose.onAllNodes(hasAnyAncestor(hasTestTag("compose_capsule")) and
                 SemanticsMatcher.expectValue(SemanticsProperties.Role, Role.Image), useUnmergedTree = true).assertCountEquals(0)
+            val capsule = compose.onNodeWithTag("compose_capsule")
+            val feather = compose.onNodeWithTag("compose_feather")
+            val capsuleBottom = capsule.getUnclippedBoundsInRoot().bottom
+            val featherBottom = feather.getUnclippedBoundsInRoot().bottom
+            fun ime(bottom: Int) = compose.runOnUiThread {
+                host.get().window.decorView.dispatchApplyWindowInsets(WindowInsets.Builder()
+                    .setSystemWindowInsets(android.graphics.Insets.of(0, 0, 0, bottom)).build())
+            }
+            compose.onNodeWithTag("open_search").performClick()
+            compose.onNodeWithTag("search_query").assertIsFocused()
+            ime(180)
+            compose.onNodeWithTag("ime_visible").assertExists()
+            val raisedCapsule = capsule.getUnclippedBoundsInRoot().bottom
+            val raisedFeather = feather.getUnclippedBoundsInRoot().bottom
+            assertTrue(raisedCapsule < capsuleBottom)
+            assertEquals(capsuleBottom - raisedCapsule, featherBottom - raisedFeather)
+            assertEquals(12.dp, raisedFeather - raisedCapsule)
+            ime(0)
+            compose.onNodeWithTag("search_close").performClick()
             val datedCard = compose.onNodeWithTag("note_card_${note.name}")
             val date = compose.onNode(hasTestTag("note_card_date") and hasAnyAncestor(hasTestTag("note_card_${note.name}")))
             compose.waitUntil(10_000) { date.isDisplayed() }
@@ -1251,9 +1273,17 @@ class AndroidUiRegressionTest {
             val initialOffset = datedCard.getUnclippedBoundsInRoot().top
             openComposer()
             composer.assertIsFocused().performTextReplacement("跨日草稿")
-            val sheet = compose.onNodeWithTag("quick_editor_sheet").getUnclippedBoundsInRoot()
+            val panel = compose.onNodeWithTag("quick_editor_sheet")
+            val sheet = panel.getUnclippedBoundsInRoot()
             assertEquals(0.dp, sheet.left)
             assertEquals(360.dp, sheet.width)
+            val dialogWindow = requireNotNull(ShadowDialog.getLatestDialog()?.window).decorView
+            withNodeBitmap(panel, dialogWindow) { pixels ->
+                assertEquals(MoeriseColors.Surface, Color(pixels.getPixel(1, pixels.height - 2)))
+                assertEquals(MoeriseColors.Surface, Color(pixels.getPixel(pixels.width - 2, pixels.height - 2)))
+            }
+            assertButtonPalette(compose.onNodeWithTag("quick_cancel"), MoeriseColors.Surface, MoeriseColors.Line, dialogWindow)
+            assertButtonPalette(compose.onNodeWithTag("quick_save"), MoeriseColors.Accent, MoeriseColors.OnAccent, dialogWindow)
             now.set(Instant.parse("2026-11-27T00:00:00Z"))
             compose.mainClock.advanceTimeBy(30_100)
             date.assertTextEquals("Nov 26")
