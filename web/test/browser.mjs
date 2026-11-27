@@ -1550,11 +1550,14 @@ test('sidebar reuses aggregates, cancels obsolete months and refreshes only affe
   assert.equal(count('/tags'), before.tags); assert.equal(count('/calendar'), before.calendar);
   await page.locator('#month-next').click();
   await page.waitForFunction(() => document.getElementById('calendar-title').textContent === '2026年9月');
-  const october = page.waitForResponse(response => response.url().includes('month=2026-10') && response.ok());
-  await page.locator('#month-next').click(); await october;
+  await page.locator('#month-next').click();
+  await page.locator('#calendar button.h2[data-date="2026-10-29"]').waitFor();
   const refreshed = { tags: count('/tags'), calendar: count('/calendar') };
-  await page.clock.setFixedTime(new Date('2026-10-30T04:01:01Z'));
-  await page.locator('#q').fill('写入后'); await aggregatesAfter(() => page.locator('#q').press('Enter'));
+  await aggregatesAfter(async () => {
+    await page.clock.setFixedTime(new Date('2026-10-30T04:01:01Z'));
+    await page.locator('#q').fill('写入后'); await page.locator('#q').press('Enter');
+  });
+  await page.waitForURL(value => value.searchParams.get('query') === '写入后');
   await page.locator('#tags button').first().waitFor();
   assert.equal(count('/tags'), refreshed.tags + 1); assert.equal(count('/calendar'), refreshed.calendar + 1);
   await page.evaluate(() => window.dispatchEvent(new Event('focus')));
