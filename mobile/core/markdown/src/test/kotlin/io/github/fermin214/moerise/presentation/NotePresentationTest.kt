@@ -6,6 +6,8 @@ import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.seconds
 import kotlin.time.measureTime
 import kotlinx.serialization.json.*
+import org.intellij.markdown.MarkdownTokenTypes
+import org.intellij.markdown.ast.ASTNode
 
 class NotePresentationTest {
     @Test
@@ -231,6 +233,26 @@ class NotePresentationTest {
     }
 
     @Test
+    fun walkSummaryFoldsUnicodeWhitespace() {
+        assertEquals("甲 乙 丙 丁", walkSummaryBody("\u3000甲\u00a0乙\t丙\n丁\u3000", emptyList()))
+    }
+
+    @Test
+    fun productionRegularExpressionsUseAndroidCompatibleFlags() {
+        val mobile = generateSequence(java.io.File(System.getProperty("user.dir"))) { it.parentFile }
+            .first { it.name == "mobile" }
+        val literal = Regex("""\b(?:Regex|Pattern\s*\.\s*compile)\s*\(\s*("{3}[\s\S]*?"{3}|"(?:\\.|[^"\\])*")""")
+        val unsupportedFlag = Regex("""(?<!\\)\(\?[idmsuxU-]*U[idmsuxU-]*(?:[:)])""")
+        val matches = mobile.walkTopDown().onEnter { it.name !in setOf("build", ".gradle", ".kotlin", "test", "androidTest") }
+            .filter { it.extension == "kt" && "/src/main/" in it.invariantSeparatorsPath }
+            .flatMap { file ->
+                literal.findAll(file.readText()).filter { unsupportedFlag.containsMatchIn(it.groupValues[1]) }
+                    .map { "${file.relativeTo(mobile)}: ${it.value}" }
+            }.toList()
+        assertTrue(matches.isEmpty(), matches.joinToString("\n"))
+    }
+
+    @Test
     fun sharedWalkSummariesPreserveCodeAndLiteralDelimiters() {
         val source = requireNotNull(javaClass.getResourceAsStream("/walk-summary.json"))
         val cases = source.bufferedReader().use { Json.parseToJsonElement(it.readText()).jsonArray }
@@ -240,6 +262,22 @@ class NotePresentationTest {
             val tags = sample.getValue("tags").jsonArray.map { it.jsonPrimitive.content }
             assertEquals(text("summary"), walkSummaryBody(text("content"), tags), text("name"))
         }
+    }
+
+    @Test
+    fun walkSummaryFenceOffsetsAreMeasuredAgainstTheCroppedBody() {
+        val input = "```\nx\n```\n#a\n\n"
+        val (body, tree) = walkSummarySource(input, listOf("a"))
+        assertEquals("```\nx\n```\n\n", body)
+        val root = requireNotNull(tree)
+        assertEquals(body.length, root.endOffset)
+        fun checkOffsets(node: ASTNode) {
+            assertTrue(node.startOffset in 0..node.endOffset && node.endOffset <= body.length)
+            if (node.type == MarkdownTokenTypes.CODE_FENCE_CONTENT) assertEquals("x", body.substring(node.startOffset, node.endOffset))
+            node.children.forEach(::checkOffsets)
+        }
+        checkOffsets(root)
+        assertEquals("x", walkSummaryBody(input, listOf("a")))
     }
 
     @Test

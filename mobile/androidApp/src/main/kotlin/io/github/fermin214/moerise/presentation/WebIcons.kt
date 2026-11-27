@@ -139,27 +139,29 @@ private fun WebIcon.svgPath(): String = when (this) {
 fun MoeriseBrandMark(size: Dp = 52.dp, modifier: Modifier = Modifier) {
     val shape = RoundedCornerShape(size * (24f / 108f))
     val moonPath = remember { PathParser().parsePathString("M35,58.5 A19,19 0 0,1 73,58.5 Z").toPath() }
+    val accent = MoeriseColors.Accent
+    val brandColors = MoeriseColors.BrandGradient
     Surface(
         modifier = modifier.size(size),
         shape = shape,
         color = Color.Transparent,
         shadowElevation = 2.dp,
-        border = BorderStroke(0.75.dp, MoeriseColors.Ink.copy(alpha = 0.08f)),
+        border = BorderStroke(0.75.dp, MoeriseColors.BrandBorder),
     ) {
         Canvas(Modifier.fillMaxSize()) {
             drawRect(
                 brush = Brush.linearGradient(
-                    colors = listOf(Color(0xFFFAF9F5), Color(0xFFECE9E0)),
+                    colors = brandColors,
                     start = Offset.Zero,
                     end = Offset(this.size.width, this.size.height),
                 ),
             )
             val scale = minOf(this.size.width, this.size.height) / 108f
             withTransform({ scale(scale, scale, pivot = Offset.Zero) }) {
-                drawPath(moonPath, MoeriseColors.Accent)
-                drawLine(MoeriseColors.Accent, Offset(27f, 63.5f), Offset(81f, 63.5f), strokeWidth = 3.6f, cap = StrokeCap.Round)
-                drawLine(MoeriseColors.Accent.copy(alpha = 0.55f), Offset(35f, 71f), Offset(73f, 71f), strokeWidth = 3.2f, cap = StrokeCap.Round)
-                drawLine(MoeriseColors.Accent.copy(alpha = 0.30f), Offset(44f, 78f), Offset(64f, 78f), strokeWidth = 2.8f, cap = StrokeCap.Round)
+                drawPath(moonPath, accent)
+                drawLine(accent, Offset(27f, 63.5f), Offset(81f, 63.5f), strokeWidth = 3.6f, cap = StrokeCap.Round)
+                drawLine(accent.copy(alpha = 0.55f), Offset(35f, 71f), Offset(73f, 71f), strokeWidth = 3.2f, cap = StrokeCap.Round)
+                drawLine(accent.copy(alpha = 0.30f), Offset(44f, 78f), Offset(64f, 78f), strokeWidth = 2.8f, cap = StrokeCap.Round)
             }
         }
     }

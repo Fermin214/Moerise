@@ -278,7 +278,7 @@ class WalkController(
         val key = account() ?: return
         val stamp = ++floaterGeneration
         floaterJob?.cancel()
-        mutable.update { it.copy(floatersLoading = repository == null, floaterError = null, offline = !online()) }
+        mutable.update { it.copy(floatersLoading = true, floaterError = null, offline = !online()) }
         floaterJob = scope.launch {
             try {
                 val repo = repository?.invoke()
@@ -286,23 +286,25 @@ class WalkController(
                     val notes = repo.localNotesPage(key, "NORMAL", 20, 0).first
                     val local = withContext(Dispatchers.Default) { walkStartingNotes(notes) }
                     if (stamp == floaterGeneration && key == account())
-                        mutable.update { it.copy(floaters = local, floatersLoading = false, hasLocalNotes = notes.isNotEmpty()) }
+                        mutable.update { it.copy(floaters = local, hasLocalNotes = notes.isNotEmpty()) }
                     if (notes.isNotEmpty() || repo.isNotesSynced(key) || !online()) return@launch
                 }
                 if (!online()) return@launch
                 val active = core() ?: return@launch
-                mutable.update { it.copy(floatersLoading = true) }
                 val page = CoreJson.decodeFromString<io.github.fermin214.moerise.domain.NotePage>(
                     active.api(HttpMethod.Get, "/notes?state=NORMAL&page_size=20"))
                 require(page.notes.all { it.belongsTo(key) && it.state == "NORMAL" } &&
                     page.notes.map { it.name }.distinct().size == page.notes.size) { "NOTE_LIST_INVALID" }
                 val selected = withContext(Dispatchers.Default) { walkStartingNotes(page.notes) }
                 if (stamp == floaterGeneration && key == account() && active === core())
-                    mutable.update { it.copy(floaters = selected, floatersLoading = false) }
+                    mutable.update { it.copy(floaters = selected) }
             } catch (error: Exception) {
                 if (error is CancellationException) throw error
                 if (stamp == floaterGeneration && key == account())
-                    mutable.update { it.copy(floatersLoading = false, floaterError = errorCode(error)) }
+                    mutable.update { it.copy(floaterError = errorCode(error)) }
+            } finally {
+                if (stamp == floaterGeneration && key == account())
+                    mutable.update { it.copy(floatersLoading = false) }
             }
         }
     }

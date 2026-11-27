@@ -12,6 +12,7 @@ import android.os.Looper
 import android.view.View
 import android.view.WindowInsets
 import android.view.WindowManager.LayoutParams
+import androidx.core.view.WindowCompat
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.ScrollState
@@ -32,6 +33,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.compositeOver
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.platform.LocalFocusManager
@@ -302,8 +304,8 @@ class AndroidUiRegressionTest {
                     MoeriseTheme {
                         Column {
                             BasicTextField("", {}, modifier = Modifier.fillMaxWidth().height(48.dp).testTag("editor"))
-                            TimelineNoteCard(TimelineEntry.Remote(Note("instance", "memos/test", "Remote body", "NORMAL", "hash",
-                                createTime = "2026-11-26T10:00:00Z")), "UTC", strings, null, {}, {}, onEdit = {})
+                            TimelineNoteCard(TimelineEntry.Remote(Note("instance", "memos/test", "Remote body\n\n#marked", "NORMAL", "hash",
+                                createTime = "2026-11-26T10:00:00Z", tags = listOf("marked"))), "UTC", strings, null, {}, {}, onEdit = {})
                             TimelineNoteCard(TimelineEntry.Local(DraftEntity("queued", "account", "Local body", 1, conflictJson = "{}",
                                 createdAt = 1_795_620_000_000L)), "UTC", strings, null, {}, {})
                         }
@@ -312,23 +314,66 @@ class AndroidUiRegressionTest {
             }
         }
         val editor = compose.onNodeWithTag("editor")
-        val card = hasAnyAncestor(hasTestTag("note_card_memos/test"))
+        for ((cardTag, actionTags) in listOf(
+            "note_card_memos/test" to listOf("note_more_memos/test"),
+            "queued_note_queued" to listOf("note_more_queued", "queued_error_queued"),
+        )) {
+            val card = hasTestTag(cardTag)
+            val withinCard = hasAnyAncestor(card)
+            val cardBounds = compose.onNode(card).getUnclippedBoundsInRoot()
+            val date = compose.onNode(hasTestTag("note_card_date") and withinCard, useUnmergedTree = true).getUnclippedBoundsInRoot()
+            val body = compose.onNode(hasTestTag("note_card_body") and withinCard, useUnmergedTree = true).getUnclippedBoundsInRoot()
+            assertTrue(date.top - body.bottom in 9.dp..11.dp, "$cardTag: $body → $date")
+            assertTrue(cardBounds.bottom - date.bottom in 14.dp..19.dp, "$cardTag: $date → $cardBounds")
+            for (tag in actionTags) {
+                val bounds = compose.onNodeWithTag(tag).getUnclippedBoundsInRoot()
+                assertEquals(44.dp, bounds.width)
+                assertEquals(44.dp, bounds.height)
+                assertTrue(bounds.top >= body.bottom)
+                assertTrue(date.top >= bounds.top && date.bottom <= bounds.bottom)
+            }
+        }
         val action = compose.onNodeWithTag("note_more_memos/test")
-        val actionBounds = action.getUnclippedBoundsInRoot()
-        val date = compose.onNode(hasTestTag("note_card_date") and card, useUnmergedTree = true).getUnclippedBoundsInRoot()
-        val body = compose.onNode(hasTestTag("note_card_body") and card, useUnmergedTree = true).getUnclippedBoundsInRoot()
-        assertTrue(date.height < actionBounds.height)
-        assertTrue(body.top < date.top)
-        assertTrue(date.top >= actionBounds.top && date.bottom <= actionBounds.bottom)
-        compose.onNode(hasTestTag("note_card_date") and card, useUnmergedTree = true).assertIsDisplayed()
-        assertEquals(44.dp, actionBounds.width)
-        assertEquals(44.dp, actionBounds.height)
-        assertEquals(44.dp, compose.onNodeWithTag("queued_error_queued").getUnclippedBoundsInRoot().height)
 
         editor.performClick().assertIsFocused()
         action.performClick()
         compose.onNodeWithTag("edit_note_memos/test").performClick()
         editor.assertIsNotFocused()
+    }
+
+    @Test
+    @GraphicsMode(GraphicsMode.Mode.NATIVE)
+    fun largeFontExpandsTheDateWithoutShrinkingColophonActions() {
+        createHost()
+        compose.runOnUiThread {
+            host.get().setContent {
+                val density = androidx.compose.ui.platform.LocalDensity.current.density
+                CompositionLocalProvider(androidx.compose.ui.platform.LocalDensity provides androidx.compose.ui.unit.Density(density, 2f)) {
+                    MoeriseTheme {
+                        TimelineNoteCard(TimelineEntry.Local(DraftEntity("scaled", "account", "正文", 1, conflictJson = "{}",
+                            createdAt = 1_795_620_000_000L)), "UTC", strings, null, {}, {}, today = "2026-11-26")
+                    }
+                }
+            }
+        }
+        val card = compose.onNodeWithTag("queued_note_scaled").getUnclippedBoundsInRoot()
+        val body = compose.onNodeWithTag("note_card_body").getUnclippedBoundsInRoot()
+        val date = compose.onNodeWithTag("note_card_date").getUnclippedBoundsInRoot()
+        assertTrue(date.height >= 32.dp)
+        assertTrue(date.top - body.bottom in 9.dp..11.dp)
+        assertTrue(card.bottom - body.bottom > 44.dp)
+        val layouts = mutableListOf<androidx.compose.ui.text.TextLayoutResult>()
+        compose.onNode(SemanticsMatcher.keyIsDefined(SemanticsActions.GetTextLayoutResult) and
+            hasAnyAncestor(hasTestTag("note_card_date")), useUnmergedTree = true)
+            .performSemanticsAction(SemanticsActions.GetTextLayoutResult) { assertTrue(it(layouts)) }
+        val layout = layouts.single()
+        assertFalse(layout.hasVisualOverflow, "${layout.layoutInput.text}: ${layout.size}; width=${layout.didOverflowWidth}, height=${layout.didOverflowHeight}")
+        for (tag in listOf("note_more_scaled", "queued_error_scaled")) {
+            val action = compose.onNodeWithTag(tag).getUnclippedBoundsInRoot()
+            assertEquals(44.dp, action.width)
+            assertEquals(44.dp, action.height)
+            assertTrue(action.top >= body.bottom)
+        }
     }
 
     @Test
@@ -476,7 +521,7 @@ class AndroidUiRegressionTest {
             assertTrue(intro.getUnclippedBoundsInRoot().top < 155.dp)
             val stop = compose.onNodeWithTag("walk_end")
             val fixed = stop.getUnclippedBoundsInRoot()
-            assertButtonPalette(stop, MoeriseColors.Surface, MoeriseColors.Line)
+            assertButtonPalette(stop, LightMoerisePalette.Surface, LightMoerisePalette.Line)
             val open = compose.onNodeWithTag("discovery_open")
             open.performScrollTo().assertIsDisplayed().assertTextEquals("View on home")
             assertTrue(open.getUnclippedBoundsInRoot().height >= 44.dp)
@@ -562,9 +607,11 @@ class AndroidUiRegressionTest {
         val files = (1..6).map { index -> recent.copy(name = "memos/file-$index", content = "",
             attachments = listOf(CoreJson.parseToJsonElement("""{"filename":"file-$index.pdf"}""") as kotlinx.serialization.json.JsonObject)) }
         val candidates = files + listOf(recent.copy(name = "memos/short", content = "短句\n#未知"), recent)
+        val longReview = recent.copy(name = "memos/long-review", content = (1..32).joinToString("\n\n") { "Review paragraph $it" })
         val review = ReviewBatch("day", "2026-10-30", timezone, listOf(
             ReviewItem(recent.name, recent.sourceHash, recent.createTime, unavailable = false, note = recent),
             ReviewItem("memos/missing", "deleted", recent.createTime, unavailable = true),
+            ReviewItem(longReview.name, longReview.sourceHash, longReview.createTime, unavailable = false, note = longReview),
         ))
         val syncAvailable = java.util.concurrent.atomic.AtomicBoolean()
         val syncedNotes = listOf(recent, recent.copy(name = "memos/synced", content = "Synced while the walk was open"))
@@ -635,16 +682,22 @@ class AndroidUiRegressionTest {
             val paragraph = compose.onNodeWithText("Review first paragraph")
             val date = compose.onNodeWithText("Today")
             assertTrue(paragraph.getUnclippedBoundsInRoot().bottom < date.getUnclippedBoundsInRoot().top)
-            compose.onNodeWithTag("discovery_open").assertTextEquals("View on home")
-            assertButtonPalette(compose.onNodeWithTag("review_walk"), MoeriseColors.Surface, MoeriseColors.Line)
+            assertTrue(compose.onNodeWithTag("review_card").getUnclippedBoundsInRoot().bottom -
+                date.getUnclippedBoundsInRoot().bottom in 21.dp..23.dp)
+            compose.onNodeWithTag("discovery_open").assertDoesNotExist()
+            assertButtonPalette(compose.onNodeWithTag("review_walk"), LightMoerisePalette.Surface, LightMoerisePalette.Line)
             compose.onNodeWithTag("review_item_1").performClick()
+            compose.onNodeWithTag("discovery_open").assertDoesNotExist()
+            compose.onNodeWithTag("review_item_2").performClick()
+            compose.onNodeWithText("Review paragraph 32").performScrollTo().assertIsDisplayed()
+            date.performScrollTo().assertIsDisplayed()
             compose.onNodeWithTag("discovery_open").assertDoesNotExist()
             compose.runOnIdle { page.value = "settings"; mobile.page("settings") }
             val reload = compose.onNodeWithTag("settings_reload")
-            compose.waitUntil(10_000) { reload.isDisplayed() }
-            assertButtonPalette(reload, MoeriseColors.Surface, MoeriseColors.Line)
-            assertButtonPalette(compose.onNodeWithTag("settings_sync"), MoeriseColors.Surface, MoeriseColors.Line)
-            assertButtonPalette(compose.onNodeWithTag("account_logout").performScrollTo(), MoeriseColors.Surface, MoeriseColors.Line)
+            compose.waitUntil(10_000) { compose.onAllNodesWithTag("settings_reload").fetchSemanticsNodes().size == 1 }
+            assertButtonPalette(reload.performScrollTo(), LightMoerisePalette.Surface, LightMoerisePalette.Line)
+            assertButtonPalette(compose.onNodeWithTag("settings_sync").performScrollTo(), LightMoerisePalette.Surface, LightMoerisePalette.Line)
+            assertButtonPalette(compose.onNodeWithTag("account_logout").performScrollTo(), LightMoerisePalette.Surface, LightMoerisePalette.Line)
         } finally {
             try {
                 try { compose.runOnUiThread { job.cancel(); session.close() } }
@@ -922,7 +975,7 @@ class AndroidUiRegressionTest {
         compose.runOnUiThread {
             host.get().setContent {
                 MoeriseTheme {
-                    Box(Modifier.width(300.dp).background(MoeriseColors.Paper)) {
+                    Box(Modifier.width(300.dp).background(LightMoerisePalette.Paper)) {
                         WebSidebar(page.value, strings, "Owner", filters, "2026-11", {}, { page.value = it },
                             {}, { selectedDay.value = it }, {}, selectedTags = setOf("selected"),
                             selectedDate = selectedDay.value, today = "2026-11-16")
@@ -938,19 +991,19 @@ class AndroidUiRegressionTest {
         assertEquals(Color(0xFFE3E7E3), light)
         assertEquals(Color(0xFFCCD7D3), shaded)
         for (cell in listOf(light, shaded)) {
-            assertTrue((cell.luminance() + .05f) / (MoeriseColors.Accent.luminance() + .05f) >= 4.5f)
+            assertTrue((cell.luminance() + .05f) / (LightMoerisePalette.Accent.luminance() + .05f) >= 4.5f)
         }
-        fun dot() = withNodeBitmap(today) { Color(it.getPixel(it.width / 2, it.height - 4)) }
-        assertEquals(MoeriseColors.Accent, dot())
+        fun dot() = withNodeBitmap(today) { Color(it.getPixel(it.width / 2, it.height - 5)) }
+        assertEquals(LightMoerisePalette.Accent, dot())
         today.performClick()
-        assertEquals(MoeriseColors.Accent, background(today))
-        assertEquals(MoeriseColors.OnAccent, dot())
-        assertEquals(MoeriseColors.SurfaceMuted, background(compose.onNodeWithTag("nav_home").assertIsSelected()))
+        assertEquals(LightMoerisePalette.Accent, background(today))
+        assertEquals(LightMoerisePalette.OnAccent, dot())
+        assertEquals(LightMoerisePalette.SelectedWash, background(compose.onNodeWithTag("nav_home").assertIsSelected()))
         val settings = compose.onNodeWithTag("nav_settings")
         settings.performClick().assertIsSelected()
-        assertEquals(MoeriseColors.SurfaceMuted, withNodeBitmap(settings) { Color(it.getPixel(it.width / 2, it.height - 2)) })
+        assertEquals(LightMoerisePalette.SelectedWash, withNodeBitmap(settings) { Color(it.getPixel(it.width / 2, it.height - 2)) })
         val tag = compose.onNodeWithText("#selected").performScrollTo().assertIsSelected()
-        assertEquals(MoeriseColors.SurfaceMuted, background(tag))
+        assertEquals(LightMoerisePalette.SelectedWash, background(tag))
     }
 
     @Test
@@ -983,7 +1036,7 @@ class AndroidUiRegressionTest {
     }
 
     @Test
-    fun toolbarKeepsAllSyncStatusesAndOnlyShowsCompletionAfterSyncing() {
+    fun toolbarShowsOnlySyncStatesThatNeedAttention() {
         createHost()
         val status = mutableStateOf(SyncStatus.CONNECTED)
         compose.runOnUiThread {
@@ -998,14 +1051,14 @@ class AndroidUiRegressionTest {
         val button = compose.onNodeWithTag("sync_notes")
         button.assertDoesNotExist()
         val labels = mapOf(SyncStatus.PENDING to "Pending sync", SyncStatus.ATTENTION to "Sync conflict",
-            SyncStatus.SIGN_IN to "Sign in again", SyncStatus.OFFLINE to "Offline", SyncStatus.SYNCING to "Syncing")
+            SyncStatus.SIGN_IN to "Sign in again", SyncStatus.OFFLINE to "Offline")
         for ((state, label) in labels) {
             compose.runOnIdle { status.value = state }
             button.assertIsDisplayed().assert(SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, label))
         }
+        compose.runOnIdle { status.value = SyncStatus.SYNCING }
+        button.assertDoesNotExist()
         compose.runOnIdle { status.value = SyncStatus.CONNECTED }
-        button.assertIsDisplayed().assert(SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, "Connected"))
-        compose.mainClock.advanceTimeBy(1_250)
         button.assertDoesNotExist()
     }
 
@@ -1080,6 +1133,9 @@ class AndroidUiRegressionTest {
             release.complete(Unit)
             val expand = compose.onNodeWithText("Expand")
             compose.waitUntil(10_000) { expand.isDisplayed() }
+            val image = compose.onNodeWithTag("decoded_attachment_image").getUnclippedBoundsInRoot()
+            val bounds = body.getUnclippedBoundsInRoot()
+            assertTrue(kotlin.math.abs(((image.left + image.right) - (bounds.left + bounds.right)).value) <= 2f)
             assertTrue(body.getUnclippedBoundsInRoot().height in 316.dp..330.dp)
             expand.performClick()
             compose.onNodeWithText("#end").performScrollTo().assertIsDisplayed()
@@ -1115,6 +1171,12 @@ class AndroidUiRegressionTest {
         try {
             var connected = false
             compose.runOnUiThread { host.get().setContent { MoeriseTheme { ConnectionScreen(session, strings) { connected = true } } } }
+            val mark = compose.onNodeWithTag("login_brand_mark").getUnclippedBoundsInRoot()
+            val brand = compose.onNodeWithText("Moerise").getUnclippedBoundsInRoot()
+            val welcome = compose.onNodeWithText("Welcome back").getUnclippedBoundsInRoot()
+            fun center(rect: androidx.compose.ui.unit.DpRect) = (rect.left.value + rect.right.value) / 2
+            assertTrue(kotlin.math.abs(center(brand) - center(mark)) <= 2f)
+            assertTrue(kotlin.math.abs(center(welcome) - center(mark)) <= 1f)
             val origin = compose.onNodeWithTag("server_origin").assertIsDisplayed()
             val user = compose.onNodeWithTag("server_username")
             val submit = compose.onNodeWithTag("server_login").assertIsNotEnabled()
@@ -1197,6 +1259,66 @@ class AndroidUiRegressionTest {
 
     @Test
     @GraphicsMode(GraphicsMode.Mode.NATIVE)
+    fun switchingThemeRecolorsRenderedTagsAndTheOpenComposer() {
+        createHost()
+        val folder = Files.createTempDirectory("moerise-theme-editor").toFile()
+        val database = testDatabase(folder.resolve("data.sqlite3").absolutePath)
+        val repository = NoteRepository(database)
+        val secrets = MemorySecrets()
+        val origin = "http://127.0.0.1:1"
+        val account = "$origin\u0000instance\u0000users/owner"
+        val content = "正文 **加粗 #tag**"
+        val note = Note("instance", "memos/themed", content, "NORMAL", "hash", tags = listOf("tag"))
+        val job = SupervisorJob()
+        val scope = CoroutineScope(job + Dispatchers.Main.immediate)
+        runBlocking {
+            secrets.write("selected-profile", CoreJson.encodeToString(ConnectionProfile(origin, account, "instance", "users/owner", "Owner", "UTC")))
+            database.dao().putSyncState(SyncStateEntity(account, "cursor", "generation", true, 1))
+            repository.recordLocalNote(account, note)
+        }
+        val session = SessionController(secrets, true, scope, themeStore = MemoryUiThemeStore(UiTheme.LIGHT))
+        try {
+            val mobile = MobileController(session, { repository }, scope, initialForeground = true)
+            compose.runOnUiThread { host.get().setContent { MoeriseApp(mobile) } }
+            val rendered = compose.onNodeWithText("正文 加粗 #tag", useUnmergedTree = true)
+            fun tagInk(): Color? = rendered.fetchSemanticsNode().config[SemanticsProperties.Text].single().let { text ->
+                val index = text.text.indexOf("#tag")
+                (text.getLinkAnnotations(index, text.length).single().item as LinkAnnotation.Clickable).styles?.style?.color
+            }
+            compose.waitUntil(10_000) { rendered.isDisplayed() }
+            assertEquals(LightMoerisePalette.Accent, tagInk())
+            compose.onNodeWithTag("compose_capsule").performClick()
+            val editor = compose.onNodeWithTag("quick_editor")
+            compose.waitUntil(10_000) { editor.isDisplayed() }
+            editor.performTextReplacement("草稿 #tag")
+            val panel = compose.onNodeWithTag("quick_editor_sheet")
+            val window = requireNotNull(ShadowDialog.getLatestDialog()?.window)
+            val bars = WindowCompat.getInsetsController(window, window.decorView)
+            fun sheetPaint() = withNodeBitmap(panel, window.decorView) { pixels ->
+                listOf(Color(pixels.getPixel(pixels.width / 2, pixels.height - 2)), Color(pixels.getPixel(pixels.width / 2, 0)))
+            }
+            assertEquals(listOf(LightMoerisePalette.SheetSurface, LightMoerisePalette.CardBorder), sheetPaint())
+            assertTrue(bars.isAppearanceLightStatusBars)
+            compose.runOnIdle { session.theme(UiTheme.DARK) }
+            val palette = DarkMoerisePalette
+            assertEquals(palette.Accent, tagInk())
+            val (surface, line) = sheetPaint()
+            assertEquals(palette.SheetSurface, surface)
+            val expectedLine = palette.CardBorder.compositeOver(palette.SheetSurface)
+            assertTrue(kotlin.math.abs(expectedLine.red - line.red) < .012f && kotlin.math.abs(expectedLine.green - line.green) < .012f,
+                "$line != $expectedLine")
+            assertFalse(bars.isAppearanceLightStatusBars)
+            assertFalse(bars.isAppearanceLightNavigationBars)
+            editor.assertTextContains("草稿 #tag")
+        } finally {
+            compose.runOnUiThread { job.cancel(); session.close() }
+            waitForMainCondition("theme fixture closes") { job.isCompleted }
+            database.close(); folder.deleteRecursively()
+        }
+    }
+
+    @Test
+    @GraphicsMode(GraphicsMode.Mode.NATIVE)
     fun floatingComposerPreservesTheTimelineAndFirstScreenPrewarmsFilters() {
         createHost()
         val folder = Files.createTempDirectory("moerise-composer-focus").toFile()
@@ -1217,7 +1339,8 @@ class AndroidUiRegressionTest {
             for (index in 1..12) {
                 val older = note.copy(createTime = "2026-11-25T10:00:00Z", tags = emptyList())
                 repository.recordLocalNote(account, older.copy(name = "memos/home-$index", content = "Home note $index"))
-                repository.recordLocalNote(account, older.copy(name = "memos/archive-$index", content = "Archive note $index", state = "ARCHIVED"))
+                repository.recordLocalNote(account, older.copy(name = "memos/archive-$index", content = "Archive note $index",
+                    state = "ARCHIVED", tags = listOf("archive-only")))
             }
         }
         val session = SessionController(secrets, true, scope)
@@ -1279,11 +1402,13 @@ class AndroidUiRegressionTest {
             assertEquals(360.dp, sheet.width)
             val dialogWindow = requireNotNull(ShadowDialog.getLatestDialog()?.window).decorView
             withNodeBitmap(panel, dialogWindow) { pixels ->
-                assertEquals(MoeriseColors.Surface, Color(pixels.getPixel(1, pixels.height - 2)))
-                assertEquals(MoeriseColors.Surface, Color(pixels.getPixel(pixels.width - 2, pixels.height - 2)))
+                assertEquals(LightMoerisePalette.SheetSurface, Color(pixels.getPixel(1, pixels.height - 2)))
+                assertEquals(LightMoerisePalette.SheetSurface, Color(pixels.getPixel(pixels.width - 2, pixels.height - 2)))
             }
-            assertButtonPalette(compose.onNodeWithTag("quick_cancel"), MoeriseColors.Surface, MoeriseColors.Line, dialogWindow)
-            assertButtonPalette(compose.onNodeWithTag("quick_save"), MoeriseColors.Accent, MoeriseColors.OnAccent, dialogWindow)
+            assertButtonPalette(compose.onNodeWithTag("quick_cancel"), LightMoerisePalette.Surface, LightMoerisePalette.Line, dialogWindow)
+            assertButtonPalette(compose.onNodeWithTag("quick_save"), LightMoerisePalette.Accent, LightMoerisePalette.OnAccent, dialogWindow)
+            assertTrue(compose.onNodeWithTag("quick_save").getUnclippedBoundsInRoot().left -
+                compose.onNodeWithTag("quick_cancel").getUnclippedBoundsInRoot().right >= 8.dp)
             now.set(Instant.parse("2026-11-27T00:00:00Z"))
             compose.mainClock.advanceTimeBy(30_100)
             date.assertTextEquals("Nov 26")
@@ -1320,16 +1445,47 @@ class AndroidUiRegressionTest {
                 mobile.archive.state.value.notes.any { it.name == "memos/archive-10" }
             }
             checkQuickComposerPosition("archive", "memos/archive-10")
-            compose.onNodeWithTag("open_menu").performSemanticsAction(SemanticsActions.OnClick) { assertTrue(it()) }
-            compose.onNodeWithTag("nav_settings").performClick()
-            waitForTag("settings_reload")
-            assertFalse(session.state.value.connected)
-            compose.onNodeWithTag("account_logout").performScrollTo().assertIsEnabled().performClick()
-            waitForTag("logout_confirm")
-            compose.onNodeWithText("Cancel").performClick()
-            compose.onNodeWithTag("open_menu").performSemanticsAction(SemanticsActions.OnClick) { assertTrue(it()) }
-            compose.onNodeWithTag("nav_home").performScrollTo().assertIsDisplayed()
-                .performSemanticsAction(SemanticsActions.OnClick) { assertTrue(it()) }
+            fun openDrawer() = compose.onNodeWithTag("open_menu").performSemanticsAction(SemanticsActions.OnClick) { assertTrue(it()) }
+            val calendarDate = compose.onNodeWithContentDescription("2026-11-26, 1 notes")
+            val archiveTag = compose.onNode(hasText("#archive-only") and hasAnyAncestor(hasTestTag("sidebar_scroll")))
+            for (destination in listOf("settings", "review")) {
+                openDrawer()
+                if (destination == "review") {
+                    compose.onNodeWithTag("nav_archive").performScrollTo().performClick()
+                    waitForTag("archive_timeline")
+                    openDrawer()
+                }
+                waitForMainCondition("archive tags and normal calendar are ready") {
+                    mobile.sidebar.state.value.let {
+                        it.tags.any { tag -> tag.tag == "archive-only" } && it.calendar?.days?.contains(DayCount("2026-11-26", 1)) == true
+                    }
+                }
+                calendarDate.assertExists()
+                archiveTag.performScrollTo().performClick()
+                assertEquals(setOf("archive-only"), mobile.search.state.value.query.tags)
+                openDrawer()
+                val link = compose.onNodeWithTag("nav_$destination")
+                if (destination == "review") link.performScrollTo()
+                link.performClick()
+                if (destination == "settings") {
+                    waitForTag("settings_reload")
+                    assertFalse(session.state.value.connected)
+                    compose.onNodeWithTag("account_logout").performScrollTo().assertIsEnabled().performClick()
+                    waitForTag("logout_confirm")
+                    compose.onNodeWithText("Cancel").performClick()
+                }
+                openDrawer()
+                waitForMainCondition("normal tags are ready in $destination") {
+                    mobile.sidebar.state.value.tags.any { it.tag == "writing" }
+                }
+                compose.onNodeWithText("#writing").assertExists()
+                archiveTag.assertDoesNotExist()
+                calendarDate.performScrollTo().performClick()
+                assertEquals(SearchQuery(date = "2026-11-26"), mobile.search.state.value.query)
+                openDrawer()
+                calendarDate.performScrollTo().performClick()
+                assertEquals(SearchQuery(), mobile.search.state.value.query)
+            }
             waitForTag("home_timeline")
             openComposer()
             val queuedBody = (1..24).joinToString("\n\n") { "New note $it" }

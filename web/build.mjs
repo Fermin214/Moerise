@@ -9,18 +9,7 @@ const output = fileURLToPath(new URL('./dist/', import.meta.url));
 await rm(output, { recursive: true, force: true });
 await mkdir(output, { recursive: true });
 await cp(source, output, { recursive: true });
-// Compile static inline styles for the same-origin CSP.
-const rules = [];
-let html = (await readFile(`${output}/index.html`, 'utf8')).replace(/<[^>]+\sstyle="[^"]*"[^>]*>/g, tag => {
-  const style = /\sstyle="([^"]*)"/.exec(tag)[1];
-  const name = `layout-${rules.length}`;
-  rules.push(`#app .${name}{${style}}`);
-  const cleaned = tag.replace(/\sstyle="[^"]*"/, '');
-  return /\sclass="/.test(cleaned)
-    ? cleaned.replace(/\sclass="([^"]*)"/, ` class="$1 ${name}"`)
-    : cleaned.replace(/^<([^\s>]+)/, `<$1 class="${name}"`);
-});
-await writeFile(`${output}/layout.css`, rules.join('\n') + '\n');
+let html = await readFile(`${output}/index.html`, 'utf8');
 const pkg = JSON.parse(await readFile(new URL('./package.json', import.meta.url), 'utf8'));
 html = html.replace('</head>', `  <meta name="moerise-version" content="${pkg.version}">\n</head>`);
 const modules = new Map();
@@ -35,7 +24,7 @@ for (const match of styles.matchAll(imports)) {
   const body = await readFile(`${source}/${match[1]}`, 'utf8');
   combined.push(match[2] ? `@layer ${match[2]} {\n${body}\n}` : body);
 }
-combined.push(styles.replace(imports, '').replace(layerOrder, ''), rules.join('\n'));
+combined.push(styles.replace(imports, '').replace(layerOrder, ''));
 const contents = new Map([
   ['index.html', html], ['styles.css', combined.join('\n') + '\n'],
   ...modules, ['favicon.svg', await readFile(`${source}/favicon.svg`, 'utf8')],

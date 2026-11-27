@@ -17,6 +17,7 @@ import { syncStatus } from './sync-status.js';
 import { dismissSnackbar, snackbar } from './snackbar.js';
 import { animateMotion, motionPositions, moveFrom } from './motion.js';
 import { serviceDate, nextServiceDay, timelineTime } from './timeline-time.js';
+import { initTheme } from './theme.js';
 
 const $ = id => document.getElementById(id);
 const logoutKey = 'moerise.logout-pending';
@@ -32,6 +33,8 @@ function setLogoutCSRF(token) {
 const shell = initShell(loadSidebar);
 const draft = new Draft(), snapshots = new Map();
 const editors = new Map(), pendingWrites = new Map(), failures = new Map();
+const noteRefreshes = new Map();
+const refreshSync = Symbol('refresh');
 const noteSizes = new Map();
 const expandedNotes = new Set();
 const measuredCards = new Map();
@@ -82,7 +85,7 @@ const client = createClient({
     const timezoneChanged = identity.timezone !== value.timezone;
     identity = value; updateStargazing();
     if (timezoneChanged) {
-      refreshServiceDay(true); month = sourceTimeline().values.date?.slice(0, 7) || serviceDay.slice(0, 7);
+      refreshServiceDay(true); month = sidebarDate().slice(0, 7) || serviceDay.slice(0, 7);
       dirtySnapshots(); invalidateSidebar(); loadSidebar();
     }
   },
@@ -122,6 +125,7 @@ function aborted() { return new DOMException('Stale request', 'AbortError'); }
 function stale(generation) { if (generation !== epoch) throw aborted(); }
 function invalidate() {
   epoch++; viewSequence++;
+  noteRefreshes.clear();
   syncStatus.reset();
   dismissSnackbar(); lastSyncAt = null;
   capabilitiesRequest = null;
@@ -160,6 +164,7 @@ function hidePrivate({ resume = false } = {}) {
   if (resume) {
     draftOwner ||= sessionOwner(identity);
     for (const [name, operation] of pendingWrites) {
+      if (operation.method === 'DELETE' && operation.busy) operation.unconfirmed = true;
       operation.busy = false;
       failures.set(name, { code: 'NOTE_SAVE_UNCONFIRMED' });
     }
@@ -234,7 +239,7 @@ function refreshServiceDay(timezoneChanged = false) {
     calendar.querySelector('.today')?.classList.remove('today');
     calendar.querySelector(`[data-date="${day}"]`)?.classList.add('today');
     if (!timezoneChanged && month === previous.slice(0, 7) && month && month !== day.slice(0, 7) &&
-        !sourceTimeline().values.date && !calendar.contains(document.activeElement)) {
+        !sidebarDate() && !calendar.contains(document.activeElement)) {
       month = day.slice(0, 7);
       loadSidebar(null, { calendarOnly: true });
     }
@@ -282,6 +287,26 @@ function sidebarFilter(change) {
   const source = sourceTimeline();
   navigate(timelineURL(source.path, { ...source.values, query: $('q').value, ...change }));
 }
+function sidebarTagContext() {
+  if (isTimeline()) return { path: location.pathname, values: filters(location.search) };
+  if (notePath.test(location.pathname)) {
+    const from = new URL(safeFrom(new URLSearchParams(location.search).get('from')), location.origin);
+    if (from.pathname === '/' || from.pathname === '/archived') return { path: from.pathname, values: filters(from.search) };
+  }
+  return { path: '/', values: filters('') };
+}
+function setSidebarTagScope(path) {
+  const state = path === '/archived' ? 'ARCHIVED' : 'NORMAL';
+  if (sidebarTagState !== state) {
+    sidebarTagSequence++;
+    const host = $('tags');
+    sidebarCommits.delete(host);
+    host.replaceChildren();
+    sidebarTagState = state;
+  }
+  return state;
+}
+const sidebarDate = () => location.pathname === '/' ? filters(location.search).date : '';
 function recordSync() {
   lastSyncAt = Date.now();
   window.dispatchEvent(new Event('moerisesync'));
@@ -432,8 +457,8 @@ function discard(cache, key) {
   cache.delete(key);
 }
 function readTags(state, owner) { return sidebarData(sidebarTags, state, `/tags?${new URLSearchParams({ state })}`, owner); }
-function readCalendar(state, month, owner) {
-  return sidebarData(sidebarCalendars, `${state}:${month}`, `/calendar?${new URLSearchParams({ state, month })}`, owner);
+function readCalendar(month, owner) {
+  return sidebarData(sidebarCalendars, `NORMAL:${month}`, `/calendar?${new URLSearchParams({ state: 'NORMAL', month })}`, owner);
 }
 function sidebarChanged(before, after) {
   const dayOf = note => note && resolveText(formatTime(note.create_time)).slice(0, 10);
@@ -442,7 +467,7 @@ function sidebarChanged(before, after) {
   const tagsOf = note => JSON.stringify([...(note?.tags || [])].sort());
   for (const [note, day] of [[before, oldDay], [after, newDay]]) {
     if (!note) continue;
-    if (changedState || oldDay !== newDay) discard(sidebarCalendars, `${note.state}:${day.slice(0, 7)}`);
+    if (note.state === 'NORMAL' && (changedState || oldDay !== newDay)) discard(sidebarCalendars, `NORMAL:${day.slice(0, 7)}`);
     if ((changedState && note.tags?.length) || tagsOf(before) !== tagsOf(after)) discard(sidebarTags, note.state);
   }
   loadSidebar();
@@ -516,23 +541,19 @@ async function loadSidebar(owner, { calendarOnly = false, preserveFocus = false 
   if (!(owner instanceof AbortController)) owner = null;
   if (!identity) return;
   const generation = epoch;
-  const { path, values } = sourceTimeline();
-  const state = path === '/archived' ? 'ARCHIVED' : 'NORMAL', selectedMonth = month;
-  const calendarKey = `${state}:${selectedMonth}`;
+  const { path } = sidebarTagContext();
+  const state = setSidebarTagScope(path), selectedMonth = month;
+  const calendarKey = `NORMAL:${selectedMonth}`;
   const tagsHost = $('tags'), calendarHost = $('calendar');
-  calendarOnly = calendarOnly && sidebarTagState === state && tagsHost.hasChildNodes();
+  calendarOnly = calendarOnly && tagsHost.hasChildNodes();
   const tagSequence = calendarOnly ? null : ++sidebarTagSequence;
   const calendarSequence = ++sidebarCalendarSequence;
-  const contextCurrent = () => generation === epoch && sourceTimeline().path === path;
+  const contextCurrent = () => generation === epoch && sidebarTagContext().path === path;
   const tagsCurrent = () => tagSequence === sidebarTagSequence && contextCurrent();
-  const calendarCurrent = () => calendarSequence === sidebarCalendarSequence && selectedMonth === month && contextCurrent();
+  const calendarCurrent = () => calendarSequence === sidebarCalendarSequence && selectedMonth === month && generation === epoch;
   showError($('sidebar-error'), null); $('sidebar-retry').hidden = true;
-  if (sidebarTagState !== state) {
-    $('tags').replaceChildren();
-    sidebarTagState = state;
-  }
   if (sidebarCalendarKey !== calendarKey && (!preserveFocus || !calendarHost.contains(document.activeElement))) {
-    renderCalendar([], values.date, true);
+    renderCalendar([], sidebarDate(), true);
     sidebarCalendarKey = calendarKey;
   }
   async function receive(read, current, publish) {
@@ -549,12 +570,12 @@ async function loadSidebar(owner, { calendarOnly = false, preserveFocus = false 
   const invalidData = () => Object.assign(new Error('Invalid sidebar data'), { code: 'NOTE_LIST_INVALID' });
   const tags = () => receive(() => readTags(state, owner), tagsCurrent, data => {
     if (!Array.isArray(data?.tags)) { sidebarTags.delete(state); throw invalidData(); }
-    commitSidebar(tagsHost, preserveFocus, tagsCurrent, () => renderTags(data.tags, sourceTimeline().values.tags));
+    commitSidebar(tagsHost, preserveFocus, tagsCurrent, () => renderTags(data.tags, sidebarTagContext().values.tags));
   });
-  const calendar = () => receive(() => readCalendar(state, selectedMonth, owner), calendarCurrent, data => {
+  const calendar = () => receive(() => readCalendar(selectedMonth, owner), calendarCurrent, data => {
     if (!Array.isArray(data?.days) || data.month !== selectedMonth) { sidebarCalendars.delete(calendarKey); throw invalidData(); }
     commitSidebar(calendarHost, preserveFocus, calendarCurrent, () => {
-      renderCalendar(data.days, sourceTimeline().values.date);
+      renderCalendar(data.days, sidebarDate());
       sidebarCalendarKey = calendarKey;
     });
   });
@@ -574,9 +595,9 @@ function renderTags(items, selectedTags) {
   for (const item of matches) {
     const on = selected.has(item.tag);
     const link = button('', `ent tag-row${on ? ' on' : ''}`, () => {
-      const source = sourceTimeline();
-      sidebarFilter({ tags: source.values.tags.includes(item.tag)
-        ? source.values.tags.filter(tag => tag !== item.tag) : [...source.values.tags, item.tag] });
+      const { path, values } = sidebarTagContext();
+      const tags = values.tags.includes(item.tag) ? values.tags.filter(tag => tag !== item.tag) : [...values.tags, item.tag];
+      navigate(timelineURL(path, { ...values, query: isTimeline() ? $('q').value : values.query, tags }));
     });
     link.setAttribute('aria-pressed', String(on)); link.title = `#${item.tag}`;
     link.append(el('span', '', `#${item.tag}`), el('em', '', String(item.count)));
@@ -599,7 +620,9 @@ function renderCalendar(days, selected, disabled = false) {
   for (let day = 1; day <= size; day++) {
     const date = `${month}-${String(day).padStart(2, '0')}`, count = counts.get(date) || 0;
     const cell = button(String(day), [selected === date ? 'sel' : count > 1 ? 'h2' : count ? 'h1' : '', date === today ? 'today' : ''].join(' '),
-      () => sidebarFilter({ date: sourceTimeline().values.date === date ? '' : date }));
+      () => navigate(timelineURL('/', location.pathname === '/'
+        ? { ...filters(location.search), query: $('q').value, date: sidebarDate() === date ? '' : date }
+        : { date })));
     cell.disabled = disabled;
     cell.dataset.date = date;
     setAttr(cell, 'aria-label', l("{0}，{1} 条笔记", { 0: date, 1: count }));
@@ -709,20 +732,39 @@ function appendNoteError(card, note, err) {
   if (pendingWrites.has(note.name)) box.append(button(l("重试原提交"), 'ghost', () => performWrite(note)));
   box.append(button(l("刷新笔记"), 'ghost', () => refreshNote(note))); card.append(box);
 }
-async function refreshNote(note) {
+async function publishNoteWrite(note, updated) {
+  const { name } = note;
+  editors.get(name)?.draft.clear(); editors.delete(name); pendingWrites.delete(name); failures.delete(name);
+  syncStatus.clear(name);
+  leaveGuard.update(); dirtySnapshots();
+  if (updated) replaceCard(updated);
+  sidebarChanged(note, updated);
+  if (timeline) await timeline.update(name, updated);
+  else if (location.pathname === `/notes/${noteID(name)}`) {
+    if (updated) renderList([updated]);
+    else navigate(safeFrom(new URLSearchParams(location.search).get('from')));
+  }
+}
+async function refreshNote(note, { missingOnly = false } = {}) {
   const generation = epoch, sequence = viewSequence;
+  const { name } = note, operation = pendingWrites.get(name);
+  if (operation?.busy) return;
+  const attempt = Symbol();
+  noteRefreshes.set(name, attempt);
+  const current = () => generation === epoch && sequence === viewSequence && noteRefreshes.get(name) === attempt;
+  const unconfirmedDelete = operation?.method === 'DELETE' && operation.unconfirmed;
   try {
-    const updated = await request(`/notes/${noteID(note.name)}`);
-    stale(generation);
-    if (sequence !== viewSequence) return;
+    const updated = await request(`/notes/${noteID(name)}`);
+    if (!current() || unconfirmedDelete || missingOnly) return;
     if (!validNote(updated)) throw Object.assign(new Error('Invalid note'), { code: 'NOTE_LIST_INVALID' });
-    editors.get(note.name)?.draft.clear(); editors.delete(note.name); pendingWrites.delete(note.name); failures.delete(note.name);
-    replaceCard(updated);
-    dirtySnapshots();
-    if (timeline) await timeline.update(note.name, updated);
-    else renderList([updated]);
-    sidebarChanged(note, updated);
-  } catch (err) { if (generation === epoch && sequence === viewSequence) handleFailure($('list-error'), err); }
+    await publishNoteWrite(note, updated);
+  } catch (err) {
+    if (!current()) return;
+    if (unconfirmedDelete && err.status === 404 && err.code === 'SOURCE_NOT_FOUND') await publishNoteWrite(note, null);
+    else if (!missingOnly || err.status === 401) handleFailure($('list-error'), err);
+  } finally {
+    if (noteRefreshes.get(name) === attempt) noteRefreshes.delete(name);
+  }
 }
 function confirmDelete(card, note) {
   if (card.querySelector('.cfm') || pendingWrites.has(note.name)) return;
@@ -731,7 +773,7 @@ function confirmDelete(card, note) {
   const controls = el('span', 'editor-actions');
   const cancel = button(l("取消"), 'ghost', () => { confirm.remove(); card.querySelector('.more, .note-actions button')?.focus(); });
   const remove = button(l("删除"), 'danger', () => {
-    pendingWrites.set(note.name, { method: 'DELETE', body: Object.freeze({ source_hash: note.source_hash }), busy: false });
+    pendingWrites.set(note.name, { method: 'DELETE', note, body: Object.freeze({ source_hash: note.source_hash }), busy: false });
     performWrite(note);
   });
   controls.append(cancel, remove); confirm.append(controls);
@@ -750,9 +792,10 @@ function changeState(note) {
 async function performWrite(note) {
   const operation = pendingWrites.get(note.name);
   if (!operation || operation.busy) return;
+  noteRefreshes.delete(note.name);
   const generation = epoch;
   const started = performance.now();
-  const transfer = syncStatus.start();
+  const transfer = syncStatus.start(note.name, { write: true });
   operation.busy = true; failures.delete(note.name);
   const editor = editors.get(note.name);
   editor?.update();
@@ -773,17 +816,13 @@ async function performWrite(note) {
     });
     else if (operation.body.state === 'NORMAL') snackbar(l("笔记已恢复。"));
     if (editor) { usage('edit', 'success'); usage('save_ack', 'success', performance.now() - started); }
-    editor?.draft.clear(); editors.delete(note.name); pendingWrites.delete(note.name); failures.delete(note.name); dirtySnapshots();
-    if (timeline) await timeline.update(note.name, updated);
-    else if (location.pathname === `/notes/${noteID(note.name)}`) {
-      if (operation.method === 'DELETE') navigate(safeFrom(new URLSearchParams(location.search).get('from')));
-      else renderList([updated]);
-    }
-    sidebarChanged(note, updated);
+    await publishNoteWrite(note, updated);
   } catch (err) {
-    transfer(resultOf(err));
-    if (editor && generation === epoch) { usage('edit', resultOf(err)); usage('save_ack', resultOf(err), performance.now() - started); }
+    const result = resultOf(err);
+    transfer(result);
+    if (editor && generation === epoch) { usage('edit', result); usage('save_ack', result, performance.now() - started); }
     if (generation !== epoch || err.name === 'AbortError') return;
+    if (operation.method === 'DELETE' && ['unknown', 'timeout'].includes(result)) operation.unconfirmed = true;
     operation.busy = false;
     if (err.status === 401) { expire(err); return; }
     failures.set(note.name, err);
@@ -821,7 +860,10 @@ function startEdit(note) {
   const cancel = button(l("取消"), 'secondary', () => {
     if (pendingWrites.get(note.name)?.busy) return;
     readSequence++; model.clear(); editors.delete(note.name);
-    if (!pendingWrites.has(note.name)) failures.delete(note.name);
+    if (!pendingWrites.has(note.name)) {
+      failures.delete(note.name);
+      syncStatus.clear(note.name);
+    }
     replaceCard(note); leaveGuard.update();
   });
   const save = button(l("保存"), 'save', () => form.requestSubmit()); save.append(el('small', '', 'Ctrl ↵'));
@@ -904,6 +946,7 @@ async function routeModule(load, generation, sequence) {
 }
 async function showRoute({ focus = false, returning = false } = {}) {
   if (!identity) return;
+  setSidebarTagScope(sidebarTagContext().path);
   timelineRefresh?.abort();
   stopPreload();
   shell.closeNavigation();
@@ -932,7 +975,7 @@ async function showRoute({ focus = false, returning = false } = {}) {
   if ($('q').value !== sourceTimeline().values.query) $('q').value = sourceTimeline().values.query;
   $('search-mode').value = sourceTimeline().values.mode;
   lastTimeline = sourceTimeline();
-  if (sourceTimeline().values.date) month = sourceTimeline().values.date.slice(0, 7);
+  if (sidebarDate()) month = sidebarDate().slice(0, 7);
   document.querySelectorAll('[data-route]').forEach(link => {
     const active = link.getAttribute('href') === location.pathname; link.classList.toggle('on', active);
     if (active) link.setAttribute('aria-current', 'page'); else link.removeAttribute('aria-current');
@@ -1049,15 +1092,26 @@ async function synchronize() {
   if (!identity || trigger.disabled) return;
   const generation = epoch, view = viewSequence;
   trigger.disabled = true;
-  const transfer = syncStatus.start();
+  const transfer = syncStatus.start(refreshSync);
   try {
     dirtySnapshots(); invalidateSidebar();
-    const [, refreshed] = await Promise.all([loadSidebar(), timeline ? timeline.refresh({ record: false }) : refreshTimelineSnapshot()]);
+    const sidebar = loadSidebar();
+    const refreshed = await (timeline ? timeline.refresh({ record: false, onRetry: synchronize }) : refreshTimelineSnapshot());
     stale(generation);
     if (view !== viewSequence || !refreshed) { transfer(view === viewSequence ? 'failure' : 'canceled'); return; }
+    await sidebar;
+    stale(generation);
+    if (view !== viewSequence) { transfer('canceled'); return; }
     transfer('success');
     recordSync();
     snackbar(l("已从 Core 刷新笔记。"));
+    const visible = new Set([...$('notes').children].map(node => node.dataset.name));
+    for (const operation of pendingWrites.values()) {
+      if (generation !== epoch || view !== viewSequence) break;
+      if (operation.method === 'DELETE' && operation.unconfirmed && !visible.has(operation.note.name)) {
+        await refreshNote(operation.note, { missingOnly: true });
+      }
+    }
   } catch (err) {
     transfer(resultOf(err));
     if (generation === epoch && (view === viewSequence || err.status === 401)) handleFailure($('list-error'), err);
@@ -1105,7 +1159,7 @@ $('composer').addEventListener('submit', async event => {
   let attempt;
   try { attempt = draft.begin(); } catch (err) { showError($('save-error'), err); return; }
   const generation = epoch;
-  const started = performance.now(), transfer = syncStatus.start();
+  const started = performance.now(), transfer = syncStatus.start(draft, { write: true });
   const returnFocus = document.activeElement === $('content') || document.activeElement === $('save');
   saving = true; updateComposer(); showError($('save-error'), null);
   try {
@@ -1164,5 +1218,6 @@ window.addEventListener('pageshow', event => { if (event.persisted) restore(); }
 window.addEventListener('focus', refreshSidebarOnFocus);
 document.addEventListener('visibilitychange', refreshSidebarOnFocus);
 document.addEventListener('visibilitychange', monitorLoginAutofill);
+initTheme();
 initI18n();
 restore();

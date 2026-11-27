@@ -34,6 +34,8 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.LocalView
@@ -83,6 +85,11 @@ fun MoeriseApp(mobile: MobileController, onHomeReady: () -> Unit = {}) {
     }
     ClearWritingOnStop(leaveWriting)
     val session = mobile.session
+    val theme by session.theme.collectAsState()
+    val themeError by session.themeError.collectAsState()
+    val darkTheme = theme.resolveDark(LocalContext.current, LocalConfiguration.current, useSystemSetting = themeError != null)
+    val window = LocalView.current.context.activity()?.window
+    SideEffect { window?.applyMoeriseTheme(darkTheme) }
     val language by session.language.collectAsState()
     val strings = remember(language) { Strings(language) }
     val connection by session.state.collectAsState()
@@ -128,6 +135,7 @@ fun MoeriseApp(mobile: MobileController, onHomeReady: () -> Unit = {}) {
     var page by rememberSaveable(account) { mutableStateOf("home") }
     var searchOpen by rememberSaveable(account) { mutableStateOf(false) }
     var sourceTimeline by rememberSaveable(account) { mutableStateOf("home") }
+    val sidebarTagState = if (page == "archive") "ARCHIVED" else "NORMAL"
     var conflictKey by remember(account) { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
     val drawer = remember(account, scope) { NavigationDrawerState(scope) }
@@ -285,9 +293,9 @@ fun MoeriseApp(mobile: MobileController, onHomeReady: () -> Unit = {}) {
         targetPositioned = true
     }
     LaunchedEffect(query.text, query.mode) { if (searchOpen) { delay(250); if (searchOpen) showFilter(query) } }
-    LaunchedEffect(drawerVisible, month, account, connection.connected, connection.needsLogin, sourceTimeline, timezone, filterRevision) {
+    LaunchedEffect(drawerVisible, month, account, connection.connected, connection.needsLogin, sidebarTagState, timezone, filterRevision) {
         if (drawerVisible && account != null && !connection.needsLogin) {
-            sidebar.change(query.copy(state = if (sourceTimeline == "archive") "ARCHIVED" else "NORMAL"))
+            sidebar.change(SearchQuery(state = sidebarTagState))
             sidebar.filters(month)
         } else sidebar.leave()
     }
@@ -300,7 +308,7 @@ fun MoeriseApp(mobile: MobileController, onHomeReady: () -> Unit = {}) {
         if (page != "map" || !mobile.stars.back()) navigate("home")
     }
     PlatformLanguage(language) {
-    MoeriseTheme {
+    MoeriseTheme(darkTheme) {
         WelcomeDialog(mobile.privacy, strings)
         CompositionLocalProvider(
             LocalReducedMotion provides reducedMotion,
@@ -319,18 +327,25 @@ fun MoeriseApp(mobile: MobileController, onHomeReady: () -> Unit = {}) {
                 modifier = Modifier.platformTestTags().testTag(if (platformImeVisible()) "ime_visible" else "ime_hidden"),
                 sheet = {
                     WebSidebar(page, strings, connection.profile?.let { it.displayName.trim().ifBlank { it.userName.removePrefix("users/") } }.orEmpty(),
-                        sidebarFilters, month, onClose = drawer::close,
+                        sidebarFilters.let { if (it.query.state == sidebarTagState) it else it.copy(tags = emptyList()) },
+                        month, onClose = drawer::close,
                         onNavigate = { target -> drawer.close(); navigate(target) },
-                        onMonth = { month = it }, onDate = { showFilter(query.copy(date = if (query.date == it) "" else it)) },
-                        onTag = { tag -> showFilter(query.copy(tags = if (tag in query.tags) query.tags - tag else query.tags + tag)) },
-                        selectedTags = query.tags,
-                        selectedDate = query.date, today = serviceDay,
+                        onMonth = { month = it }, onDate = { date ->
+                            val next = if (page == "home") query.copy(date = if (query.date == date) "" else date)
+                                else SearchQuery(date = date)
+                            showFilter(next, "home")
+                        },
+                        onTag = { tag ->
+                            val value = if (page in setOf("home", "archive")) query else SearchQuery(state = sidebarTagState)
+                            showFilter(value.copy(tags = if (tag in value.tags) value.tags - tag else value.tags + tag),
+                                if (sidebarTagState == "ARCHIVED") "archive" else "home")
+                        },
+                        selectedTags = if (page in setOf("home", "archive") && query.state == sidebarTagState) query.tags else emptySet(),
+                        selectedDate = if (page == "home") query.date else "", today = serviceDay,
                         stargazingEnabled = connection.profile?.stargazingEnabled != false)
                 }
             ) {
-                Surface(Modifier.fillMaxSize().platformTestTags(),
-                    color = if (account == null || page == "connect" || page in setOf("home", "archive"))
-                        MoeriseColors.ScrollPaper else MoeriseColors.Paper) {
+                Surface(Modifier.fillMaxSize().platformTestTags(), color = MoeriseColors.Paper) {
                     Box(Modifier.fillMaxSize()) {
                     when {
                         connection.loading -> Box(Modifier.safeDrawingPadding().padding(24.dp)) { CircularProgressIndicator() }
@@ -562,7 +577,7 @@ internal suspend fun SnackbarHostState.showMobileNotice(message: String, undoLab
 @Composable
 private fun MobileSnackbar(data: SnackbarData) {
     Surface(Modifier.fillMaxWidth().heightIn(min = 48.dp).semantics { liveRegion = LiveRegionMode.Polite }, shape = RoundedCornerShape(14.dp),
-        color = Color.White, border = BorderStroke(1.dp, MoeriseColors.Line), shadowElevation = 4.dp) {
+        color = MoeriseColors.SheetSurface, border = BorderStroke(1.dp, MoeriseColors.CardBorder), shadowElevation = 4.dp) {
         Row(Modifier.padding(horizontal = 14.dp, vertical = 2.dp), verticalAlignment = Alignment.CenterVertically) {
             Text(data.visuals.message, Modifier.weight(1f), color = MoeriseColors.Ink, fontSize = 15.sp)
             data.visuals.actionLabel?.let {
@@ -583,14 +598,18 @@ private fun NoteComposerSheet(state: EditorUiState, controller: EditorController
     }
     Dialog(onDismissRequest = dismiss, properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) {
         val window = (LocalView.current.parent as? DialogWindowProvider)?.window
-        SideEffect { window?.setDimAmount(0f) }
+        val palette = MoeriseColors
+        SideEffect {
+            window?.setDimAmount(0f)
+            window?.applyMoeriseTheme(palette.dark, dialog = true)
+        }
         val focus = LocalFocusManager.current
         val keyboard = LocalSoftwareKeyboardController.current
         val leave: () -> Unit = { focus.clearFocus(); keyboard?.hide() }
         ClearWritingOnStop(leave)
         CompositionLocalProvider(LocalLeaveWriting provides leave) {
             Box(Modifier.fillMaxSize()) {
-                Box(Modifier.matchParentSize().background(MoeriseColors.Ink.copy(alpha = 0.18f))
+                Box(Modifier.matchParentSize().background(palette.Scrim)
                     .clickable(interactionSource = null, indication = null, onClick = dismiss)
                     .semantics { contentDescription = strings.text("关闭写作", "Close writing") })
                 Box(Modifier.align(Alignment.BottomCenter).fillMaxWidth().statusBarsPadding().displayCutoutPadding().imePadding(),
@@ -658,7 +677,8 @@ private fun SheetEditor(
         (draft.content.isNotBlank() || edits.staged.isNotEmpty() ||
             baseline?.attachments?.any { it["name"]?.jsonPrimitive?.content !in edits.removed } == true || state.pending != null)
     val scanner = remember(field.text) { if ('#' in field.text) NoteTagScanner(field.text) else null }
-    val transformation = remember(field.text) { markdownEditorTransformation(field.text) }
+    val palette = MoeriseColors
+    val transformation = remember(field.text, palette) { markdownEditorTransformation(field.text, palette) }
     var insertedMarker by remember(draft.id) { mutableStateOf<Int?>(null) }
     val prefix = if (focused && field.composition == null && field.selection.collapsed) {
         val cursor = field.selection.start
@@ -720,6 +740,7 @@ private fun SheetEditor(
                 Spacer(Modifier.weight(1f))
                 WebSecondaryAction(strings.text("取消", "Cancel"), onClick = onCancel, enabled = !state.busy && !state.importing,
                     modifier = Modifier.testTag(cancelTag))
+                Spacer(Modifier.width(8.dp))
                 if (draft.conflictJson != null) {
                     WebAction(strings.text("处理冲突", "Resolve conflict"), onClick = { leaveWriting(); onConflict() })
                 } else WebAction(strings.text("保存", "Save"), onClick = { haptic(); onSave() },
@@ -730,12 +751,12 @@ private fun SheetEditor(
     Surface(modifier = Modifier.widthIn(max = 800.dp).fillMaxWidth().testTag("quick_editor_sheet")
         .then(if (LocalReducedMotion.current) Modifier else Modifier.animateContentSize(tween(140))),
         shape = RoundedCornerShape(topStart = 18.dp, topEnd = 18.dp, bottomStart = 0.dp, bottomEnd = 0.dp),
-        color = MoeriseColors.Surface, shadowElevation = 3.dp) {
+        color = MoeriseColors.SheetSurface, shadowElevation = 3.dp) {
         Column(Modifier.drawWithContent {
             drawContent()
             val edge = 18.dp.toPx()
             val line = 1.dp.toPx()
-            drawLine(MoeriseColors.Line, Offset(edge, line / 2), Offset(size.width - edge, line / 2), strokeWidth = line)
+            drawLine(palette.CardBorder, Offset(edge, line / 2), Offset(size.width - edge, line / 2), strokeWidth = line)
         }.navigationBarsPadding().padding(start = 20.dp, top = 14.dp, end = 20.dp, bottom = 8.dp),
             verticalArrangement = Arrangement.spacedBy(2.dp)) {
             Column(Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState())) {

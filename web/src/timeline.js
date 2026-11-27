@@ -93,7 +93,7 @@ export function createTimeline({ key, url, snapshots, request, sessionRequest, r
       if (card) { window.scrollBy(0, card.getBoundingClientRect().top - top); break; }
     }
   }
-  async function load({ reset = false, targetPages = 1, scroll, record = true } = {}) {
+  async function load({ reset = false, targetPages = 1, scroll, record = true, onRetry } = {}) {
     if (closed || (!reset && (active || !nextToken))) return;
     active?.abort();
     const owner = active = new AbortController();
@@ -123,7 +123,7 @@ export function createTimeline({ key, url, snapshots, request, sessionRequest, r
       handleFailure(element('list-error'), error.code === 'SOURCE_CHANGED' ? { ...error, code: 'SEARCH_SOURCE_CHANGED' } : error);
       if (closed) return;
       const restart = reset || ['INVALID_PAGE_TOKEN', 'SOURCE_CHANGED'].includes(error.code);
-      retryOptions = { reset: restart, targetPages, scroll };
+      retryOptions = { reset: restart, onRetry };
       setText(element('list-retry'), restart ? l("刷新主页") : l("重试加载")); element('list-retry').hidden = false;
     } finally {
       if (owner === active) { active = null; controls(); }
@@ -151,8 +151,8 @@ export function createTimeline({ key, url, snapshots, request, sessionRequest, r
       }
     },
     loadMore: () => load(),
-    refresh: ({ record = true } = {}) => load({ reset: true, targetPages: pages || 1, record }),
-    retry: () => retryOptions?.reset
+    refresh: ({ record = true, onRetry } = {}) => load({ reset: true, targetPages: pages || 1, record, onRetry }),
+    retry: () => retryOptions?.onRetry ? retryOptions.onRetry() : retryOptions?.reset
       ? load({ reset: true, targetPages: pages || 1 }) : load(),
     async update(name, note, inserted = false) {
       active?.abort(); active = null;

@@ -34,7 +34,7 @@ class SearchRecoveryTest {
                     respond("""{"tags":[{"tag":"C++","count":1}]}""")
                 }
                 "/calendar" -> {
-                    assertEquals("ARCHIVED", request.url.parameters["state"])
+                    assertEquals("NORMAL", request.url.parameters["state"])
                     respond("""{"month":"2026-11","days":[{"date":"2026-11-14","count":2}]}""")
                 }
                 "/notes" -> {

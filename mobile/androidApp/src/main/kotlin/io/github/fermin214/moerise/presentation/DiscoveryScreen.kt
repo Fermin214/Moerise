@@ -3,6 +3,7 @@ package io.github.fermin214.moerise.presentation
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
@@ -37,6 +38,7 @@ import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.sp
 import io.github.fermin214.moerise.data.epochMillis
 import io.github.fermin214.moerise.domain.Note
@@ -92,16 +94,17 @@ fun DiscoveryScreen(page: String, mobile: MobileController, strings: Strings,
                                             Modifier.fillMaxSize().offset(y = (depth * 8).dp)
                                                 .scale(1f - depth * .04f).alpha(if (depth == 1) .8f else .5f),
                                             shape = RoundedCornerShape(12.dp), color = MoeriseColors.Surface,
-                                            border = BorderStroke(1.dp, MoeriseColors.Line),
+                                            border = BorderStroke(1.dp, MoeriseColors.CardBorder),
                                         ) {}
                                     }
                                     ReviewStack(batch.id, batch.items.size, review.position, reviewDragOffset, ::selectReview) { index, layer ->
                                         val item = batch.items[index]
-                                        DiscoveryCard(layer.fillMaxSize(), rememberScrollState()) {
+                                        DiscoveryCard(layer.fillMaxSize(), rememberScrollState()) { minHeight ->
                                             if (item.unavailable) DiscoveryMessage(strings.text(
                                                 "这条笔记已不存在或无法访问。", "This note was deleted or is no longer accessible."))
                                             else item.note?.let { note ->
-                                                DiscoveryNoteContent(note, batch.timezone, mobile, strings, review = true, onTag = onTag)
+                                                DiscoveryNoteContent(note, batch.timezone, mobile, strings, review = true,
+                                                    onTag = onTag, minHeight = minHeight)
                                             }
                                         }
                                     }
@@ -171,7 +174,7 @@ fun DiscoveryScreen(page: String, mobile: MobileController, strings: Strings,
                                     }
                                 }
                             }
-                            FlowRow(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                 reviewItem?.takeUnless { it.unavailable }?.note?.let { note ->
                                     if (note.state == "NORMAL") WebSecondaryAction(strings.text("从这条漫步", "Walk from here"),
                                         onClick = { onWalk(note) }, enabled = connection.connected, modifier = Modifier.testTag("review_walk"),
@@ -194,7 +197,7 @@ fun DiscoveryScreen(page: String, mobile: MobileController, strings: Strings,
             Column(Modifier.fillMaxWidth().background(MoeriseColors.Paper), horizontalAlignment = Alignment.CenterHorizontally) {
                 HorizontalDivider(color = MoeriseColors.Line)
                 FlowRow(Modifier.widthIn(max = 800.dp).fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp),
-                    horizontalArrangement = Arrangement.spacedBy(4.dp, Alignment.End),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
                     verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     WebSecondaryAction(strings.text("停止", "Stop"), mobile.walk::end, Modifier.testTag("walk_end"))
                     if (walk.result?.item != null && walk.result?.exhausted == false) WebAction(
@@ -340,15 +343,21 @@ private fun DiscoveryMessage(text: String, error: Boolean = false, modifier: Mod
 private fun WalkStart(walk: WalkState, connected: Boolean, timezone: String, strings: Strings, onStart: (String) -> Unit) {
     val enabled = !walk.loading && (walk.offline && walk.hasLocalNotes || connected && walk.embeddingEnabled == true)
     val looking = walk.loading || walk.initialConfigurationLoading
-    Column {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         WebAction(if (looking) strings.text("翻找中…", "Looking…") else strings.text("随机开始", "Random start"),
             onClick = { onStart("") }, modifier = Modifier.heightIn(min = 52.dp).testTag("walk_start"),
             enabled = enabled, contentPadding = PaddingValues(horizontal = 28.dp, vertical = 8.dp))
+        if (walk.floaters.isNotEmpty() || walk.floatersLoading) {
+            Text(strings.text("从一条笔记开始", "Start from a note"), Modifier.padding(top = 4.dp),
+                style = MaterialTheme.typography.labelMedium, color = MoeriseColors.Muted)
+        }
+        if (walk.floaters.isEmpty() && walk.floatersLoading) {
+            DiscoveryMessage(strings.text("正在加载笔记…", "Loading notes…"))
+        }
         if (walk.floaters.isNotEmpty()) {
-            Spacer(Modifier.height(20.dp))
-            Text(strings.text("从一条笔记开始", "Start from a note"), style = MaterialTheme.typography.labelMedium, color = MoeriseColors.Muted)
-            Spacer(Modifier.height(8.dp))
-            BoxWithConstraints(Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(MoeriseColors.Surface)) {
+            val shape = RoundedCornerShape(12.dp)
+            BoxWithConstraints(Modifier.fillMaxWidth().clip(shape).background(MoeriseColors.Surface)
+                .border(1.dp, MoeriseColors.CardBorder, shape)) {
                 val count = if (maxWidth < 520.dp) 4 else 6
                 Column {
                     walk.floaters.take(count).forEachIndexed { index, note ->
@@ -372,38 +381,51 @@ private fun WalkStart(walk: WalkState, connected: Boolean, timezone: String, str
 }
 
 @Composable
-private fun DiscoveryCard(modifier: Modifier, scroll: ScrollState, content: @Composable () -> Unit) {
-    Surface(modifier, shape = RoundedCornerShape(12.dp), color = MoeriseColors.Surface,
-        border = BorderStroke(1.dp, MoeriseColors.Line)) {
-        Column(Modifier.fillMaxSize().verticalScroll(scroll).padding(horizontal = 20.dp, vertical = 22.dp)) { content() }
+private fun DiscoveryCard(modifier: Modifier, scroll: ScrollState, content: @Composable (Dp) -> Unit) {
+    Surface(modifier.testTag("review_card"), shape = RoundedCornerShape(12.dp), color = MoeriseColors.Surface,
+        border = BorderStroke(1.dp, MoeriseColors.CardBorder)) {
+        BoxWithConstraints(Modifier.fillMaxSize()) {
+            val minContentHeight = (maxHeight - 44.dp).coerceAtLeast(0.dp)
+            Column(Modifier.fillMaxSize().verticalScroll(scroll).padding(horizontal = 20.dp, vertical = 22.dp)) {
+                content(minContentHeight)
+            }
+        }
     }
 }
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 internal fun DiscoveryNoteContent(note: Note, timezone: String, mobile: MobileController, strings: Strings,
-    review: Boolean = false, onTag: ((String) -> Unit)? = null) {
+    review: Boolean = false, onTag: ((String) -> Unit)? = null, minHeight: Dp = 0.dp) {
     val presentation = rememberNotePresentation(note.content, note.tags)
     val date = displayNoteDay(note.createTime, timezone, strings.text("zh", "en") == "en")
     val age = if (review) remember(note.createTime) { elapsedNoteDays(note.createTime, epochMillis()) } else null
     val core = mobile.session.core
-    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        MarkdownBody(presentation.body, note = note, core = core, tags = presentation.inlineTags, onTag = onTag, strings = strings)
-        NoteAttachments(note, core, strings)
-        NoteTags(presentation.tags, plain = true, onTag = onTag)
-        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
-            Text(when {
-                !review || age == null -> date
-                age == 0L -> strings.text("今天", "Today")
-                else -> strings.text("$age 天前", "$age ${if (age == 1L) "day" else "days"} ago")
-            }, color = MoeriseColors.Muted, style = MaterialTheme.typography.bodySmall)
-            val interaction = remember { MutableInteractionSource() }
-            val active = actionHighlighted(interaction)
-            Box(Modifier.heightIn(min = 44.dp).testTag("discovery_open")
-                .clickable(interactionSource = interaction, indication = null, role = Role.Button) { mobile.openNote(note.name) },
-                contentAlignment = Alignment.CenterEnd) {
-                Text(strings.text("在主页查看", "View on home"), style = MaterialTheme.typography.bodySmall,
-                    color = if (active) MoeriseColors.Accent else MoeriseColors.Muted)
+    Column(Modifier.fillMaxWidth().heightIn(min = minHeight),
+        verticalArrangement = if (review) Arrangement.SpaceBetween else Arrangement.spacedBy(12.dp)) {
+        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            MarkdownBody(presentation.body, note = note, core = core, tags = presentation.inlineTags, onTag = onTag, strings = strings)
+            NoteAttachments(note, core, strings)
+        }
+        Column(Modifier.padding(top = if (review) 12.dp else 0.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            NoteTags(presentation.tags, plain = true, onTag = onTag)
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
+                Text(when {
+                    !review || age == null -> date
+                    age == 0L -> strings.text("今天", "Today")
+                    else -> strings.text("$age 天前", "$age ${if (age == 1L) "day" else "days"} ago")
+                }, color = MoeriseColors.InkColophon, style = MaterialTheme.typography.labelSmall,
+                    modifier = Modifier.testTag("discovery_date"))
+                if (!review) {
+                    val interaction = remember { MutableInteractionSource() }
+                    val active = actionHighlighted(interaction)
+                    Box(Modifier.heightIn(min = 44.dp).testTag("discovery_open")
+                        .clickable(interactionSource = interaction, indication = null, role = Role.Button) { mobile.openNote(note.name) },
+                        contentAlignment = Alignment.CenterEnd) {
+                        Text(strings.text("在主页查看", "View on home"), style = MaterialTheme.typography.bodySmall,
+                            color = if (active) MoeriseColors.Accent else MoeriseColors.Muted)
+                    }
+                }
             }
         }
     }

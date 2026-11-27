@@ -5,6 +5,7 @@ import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.padding
@@ -17,6 +18,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.onSizeChanged
@@ -27,6 +29,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.UriHandler
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.LinkAnnotation
+import androidx.compose.ui.text.LinkInteractionListener
 import androidx.compose.ui.text.Placeholder
 import androidx.compose.ui.text.PlaceholderVerticalAlign
 import androidx.compose.ui.text.SpanStyle
@@ -34,8 +37,12 @@ import androidx.compose.ui.text.TextLinkStyles
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.withLink
+import com.mikepenz.markdown.annotator.DefaultAnnotatorSettings
+import com.mikepenz.markdown.annotator.buildMarkdownAnnotatedString
 import com.mikepenz.markdown.compose.components.markdownComponents
+import com.mikepenz.markdown.compose.elements.MarkdownParagraph
 import com.mikepenz.markdown.m3.Markdown
 import com.mikepenz.markdown.m3.markdownColor
 import com.mikepenz.markdown.model.markdownPadding
@@ -215,9 +222,12 @@ fun MarkdownBody(content: String, modifier: Modifier = Modifier, note: Note? = n
         }
     } else null
     val renderedSpans = asynchronousSpans?.value ?: immediateSpans
-    val annotator = remember(note, renderedSpans, onTag != null) {
-        val tagStyle = SpanStyle(color = MoeriseColors.Accent)
-        markdownAnnotator(markdownAnnotatorConfig(eolAsNewLine = true)) { text, child ->
+    val accent = MoeriseColors.Accent
+    val dark = MoeriseColors.dark
+    val annotator = remember(note, renderedSpans, onTag != null, accent, dark, refHandler, safeUri) {
+        val tagStyle = SpanStyle(color = accent)
+        lateinit var settings: DefaultAnnotatorSettings
+        val renderer = markdownAnnotator(markdownAnnotatorConfig(eolAsNewLine = true)) { text, child ->
             when {
                 child.type == MarkdownTokenTypes.TEXT && renderedSpans[text]?.isNotEmpty() == true -> {
                     val spans = renderedSpans.getValue(text)
@@ -240,6 +250,12 @@ fun MarkdownBody(content: String, modifier: Modifier = Modifier, note: Note? = n
                     offset != child.startOffset
                 }
                 child.type == MarkdownTokenTypes.HTML_TAG -> { append(child.getUnescapedTextInNode(text)); true }
+                child.type == MarkdownElementTypes.STRONG && dark -> {
+                    withStyle(SpanStyle(fontWeight = FontWeight.Medium)) {
+                        buildMarkdownAnnotatedString(text, child, settings)
+                    }
+                    true
+                }
                 child.type == MarkdownElementTypes.IMAGE -> {
                     val link = child.findChildOfTypeRecursive(MarkdownElementTypes.LINK_DESTINATION)?.getUnescapedTextInNode(text)
                     val item = link?.let { managedAttachment(note, it) }
@@ -253,10 +269,18 @@ fun MarkdownBody(content: String, modifier: Modifier = Modifier, note: Note? = n
                 else -> false
             }
         }
+        settings = DefaultAnnotatorSettings(
+            TextLinkStyles(style = SpanStyle(color = accent, textDecoration = TextDecoration.Underline)),
+            SpanStyle(color = accent, fontFamily = FontFamily.Monospace, fontSize = 13.sp), renderer, refHandler,
+            LinkInteractionListener { link ->
+                (link as? LinkAnnotation.Url)?.url?.let { safeUri.openUri(refHandler.find(it)?.takeIf(String::isNotEmpty) ?: it) }
+            },
+        )
+        renderer
     }
-    val body = MaterialTheme.typography.bodyLarge.copy(letterSpacing = 0.2.sp)
-    val heading = body.copy(fontSize = 16.sp, lineHeight = 23.5.sp, fontWeight = FontWeight.SemiBold)
-    val minorHeading = body.copy(fontWeight = FontWeight.SemiBold)
+    val body = MaterialTheme.typography.bodyLarge.copy(letterSpacing = if (dark) 0.3.sp else 0.2.sp)
+    val heading = body.copy(fontSize = 16.sp, lineHeight = 23.5.sp, fontWeight = MoeriseColors.HeadingWeight)
+    val minorHeading = body.copy(fontWeight = MoeriseColors.HeadingWeight)
     val colors = markdownColor(inlineCodeBackground = Color.Transparent, codeBackground = MoeriseColors.SurfaceMuted)
     val padding = markdownPadding(block = 2.dp, list = 0.dp, listItemTop = 2.dp, listItemBottom = 2.dp)
     val typography = markdownTypography(
@@ -273,13 +297,28 @@ fun MarkdownBody(content: String, modifier: Modifier = Modifier, note: Note? = n
     val animations = markdownAnimations(animateTextSize = { this })
     val components = remember(safeUri) {
         markdownComponents(
+            paragraph = { model ->
+                val image = model.node.children.singleOrNull { it.type != MarkdownTokenTypes.WHITE_SPACE }
+                    ?.takeIf { it.type == MarkdownElementTypes.IMAGE }
+                val parent = latestNote
+                val client = latestCore
+                val link = image?.findChildOfTypeRecursive(MarkdownElementTypes.LINK_DESTINATION)?.getUnescapedTextInNode(model.content)
+                val item = link?.let { managedAttachment(parent, it) }
+                if (item?.isImageAttachment() == true && parent != null && client != null) {
+                    Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+                        ProtectedAttachmentImage(parent, item, client, latestStrings)
+                    }
+                } else MarkdownParagraph(model.content, model.node, style = model.typography.paragraph)
+            },
             image = { model ->
                 val link = model.node.findChildOfTypeRecursive(MarkdownElementTypes.LINK_DESTINATION)?.getUnescapedTextInNode(model.content)
                 val parent = latestNote
                 val client = latestCore
                 val item = link?.let { managedAttachment(parent, it) }
                 if (item != null && parent != null && client != null) {
-                    if (item.isImageAttachment()) ProtectedAttachmentImage(parent, item, client, latestStrings)
+                    if (item.isImageAttachment()) Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+                        ProtectedAttachmentImage(parent, item, client, latestStrings)
+                    }
                     else OpenAttachmentButton(parent, item, client, latestStrings)
                 }
                 else if (link != null && externalLink(link)) TextButton(onClick = { safeUri.openUri(link) }) { Text(link) }
@@ -341,7 +380,8 @@ fun MarkdownBody(content: String, modifier: Modifier = Modifier, note: Note? = n
                     if (note != null && core != null) {
                         for (image in images) {
                             if (image.start > offset) Text(tail.substring(offset, image.start), Modifier.fillMaxWidth(), style = body)
-                            ProtectedAttachmentImage(note, image.item, core, strings, Modifier.widthIn(max = inlineMaxWidth))
+                            ProtectedAttachmentImage(note, image.item, core, strings,
+                                Modifier.align(Alignment.CenterHorizontally).widthIn(max = inlineMaxWidth))
                             offset = image.end
                         }
                     }

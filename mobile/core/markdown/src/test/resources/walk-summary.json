@@ -48,6 +48,18 @@
     "summary": "#日记 # 注释 ``` **原样**"
   },
   {
+    "name": "closed fence before cropped tag and retained blank line",
+    "content": "```\nx\n```\n#a\n\n",
+    "tags": ["a"],
+    "summary": "x"
+  },
+  {
+    "name": "mixed Unicode whitespace",
+    "content": "　甲\u00a0乙\t丙\n丁　",
+    "tags": [],
+    "summary": "甲 乙 丙 丁"
+  },
+  {
     "name": "multiple container levels preserve literal quote and list markers",
     "content": "- > ~~~\n  > > 字面引用\n  > - **原样**\n  > ~~~\n\n普通 **正文**\n#日记",
     "tags": ["日记"],

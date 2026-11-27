@@ -18,7 +18,6 @@ import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.platform.LocalUriHandler
@@ -29,12 +28,10 @@ import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import java.time.ZoneId
 import java.util.TimeZone
 import kotlinx.serialization.json.JsonObject
@@ -53,6 +50,8 @@ fun SettingsScreen(
     val state by controller.state.collectAsState()
     val language by mobile.session.language.collectAsState()
     val preferencesError by mobile.session.preferencesError.collectAsState()
+    val theme by mobile.session.theme.collectAsState()
+    val themeError by mobile.session.themeError.collectAsState()
     val sync by mobile.sync.state.collectAsState()
     val connection by mobile.session.state.collectAsState()
     var tab by rememberSaveable { mutableIntStateOf(0) }
@@ -83,9 +82,8 @@ fun SettingsScreen(
             ) {
                 Text(
                     strings.text("设置", "Settings"),
-                    fontSize = 20.sp,
-                    lineHeight = 30.8.sp,
-                    fontWeight = FontWeight.SemiBold,
+                    style = MaterialTheme.typography.titleLarge,
+                    color = MoeriseColors.Ink,
                     modifier = Modifier.semantics { heading() },
                 )
                 WebTabs(
@@ -110,6 +108,36 @@ fun SettingsScreen(
                             modifier = Modifier.testTag("settings_sync"))
                     }
                 }
+                if (tab == 0) SettingsSection(strings.text("通用", "General")) {
+                    SettingsRow(strings.text("语言", "Language")) {
+                        SettingsSelect(
+                            language.name,
+                            listOf(
+                                UiLanguage.SYSTEM.name to strings.text("跟随系统", "Follow system"),
+                                UiLanguage.CHINESE.name to "简体中文",
+                                UiLanguage.ENGLISH.name to "English",
+                            ),
+                            strings.text("语言", "Language"), enabled = !state.busy, tag = "settings_language",
+                        ) { mobile.session.language(UiLanguage.valueOf(it)) }
+                    }
+                    SettingsRow(strings.text("外观", "Appearance"), separator = state.snapshot != null) {
+                        SettingsSelect(
+                            theme.name,
+                            listOf(
+                                UiTheme.SYSTEM.name to strings.text("跟随系统", "Follow system"),
+                                UiTheme.LIGHT.name to strings.text("浅色", "Light"),
+                                UiTheme.DARK.name to strings.text("深色", "Dark"),
+                            ),
+                            strings.text("外观", "Appearance"), enabled = true, tag = "settings_theme",
+                        ) { mobile.session.theme(UiTheme.valueOf(it)) }
+                    }
+                    if (state.snapshot != null) SettingsSummary(strings.text("时区", "Timezone"),
+                        state.values["timezone"].orEmpty(), strings) { edit("timezone") }
+                    if (preferencesError != null) SettingsMessage(strings.text(
+                        "语言设置未能保存，请重新选择。", "Could not save the language setting. Select it again."), error = true)
+                    if (themeError != null) SettingsMessage(strings.text(
+                        "外观设置未能保存，请重新选择。", "Could not save the appearance setting. Select it again."), error = true)
+                }
                 when {
                     tab == 3 -> PrivacySettings(mobile.privacy, strings)
                     state.loading -> SettingsHint(strings.text("正在加载设置…", "Loading settings…"))
@@ -124,28 +152,6 @@ fun SettingsScreen(
                     }
                     else -> {
                         when (tab) {
-                            0 -> SettingsSection(strings.text("通用", "General")) {
-                                SettingsRow(strings.text("语言", "Language")) {
-                                    SettingsSelect(
-                                        language.name,
-                                        listOf(
-                                            UiLanguage.SYSTEM.name to strings.text("跟随系统", "Follow system"),
-                                            UiLanguage.CHINESE.name to "简体中文",
-                                            UiLanguage.ENGLISH.name to "English",
-                                        ),
-                                        strings.text("语言", "Language"),
-                                        enabled = !state.busy,
-                                        tag = "settings_language",
-                                    ) { value -> mobile.session.language(UiLanguage.valueOf(value)) }
-                                }
-                                SettingsSummary(strings.text("时区", "Timezone"), state.values["timezone"].orEmpty(), strings) { edit("timezone") }
-                                if (preferencesError != null) SettingsMessage(
-                                    strings.text(
-                                        "语言设置未能保存，请重新选择。",
-                                        "Could not save the language setting. Select it again.",
-                                    ), error = true,
-                                )
-                            }
                             1 -> {
                                 SettingsModels(state, strings) { edit("embedding") }
                                 SettingsSection(strings.text("观星", "Stargazing")) {
@@ -230,12 +236,12 @@ fun SettingsScreen(
 private fun SettingsSummary(label: String, detail: String, strings: Strings, edit: () -> Unit) {
     Row(Modifier.fillMaxWidth().padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
         Column(Modifier.weight(1f)) {
-            Text(label, fontSize = 15.sp)
+            Text(label, style = MaterialTheme.typography.bodyMedium, color = MoeriseColors.Ink)
             if (detail.isNotBlank()) SettingsHint(detail)
         }
         SettingsGhost(strings.text("编辑", "Edit"), edit)
     }
-    HorizontalDivider(color = MoeriseColors.SurfaceMuted)
+    HorizontalDivider(color = MoeriseColors.Line)
 }
 
 @Composable
@@ -552,12 +558,13 @@ private fun SettingsHistory(controller: SettingsController, state: SettingsUiSta
 private fun SettingsSection(title: String, content: @Composable ColumnScope.() -> Unit) {
     Surface(
         modifier = Modifier.fillMaxWidth(),
-        color = Color.White,
+        color = MoeriseColors.Surface,
         shape = RoundedCornerShape(14.dp),
+        border = BorderStroke(1.dp, MoeriseColors.CardBorder),
     ) {
         Column(Modifier.padding(start = 18.dp, top = 14.dp, end = 18.dp, bottom = 16.dp)) {
             Text(
-                title, style = MaterialTheme.typography.titleMedium,
+                title, style = MaterialTheme.typography.titleMedium, color = MoeriseColors.Ink,
                 modifier = Modifier.padding(bottom = 4.dp).semantics { heading() },
             )
             content()
@@ -577,12 +584,12 @@ private fun SettingsRow(
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-            Text(label, fontSize = 15.sp, lineHeight = 22.4.sp)
+            Text(label, style = MaterialTheme.typography.bodyMedium, color = MoeriseColors.Ink)
             if (hint.isNotBlank()) SettingsHint(hint)
         }
         content()
     }
-    if (separator) HorizontalDivider(color = MoeriseColors.SurfaceMuted)
+    if (separator) HorizontalDivider(color = MoeriseColors.Line)
 }
 
 @Composable
@@ -641,7 +648,7 @@ private fun SettingsCheckbox(
     val haptic = rememberMoeriseHaptic()
     Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
         Column(Modifier.weight(1f)) {
-            Text(label, fontSize = 15.sp)
+            Text(label, style = MaterialTheme.typography.bodyMedium, color = MoeriseColors.Ink)
             if (hint.isNotBlank()) SettingsHint(hint)
         }
         Switch(checked = (if (atomic) state.atomicValues[path] ?: state.values[path] else state.values[path]) == "true", onCheckedChange = {
@@ -650,7 +657,7 @@ private fun SettingsCheckbox(
         }, enabled = enabled && (!atomic || !state.conflict),
             modifier = Modifier.testTag("settings_${path.replace('.', '_')}").semantics { contentDescription = label })
     }
-    HorizontalDivider(color = MoeriseColors.SurfaceMuted)
+    HorizontalDivider(color = MoeriseColors.Line)
 }
 
 @Composable
@@ -724,7 +731,6 @@ private fun SettingsInput(
         singleLine = !multiline,
         minLines = minLines,
         textStyle = MaterialTheme.typography.bodyLarge.copy(
-            fontSize = 15.sp, lineHeight = 25.6.sp,
             color = MoeriseColors.Ink.copy(alpha = if (enabled) 1f else .5f),
         ),
         keyboardOptions = KeyboardOptions(keyboardType = keyboard, autoCorrectEnabled = false),
@@ -742,7 +748,7 @@ private fun SettingsInput(
                 contentAlignment = Alignment.TopStart,
             ) {
                 if (value.isEmpty() && placeholder.isNotEmpty()) Text(
-                    placeholder, fontSize = 15.sp, lineHeight = 25.6.sp, color = MoeriseColors.Muted,
+                    placeholder, style = MaterialTheme.typography.bodyLarge, color = MoeriseColors.InkColophon,
                 )
                 input()
             }
@@ -765,7 +771,7 @@ private fun SettingsSelect(
     LaunchedEffect(enabled) { if (!enabled) expanded = false }
     Box(modifier) {
         Surface(
-            color = Color.White,
+            color = MoeriseColors.Surface,
             shape = RoundedCornerShape(8.dp),
             border = BorderStroke(1.dp, if (focused) MoeriseColors.Accent else MoeriseColors.FieldBorder),
             modifier = Modifier.fillMaxWidth().testTag(tag)
@@ -780,7 +786,7 @@ private fun SettingsSelect(
             ) {
                 Text(
                     options.firstOrNull { it.first == value }?.second ?: value,
-                    fontSize = 15.sp, lineHeight = 25.6.sp,
+                    style = MaterialTheme.typography.bodyLarge,
                     color = MoeriseColors.Ink.copy(alpha = if (enabled) 1f else .5f),
                     modifier = Modifier.weight(1f),
                 )
@@ -794,7 +800,7 @@ private fun SettingsSelect(
             modifier = Modifier.platformTestTags()) {
             options.forEach { (choice, title) ->
                 DropdownMenuItem(
-                    text = { Text(title, fontSize = 15.sp) },
+                    text = { Text(title, style = MaterialTheme.typography.bodyLarge) },
                     modifier = Modifier.semantics { selected = choice == value },
                     enabled = enabled,
                     onClick = { expanded = false; onSelect(choice) },
@@ -816,14 +822,15 @@ private fun SettingsGhost(
 
 @Composable
 private fun SettingsHint(text: String, modifier: Modifier = Modifier) {
-    Text(text, modifier = modifier, color = MoeriseColors.Muted, fontSize = 13.sp, lineHeight = 22.1.sp)
+    Text(text, modifier = modifier, color = MoeriseColors.Muted,
+        style = MaterialTheme.typography.bodySmall.copy(fontFeatureSettings = "tnum"))
 }
 
 @Composable
 private fun SettingsMessage(text: String, error: Boolean = false) {
     Text(
         text, color = if (error) MaterialTheme.colorScheme.error else MoeriseColors.Muted,
-        fontSize = 13.sp, lineHeight = 20.8.sp,
+        style = MaterialTheme.typography.bodySmall,
         modifier = Modifier.semantics {
             liveRegion = if (error) LiveRegionMode.Assertive else LiveRegionMode.Polite
         },

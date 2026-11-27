@@ -3,55 +3,53 @@ import { l, setAttr } from './i18n.js';
 import { syncCloud } from './sync-ring.js';
 
 const names = {
-  transfer: l("正在同步笔记"),
-  success: l("笔记已同步"),
   unknown: l("等待确认"),
   conflict: l("同步冲突"),
   offline: l("离线"),
   failure: l("请求失败，请重试。"),
 };
-let pending = 0, last = '', generation = 0;
-let hideSuccess;
+const alerts = new Map();
+let generation = 0;
 
 function render() {
   const node = document.getElementById('sync-status');
   if (!node) return;
-  const state = pending ? 'transfer' : !navigator.onLine ? 'offline' : last;
+  const active = new Set(alerts.values());
+  const state = !navigator.onLine ? 'offline' : ['conflict', 'unknown', 'failure'].find(value => active.has(value));
   node.hidden = !state;
   if (!state) {
     node.removeAttribute('data-sync');
+    node.removeAttribute('aria-label');
+    node.removeAttribute('title');
+    node.replaceChildren();
     return;
   }
-  const dot = document.createElement('span');
-  dot.className = 'sync-dot';
-  dot.setAttribute('aria-hidden', 'true');
   node.dataset.sync = state;
   setAttr(node, 'aria-label', names[state]);
   setAttr(node, 'title', names[state]);
-  node.replaceChildren(icon(state === 'success' ? 'M5 12l4 4L19 6' : syncCloud), dot);
+  node.replaceChildren(icon(syncCloud));
 }
 
 export const syncStatus = {
-  start() {
+  start(operation, { write = false } = {}) {
     const stamp = generation;
     let done = false;
-    clearTimeout(hideSuccess);
-    pending++;
-    render();
     return result => {
       if (done || stamp !== generation) return;
       done = true;
-      pending = Math.max(0, pending - 1);
-      last = result === 'canceled' ? '' : names[result] ? result : 'unknown';
+      if (result === 'canceled') return;
+      if (result === 'success') alerts.delete(operation);
+      else alerts.set(operation, result === 'timeout' ? (write ? 'unknown' : 'failure') :
+        Object.hasOwn(names, result) ? result : 'unknown');
       render();
-      if (last === 'success') hideSuccess = setTimeout(() => { if (last === 'success') last = ''; render(); }, 1200);
     };
+  },
+  clear(operation) {
+    if (alerts.delete(operation)) render();
   },
   reset() {
     generation++;
-    clearTimeout(hideSuccess);
-    pending = 0;
-    last = '';
+    alerts.clear();
     render();
   },
 };

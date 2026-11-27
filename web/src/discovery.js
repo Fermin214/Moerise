@@ -284,6 +284,7 @@ export function createDiscovery({ request, sessionRequest, getIdentity, localTod
         const control = button(busy || (modelController && !walkConfiguration) ? l("翻找中…") : l("随机开始"), 'save', () => walkRequest('/walks/start', {}));
         control.disabled = busy || !configured;
         start.append(control);
+        if (floaters.length || floaterController) start.append(el('h2', '', l("从一条笔记开始")));
         if (floaters.length) {
           const list = el('div', 'walk-start-list');
           for (const { note, body } of floaters.slice(0, narrow.matches ? 4 : 6)) {
@@ -297,8 +298,8 @@ export function createDiscovery({ request, sessionRequest, getIdentity, localTod
             floater.disabled = busy || !configured;
             list.append(floater);
           }
-          start.append(el('h2', '', l("从一条笔记开始")), list);
-        }
+          start.append(list);
+        } else if (floaterController) start.append(el('p', 'sub walk-start-loading', l("正在加载笔记…")));
         content.append(start);
         if (floaterFailure) {
           message(errorText(floaterFailure), true);
@@ -322,6 +323,7 @@ export function createDiscovery({ request, sessionRequest, getIdentity, localTod
     async function loadFloaters() {
       floaterController?.abort();
       const pending = new AbortController(); floaterController = pending; floaterFailure = null;
+      if (!walkView?.result) render();
       try {
         const page = await request(`/notes?${listQuery('/', { tags: [] })}`, { controller: pending });
         if (!alive || floaterController !== pending) return;

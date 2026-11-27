@@ -19,7 +19,6 @@ import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
@@ -184,8 +183,9 @@ internal fun NavigationDrawer(
                 CompositionLocalProvider(LocalDrawerGestureRegions provides regions, LocalDrawerOpener provides opener, content = content)
             }
             if (drawer.visible) {
+                val scrim = MoeriseColors.DialogScrim
                 Box(Modifier.matchParentSize()
-                    .drawBehind { drawRect(Color.Black.copy(alpha = .32f * drawer.fraction)) }
+                    .drawBehind { drawRect(scrim.copy(alpha = scrim.alpha * drawer.fraction)) }
                     .focusProperties { canFocus = false }
                     .clickable(interactionSource = null, indication = null, role = Role.Button,
                         onClickLabel = strings.text("关闭导航", "Close navigation"), onClick = drawer::close))

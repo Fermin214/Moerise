@@ -1,5 +1,6 @@
 package io.github.fermin214.moerise.presentation
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
@@ -17,7 +18,6 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -31,7 +31,8 @@ internal fun InformationOverlay(title: String, strings: Strings, onDismiss: () -
     Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
         BoxWithConstraints(Modifier.fillMaxSize().safeDrawingPadding().padding(8.dp), contentAlignment = Alignment.Center) {
             Surface(Modifier.widthIn(max = 560.dp).fillMaxWidth().height(minOf(700.dp, maxHeight)).platformTestTags().testTag(tag),
-                shape = RoundedCornerShape(14.dp), color = Color.White) {
+                shape = RoundedCornerShape(14.dp), color = MoeriseColors.SheetSurface,
+                border = BorderStroke(1.dp, MoeriseColors.CardBorder)) {
                 Column(Modifier.padding(horizontal = 12.dp, vertical = 6.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text(title, Modifier.weight(1f), fontSize = 17.sp, fontWeight = FontWeight.SemiBold)

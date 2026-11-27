@@ -6,13 +6,20 @@ import org.intellij.markdown.ast.ASTNode
 
 private val summaryPrefix = Regex("""^ {0,3}(?:#{1,6}[ \t]+|>[ \t]?|[-+*][ \t]+|\d+[.)][ \t]+)""", RegexOption.MULTILINE)
 private val summaryRuns = Regex("""\*+|_+|~+|\n""")
-private val summaryWhitespace = Regex("""(?U)\s+""")
+
+internal data class WalkSummarySource(val body: String, val tree: ASTNode?)
+
+internal fun walkSummarySource(content: String, tags: List<String>): WalkSummarySource {
+    val normalized = content.replace("\r\n", "\n").replace('\r', '\n')
+    val tagTree = if (tags.isNotEmpty() && '#' in normalized) markdownTree(normalized, parseInlines = true) else null
+    val body = trailingTagPresentation(normalized, tags, tagTree).body
+    val tree = if ("```" !in body && "~~~" !in body) null
+        else if (body == normalized && tagTree != null) tagTree else markdownTree(body, parseInlines = false)
+    return WalkSummarySource(body, tree)
+}
 
 fun walkSummaryBody(content: String, tags: List<String>): String {
-    val normalized = content.replace("\r\n", "\n").replace('\r', '\n')
-    val scanTags = tags.isNotEmpty() && '#' in normalized
-    val tree = if (scanTags || "```" in normalized || "~~~" in normalized) markdownTree(normalized, parseInlines = scanTags) else null
-    val body = trailingTagPresentation(normalized, tags, tree).body
+    val (body, tree) = walkSummarySource(content, tags)
     val parts = mutableListOf<String>()
     var offset = 0
     fun visit(node: ASTNode) {
@@ -32,7 +39,23 @@ fun walkSummaryBody(content: String, tags: List<String>): String {
     }
     tree?.let(::visit)
     parts += summarizeProse(body.substring(offset))
-    return parts.joinToString(" ").replace(summaryWhitespace, " ").trim()
+    return foldSummaryWhitespace(parts.joinToString(" "))
+}
+
+private fun foldSummaryWhitespace(text: String): String = buildString(text.length) {
+    var offset = 0
+    var pendingSpace = false
+    while (offset < text.length) {
+        val codePoint = text.codePointAt(offset)
+        if (Character.isWhitespace(codePoint) || Character.isSpaceChar(codePoint)) {
+            pendingSpace = isNotEmpty()
+        } else {
+            if (pendingSpace) append(' ')
+            appendCodePoint(codePoint)
+            pendingSpace = false
+        }
+        offset += Character.charCount(codePoint)
+    }
 }
 
 private fun summarizeProse(text: String): String {

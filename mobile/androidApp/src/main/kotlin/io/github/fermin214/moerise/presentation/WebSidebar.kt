@@ -60,7 +60,7 @@ fun WebSidebar(
                     filters.tags.sortedWith(compareByDescending<TagCount> { it.tag in selectedTags }.thenByDescending { it.count }).forEach { tag ->
                         val active = tag.tag in selectedTags
                         Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp))
-                            .background(if (active) MoeriseColors.SurfaceMuted else Color.Transparent)
+                            .background(if (active) MoeriseColors.SelectedWash else Color.Transparent)
                             .semantics { selected = active }
                             .clickable(role = Role.Button) { onTag(tag.tag) }.heightIn(min = 44.dp).padding(horizontal = 10.dp),
                             verticalAlignment = Alignment.CenterVertically) {
@@ -86,7 +86,7 @@ fun WebSidebar(
                 val color = if (active) MoeriseColors.Accent else MoeriseColors.Ink
                 Row(Modifier.padding(top = 8.dp).testTag("nav_settings").fillMaxWidth()
                     .clip(RoundedCornerShape(10.dp))
-                    .background(if (active) MoeriseColors.SurfaceMuted else Color.Transparent)
+                    .background(if (active) MoeriseColors.SelectedWash else Color.Transparent)
                     .clickable(role = Role.Button, onClickLabel = settings) { onNavigate("settings") }
                     .semantics { contentDescription = settings; selected = active }
                     .heightIn(min = 44.dp).padding(horizontal = 10.dp),
@@ -153,7 +153,7 @@ private fun SidebarEntry(
     label: String, icon: WebIcon, selected: Boolean, modifier: Modifier = Modifier, onClick: () -> Unit,
 ) {
     Row(modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp))
-        .background(if (selected) MoeriseColors.SurfaceMuted else Color.Transparent)
+        .background(if (selected) MoeriseColors.SelectedWash else Color.Transparent)
         .semantics { this.selected = selected }
         .clickable(role = Role.Button, onClick = onClick).heightIn(min = 44.dp).padding(horizontal = 10.dp),
         verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -173,7 +173,8 @@ private fun SidebarCalendar(
     val heading = strings.text("${grid.year}年${grid.month}月", "${grid.year}-${grid.month.toString().padStart(2, '0')}")
     Column(Modifier.padding(horizontal = 4.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
         Row(Modifier.fillMaxWidth().heightIn(min = 32.dp), verticalAlignment = Alignment.CenterVertically) {
-            Text(heading, fontSize = 13.sp, fontWeight = FontWeight.SemiBold,
+            Text(heading, style = MaterialTheme.typography.bodySmall.copy(fontFeatureSettings = "tnum"),
+                fontWeight = FontWeight.Medium, color = MoeriseColors.BrandInk,
                 modifier = Modifier.weight(1f).padding(start = 6.dp))
             IconButton(onClick = { onMonth(shiftMonth(month, -1)) }, modifier = Modifier.size(44.dp)) {
                 WebIcon(WebIcon.ChevronLeft, strings.text("上个月", "Previous month"), Modifier.size(16.dp))
@@ -185,7 +186,7 @@ private fun SidebarCalendar(
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(3.dp)) {
             strings.text("一,二,三,四,五,六,日", "M,T,W,T,F,S,S").split(',').forEach {
                 Box(Modifier.weight(1f).height(18.dp), contentAlignment = Alignment.Center) {
-                    Text(it, fontSize = 13.sp, color = MoeriseColors.Muted, lineHeight = 18.sp)
+                    Text(it, style = MaterialTheme.typography.labelSmall, color = MoeriseColors.InkColophon)
                 }
             }
         }
@@ -206,12 +207,12 @@ private fun SidebarCalendar(
                     color = if (selectedDate == date) MoeriseColors.Accent else if (count > 1) MoeriseColors.HeatmapMedium
                         else if (count > 0) MoeriseColors.HeatmapLight else Color.Transparent) {
                     Box(contentAlignment = Alignment.Center) {
-                        if (valid) Text(day.toString(), fontSize = 13.sp,
-                            color = if (selectedDate == date) MoeriseColors.OnAccent else if (count > 0) MoeriseColors.Accent else MoeriseColors.Muted,
-                            fontWeight = if (date == today) FontWeight.Bold else FontWeight.Normal)
+                        if (valid) Text(day.toString(), style = MaterialTheme.typography.bodySmall.copy(fontFeatureSettings = "tnum"),
+                            color = if (selectedDate == date) MoeriseColors.OnAccent else if (count > 0) MoeriseColors.Accent else MoeriseColors.InkColophon,
+                            fontWeight = if (date == today) FontWeight.SemiBold else if (count > 0) FontWeight.Medium else FontWeight.Normal)
                         if (valid && date == today) {
                             val dotColor = if (selectedDate == date) MoeriseColors.OnAccent else MoeriseColors.Accent
-                            Box(Modifier.align(Alignment.BottomCenter).padding(bottom = 2.dp)
+                            Box(Modifier.align(Alignment.BottomCenter).padding(bottom = 3.dp)
                                 .size(3.dp).background(dotColor, CircleShape))
                         }
                     }

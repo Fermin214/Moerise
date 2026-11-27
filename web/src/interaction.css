@@ -2,7 +2,7 @@
   outline:2px solid var(--focus);
   outline-offset:3px;
 }
-.privacy-dialog { margin:auto; width:min(26rem,calc(100% - 32px)); max-height:85dvh; overflow:auto; padding:24px; color:var(--ink); font:inherit; font-family:system-ui,sans-serif; }
+.privacy-dialog { margin:auto; width:min(26rem,calc(100% - 32px)); max-height:85dvh; overflow:auto; padding:24px; color:var(--ink); background:var(--sheet-surface); border:1px solid var(--card-border); font:inherit; font-family:system-ui,sans-serif; }
 .privacy-dialog::backdrop { background:var(--scrim); }
 .privacy-dialog h2 { margin-block:0 .6rem; font-size:var(--t1); }
 .privacy-dialog textarea { width:100%; resize:vertical; }
@@ -10,22 +10,8 @@
 .privacy-links,.privacy-switch { display:flex; align-items:center; gap:16px; flex-wrap:wrap; }
 .privacy-switch { justify-content:space-between; font-weight:600; min-height:44px; }
 .privacy-switch input { width:1.3rem; height:1.3rem; accent-color:var(--focus); }
-#sync-status { position:fixed; z-index:4; right:max(16px,env(safe-area-inset-right)); top:max(12px,env(safe-area-inset-top)); display:inline-flex; align-items:center; justify-content:center; width:28px; height:28px; color:var(--focus); background:var(--paper); border-radius:50%; pointer-events:none; }
+#sync-status { position:fixed; z-index:4; right:max(16px,env(safe-area-inset-right)); top:max(12px,env(safe-area-inset-top)); display:inline-flex; align-items:center; justify-content:center; width:28px; height:28px; color:var(--danger); background:var(--paper); border-radius:50%; pointer-events:none; }
 #sync-status[hidden] { display:none; }
-#sync-status .sync-dot { position:absolute; right:2px; top:2px; width:7px; height:7px; border-radius:50%; background:transparent; }
-@keyframes sync-breathe { 50% { transform:scale(.86); opacity:.55; } }
-@media (prefers-reduced-motion:no-preference) {
-  #sync-status[data-sync="transfer"] svg { animation:sync-breathe 1100ms cubic-bezier(.4,0,.2,1) infinite; }
-}
-#sync-status[data-sync="offline"] .sync-dot,#sync-status[data-sync="failure"] .sync-dot,#sync-status[data-sync="conflict"] .sync-dot,#sync-status[data-sync="unknown"] .sync-dot { background:var(--danger); }
-#sync-status[data-sync="offline"],#sync-status[data-sync="failure"],#sync-status[data-sync="conflict"],#sync-status[data-sync="unknown"] { color:var(--muted); }
-@media (prefers-reduced-motion:no-preference) {
-  #sync-status[data-sync="transfer"] svg { animation:sync-pulse 1.4s ease-in-out infinite; }
-}
-@media (prefers-reduced-motion:reduce) {
-  #sync-status[data-sync="transfer"] .sync-dot { background:var(--focus); }
-}
-@keyframes sync-pulse { 50% { opacity:.38; } }
 .composer:has(textarea:focus-visible) {
   outline:2px solid var(--focus);
   outline-offset:2px;
@@ -48,7 +34,7 @@
 }
 dialog:modal { overscroll-behavior:contain; }
 dialog::backdrop { overflow:hidden; overscroll-behavior:contain; }
-.leave-dialog { margin:auto; max-width:calc(100vw - 32px); color:var(--ink); font-family:var(--font-body); }
+.leave-dialog { margin:auto; max-width:calc(100vw - 32px); color:var(--ink); background:var(--sheet-surface); border:1px solid var(--card-border); font-family:var(--font-body); }
 .leave-dialog::backdrop { background:var(--scrim); }
 .leave-dialog h2 { margin:0 0 20px; font-size:var(--t2); }
 .leave-dialog .editor-actions { justify-content:flex-end; flex-wrap:wrap; }
@@ -68,7 +54,7 @@ dialog::backdrop { overflow:hidden; overscroll-behavior:contain; }
 .map-tools .focus-tool:not(:focus-visible) { position:absolute; width:1px; height:1px; padding:0; clip-path:inset(50%); overflow:hidden; }
 .map-reader > p { margin:12px 20px 20px; }
 .map-page .map-retry { position:absolute; left:1rem; top:1rem; z-index:5; }
-.snackbar { position:fixed; left:50%; bottom:max(16px,env(safe-area-inset-bottom)); z-index:30; translate:-50% 0; width:max-content; max-width:calc(100vw - 32px); display:flex; align-items:center; gap:12px; padding:8px 14px; min-height:44px; border:1px solid var(--line); border-radius:14px; background:var(--surface); color:var(--ink); box-shadow:0 8px 24px rgb(31 30 28 / .08); animation:snackbar-enter var(--motion-responsive-duration) var(--motion-responsive-easing); }
+.snackbar { position:fixed; left:50%; bottom:max(16px,env(safe-area-inset-bottom)); z-index:30; translate:-50% 0; width:max-content; max-width:calc(100vw - 32px); display:flex; align-items:center; gap:12px; padding:8px 14px; min-height:44px; border:1px solid var(--card-border); border-radius:14px; background:var(--sheet-surface); color:var(--ink); box-shadow:var(--shadow-float); animation:snackbar-enter var(--motion-responsive-duration) var(--motion-responsive-easing); }
 .snackbar .ghost { height:32px; color:var(--accent); }
 .snackbar .ghost:hover { background:var(--accent-surface); }
 @keyframes snackbar-enter { from { opacity:0; transform:translateY(8px); } }

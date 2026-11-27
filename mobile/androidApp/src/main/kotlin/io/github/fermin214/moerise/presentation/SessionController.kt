@@ -27,6 +27,8 @@ class SessionController(
     private val onConnectionFailure: (Exception) -> Unit = {},
     private val removalRepository: (suspend () -> NoteRepository)? = null,
     private val clearProtectedDownloads: suspend () -> Unit = {},
+    private val themeStore: UiThemeStore = MemoryUiThemeStore(),
+    private val onThemeChange: (UiTheme) -> Unit = {},
     private val onNetworkRequest: () -> Unit = {},
 ) : AutoCloseable {
     private val repository = ConnectionRepository(secrets)
@@ -36,6 +38,14 @@ class SessionController(
     val language = mutableLanguage.asStateFlow()
     private val mutablePreferencesError = MutableStateFlow<String?>(null)
     val preferencesError = mutablePreferencesError.asStateFlow()
+    private val mutableThemeError = MutableStateFlow<String?>(null)
+    val themeError = mutableThemeError.asStateFlow()
+    private val initialTheme = try { themeStore.read() } catch (error: Exception) {
+        mutableThemeError.value = "LOCAL_PREFERENCES_FAILED"
+        UiTheme.SYSTEM
+    }
+    private val mutableTheme = MutableStateFlow(initialTheme)
+    val theme = mutableTheme.asStateFlow()
     private val languageLock = Mutex()
     private val invalidationLock = Mutex()
     private val invalidationCleanups = mutableMapOf<String, Deferred<Result<Unit>>>()
@@ -75,6 +85,13 @@ class SessionController(
                 if (revision == languageRevision) mutablePreferencesError.value = "LOCAL_PREFERENCES_FAILED"
             }
         }
+    }
+
+    fun theme(value: UiTheme) {
+        mutableTheme.value = value
+        val saved = runCatching { themeStore.write(value) }.isSuccess
+        val applied = saved && runCatching { onThemeChange(value) }.isSuccess
+        mutableThemeError.value = if (applied) null else "LOCAL_PREFERENCES_FAILED"
     }
 
     private fun client(origin: String, stamp: Long): CoreClient =

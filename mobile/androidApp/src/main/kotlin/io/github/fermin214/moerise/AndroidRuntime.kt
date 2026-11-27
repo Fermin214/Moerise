@@ -12,10 +12,12 @@ import io.github.fermin214.moerise.data.AndroidSecretStore
 import io.github.fermin214.moerise.data.NoteRepository
 import io.github.fermin214.moerise.data.androidDatabase
 import io.github.fermin214.moerise.domain.CoreException
+import io.github.fermin214.moerise.presentation.AndroidUiThemeStore
 import io.github.fermin214.moerise.presentation.MobileController
 import io.github.fermin214.moerise.presentation.SessionController
 import io.github.fermin214.moerise.presentation.SyncTrigger
 import io.github.fermin214.moerise.presentation.androidAttachmentFiles
+import io.github.fermin214.moerise.presentation.applyApplicationNightMode
 import io.github.fermin214.moerise.presentation.clearAttachmentCache
 import io.github.fermin214.moerise.presentation.recoverGalleryExports
 import kotlinx.coroutines.CancellationException
@@ -61,6 +63,8 @@ class AndroidRuntime(application: MoeriseApplication) {
         },
         removalRepository = { repository.await() },
         clearProtectedDownloads = { clearAttachmentCache(application) },
+        themeStore = AndroidUiThemeStore(application),
+        onThemeChange = { applyApplicationNightMode(application, it) },
     ) {
         val count = requests.incrementAndGet()
         Trace.setCounter("moerise_network_requests", count)

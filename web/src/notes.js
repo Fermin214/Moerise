@@ -17,6 +17,7 @@ export function compareNotes(a, b) {
 
 export function renderAttachments(note, referenced = new Set()) {
   const box = el('div', 'attachment-list');
+  const images = [];
   for (const item of note.attachments || []) {
     const url = attachmentURL(note, item);
     if (referenced.has(url) && rasterImage(item.type)) continue;
@@ -30,14 +31,25 @@ export function renderAttachments(note, referenced = new Set()) {
       prepareImage(image, `${note.source_hash}:${url}`);
       image.addEventListener('error', () => {
         image.remove(); link.className = 'attachment'; setText(link, l("{0}，打开原图", { 0: item.filename || l("图片") }));
+        const grid = link.closest('.attachment-grid');
+        if (grid) {
+          box.append(link);
+          if (!grid.childElementCount) grid.remove();
+        }
       }, { once: true });
       link.append(image);
+      images.push(link);
     } else {
       link.download = item.filename || 'attachment';
       setText(link, item.filename || l("下载附件"));
       if (Number.isFinite(item.size)) link.append(el('span', 'sub', item.size < 1024 ? `${item.size} B` : `${Math.ceil(item.size / 1024)} KiB`));
     }
     box.append(link);
+  }
+  if (images.length > 1) {
+    const grid = el('div', `attachment-grid${images.length === 2 ? ' two' : ''}`);
+    grid.append(...images);
+    box.prepend(grid);
   }
   return box;
 }
@@ -206,12 +218,18 @@ export function renderReadingCard(note, { review = false, className = 'card big 
   time.dateTime = note.create_time;
   card.append(body, renderAttachments(note, referenced));
   if (bottomTags) {
-    if (tags.childElementCount) card.append(tags);
     const footer = el('div', 'discovery-footer');
     const days = Math.max(0, Math.floor((Date.now() - Date.parse(note.create_time)) / 86_400_000));
     const date = review && Number.isFinite(days) ? el('span', '', days ? l("{0} 天前", { 0: days }) : l("今天")) : time;
-    footer.append(date, button(l("打开笔记"), 'dlink', () => openNote(note)));
-    card.append(footer);
+    footer.append(date);
+    if (review) {
+      const colophon = el('div', 'review-colophon');
+      colophon.append(tags, footer);
+      card.append(colophon);
+    } else {
+      footer.append(button(l("打开笔记"), 'dlink', () => openNote(note)));
+      card.append(tags, footer);
+    }
   } else {
     const header = el('div', 'hd');
     const open = button('', 'btn s', () => openNote(note));

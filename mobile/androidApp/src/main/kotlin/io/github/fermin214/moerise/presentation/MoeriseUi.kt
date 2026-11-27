@@ -12,7 +12,6 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.relocation.BringIntoViewRequester
 import androidx.compose.foundation.relocation.bringIntoViewRequester
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
@@ -38,14 +37,8 @@ import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.text.input.ImeAction
-import androidx.compose.animation.core.animateFloat
-import androidx.compose.animation.core.infiniteRepeatable
-import androidx.compose.animation.core.rememberInfiniteTransition
-import androidx.compose.animation.core.FastOutSlowInEasing
-import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.snap
-import androidx.compose.animation.core.tween
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
@@ -53,10 +46,8 @@ import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInParent
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
-import kotlinx.coroutines.delay
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.Role
@@ -80,7 +71,7 @@ fun WebSearchPanel(query: SearchQuery, strings: Strings, onChange: (SearchQuery)
     Column(Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, bottom = 12.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
-            Surface(Modifier.weight(1f), color = Color.White, shape = RoundedCornerShape(10.dp),
+            Surface(Modifier.weight(1f), color = MoeriseColors.Surface, shape = RoundedCornerShape(10.dp),
                 border = BorderStroke(1.dp, MoeriseColors.FieldBorder)) {
                 Row(Modifier.padding(horizontal = 11.dp), verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -125,68 +116,52 @@ fun WebSearchPanel(query: SearchQuery, strings: Strings, onChange: (SearchQuery)
     }
 }
 
-object MoeriseColors {
-    val Paper = Color(0xFFF5F4F0)
-    val ScrollPaper = Color(0xFFF7F6F2)
-    val Surface = Color(0xFFFCFBF8)
-    val OnAccent = Color.White
-    val SurfaceMuted = Color(0xFFECEAE4)
-    val Hover = Color(0xFFE6E3DC)
-    val Line = Color(0xFFE4E1D8)
-    val FieldBorder = Color(0xFF918B80)
-    val Ink = Color(0xFF1F1E1C)
-    val InkTag = Color(0xFF64605A)
-    val InkColophon = Color(0xFF757069)
-    val BrandInk = Color(0xFF2B2926)
-    val Muted = Color(0xFF68645E)
-    val Accent = Color(0xFF2F5D62)
-    val AccentHover = Color(0xFF254B4F)
-    val AccentSurface = Color(0xFFE8F0EE)
-    val AccentSurfaceStrong = Color(0xFFDCE8E5)
-    val HeatmapLight = Color(0xFFE3E7E3)
-    val HeatmapMedium = Color(0xFFCCD7D3)
-    val Danger = Color(0xFFB42318)
-    val DangerSurface = Color(0xFFFDF2F1)
-}
-
-private fun webText(size: Int, height: Float, weight: FontWeight = FontWeight.Normal) = TextStyle(
+private fun webText(size: Int, height: Float, weight: FontWeight = FontWeight.Normal, spacing: Float = 0f) = TextStyle(
     fontFamily = FontFamily.SansSerif, fontSize = size.sp, lineHeight = height.sp,
-    letterSpacing = 0.sp, fontWeight = weight,
+    letterSpacing = spacing.sp, fontWeight = weight,
 )
 
 @Composable
-fun MoeriseTheme(content: @Composable () -> Unit) {
+fun MoeriseTheme(darkTheme: Boolean = false, content: @Composable () -> Unit) {
+    val palette = if (darkTheme) DarkMoerisePalette else LightMoerisePalette
+    val base = if (darkTheme) darkColorScheme() else lightColorScheme()
     MaterialTheme(
-        colorScheme = lightColorScheme(
-            primary = MoeriseColors.Accent, onPrimary = MoeriseColors.OnAccent,
-            primaryContainer = MoeriseColors.AccentSurface, onPrimaryContainer = MoeriseColors.Accent,
-            secondary = MoeriseColors.Accent, secondaryContainer = MoeriseColors.AccentSurface,
-            onSecondary = MoeriseColors.OnAccent, onSecondaryContainer = MoeriseColors.Accent,
-            background = MoeriseColors.Paper, onBackground = MoeriseColors.Ink,
-            surface = MoeriseColors.Surface, onSurface = MoeriseColors.Ink,
-            surfaceVariant = MoeriseColors.SurfaceMuted, onSurfaceVariant = MoeriseColors.Muted,
-            surfaceContainer = MoeriseColors.Surface, surfaceContainerLow = MoeriseColors.Paper,
-            surfaceContainerHigh = MoeriseColors.Surface, surfaceTint = MoeriseColors.Surface,
-            outline = MoeriseColors.FieldBorder, outlineVariant = MoeriseColors.Line,
-            error = MoeriseColors.Danger, errorContainer = MoeriseColors.DangerSurface,
-            onErrorContainer = MoeriseColors.Danger,
+        colorScheme = base.copy(
+            primary = palette.Accent, onPrimary = palette.OnAccent,
+            primaryContainer = palette.AccentSurface, onPrimaryContainer = palette.Accent,
+            secondary = palette.Accent, secondaryContainer = palette.AccentSurface,
+            onSecondary = palette.OnAccent, onSecondaryContainer = palette.Accent,
+            tertiary = palette.Accent, onTertiary = palette.OnAccent,
+            tertiaryContainer = palette.AccentSurface, onTertiaryContainer = palette.Accent,
+            background = palette.Paper, onBackground = palette.Ink,
+            surface = palette.Surface, onSurface = palette.Ink,
+            surfaceVariant = palette.SurfaceMuted, onSurfaceVariant = palette.Muted,
+            surfaceContainerLowest = palette.Paper, surfaceContainerLow = palette.Paper,
+            surfaceContainer = palette.Surface, surfaceContainerHigh = palette.SheetSurface,
+            surfaceContainerHighest = palette.SheetSurface, surfaceTint = palette.Surface,
+            surfaceDim = palette.Paper, surfaceBright = palette.SheetSurface,
+            outline = palette.FieldBorder, outlineVariant = palette.Line,
+            error = palette.Danger, errorContainer = palette.DangerSurface,
+            onError = palette.OnDanger, onErrorContainer = palette.Danger,
+            inverseSurface = palette.Ink, inverseOnSurface = palette.Paper, inversePrimary = palette.OnAccent,
+            scrim = palette.DialogScrim,
         ),
         typography = Typography(
-            displayLarge = webText(20, 28f, FontWeight.SemiBold),
-            displayMedium = webText(20, 28f, FontWeight.SemiBold),
-            displaySmall = webText(20, 28f, FontWeight.SemiBold),
-            headlineLarge = webText(20, 28f, FontWeight.SemiBold),
-            headlineMedium = webText(20, 28f, FontWeight.SemiBold),
-            headlineSmall = webText(20, 28f, FontWeight.SemiBold),
-            titleLarge = webText(20, 28f, FontWeight.SemiBold),
-            titleMedium = webText(17, 25.5f, FontWeight.SemiBold),
-            titleSmall = webText(15, 24f, FontWeight.SemiBold),
-            bodyLarge = webText(15, 24f),
-            bodyMedium = webText(15, 24f),
+            displayLarge = webText(20, 28f, palette.HeadingWeight),
+            displayMedium = webText(20, 28f, palette.HeadingWeight),
+            displaySmall = webText(20, 28f, palette.HeadingWeight),
+            headlineLarge = webText(20, 28f, palette.HeadingWeight),
+            headlineMedium = webText(20, 28f, palette.HeadingWeight),
+            headlineSmall = webText(20, 28f, palette.HeadingWeight),
+            titleLarge = webText(20, 28f, palette.HeadingWeight),
+            titleMedium = webText(16, 23f, palette.HeadingWeight),
+            titleSmall = webText(15, 22f, palette.HeadingWeight),
+            bodyLarge = webText(15, if (darkTheme) 24.3f else 24f, spacing = if (darkTheme) .3f else 0f),
+            bodyMedium = webText(15, if (darkTheme) 24.3f else 24f, spacing = if (darkTheme) .3f else 0f),
             bodySmall = webText(13, 19.5f),
             labelLarge = webText(15, 24f, FontWeight.Medium),
             labelMedium = webText(13, 19.5f),
-            labelSmall = webText(13, 19.5f),
+            labelSmall = webText(12, 18f),
         ),
         shapes = Shapes(
             extraSmall = RoundedCornerShape(6.dp), small = RoundedCornerShape(8.dp),
@@ -194,7 +169,7 @@ fun MoeriseTheme(content: @Composable () -> Unit) {
             extraLarge = RoundedCornerShape(18.dp),
         ),
     ) {
-        CompositionLocalProvider(LocalMinimumInteractiveComponentSize provides 44.dp, content = content)
+        CompositionLocalProvider(LocalMoeriseColors provides palette, LocalMinimumInteractiveComponentSize provides 44.dp, content = content)
     }
 }
 
@@ -217,13 +192,6 @@ fun WebToolbar(
 ) {
     val searchExpanded = LocalWebSearchOpen.current
     val syncAction = onSync ?: LocalWebSyncAction.current
-    var completedSync by remember { mutableStateOf(false) }
-    var transferring by remember { mutableStateOf(false) }
-    LaunchedEffect(syncStatus) {
-        completedSync = syncStatus == SyncStatus.CONNECTED && transferring
-        transferring = syncStatus == SyncStatus.SYNCING
-        if (completedSync) { delay(1200); completedSync = false }
-    }
     Column(modifier.fillMaxWidth().platformTestTags()) {
         Row(Modifier.fillMaxWidth().height(56.dp).padding(horizontal = 8.dp),
             verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
@@ -231,7 +199,7 @@ fun WebToolbar(
                 WebIcon(WebIcon.Menu, strings.text("打开导航", "Open navigation"), Modifier.size(20.dp))
             }
             BrandTitle(Modifier.weight(1f).padding(start = 8.dp), title)
-            if (syncAction != null && syncStatus != null && (syncStatus != SyncStatus.CONNECTED || completedSync)) {
+            if (syncAction != null && syncStatus != null && syncStatus != SyncStatus.CONNECTED && syncStatus != SyncStatus.SYNCING) {
                 SyncButton(syncStatus, strings, syncAction)
             }
             if (onSearch != null) IconButton(onClick = onSearch, modifier = Modifier.size(44.dp).testTag("open_search").semantics {
@@ -268,23 +236,14 @@ fun SyncButton(status: SyncStatus, strings: Strings, onClick: () -> Unit) {
 
 @Composable
 fun SyncGlyph(status: SyncStatus, modifier: Modifier = Modifier) {
-    val pulse = if (status == SyncStatus.SYNCING && !LocalReducedMotion.current)
-        rememberInfiniteTransition(label = "sync").animateFloat(1f, .55f,
-            animationSpec = infiniteRepeatable(tween(550, easing = FastOutSlowInEasing), RepeatMode.Reverse), label = "breath") else null
-    val (icon, tint, dotColor) = when (status) {
-        SyncStatus.SYNCING -> Triple(WebIcon.Sync, MoeriseColors.Accent, MoeriseColors.Accent)
-        SyncStatus.CONNECTED -> Triple(WebIcon.Check, MoeriseColors.Accent, null)
-        SyncStatus.PENDING -> Triple(WebIcon.Sync, MoeriseColors.Accent, MoeriseColors.Accent)
-        SyncStatus.ATTENTION -> Triple(WebIcon.Alert, MoeriseColors.Danger, MoeriseColors.Danger)
-        SyncStatus.SIGN_IN -> Triple(WebIcon.SignIn, MoeriseColors.Danger, MoeriseColors.Danger)
-        SyncStatus.OFFLINE -> Triple(WebIcon.CloudOff, MoeriseColors.Danger, MoeriseColors.Danger)
+    val (icon, tint) = when (status) {
+        SyncStatus.SYNCING, SyncStatus.PENDING -> WebIcon.Sync to MoeriseColors.Accent
+        SyncStatus.CONNECTED -> WebIcon.Check to MoeriseColors.Accent
+        SyncStatus.ATTENTION -> WebIcon.Alert to MoeriseColors.Danger
+        SyncStatus.SIGN_IN -> WebIcon.SignIn to MoeriseColors.Danger
+        SyncStatus.OFFLINE -> WebIcon.CloudOff to MoeriseColors.Danger
     }
-    Box(modifier.size(20.dp), contentAlignment = androidx.compose.ui.Alignment.Center) {
-        WebIcon(icon, modifier = Modifier.fillMaxSize().graphicsLayer { alpha = pulse?.value ?: 1f }, tint = tint)
-        if (dotColor != null && status != SyncStatus.ATTENTION && status != SyncStatus.SIGN_IN) {
-            Box(Modifier.align(androidx.compose.ui.Alignment.TopEnd).size(5.dp).background(dotColor, CircleShape).clearAndSetSemantics {})
-        }
-    }
+    WebIcon(icon, modifier = modifier.size(20.dp), tint = tint)
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -346,7 +305,8 @@ fun WebTabs(labels: List<String>, selected: Int, onSelect: (Int) -> Unit, modifi
     val position = animateFloatAsState(target?.first ?: 0f, if (reduced) snap() else MoeriseMotion.responsive(), label = "tab position")
     val width = animateFloatAsState(target?.second ?: 0f, if (reduced) snap() else MoeriseMotion.responsive(), label = "tab width")
     val density = LocalDensity.current
-    Surface(modifier.fillMaxWidth(), color = MoeriseColors.SurfaceMuted, shape = RoundedCornerShape(12.dp)) {
+    Surface(modifier.fillMaxWidth(), color = MoeriseColors.TabTrack, shape = RoundedCornerShape(12.dp),
+        border = BorderStroke(1.dp, MoeriseColors.CardBorder)) {
         Box(Modifier.horizontalScroll(rememberScrollState()).padding(4.dp)) {
         if (target != null) Box(Modifier.width(with(density) { width.value.toDp() }).height(44.dp).graphicsLayer {
             translationX = position.value
