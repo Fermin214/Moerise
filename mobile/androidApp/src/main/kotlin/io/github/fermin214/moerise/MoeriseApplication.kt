@@ -4,6 +4,7 @@ import android.app.Activity
 import android.app.Application
 import android.os.Bundle
 import androidx.core.view.doOnPreDraw
+import io.github.fermin214.moerise.presentation.applyApplicationNightMode
 
 class MoeriseApplication : Application() {
     lateinit var runtime: AndroidRuntime
@@ -12,6 +13,7 @@ class MoeriseApplication : Application() {
     override fun onCreate() {
         super.onCreate()
         runtime = AndroidRuntime(this)
+        applyApplicationNightMode(this, runtime.session.theme.value)
         registerActivityLifecycleCallbacks(object : Application.ActivityLifecycleCallbacks {
             private val started = mutableSetOf<Activity>()
 

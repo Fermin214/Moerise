@@ -16,6 +16,7 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.selection.SelectionContainer
@@ -83,6 +84,10 @@ fun MoeriseApp(mobile: MobileController, onHomeReady: () -> Unit = {}) {
     }
     ClearWritingOnStop(leaveWriting)
     val session = mobile.session
+    val theme by session.theme.collectAsState()
+    val darkTheme = theme.isDark(isSystemInDarkTheme())
+    val window = LocalView.current.context.activity()?.window
+    SideEffect { window?.applyMoeriseTheme(darkTheme) }
     val language by session.language.collectAsState()
     val strings = remember(language) { Strings(language) }
     val connection by session.state.collectAsState()
@@ -301,7 +306,7 @@ fun MoeriseApp(mobile: MobileController, onHomeReady: () -> Unit = {}) {
         if (page != "map" || !mobile.stars.back()) navigate("home")
     }
     PlatformLanguage(language) {
-    MoeriseTheme {
+    MoeriseTheme(darkTheme) {
         WelcomeDialog(mobile.privacy, strings)
         CompositionLocalProvider(
             LocalReducedMotion provides reducedMotion,
@@ -570,7 +575,7 @@ internal suspend fun SnackbarHostState.showMobileNotice(message: String, undoLab
 @Composable
 private fun MobileSnackbar(data: SnackbarData) {
     Surface(Modifier.fillMaxWidth().heightIn(min = 48.dp).semantics { liveRegion = LiveRegionMode.Polite }, shape = RoundedCornerShape(14.dp),
-        color = MoeriseColors.SheetSurface, border = BorderStroke(1.dp, MoeriseColors.Line), shadowElevation = 4.dp) {
+        color = MoeriseColors.SheetSurface, border = BorderStroke(1.dp, MoeriseColors.CardBorder), shadowElevation = 4.dp) {
         Row(Modifier.padding(horizontal = 14.dp, vertical = 2.dp), verticalAlignment = Alignment.CenterVertically) {
             Text(data.visuals.message, Modifier.weight(1f), color = MoeriseColors.Ink, fontSize = 15.sp)
             data.visuals.actionLabel?.let {
@@ -591,14 +596,18 @@ private fun NoteComposerSheet(state: EditorUiState, controller: EditorController
     }
     Dialog(onDismissRequest = dismiss, properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) {
         val window = (LocalView.current.parent as? DialogWindowProvider)?.window
-        SideEffect { window?.setDimAmount(0f) }
+        val palette = MoeriseColors
+        SideEffect {
+            window?.setDimAmount(0f)
+            window?.applyMoeriseTheme(palette.dark, dialog = true)
+        }
         val focus = LocalFocusManager.current
         val keyboard = LocalSoftwareKeyboardController.current
         val leave: () -> Unit = { focus.clearFocus(); keyboard?.hide() }
         ClearWritingOnStop(leave)
         CompositionLocalProvider(LocalLeaveWriting provides leave) {
             Box(Modifier.fillMaxSize()) {
-                Box(Modifier.matchParentSize().background(MoeriseColors.Ink.copy(alpha = 0.18f))
+                Box(Modifier.matchParentSize().background(palette.Scrim)
                     .clickable(interactionSource = null, indication = null, onClick = dismiss)
                     .semantics { contentDescription = strings.text("关闭写作", "Close writing") })
                 Box(Modifier.align(Alignment.BottomCenter).fillMaxWidth().statusBarsPadding().displayCutoutPadding().imePadding(),
@@ -666,7 +675,8 @@ private fun SheetEditor(
         (draft.content.isNotBlank() || edits.staged.isNotEmpty() ||
             baseline?.attachments?.any { it["name"]?.jsonPrimitive?.content !in edits.removed } == true || state.pending != null)
     val scanner = remember(field.text) { if ('#' in field.text) NoteTagScanner(field.text) else null }
-    val transformation = remember(field.text) { markdownEditorTransformation(field.text) }
+    val palette = MoeriseColors
+    val transformation = remember(field.text, palette) { markdownEditorTransformation(field.text, palette) }
     var insertedMarker by remember(draft.id) { mutableStateOf<Int?>(null) }
     val prefix = if (focused && field.composition == null && field.selection.collapsed) {
         val cursor = field.selection.start
@@ -744,7 +754,7 @@ private fun SheetEditor(
             drawContent()
             val edge = 18.dp.toPx()
             val line = 1.dp.toPx()
-            drawLine(MoeriseColors.Line, Offset(edge, line / 2), Offset(size.width - edge, line / 2), strokeWidth = line)
+            drawLine(palette.CardBorder, Offset(edge, line / 2), Offset(size.width - edge, line / 2), strokeWidth = line)
         }.navigationBarsPadding().padding(start = 20.dp, top = 14.dp, end = 20.dp, bottom = 8.dp),
             verticalArrangement = Arrangement.spacedBy(2.dp)) {
             Column(Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState())) {

@@ -173,6 +173,45 @@ async function login(page) {
   await page.locator('#workspace').waitFor({ state: 'visible' });
 }
 
+test('first login paint resolves appearance without waiting for app.js and keeps strict CSP', async t => {
+  const { page, context, url, errors } = await fixture(t, 'zh-CN', { colorScheme: 'light' });
+  await context.addInitScript(() => {
+    if (location.search === '?storage-unavailable') {
+      Object.defineProperty(window, 'localStorage', { get() { throw new DOMException('Storage blocked', 'SecurityError'); } });
+    } else localStorage.setItem('moerise-theme', 'dark');
+    window.themeViolations = [];
+    document.addEventListener('securitypolicyviolation', event => themeViolations.push(event.violatedDirective));
+  });
+  let release;
+  t.after(() => release?.());
+  await page.route(/\/app(?:\.[a-f0-9]+)?\.js$/, async route => {
+    await new Promise(resolve => { release = resolve; });
+    await route.continue();
+  });
+  for (const [path, system, expected, preference] of [
+    ['', 'light', 'dark', 'dark'], ['?storage-unavailable', 'dark', 'dark', 'auto'],
+  ]) {
+    await page.emulateMedia({ colorScheme: system });
+    const requested = page.waitForRequest(/\/app(?:\.[a-f0-9]+)?\.js$/);
+    const response = await page.goto(url + path, { waitUntil: 'commit' });
+    await requested;
+    const policy = response.headers()['content-security-policy'];
+    assert.match(policy, /(?:^|;\s*)script-src 'self'(?:;|$)/);
+    assert.match(policy, /(?:^|;\s*)style-src 'self'(?:;|$)/);
+    await page.waitForFunction(() => getComputedStyle(document.getElementById('auth')).backgroundColor === 'rgb(22, 22, 20)');
+    assert.deepEqual(await page.evaluate(() => [
+      document.documentElement.dataset.theme, document.documentElement.dataset.themePreference,
+      document.querySelector('meta[name="color-scheme"]').content, getComputedStyle(document.documentElement).colorScheme,
+      document.querySelectorAll('style,[style],script:not([src])').length, window.themeViolations,
+    ]), [expected, preference, expected, expected, 0, []]);
+    assert.equal(await page.locator('#login-form').isHidden(), true);
+    release();
+    await page.locator('#login-form').waitFor();
+    assert.deepEqual(await page.evaluate(() => window.themeViolations), []);
+  }
+  assert.deepEqual(errors, []);
+});
+
 test('inline tags filter within the timeline and copy preserves the source even after clipboard rejection', async t => {
   const { page, context, state, url } = await fixture(t);
   const original = '  开头 **粗体** #想法。\n第二行\n\n#灵感\n  ';
@@ -906,45 +945,6 @@ test('mobile sync conflict has one cloud status and a distinct sidebar action', 
   assert.equal(await conflict.evaluate(node => getComputedStyle(node).color), 'rgb(180, 35, 24)');
 });
 
-test('search composition, menu keyboard, route focus and refresh protection preserve input', async t => {
-  const { page, state, url, errors } = await fixture(t);
-  await page.goto(url); await login(page);
-  const query = page.locator('#q');
-  await query.focus();
-  await query.evaluate(node => {
-    node.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true }));
-    node.value = '组词中的文字';
-    node.dispatchEvent(new InputEvent('input', { bubbles: true, isComposing: true }));
-    node.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', isComposing: true, keyCode: 229, bubbles: true }));
-  });
-  await page.waitForTimeout(300);
-  assert.equal(new URL(page.url()).search, '');
-  await query.evaluate(node => { node.value = '笔记'; node.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true })); });
-  await page.waitForURL(value => value.searchParams.get('query') === '笔记');
-  assert.ok(await query.evaluate(node => node === document.activeElement));
-  await query.fill(''); await query.press('Enter');
-  await page.waitForURL(value => !value.search);
-  await page.locator('#notes[aria-busy="false"]').waitFor();
-  const more = page.locator('[data-name="memos/n00"] .more');
-  await more.focus(); await page.keyboard.press('ArrowDown');
-  await page.locator('[data-name="memos/n00"] .more[aria-expanded="true"]').waitFor();
-  await page.getByRole('menuitem', { name: '编辑', exact: true }).waitFor();
-  assert.equal(await page.evaluate(() => document.activeElement.textContent), '编辑');
-  await page.keyboard.press('End');
-  assert.equal(await page.evaluate(() => document.activeElement.textContent), '删除');
-  await page.keyboard.press('Home');
-  await page.keyboard.press('ArrowDown');
-  assert.equal(await page.evaluate(() => document.activeElement.textContent), '打开笔记');
-  await page.keyboard.press('Escape');
-  assert.ok(await more.evaluate(node => node === document.activeElement));
-  const link = page.locator('[data-name="memos/n00"] .dlink');
-  await link.focus(); await page.keyboard.press('Enter');
-  await page.locator('article.note').waitFor();
-  assert.equal(await page.evaluate(() => document.activeElement.id), 'main');
-  await page.locator('#back').click();
-  await page.waitForFunction(() => document.activeElement.matches('.dlink'));
-  await page.locator('#content').fill('刷新保护正文');
-  const rejected = page.waitForEvent('dialog').then(dialog => { assert.equal(dialog.type(), 'beforeunload'); return dialog.dismiss(); });
 test('successful writes are silent, failed and unconfirmed writes use the warning cloud, and offline is visible', async t => {
   const { page, context, url } = await fixture(t);
   await page.goto(url); await login(page);
@@ -984,6 +984,45 @@ test('successful writes are silent, failed and unconfirmed writes use the warnin
   await context.setOffline(false);
 });
 
+test('search composition, menu keyboard, route focus and refresh protection preserve input', async t => {
+  const { page, state, url, errors } = await fixture(t);
+  await page.goto(url); await login(page);
+  const query = page.locator('#q');
+  await query.focus();
+  await query.evaluate(node => {
+    node.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true }));
+    node.value = '组词中的文字';
+    node.dispatchEvent(new InputEvent('input', { bubbles: true, isComposing: true }));
+    node.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', isComposing: true, keyCode: 229, bubbles: true }));
+  });
+  await page.waitForTimeout(300);
+  assert.equal(new URL(page.url()).search, '');
+  await query.evaluate(node => { node.value = '笔记'; node.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true })); });
+  await page.waitForURL(value => value.searchParams.get('query') === '笔记');
+  assert.ok(await query.evaluate(node => node === document.activeElement));
+  await query.fill(''); await query.press('Enter');
+  await page.waitForURL(value => !value.search);
+  await page.locator('#notes[aria-busy="false"]').waitFor();
+  const more = page.locator('[data-name="memos/n00"] .more');
+  await more.focus(); await page.keyboard.press('ArrowDown');
+  await page.locator('[data-name="memos/n00"] .more[aria-expanded="true"]').waitFor();
+  await page.getByRole('menuitem', { name: '编辑', exact: true }).waitFor();
+  assert.equal(await page.evaluate(() => document.activeElement.textContent), '编辑');
+  await page.keyboard.press('End');
+  assert.equal(await page.evaluate(() => document.activeElement.textContent), '删除');
+  await page.keyboard.press('Home');
+  await page.keyboard.press('ArrowDown');
+  assert.equal(await page.evaluate(() => document.activeElement.textContent), '打开笔记');
+  await page.keyboard.press('Escape');
+  assert.ok(await more.evaluate(node => node === document.activeElement));
+  const link = page.locator('[data-name="memos/n00"] .dlink');
+  await link.focus(); await page.keyboard.press('Enter');
+  await page.locator('article.note').waitFor();
+  assert.equal(await page.evaluate(() => document.activeElement.id), 'main');
+  await page.locator('#back').click();
+  await page.waitForFunction(() => document.activeElement.matches('.dlink'));
+  await page.locator('#content').fill('刷新保护正文');
+  const rejected = page.waitForEvent('dialog').then(dialog => { assert.equal(dialog.type(), 'beforeunload'); return dialog.dismiss(); });
   const reload = page.reload({ timeout: 1500 }).catch(() => {});
   await rejected; await reload;
   assert.equal(await page.locator('#content').inputValue(), '刷新保护正文');

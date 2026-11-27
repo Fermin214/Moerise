@@ -1,5 +1,6 @@
 import { el, button } from './dom.js';
 import { l, setText, setAttr, resolveText, languagePreference, setLanguage, locale } from './i18n.js';
+import { setTheme, themePreference } from './theme.js';
 import { createModal } from './modal.js';
 import { privacySettings } from './privacy.js';
 import { snackbar } from './snackbar.js';
@@ -710,6 +711,10 @@ export function createSettingsPage({ sessionRequest, handleFailure, onSaved = ()
     language.id = 'settings-language'; language.dataset.language = ''; language.value = languagePreference();
     language.addEventListener('change', () => { setLanguage(language.value, { persist: true }); moveTabSlider(); });
     row(general, l("语言"), language);
+    const theme = select([['auto', l("跟随系统")], ['light', l("浅色")], ['dark', l("深色")]]);
+    theme.id = 'settings-theme'; theme.value = themePreference();
+    theme.addEventListener('change', () => setTheme(theme.value, { persist: true }));
+    row(general, l("外观"), theme);
     summary(general, l("时区"), () => snapshot.settings.timezone, editTimezone);
     const syncActions = el('div', 'settings-inline-actions'), synced = el('span', 'sub');
     const syncButton = button(l("同步"), 'secondary', async () => {

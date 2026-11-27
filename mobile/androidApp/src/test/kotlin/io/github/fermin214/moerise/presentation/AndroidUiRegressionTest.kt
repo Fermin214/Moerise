@@ -12,6 +12,7 @@ import android.os.Looper
 import android.view.View
 import android.view.WindowInsets
 import android.view.WindowManager.LayoutParams
+import androidx.core.view.WindowCompat
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.ScrollState
@@ -32,6 +33,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.compositeOver
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.platform.LocalFocusManager
@@ -484,7 +486,7 @@ class AndroidUiRegressionTest {
             assertTrue(intro.getUnclippedBoundsInRoot().top < 155.dp)
             val stop = compose.onNodeWithTag("walk_end")
             val fixed = stop.getUnclippedBoundsInRoot()
-            assertButtonPalette(stop, MoeriseColors.Surface, MoeriseColors.Line)
+            assertButtonPalette(stop, LightMoerisePalette.Surface, LightMoerisePalette.Line)
             val open = compose.onNodeWithTag("discovery_open")
             open.performScrollTo().assertIsDisplayed().assertTextEquals("View on home")
             assertTrue(open.getUnclippedBoundsInRoot().height >= 44.dp)
@@ -570,13 +572,13 @@ class AndroidUiRegressionTest {
         val files = (1..6).map { index -> recent.copy(name = "memos/file-$index", content = "",
             attachments = listOf(CoreJson.parseToJsonElement("""{"filename":"file-$index.pdf"}""") as kotlinx.serialization.json.JsonObject)) }
         val candidates = files + listOf(recent.copy(name = "memos/short", content = "短句\n#未知"), recent)
+        val longReview = recent.copy(name = "memos/long-review", content = (1..32).joinToString("\n\n") { "Review paragraph $it" })
         val review = ReviewBatch("day", "2026-10-30", timezone, listOf(
             ReviewItem(recent.name, recent.sourceHash, recent.createTime, unavailable = false, note = recent),
-        val longReview = recent.copy(name = "memos/long-review", content = (1..32).joinToString("\n\n") { "Review paragraph $it" })
             ReviewItem("memos/missing", "deleted", recent.createTime, unavailable = true),
+            ReviewItem(longReview.name, longReview.sourceHash, longReview.createTime, unavailable = false, note = longReview),
         ))
         val syncAvailable = java.util.concurrent.atomic.AtomicBoolean()
-            ReviewItem(longReview.name, longReview.sourceHash, longReview.createTime, unavailable = false, note = longReview),
         val syncedNotes = listOf(recent, recent.copy(name = "memos/synced", content = "Synced while the walk was open"))
         val server = MockWebServer().apply {
             dispatcher = object : Dispatcher() {
@@ -648,19 +650,19 @@ class AndroidUiRegressionTest {
             assertTrue(compose.onNodeWithTag("review_card").getUnclippedBoundsInRoot().bottom -
                 date.getUnclippedBoundsInRoot().bottom in 21.dp..23.dp)
             compose.onNodeWithTag("discovery_open").assertDoesNotExist()
-            assertButtonPalette(compose.onNodeWithTag("review_walk"), MoeriseColors.Surface, MoeriseColors.Line)
+            assertButtonPalette(compose.onNodeWithTag("review_walk"), LightMoerisePalette.Surface, LightMoerisePalette.Line)
             compose.onNodeWithTag("review_item_1").performClick()
             compose.onNodeWithTag("discovery_open").assertDoesNotExist()
-            compose.runOnIdle { page.value = "settings"; mobile.page("settings") }
-            val reload = compose.onNodeWithTag("settings_reload")
             compose.onNodeWithTag("review_item_2").performClick()
             compose.onNodeWithText("Review paragraph 32").performScrollTo().assertIsDisplayed()
             date.performScrollTo().assertIsDisplayed()
             compose.onNodeWithTag("discovery_open").assertDoesNotExist()
-            compose.waitUntil(10_000) { reload.isDisplayed() }
-            assertButtonPalette(reload, MoeriseColors.Surface, MoeriseColors.Line)
-            assertButtonPalette(compose.onNodeWithTag("settings_sync"), MoeriseColors.Surface, MoeriseColors.Line)
-            assertButtonPalette(compose.onNodeWithTag("account_logout").performScrollTo(), MoeriseColors.Surface, MoeriseColors.Line)
+            compose.runOnIdle { page.value = "settings"; mobile.page("settings") }
+            val reload = compose.onNodeWithTag("settings_reload")
+            compose.waitUntil(10_000) { compose.onAllNodesWithTag("settings_reload").fetchSemanticsNodes().size == 1 }
+            assertButtonPalette(reload.performScrollTo(), LightMoerisePalette.Surface, LightMoerisePalette.Line)
+            assertButtonPalette(compose.onNodeWithTag("settings_sync").performScrollTo(), LightMoerisePalette.Surface, LightMoerisePalette.Line)
+            assertButtonPalette(compose.onNodeWithTag("account_logout").performScrollTo(), LightMoerisePalette.Surface, LightMoerisePalette.Line)
         } finally {
             try {
                 try { compose.runOnUiThread { job.cancel(); session.close() } }
@@ -938,7 +940,7 @@ class AndroidUiRegressionTest {
         compose.runOnUiThread {
             host.get().setContent {
                 MoeriseTheme {
-                    Box(Modifier.width(300.dp).background(MoeriseColors.Paper)) {
+                    Box(Modifier.width(300.dp).background(LightMoerisePalette.Paper)) {
                         WebSidebar(page.value, strings, "Owner", filters, "2026-11", {}, { page.value = it },
                             {}, { selectedDay.value = it }, {}, selectedTags = setOf("selected"),
                             selectedDate = selectedDay.value, today = "2026-11-16")
@@ -954,19 +956,19 @@ class AndroidUiRegressionTest {
         assertEquals(Color(0xFFE3E7E3), light)
         assertEquals(Color(0xFFCCD7D3), shaded)
         for (cell in listOf(light, shaded)) {
-            assertTrue((cell.luminance() + .05f) / (MoeriseColors.Accent.luminance() + .05f) >= 4.5f)
+            assertTrue((cell.luminance() + .05f) / (LightMoerisePalette.Accent.luminance() + .05f) >= 4.5f)
         }
         fun dot() = withNodeBitmap(today) { Color(it.getPixel(it.width / 2, it.height - 5)) }
-        assertEquals(MoeriseColors.Accent, dot())
+        assertEquals(LightMoerisePalette.Accent, dot())
         today.performClick()
-        assertEquals(MoeriseColors.Accent, background(today))
-        assertEquals(MoeriseColors.OnAccent, dot())
-        assertEquals(MoeriseColors.SelectedWash, background(compose.onNodeWithTag("nav_home").assertIsSelected()))
+        assertEquals(LightMoerisePalette.Accent, background(today))
+        assertEquals(LightMoerisePalette.OnAccent, dot())
+        assertEquals(LightMoerisePalette.SelectedWash, background(compose.onNodeWithTag("nav_home").assertIsSelected()))
         val settings = compose.onNodeWithTag("nav_settings")
         settings.performClick().assertIsSelected()
-        assertEquals(MoeriseColors.SelectedWash, withNodeBitmap(settings) { Color(it.getPixel(it.width / 2, it.height - 2)) })
+        assertEquals(LightMoerisePalette.SelectedWash, withNodeBitmap(settings) { Color(it.getPixel(it.width / 2, it.height - 2)) })
         val tag = compose.onNodeWithText("#selected").performScrollTo().assertIsSelected()
-        assertEquals(MoeriseColors.SelectedWash, background(tag))
+        assertEquals(LightMoerisePalette.SelectedWash, background(tag))
     }
 
     @Test
@@ -1096,11 +1098,11 @@ class AndroidUiRegressionTest {
             release.complete(Unit)
             val expand = compose.onNodeWithText("Expand")
             compose.waitUntil(10_000) { expand.isDisplayed() }
-            assertTrue(body.getUnclippedBoundsInRoot().height in 316.dp..330.dp)
-            expand.performClick()
             val image = compose.onNodeWithTag("decoded_attachment_image").getUnclippedBoundsInRoot()
             val bounds = body.getUnclippedBoundsInRoot()
             assertTrue(kotlin.math.abs(((image.left + image.right) - (bounds.left + bounds.right)).value) <= 2f)
+            assertTrue(body.getUnclippedBoundsInRoot().height in 316.dp..330.dp)
+            expand.performClick()
             compose.onNodeWithText("#end").performScrollTo().assertIsDisplayed()
             assertTrue(body.getUnclippedBoundsInRoot().height > 400.dp)
         } finally { release.complete(Unit); client.close() }
@@ -1222,6 +1224,66 @@ class AndroidUiRegressionTest {
 
     @Test
     @GraphicsMode(GraphicsMode.Mode.NATIVE)
+    fun switchingThemeRecolorsRenderedTagsAndTheOpenComposer() {
+        createHost()
+        val folder = Files.createTempDirectory("moerise-theme-editor").toFile()
+        val database = testDatabase(folder.resolve("data.sqlite3").absolutePath)
+        val repository = NoteRepository(database)
+        val secrets = MemorySecrets()
+        val origin = "http://127.0.0.1:1"
+        val account = "$origin\u0000instance\u0000users/owner"
+        val content = "正文 **加粗 #tag**"
+        val note = Note("instance", "memos/themed", content, "NORMAL", "hash", tags = listOf("tag"))
+        val job = SupervisorJob()
+        val scope = CoroutineScope(job + Dispatchers.Main.immediate)
+        runBlocking {
+            secrets.write("selected-profile", CoreJson.encodeToString(ConnectionProfile(origin, account, "instance", "users/owner", "Owner", "UTC")))
+            database.dao().putSyncState(SyncStateEntity(account, "cursor", "generation", true, 1))
+            repository.recordLocalNote(account, note)
+        }
+        val session = SessionController(secrets, true, scope, themeStore = MemoryUiThemeStore(UiTheme.LIGHT))
+        try {
+            val mobile = MobileController(session, { repository }, scope, initialForeground = true)
+            compose.runOnUiThread { host.get().setContent { MoeriseApp(mobile) } }
+            val rendered = compose.onNodeWithText("正文 加粗 #tag", useUnmergedTree = true)
+            fun tagInk(): Color? = rendered.fetchSemanticsNode().config[SemanticsProperties.Text].single().let { text ->
+                val index = text.text.indexOf("#tag")
+                (text.getLinkAnnotations(index, text.length).single().item as LinkAnnotation.Clickable).styles?.style?.color
+            }
+            compose.waitUntil(10_000) { rendered.isDisplayed() }
+            assertEquals(LightMoerisePalette.Accent, tagInk())
+            compose.onNodeWithTag("compose_capsule").performClick()
+            val editor = compose.onNodeWithTag("quick_editor")
+            compose.waitUntil(10_000) { editor.isDisplayed() }
+            editor.performTextReplacement("草稿 #tag")
+            val panel = compose.onNodeWithTag("quick_editor_sheet")
+            val window = requireNotNull(ShadowDialog.getLatestDialog()?.window)
+            val bars = WindowCompat.getInsetsController(window, window.decorView)
+            fun sheetPaint() = withNodeBitmap(panel, window.decorView) { pixels ->
+                listOf(Color(pixels.getPixel(pixels.width / 2, pixels.height - 2)), Color(pixels.getPixel(pixels.width / 2, 0)))
+            }
+            assertEquals(listOf(LightMoerisePalette.SheetSurface, LightMoerisePalette.CardBorder), sheetPaint())
+            assertTrue(bars.isAppearanceLightStatusBars)
+            compose.runOnIdle { session.theme(UiTheme.DARK) }
+            val palette = DarkMoerisePalette
+            assertEquals(palette.Accent, tagInk())
+            val (surface, line) = sheetPaint()
+            assertEquals(palette.SheetSurface, surface)
+            val expectedLine = palette.CardBorder.compositeOver(palette.SheetSurface)
+            assertTrue(kotlin.math.abs(expectedLine.red - line.red) < .012f && kotlin.math.abs(expectedLine.green - line.green) < .012f,
+                "$line != $expectedLine")
+            assertFalse(bars.isAppearanceLightStatusBars)
+            assertFalse(bars.isAppearanceLightNavigationBars)
+            editor.assertTextContains("草稿 #tag")
+        } finally {
+            compose.runOnUiThread { job.cancel(); session.close() }
+            waitForMainCondition("theme fixture closes") { job.isCompleted }
+            database.close(); folder.deleteRecursively()
+        }
+    }
+
+    @Test
+    @GraphicsMode(GraphicsMode.Mode.NATIVE)
     fun floatingComposerPreservesTheTimelineAndFirstScreenPrewarmsFilters() {
         createHost()
         val folder = Files.createTempDirectory("moerise-composer-focus").toFile()
@@ -1305,11 +1367,11 @@ class AndroidUiRegressionTest {
             assertEquals(360.dp, sheet.width)
             val dialogWindow = requireNotNull(ShadowDialog.getLatestDialog()?.window).decorView
             withNodeBitmap(panel, dialogWindow) { pixels ->
-                assertEquals(MoeriseColors.Surface, Color(pixels.getPixel(1, pixels.height - 2)))
-                assertEquals(MoeriseColors.Surface, Color(pixels.getPixel(pixels.width - 2, pixels.height - 2)))
+                assertEquals(LightMoerisePalette.SheetSurface, Color(pixels.getPixel(1, pixels.height - 2)))
+                assertEquals(LightMoerisePalette.SheetSurface, Color(pixels.getPixel(pixels.width - 2, pixels.height - 2)))
             }
-            assertButtonPalette(compose.onNodeWithTag("quick_cancel"), MoeriseColors.Surface, MoeriseColors.Line, dialogWindow)
-            assertButtonPalette(compose.onNodeWithTag("quick_save"), MoeriseColors.Accent, MoeriseColors.OnAccent, dialogWindow)
+            assertButtonPalette(compose.onNodeWithTag("quick_cancel"), LightMoerisePalette.Surface, LightMoerisePalette.Line, dialogWindow)
+            assertButtonPalette(compose.onNodeWithTag("quick_save"), LightMoerisePalette.Accent, LightMoerisePalette.OnAccent, dialogWindow)
             assertTrue(compose.onNodeWithTag("quick_save").getUnclippedBoundsInRoot().left -
                 compose.onNodeWithTag("quick_cancel").getUnclippedBoundsInRoot().right >= 8.dp)
             now.set(Instant.parse("2026-11-27T00:00:00Z"))

@@ -35,6 +35,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         model = ViewModelProvider(this)[AppModel::class.java]
+        window.applyMoeriseTheme(model.session.theme.value.isDark(resources.configuration.isDarkMode()))
         setContent {
             MoeriseApp(model.mobile) {
                 if (!homeReady) {

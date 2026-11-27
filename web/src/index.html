@@ -3,7 +3,8 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta name="color-scheme" content="light">
+  <meta name="color-scheme" content="light dark">
+  <script src="/theme-init.js"></script>
   <title>Moerise</title>
   <link rel="icon" type="image/svg+xml" href="/favicon.svg">
   <link rel="stylesheet" href="/styles.css">
@@ -13,7 +14,21 @@
   <section id="auth" class="memos-auth" aria-labelledby="auth-title">
     <select class="language-select" data-language aria-label="语言" data-i18n-aria-label="语言"><option value="zh-CN">简体中文</option><option value="en">English</option></select>
     <div class="memos-login">
-      <div class="memos-brand"><img src="/favicon.svg" width="52" height="52" alt=""><span>Moerise</span></div>
+      <div class="memos-brand">
+        <svg class="memos-mark" viewBox="0 0 108 108" width="52" height="52" aria-hidden="true">
+          <defs>
+            <linearGradient id="memos-mark-gradient" x1="0" y1="0" x2="1" y2="1">
+              <stop offset="0%"/><stop offset="100%"/>
+            </linearGradient>
+          </defs>
+          <rect x="0.75" y="0.75" width="106.5" height="106.5" rx="24" fill="url(#memos-mark-gradient)" stroke-width="1.5"/>
+          <path d="M35 58.5 A19 19 0 0 1 73 58.5 Z" fill="currentColor"/>
+          <path d="M27 63.5 H81" fill="none" stroke="currentColor" stroke-width="3.6" stroke-linecap="round"/>
+          <path d="M35 71 H73" fill="none" stroke="currentColor" stroke-opacity="0.55" stroke-width="3.2" stroke-linecap="round"/>
+          <path d="M44 78 H64" fill="none" stroke="currentColor" stroke-opacity="0.30" stroke-width="2.8" stroke-linecap="round"/>
+        </svg>
+        <span>Moerise</span>
+      </div>
       <h1 id="auth-title" class="sr" data-i18n="登录">登录</h1>
       <p class="memos-welcome" data-i18n="欢迎回来">欢迎回来</p>
       <p id="auth-error" class="error" role="alert" hidden></p>
@@ -41,14 +56,14 @@
       </div>
       <div class="sidebar-content">
       <div class="sidebar-body">
-      <section id="sidebar-calendar" aria-label="日历" style="display:flex;flex-direction:column;gap:4px" data-i18n-aria-label="日历">
-        <div class="lab"><b id="calendar-title"></b><span style="display:flex">
-          <button id="month-prev" class="btn calendar-month" type="button" aria-label="上个月" data-i18n-aria-label="上个月"><svg class="i" style="width:16px;height:16px" viewBox="0 0 24 24" aria-hidden="true"><path d="M14 6l-6 6 6 6"></path></svg></button>
-          <button id="month-next" class="btn calendar-month" type="button" aria-label="下个月" data-i18n-aria-label="下个月"><svg class="i" style="width:16px;height:16px" viewBox="0 0 24 24" aria-hidden="true"><path d="M10 6l6 6-6 6"></path></svg></button>
+      <section id="sidebar-calendar" aria-label="日历" data-i18n-aria-label="日历">
+        <div class="lab"><b id="calendar-title"></b><span class="calendar-controls">
+          <button id="month-prev" class="btn calendar-month" type="button" aria-label="上个月" data-i18n-aria-label="上个月"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M14 6l-6 6 6 6"></path></svg></button>
+          <button id="month-next" class="btn calendar-month" type="button" aria-label="下个月" data-i18n-aria-label="下个月"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M10 6l6 6-6 6"></path></svg></button>
         </span></div>
         <div id="calendar" class="hm"><span data-i18n="一">一</span><span data-i18n="二">二</span><span data-i18n="三">三</span><span data-i18n="四">四</span><span data-i18n="五">五</span><span data-i18n="六">六</span><span data-i18n="日">日</span></div>
       </section>
-      <nav aria-label="主导航" style="display:flex;flex-direction:column;gap:2px" data-i18n-aria-label="主导航">
+      <nav class="sidebar-nav" aria-label="主导航" data-i18n-aria-label="主导航">
         <a class="ent on" href="/" data-route aria-current="page" data-i18n="主页"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 7h14M5 12h14M5 17h8.5"></path></svg>主页</a>
         <a class="ent" href="/review" data-route data-i18n="回顾"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M4.5 6.5C7 5.5 10 5.8 12 7.2C14 5.8 17 5.5 19.5 6.5V18C17 17 14 17.3 12 18.7C10 17.3 7 17 4.5 18Z"></path><path d="M12 7.2V18.5"></path></svg>回顾</a>
         <a class="ent" href="/walk" data-route data-i18n="漫步"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><circle cx="6.5" cy="17.5" r="2"></circle><circle cx="17.5" cy="6.5" r="2"></circle><path d="M8.5 17.5H13.5C15.8 17.5 15.8 12 12 12C8.2 12 8.2 6.5 10.5 6.5H15.5"></path></svg>漫步</a>
@@ -102,11 +117,11 @@
             <label class="sr" for="content" data-i18n="写点什么">写点什么</label>
             <textarea id="content" name="content" rows="3" placeholder="今天想到了什么……" data-i18n-placeholder="今天想到了什么……"></textarea>
             <div id="draft-attachments" class="attachment-list"></div>
-            <div class="bar"><div style="display:flex;align-items:center;gap:4px"><button id="add-attachment" class="btn" type="button" aria-label="添加附件" data-i18n-aria-label="添加附件"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"></path></svg></button><input id="attachment-input" class="sr" type="file" multiple tabindex="-1"></div><button id="save" class="save" type="submit" data-i18n="保存">保存<small>Ctrl ↵</small></button></div>
+            <div class="bar"><div class="composer-tools"><button id="add-attachment" class="btn" type="button" aria-label="添加附件" data-i18n-aria-label="添加附件"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"></path></svg></button><input id="attachment-input" class="sr" type="file" multiple tabindex="-1"></div><button id="save" class="save" type="submit" data-i18n="保存">保存<small>Ctrl ↵</small></button></div>
             <p id="save-error" class="error" role="alert" hidden></p>
           </form>
           <div id="filters" class="fbar" hidden></div>
-          <p id="empty" class="sub" style="text-align:center" hidden data-i18n="没有匹配的笔记">没有匹配的笔记</p>
+          <p id="empty" class="sub" hidden data-i18n="没有匹配的笔记">没有匹配的笔记</p>
           <div id="notes"></div>
           <p id="list-error" class="error" role="alert" hidden></p>
           <button id="list-retry" class="ghost" type="button" hidden data-i18n="重试">重试</button>

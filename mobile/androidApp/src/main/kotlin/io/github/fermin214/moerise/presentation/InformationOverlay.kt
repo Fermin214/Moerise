@@ -32,7 +32,7 @@ internal fun InformationOverlay(title: String, strings: Strings, onDismiss: () -
         BoxWithConstraints(Modifier.fillMaxSize().safeDrawingPadding().padding(8.dp), contentAlignment = Alignment.Center) {
             Surface(Modifier.widthIn(max = 560.dp).fillMaxWidth().height(minOf(700.dp, maxHeight)).platformTestTags().testTag(tag),
                 shape = RoundedCornerShape(14.dp), color = MoeriseColors.SheetSurface,
-                border = BorderStroke(1.dp, MoeriseColors.Line)) {
+                border = BorderStroke(1.dp, MoeriseColors.CardBorder)) {
                 Column(Modifier.padding(horizontal = 12.dp, vertical = 6.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text(title, Modifier.weight(1f), fontSize = 17.sp, fontWeight = FontWeight.SemiBold)

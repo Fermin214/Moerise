@@ -17,6 +17,7 @@ import { syncStatus } from './sync-status.js';
 import { dismissSnackbar, snackbar } from './snackbar.js';
 import { animateMotion, motionPositions, moveFrom } from './motion.js';
 import { serviceDate, nextServiceDay, timelineTime } from './timeline-time.js';
+import { initTheme } from './theme.js';
 
 const $ = id => document.getElementById(id);
 const logoutKey = 'moerise.logout-pending';
@@ -1175,5 +1176,6 @@ window.addEventListener('pageshow', event => { if (event.persisted) restore(); }
 window.addEventListener('focus', refreshSidebarOnFocus);
 document.addEventListener('visibilitychange', refreshSidebarOnFocus);
 document.addEventListener('visibilitychange', monitorLoginAutofill);
+initTheme();
 initI18n();
 restore();

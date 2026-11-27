@@ -18,6 +18,10 @@
   background: transparent;
 }
 .memos-brand { display: flex; flex-direction: column; align-items: center; gap: 12px; }
+.memos-mark { color:var(--accent); }
+.memos-mark rect { stroke:var(--brand-border); }
+.memos-mark stop:first-child { stop-color:var(--brand-start); }
+.memos-mark stop:last-child { stop-color:var(--brand-end); }
 .memos-brand span { font-family:var(--font-brand); font-size:1.4375rem; letter-spacing:.07em; padding-inline-start:.07em; font-weight:400; color:var(--brand-ink); }
 .memos-welcome { margin: 4px 0 0; text-align:center; color:var(--ink-colophon); font-size:.84375rem; line-height:20px; }
 .memos-login form { display: flex; flex-direction: column; gap: 16px; width: 100%; margin-top: 24px; }

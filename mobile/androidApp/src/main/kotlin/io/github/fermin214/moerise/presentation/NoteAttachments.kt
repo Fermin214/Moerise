@@ -109,7 +109,7 @@ internal fun ProtectedAttachmentImage(note: Note, item: JsonObject, core: CoreCl
                 val size = if (square) Modifier.fillMaxWidth().aspectRatio(1f)
                     else Modifier.width(imageWidth).height((imageWidth / ratio).coerceIn(96.dp, 220.dp))
                 Image(bitmap, filename, size.clip(shape).background(MoeriseColors.Paper)
-                    .border(0.5.dp, MoeriseColors.Ink.copy(alpha = 0.08f), shape)
+                    .border(0.5.dp, MoeriseColors.ImageBorder, shape)
                     .clickable { preview = true }.testTag("decoded_attachment_image"),
                     contentScale = if (square) ContentScale.Crop else ContentScale.Fit)
                 if (preview) ImagePreviewDialog(bitmap, filename, note, item, core, strings) { preview = false }

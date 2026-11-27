@@ -116,69 +116,48 @@ fun WebSearchPanel(query: SearchQuery, strings: Strings, onChange: (SearchQuery)
     }
 }
 
-object MoeriseColors {
-    val Paper = Color(0xFFF7F6F2)
-    val ScrollPaper = Paper
-    val Surface = Color(0xFFFCFBF8)
-    val SheetSurface = Surface
-    val TabTrack = Color(0xFFEFECE5)
-    val SelectedWash = Color(0xFFECF1F0)
-    val OnAccent = Color(0xFFFFFFFF)
-    val OnDanger = OnAccent
-    val OnImageOverlay = Color(0xFFF7F6F2)
-    val SurfaceMuted = Color(0xFFECEAE4)
-    val Hover = Color(0xFFE6E3DC)
-    val Line = Color(0xFFE4E1D8)
-    val FieldBorder = Color(0xFF918B80)
-    val Ink = Color(0xFF1F1E1C)
-    val InkTag = Color(0xFF64605A)
-    val InkColophon = Color(0xFF757069)
-    val BrandInk = Color(0xFF2B2926)
-    val Muted = Color(0xFF68645E)
-    val Accent = Color(0xFF2F5D62)
-    val AccentHover = Color(0xFF254B4F)
-    val AccentSurface = Color(0xFFE8F0EE)
-    val AccentSurfaceStrong = Color(0xFFDCE8E5)
-    val HeatmapLight = Color(0xFFE3E7E3)
-    val HeatmapMedium = Color(0xFFCCD7D3)
-    val Danger = Color(0xFFB42318)
-    val DangerSurface = Color(0xFFFDF2F1)
-}
-
-private fun webText(size: Int, height: Float, weight: FontWeight = FontWeight.Normal) = TextStyle(
+private fun webText(size: Int, height: Float, weight: FontWeight = FontWeight.Normal, spacing: Float = 0f) = TextStyle(
     fontFamily = FontFamily.SansSerif, fontSize = size.sp, lineHeight = height.sp,
-    letterSpacing = 0.sp, fontWeight = weight,
+    letterSpacing = spacing.sp, fontWeight = weight,
 )
 
 @Composable
-fun MoeriseTheme(content: @Composable () -> Unit) {
+fun MoeriseTheme(darkTheme: Boolean = false, content: @Composable () -> Unit) {
+    val palette = if (darkTheme) DarkMoerisePalette else LightMoerisePalette
+    val base = if (darkTheme) darkColorScheme() else lightColorScheme()
     MaterialTheme(
-        colorScheme = lightColorScheme(
-            primary = MoeriseColors.Accent, onPrimary = MoeriseColors.OnAccent,
-            primaryContainer = MoeriseColors.AccentSurface, onPrimaryContainer = MoeriseColors.Accent,
-            secondary = MoeriseColors.Accent, secondaryContainer = MoeriseColors.AccentSurface,
-            onSecondary = MoeriseColors.OnAccent, onSecondaryContainer = MoeriseColors.Accent,
-            background = MoeriseColors.Paper, onBackground = MoeriseColors.Ink,
-            surface = MoeriseColors.Surface, onSurface = MoeriseColors.Ink,
-            surfaceVariant = MoeriseColors.SurfaceMuted, onSurfaceVariant = MoeriseColors.Muted,
-            surfaceContainer = MoeriseColors.Surface, surfaceContainerLow = MoeriseColors.Paper,
-            surfaceContainerHigh = MoeriseColors.Surface, surfaceTint = MoeriseColors.Surface,
-            outline = MoeriseColors.FieldBorder, outlineVariant = MoeriseColors.Line,
-            error = MoeriseColors.Danger, errorContainer = MoeriseColors.DangerSurface,
-            onError = MoeriseColors.OnDanger, onErrorContainer = MoeriseColors.Danger,
+        colorScheme = base.copy(
+            primary = palette.Accent, onPrimary = palette.OnAccent,
+            primaryContainer = palette.AccentSurface, onPrimaryContainer = palette.Accent,
+            secondary = palette.Accent, secondaryContainer = palette.AccentSurface,
+            onSecondary = palette.OnAccent, onSecondaryContainer = palette.Accent,
+            tertiary = palette.Accent, onTertiary = palette.OnAccent,
+            tertiaryContainer = palette.AccentSurface, onTertiaryContainer = palette.Accent,
+            background = palette.Paper, onBackground = palette.Ink,
+            surface = palette.Surface, onSurface = palette.Ink,
+            surfaceVariant = palette.SurfaceMuted, onSurfaceVariant = palette.Muted,
+            surfaceContainerLowest = palette.Paper, surfaceContainerLow = palette.Paper,
+            surfaceContainer = palette.Surface, surfaceContainerHigh = palette.SheetSurface,
+            surfaceContainerHighest = palette.SheetSurface, surfaceTint = palette.Surface,
+            surfaceDim = palette.Paper, surfaceBright = palette.SheetSurface,
+            outline = palette.FieldBorder, outlineVariant = palette.Line,
+            error = palette.Danger, errorContainer = palette.DangerSurface,
+            onError = palette.OnDanger, onErrorContainer = palette.Danger,
+            inverseSurface = palette.Ink, inverseOnSurface = palette.Paper, inversePrimary = palette.OnAccent,
+            scrim = palette.DialogScrim,
         ),
         typography = Typography(
-            displayLarge = webText(20, 28f, FontWeight.SemiBold),
-            displayMedium = webText(20, 28f, FontWeight.SemiBold),
-            displaySmall = webText(20, 28f, FontWeight.SemiBold),
-            headlineLarge = webText(20, 28f, FontWeight.SemiBold),
-            headlineMedium = webText(20, 28f, FontWeight.SemiBold),
-            headlineSmall = webText(20, 28f, FontWeight.SemiBold),
-            titleLarge = webText(20, 28f, FontWeight.SemiBold),
-            titleMedium = webText(16, 23f, FontWeight.SemiBold),
-            titleSmall = webText(15, 22f, FontWeight.SemiBold),
-            bodyLarge = webText(15, 24f),
-            bodyMedium = webText(15, 24f),
+            displayLarge = webText(20, 28f, palette.HeadingWeight),
+            displayMedium = webText(20, 28f, palette.HeadingWeight),
+            displaySmall = webText(20, 28f, palette.HeadingWeight),
+            headlineLarge = webText(20, 28f, palette.HeadingWeight),
+            headlineMedium = webText(20, 28f, palette.HeadingWeight),
+            headlineSmall = webText(20, 28f, palette.HeadingWeight),
+            titleLarge = webText(20, 28f, palette.HeadingWeight),
+            titleMedium = webText(16, 23f, palette.HeadingWeight),
+            titleSmall = webText(15, 22f, palette.HeadingWeight),
+            bodyLarge = webText(15, if (darkTheme) 24.3f else 24f, spacing = if (darkTheme) .3f else 0f),
+            bodyMedium = webText(15, if (darkTheme) 24.3f else 24f, spacing = if (darkTheme) .3f else 0f),
             bodySmall = webText(13, 19.5f),
             labelLarge = webText(15, 24f, FontWeight.Medium),
             labelMedium = webText(13, 19.5f),
@@ -190,7 +169,7 @@ fun MoeriseTheme(content: @Composable () -> Unit) {
             extraLarge = RoundedCornerShape(18.dp),
         ),
     ) {
-        CompositionLocalProvider(LocalMinimumInteractiveComponentSize provides 44.dp, content = content)
+        CompositionLocalProvider(LocalMoeriseColors provides palette, LocalMinimumInteractiveComponentSize provides 44.dp, content = content)
     }
 }
 
@@ -327,7 +306,7 @@ fun WebTabs(labels: List<String>, selected: Int, onSelect: (Int) -> Unit, modifi
     val width = animateFloatAsState(target?.second ?: 0f, if (reduced) snap() else MoeriseMotion.responsive(), label = "tab width")
     val density = LocalDensity.current
     Surface(modifier.fillMaxWidth(), color = MoeriseColors.TabTrack, shape = RoundedCornerShape(12.dp),
-        border = BorderStroke(1.dp, MoeriseColors.Line)) {
+        border = BorderStroke(1.dp, MoeriseColors.CardBorder)) {
         Box(Modifier.horizontalScroll(rememberScrollState()).padding(4.dp)) {
         if (target != null) Box(Modifier.width(with(density) { width.value.toDp() }).height(44.dp).graphicsLayer {
             translationX = position.value

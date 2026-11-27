@@ -94,7 +94,7 @@ fun DiscoveryScreen(page: String, mobile: MobileController, strings: Strings,
                                             Modifier.fillMaxSize().offset(y = (depth * 8).dp)
                                                 .scale(1f - depth * .04f).alpha(if (depth == 1) .8f else .5f),
                                             shape = RoundedCornerShape(12.dp), color = MoeriseColors.Surface,
-                                            border = BorderStroke(1.dp, MoeriseColors.Line),
+                                            border = BorderStroke(1.dp, MoeriseColors.CardBorder),
                                         ) {}
                                     }
                                     ReviewStack(batch.id, batch.items.size, review.position, reviewDragOffset, ::selectReview) { index, layer ->
@@ -357,7 +357,7 @@ private fun WalkStart(walk: WalkState, connected: Boolean, timezone: String, str
         if (walk.floaters.isNotEmpty()) {
             val shape = RoundedCornerShape(12.dp)
             BoxWithConstraints(Modifier.fillMaxWidth().clip(shape).background(MoeriseColors.Surface)
-                .border(1.dp, MoeriseColors.Line, shape)) {
+                .border(1.dp, MoeriseColors.CardBorder, shape)) {
                 val count = if (maxWidth < 520.dp) 4 else 6
                 Column {
                     walk.floaters.take(count).forEachIndexed { index, note ->
@@ -383,7 +383,7 @@ private fun WalkStart(walk: WalkState, connected: Boolean, timezone: String, str
 @Composable
 private fun DiscoveryCard(modifier: Modifier, scroll: ScrollState, content: @Composable (Dp) -> Unit) {
     Surface(modifier.testTag("review_card"), shape = RoundedCornerShape(12.dp), color = MoeriseColors.Surface,
-        border = BorderStroke(1.dp, MoeriseColors.Line)) {
+        border = BorderStroke(1.dp, MoeriseColors.CardBorder)) {
         BoxWithConstraints(Modifier.fillMaxSize()) {
             val minContentHeight = (maxHeight - 44.dp).coerceAtLeast(0.dp)
             Column(Modifier.fillMaxSize().verticalScroll(scroll).padding(horizontal = 20.dp, vertical = 22.dp)) {

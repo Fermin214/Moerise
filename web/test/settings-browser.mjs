@@ -284,6 +284,37 @@ test('settings card tools and dialog dismissal share the secondary button colors
   await assertSecondary(page.locator('#settings-rebuild-map'));
 });
 
+test('appearance changes immediately, persists locally and follows the system when reset', async t => {
+  const { page, state, url } = await fixture(t, { language: 'en' });
+  await page.emulateMedia({ colorScheme: 'light' });
+  await login(page, url);
+  const select = page.locator('#settings-theme');
+  await select.waitFor();
+  assert.equal(await page.getByLabel('Appearance', { exact: true }).getAttribute('id'), 'settings-theme');
+  assert.equal(await select.inputValue(), 'auto');
+  await select.selectOption('dark');
+  const palette = await page.evaluate(() => {
+    const root = getComputedStyle(document.documentElement);
+    const color = selector => getComputedStyle(document.querySelector(selector)).backgroundColor;
+    return [root.colorScheme, root.backgroundColor, color('.settings-card'), color('.settings-tabs'),
+      root.getPropertyValue('--sheet-surface').trim(), getComputedStyle(document.getElementById('view-title')).fontWeight];
+  });
+  assert.deepEqual(palette, ['dark', 'rgb(22, 22, 20)', 'rgb(31, 30, 27)', 'rgb(27, 26, 23)', '#262521', '500']);
+  assert.equal(await page.evaluate(() => localStorage.getItem('moerise-theme')), 'dark');
+  await page.reload();
+  await select.waitFor();
+  assert.equal(await select.inputValue(), 'dark');
+  await select.selectOption('light');
+  await page.emulateMedia({ colorScheme: 'dark' });
+  assert.equal(await page.locator('html').getAttribute('data-theme'), 'light');
+  await select.selectOption('auto');
+  assert.equal(await page.locator('html').getAttribute('data-theme'), 'dark');
+  await page.emulateMedia({ colorScheme: 'light' });
+  await page.waitForFunction(() => document.documentElement.dataset.theme === 'light');
+  assert.equal(await page.evaluate(() => localStorage.getItem('moerise-theme')), null);
+  assert.equal(state.patches.length, 0);
+});
+
 test('an incomplete successful settings response keeps logout and settings recovery usable', async t => {
   const { page, state, url, errors } = await fixture(t);
   const incomplete = structuredClone(state.value);

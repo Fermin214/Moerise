@@ -1,4 +1,6 @@
 :root {
+  color-scheme:light;
+  background:var(--paper);
   --ink:#1F1E1C;
   --muted:#68645E;
   --accent:#2F5D62;
@@ -17,6 +19,10 @@
   --tab-track:#EFECE5;
   --selected-wash:#ECF1F0;
   --image-border:rgb(31 30 28 / .08);
+  --card-border:var(--line);
+  --brand-start:#FAF9F5;
+  --brand-end:#ECE9E0;
+  --brand-border:rgb(31 30 28 / .08);
   --on-accent:#FFFFFF;
   --ink-tag:#64605A;
   --ink-colophon:#757069;
@@ -28,7 +34,17 @@
   --danger-surface:#FDF2F1;
   --radius:12px;
   --shadow-float:0 8px 24px rgb(31 30 28 / .08);
+  --shadow-reader:0 -8px 32px rgb(31 30 28 / .08);
+  --navigation-scrim:rgb(31 30 28 / .08);
   --scrim:rgb(31 30 28 / .32);
+  --scrollbar-thumb:rgb(104 100 94 / .18);
+  --scrollbar-thumb-active:rgb(104 100 94 / .34);
+  --scrollbar-thumb-hover:rgb(104 100 94 / .4);
+  --weight-heading:600;
+  --weight-strong:600;
+  --body-lh:1.6;
+  --body-ls:.012em;
+  --save-shortcut:var(--accent-surface);
   --t1:1.25rem;
   --t2:1rem;
   --t3:.9375rem;
@@ -41,4 +57,49 @@
   --motion-responsive-easing:cubic-bezier(.22,1,.36,1);
   --motion-spatial-duration:340ms;
   --motion-spatial-easing:cubic-bezier(.25,1,.5,1);
+}
+
+:root[data-theme="dark"] {
+  color-scheme:dark;
+  --paper:#161614;
+  --surface:#1F1E1B;
+  --sheet-surface:#262521;
+  --tab-track:#1B1A17;
+  --surface-muted:#262521;
+  --hover:#2B2A26;
+  --selected-wash:#202E2F;
+  --line:#2A2925;
+  --card-border:rgb(235 230 218 / .08);
+  --field-border:#757168;
+  --ink:#E3E0D8;
+  --brand-ink:var(--ink);
+  --muted:#A6A299;
+  --ink-tag:var(--muted);
+  --ink-colophon:#928E85;
+  --accent:#73ACAE;
+  --accent-hover:#84B9BB;
+  --on-accent:#141918;
+  --accent-surface:#202E2F;
+  --accent-surface-strong:#263A3C;
+  --heatmap-light:#1E2C2D;
+  --heatmap-medium:#263A3C;
+  --danger:#D96B5C;
+  --on-danger:#141918;
+  --danger-surface:#2D1D1B;
+  --scrim:rgb(10 10 9 / .52);
+  --navigation-scrim:var(--scrim);
+  --image-border:var(--card-border);
+  --brand-start:#262521;
+  --brand-end:#1C1B18;
+  --brand-border:rgb(235 230 218 / .10);
+  --shadow-float:0 8px 24px rgb(10 10 9 / .3);
+  --shadow-reader:0 -8px 32px rgb(10 10 9 / .3);
+  --scrollbar-thumb:rgb(166 162 153 / .24);
+  --scrollbar-thumb-active:rgb(166 162 153 / .4);
+  --scrollbar-thumb-hover:rgb(166 162 153 / .52);
+  --weight-heading:500;
+  --weight-strong:500;
+  --body-lh:1.62;
+  --body-ls:.018em;
+  --save-shortcut:var(--on-accent);
 }

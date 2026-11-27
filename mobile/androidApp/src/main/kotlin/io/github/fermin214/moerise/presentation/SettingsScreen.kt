@@ -50,6 +50,8 @@ fun SettingsScreen(
     val state by controller.state.collectAsState()
     val language by mobile.session.language.collectAsState()
     val preferencesError by mobile.session.preferencesError.collectAsState()
+    val theme by mobile.session.theme.collectAsState()
+    val themeError by mobile.session.themeError.collectAsState()
     val sync by mobile.sync.state.collectAsState()
     val connection by mobile.session.state.collectAsState()
     var tab by rememberSaveable { mutableIntStateOf(0) }
@@ -106,6 +108,36 @@ fun SettingsScreen(
                             modifier = Modifier.testTag("settings_sync"))
                     }
                 }
+                if (tab == 0) SettingsSection(strings.text("通用", "General")) {
+                    SettingsRow(strings.text("语言", "Language")) {
+                        SettingsSelect(
+                            language.name,
+                            listOf(
+                                UiLanguage.SYSTEM.name to strings.text("跟随系统", "Follow system"),
+                                UiLanguage.CHINESE.name to "简体中文",
+                                UiLanguage.ENGLISH.name to "English",
+                            ),
+                            strings.text("语言", "Language"), enabled = !state.busy, tag = "settings_language",
+                        ) { mobile.session.language(UiLanguage.valueOf(it)) }
+                    }
+                    SettingsRow(strings.text("外观", "Appearance"), separator = state.snapshot != null) {
+                        SettingsSelect(
+                            theme.name,
+                            listOf(
+                                UiTheme.SYSTEM.name to strings.text("跟随系统", "Follow system"),
+                                UiTheme.LIGHT.name to strings.text("浅色", "Light"),
+                                UiTheme.DARK.name to strings.text("深色", "Dark"),
+                            ),
+                            strings.text("外观", "Appearance"), enabled = true, tag = "settings_theme",
+                        ) { mobile.session.theme(UiTheme.valueOf(it)) }
+                    }
+                    if (state.snapshot != null) SettingsSummary(strings.text("时区", "Timezone"),
+                        state.values["timezone"].orEmpty(), strings) { edit("timezone") }
+                    if (preferencesError != null) SettingsMessage(strings.text(
+                        "语言设置未能保存，请重新选择。", "Could not save the language setting. Select it again."), error = true)
+                    if (themeError != null) SettingsMessage(strings.text(
+                        "外观设置未能保存，请重新选择。", "Could not save the appearance setting. Select it again."), error = true)
+                }
                 when {
                     tab == 3 -> PrivacySettings(mobile.privacy, strings)
                     state.loading -> SettingsHint(strings.text("正在加载设置…", "Loading settings…"))
@@ -120,28 +152,6 @@ fun SettingsScreen(
                     }
                     else -> {
                         when (tab) {
-                            0 -> SettingsSection(strings.text("通用", "General")) {
-                                SettingsRow(strings.text("语言", "Language")) {
-                                    SettingsSelect(
-                                        language.name,
-                                        listOf(
-                                            UiLanguage.SYSTEM.name to strings.text("跟随系统", "Follow system"),
-                                            UiLanguage.CHINESE.name to "简体中文",
-                                            UiLanguage.ENGLISH.name to "English",
-                                        ),
-                                        strings.text("语言", "Language"),
-                                        enabled = !state.busy,
-                                        tag = "settings_language",
-                                    ) { value -> mobile.session.language(UiLanguage.valueOf(value)) }
-                                }
-                                SettingsSummary(strings.text("时区", "Timezone"), state.values["timezone"].orEmpty(), strings) { edit("timezone") }
-                                if (preferencesError != null) SettingsMessage(
-                                    strings.text(
-                                        "语言设置未能保存，请重新选择。",
-                                        "Could not save the language setting. Select it again.",
-                                    ), error = true,
-                                )
-                            }
                             1 -> {
                                 SettingsModels(state, strings) { edit("embedding") }
                                 SettingsSection(strings.text("观星", "Stargazing")) {
@@ -550,7 +560,7 @@ private fun SettingsSection(title: String, content: @Composable ColumnScope.() -
         modifier = Modifier.fillMaxWidth(),
         color = MoeriseColors.Surface,
         shape = RoundedCornerShape(14.dp),
-        border = BorderStroke(1.dp, MoeriseColors.Line),
+        border = BorderStroke(1.dp, MoeriseColors.CardBorder),
     ) {
         Column(Modifier.padding(start = 18.dp, top = 14.dp, end = 18.dp, bottom = 16.dp)) {
             Text(
