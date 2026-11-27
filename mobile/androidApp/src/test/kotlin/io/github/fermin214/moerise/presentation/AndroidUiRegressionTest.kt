@@ -13,6 +13,7 @@ import android.view.WindowManager.LayoutParams
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.ScrollState
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.BasicTextField
@@ -21,12 +22,14 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.Text
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.snapshots.Snapshot
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.testTag
@@ -653,6 +656,47 @@ class AndroidUiRegressionTest {
 
     @Test
     @GraphicsMode(GraphicsMode.Mode.NATIVE)
+    fun reviewKeepsTheIncomingInkCoveredDuringTheOutgoingFade() {
+        createHost()
+        val position = mutableStateOf(0)
+        compose.runOnUiThread {
+            host.get().setContent {
+                Box(Modifier.size(280.dp, 200.dp).testTag("review_frames")) {
+                    ReviewStack("batch", 2, position.value, remember { mutableFloatStateOf(0f) }, { position.value = it }) { index, layer ->
+                        Box(layer.fillMaxSize().background(if (index == 0) Color.Red else Color.Blue))
+                    }
+                }
+            }
+        }
+        val stack = compose.onNodeWithTag("review_frames").assertIsDisplayed()
+        compose.mainClock.autoAdvance = false
+        try {
+            compose.runOnIdle {
+                position.value = 1
+                Snapshot.sendApplyNotifications()
+                shadowOf(Looper.getMainLooper()).idle()
+            }
+            compose.mainClock.advanceTimeByFrame()
+            compose.mainClock.advanceTimeBy(208)
+            val bounds = stack.fetchSemanticsNode().boundsInWindow
+            val frame = compose.runOnIdle {
+                val window = host.get().window.decorView
+                Bitmap.createBitmap(window.width, window.height, Bitmap.Config.ARGB_8888).apply {
+                    window.draw(android.graphics.Canvas(this))
+                }
+            }
+            try {
+                val overlap = Color(frame.getPixel((bounds.left + bounds.width / 12).toInt(), bounds.center.y.toInt()))
+                val exposed = Color(frame.getPixel((bounds.left + bounds.width * 3 / 4).toInt(), bounds.center.y.toInt()))
+                assertTrue(overlap.red > .95f && overlap.green in .1f.. .9f, "Overlapping pixel: $overlap, exposed pixel: $exposed")
+                assertEquals(overlap.green, overlap.blue, .02f)
+                assertTrue(exposed.blue > .9f && exposed.red < .1f, "Exposed pixel: $exposed")
+            } finally { frame.recycle() }
+        } finally { compose.mainClock.autoAdvance = true }
+    }
+
+    @Test
+    @GraphicsMode(GraphicsMode.Mode.NATIVE)
     fun decodedAttachmentGrowthFoldsTheWholeCard() {
         createHost()
         val bitmap = Bitmap.createBitmap(220, 240, Bitmap.Config.ARGB_8888)
@@ -666,7 +710,7 @@ class AndroidUiRegressionTest {
             if (request.url.encodedPath.endsWith("/session"))
                 respond("""{"instance_id":"instance","user":{"name":"users/owner"},"timezone":"UTC","expires_at":"2099-01-01T00:00:00Z","csrf_token":"token"}""")
             else { release.await(); respond(png) }
-        }).also { it.bindAccount("$origin\u0000instance\u0000users/owner") }
+        }).also { client -> runBlocking { client.bindAccount("$origin\u0000instance\u0000users/owner") } }
         val item = CoreJson.parseToJsonElement("""{"name":"attachments/square","type":"image/png","filename":"image.png"}""")
             as kotlinx.serialization.json.JsonObject
         val content = (1..8).joinToString("\n\n") { "Paragraph $it" }

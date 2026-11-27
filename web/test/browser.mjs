@@ -1095,6 +1095,18 @@ test('sidebar reuses aggregates, cancels obsolete months and refreshes only affe
   assert.deepEqual(errors, []);
 });
 
+test('the selected current day uses white text on the accent background', async t => {
+  const { page, url } = await fixture(t);
+  await page.goto(url); await login(page);
+  await page.locator('#calendar .today').click();
+  const today = page.locator('#calendar .today.sel');
+  await today.waitFor();
+  assert.deepEqual(await today.evaluate(node => {
+    const { color, backgroundColor } = getComputedStyle(node);
+    return [color, backgroundColor];
+  }), ['rgb(255, 255, 255)', 'rgb(47, 93, 98)']);
+});
+
 test('sidebar background refresh preserves tags and calendar through slow requests, failures and retry', { timeout: 60_000 }, async t => {
   const { page, state, errors, url } = await fixture(t);
   await page.goto(url); await login(page);

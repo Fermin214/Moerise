@@ -36,7 +36,7 @@ async function fixture(t, { language = 'zh-CN', mobile = false, returning = true
   const state = { value: settings(), session: false, gets: 0, patches: [], checks: [], telemetry: false, batches: [],
     index: 'disabled', mapReads: 0, rebuilds: 0, deliveries: [], retries: [], fail: null, checkFail: null,
     hold: null, holdCheck: null, holdNotes: null, notesFail: null, nextSettingsRead: null, csrf: false,
-    notes: [], notesReads: [], mapData: null, modelVersion: null };
+    notes: [], notesReads: [], mapData: null, modelVersion: null, holdLogout: null };
   const core = http.createServer(async (req, res) => {
     const path = new URL(req.url, 'http://localhost').pathname;
     const raw = await readRequestText(req);
@@ -47,7 +47,11 @@ async function fixture(t, { language = 'zh-CN', mobile = false, returning = true
     const error = (code, status) => json({ error: { code } }, status);
     if (path === '/api/app/v1/session') {
       if (req.method === 'POST') state.session = true;
-      if (req.method === 'DELETE') { state.session = false; res.writeHead(204); res.end(); return; }
+      if (req.method === 'DELETE') {
+        if (state.holdLogout) await state.holdLogout;
+        if (state.session && req.headers['x-csrf-token'] !== 'csrf-settings') { error('CSRF_REJECTED', 403); return; }
+        state.session = false; res.writeHead(204); res.end(); return;
+      }
       if (!state.session) { error('SESSION_UNAUTHORIZED', 401); return; }
       json({ user: { name: 'users/1', display_name: '设置测试' }, timezone: state.value.settings.timezone,
         stargazing_enabled: state.value.settings.stargazing.enabled, csrf_token: 'csrf-settings' });
@@ -183,6 +187,31 @@ test('first offline settings visit offers logout and retries without restoring p
   assert.equal(state.session, false);
 });
 
+test('reloading after offline logout revokes the session before exposing private content', async t => {
+  const { page, state, url } = await fixture(t);
+  await login(page, url, '/');
+  await page.locator('#empty').waitFor();
+  await page.context().setOffline(true);
+  await page.locator('#account-settings').click();
+  await page.locator('#logout').click();
+  await page.locator('#retry-logout').waitFor();
+  assert.equal(state.session, true);
+  await page.context().setOffline(false);
+  let release;
+  state.holdLogout = new Promise(resolve => { release = resolve; });
+  try {
+    const revoking = page.waitForRequest(request => request.method() === 'DELETE' && request.url().endsWith('/session'), { timeout: 5000 });
+    await page.reload();
+    await revoking;
+    assert.equal(await page.locator('#app').isHidden(), true);
+    assert.equal(await page.locator('#login-form').isHidden(), true);
+    assert.equal(state.session, true);
+  } finally { release(); state.holdLogout = null; }
+  await page.locator('#login-form').waitFor();
+  assert.equal(state.session, false);
+  assert.equal(await page.evaluate(() => sessionStorage.length), 0);
+});
+
 test('settings request failure leaves the account and logout usable', async t => {
   const { page, state, url } = await fixture(t);
   await page.route('**/api/app/v1/settings', route => route.fulfill({ status: 500, json: { error: { code: 'HTTP_500' } } }));
@@ -192,6 +221,22 @@ test('settings request failure leaves the account and logout usable', async t =>
   await page.locator('#logout').click();
   await page.locator('#login-form').waitFor();
   assert.equal(state.session, false);
+});
+
+test('an incomplete successful settings response keeps logout and settings recovery usable', async t => {
+  const { page, state, url, errors } = await fixture(t);
+  const incomplete = structuredClone(state.value);
+  delete incomplete.settings.stargazing;
+  state.nextSettingsRead = incomplete;
+  await login(page, url);
+  await page.getByRole('alert').filter({ hasText: '服务返回的设置不完整' }).waitFor({ timeout: 5000 });
+  await page.locator('#settings-account').getByText('设置测试').waitFor();
+  assert.equal(await page.locator('#logout').isVisible(), true);
+  await page.getByRole('button', { name: '重新加载设置' }).click();
+  await page.locator('#settings-panel-general #logout').click();
+  await page.locator('#login-form').waitFor();
+  assert.equal(state.session, false);
+  assert.deepEqual(errors, []);
 });
 
 for (const language of ['zh-CN', 'en-US']) for (const mobile of [false, true]) {

@@ -722,7 +722,6 @@ export function createSettingsPage({ sessionRequest, handleFailure, onSaved = ()
     syncActions.append(synced, syncButton); row(general, l("上次同步"), syncActions);
     summaries.set(synced, () => lastSync() ? new Date(lastSync()).toLocaleString() : l("尚未同步"));
     window.addEventListener('moerisesync', () => { if (synced.isConnected) setText(synced, summaries.get(synced)()); }, { signal: lifecycle.signal });
-    general.append(account);
 
     const search = section('search', l("检索与观星"));
     const embeddingStatus = summary(search, l("向量模型"), () => snapshot.settings.embedding.enabled ?
@@ -789,8 +788,10 @@ export function createSettingsPage({ sessionRequest, handleFailure, onSaved = ()
       else telegramLink.href = link;
       for (const [node, text] of summaries) setText(node, text());
     };
-    root.prepend(form);
-    refreshView(); selectTab(currentTab);
+    refreshView();
+    root.replaceChildren(form);
+    selectTab(currentTab);
+    general.append(account);
   }
 
   async function reloadSettings() {
@@ -803,15 +804,20 @@ export function createSettingsPage({ sessionRequest, handleFailure, onSaved = ()
     try {
       const data = await requestWhile(owner, '/settings');
       if (owner.signal.aborted) return;
-      if (!data?.settings?.channel || !Number.isSafeInteger(data.version)) throw invalid(l("服务返回的设置不完整，请重新加载。"));
+      const value = data?.settings;
+      if (!Number.isSafeInteger(data?.version) || !value?.channel || !value.embedding || !value.review ||
+          typeof value.stargazing?.enabled !== 'boolean' || typeof value.notifications?.enabled !== 'boolean' ||
+          !Array.isArray(value.notifications.times) || !data.secrets) {
+        throw invalid(l("服务返回的设置不完整，请重新加载。"));
+      }
       const previous = snapshot;
       if (previous && data.version < previous.version) {
-        if (!form) { root.replaceChildren(); render(); }
+        if (!form) render();
         return;
       }
       snapshot = data; conflict = false;
       if (previous) onSaved(data, previous);
-      if (!form) { root.replaceChildren(); render(); }
+      if (!form) render();
       else {
         pageError.hidden = reload.hidden = true;
         if (editor) {
@@ -823,7 +829,8 @@ export function createSettingsPage({ sessionRequest, handleFailure, onSaved = ()
       }
     } catch (err) {
       if (owner.signal.aborted) return;
-      if (!form) {
+      if (!form?.isConnected) {
+        form = null;
         pageError = el('p', 'error sub');
         pageError.setAttribute('role', 'alert');
         reload = button(l("重新加载设置"), 'ghost', reloadSettings);

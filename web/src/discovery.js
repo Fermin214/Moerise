@@ -129,20 +129,24 @@ export function createDiscovery({ request, sessionRequest, getIdentity, localTod
         visual.classList.remove('discovery-note');
         visual.classList.add('review-outgoing');
         visual.inert = true; visual.setAttribute('aria-hidden', 'true');
-        visual.append(...card.childNodes);
+        const outgoingContent = el('div', 'review-outgoing-content');
+        outgoingContent.append(...card.childNodes);
+        visual.append(outgoingContent);
         nextStack.append(visual);
         visual.scrollTop = scroll;
         const reduce = reducedMotion(), destination = direction * nextStack.clientWidth * .92;
         const angle = direction * 2.5;
         const leaving = animateMotion(visual, reduce ? [{ opacity: 1 }, { opacity: 0 }] : [
-          { transform: `translateX(${from}px) rotate(0deg)`, opacity: 1 },
-          { transform: `translateX(${from + (destination - from) * .7}px) rotate(${angle * .7}deg)`, opacity: 1, offset: .7 },
-          { transform: `translateX(${destination}px) rotate(${angle}deg)`, opacity: 0 },
+          { transform: `translateX(${from}px) rotate(0deg)` },
+          { transform: `translateX(${destination}px) rotate(${angle}deg)` },
+        ], 'responsive', { fill: 'both', easing: 'linear' });
+        const fade = reduce ? null : animateMotion(outgoingContent, [
+          { opacity: 1 }, { opacity: 1, offset: .7 }, { opacity: 0 },
         ], 'responsive', { fill: 'both', easing: 'linear' });
         let entering, canceled = false;
         if (reduce) next.style.opacity = '0';
         else entering = animateMotion(next, [{ transform: 'translateY(8px) scale(.96)', opacity: .92 }, { transform: 'none', opacity: 1 }]);
-        cancelVisual = () => { canceled = true; leaving.cancel(); entering?.cancel(); visual.remove(); next.style.opacity = ''; };
+        cancelVisual = () => { canceled = true; leaving.cancel(); fade?.cancel(); entering?.cancel(); visual.remove(); next.style.opacity = ''; };
         leaving.finished.then(() => {
           visual.remove();
           if (reduce && !canceled) {
@@ -394,7 +398,12 @@ export function createDiscovery({ request, sessionRequest, getIdentity, localTod
         if (active(ticket)) {
           controller = null; busy = false; render();
           if (entering) {
-            const next = content.querySelector('.walk-cards > .discovery-note');
+            const reading = content.querySelector('.walk-cards');
+            if (path === '/walks/next') {
+              const toolbar = document.querySelector('.mobile-header').getBoundingClientRect();
+              window.scrollTo({ top: window.scrollY + reading.getBoundingClientRect().top - toolbar.bottom, behavior: 'instant' });
+            }
+            const next = reading.querySelector('.discovery-note');
             const animation = animateMotion(next, [{ transform: 'translateY(24px)', opacity: 0 }, { opacity: 1 }],
               'tactile', { duration: 140, fill: 'backwards' });
             cancelVisual = () => animation.cancel();

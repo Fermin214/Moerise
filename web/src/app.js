@@ -18,6 +18,16 @@ import { dismissSnackbar, snackbar } from './snackbar.js';
 import { animateMotion, motionPositions, moveFrom } from './motion.js';
 
 const $ = id => document.getElementById(id);
+const logoutKey = 'moerise.logout-pending';
+let logoutPending = false;
+try { logoutPending = sessionStorage.getItem(logoutKey) === '1'; } catch {}
+function setLogoutPending(pending) {
+  logoutPending = pending;
+  try {
+    if (pending) sessionStorage.setItem(logoutKey, '1');
+    else sessionStorage.removeItem(logoutKey);
+  } catch {}
+}
 const shell = initShell(loadSidebar);
 const draft = new Draft(), snapshots = new Map();
 const editors = new Map(), pendingWrites = new Map(), failures = new Map();
@@ -75,7 +85,10 @@ const client = createClient({
       dirtySnapshots(); invalidateSidebar(); loadSidebar();
     }
   },
-  onOwnerChange: () => expire({ code: 'SESSION_UNAUTHORIZED' }, false),
+  onOwnerChange: () => {
+    if (logoutPending) logoutSession = null;
+    else expire({ code: 'SESSION_UNAUTHORIZED' }, false);
+  },
 });
 const { request, sessionRequest } = client;
 let capabilitiesRequest;
@@ -175,7 +188,7 @@ function authControls({ busy = false, login = true } = {}) {
   authBusy = busy;
   $('auth').setAttribute('aria-busy', String(busy));
   $('login-form').hidden = !login;
-  $('retry-logout').hidden = !logoutSession || busy;
+  $('retry-logout').hidden = !logoutPending || busy;
   for (const id of ['username', 'password', 'login']) $(id).disabled = busy;
 }
 function expire(err, resume = true) {
@@ -263,6 +276,10 @@ async function enter(value, restored = false) {
   await showRoute();
 }
 async function restore() {
+  if (logoutPending) {
+    authBusy = false;
+    return logout();
+  }
   const generation = invalidate();
   hidePrivate(); authControls({ busy: true, login: false }); showError($('auth-error'), null);
   try {
@@ -277,7 +294,7 @@ async function restore() {
 }
 $('login-form').addEventListener('submit', async event => {
   event.preventDefault();
-  if (authBusy) return;
+  if (authBusy || logoutPending) return;
   const generation = invalidate();
   authControls({ busy: true }); showError($('auth-error'), null);
   const body = { username: $('username').value.trim(), password: $('password').value };
@@ -296,17 +313,31 @@ async function logout() {
   if (identity && !(await leaveGuard.confirm())) return;
   if (authBusy) return;
   logoutSession ||= identity;
-  if (!logoutSession) return;
+  if (!logoutSession && !logoutPending) return;
+  setLogoutPending(true);
   disconnectPrivacy(true);
   history.replaceState({ ...history.state, mapView: null }, '');
   const generation = invalidate();
   hidePrivate(); authControls({ busy: true, login: false }); showError($('auth-error'), null);
   try {
-    await sessionRequest('/session', { method: 'DELETE' });
-    stale(generation); logoutSession = null; authControls(); $('username').focus();
+    const options = { method: 'DELETE' };
+    if (logoutSession) await sessionRequest('/session', options);
+    else {
+      try { await request('/session', options); }
+      catch (err) {
+        if (err.code !== 'CSRF_REJECTED') throw err;
+        const value = validIdentity(await request('/session'));
+        stale(generation);
+        logoutSession = value;
+        await sessionRequest('/session', options);
+      }
+    }
+    stale(generation); logoutSession = null; setLogoutPending(false); authControls(); $('username').focus();
   } catch (err) {
-    if (generation !== epoch || err.name === 'AbortError') return;
-    authControls({ login: false }); showError($('auth-error'), err); $('retry-logout').focus();
+    if (generation !== epoch) return;
+    authControls({ login: false });
+    showError($('auth-error'), err.name === 'AbortError' ? { code: 'SESSION_UNAUTHORIZED' } : err);
+    $('retry-logout').focus();
   }
 }
 

@@ -25,6 +25,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.geometry.Offset
@@ -283,7 +284,7 @@ private fun WalkCards(note: Note, previous: Note?, loading: Boolean, pageScroll:
 }
 
 @Composable
-private fun ReviewStack(batch: String, size: Int, position: Int, offset: MutableFloatState, select: (Int) -> Unit,
+internal fun ReviewStack(batch: String, size: Int, position: Int, offset: MutableFloatState, select: (Int) -> Unit,
     card: @Composable (Int, Modifier) -> Unit) {
     val reduced = LocalReducedMotion.current
     val rebound = remember(batch) { Animatable(0f) }
@@ -343,15 +344,18 @@ private fun ReviewStack(batch: String, size: Int, position: Int, offset: Mutable
             })
         }
         if (outgoing) key(from) {
-            card(from, Modifier.clearAndSetSemantics {}.graphicsLayer {
-                val fraction = progress.value
-                alpha = if (reduced) 1f - fraction else ((1f - fraction) / .3f).coerceAtMost(1f)
-                if (!reduced) {
+            if (reduced) {
+                card(from, Modifier.clearAndSetSemantics {}.graphicsLayer { alpha = 1f - progress.value })
+            } else {
+                Box(Modifier.fillMaxSize().clearAndSetSemantics {}.graphicsLayer {
+                    val fraction = progress.value
                     val end = direction * this.size.width * .92f
                     translationX = origin + (end - origin) * fraction
                     rotationZ = direction * 2.5f * fraction
+                }.clip(RoundedCornerShape(12.dp)).background(MoeriseColors.Surface)) {
+                    card(from, Modifier.graphicsLayer { alpha = ((1f - progress.value) / .3f).coerceAtMost(1f) })
                 }
-            })
+            }
         }
     }
 }

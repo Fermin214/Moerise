@@ -48,10 +48,9 @@ internal object ProtectedImageCache {
     suspend fun openOriginal(context: Context, core: CoreClient, access: CoreClient.AttachmentAccess,
         note: Note, item: JsonObject, stamp: Long) = lock.withLock {
         checkEpoch(stamp)
-        core.withAttachmentAccess(access) {
-            val file = destination(File(context.cacheDir, "image_cache"), access.account, key(access.account, note, item))
-            file.takeIf { it.length() in 1..inlineLimit.toLong() }?.inputStream()
-        }
+        core.checkAttachmentAccess(access)
+        val file = destination(File(context.cacheDir, "image_cache"), access.account, key(access.account, note, item))
+        file.takeIf { it.length() in 1..inlineLimit.toLong() }?.inputStream()
     }
 
     suspend fun clear(context: Context) = withContext(Dispatchers.IO) {

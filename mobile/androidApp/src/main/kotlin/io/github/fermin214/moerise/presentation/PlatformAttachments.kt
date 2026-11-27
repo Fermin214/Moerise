@@ -85,14 +85,13 @@ internal suspend fun saveImageToGallery(context: Context, note: Note, item: Json
         val job = currentCoroutineContext()
         fun current() {
             job.ensureActive()
+            core.checkAttachmentAccess(access)
             if (stamp != GalleryExports.generation.get() || cacheStamp != ProtectedImageCache.epoch.value)
                 throw CancellationException("Attachment cache cleared")
         }
         var uri: Uri? = null
         try {
-            uri = GalleryExports.begin(app, temporary, mime) {
-                core.withAttachmentAccess(access, ::current)
-            }
+            uri = GalleryExports.begin(app, temporary, mime, ::current)
             val resolver = app.contentResolver
             requireNotNull(resolver.openOutputStream(uri, "w")).use { output ->
                 val cached = ProtectedImageCache.openOriginal(app, core, access, note, item, cacheStamp)
@@ -101,23 +100,23 @@ internal suspend fun saveImageToGallery(context: Context, note: Note, item: Json
                     while (true) {
                         val count = input.read(buffer)
                         if (count < 0) break
-                        core.withAttachmentAccess(access, ::current)
+                        current()
                         output.write(buffer, 0, count)
                     }
                 } else core.downloadAttachment(note, item) { buffer, count ->
-                    core.withAttachmentAccess(access, ::current)
+                    current()
                     output.write(buffer, 0, count)
                 }
             }
             GalleryExports.publish(app, temporary, uri, filename, core, access, ::current)
         } finally {
-            GalleryExports.discard(app, temporary, uri)
+            withContext(NonCancellable) { GalleryExports.discard(app, temporary, uri) }
         }
     }
 }
 
 internal object GalleryExports {
-    private val lock = Any()
+    private val lock = Mutex()
     val generation = AtomicLong()
     private var clearing = 0
     private val active = mutableSetOf<String>()
@@ -130,23 +129,23 @@ internal object GalleryExports {
 
     private fun records(context: Context) = context.getSharedPreferences("pending-gallery-exports", Context.MODE_PRIVATE)
 
-    fun recover(context: Context) = synchronized(lock) {
+    suspend fun recover(context: Context) = lock.withLock {
         recoverRecords(context)
     }
 
     suspend fun clear(context: Context, clearFiles: suspend () -> Unit) {
-        synchronized(lock) { clearing++; generation.incrementAndGet() }
+        lock.withLock { clearing++; generation.incrementAndGet() }
         try {
-            synchronized(lock) { recoverRecords(context, includeActive = true) }
+            lock.withLock { recoverRecords(context, includeActive = true) }
         } finally {
             try { clearFiles() }
-            finally { synchronized(lock) { clearing-- } }
+            finally { withContext(NonCancellable) { lock.withLock { clearing-- } } }
         }
     }
 
-    fun begin(context: Context, temporary: String, mime: String, checkCurrent: () -> Unit): Uri = synchronized(lock) {
+    suspend fun begin(context: Context, temporary: String, mime: String, checkCurrent: () -> Unit): Uri = lock.withLock {
         if (clearing != 0) throw CancellationException("Attachment cache clearing")
-        recover(context)
+        recoverRecords(context)
         checkCurrent()
         val ledger = records(context)
         check(ledger.edit().putString(temporary, "").commit())
@@ -158,9 +157,9 @@ internal object GalleryExports {
         uri
     }
 
-    fun publish(context: Context, temporary: String, uri: Uri, filename: String, core: CoreClient,
-        access: CoreClient.AttachmentAccess, checkCurrent: () -> Unit) = synchronized(lock) {
-        core.withAttachmentAccess(access) {
+    suspend fun publish(context: Context, temporary: String, uri: Uri, filename: String, core: CoreClient,
+        access: CoreClient.AttachmentAccess, checkCurrent: () -> Unit) = lock.withLock {
+        core.withAttachmentCommit(access) {
             checkCurrent()
             check(context.contentResolver.update(uri, ContentValues().apply {
                 put(name, filename); put(pending, 0)
@@ -169,7 +168,7 @@ internal object GalleryExports {
         records(context).edit().remove(temporary).commit()
     }
 
-    fun discard(context: Context, temporary: String, uri: Uri?) = synchronized(lock) {
+    suspend fun discard(context: Context, temporary: String, uri: Uri?) = lock.withLock {
         active -= temporary
         val ledger = records(context)
         if (ledger.contains(temporary)) {

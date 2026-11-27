@@ -521,27 +521,57 @@ test('review keeps one opaque outgoing card and rapid changes cancel stale anima
   const { page, url } = await fixture(t);
   await login(page, url, '/review');
   await card(page).waitFor();
-  const frames = await page.evaluate(() => {
+  const layers = await page.evaluate(() => {
     const animations = [];
     const animate = Element.prototype.animate;
     Element.prototype.animate = function (frames, options) {
       const animation = animate.call(this, frames, options);
-      if (this.matches('.review-outgoing')) { animations.push(animation); animation.pause(); }
+      if (this.matches('.review-outgoing, .review-outgoing-content')) { animations.push(animation); animation.pause(); }
       return animation;
     };
     document.querySelector('.discovery-actions .save').click();
     document.querySelector('.discovery-actions .save').click();
-    const current = animations.at(-1);
-    const result = { states: animations.map(animation => animation.playState), frames: current.effect.getKeyframes() };
-    current.finish();
+    const outgoing = document.querySelector('.review-outgoing');
+    const ink = outgoing.querySelector('.review-outgoing-content');
+    const current = outgoing.getAnimations()[0], fade = ink?.getAnimations()[0];
+    current.currentTime = 204;
+    if (fade) fade.currentTime = 204;
+    const result = { obsolete: animations.filter(animation => !animation.effect.target.isConnected).map(animation => animation.playState),
+      paper: getComputedStyle(outgoing).backgroundColor, opacity: Number(getComputedStyle(outgoing).opacity),
+      ink: ink && Number(getComputedStyle(ink).opacity), overlap: outgoing.getBoundingClientRect().right - outgoing.parentElement.getBoundingClientRect().left };
+    current.finish(); fade?.finish();
     Element.prototype.animate = animate;
     return result;
   });
-  assert.deepEqual(frames.states, ['idle', 'paused']);
-  assert.equal(frames.frames[1].offset, .7);
-  assert.equal(frames.frames[1].opacity, '1');
+  assert.deepEqual(layers.obsolete, ['idle', 'idle']);
+  assert.equal(layers.paper, 'rgb(255, 255, 255)');
+  assert.equal(layers.opacity, 1);
+  assert.ok(layers.overlap > 0);
+  assert.ok(layers.ink > 0 && layers.ink < 1);
   await page.locator('.review-outgoing').waitFor({ state: 'detached' });
   await page.getByRole('button', { name: '第 3 / 6 条', pressed: true }).waitFor();
+});
+
+test('continuing from the bottom of a long walk opens the next note below the sticky toolbar', async t => {
+  const { page, state, url } = await fixture(t, 'zh-CN', { viewport: { width: 390, height: 844 } });
+  for (const [index, note] of state.notes.slice(0, 2).entries()) {
+    note.content = Array.from({ length: 80 }, (_, paragraph) => `笔记 ${index + 1}，段落 ${paragraph + 1}`).join('\n\n');
+  }
+  await login(page, url, '/walk');
+  await page.getByRole('button', { name: '随机开始', exact: true }).click();
+  await card(page).getByText('笔记 1，段落 1', { exact: true }).waitFor();
+  await next(page).scrollIntoViewIfNeeded();
+  assert.ok(await page.evaluate(() => window.scrollY > 1000));
+  await next(page).click();
+  await card(page).getByText('笔记 2，段落 1', { exact: true }).waitFor();
+  await settleAnimation(page);
+  const { readingTop, toolbarBottom, firstLine } = await page.evaluate(() => ({
+    readingTop: document.querySelector('.walk-cards').getBoundingClientRect().top,
+    toolbarBottom: document.querySelector('.mobile-header').getBoundingClientRect().bottom,
+    firstLine: document.querySelector('.walk-cards .note-content p').getBoundingClientRect().top,
+  }));
+  assert.ok(Math.abs(readingTop - toolbarBottom) <= 1);
+  assert.ok(firstLine > toolbarBottom && firstLine < 250);
 });
 
 test('reduced-motion walk waits for the exit signal and stop cancels it', async t => {
