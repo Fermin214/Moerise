@@ -35,6 +35,7 @@ import androidx.compose.ui.text.withLink
 import com.mikepenz.markdown.compose.components.markdownComponents
 import com.mikepenz.markdown.m3.Markdown
 import com.mikepenz.markdown.m3.markdownColor
+import com.mikepenz.markdown.model.markdownPadding
 import com.mikepenz.markdown.m3.markdownTypography
 import com.mikepenz.markdown.model.*
 import com.mikepenz.markdown.model.State as MdState
@@ -248,6 +249,7 @@ fun MarkdownBody(content: String, modifier: Modifier = Modifier, note: Note? = n
     val heading = MaterialTheme.typography.titleMedium
     val minorHeading = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold)
     val colors = markdownColor(inlineCodeBackground = Color.Transparent, codeBackground = MoeriseColors.SurfaceMuted)
+    val padding = markdownPadding(block = 2.dp, list = 0.dp, listItemTop = 2.dp, listItemBottom = 2.dp)
     val typography = markdownTypography(
         h1 = MaterialTheme.typography.titleLarge,
         h2 = heading, h3 = heading, h4 = heading,
@@ -300,6 +302,7 @@ fun MarkdownBody(content: String, modifier: Modifier = Modifier, note: Note? = n
                             annotator = annotator,
                             typography = typography,
                             colors = colors,
+                            padding = padding,
                             components = components,
                             animations = animations,
                         )
@@ -347,6 +350,7 @@ fun MarkdownBody(content: String, modifier: Modifier = Modifier, note: Note? = n
                         annotator = annotator,
                         typography = typography,
                         colors = colors,
+                        padding = padding,
                         components = components,
                         animations = animations,
                     )

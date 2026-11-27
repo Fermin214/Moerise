@@ -193,26 +193,29 @@ export function renderNoteCard(note, { detail, formatTime, href, onTag, actions,
   return card;
 }
 
-export function renderReadingCard(note, { review = false, className = 'card big discovery-note', formatTime, openNote, onTag, bottomTags = false }) {
+export function renderReadingCard(note, { review = false, className = 'card big discovery-note', formatTime, formatDate, openNote, onTag, bottomTags = false }) {
   const card = el('article', `${className}${review ? ' rv' : ''}`);
   card.dataset.name = note.name;
-  const header = el('div', 'hd'), time = el('time', '', formatTime(note.create_time));
-  time.dateTime = note.create_time;
-  const open = button('', 'btn s', () => openNote(note));
-  setAttr(open, 'aria-label', l("打开笔记")); setAttr(open, 'title', l("打开笔记"));
-  open.append(icon('M9 6h9v9M18 6L7 17'));
-  const metadata = el('div', 'discovery-meta');
-  if (review && Number.isFinite(Date.parse(note.create_time))) {
-    const days = Math.max(0, Math.floor((Date.now() - Date.parse(note.create_time)) / 86_400_000));
-    header.append(el('span', 'pill', days ? l("{0} 天前", { 0: days }) : l("今天")));
-    if (!bottomTags) metadata.append(time);
-  } else header.append(time);
   const renderedTags = new Set();
   const body = noteBody(note, onTag, renderedTags), referenced = new Set([...body.querySelectorAll('img')].map(image => image.getAttribute('src')));
-  const tags = bottomTags ? el('div', 'note-tags') : metadata;
+  const tags = el('div', bottomTags ? 'note-tags' : 'discovery-meta');
   appendTags(tags, note.tags, renderedTags, onTag);
-  metadata.append(open); header.append(metadata);
-  card.append(header, body, renderAttachments(note, referenced));
-  if (bottomTags && tags.childElementCount) card.append(tags);
+  const time = el('time', '', (bottomTags ? formatDate : formatTime)(note.create_time));
+  time.dateTime = note.create_time;
+  card.append(body, renderAttachments(note, referenced));
+  if (bottomTags) {
+    if (tags.childElementCount) card.append(tags);
+    const footer = el('div', 'discovery-footer');
+    const days = Math.max(0, Math.floor((Date.now() - Date.parse(note.create_time)) / 86_400_000));
+    const date = review && Number.isFinite(days) ? el('span', '', days ? l("{0} 天前", { 0: days }) : l("今天")) : time;
+    footer.append(date, button(l("打开笔记"), 'dlink', () => openNote(note)));
+    card.append(footer);
+  } else {
+    const header = el('div', 'hd');
+    const open = button('', 'btn s', () => openNote(note));
+    setAttr(open, 'aria-label', l("打开笔记")); setAttr(open, 'title', l("打开笔记"));
+    open.append(icon('M9 6h9v9M18 6L7 17'));
+    tags.append(open); header.append(time, tags); card.prepend(header);
+  }
   return card;
 }

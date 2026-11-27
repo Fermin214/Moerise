@@ -197,5 +197,37 @@ class NotePresentationTest {
         )
     }
 
+    @Test
+    fun listBoundariesPreserveEmptyItemsIndentedContinuationsAndCode() {
+        val cases = mapOf(
+            "- 无序\n1.有序\n2、普通" to listOf("- 无序", "1.有序\n2、普通"),
+            "1.有序\n- 无序\n2、普通" to listOf("1.有序", "- 无序", "2、普通"),
+            "1. 甲\n2.\n3. 丙\n正文" to listOf("1. 甲\n2.\n3. 丙", "正文"),
+            "- `code\nnext`\n正文" to listOf("- `code\nnext`", "正文"),
+            "- ``code\n`literal`\nnext``\n正文" to listOf("- ``code\n`literal`\nnext``", "正文"),
+            "- 甲\n  - 乙\n  显式续行\n\t续行\n正文 #日记" to listOf("- 甲\n  - 乙\n  显式续行\n\t续行", "正文 #日记"),
+            "```text\n- 字面列表\n顶格正文\n```\n\n1) 列表\n正文" to listOf("```text\n- 字面列表\n顶格正文\n```", "1) 列表", "正文"),
+        )
+        cases.forEach { (source, blocks) -> assertEquals(blocks, splitMarkdownBlocks(source)) }
+    }
 
+    @Test
+    fun walkSummariesStripOnlyConfirmedTrailingTagsAndPairedDecoration() {
+        val content = "# 标题\n> **正文** __强调__ *斜体* ~~删除~~ snake_case\n- `#日记`\n\n```\n#日记\n```\n\n#日记"
+        assertEquals("标题 正文 强调 斜体 删除 snake_case #日记 #日记", walkSummaryBody(content, listOf("日记")))
+        assertEquals("猫 #未知", walkSummaryBody("猫\n#未知", emptyList()))
+        assertEquals("首行 #日记 后续", walkSummaryBody("首行\n#日记\n后续", listOf("日记")))
+        assertEquals("未配对 **星号 和 snake_case", walkSummaryBody("未配对 **星号 和 snake_case", emptyList()))
+        assertEquals("😀".repeat(64) + "…", limitWalkSummary("😀".repeat(65)))
+        assertEquals("😀".repeat(64), limitWalkSummary("😀".repeat(64)))
+    }
+
+    @Test
+    fun walkStartingPriorityUsesCleanedBodyBeforeAttachmentFallback() {
+        val fixture = listOf("", "短句", "# 笔记有足够正文可以作为起点", "#日记", "另外一篇正文也可以作为起点", "")
+        val selected = fixture.mapIndexedNotNull { index, raw ->
+            walkStartPriority(walkSummaryBody(raw, listOf("日记")), hasAttachment = index < 5)?.let { it to index }
+        }.sortedBy { it.first }.map { it.second }
+        assertEquals(listOf(2, 4, 1, 0, 3), selected)
+    }
 }

@@ -260,6 +260,29 @@ test('settings request failure leaves the account and logout usable', async t =>
   assert.equal(state.sessions.size, 0);
 });
 
+test('settings card tools and dialog dismissal share the secondary button colors', async t => {
+  const { page, state, url } = await fixture(t);
+  state.value.settings.embedding.enabled = true;
+  state.index = 'ready';
+  await login(page, url);
+  async function assertSecondary(control) {
+    await control.waitFor();
+    assert.deepEqual(await control.evaluate(node => {
+      const { backgroundColor, color, borderTopColor, borderTopWidth, borderRadius } = getComputedStyle(node);
+      return [backgroundColor, color, borderTopColor, borderTopWidth, borderRadius];
+    }), ['rgb(255, 255, 255)', 'rgb(31, 30, 28)', 'rgb(227, 224, 216)', '1px', '10px']);
+  }
+  await assertSecondary(page.locator('#settings-account #logout'));
+  await assertSecondary(page.locator('#settings-page').getByRole('button', { name: '同步', exact: true }));
+  const editTimezone = page.locator('.settings-row').filter({ hasText: '时区' }).getByRole('button', { name: '编辑' });
+  await assertSecondary(editTimezone);
+  await editTimezone.click();
+  await assertSecondary(dialog(page).getByRole('button', { name: '关闭' }));
+  await dialog(page).getByRole('button', { name: '关闭' }).click();
+  await tab(page, 'search');
+  await assertSecondary(page.locator('#settings-rebuild-map'));
+});
+
 test('an incomplete successful settings response keeps logout and settings recovery usable', async t => {
   const { page, state, url, errors } = await fixture(t);
   const incomplete = structuredClone(state.value);
@@ -561,7 +584,7 @@ test('settings reload is single-flight and an older response cannot replace the 
   await request;
   const response = page.waitForResponse(response => response.request().method() === 'GET' && response.url().endsWith('/settings'));
   release(); state.hold = null; await response;
-  await dialog(page).locator('button.ghost:enabled').filter({ hasText: '重新加载设置' }).waitFor();
+  await dialog(page).getByRole('button', { name: '重新加载设置', exact: true }).and(page.locator(':enabled')).waitFor();
   assert.equal(await dialog(page).locator('button.save').isDisabled(), true);
   assert.equal(state.gets, before + 1);
   assert.equal(await settingsField(page, 'timezone').inputValue(), 'UTC');

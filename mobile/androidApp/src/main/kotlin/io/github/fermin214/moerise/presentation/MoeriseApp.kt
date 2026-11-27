@@ -692,8 +692,8 @@ private fun SheetEditor(
                     WebIcon(WebIcon.Hash, strings.text("添加标签", "Add tag"), tint = MoeriseColors.Muted)
                 }
                 Spacer(Modifier.weight(1f))
-                TextButton(onClick = onCancel, enabled = !state.busy && !state.importing,
-                    modifier = Modifier.testTag(cancelTag)) { Text(strings.text("取消", "Cancel")) }
+                WebSecondaryAction(strings.text("取消", "Cancel"), onClick = onCancel, enabled = !state.busy && !state.importing,
+                    modifier = Modifier.testTag(cancelTag))
                 if (draft.conflictJson != null) {
                     WebAction(strings.text("处理冲突", "Resolve conflict"), onClick = { leaveWriting(); onConflict() })
                 } else WebAction(strings.text("保存", "Save"), onClick = { haptic(); onSave() },

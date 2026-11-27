@@ -1,14 +1,10 @@
 package io.github.fermin214.moerise.presentation
 
 import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
-import androidx.compose.foundation.interaction.collectIsFocusedAsState
-import androidx.compose.foundation.interaction.collectIsHoveredAsState
-import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
@@ -28,9 +24,7 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.draw.scale
-import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
@@ -131,34 +125,7 @@ fun DiscoveryScreen(page: String, mobile: MobileController, strings: Strings,
                             if (result?.item != null) {
                                 WalkCards(result.item.note, walk.previous, loading, pageScroll, timezone, mobile, strings, onTag)
                             } else if (result?.exhausted != true) {
-                                BoxWithConstraints(Modifier.height(readingHeight).fillMaxWidth(), contentAlignment = Alignment.Center) {
-                                    val startEnabled = !loading && (walk.offline && walk.floaters.isNotEmpty() || connection.connected && walk.embeddingEnabled == true)
-                                    val narrow = maxWidth < 520.dp
-                                    walk.floaters.take(if (narrow) 4 else 6).forEachIndexed { index, note ->
-                                        WalkFloater(note, strings, startEnabled, { mobile.walk.start(note.name) },
-                                            Modifier.align(when (index) {
-                                                0 -> Alignment.TopStart
-                                                1 -> Alignment.TopEnd
-                                                2 -> Alignment.BottomStart
-                                                3 -> Alignment.BottomEnd
-                                                4 -> Alignment.TopCenter
-                                                else -> Alignment.BottomCenter
-                                            }).padding(horizontal = maxWidth * .01f)
-                                                .offset(y = when (index) {
-                                                    0 -> 28.dp; 1 -> 20.dp; 2 -> (-40).dp; 3 -> (-32).dp; 4 -> 6.dp; else -> (-8).dp
-                                                }).width(if (narrow) maxWidth * .42f else minOf(170.dp, maxWidth * .29f)))
-                                    }
-                                    Button(
-                                        onClick = { mobile.walk.start() }, enabled = startEnabled,
-                                        modifier = Modifier.heightIn(min = 52.dp).testTag("walk_start"),
-                                        shape = RoundedCornerShape(10.dp), contentPadding = PaddingValues(horizontal = 28.dp),
-                                        colors = ButtonDefaults.buttonColors(
-                                            containerColor = MoeriseColors.AccentSurface, contentColor = MoeriseColors.Accent,
-                                            disabledContainerColor = MoeriseColors.AccentSurface.copy(alpha = .6f),
-                                            disabledContentColor = MoeriseColors.Accent.copy(alpha = .45f)),
-                                    ) { Text(strings.text(if (loading || walk.initialConfigurationLoading) "翻找中…" else "随机开始",
-                                        if (loading || walk.initialConfigurationLoading) "Looking…" else "Random start"), fontSize = 15.sp) }
-                                }
+                                WalkStart(walk, connection.connected, timezone, strings) { name -> mobile.walk.start(name) }
                                 walk.floaterError?.let {
                                     DiscoveryMessage(discoveryError(it, strings), error = true, modifier = Modifier.testTag("walk_floaters_error"))
                                     TextButton(onClick = mobile.walk::retryFloaters, enabled = connection.connected && !walk.floatersLoading,
@@ -207,9 +174,9 @@ fun DiscoveryScreen(page: String, mobile: MobileController, strings: Strings,
                             }
                             FlowRow(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                                 reviewItem?.takeUnless { it.unavailable }?.note?.let { note ->
-                                    if (note.state == "NORMAL") TextButton(
+                                    if (note.state == "NORMAL") WebSecondaryAction(strings.text("从这条漫步", "Walk from here"),
                                         onClick = { onWalk(note) }, enabled = connection.connected, modifier = Modifier.testTag("review_walk"),
-                                    ) { Text(strings.text("从这条漫步", "Walk from here")) }
+                                    )
                                 }
                                 WebAction(
                                     if (review.position + 1 < batch.items.size) strings.text("下一条", "Next note") else strings.text("再看一遍", "Start again"),
@@ -220,19 +187,23 @@ fun DiscoveryScreen(page: String, mobile: MobileController, strings: Strings,
                                 )
                             }
                         }
-                    } else if (walk.result != null || walk.retry != null) {
-                        FlowRow(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp, Alignment.End),
-                            verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                            OutlinedButton(onClick = mobile.walk::end, shape = RoundedCornerShape(10.dp),
-                                modifier = Modifier.heightIn(min = 44.dp).testTag("walk_end"),
-                                border = BorderStroke(1.dp, MoeriseColors.FieldBorder)) { Text(strings.text("停止", "Stop")) }
-                            if (walk.result?.item != null && walk.result?.exhausted == false) WebAction(
-                                strings.text(if (loading) "翻找中…" else "继续漫步", if (loading) "Looking…" else "Continue walk"),
-                                onClick = mobile.walk::next, enabled = !loading && (walk.offline && walk.floaters.isNotEmpty() || connection.connected && walk.embeddingEnabled == true),
-                                modifier = Modifier.testTag("walk_next"),
-                            )
-                        }
                     }
+                }
+            }
+        }
+        if (!isReview && (walk.result != null || walk.retry != null || walk.loading)) {
+            Column(Modifier.fillMaxWidth().background(MoeriseColors.Paper), horizontalAlignment = Alignment.CenterHorizontally) {
+                HorizontalDivider(color = MoeriseColors.Line)
+                FlowRow(Modifier.widthIn(max = 800.dp).fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp),
+                    horizontalArrangement = Arrangement.spacedBy(4.dp, Alignment.End),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    WebSecondaryAction(strings.text("停止", "Stop"), mobile.walk::end, Modifier.testTag("walk_end"))
+                    if (walk.result?.item != null && walk.result?.exhausted == false) WebAction(
+                        if (loading) strings.text("翻找中…", "Looking…") else strings.text("继续漫步", "Continue walk"),
+                        onClick = mobile.walk::next,
+                        enabled = !loading && (walk.offline && walk.floaters.isNotEmpty() || connection.connected && walk.embeddingEnabled == true),
+                        modifier = Modifier.testTag("walk_next"),
+                    )
                 }
             }
         }
@@ -245,6 +216,7 @@ private fun WalkCards(note: Note, previous: Note?, loading: Boolean, pageScroll:
     val reduced = LocalReducedMotion.current
     var displayed by remember { mutableStateOf(note to previous) }
     val progress = remember { Animatable(0f) }
+    LaunchedEffect(Unit) { pageScroll.scrollTo(0) }
     LaunchedEffect(note, reduced, loading) {
         if (displayed.first.name == note.name) {
             progress.snapTo(0f)
@@ -262,10 +234,7 @@ private fun WalkCards(note: Note, previous: Note?, loading: Boolean, pageScroll:
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                 Box(Modifier.width(1.dp).height(20.dp).background(MoeriseColors.Line))
                 Text("↑", style = MaterialTheme.typography.bodySmall, color = MoeriseColors.Muted)
-                Text(displayNoteDate(prior.createTime, timezone, strings.text("zh", "en") == "en"),
-                    style = MaterialTheme.typography.bodySmall, color = MoeriseColors.Muted)
-                val summary = remember(prior.content) { prior.content.replace(Regex("\\s+"), " ").trim() }
-                Text(summary, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                Text(walkSummary(prior, strings), maxLines = 1, overflow = TextOverflow.Ellipsis,
                     style = MaterialTheme.typography.bodySmall, color = MoeriseColors.Muted)
             }
         }
@@ -368,38 +337,46 @@ private fun DiscoveryMessage(text: String, error: Boolean = false, modifier: Mod
 }
 
 @Composable
-private fun WalkFloater(note: Note, strings: Strings, enabled: Boolean, onClick: () -> Unit, modifier: Modifier) {
-    val interaction = remember(note.name) { MutableInteractionSource() }
-    val focused by interaction.collectIsFocusedAsState()
-    val hovered by interaction.collectIsHoveredAsState()
-    val pressed by interaction.collectIsPressedAsState()
-    val active = focused || hovered
-    val reduced = LocalReducedMotion.current
-    val sink = animateFloatAsState(if (pressed && !reduced) 1f else 0f,
-        if (reduced) snap() else MoeriseMotion.tactile(), label = "walk press")
-    val preview = remember(note.content, note.attachments) {
-        val text = note.content.replace(Regex("\\s+"), " ").trim()
-        var end = 0
-        repeat(64) {
-            if (end < text.length) {
-                val first = text[end++]
-                if (first.isHighSurrogate() && end < text.length && text[end].isLowSurrogate()) end++
+private fun walkSummary(note: Note, strings: Strings): String =
+    remember(note.content, note.tags, note.attachments) {
+        val body = walkSummaryBody(note.content, note.tags)
+        limitWalkSummary(body.ifBlank {
+            (note.attachments.firstOrNull()?.get("filename") as? JsonPrimitive)?.contentOrNull.orEmpty()
+        })
+    }.ifBlank { strings.text("笔记", "Note") }
+
+@Composable
+private fun WalkStart(walk: WalkState, connected: Boolean, timezone: String, strings: Strings, onStart: (String) -> Unit) {
+    val enabled = !walk.loading && (walk.offline && walk.floaters.isNotEmpty() || connected && walk.embeddingEnabled == true)
+    val looking = walk.loading || walk.initialConfigurationLoading
+    Column {
+        WebAction(if (looking) strings.text("翻找中…", "Looking…") else strings.text("随机开始", "Random start"),
+            onClick = { onStart("") }, modifier = Modifier.heightIn(min = 52.dp).testTag("walk_start"),
+            enabled = enabled, contentPadding = PaddingValues(horizontal = 28.dp, vertical = 8.dp))
+        if (walk.floaters.isNotEmpty()) {
+            Spacer(Modifier.height(20.dp))
+            Text(strings.text("从一条笔记开始", "Start from a note"), style = MaterialTheme.typography.labelMedium, color = MoeriseColors.Muted)
+            Spacer(Modifier.height(8.dp))
+            BoxWithConstraints(Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(MoeriseColors.Surface)) {
+                val count = if (maxWidth < 520.dp) 4 else 6
+                Column {
+                    walk.floaters.take(count).forEachIndexed { index, note ->
+                        if (index > 0) HorizontalDivider(color = MoeriseColors.Line)
+                        val summary = walkSummary(note, strings)
+                        val date = displayNoteDay(note.createTime, timezone, strings.text("zh", "en") == "en")
+                        Row(Modifier.fillMaxWidth().heightIn(min = 52.dp).testTag("walk_floater_${note.name}")
+                            .clickable(enabled = enabled, role = Role.Button) { onStart(note.name) }
+                            .semantics { contentDescription = strings.text("从这条笔记开始：$summary", "Start from this note: $summary") }
+                            .padding(horizontal = 16.dp, vertical = 14.dp),
+                            verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                            Text(summary, Modifier.weight(1f).clearAndSetSemantics {}, maxLines = 2, overflow = TextOverflow.Ellipsis,
+                                style = MaterialTheme.typography.bodyMedium, color = if (enabled) MoeriseColors.Ink else MoeriseColors.Muted)
+                            Text(date, style = MaterialTheme.typography.bodySmall, color = MoeriseColors.Muted)
+                        }
+                    }
+                }
             }
         }
-        text.substring(0, end).ifBlank { note.attachments.firstOrNull()?.get("filename")?.jsonPrimitive?.content.orEmpty() }
-    }.ifBlank { strings.text("笔记", "Note") }
-    OutlinedButton(onClick, enabled = enabled, interactionSource = interaction,
-        modifier = modifier.heightIn(min = 76.dp).testTag("walk_floater_${note.name}")
-            .graphicsLayer {
-            translationY = 2.dp.toPx() * sink.value
-            scaleX = 1f - .02f * sink.value
-            scaleY = scaleX
-        }.semantics { contentDescription = strings.text("从这条笔记开始：$preview", "Start from this note: $preview") },
-        shape = RoundedCornerShape(12.dp), contentPadding = PaddingValues(horizontal = 8.dp, vertical = 10.dp),
-        border = BorderStroke(1.dp, if (active) MoeriseColors.Accent else Color.Transparent),
-        colors = ButtonDefaults.outlinedButtonColors(containerColor = Color.White, contentColor = MoeriseColors.Ink,
-            disabledContainerColor = Color.White, disabledContentColor = MoeriseColors.Muted)) {
-        Text(preview, maxLines = 4, overflow = TextOverflow.Clip, fontSize = 13.sp, lineHeight = 20.4.sp)
     }
 }
 
@@ -411,38 +388,15 @@ private fun DiscoveryCard(modifier: Modifier, scroll: ScrollState, content: @Com
     }
 }
 
-@OptIn(ExperimentalLayoutApi::class, kotlin.time.ExperimentalTime::class)
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 internal fun DiscoveryNoteContent(note: Note, timezone: String, mobile: MobileController, strings: Strings,
     review: Boolean = false, onTag: ((String) -> Unit)? = null) {
     val presentation = rememberNotePresentation(note.content, note.tags)
-    val date = displayNoteDate(note.createTime, timezone, strings.text("zh", "en") == "en")
-    val age = remember(note.createTime) {
-        runCatching { ((epochMillis() - kotlin.time.Instant.parse(note.createTime).toEpochMilliseconds()) / 86_400_000).coerceAtLeast(0) }.getOrNull()
-    }
+    val date = displayNoteDay(note.createTime, timezone, strings.text("zh", "en") == "en")
+    val age = if (review) remember(note.createTime) { elapsedNoteDays(note.createTime, epochMillis()) } else null
     val core = mobile.session.core
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            if (review && age != null) Surface(color = MoeriseColors.AccentSurface, shape = RoundedCornerShape(50)) {
-                Text(if (age == 0L) strings.text("今天", "Today")
-                    else strings.text("$age 天前", "$age ${if (age == 1L) "day" else "days"} ago"),
-                    style = MaterialTheme.typography.labelMedium, color = MoeriseColors.Accent,
-                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 2.dp))
-            } else Text(date, color = MoeriseColors.Muted, style = MaterialTheme.typography.bodySmall)
-            Spacer(Modifier.weight(1f))
-                IconButton(onClick = { mobile.openNote(note.name) }, modifier = Modifier.size(44.dp)
-                    .testTag("discovery_open")
-                    .semantics { contentDescription = strings.text("在主页查看", "View on home") }) {
-                    Canvas(Modifier.size(18.dp)) {
-                        val unit = size.width / 24
-                        fun point(x: Float, y: Float) = Offset(x * unit, y * unit)
-                        val color = MoeriseColors.Muted
-                        drawLine(color, point(9f, 6f), point(18f, 6f), 1.7f * unit, StrokeCap.Round)
-                        drawLine(color, point(18f, 6f), point(18f, 15f), 1.7f * unit, StrokeCap.Round)
-                        drawLine(color, point(18f, 6f), point(7f, 17f), 1.7f * unit, StrokeCap.Round)
-                    }
-                }
-        }
         val typography = MaterialTheme.typography
         MaterialTheme(typography = typography.copy(
             bodyLarge = typography.bodyLarge.copy(fontSize = 17.sp, lineHeight = 28.sp),
@@ -451,6 +405,21 @@ internal fun DiscoveryNoteContent(note: Note, timezone: String, mobile: MobileCo
         }
         NoteAttachments(note, core, strings)
         NoteTags(presentation.tags, onTag = onTag)
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
+            Text(when {
+                !review || age == null -> date
+                age == 0L -> strings.text("今天", "Today")
+                else -> strings.text("$age 天前", "$age ${if (age == 1L) "day" else "days"} ago")
+            }, color = MoeriseColors.Muted, style = MaterialTheme.typography.bodySmall)
+            val interaction = remember { MutableInteractionSource() }
+            val active = actionHighlighted(interaction)
+            Box(Modifier.heightIn(min = 44.dp).testTag("discovery_open")
+                .clickable(interactionSource = interaction, indication = null, role = Role.Button) { mobile.openNote(note.name) },
+                contentAlignment = Alignment.CenterEnd) {
+                Text(strings.text("在主页查看", "View on home"), style = MaterialTheme.typography.bodySmall,
+                    color = if (active) MoeriseColors.Accent else MoeriseColors.Muted)
+            }
+        }
     }
 }
 

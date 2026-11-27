@@ -112,6 +112,9 @@ test('a tag in the star reader opens the home filter', async t => {
   await login(page, url); await ready(page);
   await marker(page, 0).press('Enter');
   await card(page).locator('.hd').getByRole('button', { name: '#元数据', exact: true }).waitFor();
+  assert.match(await card(page).locator('.hd time').innerText(), /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/);
+  assert.equal(await card(page).locator('.hd button[aria-label="打开笔记"] svg').count(), 1);
+  assert.equal(await card(page).locator('.discovery-footer').count(), 0);
   await card(page).getByRole('button', { name: '#想法', exact: true }).click();
   await page.waitForURL(value => value.pathname === '/' && value.searchParams.get('tag') === '想法');
 });

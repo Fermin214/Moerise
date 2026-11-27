@@ -18,3 +18,12 @@ fun displayServiceTime(instant: String, timezone: String): String = runCatching 
 }.getOrDefault(instant)
 
 fun displayNoteDate(instant: String, timezone: String, english: Boolean): String = displayServiceTime(instant, timezone)
+
+fun displayNoteDay(instant: String, timezone: String, english: Boolean): String = runCatching {
+    val date = Instant.parse(instant).atZone(ZoneId.of(timezone)).toLocalDate()
+    if (english) date.toString() else "${date.year}年${date.monthValue}月${date.dayOfMonth}日"
+}.getOrDefault("")
+
+internal fun elapsedNoteDays(instant: String, nowMillis: Long): Long? = runCatching {
+    ((nowMillis - Instant.parse(instant).toEpochMilli()) / 86_400_000).coerceAtLeast(0)
+}.getOrNull()

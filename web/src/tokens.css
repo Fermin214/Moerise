@@ -2,9 +2,11 @@
   --ink:#1F1E1C;
   --muted:#68645E;
   --accent:#2F5D62;
+  --accent-hover:#254B4F;
   --accent-surface:#E8F0EE;
   --accent-surface-strong:#DCE8E5;
-  --heatmap-medium:#B8D2CF;
+  --heatmap-light:#E3E7E3;
+  --heatmap-medium:#CCD7D3;
   --line:#E3E0D8;
   --field-border:#918B80;
   --paper:#F5F4F0;

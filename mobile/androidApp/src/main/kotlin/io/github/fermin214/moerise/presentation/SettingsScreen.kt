@@ -223,7 +223,7 @@ fun SettingsScreen(
         title = { Text(strings.text("放弃未保存的修改？", "Discard unsaved changes?")) },
         confirmButton = { TextButton({ controller.discardDraft(); discard = false; editor = null }) {
             Text(strings.text("放弃修改", "Discard changes"))
-        } }, dismissButton = { TextButton({ discard = false }) { Text(strings.text("继续编辑", "Keep editing")) } })
+        } }, dismissButton = { WebSecondaryAction(strings.text("继续编辑", "Keep editing"), { discard = false }) })
 }
 
 @Composable
@@ -539,8 +539,9 @@ private fun SettingsHistory(controller: SettingsController, state: SettingsUiSta
             SettingsHint(listOfNotNull(item.settingsText("date"), item.settingsText("clock"), kind,
                 channelLabel(status, strings), item.settingsText("last_error")).filter { it.isNotBlank() }.joinToString(strings.text("、", ", ")))
             if (status == "failed" && id.isNotEmpty()) key(id) {
-                SettingsGhost(strings.text("重试", "Retry"), { controller.retryDelivery(id) },
-                    enabled = id !in state.resending && !state.busy)
+                TextButton({ controller.retryDelivery(id) }, enabled = id !in state.resending && !state.busy) {
+                    Text(strings.text("重试", "Retry"))
+                }
             }
             HorizontalDivider(color = MoeriseColors.Line)
         }
@@ -810,13 +811,7 @@ private fun SettingsGhost(
     modifier: Modifier = Modifier,
     enabled: Boolean = true,
 ) {
-    OutlinedButton(
-        onClick, enabled = enabled, modifier = modifier.heightIn(min = 44.dp),
-        shape = RoundedCornerShape(10.dp),
-        border = BorderStroke(1.dp, MoeriseColors.FieldBorder),
-        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
-        colors = ButtonDefaults.outlinedButtonColors(contentColor = MoeriseColors.Muted),
-    ) { Text(label, fontSize = 15.sp, lineHeight = 22.4.sp, fontWeight = FontWeight.Normal) }
+    WebSecondaryAction(label, onClick, modifier, enabled)
 }
 
 @Composable

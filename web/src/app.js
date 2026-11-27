@@ -100,7 +100,7 @@ function readCapabilities() {
 }
 const searchInput = bindSearchInput($('q'), query => sidebarFilter({ query }));
 const discoveryCard = (note, review = false, className, bottomTags = true) => renderReadingCard(note, {
-  review, className, formatTime, openNote, bottomTags,
+  review, className, formatTime, formatDate, openNote, bottomTags,
   onTag: tag => navigate(timelineURL('/', { tags: [tag] })),
 });
 const pageDirty = () => settingsPage?.hasChanges();
@@ -217,6 +217,17 @@ function formatTime(value) {
         hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
       }).formatToParts(new Date(value)).map(part => [part.type, part.value]));
       return `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute}`;
+    } catch { return ''; }
+  };
+}
+function formatDate(value) {
+  if (!Number.isFinite(Date.parse(value))) return '';
+  return () => {
+    try {
+      const { year, month, day } = Object.fromEntries(new Intl.DateTimeFormat('en-CA-u-ca-gregory-nu-latn', {
+        timeZone: identity?.timezone, year: 'numeric', month: '2-digit', day: '2-digit',
+      }).formatToParts(new Date(value)).map(part => [part.type, part.value]));
+      return locale() === 'en' ? `${year}-${month}-${day}` : `${year}年${Number(month)}月${Number(day)}日`;
     } catch { return ''; }
   };
 }
@@ -737,7 +748,7 @@ function startEdit(note) {
   const bar = el('div', 'bar'), actions = el('div', 'editor-actions'), input = el('input', 'sr');
   input.type = 'file'; input.multiple = true; input.tabIndex = -1;
   const add = button('+', 'btn', () => input.click()); setAttr(add, 'aria-label', l("添加附件"));
-  const cancel = button(l("取消"), 'ghost', () => {
+  const cancel = button(l("取消"), 'secondary', () => {
     if (pendingWrites.get(note.name)?.busy) return;
     readSequence++; model.clear(); editors.delete(note.name);
     if (!pendingWrites.has(note.name)) failures.delete(note.name);
@@ -884,7 +895,7 @@ async function showRoute({ focus = false, returning = false } = {}) {
     const module = await routeModule(() => import('./discovery.js'), generation, sequence);
     if (!module) return;
     discovery ||= module.createDiscovery({ request, sessionRequest, getIdentity: () => identity,
-      localToday, formatTime, discoveryCard, startFromNote, expire });
+      localToday, formatDate, discoveryCard, startFromNote, expire });
     discoveryPage = discovery.createPage(location.pathname === '/review' ? 'review' : 'walk', {
       key: router.key, seedName: new URLSearchParams(location.search).get('name'),
     });
@@ -923,7 +934,7 @@ async function showRoute({ focus = false, returning = false } = {}) {
     window.scrollTo(0, 0);
     const account = settingsAccount = el('section', 'card settings-card settings-account');
     account.id = 'settings-account';
-    const signOut = button(l("退出登录"), 'ghost', logout); signOut.id = 'logout';
+    const signOut = button(l("退出登录"), 'secondary', logout); signOut.id = 'logout';
     account.append(el('span', '', $('account-name').textContent), signOut);
     $('workspace').append(account);
     const module = await routeModule(() => import('./settings.js'), generation, sequence);

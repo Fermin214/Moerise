@@ -47,7 +47,7 @@
   height: 32px;
   padding: 0 12px;
   border: 0;
-  border-radius: 6px;
+  border-radius: 10px;
   background: var(--accent);
   color: var(--surface);
   font-size:var(--t3);
@@ -55,6 +55,6 @@
   line-height: 20px;
   cursor: pointer;
 }
-.memos-login button:hover { background: var(--accent-surface-strong); color:var(--accent); }
+.memos-login button:not(:disabled):is(:hover,:active) { background:var(--accent-hover); color:var(--surface); }
 #retry-logout { margin-top:16px; }
 .memos-login :disabled { pointer-events: none; opacity: .5; }

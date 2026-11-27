@@ -1,10 +1,10 @@
 package io.github.fermin214.moerise.presentation
 
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
@@ -58,11 +58,15 @@ fun WebSidebar(
                     Text(strings.text("标签", "Tags"), fontSize = 13.sp, color = MoeriseColors.Muted,
                         modifier = Modifier.padding(start = 10.dp))
                     filters.tags.sortedWith(compareByDescending<TagCount> { it.tag in selectedTags }.thenByDescending { it.count }).forEach { tag ->
+                        val active = tag.tag in selectedTags
                         Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp))
-                            .background(if (tag.tag in selectedTags) MoeriseColors.AccentSurface else Color.Transparent)
+                            .background(if (active) MoeriseColors.SurfaceMuted else Color.Transparent)
+                            .semantics { selected = active }
                             .clickable(role = Role.Button) { onTag(tag.tag) }.heightIn(min = 44.dp).padding(horizontal = 10.dp),
                             verticalAlignment = Alignment.CenterVertically) {
                             Text("#${tag.tag.removePrefix("#")}", fontSize = 13.sp,
+                                fontWeight = if (active) FontWeight.SemiBold else FontWeight.Normal,
+                                color = if (active) MoeriseColors.Accent else MoeriseColors.Ink,
                                 modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
                             Text(tag.count.toString(), fontSize = 13.sp, color = MoeriseColors.Muted)
                         }
@@ -78,17 +82,20 @@ fun WebSidebar(
             Column(Modifier.fillMaxWidth().background(MoeriseColors.Paper).testTag("sidebar_account")) {
                 HorizontalDivider(color = MoeriseColors.Line)
                 val settings = strings.text("设置", "Settings")
+                val active = page == "settings"
+                val color = if (active) MoeriseColors.Accent else MoeriseColors.Ink
                 Row(Modifier.padding(top = 8.dp).testTag("nav_settings").fillMaxWidth()
                     .clip(RoundedCornerShape(10.dp))
-                    .background(if (page == "settings") MoeriseColors.AccentSurface else Color.Transparent)
+                    .background(if (active) MoeriseColors.SurfaceMuted else Color.Transparent)
                     .clickable(role = Role.Button, onClickLabel = settings) { onNavigate("settings") }
-                    .semantics { contentDescription = settings; selected = page == "settings" }
+                    .semantics { contentDescription = settings; selected = active }
                     .heightIn(min = 44.dp).padding(horizontal = 10.dp),
                     verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    WebIcon(WebIcon.User)
+                    WebIcon(WebIcon.User, tint = color)
                     Text(userName.removePrefix("users/"), fontSize = 15.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                        color = color, fontWeight = if (active) FontWeight.SemiBold else FontWeight.Normal,
                         modifier = Modifier.weight(1f))
-                    WebIcon(WebIcon.Settings)
+                    WebIcon(WebIcon.Settings, tint = color)
                 }
             }
     }
@@ -146,7 +153,8 @@ private fun SidebarEntry(
     label: String, icon: WebIcon, selected: Boolean, modifier: Modifier = Modifier, onClick: () -> Unit,
 ) {
     Row(modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp))
-        .background(if (selected) MoeriseColors.AccentSurface else Color.Transparent)
+        .background(if (selected) MoeriseColors.SurfaceMuted else Color.Transparent)
+        .semantics { this.selected = selected }
         .clickable(role = Role.Button, onClick = onClick).heightIn(min = 44.dp).padding(horizontal = 10.dp),
         verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
         val color = if (selected) MoeriseColors.Accent else MoeriseColors.Ink
@@ -195,13 +203,17 @@ private fun SidebarCalendar(
                         contentDescription = "$date, $count " + strings.text("条笔记", "notes")
                     } else Modifier),
                     shape = RoundedCornerShape(6.dp),
-                    border = if (valid && date == today) BorderStroke(1.dp, MoeriseColors.Accent) else null,
                     color = if (selectedDate == date) MoeriseColors.Accent else if (count > 1) MoeriseColors.HeatmapMedium
-                        else if (count > 0) MoeriseColors.AccentSurface else Color.Transparent) {
+                        else if (count > 0) MoeriseColors.HeatmapLight else Color.Transparent) {
                     Box(contentAlignment = Alignment.Center) {
                         if (valid) Text(day.toString(), fontSize = 13.sp,
                             color = if (selectedDate == date) Color.White else if (count > 0) MoeriseColors.Accent else MoeriseColors.Muted,
                             fontWeight = if (date == today) FontWeight.Bold else FontWeight.Normal)
+                        if (valid && date == today) {
+                            val dotColor = if (selectedDate == date) MoeriseColors.Surface else MoeriseColors.Accent
+                            Box(Modifier.align(Alignment.BottomCenter).padding(bottom = 2.dp)
+                                .size(3.dp).background(dotColor, CircleShape))
+                        }
                     }
                 }
             }

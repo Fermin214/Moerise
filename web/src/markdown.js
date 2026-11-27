@@ -88,7 +88,7 @@ function tagSpans(text, tags) {
   return spans;
 }
 
-function removeTagLines(lines, tags) {
+function removeTagLines(lines, tags, trailingOnly = false) {
   if (!tags.length) return lines;
   const kept = lines.slice();
   for (let start = 0; start < lines.length;) {
@@ -119,6 +119,10 @@ function removeTagLines(lines, tags) {
     }
     start = stop;
   }
+  if (trailingOnly) {
+    const lastBody = kept.findLastIndex(line => line?.trim());
+    return [...lines.slice(0, lastBody + 1), ...kept.slice(lastBody + 1).filter(line => line !== null)];
+  }
   const result = [];
   for (let index = 0; index < kept.length;) {
     if (kept[index]?.trim()) { result.push(kept[index++]); continue; }
@@ -133,6 +137,22 @@ function removeTagLines(lines, tags) {
     else if (result.length && index < kept.length && blank !== undefined) result.push(blank);
   }
   return result;
+}
+
+export function walkSummaryBody(content, tags) {
+  const text = removeTagLines(content.replace(/\r\n?/g, '\n').split('\n'), tags, true)
+    .map(line => line.replace(/^ {0,3}(?:#{1,6}[ \t]+|>[ \t]?|[-+*][ \t]+|\d+[.)][ \t]+)/u, ''))
+    .join('\n');
+  const plain = part => part.replace(/(?<!\\)(\*\*|__|~~)(?=\S)([^\n]+?)(?<=\S)\1|(?<![*\\])\*(?![\s*])([^*\n]+?)(?<=\S)\*(?!\*)/gu,
+    (_, marker, decorated, emphasis) => decorated ?? emphasis);
+  const parts = [];
+  let offset = 0;
+  for (const span of codeSpans(text)) {
+    parts.push(plain(text.slice(offset, span.opening)), text.slice(span.start, span.stop));
+    offset = span.end;
+  }
+  parts.push(plain(text.slice(offset)));
+  return parts.join('').replace(/\s+/gu, ' ').trim();
 }
 
 function appendPlain(parent, text, start, end, spans, onTag, renderedTags) {

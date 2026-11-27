@@ -24,6 +24,13 @@ private val noteResource = Regex("^memos/[A-Za-z0-9_-]+$")
 private fun Note.belongsTo(account: String) = instanceId == account.split('\u0000')[1] &&
     noteResource.matches(name) && sourceHash.isNotBlank() && state in setOf("NORMAL", "ARCHIVED")
 
+private fun walkStartingNotes(notes: List<Note>): List<Note> = notes.take(20)
+    .mapNotNull { note ->
+        val body = walkSummaryBody(note.content, note.tags)
+        walkStartPriority(body, note.attachments.isNotEmpty())?.let { it to note }
+    }
+    .sortedBy { it.first }.take(6).map { it.second }
+
 class ReviewController(
     private val core: () -> CoreClient?, private val account: () -> String?, private val scope: CoroutineScope,
     private val privacy: PrivacyController? = null,
@@ -265,7 +272,7 @@ class WalkController(
             try {
                 val repo = repository?.invoke()
                 if (repo != null) {
-                    val local = repo.localNotesPage(key, "NORMAL", 6, 0).first
+                    val local = walkStartingNotes(repo.localNotesPage(key, "NORMAL", 20, 0).first)
                     if (stamp == floaterGeneration && key == account())
                         mutable.update { it.copy(floaters = local, floatersLoading = false) }
                     if (local.isNotEmpty() || repo.isNotesSynced(key) || !online()) return@launch
@@ -274,11 +281,11 @@ class WalkController(
                 val active = core() ?: return@launch
                 mutable.update { it.copy(floatersLoading = true) }
                 val page = CoreJson.decodeFromString<io.github.fermin214.moerise.domain.NotePage>(
-                    active.api(HttpMethod.Get, "/notes?state=NORMAL&page_size=6"))
+                    active.api(HttpMethod.Get, "/notes?state=NORMAL&page_size=20"))
                 require(page.notes.all { it.belongsTo(key) && it.state == "NORMAL" } &&
                     page.notes.map { it.name }.distinct().size == page.notes.size) { "NOTE_LIST_INVALID" }
                 if (stamp == floaterGeneration && key == account() && active === core())
-                    mutable.update { it.copy(floaters = page.notes.take(6), floatersLoading = false) }
+                    mutable.update { it.copy(floaters = walkStartingNotes(page.notes), floatersLoading = false) }
             } catch (error: Exception) {
                 if (error is CancellationException) throw error
                 if (stamp == floaterGeneration && key == account())

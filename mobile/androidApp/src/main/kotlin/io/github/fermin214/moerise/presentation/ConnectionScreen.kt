@@ -128,24 +128,13 @@ fun ConnectionScreen(controller: SessionController, strings: Strings, onConnecte
                             Text(connectionError(it, strings), color = MaterialTheme.colorScheme.error,
                                 style = MaterialTheme.typography.bodyMedium)
                         }
-                        Button(
+                        WebAction(
+                            if (state.busy) strings.text("连接中…", "Connecting…") else strings.text("登录", "Sign in"),
                             onClick = ::submitLogin,
                             enabled = canLogin,
-                            modifier = Modifier.fillMaxWidth().heightIn(min = 44.dp).testTag("server_login"),
-                            shape = RoundedCornerShape(6.dp),
+                            modifier = Modifier.fillMaxWidth().testTag("server_login"),
                             contentPadding = PaddingValues(horizontal = 12.dp, vertical = 12.dp),
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = MaterialTheme.colorScheme.primary,
-                                contentColor = Color.White,
-                                disabledContainerColor = MaterialTheme.colorScheme.primary.copy(alpha = .5f),
-                                disabledContentColor = Color.White.copy(alpha = .5f),
-                            ),
-                        ) {
-                            Text(
-                                if (state.busy) strings.text("连接中…", "Connecting…") else strings.text("登录", "Sign in"),
-                                style = MaterialTheme.typography.labelLarge,
-                            )
-                        }
+                        )
                     }
                 }
             }

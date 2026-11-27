@@ -30,6 +30,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.testTag
@@ -54,8 +55,10 @@ import io.github.fermin214.moerise.data.SessionCookies
 import io.github.fermin214.moerise.data.StagedAttachment
 import io.github.fermin214.moerise.data.SyncStateEntity
 import io.github.fermin214.moerise.data.attachmentEdits
+import io.github.fermin214.moerise.data.epochMillis
 import io.github.fermin214.moerise.data.testDatabase
 import io.github.fermin214.moerise.domain.Note
+import io.github.fermin214.moerise.domain.NotePage
 import io.github.fermin214.moerise.domain.StarMap
 import io.github.fermin214.moerise.domain.StarPoint
 import io.github.fermin214.moerise.domain.StarView
@@ -63,6 +66,7 @@ import io.ktor.client.engine.mock.MockEngine
 import io.ktor.client.engine.mock.respond
 import java.io.ByteArrayOutputStream
 import java.nio.file.Files
+import java.time.Instant
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import kotlin.test.*
@@ -372,6 +376,229 @@ class AndroidUiRegressionTest {
     }
 
     @Test
+    fun markdownListsKeepTopLevelAlignmentCompactSpacingAndClickableTags() {
+        createHost()
+        val input = mutableStateOf("前面一段\n- 列表项\n1.有序列表\n2、普通写法 #日记")
+        val selected = mutableListOf<String>()
+        compose.runOnUiThread {
+            host.get().setContent {
+                MoeriseTheme {
+                    MarkdownBody(input.value, tags = listOf("日记"), onTag = { selected += it })
+                }
+            }
+        }
+        val intro = compose.onNodeWithText("前面一段").getUnclippedBoundsInRoot()
+        val list = compose.onNodeWithText("列表项").getUnclippedBoundsInRoot()
+        val ordinary = compose.onNodeWithText("1.有序列表\n2、普通写法 #日记")
+        assertEquals(intro.left, ordinary.getUnclippedBoundsInRoot().left)
+        assertTrue(list.left > intro.left)
+        assertTrue(list.top - intro.bottom in 6.dp..10.dp)
+        val text = ordinary.fetchSemanticsNode().config[SemanticsProperties.Text].single()
+        val link = text.getLinkAnnotations(0, text.length).single().item as LinkAnnotation.Clickable
+        compose.runOnIdle { requireNotNull(link.linkInteractionListener).onClick(link) }
+        assertEquals(listOf("日记"), selected)
+        compose.runOnIdle { input.value = "1. 甲\n2.\n3. 丙\n- `code\nnext`\n正文" }
+        for (marker in listOf("1.", "2.", "3.")) compose.onNodeWithText(marker, substring = true).assertExists()
+        val code = compose.onNode(hasText("code", substring = true) and hasText("next", substring = true))
+        val codeText = code.fetchSemanticsNode().config[SemanticsProperties.Text].single().text
+        assertFalse('`' in codeText)
+        assertTrue(code.getUnclippedBoundsInRoot().left > intro.left)
+        assertEquals(intro.left, compose.onNodeWithText("正文").getUnclippedBoundsInRoot().left)
+    }
+
+    @Test
+    @GraphicsMode(GraphicsMode.Mode.NATIVE)
+    fun walkRoomDirectoryOpensLongFirstNoteAtTopWithFixedActionsAndDateFooter() {
+        createHost()
+        val folder = Files.createTempDirectory("moerise-walk-directory").toFile()
+        val database = testDatabase(folder.resolve("data.sqlite3").absolutePath)
+        val repository = NoteRepository(database)
+        val secrets = MemorySecrets()
+        val origin = "http://127.0.0.1:1"
+        val account = "$origin\u0000instance\u0000users/owner"
+        val attachment = CoreJson.parseToJsonElement("""{"filename":"notes.pdf"}""") as kotlinx.serialization.json.JsonObject
+        val longBody = (1..30).joinToString("\n\n") { "Long first note, paragraph $it" }
+        val candidate = Note("instance", "memos/long", longBody, "NORMAL", "hash", createTime = "2026-11-14T20:00:00Z")
+        val job = SupervisorJob()
+        val scope = CoroutineScope(job + Dispatchers.Main.immediate)
+        runBlocking {
+            secrets.write("selected-profile", CoreJson.encodeToString(
+                ConnectionProfile(origin, account, "instance", "users/owner", "Owner", "Pacific/Kiritimati")))
+            for (index in 1..6) repository.recordLocalNote(account, candidate.copy(
+                name = "memos/file-$index", content = "", createTime = "2026-11-16T00:00:00Z", attachments = listOf(attachment)))
+            for (index in 1..3) repository.recordLocalNote(account, candidate.copy(
+                name = "memos/body-$index", content = "**Substantive body $index** snake_case", createTime = "2026-11-15T00:00:00Z"))
+            repository.recordLocalNote(account, candidate)
+        }
+        val session = SessionController(secrets, true, scope)
+        try {
+            val mobile = MobileController(session, { repository }, scope)
+            waitForMainCondition("the cached account is restored") { session.state.value.profile != null && !session.state.value.loading }
+            compose.runOnIdle { mobile.page("walk") }
+            compose.runOnUiThread {
+                host.get().setContent {
+                    MoeriseTheme {
+                        Box(Modifier.width(340.dp).height(320.dp)) {
+                            DiscoveryScreen("walk", mobile, strings, {}, {}, {}, {})
+                        }
+                    }
+                }
+            }
+            waitForMainCondition("Room supplies six priority-ranked candidates") { mobile.walk.state.value.floaters.size == 6 }
+            assertEquals(listOf("body-3", "body-2", "body-1", "long", "file-6", "file-5"),
+                mobile.walk.state.value.floaters.map { it.name.substringAfter('/') })
+            assertEquals(4, compose.onAllNodes(hasTestTagPrefix("walk_floater_")).fetchSemanticsNodes().size)
+            compose.onNodeWithTag("walk_end").assertDoesNotExist()
+            val start = compose.onNodeWithTag("walk_start")
+            val firstRow = compose.onNodeWithTag("walk_floater_memos/body-3")
+            val lastRow = compose.onNodeWithTag("walk_floater_memos/long")
+            firstRow.assert(hasContentDescription("Start from this note: Substantive body 3 snake_case"))
+            assertTrue(firstRow.getUnclippedBoundsInRoot().top >= start.getUnclippedBoundsInRoot().bottom + 20.dp)
+            assertEquals(firstRow.getUnclippedBoundsInRoot().left, lastRow.getUnclippedBoundsInRoot().left)
+            assertEquals(firstRow.getUnclippedBoundsInRoot().width, lastRow.getUnclippedBoundsInRoot().width)
+            lastRow.performScrollTo().performClick()
+            waitForMainCondition("the selected long note opens") { mobile.walk.state.value.result?.item?.note?.name == candidate.name }
+            val intro = compose.onNodeWithText("Long first note, paragraph 1")
+            intro.assertIsDisplayed()
+            assertTrue(intro.getUnclippedBoundsInRoot().top < 155.dp)
+            val stop = compose.onNodeWithTag("walk_end")
+            val fixed = stop.getUnclippedBoundsInRoot()
+            assertButtonPalette(stop, MoeriseColors.Surface, MoeriseColors.Line)
+            val open = compose.onNodeWithTag("discovery_open")
+            open.performScrollTo().assertIsDisplayed().assertTextEquals("View on home")
+            assertTrue(open.getUnclippedBoundsInRoot().height >= 44.dp)
+            compose.onNodeWithText("2026-11-15").assertIsDisplayed()
+            compose.onNodeWithText("2026-11-15 10:00").assertDoesNotExist()
+            assertEquals(fixed, stop.getUnclippedBoundsInRoot())
+            compose.onNodeWithTag("walk_next").performClick()
+            waitForMainCondition("the next note retains the previous note as its trail") { mobile.walk.state.value.previous?.name == candidate.name }
+            compose.onNodeWithText("↑").assertIsDisplayed()
+            compose.onNodeWithText(walkSummaryBody(longBody, emptyList()).let(::limitWalkSummary)).assertIsDisplayed()
+            assertEquals(fixed, stop.getUnclippedBoundsInRoot())
+            stop.performClick().assertDoesNotExist()
+        } finally {
+            compose.runOnUiThread { session.close(); job.cancel() }
+            compose.waitForIdle()
+            database.close()
+            folder.deleteRecursively()
+        }
+    }
+
+    private fun hasTestTagPrefix(prefix: String) = SemanticsMatcher("test tag starts with $prefix") {
+        it.config.getOrElse(SemanticsProperties.TestTag) { "" }.startsWith(prefix)
+    }
+
+    private fun assertButtonPalette(node: SemanticsNodeInteraction, fill: Color, frame: Color) {
+        withNodeBitmap(node) { pixels ->
+            assertTrue((0 until pixels.width).any { x -> Color(pixels.getPixel(x, pixels.height / 4)) == fill })
+            assertTrue((0 until pixels.width).any { x -> Color(pixels.getPixel(x, pixels.height / 2)) == frame })
+        }
+    }
+
+    private fun activityBitmap(): Bitmap = compose.runOnIdle {
+        val window = host.get().window.decorView
+        Bitmap.createBitmap(window.width, window.height, Bitmap.Config.ARGB_8888).apply {
+            window.draw(android.graphics.Canvas(this))
+        }
+    }
+
+    private fun <Result> withNodeBitmap(node: SemanticsNodeInteraction, read: (Bitmap) -> Result): Result {
+        val bounds = node.fetchSemanticsNode().boundsInWindow
+        val frame = activityBitmap()
+        try {
+            val pixels = Bitmap.createBitmap(frame, bounds.left.toInt(), bounds.top.toInt(), bounds.width.toInt(), bounds.height.toInt())
+            try { return read(pixels) }
+            finally { if (pixels !== frame) pixels.recycle() }
+        } finally { frame.recycle() }
+    }
+
+    @Test
+    @GraphicsMode(GraphicsMode.Mode.NATIVE)
+    fun onlineWalkFallbackAndReviewUseTheSameDirectoryAndActionStyles() {
+        createHost()
+        val folder = Files.createTempDirectory("moerise-online-directory").toFile()
+        val database = testDatabase(folder.resolve("data.sqlite3").absolutePath)
+        val repository = NoteRepository(database)
+        val job = SupervisorJob()
+        val scope = CoroutineScope(job + Dispatchers.Main.immediate)
+        val session = SessionController(MemorySecrets(), true, scope)
+        val timezone = "Asia/Hong_Kong"
+        val beforeMidnight = "2026-10-29T15:55:00Z"
+        val afterMidnight = Instant.parse("2026-10-29T16:05:00Z")
+        assertEquals("2026-10-29", displayNoteDay(beforeMidnight, timezone, english = true))
+        assertEquals("2026-10-30", displayNoteDay(afterMidnight.toString(), timezone, english = true))
+        assertEquals(0L, elapsedNoteDays(beforeMidnight, afterMidnight.toEpochMilli()))
+        val recent = Note("instance", "memos/recent", "Review first paragraph", "NORMAL", "hash",
+            createTime = Instant.ofEpochMilli(epochMillis() - 600_000).toString())
+        val files = (1..6).map { index -> recent.copy(name = "memos/file-$index", content = "",
+            attachments = listOf(CoreJson.parseToJsonElement("""{"filename":"file-$index.pdf"}""") as kotlinx.serialization.json.JsonObject)) }
+        val candidates = files + listOf(recent.copy(name = "memos/short", content = "短句\n#未知"), recent)
+        val review = ReviewBatch("day", "2026-10-30", timezone, listOf(
+            ReviewItem(recent.name, recent.sourceHash, recent.createTime, unavailable = false, note = recent),
+            ReviewItem("memos/missing", "deleted", recent.createTime, unavailable = true),
+        ))
+        val server = MockWebServer().apply {
+            dispatcher = object : Dispatcher() {
+                override fun dispatch(request: RecordedRequest): MockResponse = when (request.requestUrl?.encodedPath) {
+                    "/api/app/v1/capabilities" -> MockResponse().setBody("""{"login_methods":["password"],"notes":"ready"}""")
+                    "/api/app/v1/session" -> MockResponse().setBody("""{"instance_id":"instance","user":{"name":"users/owner"},"timezone":"$timezone","expires_at":"2099-01-01T00:00:00Z","csrf_token":"token"}""")
+                    "/api/app/v1/models" -> MockResponse().setBody("""{"embedding":{"enabled":true,"configured":true}}""")
+                    "/api/app/v1/notes" -> {
+                        assertEquals("20", request.requestUrl?.queryParameter("page_size"))
+                        assertEquals("NORMAL", request.requestUrl?.queryParameter("state"))
+                        MockResponse().setBody(CoreJson.encodeToString(NotePage(candidates)))
+                    }
+                    "/api/app/v1/reviews/daily" -> MockResponse().setBody(CoreJson.encodeToString(review))
+                    else -> MockResponse().setResponseCode(404)
+                }
+            }
+            start()
+        }
+        try {
+            val page = mutableStateOf("walk")
+            val mobile = MobileController(session, { repository }, scope)
+            compose.runOnIdle { session.login(server.url("/").toString(), "owner", "test-password") }
+            waitForMainCondition("the Core test account is connected") { session.state.value.connected }
+            compose.runOnUiThread {
+                mobile.page("walk")
+                host.get().setContent {
+                    MoeriseTheme {
+                        if (page.value == "settings") SettingsScreen(mobile, strings, {}, {})
+                        else DiscoveryScreen(page.value, mobile, strings, {}, {}, {}, {})
+                    }
+                }
+            }
+            waitForMainCondition("online candidates load after the empty Room query") { mobile.walk.state.value.floaters.size == 6 }
+            assertEquals(listOf("memos/recent", "memos/short") + files.take(4).map { it.name },
+                mobile.walk.state.value.floaters.map { it.name })
+            compose.onNodeWithTag("walk_floater_memos/short").assert(hasContentDescription("Start from this note: 短句 #未知"))
+            compose.onNodeWithTag("walk_floater_memos/file-1").assert(hasContentDescription("Start from this note: file-1.pdf"))
+            compose.onNodeWithTag("walk_end").assertDoesNotExist()
+            compose.runOnIdle { page.value = "review"; mobile.page("review") }
+            waitForMainCondition("the review batch loads") { mobile.review.state.value.batch?.id == review.id }
+            val paragraph = compose.onNodeWithText("Review first paragraph")
+            val date = compose.onNodeWithText("Today")
+            assertTrue(paragraph.getUnclippedBoundsInRoot().bottom < date.getUnclippedBoundsInRoot().top)
+            compose.onNodeWithTag("discovery_open").assertTextEquals("View on home")
+            assertButtonPalette(compose.onNodeWithTag("review_walk"), MoeriseColors.Surface, MoeriseColors.Line)
+            compose.onNodeWithTag("review_item_1").performClick()
+            compose.onNodeWithTag("discovery_open").assertDoesNotExist()
+            compose.runOnIdle { page.value = "settings"; mobile.page("settings") }
+            val reload = compose.onNodeWithTag("settings_reload")
+            compose.waitUntil(10_000) { reload.isDisplayed() }
+            assertButtonPalette(reload, MoeriseColors.Surface, MoeriseColors.Line)
+            assertButtonPalette(compose.onNodeWithTag("settings_sync"), MoeriseColors.Surface, MoeriseColors.Line)
+            assertButtonPalette(compose.onNodeWithTag("account_logout").performScrollTo(), MoeriseColors.Surface, MoeriseColors.Line)
+        } finally {
+            compose.runOnUiThread { session.close(); job.cancel() }
+            compose.waitForIdle()
+            server.shutdown()
+            database.close()
+            folder.deleteRecursively()
+        }
+    }
+
+    @Test
     @GraphicsMode(GraphicsMode.Mode.NATIVE)
     fun confirmedTagMetadataKeepsTheDecodedInlineImageOnTheFirstFrame() =
         checkImageHandoff(promoteToTail = false)
@@ -629,6 +856,48 @@ class AndroidUiRegressionTest {
     }
 
     @Test
+    @GraphicsMode(GraphicsMode.Mode.NATIVE)
+    fun sidebarSelectionsAndCalendarMarkersUseWarmPaperColors() {
+        createHost()
+        val selectedDay = mutableStateOf("")
+        val page = mutableStateOf("home")
+        val filters = SearchState(tags = listOf(TagCount("selected", 3)),
+            calendar = CalendarPage("2026-11", listOf(DayCount("2026-11-16", 1), DayCount("2026-11-17", 2))))
+        compose.runOnUiThread {
+            host.get().setContent {
+                MoeriseTheme {
+                    Box(Modifier.width(300.dp).background(MoeriseColors.Paper)) {
+                        WebSidebar(page.value, strings, "Owner", filters, "2026-11", {}, { page.value = it },
+                            {}, { selectedDay.value = it }, {}, selectedTags = setOf("selected"),
+                            selectedDate = selectedDay.value, today = "2026-11-16")
+                    }
+                }
+            }
+        }
+        fun background(node: SemanticsNodeInteraction) = withNodeBitmap(node) { Color(it.getPixel(it.width / 2, 2)) }
+        val today = compose.onNodeWithContentDescription("2026-11-16, 1 notes")
+        val medium = compose.onNodeWithContentDescription("2026-11-17, 2 notes")
+        val light = background(today)
+        val shaded = background(medium)
+        assertEquals(Color(0xFFE3E7E3), light)
+        assertEquals(Color(0xFFCCD7D3), shaded)
+        for (cell in listOf(light, shaded)) {
+            assertTrue((cell.luminance() + .05f) / (MoeriseColors.Accent.luminance() + .05f) >= 4.5f)
+        }
+        fun dot() = withNodeBitmap(today) { Color(it.getPixel(it.width / 2, it.height - 4)) }
+        assertEquals(MoeriseColors.Accent, dot())
+        today.performClick()
+        assertEquals(MoeriseColors.Accent, background(today))
+        assertEquals(MoeriseColors.Surface, dot())
+        assertEquals(MoeriseColors.SurfaceMuted, background(compose.onNodeWithTag("nav_home").assertIsSelected()))
+        val settings = compose.onNodeWithTag("nav_settings")
+        settings.performClick().assertIsSelected()
+        assertEquals(MoeriseColors.SurfaceMuted, withNodeBitmap(settings) { Color(it.getPixel(it.width / 2, it.height - 2)) })
+        val tag = compose.onNodeWithText("#selected").performScrollTo().assertIsSelected()
+        assertEquals(MoeriseColors.SurfaceMuted, background(tag))
+    }
+
+    @Test
     fun longNoteCardMeasuresTheBodyBeforeClippingIt() {
         createHost()
         val content = (1..22).joinToString("\n\n") { "Paragraph number $it" }
@@ -679,12 +948,7 @@ class AndroidUiRegressionTest {
             compose.mainClock.advanceTimeByFrame()
             compose.mainClock.advanceTimeBy(208)
             val bounds = stack.fetchSemanticsNode().boundsInWindow
-            val frame = compose.runOnIdle {
-                val window = host.get().window.decorView
-                Bitmap.createBitmap(window.width, window.height, Bitmap.Config.ARGB_8888).apply {
-                    window.draw(android.graphics.Canvas(this))
-                }
-            }
+            val frame = activityBitmap()
             try {
                 val overlap = Color(frame.getPixel((bounds.left + bounds.width / 12).toInt(), bounds.center.y.toInt()))
                 val exposed = Color(frame.getPixel((bounds.left + bounds.width * 3 / 4).toInt(), bounds.center.y.toInt()))

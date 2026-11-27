@@ -117,6 +117,7 @@ export const english = {
   "设置模块": "Settings sections",
   "跟随浏览器": "Follow browser",
   "从这条笔记开始：{0}": "Start from this note: {0}",
+  "从一条笔记开始": "Start from a note",
   "重试加载笔记": "Retry loading notes",
   "打开导航": "Open navigation",
   "关闭导航": "Close navigation",

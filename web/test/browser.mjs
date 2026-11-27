@@ -65,7 +65,9 @@ async function fixture(t, language = 'zh-CN', options = {}) {
       json({ tags: [...counts].map(([tag, count]) => ({ tag, count })) }); return;
     }
     if (path === '/calendar') {
-      json({ month: url.searchParams.get('month'), days: [{ date: '2026-10-29', count: source.length }] }); return;
+      json({ month: url.searchParams.get('month'), days: [
+        { date: '2026-10-29', count: source.length }, { date: '2026-10-30', count: 1 },
+      ] }); return;
     }
     if (path === '/notes' && req.method === 'GET') {
       assert.equal(url.searchParams.get('order'), 'created_desc');
@@ -1095,16 +1097,68 @@ test('sidebar reuses aggregates, cancels obsolete months and refreshes only affe
   assert.deepEqual(errors, []);
 });
 
-test('the selected current day uses white text on the accent background', async t => {
+test('sidebar selection and heatmap use warm-paper tones and a 3px current-day marker', async t => {
   const { page, url } = await fixture(t);
   await page.goto(url); await login(page);
-  await page.locator('#calendar .today').click();
+  const activeStyle = node => {
+    const { color, backgroundColor, fontWeight } = getComputedStyle(node);
+    return [color, backgroundColor, fontWeight];
+  };
+  const accent = 'rgb(47, 93, 98)', muted = 'rgb(236, 234, 228)';
+  assert.deepEqual(await page.locator('nav .ent.on').evaluate(activeStyle), [accent, muted, '600']);
+  await page.locator('#tags .tag-row').first().click();
+  assert.deepEqual(await page.locator('#tags .tag-row.on').evaluate(activeStyle), [accent, muted, '600']);
+  const current = page.locator('#calendar .today');
+  const marker = node => {
+    const { backgroundColor, width, height, borderRadius, left } = getComputedStyle(node, '::after');
+    return [backgroundColor, width, height, borderRadius,
+      Math.abs(parseFloat(left) + 1.5 - node.getBoundingClientRect().width / 2) <= 1];
+  };
+  assert.deepEqual(await current.evaluate(activeStyle), [accent, 'rgb(227, 231, 227)', '700']);
+  assert.deepEqual(await page.locator('#calendar .h2').evaluate(activeStyle), [accent, 'rgb(204, 215, 211)', '400']);
+  assert.equal(await current.evaluate(node => getComputedStyle(node).boxShadow), 'none');
+  assert.deepEqual(await current.evaluate(marker), [accent, '3px', '3px', '50%', true]);
+  const luminance = values => values.map(value => value / 255)
+    .map(value => value <= .04045 ? value / 12.92 : ((value + .055) / 1.055) ** 2.4)
+    .reduce((sum, value, index) => sum + value * [.2126, .7152, .0722][index], 0);
+  for (const background of [[227, 231, 227], [204, 215, 211], [236, 234, 228]]) {
+    assert.ok((luminance(background) + .05) / (luminance([47, 93, 98]) + .05) >= 4.5);
+  }
+  await current.click();
   const today = page.locator('#calendar .today.sel');
   await today.waitFor();
-  assert.deepEqual(await today.evaluate(node => {
-    const { color, backgroundColor } = getComputedStyle(node);
-    return [color, backgroundColor];
-  }), ['rgb(255, 255, 255)', 'rgb(47, 93, 98)']);
+  assert.deepEqual(await today.evaluate(activeStyle), ['rgb(255, 255, 255)', accent, '700']);
+  assert.deepEqual(await today.evaluate(marker), ['rgb(255, 255, 255)', '3px', '3px', '50%', true]);
+  await page.locator('#account-settings').click();
+  assert.deepEqual(await page.locator('#account-settings').evaluate(activeStyle), [accent, muted, '600']);
+});
+
+test('primary actions retain white text and note lists sit close to top-level paragraphs', async t => {
+  const { page, state, url } = await fixture(t);
+  state.notes.get('n00').content = '段落\n\n- 无序列表\n1.有序列表\n2、普通写法';
+  await page.goto(url);
+  await page.locator('#username').fill('test'); await page.locator('#password').fill('test');
+  const primaryStyle = node => {
+    const { backgroundColor, color } = getComputedStyle(node);
+    return [backgroundColor, color];
+  };
+  const signIn = page.locator('#login');
+  await signIn.hover();
+  assert.deepEqual(await signIn.evaluate(primaryStyle), ['rgb(37, 75, 79)', 'rgb(255, 255, 255)']);
+  await signIn.click();
+  await page.locator('#content').fill('未保存正文');
+  const save = page.locator('#save');
+  assert.deepEqual(await save.evaluate(primaryStyle), ['rgb(47, 93, 98)', 'rgb(255, 255, 255)']);
+  assert.equal(await save.locator('small').evaluate(node => getComputedStyle(node).color), 'rgb(232, 240, 238)');
+  const body = page.locator('article[data-name="memos/n00"] .note-content');
+  await body.waitFor();
+  const layout = await body.evaluate(node => {
+    const [intro, list, ordinary] = [...node.children].map(child => child.getBoundingClientRect());
+    return { gap: list.top - intro.bottom, left: intro.left, ordinaryLeft: ordinary.left };
+  });
+  assert.ok(layout.gap >= 6 && layout.gap <= 8);
+  assert.equal(layout.left, layout.ordinaryLeft);
+  assert.match(await body.locator('p').last().innerText(), /^1\.有序列表\n2、普通写法$/);
 });
 
 test('sidebar background refresh preserves tags and calendar through slow requests, failures and retry', { timeout: 60_000 }, async t => {

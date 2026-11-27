@@ -260,7 +260,7 @@ export function createSettingsPage({ sessionRequest, handleFailure, onSaved = ()
   function summary(parent, title, text, edit) {
     const actions = el('div', 'settings-inline-actions');
     const info = el('span', 'sub');
-    actions.append(info, button(l("编辑"), 'ghost', edit));
+    actions.append(info, button(l("编辑"), 'secondary', edit));
     row(parent, title, actions);
     summaries.set(info, text);
     return info;
@@ -271,7 +271,7 @@ export function createSettingsPage({ sessionRequest, handleFailure, onSaved = ()
     const container = el('form', 'settings-edit-form');
     const error = el('p', 'error sub');
     error.setAttribute('role', 'alert'); error.hidden = true;
-    const reloadButton = button(l("重新加载设置"), 'ghost', reloadSettings);
+    const reloadButton = button(l("重新加载设置"), 'secondary', reloadSettings);
     reloadButton.hidden = !conflict;
     const inputs = new Map(), secrets = new Map(), onRebase = [];
     let revision = 0, busy = false, closing = false, locked = [];
@@ -325,12 +325,12 @@ export function createSettingsPage({ sessionRequest, handleFailure, onSaved = ()
     }
     const extra = populate({ container, field, secret, onRebase }) || {};
     const save = el('button', 'save', target ? l("测试并保存") : l("保存"));
-    const cancel = button(l("关闭"), 'ghost', requestClose);
+    const cancel = button(l("关闭"), 'secondary', requestClose);
     const address = inputs.get('embedding.base_url');
     const needsConfirmation = () => confirmEmbedding &&
       secrets.get('embedding_api_key').action.value === 'replace' &&
       confirmedOrigin !== (embeddingOrigin(readField(address)) || null);
-    const confirmAddress = address ? button('', 'ghost settings-confirm-address', () => {
+    const confirmAddress = address ? button('', 'secondary settings-confirm-address', () => {
       confirmedOrigin = embeddingOrigin(readField(address));
       if (addressError) { addressError = false; error.hidden = true; }
       updateConfirmation();
@@ -446,7 +446,7 @@ export function createSettingsPage({ sessionRequest, handleFailure, onSaved = ()
       for (const zone of new Set([system, 'UTC', ...(Intl.supportedValuesOf?.('timeZone') || [])])) {
         const option = el('option'); option.value = zone; list.append(option);
       }
-      container.append(list, button(l("采用设备时区"), 'ghost', () => {
+      container.append(list, button(l("采用设备时区"), 'secondary', () => {
         input.value = system; input.dispatchEvent(new Event('input', { bubbles: true }));
       }));
       return { read: () => {
@@ -484,7 +484,7 @@ export function createSettingsPage({ sessionRequest, handleFailure, onSaved = ()
       protocol.addEventListener('change', update); onRebase.push(update); update();
       let check;
       if (snapshot.settings.embedding.enabled) {
-        check = button(l("检查 Embedding 连接"), 'ghost', async () => {
+        check = button(l("检查 Embedding 连接"), 'secondary', async () => {
           const ticket = snapshot.version;
           check.disabled = true;
           try {
@@ -539,10 +539,10 @@ export function createSettingsPage({ sessionRequest, handleFailure, onSaved = ()
       const append = value => {
         const line = el('div', 'settings-time'), input = el('input');
         input.type = 'time'; input.required = true; input.value = value;
-        line.append(input, button(l("移除"), 'ghost', () => { line.remove(); update(); }));
+        line.append(input, button(l("移除"), 'secondary', () => { line.remove(); update(); }));
         list.append(line); update();
       };
-      const add = button(l("添加时段"), 'ghost', () => append(''));
+      const add = button(l("添加时段"), 'secondary', () => append(''));
       let original = snapshot.settings.notifications.times;
       for (const clock of original) append(clock);
       container.append(list, add);
@@ -702,7 +702,7 @@ export function createSettingsPage({ sessionRequest, handleFailure, onSaved = ()
       return card;
     }
     pageError = el('p', 'error sub'); pageError.hidden = true; pageError.setAttribute('role', 'alert');
-    reload = button(l("重新加载设置"), 'ghost', reloadSettings); reload.hidden = true;
+    reload = button(l("重新加载设置"), 'secondary', reloadSettings); reload.hidden = true;
     form.append(pageError, reload);
 
     const general = section('general', l("通用"));
@@ -712,7 +712,7 @@ export function createSettingsPage({ sessionRequest, handleFailure, onSaved = ()
     row(general, l("语言"), language);
     summary(general, l("时区"), () => snapshot.settings.timezone, editTimezone);
     const syncActions = el('div', 'settings-inline-actions'), synced = el('span', 'sub');
-    const syncButton = button(l("同步"), 'ghost', async () => {
+    const syncButton = button(l("同步"), 'secondary', async () => {
       const page = lifecycle;
       syncButton.disabled = true;
       try { await sync(); } finally {
@@ -734,7 +734,7 @@ export function createSettingsPage({ sessionRequest, handleFailure, onSaved = ()
     stargazing.name = 'stargazing.enabled';
     stargazing.addEventListener('change', () => commit({ draft: { stargazing: { enabled: stargazing.checked } } }));
     row(search, l("启用观星"), stargazing);
-    const rebuild = button(l("重新生成星图"), 'ghost', async () => {
+    const rebuild = button(l("重新生成星图"), 'secondary', async () => {
       const page = lifecycle;
       rebuild.disabled = true;
       try {
@@ -833,7 +833,7 @@ export function createSettingsPage({ sessionRequest, handleFailure, onSaved = ()
         form = null;
         pageError = el('p', 'error sub');
         pageError.setAttribute('role', 'alert');
-        reload = button(l("重新加载设置"), 'ghost', reloadSettings);
+        reload = button(l("重新加载设置"), 'secondary', reloadSettings);
         root.replaceChildren(pageError, reload);
       }
       failure(editor?.error || pageError, err);
