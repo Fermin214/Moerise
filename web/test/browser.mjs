@@ -29,7 +29,7 @@ async function fixture(t, language = 'zh-CN', options = {}) {
   ];
   notes.get('n02').content += '\n\n[资料](/file/attachments/doc/document.pdf) ![原图](/file/attachments/pic/image.png)';
   notes.set('old', { ...notes.get('n00'), name: 'memos/old', state: 'ARCHIVED', content: '归档原文 #想法', source_hash: 'v-old' });
-  const state = { notes, requests: [], unknownCreate: false, unknownPatch: false, conflict: false, csrfRejected: false,
+  const state = { notes, requests: [], unknownCreate: false, unknownPatch: false, unknownDelete: false, conflict: false, csrfRejected: false,
     created: 0, session: false, instance: 'first', user: 'users/1', embedding: true, searchChanged: false, searchDelay: 0 };
   const idempotency = new Map();
   const core = http.createServer(async (req, res) => {
@@ -123,7 +123,11 @@ async function fixture(t, language = 'zh-CN', options = {}) {
     if (state.conflict) { state.conflict = false; note.source_hash += '-external'; note.content = '外部修改 #想法'; error('SOURCE_CHANGED'); return; }
     if (req.method === 'PATCH' && idempotency.has(req.headers['idempotency-key'])) { json(idempotency.get(req.headers['idempotency-key'])); return; }
     if (body.source_hash !== note.source_hash) { error('WRITE_CONFLICT'); return; }
-    if (req.method === 'DELETE') { notes.delete(id); res.writeHead(204); res.end(); return; }
+    if (req.method === 'DELETE') {
+      notes.delete(id);
+      if (state.unknownDelete) { state.unknownDelete = false; error('WRITE_OUTCOME_UNKNOWN', 502); return; }
+      res.writeHead(204); res.end(); return;
+    }
     assert.equal(req.method, 'PATCH'); assert.ok(req.headers['idempotency-key']);
     for (const resource of body.remove_attachments || []) {
       if ((body.content ?? note.content).includes(`](/file/${resource}/`) && note.attachments.some(item => item.name === resource && item.type.startsWith('image/'))) {
@@ -1725,6 +1729,110 @@ test('refreshing an unchanged note clears failed mutation controls', { timeout: 
   await card.getByRole('button', { name: '更多操作' }).click();
   assert.equal(await card.getByRole('menuitem', { name: '归档', exact: true }).isEnabled(), true);
   assert.deepEqual(errors, []);
+});
+
+test('an old note refresh cannot clear the draft and warning after another unconfirmed submission', async t => {
+  const { page, state, url } = await fixture(t);
+  const endpoint = '**/api/app/v1/notes/n00';
+  const release = Promise.withResolvers();
+  t.after(() => release.resolve());
+  await page.goto(url); await login(page);
+  await menu(page, 'n00', '编辑');
+  const editor = page.locator('form.editor[data-name="memos/n00"]');
+  const text = editor.locator('textarea'), save = editor.getByRole('button', { name: /^保存/ });
+  const warning = page.locator('#sync-status[data-sync="unknown"]');
+  const content = '等待确认的编辑草稿';
+  state.unknownPatch = true;
+  await text.fill(content); await save.click();
+  await warning.waitFor();
+  const oldNote = structuredClone(state.notes.get('n00'));
+  const intercept = async route => {
+    if (route.request().method() === 'GET') {
+      await release.promise;
+      return route.fulfill({ json: oldNote });
+    }
+    return route.fulfill({ status: 502, json: { error: { code: 'WRITE_OUTCOME_UNKNOWN' } } });
+  };
+  await page.route(endpoint, intercept);
+  const refresh = page.waitForRequest(request => request.url().endsWith('/notes/n00') && request.method() === 'GET');
+  await editor.getByRole('button', { name: '刷新笔记' }).click(); await refresh;
+  await save.click();
+  await editor.getByText('保存结果尚未确认。').waitFor();
+  const response = page.waitForResponse(response => response.url().endsWith('/notes/n00') && response.request().method() === 'GET');
+  release.resolve();
+  assert.equal(await (await response).finished(), null);
+  await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  assert.equal(await text.inputValue(), content);
+  assert.equal(await warning.isVisible(), true);
+  await page.unroute(endpoint, intercept);
+  await save.click();
+  await page.locator('article[data-name="memos/n00"]').filter({ hasText: content }).waitFor();
+  await warning.waitFor({ state: 'hidden' });
+  const patches = state.requests.filter(request => request.path === '/notes/n00' && request.method === 'PATCH');
+  assert.equal(patches.length, 2);
+  assert.deepEqual(patches[1].body, patches[0].body);
+  assert.equal(patches[1].headers['idempotency-key'], patches[0].headers['idempotency-key']);
+});
+
+test('manual sync verifies an unconfirmed deletion after its card leaves the timeline', async t => {
+  const { page, state, url } = await fixture(t);
+  await page.goto(url); await login(page);
+  const card = page.locator('article[data-name="memos/n00"]');
+  await card.waitFor();
+  const original = structuredClone(state.notes.get('n00'));
+  const warning = page.locator('#sync-status[data-sync="unknown"]');
+  state.unknownDelete = true;
+  await menu(page, 'n00', '删除');
+  await card.getByRole('button', { name: '删除', exact: true }).click();
+  await warning.waitFor();
+  assert.equal(state.notes.has('n00'), false);
+  const endpoint = '**/api/app/v1/notes/n00';
+  const projected = route => route.fulfill({ json: original });
+  await page.route(endpoint, projected);
+  const visibleRead = page.waitForResponse(endpoint);
+  await card.getByRole('button', { name: '刷新笔记' }).click();
+  assert.equal(await (await visibleRead).finished(), null);
+  await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  assert.equal(await card.getByRole('button', { name: '重试原提交' }).isVisible(), true);
+  await page.unroute(endpoint, projected);
+  state.unknownCreate = true;
+  const content = '另一条未确认写入';
+  await page.locator('#content').fill(content); await page.locator('#save').click();
+  await page.locator('#save-error').waitFor();
+  const checked = page.waitForResponse(response => response.url().endsWith('/notes/n00') && response.status() === 404);
+  await page.locator('#sync-trigger').click();
+  await card.waitFor({ state: 'detached' });
+  assert.equal((await (await checked).json()).error.code, 'SOURCE_NOT_FOUND');
+  await page.locator('#sync-trigger:enabled').waitFor();
+  assert.equal(await warning.isVisible(), true);
+  assert.equal(await page.locator('#content').inputValue(), content);
+  await page.locator('#save').click();
+  await page.locator('#sync-status').waitFor({ state: 'hidden' });
+  assert.equal(await page.locator('#list-error').isHidden(), true);
+  assert.equal(state.requests.filter(request => request.path === '/notes/n00' && request.method === 'DELETE').length, 1);
+});
+
+test('retrying a failed manual sync from the timeline clears only the sync warning', async t => {
+  const { page, state, url } = await fixture(t);
+  await page.goto(url); await login(page);
+  await page.locator('article[data-name="memos/n00"]').waitFor();
+  const endpoint = '**/api/app/v1/notes?*';
+  const unavailable = route => route.fulfill({ status: 503, json: { error: { code: 'UPSTREAM_UNAVAILABLE' } } });
+  await page.route(endpoint, unavailable);
+  await page.locator('#sync-trigger').click();
+  await page.locator('#sync-status[data-sync="failure"]').waitFor();
+  state.unknownCreate = true;
+  await page.locator('#content').fill('同步重试期间的待确认写入');
+  await page.locator('#save').click();
+  const warning = page.locator('#sync-status[data-sync="unknown"]');
+  await warning.waitFor();
+  await page.unroute(endpoint, unavailable);
+  await page.getByRole('button', { name: '刷新主页', exact: true }).click();
+  await page.locator('.snackbar').getByText('已从 Core 刷新笔记。').waitFor();
+  assert.equal(await warning.isVisible(), true);
+  assert.equal(await page.locator('#save-error').isVisible(), true);
+  await page.locator('#save').click();
+  await page.locator('#sync-status').waitFor({ state: 'hidden' });
 });
 
 test('inserting a saved note keeps both editors connected and preserves keyboard focus', { timeout: 60_000 }, async t => {

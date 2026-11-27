@@ -3,6 +3,7 @@ package io.github.fermin214.moerise.presentation
 import android.app.UiModeManager
 import android.content.Context
 import android.content.res.Configuration
+import android.content.res.Resources
 import android.os.Build
 
 enum class UiTheme {
@@ -33,6 +34,15 @@ internal class AndroidUiThemeStore(context: Context) : UiThemeStore {
 }
 
 internal fun Configuration.isDarkMode() = uiMode and Configuration.UI_MODE_NIGHT_MASK == Configuration.UI_MODE_NIGHT_YES
+
+internal fun UiTheme.resolveDark(context: Context, configuration: Configuration, useSystemSetting: Boolean = false): Boolean {
+    if (this != UiTheme.SYSTEM || !useSystemSetting || Build.VERSION.SDK_INT < 31) return isDark(configuration.isDarkMode())
+    return when (context.getSystemService(UiModeManager::class.java).nightMode) {
+        UiModeManager.MODE_NIGHT_YES -> true
+        UiModeManager.MODE_NIGHT_NO -> false
+        else -> Resources.getSystem().configuration.isDarkMode()
+    }
+}
 
 internal fun applyApplicationNightMode(context: Context, theme: UiTheme) {
     if (Build.VERSION.SDK_INT >= 31) {

@@ -2,6 +2,7 @@ package io.github.fermin214.moerise.data
 
 import android.app.UiModeManager
 import android.content.Context
+import android.content.res.Configuration
 import android.graphics.drawable.ColorDrawable
 import androidx.compose.ui.graphics.toArgb
 import androidx.core.view.WindowCompat
@@ -57,18 +58,27 @@ class SessionPreferencesTest {
     @Config(sdk = [31], qualifiers = "notnight")
     fun failedThemeSaveKeepsThePersistedApplicationNightMode() {
         val context = RuntimeEnvironment.getApplication()
-        val manager = shadowOf(context.getSystemService(UiModeManager::class.java))
+        val uiModeManager = context.getSystemService(UiModeManager::class.java)
+        val manager = shadowOf(uiModeManager)
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
         val store = object : UiThemeStore {
             override fun read() = UiTheme.DARK
             override fun write(theme: UiTheme) { error("storage unavailable") }
         }
         try {
+            uiModeManager.setNightMode(UiModeManager.MODE_NIGHT_NO)
             applyApplicationNightMode(context, store.read())
+            val configuration = Configuration(context.resources.configuration).apply { uiMode = Configuration.UI_MODE_NIGHT_YES }
             SessionController(MemorySecrets(), false, scope, themeStore = store,
                 onThemeChange = { applyApplicationNightMode(context, it) }).use { session ->
                 session.theme(UiTheme.LIGHT)
                 assertEquals(UiTheme.LIGHT, session.theme.value)
+                assertEquals("LOCAL_PREFERENCES_FAILED", session.themeError.value)
+                assertEquals(UiModeManager.MODE_NIGHT_YES, manager.applicationNightMode)
+                session.theme(UiTheme.SYSTEM)
+                assertEquals(UiTheme.SYSTEM, session.theme.value)
+                assertTrue(configuration.isDarkMode())
+                assertFalse(session.theme.value.resolveDark(context, configuration, useSystemSetting = session.themeError.value != null))
                 assertEquals("LOCAL_PREFERENCES_FAILED", session.themeError.value)
                 assertEquals(UiModeManager.MODE_NIGHT_YES, manager.applicationNightMode)
             }

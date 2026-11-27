@@ -16,7 +16,6 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.horizontalScroll
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.selection.SelectionContainer
@@ -35,6 +34,8 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.LocalView
@@ -85,7 +86,8 @@ fun MoeriseApp(mobile: MobileController, onHomeReady: () -> Unit = {}) {
     ClearWritingOnStop(leaveWriting)
     val session = mobile.session
     val theme by session.theme.collectAsState()
-    val darkTheme = theme.isDark(isSystemInDarkTheme())
+    val themeError by session.themeError.collectAsState()
+    val darkTheme = theme.resolveDark(LocalContext.current, LocalConfiguration.current, useSystemSetting = themeError != null)
     val window = LocalView.current.context.activity()?.window
     SideEffect { window?.applyMoeriseTheme(darkTheme) }
     val language by session.language.collectAsState()

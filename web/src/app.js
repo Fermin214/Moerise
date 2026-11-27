@@ -33,6 +33,7 @@ function setLogoutCSRF(token) {
 const shell = initShell(loadSidebar);
 const draft = new Draft(), snapshots = new Map();
 const editors = new Map(), pendingWrites = new Map(), failures = new Map();
+const noteRefreshes = new Map();
 const refreshSync = Symbol('refresh');
 const noteSizes = new Map();
 const expandedNotes = new Set();
@@ -124,6 +125,7 @@ function aborted() { return new DOMException('Stale request', 'AbortError'); }
 function stale(generation) { if (generation !== epoch) throw aborted(); }
 function invalidate() {
   epoch++; viewSequence++;
+  noteRefreshes.clear();
   syncStatus.reset();
   dismissSnackbar(); lastSyncAt = null;
   capabilitiesRequest = null;
@@ -162,6 +164,7 @@ function hidePrivate({ resume = false } = {}) {
   if (resume) {
     draftOwner ||= sessionOwner(identity);
     for (const [name, operation] of pendingWrites) {
+      if (operation.method === 'DELETE' && operation.busy) operation.unconfirmed = true;
       operation.busy = false;
       failures.set(name, { code: 'NOTE_SAVE_UNCONFIRMED' });
     }
@@ -729,22 +732,39 @@ function appendNoteError(card, note, err) {
   if (pendingWrites.has(note.name)) box.append(button(l("重试原提交"), 'ghost', () => performWrite(note)));
   box.append(button(l("刷新笔记"), 'ghost', () => refreshNote(note))); card.append(box);
 }
-async function refreshNote(note) {
+async function publishNoteWrite(note, updated) {
+  const { name } = note;
+  editors.get(name)?.draft.clear(); editors.delete(name); pendingWrites.delete(name); failures.delete(name);
+  syncStatus.clear(name);
+  leaveGuard.update(); dirtySnapshots();
+  if (updated) replaceCard(updated);
+  sidebarChanged(note, updated);
+  if (timeline) await timeline.update(name, updated);
+  else if (location.pathname === `/notes/${noteID(name)}`) {
+    if (updated) renderList([updated]);
+    else navigate(safeFrom(new URLSearchParams(location.search).get('from')));
+  }
+}
+async function refreshNote(note, { missingOnly = false } = {}) {
   const generation = epoch, sequence = viewSequence;
-  const operation = pendingWrites.get(note.name);
+  const { name } = note, operation = pendingWrites.get(name);
+  if (operation?.busy) return;
+  const attempt = Symbol();
+  noteRefreshes.set(name, attempt);
+  const current = () => generation === epoch && sequence === viewSequence && noteRefreshes.get(name) === attempt;
+  const unconfirmedDelete = operation?.method === 'DELETE' && operation.unconfirmed;
   try {
-    const updated = await request(`/notes/${noteID(note.name)}`);
-    stale(generation);
-    if (sequence !== viewSequence || operation !== pendingWrites.get(note.name) || operation?.busy) return;
+    const updated = await request(`/notes/${noteID(name)}`);
+    if (!current() || unconfirmedDelete || missingOnly) return;
     if (!validNote(updated)) throw Object.assign(new Error('Invalid note'), { code: 'NOTE_LIST_INVALID' });
-    editors.get(note.name)?.draft.clear(); editors.delete(note.name); pendingWrites.delete(note.name); failures.delete(note.name);
-    syncStatus.clear(note.name);
-    replaceCard(updated);
-    dirtySnapshots();
-    if (timeline) await timeline.update(note.name, updated);
-    else renderList([updated]);
-    sidebarChanged(note, updated);
-  } catch (err) { if (generation === epoch && sequence === viewSequence) handleFailure($('list-error'), err); }
+    await publishNoteWrite(note, updated);
+  } catch (err) {
+    if (!current()) return;
+    if (unconfirmedDelete && err.status === 404 && err.code === 'SOURCE_NOT_FOUND') await publishNoteWrite(note, null);
+    else if (!missingOnly || err.status === 401) handleFailure($('list-error'), err);
+  } finally {
+    if (noteRefreshes.get(name) === attempt) noteRefreshes.delete(name);
+  }
 }
 function confirmDelete(card, note) {
   if (card.querySelector('.cfm') || pendingWrites.has(note.name)) return;
@@ -753,7 +773,7 @@ function confirmDelete(card, note) {
   const controls = el('span', 'editor-actions');
   const cancel = button(l("取消"), 'ghost', () => { confirm.remove(); card.querySelector('.more, .note-actions button')?.focus(); });
   const remove = button(l("删除"), 'danger', () => {
-    pendingWrites.set(note.name, { method: 'DELETE', body: Object.freeze({ source_hash: note.source_hash }), busy: false });
+    pendingWrites.set(note.name, { method: 'DELETE', note, body: Object.freeze({ source_hash: note.source_hash }), busy: false });
     performWrite(note);
   });
   controls.append(cancel, remove); confirm.append(controls);
@@ -772,6 +792,7 @@ function changeState(note) {
 async function performWrite(note) {
   const operation = pendingWrites.get(note.name);
   if (!operation || operation.busy) return;
+  noteRefreshes.delete(note.name);
   const generation = epoch;
   const started = performance.now();
   const transfer = syncStatus.start(note.name, { write: true });
@@ -795,17 +816,13 @@ async function performWrite(note) {
     });
     else if (operation.body.state === 'NORMAL') snackbar(l("笔记已恢复。"));
     if (editor) { usage('edit', 'success'); usage('save_ack', 'success', performance.now() - started); }
-    editor?.draft.clear(); editors.delete(note.name); pendingWrites.delete(note.name); failures.delete(note.name); dirtySnapshots();
-    if (timeline) await timeline.update(note.name, updated);
-    else if (location.pathname === `/notes/${noteID(note.name)}`) {
-      if (operation.method === 'DELETE') navigate(safeFrom(new URLSearchParams(location.search).get('from')));
-      else renderList([updated]);
-    }
-    sidebarChanged(note, updated);
+    await publishNoteWrite(note, updated);
   } catch (err) {
-    transfer(resultOf(err));
-    if (editor && generation === epoch) { usage('edit', resultOf(err)); usage('save_ack', resultOf(err), performance.now() - started); }
+    const result = resultOf(err);
+    transfer(result);
+    if (editor && generation === epoch) { usage('edit', result); usage('save_ack', result, performance.now() - started); }
     if (generation !== epoch || err.name === 'AbortError') return;
+    if (operation.method === 'DELETE' && ['unknown', 'timeout'].includes(result)) operation.unconfirmed = true;
     operation.busy = false;
     if (err.status === 401) { expire(err); return; }
     failures.set(note.name, err);
@@ -1078,12 +1095,23 @@ async function synchronize() {
   const transfer = syncStatus.start(refreshSync);
   try {
     dirtySnapshots(); invalidateSidebar();
-    const [, refreshed] = await Promise.all([loadSidebar(), timeline ? timeline.refresh({ record: false }) : refreshTimelineSnapshot()]);
+    const sidebar = loadSidebar();
+    const refreshed = await (timeline ? timeline.refresh({ record: false, onRetry: synchronize }) : refreshTimelineSnapshot());
     stale(generation);
     if (view !== viewSequence || !refreshed) { transfer(view === viewSequence ? 'failure' : 'canceled'); return; }
+    await sidebar;
+    stale(generation);
+    if (view !== viewSequence) { transfer('canceled'); return; }
     transfer('success');
     recordSync();
     snackbar(l("已从 Core 刷新笔记。"));
+    const visible = new Set([...$('notes').children].map(node => node.dataset.name));
+    for (const operation of pendingWrites.values()) {
+      if (generation !== epoch || view !== viewSequence) break;
+      if (operation.method === 'DELETE' && operation.unconfirmed && !visible.has(operation.note.name)) {
+        await refreshNote(operation.note, { missingOnly: true });
+      }
+    }
   } catch (err) {
     transfer(resultOf(err));
     if (generation === epoch && (view === viewSequence || err.status === 401)) handleFailure($('list-error'), err);
