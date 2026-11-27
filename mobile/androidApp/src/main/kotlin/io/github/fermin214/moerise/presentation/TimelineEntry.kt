@@ -12,6 +12,35 @@ sealed interface TimelineEntry {
     data class Local(val draft: DraftEntity, override val key: String = draft.targetName ?: "queued:${draft.id}") : TimelineEntry
 }
 
+internal fun applyStateActions(
+    notes: List<Note>, actions: Map<String, NoteStateProgress>, listState: String, query: SearchQuery, timezone: String,
+): List<Note> {
+    val selected = notes.toMutableList()
+    for ((name, progress) in actions) {
+        val action = progress.action
+        val previous = action.intent?.note
+        val index = selected.indexOfFirst { it.name == name }
+        val current = selected.getOrNull(index)
+        val undoHome = action.intent?.undo == true && listState == "NORMAL"
+        val candidate = when {
+            undoHome -> (current ?: previous)?.copy(state = "NORMAL")
+            action.intent?.undo == true -> null
+            progress.unknown -> current ?: previous?.takeIf { it.state == listState }
+            else -> null
+        }
+        val hit = progress.hit?.takeIf { it.query == query }
+        if (candidate == null) {
+            if (index >= 0 && (action.intent?.undo == true || listState != action.visibleState)) selected.removeAt(index)
+        } else if (index >= 0) {
+            selected[index] = candidate
+        } else if (!query.filtered || query.matchesScope(candidate, timezone) &&
+            (hit != null || query.text.isBlank() || query.mode == "keyword" && query.matchesKeyword(candidate))) {
+            selected.add(hit?.index?.coerceIn(0, selected.size) ?: selected.size, candidate)
+        }
+    }
+    return selected
+}
+
 internal fun filteredTimelineEntries(notes: List<Note>, queued: List<DraftEntity>, displayKeys: Map<String, String>): List<TimelineEntry> {
     val byTarget = queued.filter { it.targetName != null }.distinctBy { it.targetName }.associateBy { it.targetName }
     return notes.map { note ->

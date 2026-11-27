@@ -16,19 +16,25 @@ private fun homeIntent() = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGOR
 
 fun MacrobenchmarkScope.home() {
     startActivityAndWait(homeIntent())
-    check(device.wait(Until.hasObject(By.res("note_editor")), 20_000)) { "编辑器未就绪" }
-    check(device.findObject(By.res("note_editor")).isEnabled)
+    check(device.wait(Until.hasObject(By.res("compose_capsule")), 20_000)) { "首页写作胶囊未就绪" }
+    check(device.findObject(By.res("compose_capsule")).isEnabled)
+}
+
+fun MacrobenchmarkScope.openComposer() {
+    device.findObject(By.res("compose_capsule")).click()
+    check(device.wait(Until.hasObject(By.res("quick_editor")), 20_000)) { "写作浮层未就绪" }
+    check(device.findObject(By.res("quick_editor")).isEnabled)
 }
 
 fun MacrobenchmarkScope.configure() {
     startActivityAndWait(homeIntent())
-    check(device.wait(Until.hasObject(By.res(Pattern.compile("welcome_enter|server_login|note_editor"))), 20_000))
+    check(device.wait(Until.hasObject(By.res(Pattern.compile("welcome_enter|server_login|compose_capsule"))), 20_000))
     if (device.hasObject(By.res("welcome_enter"))) {
         check(!device.findObject(By.res("privacy_share")).isChecked)
         device.findObject(By.res("welcome_enter")).click()
     }
-    check(device.wait(Until.hasObject(By.res(Pattern.compile("server_login|note_editor"))), 20_000)) {
-        "登录表单或顶部新建输入器未就绪"
+    check(device.wait(Until.hasObject(By.res(Pattern.compile("server_login|compose_capsule"))), 20_000)) {
+        "登录表单或首页写作胶囊未就绪"
     }
     if (device.hasObject(By.res("server_login"))) {
         val config = JSONObject(device.executeShellCommand("cat /data/local/tmp/moerise-android-fixture.json"))
@@ -41,7 +47,7 @@ fun MacrobenchmarkScope.configure() {
         device.findObject(By.res("server_password")).text = config.getString("password")
         device.findObject(By.res("server_login")).click()
     }
-    check(device.wait(Until.hasObject(By.res("note_editor")), 20_000)) { "先为性能包配置隔离账号" }
+    check(device.wait(Until.hasObject(By.res("compose_capsule")), 20_000)) { "先为性能包配置隔离账号" }
     startActivityAndWait(Intent().setComponent(ComponentName(targetPackage, "io.github.fermin214.moerise.PrepareBenchmarkActivity"))
         .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
     check(device.wait(Until.hasObject(By.desc(Pattern.compile(

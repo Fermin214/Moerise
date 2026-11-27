@@ -2,35 +2,31 @@ package io.github.fermin214.moerise.presentation
 
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.InlineTextContent
+import androidx.compose.foundation.text.appendInlineContent
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.painter.BitmapPainter
-import androidx.compose.ui.graphics.painter.ColorPainter
-import androidx.compose.ui.graphics.painter.Painter
-import androidx.compose.ui.geometry.Size
-import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.layout.boundsInWindow
-import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.UriHandler
-import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.LinkAnnotation
+import androidx.compose.ui.text.Placeholder
+import androidx.compose.ui.text.PlaceholderVerticalAlign
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextLinkStyles
 import androidx.compose.ui.text.withStyle
@@ -38,7 +34,6 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.withLink
 import com.mikepenz.markdown.compose.components.markdownComponents
-import com.mikepenz.markdown.compose.elements.MarkdownImage
 import com.mikepenz.markdown.m3.Markdown
 import com.mikepenz.markdown.m3.markdownTypography
 import com.mikepenz.markdown.model.*
@@ -47,11 +42,8 @@ import com.mikepenz.markdown.utils.getUnescapedTextInNode
 import io.github.fermin214.moerise.data.CoreClient
 import io.github.fermin214.moerise.domain.Note
 import io.ktor.http.Url
-import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.sync.Semaphore
-import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.*
 import org.intellij.markdown.MarkdownElementTypes
@@ -65,22 +57,11 @@ import org.intellij.markdown.parser.MarkdownParser
 private fun ASTNode.findChildOfTypeRecursive(type: IElementType): ASTNode? =
     children.firstOrNull { it.type == type } ?: children.firstNotNullOfOrNull { it.findChildOfTypeRecursive(type) }
 
-private val protectedImages = Semaphore(2)
-private val protectedImageTypes = setOf("image/png", "image/jpeg", "image/webp", "image/gif")
-
 internal val LocalParseMarkdownTail = staticCompositionLocalOf<suspend (String, MarkdownParser, ReferenceLinkHandler) -> MdState.Success?> {
     { content, parser, references ->
         parseMarkdownFlow(content, parser = parser, referenceLinkHandler = references)
             .first { it !is MdState.Loading } as? MdState.Success
     }
-}
-
-private data class ManagedImage(val name: String, val url: String?, val type: String)
-
-private fun JsonObject.imageIdentity(): ManagedImage? {
-    val name = this["name"]?.jsonPrimitive?.content ?: return null
-    val type = this["type"]?.jsonPrimitive?.content?.takeIf { it in protectedImageTypes } ?: return null
-    return ManagedImage(name, this["content_url"]?.jsonPrimitive?.content, type)
 }
 
 @OptIn(ExperimentalLayoutApi::class)
@@ -97,17 +78,6 @@ fun NoteTags(tags: List<String>, modifier: Modifier = Modifier, onTag: ((String)
             }
         }
     }
-}
-
-@Composable
-fun NoteAttachments(note: Note, core: CoreClient?, strings: Strings) {
-    if (core == null) return
-    note.attachments.forEach { item -> key(item["name"], item["content_url"]) {
-        if (item["type"]?.jsonPrimitive?.content in protectedImageTypes) {
-            item["content_url"]?.jsonPrimitive?.content?.let { MarkdownBody("![]($it)", note = note, core = core) }
-        }
-        OpenAttachmentButton(note, item, core, strings)
-    } }
 }
 
 fun externalLink(link: String): Boolean = runCatching {
@@ -128,6 +98,8 @@ fun managedAttachment(note: Note?, link: String): JsonObject? {
 }
 
 private val referenceDefRegex = Regex("""^\s{0,3}\[[^\]\n]+\]:""", RegexOption.MULTILINE)
+
+private fun inlineAttachmentId(item: JsonObject) = "moerise-attachment:${item["name"]?.jsonPrimitive?.content}"
 
 @Composable
 internal fun rememberNotePresentation(content: String, tags: List<String>?): NotePresentation {
@@ -159,7 +131,8 @@ internal fun extractReferenceDefinitions(content: String, parser: MarkdownParser
 
 @Composable
 fun MarkdownBody(content: String, modifier: Modifier = Modifier, note: Note? = null, core: CoreClient? = null,
-    tags: List<String> = emptyList(), onTag: ((String) -> Unit)? = null, originalContent: String = content) {
+    tags: List<String> = emptyList(), onTag: ((String) -> Unit)? = null, originalContent: String = content,
+    strings: Strings = Strings(UiLanguage.SYSTEM)) {
     val blocks = remember(content) { splitMarkdownBlocks(content) }
     if (blocks.isEmpty()) return
     val flavour = remember { GFMFlavourDescriptor() }
@@ -177,42 +150,32 @@ fun MarkdownBody(content: String, modifier: Modifier = Modifier, note: Note? = n
         override fun openUri(uri: String) { if (externalLink(uri)) runCatching { platformUri.openUri(uri) } }
     } }
     val latestNote by rememberUpdatedState(note)
-    val bitmaps = remember(core, note?.instanceId, note?.name) { mutableStateMapOf<ManagedImage, ImageBitmap>() }
-    val availableImages = remember(note?.attachments) { note?.attachments.orEmpty().mapNotNull { it.imageIdentity() }.toSet() }
-    SideEffect { bitmaps.keys.filterNot { it in availableImages }.forEach { bitmaps.remove(it) } }
-    val transformer = remember(note, core, bitmaps) { object : ImageTransformer {
-        @Composable override fun intrinsicSize(painter: Painter): Size = Size(1600f, 900f)
-        @Composable override fun transform(link: String): ImageData? {
-            val item = managedAttachment(note, link) ?: return null
-            val identity = item.imageIdentity() ?: return null
-            return key(identity) {
-                var visible by remember { mutableStateOf(false) }
-                val bitmap = bitmaps[identity]
-                LaunchedEffect(bitmaps, note?.sourceHash, visible) {
-                    if (bitmaps[identity] == null && visible && note != null && core != null) {
-                        val decoded = try {
-                            protectedImages.withPermit { decodeProtectedImage(core.attachmentBytes(note, item, 8 * 1024 * 1024)) }
-                        } catch (error: Exception) {
-                            if (error is CancellationException) throw error
-                            null
-                        }
-                        if (decoded != null) bitmaps[identity] = decoded
-                    }
-                }
-                ImageData(
-                    painter = bitmap?.let(::BitmapPainter) ?: ColorPainter(MoeriseColors.Line),
-                    contentDescription = item["filename"]?.jsonPrimitive?.content,
-                    modifier = Modifier.fillMaxWidth().height(220.dp)
-                        .then(if (bitmap != null) Modifier.testTag("decoded_attachment_image") else Modifier)
-                        .onGloballyPositioned { coordinates ->
-                        val bounds = coordinates.boundsInWindow()
-                        visible = bounds.width > 0 && bounds.height > 0
-                    },
-                    contentScale = ContentScale.Fit,
-                )
+    val latestCore by rememberUpdatedState(core)
+    val latestStrings by rememberUpdatedState(strings)
+    val attachments = note?.attachments.orEmpty()
+    val epoch = if (attachments.isNotEmpty()) ProtectedImageCache.epoch.collectAsState().value else 0L
+    var markdownWidth by remember { mutableIntStateOf(0) }
+    val inlineRatios = remember(core, note?.name, attachments, epoch) { mutableStateMapOf<String, Float>() }
+    val density = LocalDensity.current
+    val inlineMaxWidth = with(density) {
+        if (markdownWidth == 0) 120.dp else (markdownWidth.toDp() * .8f).coerceIn(1.dp, 220.dp)
+    }
+    val inlineContent = markdownInlineContent(attachments.associate { item ->
+        val id = inlineAttachmentId(item)
+        val ratio = inlineRatios[id]
+        val width = if (ratio == null) inlineMaxWidth else minOf(inlineMaxWidth, (220 * ratio).dp)
+        val height = if (ratio == null) 148.dp else (width / ratio).coerceIn(96.dp, 220.dp)
+        id to InlineTextContent(with(density) { Placeholder(width.toSp(), height.toSp(), PlaceholderVerticalAlign.Bottom) }) { link ->
+            val parent = latestNote
+            val client = latestCore
+            val attachment = managedAttachment(parent, link)
+            if (attachment != null && parent != null && client != null) {
+                if (attachment.isImageAttachment()) ProtectedAttachmentImage(parent, attachment, client, latestStrings,
+                    Modifier.widthIn(max = inlineMaxWidth), onRatio = { inlineRatios[id] = it })
+                else OpenAttachmentButton(parent, attachment, client, latestStrings)
             }
         }
-    } }
+    })
     val latestTagAction by rememberUpdatedState(onTag)
     fun mapSpans(): Map<String, List<NoteTagSpan>> {
         if (tags.isEmpty()) return emptyMap()
@@ -270,11 +233,13 @@ fun MarkdownBody(content: String, modifier: Modifier = Modifier, note: Note? = n
                 child.type == MarkdownTokenTypes.HTML_TAG -> { append(child.getUnescapedTextInNode(text)); true }
                 child.type == MarkdownElementTypes.IMAGE -> {
                     val link = child.findChildOfTypeRecursive(MarkdownElementTypes.LINK_DESTINATION)?.getUnescapedTextInNode(text)
-                    if (link != null && managedAttachment(note, link) == null) {
-                        if (externalLink(link)) withLink(LinkAnnotation.Url(link)) { append(link) }
-                        else append(child.getUnescapedTextInNode(text))
-                        true
-                    } else false
+                    val item = link?.let { managedAttachment(note, it) }
+                    when {
+                        item != null -> appendInlineContent(inlineAttachmentId(item), requireNotNull(link))
+                        link != null && externalLink(link) -> withLink(LinkAnnotation.Url(link)) { append(link) }
+                        else -> append(child.getUnescapedTextInNode(text))
+                    }
+                    true
                 }
                 else -> false
             }
@@ -298,7 +263,13 @@ fun MarkdownBody(content: String, modifier: Modifier = Modifier, note: Note? = n
         markdownComponents(
             image = { model ->
                 val link = model.node.findChildOfTypeRecursive(MarkdownElementTypes.LINK_DESTINATION)?.getUnescapedTextInNode(model.content)
-                if (link != null && managedAttachment(latestNote, link) != null) MarkdownImage(model.content, model.node)
+                val parent = latestNote
+                val client = latestCore
+                val item = link?.let { managedAttachment(parent, it) }
+                if (item != null && parent != null && client != null) {
+                    if (item.isImageAttachment()) ProtectedAttachmentImage(parent, item, client, latestStrings)
+                    else OpenAttachmentButton(parent, item, client, latestStrings)
+                }
                 else if (link != null && externalLink(link)) TextButton(onClick = { safeUri.openUri(link) }) { Text(link) }
                 else Text(model.node.getUnescapedTextInNode(model.content))
             },
@@ -310,7 +281,8 @@ fun MarkdownBody(content: String, modifier: Modifier = Modifier, note: Note? = n
     val retainedBlocks = remember(originalContent, defBlocks) { mutableMapOf<String, MdState.Success>() }
     var retainedTail by remember(originalContent) { mutableStateOf<MdState.Success?>(null) }
     CompositionLocalProvider(LocalUriHandler provides safeUri) {
-        Column(modifier, verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Column(modifier.then(if (attachments.isEmpty()) Modifier else Modifier.onSizeChanged { markdownWidth = it.width }),
+            verticalArrangement = Arrangement.spacedBy(8.dp)) {
             for (index in 0 until blocks.lastIndex) {
                 val block = blocks[index]
                 key(defBlocks, index) {
@@ -323,7 +295,7 @@ fun MarkdownBody(content: String, modifier: Modifier = Modifier, note: Note? = n
                         Markdown(
                             state = rendered,
                             modifier = Modifier.fillMaxWidth(),
-                            imageTransformer = transformer,
+                            inlineContent = inlineContent,
                             annotator = annotator,
                             typography = typography,
                             components = components,
@@ -348,16 +320,16 @@ fun MarkdownBody(content: String, modifier: Modifier = Modifier, note: Note? = n
                 }
                 if (rendered == null) {
                     val previous = retainedTail
-                    val images = if (previous != null && bitmaps.isNotEmpty()) {
+                    val images = if (previous != null && core != null && note != null) {
                         remember(previous, tail, note?.attachments) { retainedImages(previous, tail, note) }
                     } else emptyList()
                     var offset = 0
-                    for (image in images) {
-                        val bitmap = bitmaps[image.identity] ?: continue
-                        if (image.start > offset) Text(tail.substring(offset, image.start), Modifier.fillMaxWidth(), style = body)
-                        Image(bitmap, image.description, Modifier.fillMaxWidth().height(220.dp).testTag("decoded_attachment_image"),
-                            contentScale = ContentScale.Fit)
-                        offset = image.end
+                    if (note != null && core != null) {
+                        for (image in images) {
+                            if (image.start > offset) Text(tail.substring(offset, image.start), Modifier.fillMaxWidth(), style = body)
+                            ProtectedAttachmentImage(note, image.item, core, strings, Modifier.widthIn(max = inlineMaxWidth))
+                            offset = image.end
+                        }
                     }
                     if (offset < tail.length) Text(tail.substring(offset), Modifier.fillMaxWidth(), style = body)
                 }
@@ -369,7 +341,7 @@ fun MarkdownBody(content: String, modifier: Modifier = Modifier, note: Note? = n
                     Markdown(
                         state = rendered,
                         modifier = Modifier.fillMaxWidth(),
-                        imageTransformer = transformer,
+                        inlineContent = inlineContent,
                         annotator = annotator,
                         typography = typography,
                         components = components,
@@ -381,7 +353,7 @@ fun MarkdownBody(content: String, modifier: Modifier = Modifier, note: Note? = n
     }
 }
 
-private data class RetainedImage(val start: Int, val end: Int, val identity: ManagedImage, val description: String?)
+private data class RetainedImage(val start: Int, val end: Int, val item: JsonObject)
 
 private fun retainedImages(previous: MdState.Success, content: String, note: Note?): List<RetainedImage> = buildList {
     var offset = 0
@@ -392,13 +364,12 @@ private fun retainedImages(previous: MdState.Success, content: String, note: Not
         }
         val link = node.findChildOfTypeRecursive(MarkdownElementTypes.LINK_DESTINATION)
             ?.getUnescapedTextInNode(previous.content) ?: return
-        val item = managedAttachment(note, link) ?: return
-        val identity = item.imageIdentity() ?: return
+        val item = managedAttachment(note, link)?.takeIf(JsonObject::isImageAttachment) ?: return
         val markup = previous.content.substring(node.startOffset, node.endOffset)
         val start = content.indexOf(markup, offset)
         if (start < 0) return
         offset = start + markup.length
-        add(RetainedImage(start, offset, identity, item["filename"]?.jsonPrimitive?.content))
+        add(RetainedImage(start, offset, item))
     }
     findImages(previous.node)
 }

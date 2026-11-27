@@ -1,5 +1,12 @@
 package io.github.fermin214.moerise.presentation
 
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.core.updateTransition
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -34,15 +41,13 @@ import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.TextStyle
-import androidx.compose.ui.text.SpanStyle
-import androidx.compose.ui.text.buildAnnotatedString
-import androidx.compose.ui.text.input.OffsetMapping
 import androidx.compose.ui.text.input.TextFieldValue
-import androidx.compose.ui.text.input.TransformedText
-import androidx.compose.ui.text.input.VisualTransformation
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
@@ -53,14 +58,16 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import io.github.fermin214.moerise.data.*
 import io.github.fermin214.moerise.domain.Note
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.selects.select
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.*
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun MoeriseApp(mobile: MobileController, onEditorReady: () -> Unit = {}) {
+fun MoeriseApp(mobile: MobileController, onHomeReady: () -> Unit = {}) {
     val focusManager = LocalFocusManager.current
     val keyboard = LocalSoftwareKeyboardController.current
     val leaveWriting: () -> Unit = {
@@ -76,11 +83,13 @@ fun MoeriseApp(mobile: MobileController, onEditorReady: () -> Unit = {}) {
     val composer by mobile.editor.state.collectAsState()
     val pickAttachments = AttachmentPicker(mobile)
     val noteEditors by mobile.noteEditors.collectAsState()
-    val editorFocus by mobile.editorFocus.collectAsState()
+    val composerOpen by mobile.composerOpen.collectAsState()
+    val restoredEditors by mobile.restoredEditors.collectAsState()
     val home by mobile.timeline.state.collectAsState()
     val archive by mobile.archive.state.collectAsState()
     val homeNote by mobile.homeNote.state.collectAsState()
     val actions by mobile.noteActions.state.collectAsState()
+    val stateActions by mobile.stateActions.state.collectAsState()
     val clearing by mobile.clearing.collectAsState()
     val logout by mobile.logoutState.collectAsState()
     val localError by mobile.localError.collectAsState()
@@ -95,21 +104,21 @@ fun MoeriseApp(mobile: MobileController, onEditorReady: () -> Unit = {}) {
     val snackbar = remember(account) { SnackbarHostState() }
     val currentStrings by rememberUpdatedState(strings)
     LaunchedEffect(mobile, account, snackbar) {
-        mobile.notices.collectLatest { notice ->
+        mobile.notices.collect { notice ->
+            if (notice.account != account) return@collect
             val labels = currentStrings
             val message = when (notice.code) {
                 "NOTE_ARCHIVED" -> labels.text("笔记已归档。", "Note archived.")
                 "NOTE_UNDO_CONFLICT" -> labels.text("笔记已在服务器上变化，无法撤销归档。", "The note changed on the server. Archiving could not be undone.")
+                "NOTE_STATE_CONFLICT" -> labels.text("笔记已在服务器上变化，请刷新后重试。", "The note changed on the server. Refresh and try again.")
+                "NOTE_STATE_REJECTED" -> labels.text("服务器拒绝了笔记状态变更。", "The server rejected the note state change.")
                 "NOTE_UNDO_FAILED" -> labels.text("撤销归档失败，请刷新笔记后重试。", "Undo failed. Refresh the note and try again.")
                 "NOTE_SAVED" -> labels.text("笔记已保存。", "Note saved.")
                 "COPIED" -> labels.text("已复制", "Copied")
                 "COPY_FAILED" -> labels.text("复制失败", "Copy failed")
                 else -> settingsMessage(notice.code, labels)
             }
-            val result = withTimeoutOrNull(3000) {
-                snackbar.showSnackbar(message, notice.undo?.let { labels.text("撤销", "Undo") }, duration = SnackbarDuration.Indefinite)
-            }
-            if (result == SnackbarResult.ActionPerformed) notice.undo?.invoke()
+            snackbar.showMobileNotice(message, labels.text("撤销", "Undo"), notice.undo)
         }
     }
     val timezone = connection.profile?.timezone ?: "UTC"
@@ -117,9 +126,7 @@ fun MoeriseApp(mobile: MobileController, onEditorReady: () -> Unit = {}) {
     var searchOpen by rememberSaveable(account) { mutableStateOf(false) }
     var sourceTimeline by rememberSaveable(account) { mutableStateOf("home") }
     var conflictKey by remember(account) { mutableStateOf<String?>(null) }
-    var quickCompose by rememberSaveable(account) { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
-    val timelineActions = remember(account) { mutableStateOf<WritingActions?>(null) }
     val drawer = remember(account, scope) { NavigationDrawerState(scope) }
     val drawerVisible = drawer.visible
     val sidebar = mobile.sidebar
@@ -137,6 +144,8 @@ fun MoeriseApp(mobile: MobileController, onEditorReady: () -> Unit = {}) {
     LaunchedEffect(search.loading) { if (!search.loading) searchRefreshing = false }
     val timeline = if (page == "archive") archive else home
     val timelineController = if (page == "archive") mobile.archive else mobile.timeline
+    val timelineScroll = if (page == "archive") archiveScroll else homeScroll
+    val expandedNotes = remember(account, page) { mutableStateMapOf<String, Boolean>() }
     val editorStates = noteEditors.mapValues { (_, controller) ->
         key(controller) { controller.state.collectAsState().value }
     }
@@ -149,49 +158,53 @@ fun MoeriseApp(mobile: MobileController, onEditorReady: () -> Unit = {}) {
             }
         }
     }
-    val activeDraft = editorStates.values.firstOrNull()?.draft
-    val activeBaseline = activeDraft?.baselineJson?.let {
-        runCatching { CoreJson.decodeFromString<Note>(it) }.getOrNull()
-    }
     val visibleQueue = remember(sync, account, connection.needsLogin, clearing) {
         sync.notesFor(account.takeUnless { connection.needsLogin || clearing })
     }
-    val entries = remember(timeline.notes, timeline.displayKeys, timeline.snapshotAt, visibleQueue, search.notes, filtered, page, homeNote.note, homeNote.snapshotAt, activeBaseline) {
-        val notes = if (filtered) search.notes else timeline.notes
-        val pinned = if (page == "home" && !filtered) listOfNotNull(homeNote.note, activeBaseline)
-            .distinctBy { it.name }.filter { candidate -> notes.none { it.name == candidate.name } } else emptyList()
-        val selected = notes.map { note ->
+    val entries = remember(timeline, visibleQueue, search.notes, query, page, homeNote, stateActions, timezone) {
+        val notes = (if (filtered) search.notes else timeline.notes).toMutableList()
+        val listState = if (page == "archive") "ARCHIVED" else "NORMAL"
+        if (listState == "NORMAL" && !filtered) homeNote.note?.takeIf { note ->
+            notes.none { it.name == note.name }
+        }?.let { notes.add(0, it) }
+        val selected = applyStateActions(notes.map { note ->
             homeNote.note?.takeIf { it.name == note.name && homeNote.snapshotAt >= timeline.snapshotAt } ?: note
-        }
+        }, stateActions, listState, query, timezone)
         if (filtered || page == "archive") filteredTimelineEntries(selected, visibleQueue, timeline.displayKeys)
-        else timelineEntries(pinned + selected, visibleQueue, timeline.displayKeys)
+        else timelineEntries(selected, visibleQueue, timeline.displayKeys)
     }
-    val entryEditorKeys = entries.map { when (it) { is TimelineEntry.Remote -> it.note.name; is TimelineEntry.Local -> it.draft.id } }.toSet()
-    val displayedEditors = entryEditorKeys.mapNotNull(editorsByKey::get).toSet()
-    val orphanEditors = if (page == "home") noteEditors.filter { (key, editor) ->
-        editorStates[key]?.draft != null && editor !in displayedEditors
-    }.keys.toList() else emptyList()
     val homeStatusVisible = homeNote.loading || homeNote.error != null || localError != null
-    val focusTarget = homeNote.name ?: activeDraft?.targetName ?: activeDraft?.id
+    val focusTarget = homeNote.name
     var targetPositioned by remember(focusTarget, account, page) { mutableStateOf(false) }
-    val composerReady = !connection.loading && account != null && composer.accountKey == account && composer.draft != null
-    val composerVisible by remember(homeScroll) { derivedStateOf {
-        val layout = homeScroll.layoutInfo
-        layout.visibleItemsInfo.any { it.key == "composer" && it.offset < layout.viewportEndOffset &&
-            it.offset + it.size > layout.viewportStartOffset }
-    } }
-    fun showComposer() { leaveWriting(); searchOpen = false; quickCompose = true }
-    val openComposer: (() -> Unit)? = if (composerReady && !connection.needsLogin && !clearing &&
-        (page in setOf("archive", "review", "walk") || page == "home" && (noteEditors.isNotEmpty() || !composerVisible))) {
-        ::showComposer
-    } else null
-    LaunchedEffect(composerReady, page, clearing, account) {
-        if (composerReady && page == "home" && !clearing) {
+    val composerReady = !connection.loading && account != null && restoredEditors == account &&
+        composer.accountKey == account && composer.draft != null && !connection.needsLogin && !clearing
+    val editingEntry = noteEditors.entries.firstOrNull { editorStates[it.key]?.draft != null }
+    val writing = composerReady && (composerOpen || editingEntry != null)
+    val capsuleVisible = page == "home" && composerReady
+    val capsuleEnabled = capsuleVisible && !writing && !drawerVisible && conflictKey == null && logout == null
+    val bottomAction = updateTransition(snackbar.currentSnackbarData, label = "bottom action")
+    val capsuleInteractive = capsuleEnabled && bottomAction.currentState == null &&
+        bottomAction.targetState == null && !bottomAction.isRunning
+    val latestCapsuleInteractive by rememberUpdatedState(capsuleInteractive)
+    var homeReported by remember(account) { mutableStateOf(false) }
+    LaunchedEffect(account, composerReady) {
+        if (composerReady) {
             withFrameNanos { }; withFrameNanos { }
-            account?.let(mobile::editorFrameReady)
-            onEditorReady()
+            mobile.timelineFrameReady(account)
         }
     }
+    LaunchedEffect(account, capsuleInteractive) {
+        if (account != null && capsuleInteractive && !homeReported) {
+            withFrameNanos { }; withFrameNanos { }
+            if (latestCapsuleInteractive && mobile.isHomeCapsuleAvailable(account)) {
+                homeReported = true
+                onHomeReady()
+            }
+        }
+    }
+    val openComposer: (() -> Unit)? = if (composerReady && page in setOf("archive", "review", "walk")) {
+        mobile::openComposer
+    } else null
     fun navigate(next: String) {
         leaveWriting()
         mobile.flush()
@@ -224,7 +237,6 @@ fun MoeriseApp(mobile: MobileController, onEditorReady: () -> Unit = {}) {
     }
     val tagFromReading: (String) -> Unit = { tag -> showFilter(SearchQuery(tags = setOf(tag)), "home") }
     fun startWalk(note: Note) { navigate("walk"); mobile.walk.start(note.name) }
-    fun editNote(note: Note) { mobile.editNote(note, ::showComposer) }
     LaunchedEffect(homeNote.name) {
         if (homeNote.name != null) {
             page = "home"
@@ -233,8 +245,8 @@ fun MoeriseApp(mobile: MobileController, onEditorReady: () -> Unit = {}) {
             mobile.page("home")
         }
     }
-    LaunchedEffect(focusTarget, entries.map { it.key }, noteEditors.keys, page, homeStatusVisible, quickCompose) {
-        if (page != "home" || targetPositioned || quickCompose) return@LaunchedEffect
+    LaunchedEffect(focusTarget, entries.map { it.key }, page, homeStatusVisible, writing) {
+        if (page != "home" || targetPositioned || writing) return@LaunchedEffect
         val target = focusTarget ?: return@LaunchedEffect
         val entryIndex = entries.indexOfFirst { entry ->
             when (entry) {
@@ -242,15 +254,12 @@ fun MoeriseApp(mobile: MobileController, onEditorReady: () -> Unit = {}) {
                 is TimelineEntry.Local -> entry.draft.id == target || entry.draft.targetName == target
             }
         }
-        val prefix = (if (noteEditors.isEmpty()) 1 else 0) +
-            (if (query.tags.isNotEmpty() || query.date.isNotEmpty()) 1 else 0) +
+        val prefix = (if (query.tags.isNotEmpty() || query.date.isNotEmpty()) 1 else 0) +
             (if (filtered) 1 else 0) + (if (homeStatusVisible) 1 else 0)
         val index = if (entryIndex >= 0) {
             entryIndex + prefix
-        } else if (orphanEditors.isNotEmpty()) {
-            entries.size + prefix
         } else return@LaunchedEffect
-        val targetKey = entries.getOrNull(entryIndex)?.key ?: "editor:$target"
+        val targetKey = entries[entryIndex].key
         if (homeScroll.layoutInfo.visibleItemsInfo.none { it.key == targetKey }) homeScroll.scrollToItem(index)
         targetPositioned = true
     }
@@ -264,20 +273,10 @@ fun MoeriseApp(mobile: MobileController, onEditorReady: () -> Unit = {}) {
     LaunchedEffect(page, connection.connected) { mobile.page(page) }
     DisposableEffect(sidebar) { onDispose { sidebar.clear() } }
     DisposableEffect(mobile) { onDispose { mobile.page(null) } }
-    val modalBack = clearing || drawerVisible || searchOpen || conflictKey != null || quickCompose
+    val modalBack = clearing || drawerVisible || searchOpen || conflictKey != null || writing
     PlatformBackHandler(!modalBack && page != "home") {
         mobile.flush()
         if (page != "map" || !mobile.stars.back()) navigate("home")
-    }
-    @Composable
-    fun renderEditor(id: String, controller: EditorController) {
-        val state by controller.state.collectAsState()
-        HomeEditor(state, controller, strings, onSave = { mobile.saveNote(id) }, onConflict = { conflictKey = id },
-            onCancel = { mobile.finishEditing(id) }, onFocus = { if (it) mobile.focusNoteEditor(id) },
-            requestFocus = editorFocus === controller, consumeFocus = { mobile.consumeEditorFocus(controller) },
-            editorTag = "note_editor_$id", saveTag = "save_note_$id",
-            cancelTag = "cancel_note_$id", actions = timelineActions, pick = pickAttachments,
-            filters = mobile.filterReads, filterRevision = filterRevision)
     }
     PlatformLanguage(language) {
     MoeriseTheme {
@@ -294,7 +293,7 @@ fun MoeriseApp(mobile: MobileController, onEditorReady: () -> Unit = {}) {
             }
         }) {
             NavigationDrawer(
-                drawer, account != null && !clearing && conflictKey == null && logout == null && page != "connect", strings,
+                drawer, account != null && !clearing && !writing && conflictKey == null && logout == null && page != "connect", strings,
                 onDragStart = ::beginDrawer,
                 modifier = Modifier.platformTestTags().testTag(if (platformImeVisible()) "ime_visible" else "ime_hidden"),
                 sheet = {
@@ -303,7 +302,7 @@ fun MoeriseApp(mobile: MobileController, onEditorReady: () -> Unit = {}) {
                         onNavigate = { target -> drawer.close(); navigate(target) },
                         onMonth = { month = it }, onDate = { showFilter(query.copy(date = if (query.date == it) "" else it)) },
                         onTag = { tag -> showFilter(query.copy(tags = if (tag in query.tags) query.tags - tag else query.tags + tag)) },
-                        onLogout = { drawer.close(); mobile.askLogout() }, selectedTags = query.tags,
+                        selectedTags = query.tags,
                         selectedDate = query.date, today = serviceToday(timezone),
                         stargazingEnabled = connection.profile?.stargazingEnabled != false)
                 }
@@ -334,15 +333,10 @@ fun MoeriseApp(mobile: MobileController, onEditorReady: () -> Unit = {}) {
                                 modifier = Modifier.weight(1f).fillMaxWidth().timelineFocusExit(leaveWriting),
                                 contentAlignment = androidx.compose.ui.Alignment.TopCenter) {
                                 LazyColumn(Modifier.fillMaxHeight().widthIn(max = 800.dp).fillMaxWidth().testTag("${page}_timeline"),
-                                    state = if (page == "archive") archiveScroll else homeScroll,
-                                    contentPadding = PaddingValues(horizontal = 16.dp, vertical = 20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-                                    if (page == "home" && noteEditors.isEmpty()) item(key = "composer") {
-                                        if (composerReady) HomeEditor(composer, mobile.editor, strings, onSave = { mobile.saveComposer() },
-                                            onConflict = { conflictKey = composer.draft?.id }, actions = timelineActions, pick = pickAttachments,
-                                            filters = mobile.filterReads, filterRevision = filterRevision)
-                                        else { LinearProgressIndicator(Modifier.fillMaxWidth()); TextButton(mobile::retryDraft) { Text(strings.text("重新读取", "Read again")) } }
-                                    }
-                                    if (page == "archive") item { Text(strings.text("归档笔记", "Archived notes"),
+                                    state = timelineScroll,
+                                    contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 20.dp,
+                                        bottom = if (page == "home") 88.dp else 20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                                    if (page == "archive") item { Text(strings.text("归档", "Archive"),
                                         style = MaterialTheme.typography.titleLarge, modifier = Modifier.testTag("archive_page")) }
                                     if (query.tags.isNotEmpty() || query.date.isNotEmpty()) item { WebFilterBar(query, strings) { showFilter(it) } }
                                     if (filtered) item { SearchStatus(search, strings) }
@@ -363,22 +357,17 @@ fun MoeriseApp(mobile: MobileController, onEditorReady: () -> Unit = {}) {
                                             placementSpec = MoeriseMotion.responsive(),
                                             fadeOutSpec = MoeriseMotion.tactile(),
                                         )) {
-                                        val noteId = when (entry) {
-                                            is TimelineEntry.Local -> entry.draft.id
-                                            is TimelineEntry.Remote -> entry.note.name
-                                        }
                                         val remote = (entry as? TimelineEntry.Remote)?.note
+                                        val stateAction = remote?.name?.let(stateActions::get)
                                         val noteAction = if (remote != null) {
                                             if (actions.name == remote.name && (actions.busy || actions.pendingAction || actions.error != null)) actions
                                             else homeNote.takeIf { it.name == remote.name } ?: NoteDetailState()
                                         } else NoteDetailState()
-                                        val controller = editorsByKey[noteId]
                                         val recent = entry.key == newTimelineKey
                                         Box(if (recent) Modifier.motionEnter(entry.key, distance = -18f, initialScale = .985f, spatial = true)
-                                            else Modifier.motionEnter(entry.key to (controller != null), initialScale = .992f,
+                                            else Modifier.motionEnter(entry.key, initialScale = .992f,
                                                 distance = 0f, animateInitial = false)) {
-                                        if (controller != null) renderEditor(noteId, controller)
-                                        else TimelineNoteCard(
+                                        TimelineNoteCard(
                                             entry = entry,
                                             timezone = connection.profile!!.timezone,
                                             strings = strings,
@@ -386,7 +375,6 @@ fun MoeriseApp(mobile: MobileController, onEditorReady: () -> Unit = {}) {
                                             onTag = { showFilter(query.copy(tags = query.tags + it)) },
                                             onOpenLocal = { local ->
                                                 mobile.openDraft(local.id, onComposer = {
-                                                    showComposer()
                                                     if (local.conflictJson != null) conflictKey = local.id
                                                 }) {
                                                     if (mobile.getNoteEditor(local.id)?.state?.value?.draft?.conflictJson != null) {
@@ -395,22 +383,32 @@ fun MoeriseApp(mobile: MobileController, onEditorReady: () -> Unit = {}) {
                                                     }
                                                 }
                                             },
-                                            onEdit = { editNote(it) },
+                                            onEdit = { mobile.editNote(it) },
                                             onState = { mobile.changeNoteState(it) },
                                             onDelete = { mobile.deleteNote(it) },
                                             onWalk = { startWalk(it) },
                                             online = connection.connected,
                                             busy = noteAction.busy,
-                                            error = noteAction.error,
-                                            pendingAction = noteAction.pendingAction,
+                                            error = if (stateAction?.unknown == true) "WRITE_OUTCOME_UNKNOWN" else noteAction.error,
+                                            pendingAction = noteAction.pendingAction || stateAction != null,
+                                            stateActionSending = stateAction != null && !stateAction.unknown,
                                             deleteUnknown = noteAction.deleteUnknown,
                                             onCheckDeletion = { mobile.checkNoteDeletion(it.name) },
+                                            expanded = remote?.takeIf { query.text.isBlank() && stateAction == null }
+                                                ?.let { expandedNotes[it.name] == true },
+                                            onExpand = { expanded ->
+                                                if (remote != null) {
+                                                    val layout = timelineScroll.layoutInfo
+                                                    val item = layout.visibleItemsInfo.firstOrNull { it.key == entry.key }
+                                                    expandedNotes[remote.name] = expanded
+                                                    if (!expanded && item != null && item.offset < layout.viewportStartOffset) {
+                                                        scope.launch { timelineScroll.animateScrollToItem(item.index) }
+                                                    }
+                                                }
+                                            },
                                         )
                                         }
                                         }
-                                    }
-                                    items(if (connection.needsLogin || clearing) emptyList() else orphanEditors, key = { "editor:$it" }) { id ->
-                                        noteEditors[id]?.let { renderEditor(id, it) }
                                     }
                                     item {
                                         val error = if (filtered) search.error else timeline.error
@@ -439,14 +437,24 @@ fun MoeriseApp(mobile: MobileController, onEditorReady: () -> Unit = {}) {
                                     }
                                 }
                             }
-                            timelineActions.value?.render?.invoke()
                         }
                     }
-                    SnackbarHost(snackbar, Modifier.align(Alignment.BottomCenter).safeDrawingPadding().imePadding())
+                    Box(Modifier.align(Alignment.BottomCenter).safeDrawingPadding().imePadding()
+                        .padding(horizontal = 16.dp, vertical = 12.dp).widthIn(max = 560.dp).fillMaxWidth()) {
+                        bottomAction.AnimatedContent(transitionSpec = {
+                            if (reducedMotion) fadeIn(tween(0)) togetherWith fadeOut(tween(0))
+                            else fadeIn(tween(120, delayMillis = 90)) togetherWith fadeOut(tween(90))
+                        }) { data ->
+                            when {
+                                data != null -> MobileSnackbar(data)
+                                capsuleVisible -> ComposerCapsule(composer.draft?.content.orEmpty(), strings, capsuleEnabled, mobile::openComposer)
+                            }
+                        }
+                    }
                     }
                 }
             }
-            PlatformBackHandler(modalBack && !quickCompose) {
+            PlatformBackHandler(modalBack && !writing) {
                 if (clearing) return@PlatformBackHandler
                 mobile.flush()
                 when {
@@ -458,9 +466,19 @@ fun MoeriseApp(mobile: MobileController, onEditorReady: () -> Unit = {}) {
             logout?.takeIf { it.account == account }?.let {
                 LogoutDialog(it, clearing, strings, mobile::confirmLogout, mobile::dismissLogout)
             }
-            if (quickCompose && composerReady && !connection.needsLogin && !clearing) {
-                QuickComposer(composer, mobile, strings, pickAttachments, filterRevision,
-                    onConflict = { conflictKey = composer.draft?.id }) { quickCompose = false }
+            if (writing) {
+                val editing = editingEntry?.takeUnless { composerOpen }
+                val active = editing?.value ?: mobile.editor
+                val editorId = editing?.key
+                val state by active.state.collectAsState()
+                state.draft?.let { draft ->
+                    key(draft.id) {
+                        NoteComposerSheet(state.copy(error = state.error ?: localError), active, mobile.filterReads, strings, pickAttachments, filterRevision,
+                            editorId, onConflict = { conflictKey = editorId ?: draft.id },
+                            onSave = { if (editorId == null) mobile.saveComposer() else mobile.saveNote(editorId) },
+                            onClose = { if (editorId == null) mobile.closeComposer() else mobile.finishEditing(editorId) })
+                    }
+                }
             }
             conflictKey?.let { id ->
                 val target = editorsByKey[id] ?: mobile.editor.takeIf { composer.draft?.id == id }
@@ -471,30 +489,69 @@ fun MoeriseApp(mobile: MobileController, onEditorReady: () -> Unit = {}) {
                     }) { conflictKey = null }
                 }
             }
-            LaunchedEffect(connection.needsLogin, clearing) {
-                if (connection.needsLogin || clearing) quickCompose = false
-            }
         }
     }
     }
 }
 
-private class WritingActions(val render: @Composable () -> Unit)
-
 @Composable
-private fun QuickComposer(state: EditorUiState, mobile: MobileController, strings: Strings,
-    pick: (DraftEntity) -> Unit, filterRevision: Long, onConflict: () -> Unit, onClose: () -> Unit) {
-    val scope = rememberCoroutineScope()
-    val actions = remember { mutableStateOf<WritingActions?>(null) }
-    var closing by remember { mutableStateOf(false) }
-    val dismiss: () -> Unit = {
-        if (!closing && !mobile.editor.state.value.busy && !mobile.editor.state.value.importing) {
-            closing = true
-            scope.launch {
-                if (mobile.editor.flushForLifecycle()) onClose()
-                else closing = false
+private fun ComposerCapsule(draft: String, strings: Strings, enabled: Boolean, onClick: () -> Unit) {
+    Surface(onClick = onClick, enabled = enabled, modifier = Modifier.fillMaxWidth().height(48.dp).testTag("compose_capsule"),
+        shape = RoundedCornerShape(24.dp), color = Color.White, border = BorderStroke(1.dp, MoeriseColors.Line),
+        shadowElevation = 3.dp) {
+        Row(Modifier.padding(horizontal = 15.dp), verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            WebIcon(WebIcon.Plus, null, tint = MoeriseColors.Muted)
+            Text(draft.lineSequence().firstOrNull { it.isNotBlank() } ?: strings.text("今天想到了什么……", "What came to mind today…"),
+                color = Color(0xFF69727F), maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 14.sp)
+        }
+    }
+}
+
+internal suspend fun SnackbarHostState.showMobileNotice(message: String, undoLabel: String, undo: (() -> Unit)?) {
+    val archiveUndo = undo as? ArchiveUndo
+    if (archiveUndo?.failed == true) return
+    val result = withTimeoutOrNull(3000) {
+        if (archiveUndo == null) {
+            showSnackbar(message, undo?.let { undoLabel }, duration = SnackbarDuration.Indefinite)
+        } else coroutineScope {
+            val shown = async { showSnackbar(message, undoLabel, duration = SnackbarDuration.Indefinite) }
+            val rejected = async { archiveUndo.awaitFailure() }
+            try {
+                select {
+                    shown.onAwait { it }
+                    rejected.onAwait { SnackbarResult.Dismissed }
+                }
+            } finally {
+                shown.cancel()
+                rejected.cancel()
             }
         }
+    }
+    if (result == SnackbarResult.ActionPerformed) undo?.invoke()
+}
+
+@Composable
+private fun MobileSnackbar(data: SnackbarData) {
+    Surface(Modifier.fillMaxWidth().heightIn(min = 48.dp).semantics { liveRegion = LiveRegionMode.Polite }, shape = RoundedCornerShape(14.dp),
+        color = Color.White, border = BorderStroke(1.dp, Color(0xFFD5E1F7)), shadowElevation = 4.dp) {
+        Row(Modifier.padding(horizontal = 14.dp, vertical = 2.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text(data.visuals.message, Modifier.weight(1f), color = MoeriseColors.Ink, fontSize = 14.sp)
+            data.visuals.actionLabel?.let {
+                TextButton(onClick = data::performAction, colors = ButtonDefaults.textButtonColors(contentColor = MoeriseColors.Blue)) {
+                    Text(it)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun NoteComposerSheet(state: EditorUiState, controller: EditorController, filters: FilterReads, strings: Strings,
+    pick: (DraftEntity) -> Unit, filterRevision: Long, editorId: String?, onConflict: () -> Unit, onSave: () -> Unit,
+    onClose: () -> Unit) {
+    val dismiss: () -> Unit = {
+        if (!state.busy && !state.importing) onClose()
     }
     Dialog(onDismissRequest = dismiss, properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) {
         val focus = LocalFocusManager.current
@@ -503,17 +560,11 @@ private fun QuickComposer(state: EditorUiState, mobile: MobileController, string
         ClearWritingOnStop(leave)
         CompositionLocalProvider(LocalLeaveWriting provides leave) {
             Box(Modifier.fillMaxSize().imePadding().safeDrawingPadding()) {
-                Box(Modifier.matchParentSize().clickable(onClick = dismiss).semantics { contentDescription = strings.text("关闭速记", "Close quick note") })
-                Column(Modifier.align(Alignment.BottomCenter).widthIn(max = 800.dp).fillMaxWidth()
+                Box(Modifier.matchParentSize().clickable(onClick = dismiss).semantics { contentDescription = strings.text("关闭写作", "Close writing") })
+                Box(Modifier.align(Alignment.BottomCenter).widthIn(max = 800.dp).fillMaxWidth()
                     .padding(horizontal = 16.dp).testTag("quick_editor_sheet")) {
-                    Column(Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState())) {
-                        HomeEditor(state.copy(busy = state.busy || closing), mobile.editor, strings,
-                            onSave = { mobile.saveComposer { if (it == SaveOutcome.COMMITTED) onClose() } },
-                            onConflict = onConflict, onCancel = dismiss, requestFocus = true, consumeFocus = { true },
-                            actions = actions, pick = pick, filters = mobile.filterReads, filterRevision = filterRevision,
-                            editorTag = "quick_editor", saveTag = "quick_save", cancelTag = "quick_cancel")
-                    }
-                    actions.value?.render?.invoke()
+                    SheetEditor(state, controller, strings, onSave, onConflict, dismiss, editorId,
+                        pick, filters, filterRevision)
                 }
             }
         }
@@ -534,26 +585,36 @@ internal fun ClearWritingOnStop(leaveWriting: () -> Unit) {
 }
 
 @Composable
-private fun HomeEditor(
+private fun SheetEditor(
     state: EditorUiState, controller: EditorController, strings: Strings, onSave: () -> Unit, onConflict: () -> Unit,
-    onCancel: (() -> Unit)? = null, onFocus: (Boolean) -> Unit = {}, requestFocus: Boolean = false, consumeFocus: () -> Boolean = { false },
-    editorTag: String = "note_editor", saveTag: String = "save_note", cancelTag: String? = null,
-    actions: MutableState<WritingActions?>, pick: (DraftEntity) -> Unit, filters: FilterReads, filterRevision: Long,
+    onCancel: () -> Unit, editorId: String?,
+    pick: (DraftEntity) -> Unit, filters: FilterReads, filterRevision: Long,
 ) {
     val haptic = rememberMoeriseHaptic()
     val draft = state.draft ?: return
     val leaveWriting = LocalLeaveWriting.current
     val editorFocus = remember(draft.id) { FocusRequester() }
+    val keyboard = LocalSoftwareKeyboardController.current
+    val requestFocus = remember(draft.id) {
+        editorId == null || draft.content.length <= 280 && draft.content.count { it == '\n' } <= 8
+    }
+    val editorTag = editorId?.let { "note_editor_$it" } ?: "quick_editor"
+    val saveTag = editorId?.let { "save_note_$it" } ?: "quick_save"
+    val cancelTag = editorId?.let { "cancel_note_$it" } ?: "quick_cancel"
     var focused by remember(draft.id) { mutableStateOf(false) }
-    LaunchedEffect(draft.id, requestFocus) {
-        if (requestFocus && consumeFocus()) editorFocus.requestFocus()
+    LaunchedEffect(draft.id) {
+        if (requestFocus) {
+            withFrameNanos { }
+            editorFocus.requestFocus()
+            keyboard?.show()
+        }
     }
     val edits = draft.attachmentEdits()
     val baseline = remember(draft.baselineJson) {
         draft.baselineJson?.let { runCatching { CoreJson.decodeFromString<Note>(it) }.getOrNull() }
     }
     var field by remember(draft.id) {
-        mutableStateOf(TextFieldValue(draft.content, TextRange(initialEditorSelection(draft.content))))
+        mutableStateOf(TextFieldValue(draft.content, TextRange(if (requestFocus) initialEditorSelection(draft.content) else 0)))
     }
     LaunchedEffect(draft.content) {
         if (field.text != draft.content) {
@@ -565,15 +626,7 @@ private fun HomeEditor(
         (draft.content.isNotBlank() || edits.staged.isNotEmpty() ||
             baseline?.attachments?.any { it["name"]?.jsonPrimitive?.content !in edits.removed } == true || state.pending != null)
     val scanner = remember(field.text) { if ('#' in field.text) NoteTagScanner(field.text) else null }
-    val transformation = if (scanner == null) VisualTransformation.None else remember(scanner) {
-        val highlighted = buildAnnotatedString {
-            append(field.text)
-            scanner.spans().forEach { addStyle(SpanStyle(color = Color(0xFF2A5BB5)), it.start, it.end) }
-        }
-        VisualTransformation { original ->
-            TransformedText(if (original.text == highlighted.text) highlighted else original, OffsetMapping.Identity)
-        }
-    }
+    val transformation = remember(field.text) { markdownEditorTransformation(field.text) }
     var insertedMarker by remember(draft.id) { mutableStateOf<Int?>(null) }
     val prefix = if (focused && field.composition == null && field.selection.collapsed) {
         val cursor = field.selection.start
@@ -591,9 +644,11 @@ private fun HomeEditor(
         }
     }
     fun changeField(next: TextFieldValue) {
+        val current = controller.state.value
+        if (current.busy || current.draft?.id != draft.id) return
+        if (next.text != current.draft.content && !controller.change(next.text)) return
         if (next.text != field.text) insertedMarker = null
         field = next
-        if (next.text != draft.content) controller.change(next.text)
     }
     val actionContent: @Composable () -> Unit = {
         val currentPrefix = prefix
@@ -627,37 +682,32 @@ private fun HomeEditor(
                     val preview = field.text.replaceRange(marker + 1, marker + 1, "a")
                     insertedMarker = marker.takeIf { NoteTagScanner(preview).prefixAt(marker + 2)?.start == marker }
                     editorFocus.requestFocus()
-                }, modifier = Modifier.testTag("insert_tag").semantics { contentDescription = strings.text("添加标签", "Add tag") }) { Text("#") }
+                }, colors = ButtonDefaults.textButtonColors(contentColor = MoeriseColors.Ink),
+                    modifier = Modifier.testTag("insert_tag").semantics { contentDescription = strings.text("添加标签", "Add tag") }) { Text("#") }
                 Spacer(Modifier.weight(1f))
-                onCancel?.let { TextButton(onClick = { leaveWriting(); it() }, enabled = !state.busy && !state.importing,
-                    modifier = cancelTag?.let { tag -> Modifier.testTag(tag) } ?: Modifier) { Text(strings.text("取消", "Cancel")) } }
+                TextButton(onClick = onCancel, enabled = !state.busy && !state.importing,
+                    modifier = Modifier.testTag(cancelTag)) { Text(strings.text("取消", "Cancel")) }
                 if (draft.conflictJson != null) {
                     WebAction(strings.text("处理冲突", "Resolve conflict"), onClick = { leaveWriting(); onConflict() })
-                } else WebAction(strings.text("保存", "Save"), onClick = { leaveWriting(); haptic(); onSave() },
+                } else WebAction(strings.text("保存", "Save"), onClick = { haptic(); onSave() },
                     modifier = Modifier.testTag(saveTag), enabled = canSave)
             }
         }
     }
-    val latestActions by rememberUpdatedState(actionContent)
-    val holder = remember { WritingActions { Surface(color = Color.White, shadowElevation = 3.dp) {
-        Box(Modifier.padding(horizontal = 16.dp)) { latestActions() }
-    } } }
-    DisposableEffect(focused, actions, holder) {
-        if (focused) actions.value = holder
-        onDispose { if (actions.value === holder) actions.value = null }
-    }
-    Surface(shape = RoundedCornerShape(18.dp), border = BorderStroke(1.dp, MoeriseColors.Line), color = Color.White) {
+    Surface(modifier = if (LocalReducedMotion.current) Modifier else Modifier.animateContentSize(tween(140)),
+        shape = RoundedCornerShape(18.dp), border = BorderStroke(1.dp, MoeriseColors.Line), color = Color.White) {
         Column(Modifier.padding(start = 20.dp, top = 14.dp, end = 20.dp, bottom = 8.dp),
             verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Column(Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState())) {
             BasicTextField(
                 value = field, onValueChange = ::changeField, visualTransformation = transformation,
-                modifier = Modifier.fillMaxWidth().heightIn(min = 96.dp).drawerGestureRegion()
+                modifier = Modifier.fillMaxWidth().heightIn(min = 64.dp)
                     .testTag(editorTag).onPreviewKeyEvent {
-                        if (it.type == KeyEventType.KeyDown && it.key == Key.Escape && onCancel != null) {
-                            leaveWriting(); onCancel(); true
+                        if (it.type == KeyEventType.KeyDown && it.key == Key.Escape) {
+                            onCancel(); true
                         } else if (it.type == KeyEventType.KeyDown && it.key == Key.Enter &&
-                            (it.isCtrlPressed || it.isMetaPressed) && canSave) { leaveWriting(); haptic(); onSave(); true } else false
-                    }.focusRequester(editorFocus).onFocusChanged { focused = it.isFocused; onFocus(it.isFocused) }.semantics {
+                            (it.isCtrlPressed || it.isMetaPressed) && canSave) { haptic(); onSave(); true } else false
+                    }.focusRequester(editorFocus).onFocusChanged { focused = it.isFocused }.semantics {
                         contentDescription = strings.text("写点什么", "Write a note")
                 },
                 readOnly = state.busy,
@@ -691,7 +741,8 @@ private fun HomeEditor(
                 }
             }
             state.error?.let { Text(editorError(it, strings), color = MaterialTheme.colorScheme.error) }
-            if (!focused) actionContent()
+            }
+            actionContent()
         }
     }
 }
@@ -766,6 +817,7 @@ fun editorError(code: String, strings: Strings): String = when (code) {
     "CONTENT_TOO_LARGE" -> strings.text("正文不能超过 64 KiB。", "Content must fit within 64 KiB.")
     "CONTENT_EMPTY" -> strings.text("请先写下笔记。", "Write a note first.")
     "SOURCE_CHANGED" -> strings.text("服务器笔记已变化，请合并后再保存。", "The server note changed. Merge before saving.")
+    "WRITE_OUTCOME_UNKNOWN" -> strings.text("操作结果待核对。请重试操作。", "The result is unconfirmed. Retry the action.")
     "IDEMPOTENCY_CONFLICT" -> strings.text("保存请求发生冲突，请编辑笔记并合并。", "The save request conflicts. Edit the note to merge.")
     "ATTACHMENTS_TOO_LARGE" -> strings.text("最多添加 10 个附件，合计不超过 8 MiB。", "Add up to 10 files, totaling no more than 8 MiB.")
     "ATTACHMENT_READ_FAILED", "ATTACHMENT_MISSING", "ATTACHMENT_CHANGED" -> strings.text("附件无法读取，请重新选择文件。", "Could not read the file. Select it again.")

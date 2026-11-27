@@ -14,12 +14,11 @@ class StartupBenchmark {
     @get:Rule val benchmark = MacrobenchmarkRule()
 
     private fun startup(mode: StartupMode, compilation: CompilationMode) {
+        val readyTrace = if (mode == StartupMode.HOT) "note_foreground_ready" else "note_editor_ready"
         var prepared = false
         benchmark.measureRepeated(
             packageName = targetPackage,
-            metrics = listOf(StartupTimingMetric(), TraceSectionMetric(
-                if (mode == StartupMode.HOT) "note_foreground_ready" else "note_editor_ready",
-                TraceSectionMetric.Mode.First)),
+            metrics = listOf(StartupTimingMetric(), TraceSectionMetric(readyTrace, TraceSectionMetric.Mode.First)),
             compilationMode = compilation, startupMode = mode, iterations = 50,
             setupBlock = {
                 if (!prepared) { configure(); prepared = true } else home()

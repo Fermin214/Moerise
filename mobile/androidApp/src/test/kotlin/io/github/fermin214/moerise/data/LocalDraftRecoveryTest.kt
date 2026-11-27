@@ -16,12 +16,81 @@ import io.github.fermin214.moerise.presentation.EditorController
 import io.github.fermin214.moerise.presentation.MobileController
 import io.github.fermin214.moerise.presentation.SessionController
 import io.github.fermin214.moerise.presentation.clearAttachmentCache
+import io.ktor.http.HttpMethod
 import io.ktor.http.Cookie
 import io.ktor.http.Url
+import okhttp3.mockwebserver.MockResponse
+import okhttp3.mockwebserver.MockWebServer
 
 @RunWith(RobolectricTestRunner::class)
 @Config(manifest = Config.NONE, sdk = [29])
 class LocalDraftRecoveryTest {
+    @Test
+    fun unauthorizedImageCleanupResumesBeforeTheOfflineAccountIsExposed() = runBlocking<Unit> {
+        val context = ApplicationProvider.getApplicationContext<android.content.Context>()
+        val thumbnail = context.cacheDir.resolve("image_cache/owner/thumbnail")
+        thumbnail.parentFile?.mkdirs()
+        thumbnail.writeText("protected thumbnail")
+        val server = MockWebServer()
+        server.enqueue(MockResponse().setBody("""{"instance_id":"instance","user":{"name":"users/owner"},"timezone":"UTC","expires_at":"2099-01-01T00:00:00Z","csrf_token":"token"}"""))
+        server.enqueue(MockResponse().setResponseCode(401).setBody("""{"error":{"code":"SESSION_UNAUTHORIZED"}}"""))
+        server.start()
+        val origin = server.url("/").toString().removeSuffix("/")
+        val key = "$origin\u0000instance\u0000users/owner"
+        val secrets = MemorySecrets()
+        secrets.write("selected-profile", CoreJson.encodeToString(ConnectionProfile(origin, key, "instance", "users/owner", "Owner", "UTC")))
+        val firstScope = CoroutineScope(coroutineContext + SupervisorJob())
+        val coldScope = CoroutineScope(coroutineContext + SupervisorJob())
+        val cleanupStarted = CompletableDeferred<Unit>()
+        val first = SessionController(secrets, true, firstScope, clearProtectedDownloads = {
+            cleanupStarted.complete(Unit)
+            awaitCancellation()
+        })
+        var restarted: SessionController? = null
+        var serverStopped = false
+        try {
+            withTimeout(10_000) { first.state.first { it.connected } }
+            val active = assertNotNull(first.core)
+            assertFailsWith<io.github.fermin214.moerise.domain.CoreException> { active.api(HttpMethod.Get, "/notes") }
+            withTimeout(10_000) { cleanupStarted.await() }
+            assertTrue(first.state.value.needsLogin)
+            assertNull(active.attachmentAccountKey)
+            firstScope.coroutineContext[Job]!!.cancelAndJoin()
+            first.close()
+            assertTrue(thumbnail.exists())
+            server.shutdown()
+            serverStopped = true
+
+            val resumedCleanup = CompletableDeferred<Unit>()
+            val finishCleanup = CompletableDeferred<Unit>()
+            var requests = 0
+            val cold = SessionController(secrets, true, coldScope, clearProtectedDownloads = {
+                resumedCleanup.complete(Unit)
+                finishCleanup.await()
+                clearAttachmentCache(context)
+            }, onNetworkRequest = { requests++ })
+            restarted = cold
+            withTimeout(10_000) { resumedCleanup.await() }
+            assertTrue(cold.state.value.loading)
+            assertNull(cold.state.value.profile)
+            assertNull(cold.core)
+            assertEquals(0, requests)
+            finishCleanup.complete(Unit)
+            val offline = withTimeout(10_000) { cold.state.first { it.error == "CONNECTION_FAILED" } }
+            assertEquals(key, offline.profile?.accountKey)
+            assertFalse(offline.connected)
+            assertFalse(thumbnail.exists())
+            assertNull(secrets.read("protected-download-cleanup:$key"))
+        } finally {
+            firstScope.coroutineContext[Job]!!.cancelAndJoin()
+            coldScope.coroutineContext[Job]!!.cancelAndJoin()
+            first.close()
+            restarted?.close()
+            if (!serverStopped) server.shutdown()
+            clearAttachmentCache(context)
+        }
+    }
+
     @Test
     fun committedAccountRemovalSignsOutBeforeRestoreWithOrWithoutStagedAttachments() = runBlocking<Unit> {
         val context = ApplicationProvider.getApplicationContext<android.content.Context>()

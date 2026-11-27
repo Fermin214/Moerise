@@ -172,6 +172,14 @@ fun SettingsScreen(
                             controller::reload, enabled = !state.loading, modifier = Modifier.testTag("settings_reload"))
                     }
                 }
+                if (tab == 0) connection.profile?.let { profile ->
+                    SettingsSection(strings.text("账号", "Account")) {
+                        SettingsRow(profile.displayName.trim().ifBlank { profile.userName.removePrefix("users/") }, separator = false) {
+                            SettingsGhost(strings.text("退出登录", "Sign out"), mobile::askLogout,
+                                modifier = Modifier.testTag("account_logout"))
+                        }
+                    }
+                }
             }
         }
     }

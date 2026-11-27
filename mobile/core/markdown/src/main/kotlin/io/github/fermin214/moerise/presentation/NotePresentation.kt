@@ -31,8 +31,11 @@ private fun presentTags(content: String, tags: List<String>, spans: List<NoteTag
     return NotePresentation(body, tags.filterNot { it in inline }, inline.toList())
 }
 
-class NoteTagScanner(private val content: String, lightweight: Boolean = content.length > 16_384) {
-    private val protected = if ('#' !in content) BooleanArray(content.length) else protectedTagOffsets(content, lightweight)
+class NoteTagScanner private constructor(private val content: String, lightweight: Boolean, tree: ASTNode?) {
+    constructor(content: String, lightweight: Boolean = markdownIsLong(content)) : this(content, lightweight, null)
+    internal constructor(content: String, tree: ASTNode) : this(content, false, tree)
+
+    private val protected = if ('#' !in content) BooleanArray(content.length) else protectedTagOffsets(content, lightweight, tree)
 
     private fun validStart(offset: Int) = offset in content.indices && content[offset] == '#' && !protected[offset] &&
         (offset == 0 || tagBoundary(content[offset - 1], before = true))
@@ -109,23 +112,23 @@ fun initialEditorSelection(content: String): Int {
     return if (trailing && cursor > 0) cursor else content.length
 }
 
-private fun protectedTagOffsets(content: String, lightweight: Boolean): BooleanArray {
+private fun protectedTagOffsets(content: String, lightweight: Boolean, tree: ASTNode?): BooleanArray {
     val protected = BooleanArray(content.length)
     fun protect(node: ASTNode) {
         if (node.type in protectedTagNodes) protected.fill(true, node.startOffset, node.endOffset)
         else node.children.forEach(::protect)
     }
     if (lightweight) protectTagLines(content, protected)
-    else protect(MarkdownParser(GFMFlavourDescriptor()).buildMarkdownTreeFromString(content))
+    else protect(tree ?: MarkdownParser(GFMFlavourDescriptor()).buildMarkdownTreeFromString(content))
     bareTagURLs.findAll(content).forEach { protected.fill(true, it.range.first, it.range.last + 1) }
     return protected
 }
 
-private val fencePattern = Regex("""^ {0,3}(`{3,}|~{3,})""")
+internal val fencePattern = Regex("""^ {0,3}(`{3,}|~{3,})""")
 private val protectedLine = Regex("""^(?: {4}|\t| {0,3}(?:#{1,6}(?:\s|$)|\[[^\]]+]:))""")
 private val protectedInline = Regex("""<[^<>\r\n]*>|!?\[[^\[\]\r\n]*](?:\([^()\r\n]*\)|\[[^\[\]\r\n]*])?""")
 private val backtickRun = Regex("`+")
-private val quotePrefix = Regex("""^(?: {0,3}>[ \t]?)+""")
+internal val quotePrefix = Regex("""^(?: {0,3}>[ \t]?)+""")
 private val listPrefix = Regex("""^ {0,3}(?:[-+*]|\d+[.)])[ \t]+""")
 private val escape = Regex("""\\[^\r\n]""")
 

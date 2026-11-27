@@ -21,7 +21,7 @@ class AppModel(application: Application) : AndroidViewModel(application) {
 
 class MainActivity : ComponentActivity() {
     private lateinit var model: AppModel
-    private var editorReady = false
+    private var homeReady = false
     private var foregroundTrace = false
     private var foregroundGeneration = 0
     private fun foregroundReady() {
@@ -37,8 +37,8 @@ class MainActivity : ComponentActivity() {
         model = ViewModelProvider(this)[AppModel::class.java]
         setContent {
             MoeriseApp(model.mobile) {
-                if (!editorReady) {
-                    editorReady = true
+                if (!homeReady) {
+                    homeReady = true
                     val started = if (firstActivity) System.currentTimeMillis() -
                         (SystemClock.elapsedRealtime() - Process.getStartElapsedRealtime()) else null
                     firstActivity = false
@@ -64,7 +64,7 @@ class MainActivity : ComponentActivity() {
         Trace.beginAsyncSection("note_foreground_ready", hashCode())
         window.decorView.doOnPreDraw {
             window.decorView.post {
-                if (generation == foregroundGeneration && editorReady) foregroundReady()
+                if (generation == foregroundGeneration && homeReady) foregroundReady()
             }
         }
     }
@@ -82,7 +82,7 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
-        if (!editorReady) Trace.endAsyncSection("note_editor_ready", hashCode())
+        if (!homeReady) Trace.endAsyncSection("note_editor_ready", hashCode())
         super.onDestroy()
     }
 

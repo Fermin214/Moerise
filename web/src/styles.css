@@ -6,6 +6,10 @@
 @layer pages {
 [hidden] { display: none !important; }
 .note-content { overflow-wrap: anywhere; }
+.note-fold-body,.note-fold-body > .note-content { display:flow-root; }
+.note-fold-collapsed { position:relative; max-block-size:260px; overflow:hidden; overflow:clip; }
+.note-fold-collapsed::after { content:""; position:absolute; inset:auto 0 0; height:36px; background:linear-gradient(transparent,var(--surface)); pointer-events:none; }
+.note-fold-toggle.ghost { color:#2A5BB5; }
 .error { color: #B42318; overflow-wrap: anywhere; }
 #workspace { gap: 14px; }
 #workspace > #empty, #workspace > .error { margin: 0; }

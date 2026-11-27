@@ -13,9 +13,14 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.Layout
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -47,8 +52,11 @@ fun TimelineNoteCard(
     busy: Boolean = false,
     error: String? = null,
     pendingAction: Boolean = false,
+    stateActionSending: Boolean = false,
     deleteUnknown: Boolean = false,
     onCheckDeletion: ((Note) -> Unit)? = null,
+    expanded: Boolean? = null,
+    onExpand: (Boolean) -> Unit = {},
 ) {
     val draft = (entry as? TimelineEntry.Local)?.draft
     val remote = (entry as? TimelineEntry.Remote)?.note
@@ -80,7 +88,7 @@ fun TimelineNoteCard(
             onState?.let { add(NoteMenuAction(
                 if (pendingAction && !deleteUnknown) strings.text("重试操作", "Retry action")
                 else if (remote.state == "ARCHIVED") strings.text("恢复到主页", "Restore to home") else strings.text("归档", "Archive"),
-                { it(remote) }, online && !busy && !deleteUnknown, tag = "archive_note_$id")) }
+                { it(remote) }, online && !busy && !stateActionSending && !deleteUnknown, tag = "archive_note_$id")) }
             if (remote.state == "NORMAL") onWalk?.let { add(NoteMenuAction(strings.text("从这条漫步", "Walk from this note"), { it(remote) }, online && !busy, tag = "walk_note_$id")) }
             if (deleteUnknown) onCheckDeletion?.let { add(NoteMenuAction(strings.text("检查删除结果", "Check deletion"), { it(remote) }, online && !busy, tag = "check_delete_$id")) }
         }
@@ -102,6 +110,8 @@ fun TimelineNoteCard(
         core = core,
         note = note,
         onTag = onTag.takeIf { remote != null },
+        expanded = expanded,
+        onExpand = onExpand,
         headerActions = if (hasFailure) 2 else 1,
         trailingHeader = {
             if (hasFailure) {
@@ -154,6 +164,8 @@ private fun NoteCardScaffold(
     core: CoreClient?,
     note: Note?,
     onTag: ((String) -> Unit)?,
+    expanded: Boolean?,
+    onExpand: (Boolean) -> Unit,
     headerActions: Int,
     trailingHeader: @Composable RowScope.() -> Unit,
     extraContent: @Composable ColumnScope.() -> Unit,
@@ -168,8 +180,10 @@ private fun NoteCardScaffold(
                     Text(date, fontSize = 13.sp, color = MoeriseColors.Muted, modifier = Modifier.testTag("note_card_date"))
                 }
                 if (presentation.body.isNotBlank()) Box(Modifier.fillMaxWidth().padding(top = 2.dp, bottom = 8.dp).testTag("note_card_body")) {
-                    MarkdownBody(presentation.body, note = note, core = core, tags = presentation.inlineTags, onTag = onTag,
-                        originalContent = content)
+                    FoldableNoteBody(content, expanded, onExpand, strings) {
+                        MarkdownBody(presentation.body, note = note, core = core, tags = presentation.inlineTags, onTag = onTag,
+                            originalContent = content, strings = strings)
+                    }
                 }
                 if (note != null) NoteAttachments(note, core, strings = strings)
                 NoteTags(presentation.tags, onTag = onTag)
@@ -178,6 +192,34 @@ private fun NoteCardScaffold(
             if (headerActions > 0) {
                 Row(Modifier.align(Alignment.TopEnd).padding(end = 6.dp), content = trailingHeader)
             }
+        }
+    }
+}
+
+@Composable
+private fun FoldableNoteBody(
+    text: String, expanded: Boolean?, onExpand: (Boolean) -> Unit, strings: Strings, body: @Composable () -> Unit,
+) {
+    if (expanded == null) {
+        body()
+        return
+    }
+    var height by remember(text) { mutableIntStateOf(0) }
+    val long = height > with(LocalDensity.current) { 400.dp.roundToPx() }
+    Column {
+        Box(Modifier.fillMaxWidth()) {
+            Layout(content = { Box(Modifier.onSizeChanged { height = it.height }) { body() } },
+                modifier = Modifier.fillMaxWidth().clipToBounds()) { measurables, constraints ->
+                val note = measurables.single().measure(constraints.copy(minHeight = 0))
+                val visibleHeight = if (long && !expanded) minOf(note.height, 280.dp.roundToPx()) else note.height
+                layout(note.width, visibleHeight) { note.placeRelative(0, 0) }
+            }
+            if (long && !expanded) Box(Modifier.align(Alignment.BottomCenter).fillMaxWidth().height(36.dp)
+                .background(Brush.verticalGradient(listOf(Color.White.copy(alpha = 0f), Color.White))))
+        }
+        if (long) TextButton(onClick = { onExpand(!expanded) },
+            colors = ButtonDefaults.textButtonColors(contentColor = MoeriseColors.Blue)) {
+            Text(if (expanded) strings.text("收起", "Collapse") else strings.text("展开全文", "Expand"))
         }
     }
 }

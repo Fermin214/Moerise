@@ -36,6 +36,7 @@ class SessionController(
     private val mutablePreferencesError = MutableStateFlow<String?>(null)
     val preferencesError = mutablePreferencesError.asStateFlow()
     private val languageLock = Mutex()
+    private val invalidationLock = Mutex()
     private var languageRevision = 0L
     private var generation = 0L
     private var settingsRevision = 0L
@@ -75,11 +76,49 @@ class SessionController(
     }
 
     private fun client(origin: String, stamp: Long): CoreClient =
-        CoreClient(origin, SessionCookies(origin, secrets), onUnauthorized = {
-            scope.launch { if (generation == stamp) mutableState.update { it.copy(connected = false, needsLogin = true) } }
+        CoreClient(origin, SessionCookies(origin, secrets), onUnauthorized = { account ->
+            invalidateDownloads(stamp, account)
         }, onRequestFailure = { started, error ->
             scope.launch { if (generation == stamp) onRequestFailure(started, error) }
         }, onRequest = onNetworkRequest)
+
+    private fun pendingInvalidation(account: String) = "protected-download-cleanup:$account"
+
+    private suspend fun invalidateDownloads(stamp: Long, account: String) {
+        try {
+            withContext(NonCancellable) {
+                invalidationLock.withLock {
+                    if (generation != stamp || state.value.profile?.accountKey != account || state.value.needsLogin)
+                        return@withContext
+                    secrets.write(pendingInvalidation(account), "pending")
+                    mutableState.update { it.copy(connected = false, needsLogin = true) }
+                }
+                scope.launch {
+                    try { invalidationLock.withLock { finishInvalidation(account) } }
+                    catch (error: Exception) {
+                        if (error is CancellationException) throw error
+                        reportInvalidationFailure(stamp)
+                    }
+                }
+            }
+        } catch (error: Exception) {
+            if (error is CancellationException) throw error
+            reportInvalidationFailure(stamp)
+        }
+    }
+
+    private fun reportInvalidationFailure(stamp: Long) {
+        if (generation == stamp) mutableState.update {
+            it.copy(connected = false, needsLogin = true, error = "LOCAL_REMOVE_FAILED")
+        }
+    }
+
+    private suspend fun finishInvalidation(account: String) {
+        val marker = pendingInvalidation(account)
+        if (secrets.read(marker) == null) return
+        clearProtectedDownloads()
+        secrets.write(marker, null)
+    }
 
     private suspend fun restore() {
         val stamp = ++generation
@@ -113,9 +152,10 @@ class SessionController(
 
     private suspend fun restoreSelection(): ConnectionProfile? {
         val profile = repository.selected() ?: return null
-        val notes = removalRepository?.invoke() ?: return profile
-        if (!notes.hasPendingLogout(profile.accountKey)) return profile
         try {
+            invalidationLock.withLock { finishInvalidation(profile.accountKey) }
+            val notes = removalRepository?.invoke() ?: return profile
+            if (!notes.hasPendingLogout(profile.accountKey)) return profile
             clearProtectedDownloads()
             SessionCookies(profile.origin, secrets).clear()
             repository.clear()
@@ -169,7 +209,7 @@ class SessionController(
     }
 
     suspend fun checkConnection(): Boolean {
-        if (state.value.busy) return false
+        if (state.value.busy || state.value.needsLogin) return false
         val stamp = generation
         val timeStamp = settingsRevision
         val profile = state.value.profile ?: return false
@@ -240,8 +280,9 @@ class SessionController(
         retrySession()
     }
 
-    suspend fun logout() {
+    suspend fun logout(clearDownloads: suspend () -> Unit = clearProtectedDownloads) {
         stopForRemoval()
+        clearDownloads()
         finishLogout()
     }
 

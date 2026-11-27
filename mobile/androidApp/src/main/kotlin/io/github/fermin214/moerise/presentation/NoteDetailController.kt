@@ -17,7 +17,6 @@ data class NoteDetailState(
 class NoteDetailController(
     private val repository: suspend () -> NoteRepository, private val account: () -> String?,
     private val core: () -> CoreClient?, private val scope: CoroutineScope,
-    private val onArchived: (String, Note) -> Unit = { _, _ -> },
     private val onChanged: (String, Note?, Note?) -> Unit,
 ) {
     private val mutable = MutableStateFlow(NoteDetailState())
@@ -25,14 +24,13 @@ class NoteDetailController(
     private var generation = 0L
     private var operation: Job? = null
     private var pending: PendingWriteEntity? = null
-    private var undoQueue: Job? = null
 
     fun clear() {
-        ++generation; undoQueue?.cancel(); undoQueue = null
+        ++generation
         operation?.cancel(); pending = null; mutable.value = NoteDetailState()
     }
     suspend fun stopForRemoval() {
-        ++generation; undoQueue?.cancelAndJoin(); undoQueue = null
+        ++generation
         operation?.cancelAndJoin(); pending = null; mutable.value = NoteDetailState()
     }
 
@@ -50,7 +48,7 @@ class NoteDetailController(
         operation = scope.launch {
             try {
                 previous?.join()
-                val restored = repository().action(key, name)
+                val restored = repository().action(key, name)?.takeIf { it.method == "DELETE" }
                 if (stamp != generation) return@launch
                 pending = restored
                 mutable.update { it.copy(note = fallback, cached = fallback != null, snapshotAt = snapshotAt,
@@ -77,47 +75,6 @@ class NoteDetailController(
 
     private fun path(name: String) = "/notes/${name.removePrefix("memos/")}"
 
-    fun changeState() {
-        val note = state.value.note ?: return
-        val active = core() ?: return
-        if (state.value.busy || state.value.deleteUnknown) return
-        execute(note, active, "PATCH", buildJsonObject {
-            put("source_hash", note.sourceHash)
-            put("state", if (note.state == "ARCHIVED") "NORMAL" else "ARCHIVED")
-        }.toString())
-    }
-
-    fun changeState(note: Note) {
-        if (!selectAction(note)) return
-        changeState()
-    }
-
-    fun undoArchive(note: Note, onFailure: (String) -> Unit) {
-        if (note.state != "ARCHIVED" || note.sourceHash.isBlank()) return
-        val key = account() ?: return
-        val active = core() ?: run { onFailure("CONNECTION_FAILED"); return }
-        val body = buildJsonObject {
-            put("source_hash", note.sourceHash)
-            put("state", "NORMAL")
-        }.toString()
-        val previous = undoQueue
-        undoQueue = scope.launch(start = CoroutineStart.LAZY) {
-            previous?.join()
-            while (true) {
-                val write = operation ?: break
-                write.join()
-                if (write === operation) break
-            }
-            if (key != account() || active !== core()) return@launch
-            if (!selectAction(note) || pending != null) {
-                onFailure("WRITE_OUTCOME_UNKNOWN")
-                return@launch
-            }
-            execute(note, active, "PATCH", body, requireFresh = true, onFailure = onFailure)
-            operation?.join()
-        }.also { it.start() }
-    }
-
     fun delete(note: Note) {
         if (!selectAction(note)) return
         delete()
@@ -138,40 +95,28 @@ class NoteDetailController(
         val note = state.value.note ?: return
         val active = core() ?: return
         if (state.value.busy || state.value.deleteUnknown || pending != null) return
-        execute(note, active, "DELETE", buildJsonObject { put("source_hash", note.sourceHash) }.toString())
-    }
-
-    private fun execute(
-        note: Note, active: CoreClient, method: String, body: String, requireFresh: Boolean = false,
-        onFailure: (String) -> Unit = {},
-    ) {
         val key = account() ?: return
         val stamp = generation
+        val body = buildJsonObject { put("source_hash", note.sourceHash) }.toString()
         mutable.update { it.copy(busy = true, error = null) }
         operation = scope.launch {
             var write: PendingWriteEntity? = null
             try {
-                write = repository().prepareAction(key, note.name, method, body, requireFresh = requireFresh)
+                write = repository().prepareDeletion(key, note.name, body)
                 if (stamp != generation) throw CancellationException("Page changed")
                 pending = write
                 if (stamp == generation) mutable.update { it.copy(pendingAction = true) }
                 repository().status(write, "sending")
-                val result = active.api(HttpMethod.parse(write.method), write.path, write.body,
-                    write.idempotencyKey.takeIf { method != "DELETE" })
-                val updated = if (method == "DELETE") null else CoreJson.decodeFromString<Note>(result)
-                if (updated != null) require(updated.name == note.name && updated.instanceId == key.split('\u0000')[1])
+                active.api(HttpMethod.Delete, write.path, write.body)
                 val repo = repository()
                 val previous = repo.localNote(key, note.name) ?: note
-                repo.finishAction(write, updated, note.name)
+                repo.finishAction(write, null, note.name)
                 if (key == account()) {
-                    onChanged(note.name, previous, updated)
-                    if (note.state != "ARCHIVED" && updated?.state == "ARCHIVED" && updated.sourceHash.isNotBlank()) {
-                        onArchived(key, updated)
-                    }
+                    onChanged(note.name, previous, null)
                 }
                 if (stamp == generation) {
                     pending = null
-                    mutable.value = if (updated == null) NoteDetailState() else NoteDetailState(name = updated.name, note = updated)
+                    mutable.value = NoteDetailState()
                 }
             } catch (error: Exception) {
                 val conflict = error is CoreException && error.detail.code == "SOURCE_CHANGED"
@@ -182,9 +127,8 @@ class NoteDetailController(
                 if (stamp == generation) {
                     val code = errorCode(error)
                     if (conflict) pending = null
-                    mutable.update { it.copy(busy = false, deleteUnknown = method == "DELETE" && write != null && !conflict,
+                    mutable.update { it.copy(busy = false, deleteUnknown = write != null && !conflict,
                         pendingAction = write != null && !conflict, error = code) }
-                    if (key == account() && active === core()) onFailure(code)
                 }
             }
         }

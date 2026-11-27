@@ -42,6 +42,8 @@ enum class WebIcon {
     Alert,
     SignIn,
     ArrowDown,
+    Eye,
+    EyeOff,
 }
 
 /**
@@ -124,4 +126,6 @@ private fun WebIcon.svgPath(): String = when (this) {
     WebIcon.CloudOff -> "M3 3l18 18M7 7a6 6 0 0 1 10.3 3.2A4 4 0 0 1 20 17M5 10a4 4 0 0 0 1 8h10"
     WebIcon.Alert -> "M12 8v5M12 17h.01M10.3 3.8L2.8 18a2 2 0 0 0 1.7 3h15a2 2 0 0 0 1.7-3L13.7 3.8a2 2 0 0 0-3.4 0"
     WebIcon.SignIn -> "M14 4h6v16h-6M3 12h12M10 7l5 5-5 5"
+    WebIcon.Eye -> "M2 12s3.6-6 10-6 10 6 10 6-3.6 6-10 6S2 12 2 12Z M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z"
+    WebIcon.EyeOff -> "M3 3l18 18M10.6 6.1c6.9-.8 11.4 5.9 11.4 5.9a17 17 0 0 1-3 3.3M14 17.8C6.4 19.3 2 12 2 12a18 18 0 0 1 4.1-4.1"
 }

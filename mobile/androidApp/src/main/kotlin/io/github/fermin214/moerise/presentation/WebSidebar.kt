@@ -1,7 +1,7 @@
 package io.github.fermin214.moerise.presentation
 
-import androidx.compose.foundation.background
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
@@ -28,7 +28,7 @@ fun WebSidebar(
     page: String, strings: Strings, userName: String, filters: SearchState, month: String,
     onClose: () -> Unit, onNavigate: (String) -> Unit,
     onMonth: (String) -> Unit, onDate: (String) -> Unit, onTag: (String) -> Unit,
-    onLogout: () -> Unit, selectedTags: Set<String> = emptySet(), selectedDate: String = "",
+    selectedTags: Set<String> = emptySet(), selectedDate: String = "",
     today: String = "", stargazingEnabled: Boolean = true,
 ) {
     val scroll = rememberScrollState()
@@ -49,7 +49,7 @@ fun WebSidebar(
                         Triple("review", strings.text("回顾", "Review"), WebIcon.Review),
                         Triple("walk", strings.text("漫步", "Walk"), WebIcon.Walk),
                         Triple("map", strings.text("观星", "Stargazing"), WebIcon.Map),
-                        Triple("archive", strings.text("归档笔记", "Archived notes"), WebIcon.Archive),
+                        Triple("archive", strings.text("归档", "Archive"), WebIcon.Archive),
                     ).filter { it.first != "map" || stargazingEnabled }.forEach { (target, label, icon) ->
                         SidebarEntry(label, icon, page == target, Modifier.testTag("nav_$target")) { onNavigate(target) }
                     }
@@ -77,18 +77,18 @@ fun WebSidebar(
             }
             Column(Modifier.fillMaxWidth().background(MoeriseColors.Paper).testTag("sidebar_account")) {
                 HorizontalDivider(color = MoeriseColors.Line)
-                Column(Modifier.padding(top = 8.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                    SidebarEntry(strings.text("设置", "Settings"), WebIcon.Settings, page == "settings",
-                        Modifier.testTag("nav_settings")) { onNavigate("settings") }
-                    Row(Modifier.fillMaxWidth().padding(start = 10.dp),
-                        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                        WebIcon(WebIcon.User)
-                        Text(userName.removePrefix("users/"), fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.weight(1f))
-                        TextButton(onClick = onLogout, modifier = Modifier.testTag("account_logout")) {
-                            Text(strings.text("退出登录", "Sign out"))
-                        }
-                    }
+                val settings = strings.text("设置", "Settings")
+                Row(Modifier.padding(top = 8.dp).testTag("nav_settings").fillMaxWidth()
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(if (page == "settings") MoeriseColors.Selected else Color.Transparent)
+                    .clickable(role = Role.Button, onClickLabel = settings) { onNavigate("settings") }
+                    .semantics { contentDescription = settings; selected = page == "settings" }
+                    .heightIn(min = 44.dp).padding(horizontal = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    WebIcon(WebIcon.User)
+                    Text(userName.removePrefix("users/"), fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f))
+                    WebIcon(WebIcon.Settings)
                 }
             }
     }

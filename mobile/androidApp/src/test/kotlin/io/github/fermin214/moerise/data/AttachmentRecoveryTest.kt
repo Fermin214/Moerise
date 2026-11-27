@@ -1,15 +1,24 @@
 package io.github.fermin214.moerise.data
 
+import android.content.Context
+import android.graphics.Bitmap
+import androidx.test.core.app.ApplicationProvider
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
+import org.robolectric.annotation.GraphicsMode
 
 import io.github.fermin214.moerise.domain.AttachmentReceipt
 import io.github.fermin214.moerise.domain.Note
 import io.github.fermin214.moerise.presentation.expectedSubmittedResult
+import io.github.fermin214.moerise.presentation.ProtectedImageCache
+import io.github.fermin214.moerise.presentation.ProtectedImageResult
+import io.github.fermin214.moerise.presentation.clearAttachmentCache
 import io.ktor.client.engine.mock.*
 import io.ktor.http.*
+import java.io.ByteArrayOutputStream
 import java.nio.file.Files
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.*
 import kotlinx.coroutines.*
 import kotlinx.serialization.json.*
@@ -17,6 +26,71 @@ import kotlinx.serialization.json.*
 @RunWith(RobolectricTestRunner::class)
 @Config(manifest = Config.NONE, sdk = [29])
 class AttachmentRecoveryTest {
+    @Test
+    @GraphicsMode(GraphicsMode.Mode.NATIVE)
+    fun imageCacheSharesRequestsAndClearDropsAnOlderDownload() = runBlocking<Unit> {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val origin = "https://images.example"
+        val key = "$origin\u0000instance\u0000users/owner"
+        fun attachment(id: String) = buildJsonObject {
+            put("name", "attachments/$id"); put("filename", "$id.png"); put("type", "image/png")
+            put("content_url", "/api/app/v1/notes/one/attachments/$id/content")
+        }
+        val blocked = attachment("blocked")
+        val ready = attachment("ready")
+        val malformed = attachment("malformed")
+        val large = JsonObject(attachment("large") + ("size" to JsonPrimitive(8 * 1024 * 1024 + 1)))
+        val note = Note("instance", "memos/one", "image", "NORMAL", "hash", attachments = listOf(blocked, ready, malformed, large))
+        val png = ByteArrayOutputStream().use { stream ->
+            val bitmap = Bitmap.createBitmap(20, 20, Bitmap.Config.ARGB_8888)
+            check(bitmap.compress(Bitmap.CompressFormat.PNG, 100, stream))
+            bitmap.recycle()
+            stream.toByteArray()
+        }
+        val started = CompletableDeferred<Unit>()
+        val release = CompletableDeferred<Unit>()
+        val requests = AtomicInteger()
+        val core = CoreClient(origin, SessionCookies(origin, MemorySecrets()), MockEngine { request ->
+            when {
+                request.url.encodedPath.endsWith("/session") ->
+                    respond("""{"instance_id":"instance","user":{"name":"users/owner"},"timezone":"UTC","expires_at":"2099-01-01T00:00:00Z","csrf_token":"token"}""")
+                request.url.encodedPath.endsWith("/blocked/content") -> {
+                    started.complete(Unit)
+                    withContext(NonCancellable) { release.await() }
+                    respond(png)
+                }
+                request.url.encodedPath.endsWith("/malformed/content") -> respond("invalid image")
+                else -> { requests.incrementAndGet(); respond(png) }
+            }
+        }).also { it.bindAccount(key) }
+        val root = context.cacheDir.resolve("image_cache")
+        try {
+            clearAttachmentCache(context)
+            val stamp = ProtectedImageCache.epoch.value
+            val pending = async { ProtectedImageCache.load(context, core, note, blocked, stamp) }
+            withTimeout(10_000) { started.await() }
+            clearAttachmentCache(context)
+            release.complete(Unit)
+            assertFailsWith<CancellationException> { withTimeout(10_000) { pending.await() } }
+            assertFalse(root.exists())
+            assertNull(ProtectedImageCache.peek(core, blocked, ProtectedImageCache.epoch.value))
+            val active = ProtectedImageCache.epoch.value
+            val first = async { ProtectedImageCache.load(context, core, note, ready, active) }
+            val second = async { ProtectedImageCache.load(context, core, note, ready, active) }
+            val loaded = assertIs<ProtectedImageResult.Loaded>(first.await())
+            assertSame(loaded.bitmap, assertIs<ProtectedImageResult.Loaded>(second.await()).bitmap)
+            assertEquals(1, requests.get())
+            assertEquals(1, root.walkTopDown().count { it.isFile })
+            assertEquals(ProtectedImageResult.Failed(false), ProtectedImageCache.load(context, core, note, large, active))
+            assertEquals(ProtectedImageResult.Failed(false), ProtectedImageCache.load(context, core, note, malformed, active))
+            assertEquals(1, requests.get())
+        } finally {
+            release.complete(Unit)
+            clearAttachmentCache(context)
+            core.close()
+        }
+    }
+
     @Test
     fun failedAttachmentConfirmationReplaysQueueAndPreservesUnfinishedInput() = runBlocking<Unit> {
         val folder = Files.createTempDirectory("moerise-attachment-queue-").toFile()

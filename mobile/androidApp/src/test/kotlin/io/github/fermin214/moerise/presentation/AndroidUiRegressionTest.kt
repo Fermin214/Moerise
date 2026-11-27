@@ -37,6 +37,7 @@ import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createEmptyComposeRule
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.height
+import androidx.compose.ui.unit.width
 import androidx.test.platform.app.InstrumentationRegistry
 import io.github.fermin214.moerise.MainActivity
 import io.github.fermin214.moerise.data.ACTIVE_NOTE_EDITOR
@@ -59,6 +60,8 @@ import io.ktor.client.engine.mock.MockEngine
 import io.ktor.client.engine.mock.respond
 import java.io.ByteArrayOutputStream
 import java.nio.file.Files
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import kotlin.test.*
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CompletableDeferred
@@ -66,6 +69,10 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.runBlocking
+import okhttp3.mockwebserver.Dispatcher
+import okhttp3.mockwebserver.MockResponse
+import okhttp3.mockwebserver.MockWebServer
+import okhttp3.mockwebserver.RecordedRequest
 import org.junit.Rule
 import org.junit.runner.RunWith
 import org.robolectric.Robolectric
@@ -162,7 +169,7 @@ class AndroidUiRegressionTest {
                 val leave = { focus.clearFocus() }
                 MoeriseTheme {
                     NavigationDrawer(drawer, true, strings, leave, modifier = Modifier.testTag("drawer_host"),
-                        sheet = { Text("Navigation") }) {
+                        sheet = { Text("Navigation", modifier = Modifier.fillMaxWidth().testTag("drawer_sheet")) }) {
                         Column(Modifier.fillMaxSize().timelineFocusExit(leave).verticalScroll(scroll)) {
                             BasicTextField("", {}, modifier = Modifier.fillMaxWidth().height(80.dp)
                                 .drawerGestureRegion().testTag("editor"))
@@ -204,6 +211,12 @@ class AndroidUiRegressionTest {
         root.performTouchInput { swipeUp(startY = 250.dp.toPx(), endY = 160.dp.toPx()) }
         editor.assertIsNotFocused()
         compose.runOnIdle { assertTrue(scroll.value > 0) }
+        root.performTouchInput { swipe(Offset(65.dp.toPx(), 180.dp.toPx()), Offset(115.dp.toPx(), 180.dp.toPx()), durationMillis = 48) }
+        compose.runOnIdle { assertTrue(drawer.isOpen) }
+        val sheet = compose.onNodeWithTag("drawer_sheet").getUnclippedBoundsInRoot().width
+        assertTrue(kotlin.math.abs(sheet.value - minOf(root.getUnclippedBoundsInRoot().width.value * .78f, 296f)) <= 1f)
+        root.performTouchInput { swipe(Offset(150.dp.toPx(), 180.dp.toPx()), Offset(95.dp.toPx(), 180.dp.toPx()), durationMillis = 48) }
+        compose.runOnIdle { assertFalse(drawer.isOpen) }
     }
 
     @Test
@@ -444,7 +457,7 @@ class AndroidUiRegressionTest {
     }
 
     @Test
-    fun attachmentResultAfterStopReturnsToTheUnfocusedComposerAndCanSaveWithoutText() =
+    fun attachmentResultAfterStopReturnsToTheComposerAndCanSaveWithoutText() =
         checkAttachmentResult(recreate = false)
 
     @Test
@@ -452,7 +465,7 @@ class AndroidUiRegressionTest {
         checkAttachmentResult(recreate = true)
 
     @Test
-    fun failedInlineRestorationReleasesThePickerForTheComposer() =
+    fun failedEditRestorationReleasesThePickerForTheComposer() =
         checkAttachmentResult(recreate = true, inlineRestoreFails = true)
 
     private fun checkAttachmentResult(recreate: Boolean, inlineRestoreFails: Boolean = false) {
@@ -488,8 +501,8 @@ class AndroidUiRegressionTest {
         }
         try {
             compose.runOnUiThread { showApp(mobile) }
-            compose.waitUntil(10_000) { compose.onAllNodesWithTag("note_editor").fetchSemanticsNodes().size == 1 }
-            val field = compose.onNodeWithTag("note_editor")
+            compose.waitUntil(10_000) { compose.onAllNodesWithTag("compose_capsule").fetchSemanticsNodes().size == 1 }
+            val field = compose.onNodeWithTag("quick_editor")
             val inline = Note("instance", "memos/inline", "Original", "NORMAL", "hash")
             val target = if (inlineRestoreFails) {
                 compose.runOnIdle { mobile.editNote(inline) }
@@ -497,7 +510,11 @@ class AndroidUiRegressionTest {
                 compose.waitUntil(10_000) { compose.onAllNodesWithTag(tag).fetchSemanticsNodes().size == 1 }
                 compose.waitUntil(10_000) { runBlocking { repo.feature(account, ACTIVE_NOTE_EDITOR)?.contains(inline.name) == true } }
                 compose.onNodeWithTag(tag)
-            } else field
+            } else {
+                compose.onNodeWithTag("compose_capsule").performClick()
+                compose.waitUntil(10_000) { compose.onAllNodesWithTag("quick_editor").fetchSemanticsNodes().size == 1 }
+                field
+            }
             target.performClick().assertIsFocused()
             compose.onNodeWithTag("add_attachment").assertIsEnabled()
                 .performSemanticsAction(SemanticsActions.OnClick) { assertTrue(it()) }
@@ -538,6 +555,8 @@ class AndroidUiRegressionTest {
                 }
                 compose.waitForIdle()
                 assertTrue(mobile.editor.state.value.draft?.attachmentEdits()?.staged?.isEmpty() == true)
+                compose.onNodeWithTag("compose_capsule").performClick()
+                compose.waitUntil(10_000) { compose.onAllNodesWithTag("quick_editor").fetchSemanticsNodes().size == 1 }
                 field.performClick().assertIsFocused()
                 compose.onNodeWithTag("add_attachment").assertIsEnabled()
                     .performSemanticsAction(SemanticsActions.OnClick) { assertTrue(it()) }
@@ -555,14 +574,17 @@ class AndroidUiRegressionTest {
                 state.draft?.attachmentEdits()?.staged?.size == 1 && !state.importing
             }
             staged = mobile.editor.state.value.draft?.attachmentEdits()?.staged?.single()
-            field.assertIsNotFocused()
-            compose.onNodeWithTag("save_note").assertIsEnabled().performSemanticsAction(SemanticsActions.OnClick) { assertTrue(it()) }
+            compose.waitUntil(10_000) {
+                compose.onAllNodes(hasTestTag("quick_save") and isEnabled()).fetchSemanticsNodes().size == 1
+            }
+            compose.onNodeWithTag("quick_save").assertIsEnabled().performSemanticsAction(SemanticsActions.OnClick) { assertTrue(it()) }
             waitForMainCondition("the attachment-only note is queued") {
                 mobile.sync.state.value.notes.singleOrNull()?.attachmentEdits()?.staged?.size == 1
             }
             val saved = mobile.sync.state.value.notes.single()
             assertEquals("", saved.content)
             assertEquals(assertNotNull(staged).id, saved.attachmentEdits().staged.single().id)
+            assertEquals("{}", runBlocking { repo.feature(account, ACTIVE_NOTE_EDITOR) })
         } finally {
             compose.runOnUiThread { job.cancel(); session.close() }
             compose.waitForIdle()
@@ -573,19 +595,20 @@ class AndroidUiRegressionTest {
     }
 
     @Test
-    fun sidebarHasDirectArchiveAndLogoutAndPrivacyActionStaysEnabled() {
+    fun sidebarHasDirectArchiveAndSingleAccessibleSettingsRow() {
         createHost()
         val scope = CoroutineScope(SupervisorJob())
         val session = SessionController(MemorySecrets(), true, scope)
         try {
             val privacy = PrivacyController(null, session, scope)
+            var destination: String? = null
             compose.runOnUiThread {
                 host.get().setContent {
                     MoeriseTheme {
                         Row {
                             Box(Modifier.weight(1f)) {
                                 WebSidebar("home", strings, "Owner", SearchState(), "2026-11",
-                                    onClose = {}, onNavigate = {}, onMonth = {}, onDate = {}, onTag = {}, onLogout = {})
+                                    onClose = {}, onNavigate = { destination = it }, onMonth = {}, onDate = {}, onTag = {})
                             }
                             Box(Modifier.weight(1f)) { PrivacySettings(privacy, strings) }
                         }
@@ -593,7 +616,9 @@ class AndroidUiRegressionTest {
                 }
             }
             compose.onNodeWithTag("nav_archive").assertExists()
-            compose.onNodeWithTag("account_logout").assertExists()
+            compose.onNodeWithTag("nav_settings").assert(hasContentDescription("Settings") and hasText("Owner")).performClick()
+            assertEquals("settings", destination)
+            compose.onNodeWithTag("account_logout").assertDoesNotExist()
             compose.onNodeWithTag("sidebar_sync").assertDoesNotExist()
             compose.onNodeWithTag("account_menu").assertDoesNotExist()
             compose.onNodeWithTag("diagnostic_summary").assertIsEnabled()
@@ -601,7 +626,126 @@ class AndroidUiRegressionTest {
     }
 
     @Test
-    fun savingAndCancellingReturnToAnUnfocusedComposerAndFirstScreenPrewarmsFilters() {
+    fun longNoteCardMeasuresTheBodyBeforeClippingIt() {
+        createHost()
+        val content = (1..22).joinToString("\n\n") { "Paragraph number $it" }
+        val note = Note("instance", "memos/long", content, "NORMAL", "hash")
+        compose.runOnUiThread {
+            host.get().setContent {
+                val expanded = remember { mutableStateOf(false) }
+                MoeriseTheme {
+                    Column(Modifier.verticalScroll(rememberScrollState())) {
+                        TimelineNoteCard(TimelineEntry.Remote(note), "UTC", strings, null, {}, {},
+                            expanded = expanded.value, onExpand = { expanded.value = it })
+                    }
+                }
+            }
+        }
+        val body = compose.onNodeWithTag("note_card_body")
+        val expand = compose.onNodeWithText("Expand")
+        compose.waitUntil(10_000) { expand.isDisplayed() }
+        assertTrue(body.getUnclippedBoundsInRoot().height in 325.dp..350.dp)
+        expand.performClick()
+        compose.waitUntil(10_000) { body.getUnclippedBoundsInRoot().height > 400.dp }
+        compose.onNodeWithText("Collapse").performScrollTo().performClick()
+        compose.waitUntil(10_000) { body.getUnclippedBoundsInRoot().height <= 350.dp }
+    }
+
+    @Test
+    fun failedLoginKeepsTheMaskedPasswordAndSuccessClearsIt() {
+        createHost()
+        val release = CountDownLatch(1)
+        val attempts = java.util.concurrent.atomic.AtomicInteger()
+        val server = MockWebServer().apply {
+            dispatcher = object : Dispatcher() {
+                override fun dispatch(request: RecordedRequest): MockResponse = when (request.path) {
+                    "/api/app/v1/capabilities" -> MockResponse().setBody("""{"login_methods":["password"],"notes":"ready"}""")
+                    "/api/app/v1/session" -> {
+                        if (attempts.incrementAndGet() == 1) {
+                            check(release.await(10, TimeUnit.SECONDS))
+                            MockResponse().setResponseCode(401).setBody("""{"error":{"code":"INVALID_CREDENTIALS"}}""")
+                        } else MockResponse().setBody("""{"instance_id":"instance","user":{"name":"users/owner"},"timezone":"UTC","expires_at":"2099-01-01T00:00:00Z","csrf_token":"token"}""")
+                    }
+                    else -> MockResponse().setResponseCode(404)
+                }
+            }
+            start()
+        }
+        val job = SupervisorJob()
+        val scope = CoroutineScope(job + Dispatchers.Main.immediate)
+        val session = SessionController(MemorySecrets(), true, scope)
+        try {
+            var connected = false
+            compose.runOnUiThread { host.get().setContent { MoeriseTheme { ConnectionScreen(session, strings) { connected = true } } } }
+            compose.onNodeWithTag("server_origin").performTextReplacement(server.url("/").toString().removeSuffix("/"))
+            compose.onNodeWithTag("server_username").performTextReplacement("owner")
+            val password = compose.onNodeWithTag("server_password")
+            password.performTextReplacement("fixture-pass")
+            compose.onNodeWithTag("toggle_password").performClick()
+            password.assertTextContains("fixture-pass")
+            compose.onNodeWithTag("server_login").performScrollTo().performClick()
+            waitForMainCondition("login is busy") { session.state.value.busy }
+            password.assertIsNotEnabled().assert(SemanticsMatcher.keyIsDefined(SemanticsProperties.Password))
+            release.countDown()
+            waitForMainCondition("login was rejected") { session.state.value.error == "INVALID_CREDENTIALS" }
+            compose.onNodeWithTag("server_password_filled", useUnmergedTree = true).assertExists()
+            compose.onNodeWithTag("toggle_password").performClick()
+            password.assertTextContains("fixture-pass")
+            compose.onNodeWithTag("server_login").performScrollTo().performClick()
+            waitForMainCondition("login succeeds") { connected }
+            compose.onNodeWithTag("server_password_empty", useUnmergedTree = true).assertExists()
+        } finally {
+            release.countDown()
+            compose.runOnUiThread { session.close(); job.cancel() }
+            server.shutdown()
+        }
+    }
+
+    @Test
+    fun coldStartWithAnActiveEditLoadsTheTimelineBeforeReportingTheCapsuleReady() {
+        createHost()
+        val folder = Files.createTempDirectory("moerise-restored-editor").toFile()
+        val database = testDatabase(folder.resolve("data.sqlite3").absolutePath)
+        val repository = NoteRepository(database)
+        val secrets = MemorySecrets()
+        val origin = "http://127.0.0.1:1"
+        val account = "$origin\u0000instance\u0000users/owner"
+        val note = Note("instance", "memos/restored", "Restored draft", "NORMAL", "hash")
+        val job = SupervisorJob()
+        val scope = CoroutineScope(job + Dispatchers.Main.immediate)
+        runBlocking {
+            secrets.write("selected-profile", CoreJson.encodeToString(ConnectionProfile(origin, account, "instance", "users/owner", "Owner", "UTC")))
+            database.dao().putSyncState(SyncStateEntity(account, "cursor", "generation", true, 1))
+            repository.recordLocalNote(account, note)
+            val draft = repository.restore(account, note).draft
+            repository.putFeature(account, ACTIVE_NOTE_EDITOR, """{"kind":"edit","draft_id":"${draft.id}","key":"${note.name}"}""")
+        }
+        val session = SessionController(secrets, true, scope)
+        try {
+            var reported = 0
+            val mobile = MobileController(session, { repository }, scope, initialForeground = true)
+            compose.runOnUiThread { host.get().setContent { MoeriseApp(mobile) { reported++ } } }
+            val editorTag = "note_editor_${note.name}"
+            compose.waitUntil(10_000) { compose.onAllNodesWithTag(editorTag).fetchSemanticsNodes().size == 1 }
+            waitForMainCondition("cached timeline loads behind the restored editor") {
+                mobile.timeline.state.value.notes.any { it.name == note.name }
+            }
+            compose.waitForIdle()
+            compose.onNodeWithTag("compose_capsule").assertIsNotEnabled()
+            compose.runOnIdle { assertEquals(0, reported) }
+            compose.onNodeWithTag("cancel_note_${note.name}").performClick()
+            waitForMainCondition("the capsule is reported after the restored editor closes") { reported == 1 }
+            compose.onNodeWithTag("compose_capsule").assertIsEnabled()
+            compose.onNodeWithTag(editorTag).assertDoesNotExist()
+        } finally {
+            compose.runOnUiThread { session.close(); job.cancel() }
+            database.close()
+            folder.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun floatingComposerPreservesTheTimelineAndFirstScreenPrewarmsFilters() {
         createHost()
         val folder = Files.createTempDirectory("moerise-composer-focus").toFile()
         val database = testDatabase(folder.resolve("data.sqlite3").absolutePath)
@@ -629,14 +773,22 @@ class AndroidUiRegressionTest {
             fun waitForTag(tag: String) {
                 compose.waitUntil(10_000) { compose.onAllNodesWithTag(tag).fetchSemanticsNodes().size == 1 }
             }
-            val composer = compose.onNodeWithTag("note_editor")
+            val composer = compose.onNodeWithTag("quick_editor")
             val inline = compose.onNodeWithTag("note_editor_${note.name}")
             fun edit() {
                 compose.runOnIdle { mobile.editNote(note) }
                 waitForTag("note_editor_${note.name}")
                 inline.performClick().assertIsFocused()
             }
-            waitForTag("note_editor")
+            fun openComposer() {
+                waitForTag("compose_capsule")
+                compose.onNodeWithTag("compose_capsule").performClick()
+                waitForTag("quick_editor")
+            }
+            fun closed() = waitForMainCondition("the writing sheet closes") {
+                !mobile.composerOpen.value && mobile.noteEditors.value.isEmpty()
+            }
+            waitForTag("compose_capsule")
             waitForMainCondition("first-screen tag and calendar data are available") {
                 mobile.filterReads.cached("NORMAL", serviceMonth("UTC")) != null
             }
@@ -646,7 +798,8 @@ class AndroidUiRegressionTest {
                 val anchor = compose.onNodeWithTag("note_card_$firstKey")
                 val offset = anchor.getUnclippedBoundsInRoot().top - timeline.getUnclippedBoundsInRoot().top
                 assertTrue(anchor.isDisplayed())
-                compose.onNodeWithTag("quick_compose").assertIsDisplayed().performClick()
+                compose.onNodeWithTag(if (page == "home") "compose_capsule" else "quick_compose").assertIsDisplayed().performClick()
+                waitForTag("quick_cancel")
                 compose.onNodeWithTag("quick_cancel").performClick()
                 compose.waitUntil(10_000) { compose.onAllNodesWithTag("quick_editor").fetchSemanticsNodes().isEmpty() }
                 assertTrue(anchor.isDisplayed())
@@ -666,33 +819,39 @@ class AndroidUiRegressionTest {
             }
             checkQuickComposerPosition("archive", "memos/archive-10")
             compose.onNodeWithTag("open_menu").performSemanticsAction(SemanticsActions.OnClick) { assertTrue(it()) }
+            compose.onNodeWithTag("nav_settings").performClick()
+            waitForTag("settings_reload")
+            assertFalse(session.state.value.connected)
+            compose.onNodeWithTag("account_logout").performScrollTo().assertIsEnabled().performClick()
+            waitForTag("logout_confirm")
+            compose.onNodeWithText("Cancel").performClick()
+            compose.onNodeWithTag("open_menu").performSemanticsAction(SemanticsActions.OnClick) { assertTrue(it()) }
             compose.onNodeWithTag("nav_home").performScrollTo().assertIsDisplayed()
                 .performSemanticsAction(SemanticsActions.OnClick) { assertTrue(it()) }
             waitForTag("home_timeline")
-            compose.onNodeWithTag("home_timeline").performScrollToKey("composer")
+            openComposer()
             composer.performClick().assertIsFocused().performTextReplacement("New note")
             composer.assertTextContains("New note")
-            compose.onNodeWithTag("save_note").assertIsEnabled()
+            compose.onNodeWithTag("quick_save").assertIsEnabled()
                 .performSemanticsAction(SemanticsActions.OnClick) { assertTrue(it()) }
             waitForMainCondition("the composer clears after the local commit") {
                 mobile.editor.state.value.let { it.draft?.content == "" || it.error != null }
             }
             assertNull(mobile.editor.state.value.error)
             assertEquals("New note", runBlocking { repository.queuedNotes(account).single().content })
-            composer.assertIsNotFocused()
+            closed()
 
             edit()
-            compose.onNodeWithTag("quick_compose").assertIsDisplayed().performClick()
-            compose.onNodeWithTag("quick_editor").assertIsFocused().performTextReplacement("Floating draft")
+            inline.performTextReplacement("Local edit")
+            compose.onNodeWithTag("cancel_note_${note.name}").performClick()
+            closed()
+            openComposer()
+            composer.assertIsFocused().performTextReplacement("Floating draft")
             compose.onNodeWithTag("quick_cancel").performClick()
             compose.waitUntil(10_000) { compose.onAllNodesWithTag("quick_editor").fetchSemanticsNodes().isEmpty() }
             assertEquals("Floating draft", runBlocking { repository.restore(account).draft.content })
-            inline.assertIsNotFocused()
-            compose.onNodeWithTag("cancel_note_${note.name}").performClick()
-            waitForTag("note_editor")
-            composer.assertIsNotFocused()
 
-            compose.onNodeWithTag("home_timeline").performScrollToKey("composer")
+            openComposer()
             composer.assertIsDisplayed().performClick().assertIsFocused().performTextReplacement("left #writ right")
             composer.performSemanticsAction(SemanticsActions.SetSelection) { select ->
                 assertTrue(select("left #wr".length, "left #wr".length, false))
@@ -710,6 +869,8 @@ class AndroidUiRegressionTest {
             waitForTag("writing_tags")
             compose.onNode(hasText("#writing") and hasAnyAncestor(hasTestTag("writing_tags"))).performClick()
             composer.assertIsFocused().assertTextContains("左 #writing 右")
+            compose.onNodeWithTag("quick_cancel").performClick()
+            closed()
 
             compose.onNodeWithTag("home_timeline").performScrollToKey(note.name)
             compose.onNodeWithText("#writing").performClick()
@@ -721,11 +882,20 @@ class AndroidUiRegressionTest {
             inline.assertTextContains("Edited")
             compose.onNodeWithTag("save_note_${note.name}").assertIsEnabled()
                 .performSemanticsAction(SemanticsActions.OnClick) { assertTrue(it()) }
-            waitForTag("note_editor")
-            composer.assertIsNotFocused()
+            closed()
+            compose.onNodeWithTag("quick_editor").assertDoesNotExist()
             assertEquals(setOf("writing"), mobile.search.state.value.query.tags)
             compose.onNodeWithText("Edited", useUnmergedTree = true).assertExists()
             compose.onNodeWithText("Original", useUnmergedTree = true).assertDoesNotExist()
+            val long = note.copy(name = "memos/long", content = "Long text\n".repeat(32))
+            compose.runOnIdle { mobile.editNote(long) }
+            val longEditor = "note_editor_${long.name}"
+            waitForTag(longEditor)
+            compose.onNodeWithTag(longEditor).assertIsNotFocused()
+                .assert(SemanticsMatcher.expectValue(SemanticsProperties.TextSelectionRange, androidx.compose.ui.text.TextRange.Zero))
+            compose.onNodeWithTag("cancel_note_${long.name}").performClick()
+            closed()
+            assertEquals(setOf("writing"), mobile.search.state.value.query.tags)
         } finally {
             compose.runOnUiThread { job.cancel(); session.close() }
             compose.waitForIdle()

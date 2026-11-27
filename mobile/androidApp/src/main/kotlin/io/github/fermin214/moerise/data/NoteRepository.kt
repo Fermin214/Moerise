@@ -14,6 +14,7 @@ import io.github.fermin214.moerise.presentation.displayServiceTime
 import java.time.YearMonth
 import java.time.ZoneId
 import kotlinx.serialization.json.*
+import kotlinx.serialization.Serializable
 import kotlin.time.Instant
 import kotlin.time.ExperimentalTime
 import kotlinx.coroutines.Dispatchers
@@ -34,6 +35,15 @@ data class RestoredDraft(val draft: DraftEntity, val pending: PendingWriteEntity
 internal data class QueuedDraft(val frozen: DraftEntity, val home: RestoredDraft)
 
 internal const val ACTIVE_NOTE_EDITOR = "active-note-editor"
+
+@Serializable
+internal data class StateActionIntent(val note: Note, val undo: Boolean = false)
+
+internal data class StateAction(val write: PendingWriteEntity, val intent: StateActionIntent?, val fresh: Boolean = false) {
+    val name: String get() = "memos/${write.path.substringAfterLast('/')}"
+    val target: String get() = CoreJson.parseToJsonElement(write.body).jsonObject.getValue("state").jsonPrimitive.content
+    val visibleState: String get() = if (intent?.undo == true) "NORMAL" else target
+}
 
 enum class SyncNotesOutcome { UPDATED, NO_CHANGES, UNSUPPORTED_LEGACY }
 
@@ -151,17 +161,22 @@ class NoteRepository(private val db: LocalDatabase, private val files: Attachmen
         enqueueLocked(draft, write)
     }
 
-    internal suspend fun submit(draft: DraftEntity, clearEditorRegistration: Boolean): QueuedDraft {
+    internal suspend fun submit(draft: DraftEntity): QueuedDraft {
         val prepared = db.dao().pending(draft.id) ?: prepareWrite(draft)
         currentCoroutineContext().ensureActive()
         return withContext(NonCancellable) {
             transaction {
                 val write = db.dao().pending(draft.id) ?: prepared.also { db.dao().putWrite(it) }
-                enqueueLocked(draft, write).also {
-                    if (clearEditorRegistration) putFeature(draft.accountKey, ACTIVE_NOTE_EDITOR, "{}")
-                }
+                enqueueLocked(draft, write).also { clearActiveEditor(draft.accountKey, draft.id) }
             }
         }
+    }
+
+    internal suspend fun clearActiveEditor(account: String, id: String) {
+        val mark = feature(account, ACTIVE_NOTE_EDITOR)?.let {
+            runCatching { CoreJson.parseToJsonElement(it).jsonObject["draft_id"]?.jsonPrimitive?.content }.getOrNull()
+        }
+        if (mark == id) putFeature(account, ACTIVE_NOTE_EDITOR, "{}")
     }
 
     private suspend fun enqueueLocked(draft: DraftEntity, write: PendingWriteEntity): QueuedDraft {
@@ -195,6 +210,10 @@ class NoteRepository(private val db: LocalDatabase, private val files: Attachmen
         val next = DraftEntity(newLocalId(), draft.accountKey, content, 0,
             attachmentsJson = CoreJson.encodeToString(attachments.copy(removed = emptyList())), slot = "home", createdAt = epochMillis())
         db.dao().putDraft(next)
+        putFeature(draft.accountKey, ACTIVE_NOTE_EDITOR, buildJsonObject {
+            put("kind", "new")
+            put("draft_id", next.id)
+        }.toString())
         RestoredDraft(next, null)
     }
 
@@ -483,20 +502,82 @@ class NoteRepository(private val db: LocalDatabase, private val files: Attachmen
     }
 
     private fun actionSlot(key: String, name: String) = "$key\u0000action:$name"
+    private fun intentSlot(name: String) = "note-state-action:$name"
+
+    private suspend fun stateAction(write: PendingWriteEntity): StateAction {
+        val name = "memos/${write.path.substringAfterLast('/')}"
+        val intent = feature(write.accountKey, intentSlot(name))?.let { CoreJson.decodeFromString<StateActionIntent>(it) }
+        return StateAction(write, intent)
+    }
+
+    internal suspend fun stateActions(key: String): List<StateAction> = transaction {
+        recoverOnce(key)
+        db.dao().accountWrites(key).filter {
+            it.method == "PATCH" && it.draftId.startsWith("$key\u0000action:") && it.status != "conflict"
+        }.map { stateAction(it) }
+    }
+
+    private fun stateWrite(key: String, note: Note, target: String) =
+        PendingWriteEntity(newLocalId(), actionSlot(key, note.name), key, newLocalId(), "PATCH",
+            "/notes/${note.name.removePrefix("memos/")}", buildJsonObject {
+                put("source_hash", note.sourceHash)
+                put("state", target)
+            }.toString(), 0)
+
+    internal suspend fun prepareStateAction(key: String, note: Note, target: String, undo: Boolean = false): StateAction = transaction {
+        recoverOnce(key)
+        require(note.instanceId == key.split('\u0000')[1] && Regex("^memos/[A-Za-z0-9_-]+$").matches(note.name))
+        val existing = db.dao().pending(actionSlot(key, note.name))
+        if (existing != null) {
+            require(!undo && existing.method == "PATCH") { "WRITE_OUTCOME_UNKNOWN" }
+            return@transaction stateAction(existing)
+        }
+        val write = stateWrite(key, note, target)
+        val intent = StateActionIntent(note, undo)
+        db.dao().putWrite(write)
+        putFeature(key, intentSlot(note.name), CoreJson.encodeToString(intent))
+        StateAction(write, intent, fresh = true)
+    }
+
+    internal suspend fun requestStateUndo(action: StateAction): StateAction? = transaction {
+        val write = db.dao().pending(action.write.draftId)?.takeIf { it.id == action.write.id } ?: return@transaction null
+        val state = stateAction(write)
+        val intent = (state.intent ?: action.intent ?: return@transaction null).copy(undo = true)
+        putFeature(write.accountKey, intentSlot(action.name), CoreJson.encodeToString(intent))
+        state.copy(intent = intent)
+    }
+
+    internal suspend fun settleStateAction(action: StateAction, remote: Note? = null): StateAction? =
+        transaction(publishesNotes = remote != null) {
+            val write = db.dao().pending(action.write.draftId)?.takeIf { it.id == action.write.id } ?: return@transaction null
+            val key = write.accountKey
+            val intent = stateAction(write).intent
+            db.dao().deleteWrite(write.id)
+            db.dao().deleteFeature(key, intentSlot(action.name))
+            if (remote == null) return@transaction null
+            upsertLocalNoteLocked(key, remote)
+            updateSnapshot(key, remote)
+            if (action.target != "ARCHIVED" || remote.state != "ARCHIVED" || intent?.undo != true) return@transaction null
+            val restore = stateWrite(key, remote, "NORMAL")
+            val restoreIntent = StateActionIntent(remote, undo = true)
+            db.dao().putWrite(restore)
+            putFeature(key, intentSlot(action.name), CoreJson.encodeToString(restoreIntent))
+            StateAction(restore, restoreIntent)
+        }
 
     suspend fun action(key: String, name: String): PendingWriteEntity? = transaction {
         recoverOnce(key)
         db.dao().pending(actionSlot(key, name))
     }
 
-    suspend fun prepareAction(key: String, name: String, method: String, body: String, requireFresh: Boolean = false): PendingWriteEntity = transaction {
-        require(method in setOf("PATCH", "DELETE") && Regex("^memos/[A-Za-z0-9_-]+$").matches(name))
+    suspend fun prepareDeletion(key: String, name: String, body: String): PendingWriteEntity = transaction {
+        require(Regex("^memos/[A-Za-z0-9_-]+$").matches(name))
         val slot = actionSlot(key, name)
         db.dao().pending(slot)?.let {
-            require(!requireFresh && it.method == method) { "WRITE_OUTCOME_UNKNOWN" }
+            require(it.method == "DELETE") { "WRITE_OUTCOME_UNKNOWN" }
             return@transaction it
         }
-        PendingWriteEntity(newLocalId(), slot, key, newLocalId(), method,
+        PendingWriteEntity(newLocalId(), slot, key, newLocalId(), "DELETE",
             "/notes/${name.removePrefix("memos/")}", body, 0).also { db.dao().putWrite(it) }
     }
 

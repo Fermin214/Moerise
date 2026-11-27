@@ -32,8 +32,8 @@ class ImeLifecycleTest {
         assertEquals("手机使用竖屏", ActivityInfo.SCREEN_ORIENTATION_PORTRAIT, compose.activity.requestedOrientation)
         assertEquals("手机编辑窗口为竖屏", Configuration.ORIENTATION_PORTRAIT,
             compose.activity.resources.configuration.orientation)
-        compose.homeNode("note_editor")
-        val initial = requireNotNull(compose.editorConfiguration("note_editor"))[SemanticsProperties.EditableText].text
+        compose.openComposer()
+        val initial = requireNotNull(compose.editorConfiguration("quick_editor"))[SemanticsProperties.EditableText].text
         val prefix = if (initial.isEmpty()) "" else "$initial\n"
         var connection = editorConnection()
         edit(connection, "将光标移到草稿末尾", initial) { setSelection(initial.length, initial.length) }
@@ -74,12 +74,13 @@ class ImeLifecycleTest {
         edit(connection, "完成后结束组合状态", completed) { finishComposingText() }
         assertDraftSaved(completed)
         reopenLocalDraft(completed)
+        compose.closeWriting("quick_cancel")
         compose.onNodeWithTag("home").assertExists()
         compose.onNodeWithTag("open_menu").assertExists()
     }
 
     private fun editorConnection(): InputConnection {
-        compose.homeNode("note_editor").performClick().assertIsFocused()
+        compose.onNodeWithTag("quick_editor").performClick().assertIsFocused()
         compose.waitUntil(10_000) {
             compose.runOnIdle { inputMethod.session != null }
         }
@@ -112,11 +113,10 @@ class ImeLifecycleTest {
             it.config.getOrNull(SemanticsProperties.EditableText)?.text == expected
         }
         try {
-            compose.waitForHome()
             compose.waitUntil(10_000) {
-                compose.onAllNodes(hasTestTag("note_editor") and exactText).fetchSemanticsNodes().size == 1
+                compose.onAllNodes(hasTestTag("quick_editor") and exactText).fetchSemanticsNodes().size == 1
             }
-            compose.onNodeWithTag("note_editor").assert(exactText)
+            compose.onNodeWithTag("quick_editor").assert(exactText)
         } catch (failure: Throwable) {
             textFailure(operation, expected, failure)
         }
@@ -124,7 +124,7 @@ class ImeLifecycleTest {
 
     private fun textFailure(operation: String, expected: String, failure: Throwable): Nothing {
         val config = runCatching {
-            compose.editorConfiguration("note_editor")
+            compose.editorConfiguration("quick_editor")
         }.getOrElse { failure.addSuppressed(it); null }
         val actual = config?.getOrNull(SemanticsProperties.EditableText)?.text
         val selection = config?.getOrNull(SemanticsProperties.TextSelectionRange)
@@ -148,9 +148,11 @@ class ImeLifecycleTest {
     }
 
     private fun reopenLocalDraft(expected: String) {
+        compose.closeWriting("quick_cancel")
         compose.navigate("settings")
         compose.navigate("home")
-        compose.waitForEditor("note_editor", expected)
+        compose.openComposer()
+        compose.waitForEditor("quick_editor", expected)
         assertDraftSaved(expected)
     }
 }

@@ -155,12 +155,13 @@ test('reading cards open a home tag filter from review and walk', async t => {
   await login(page, url, '/review');
   const inline = card(page).locator('button.inline-tag');
   await inline.waitFor();
-  assert.deepEqual(await card(page).locator('.tag').allTextContents(), ['#第二标签']);
+  assert.deepEqual(await card(page).locator('.note-tags .tag').allTextContents(), ['#第二标签']);
+  assert.equal(await card(page).locator('.hd .tag').count(), 0);
   await inline.click();
   await page.waitForURL(value => value.pathname === '/' && value.searchParams.get('tag') === '原始标签');
   await page.locator('a[data-route][href="/walk"]').click();
   await page.getByRole('button', { name: '随机开始', exact: true }).click();
-  await card(page).getByRole('button', { name: '#第二标签', exact: true }).click();
+  await card(page).locator('.note-tags').getByRole('button', { name: '#第二标签', exact: true }).click();
   await page.waitForURL(value => value.pathname === '/' && value.searchParams.get('tag') === '第二标签');
 });
 
