@@ -31,47 +31,6 @@ private fun presentTags(content: String, tags: List<String>, spans: List<NoteTag
     return NotePresentation(body, tags.filterNot { it in inline }, inline.toList())
 }
 
-private val summaryPrefix = Regex("""^ {0,3}(?:#{1,6}[ \t]+|>[ \t]?|[-+*][ \t]+|\d+[.)][ \t]+)""")
-private val summaryDecoration = Regex(
-    """(?<!\\)(\*\*|__|~~)(?=\S)([^\n]+?)(?<=\S)\1|(?<![*\\])\*(?![\s*])([^*\n]+?)(?<=\S)\*(?!\*)"""
-)
-private val summaryParagraph = Regex("""\n[ \t]*\n""")
-private val summaryWhitespace = Regex("""(?U)\s+""")
-
-fun walkSummaryBody(content: String, tags: List<String>): String =
-    notePresentation(content, tags, trailingOnly = true).body.lineSequence()
-        .joinToString("\n") { it.replaceFirst(summaryPrefix, "") }
-        .splitToSequence(summaryParagraph).joinToString(" ", transform = ::plainSummaryParagraph)
-        .replace(summaryWhitespace, " ").trim()
-
-private fun plainSummaryParagraph(text: String): String = buildString {
-    fun appendPlain(start: Int, end: Int) {
-        append(summaryDecoration.replace(text.substring(start, end)) { (it.groups[2] ?: it.groups[3])!!.value })
-    }
-    val runs = backtickRun.findAll(text).map { run ->
-        Backticks(run.range.first, run.range.last + 1, escapedBacktick(text, run.range.first))
-    }.toList()
-    var offset = 0
-    forEachBacktickSpan(runs) { open, close ->
-        appendPlain(offset, open.start + if (open.escaped) 1 else 0)
-        append(text, open.end, close.start)
-        offset = close.end
-        true
-    }
-    appendPlain(offset, text.length)
-}
-
-fun walkStartPriority(body: String, hasAttachment: Boolean): Int? = when {
-    body.codePointCount(0, body.length) >= 12 -> 0
-    body.isNotEmpty() -> 1
-    hasAttachment -> 2
-    else -> null
-}
-
-fun limitWalkSummary(text: String): String = if (text.codePointCount(0, text.length) > 64) {
-    text.substring(0, text.offsetByCodePoints(0, 64)) + "…"
-} else text
-
 class NoteTagScanner private constructor(private val content: String, lightweight: Boolean, tree: ASTNode?) {
     constructor(content: String, lightweight: Boolean = markdownIsLong(content)) : this(content, lightweight, null)
     internal constructor(content: String, tree: ASTNode) : this(content, false, tree)
@@ -168,17 +127,32 @@ private fun protectedTagOffsets(content: String, lightweight: Boolean, tree: AST
 internal val fencePattern = Regex("""^ {0,3}(`{3,}|~{3,})""")
 private val protectedLine = Regex("""^(?: {4}|\t| {0,3}(?:#{1,6}(?:\s|$)|\[[^\]]+]:))""")
 private val protectedInline = Regex("""<[^<>\r\n]*>|!?\[[^\[\]\r\n]*](?:\([^()\r\n]*\)|\[[^\[\]\r\n]*])?""")
-internal val backtickRun = Regex("`+")
+private val backtickRun = Regex("`+")
 internal val quotePrefix = Regex("""^(?: {0,3}>[ \t]?)+""")
 private val listPrefix = Regex("""^ {0,3}(?:[-+*]|\d+[.)])[ \t]+""")
 private val escape = Regex("""\\[^\r\n]""")
 
 private data class Backticks(val start: Int, val end: Int, val escaped: Boolean)
 
-internal fun escapedBacktick(text: String, start: Int): Boolean {
+internal fun escapedDelimiter(text: String, start: Int): Boolean {
     var slash = start
     while (slash > 0 && text[slash - 1] == '\\') slash--
     return (start - slash) % 2 != 0
+}
+
+internal data class InlineCodeSpan(val opening: Int, val start: Int, val stop: Int, val end: Int)
+
+internal fun inlineCodeSpans(text: String): List<InlineCodeSpan> {
+    if ('`' !in text) return emptyList()
+    val runs = backtickRun.findAll(text).map { run ->
+        Backticks(run.range.first, run.range.last + 1, escapedDelimiter(text, run.range.first))
+    }.toList()
+    return buildList {
+        forEachBacktickSpan(runs) { open, close ->
+            add(InlineCodeSpan(open.start + if (open.escaped) 1 else 0, open.end, close.start, close.end))
+            true
+        }
+    }
 }
 
 private fun forEachBacktickSpan(ticks: List<Backticks>, accept: (Backticks, Backticks) -> Boolean) {
@@ -238,7 +212,7 @@ private fun protectTagLines(content: String, protected: BooleanArray) {
                 escape.findAll(body).forEach { protected[start + it.range.last] = true }
                 backtickRun.findAll(body).forEach { run ->
                     val at = start + run.range.first
-                    ticks += Backticks(at, start + run.range.last + 1, escapedBacktick(body, run.range.first))
+                    ticks += Backticks(at, start + run.range.last + 1, escapedDelimiter(body, run.range.first))
                 }
             }
         }

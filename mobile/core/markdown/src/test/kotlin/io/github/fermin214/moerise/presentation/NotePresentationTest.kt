@@ -205,6 +205,11 @@ class NotePresentationTest {
             "1. 甲\n2.\n3. 丙\n正文" to listOf("1. 甲\n2.\n3. 丙", "正文"),
             "- `code\nnext`\n正文" to listOf("- `code\nnext`", "正文"),
             "- ``code\n`literal`\nnext``\n正文" to listOf("- ``code\n`literal`\nnext``", "正文"),
+            "- 未闭合 `\n1.有序列表" to listOf("- 未闭合 `", "1.有序列表"),
+            "- 未闭合 ``\n1.有序列表 `单反引号`" to listOf("- 未闭合 ``", "1.有序列表 `单反引号`"),
+            "- 未闭合 `\n\n正文`" to listOf("- 未闭合 `", "正文`"),
+            "<pre>\n- 原样文本\n\n1. 原样编号\n</pre>\n\n- 真正列表" to listOf("<pre>\n- 原样文本\n\n1. 原样编号\n</pre>", "- 真正列表"),
+            "段落 <pre>\n- 真正列表\n顶格正文" to listOf("段落 <pre>", "- 真正列表", "顶格正文"),
             "- 甲\n  - 乙\n  显式续行\n\t续行\n正文 #日记" to listOf("- 甲\n  - 乙\n  显式续行\n\t续行", "正文 #日记"),
             "```text\n- 字面列表\n顶格正文\n```\n\n1) 列表\n正文" to listOf("```text\n- 字面列表\n顶格正文\n```", "1) 列表", "正文"),
         )
@@ -220,6 +225,25 @@ class NotePresentationTest {
         assertEquals("未配对 **星号 和 snake_case", walkSummaryBody("未配对 **星号 和 snake_case", emptyList()))
         assertEquals("😀".repeat(64) + "…", limitWalkSummary("😀".repeat(65)))
         assertEquals("😀".repeat(64), limitWalkSummary("😀".repeat(64)))
+    }
+
+    @Test
+    fun sharedWalkSummariesPreserveCodeAndLiteralDelimiters() {
+        val source = requireNotNull(javaClass.getResourceAsStream("/walk-summary.json"))
+        val cases = source.bufferedReader().use { Json.parseToJsonElement(it.readText()).jsonArray }
+        for (value in cases) {
+            val sample = value.jsonObject
+            fun text(key: String) = sample.getValue(key).jsonPrimitive.content
+            val tags = sample.getValue("tags").jsonArray.map { it.jsonPrimitive.content }
+            assertEquals(text("summary"), walkSummaryBody(text("content"), tags), text("name"))
+        }
+    }
+
+    @Test
+    fun summaryScansALongLineOfUnclosedDelimitersWithinTheLocalBudget() {
+        val body = "**word ".repeat(6900) + "end"
+        val elapsed = measureTime { assertEquals(body, walkSummaryBody("$body\n#日记", listOf("日记"))) }
+        assertTrue(elapsed < 1.seconds, "48 KB summary took $elapsed")
     }
 
     @Test

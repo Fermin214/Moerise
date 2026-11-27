@@ -476,6 +476,20 @@ class AndroidUiRegressionTest {
             compose.onNodeWithText(walkSummaryBody(longBody, emptyList()).let(::limitWalkSummary)).assertIsDisplayed()
             assertEquals(fixed, stop.getUnclippedBoundsInRoot())
             stop.performClick().assertDoesNotExist()
+            runBlocking {
+                for (index in 1..20) repository.recordLocalNote(account, candidate.copy(
+                    name = "memos/tag-only-$index", content = "#日记", tags = listOf("日记"),
+                    createTime = "2026-11-17T00:00:00Z"))
+            }
+            compose.runOnIdle { mobile.walk.retryFloaters() }
+            waitForMainCondition("the latest twenty notes leave the offline directory empty") {
+                mobile.walk.state.value.floaters.isEmpty() && mobile.walk.state.value.hasLocalNotes
+            }
+            compose.onNodeWithText("Start from a note").assertDoesNotExist()
+            start.assertIsEnabled().performClick()
+            waitForMainCondition("offline random start still reads a local note") { mobile.walk.state.value.result?.path?.size == 1 }
+            compose.onNodeWithTag("walk_next").assertIsEnabled().performClick()
+            waitForMainCondition("offline continue still reads another local note") { mobile.walk.state.value.result?.path?.size == 2 }
         } finally {
             compose.runOnUiThread { session.close(); job.cancel() }
             compose.waitForIdle()

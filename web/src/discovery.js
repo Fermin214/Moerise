@@ -329,9 +329,15 @@ export function createDiscovery({ request, sessionRequest, getIdentity, localTod
           throw Object.assign(new Error('Invalid notes'), { code: 'NOTE_LIST_INVALID' });
         }
         const tiers = [[], [], []];
+        let sliceStarted = performance.now();
         for (const note of page.notes.slice(0, 20)) {
           const body = walkSummaryBody(note.content, note.tags || []);
           if (body || note.attachments?.length) tiers[[...body].length >= 12 ? 0 : body ? 1 : 2].push({ note, body });
+          if (performance.now() - sliceStarted >= 40) {
+            await (globalThis.scheduler?.yield ? scheduler.yield() : new Promise(resolve => setTimeout(resolve, 0)));
+            if (!alive || floaterController !== pending) return;
+            sliceStarted = performance.now();
+          }
         }
         walkFloaters = floaters = tiers.flat().slice(0, 6);
       } catch (err) {

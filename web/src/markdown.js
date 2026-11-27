@@ -140,19 +140,77 @@ function removeTagLines(lines, tags, trailingOnly = false) {
 }
 
 export function walkSummaryBody(content, tags) {
-  const text = removeTagLines(content.replace(/\r\n?/g, '\n').split('\n'), tags, true)
-    .map(line => line.replace(/^ {0,3}(?:#{1,6}[ \t]+|>[ \t]?|[-+*][ \t]+|\d+[.)][ \t]+)/u, ''))
-    .join('\n');
-  const plain = part => part.replace(/(?<!\\)(\*\*|__|~~)(?=\S)([^\n]+?)(?<=\S)\1|(?<![*\\])\*(?![\s*])([^*\n]+?)(?<=\S)\*(?!\*)/gu,
-    (_, marker, decorated, emphasis) => decorated ?? emphasis);
-  const parts = [];
-  let offset = 0;
-  for (const span of codeSpans(text)) {
-    parts.push(plain(text.slice(offset, span.opening)), text.slice(span.start, span.stop));
-    offset = span.end;
+  const lines = removeTagLines(content.replace(/\r\n?/g, '\n').split('\n'), tags, true);
+  const parts = [], prose = [];
+  let fence;
+  function finishProse() {
+    if (prose.length) parts.push(cleanSummaryProse(prose.join('\n')));
+    prose.length = 0;
   }
-  parts.push(plain(text.slice(offset)));
-  return parts.join('').replace(/\s+/gu, ' ').trim();
+  for (const line of lines) {
+    if (fence) {
+      const marker = fenced.exec(line);
+      if (marker && marker[1][0] === fence[0] && marker[1].length >= fence.length && !line.slice(marker[0].length).trim()) {
+        fence = undefined;
+      } else parts.push(line);
+    } else if ((fence = fenceMarker(line)) || !line.trim() || (!prose.length && /^(?: {4}|\t)/.test(line))) {
+      finishProse();
+      if (!fence) parts.push(line);
+    } else prose.push(line);
+  }
+  finishProse();
+  return parts.join(' ').replace(/\s+/gu, ' ').trim();
+}
+
+function cleanSummaryProse(text) {
+  const removed = new Uint8Array(text.length), code = codeSpans(text);
+  for (const span of code) {
+    removed.fill(1, span.opening, span.start);
+    removed.fill(1, span.stop, span.end);
+  }
+  let codeIndex = 0;
+  const insideCode = offset => {
+    while (code[codeIndex]?.end <= offset) codeIndex++;
+    return code[codeIndex]?.opening <= offset;
+  };
+  for (const prefix of text.matchAll(/^ {0,3}(?:#{1,6}[ \t]+|>[ \t]?|[-+*][ \t]+|\d+[.)][ \t]+)/gm)) {
+    if (!insideCode(prefix.index)) removed.fill(1, prefix.index, prefix.index + prefix[0].length);
+  }
+  codeIndex = 0;
+  const openers = new Map([['*', []], ['**', []], ['__', []], ['~~', []]]);
+  for (const run of text.matchAll(/\*+|_+|~+|\n/g)) {
+    const [raw] = run, end = run.index + raw.length;
+    if (raw === '\n') {
+      for (const stack of openers.values()) stack.length = 0;
+      continue;
+    }
+    const start = run.index + Number(escapedAt(text, run.index));
+    const marker = start === run.index ? raw : raw.slice(1);
+    const stack = openers.get(marker);
+    if (!stack || removed[start] || insideCode(start)) continue;
+    const before = start ? String.fromCodePoint(text.codePointAt(start - (/[\uDC00-\uDFFF]/.test(text[start - 1]) &&
+      /[\uD800-\uDBFF]/.test(text[start - 2] || '') ? 2 : 1))) : ' ';
+    const after = end < text.length ? String.fromCodePoint(text.codePointAt(end)) : ' ';
+    const beforeSpace = /\s/u.test(before), afterSpace = /\s/u.test(after);
+    const beforePunctuation = /[\p{P}\p{S}]/u.test(before), afterPunctuation = /[\p{P}\p{S}]/u.test(after);
+    const left = !afterSpace && (!afterPunctuation || beforeSpace || beforePunctuation);
+    const right = !beforeSpace && (!beforePunctuation || afterSpace || afterPunctuation);
+    if (stack.length && right && (marker !== '__' || !left || afterPunctuation)) {
+      const opening = stack.pop();
+      removed.fill(1, opening, opening + marker.length);
+      removed.fill(1, start, end);
+      for (const other of openers.values()) while (other.at(-1) > opening) other.pop();
+    } else if (left && (marker !== '__' || !right || beforePunctuation)) stack.push(start);
+  }
+  const parts = [];
+  let start = 0;
+  for (let offset = 0; offset < text.length; offset++) {
+    if (!removed[offset]) continue;
+    if (start < offset) parts.push(text.slice(start, offset));
+    start = offset + 1;
+  }
+  parts.push(text.slice(start));
+  return parts.join('');
 }
 
 function appendPlain(parent, text, start, end, spans, onTag, renderedTags) {

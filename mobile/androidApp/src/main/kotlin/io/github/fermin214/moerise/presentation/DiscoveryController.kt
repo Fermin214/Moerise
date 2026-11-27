@@ -24,10 +24,19 @@ private val noteResource = Regex("^memos/[A-Za-z0-9_-]+$")
 private fun Note.belongsTo(account: String) = instanceId == account.split('\u0000')[1] &&
     noteResource.matches(name) && sourceHash.isNotBlank() && state in setOf("NORMAL", "ARCHIVED")
 
-private fun walkStartingNotes(notes: List<Note>): List<Note> = notes.take(20)
+data class WalkStartNote(val name: String, val createTime: String, val summary: String)
+
+internal fun walkSummaryPreview(note: Note, body: String = walkSummaryBody(note.content, note.tags)): String =
+    limitWalkSummary(body.ifBlank {
+        (note.attachments.firstOrNull()?.get("filename") as? JsonPrimitive)?.contentOrNull.orEmpty()
+    })
+
+private fun walkStartingNotes(notes: List<Note>): List<WalkStartNote> = notes.take(20)
     .mapNotNull { note ->
         val body = walkSummaryBody(note.content, note.tags)
-        walkStartPriority(body, note.attachments.isNotEmpty())?.let { it to note }
+        walkStartPriority(body, note.attachments.isNotEmpty())?.let {
+            it to WalkStartNote(note.name, note.createTime, walkSummaryPreview(note, body))
+        }
     }
     .sortedBy { it.first }.take(6).map { it.second }
 
@@ -141,8 +150,8 @@ data class WalkState(
     val error: String? = null, val retry: WalkRequest? = null,
     val embeddingEnabled: Boolean? = null, val embeddingConfigured: Boolean? = null,
     val configurationLoading: Boolean = false, val configurationError: String? = null,
-    val offline: Boolean = false,
-    val floaters: List<Note> = emptyList(), val floatersLoading: Boolean = false, val floaterError: String? = null,
+    val offline: Boolean = false, val hasLocalNotes: Boolean = false,
+    val floaters: List<WalkStartNote> = emptyList(), val floatersLoading: Boolean = false, val floaterError: String? = null,
 ) {
     val initialConfigurationLoading: Boolean get() = configurationLoading && embeddingEnabled == null
 }
@@ -272,10 +281,11 @@ class WalkController(
             try {
                 val repo = repository?.invoke()
                 if (repo != null) {
-                    val local = walkStartingNotes(repo.localNotesPage(key, "NORMAL", 20, 0).first)
+                    val notes = repo.localNotesPage(key, "NORMAL", 20, 0).first
+                    val local = withContext(Dispatchers.Default) { walkStartingNotes(notes) }
                     if (stamp == floaterGeneration && key == account())
-                        mutable.update { it.copy(floaters = local, floatersLoading = false) }
-                    if (local.isNotEmpty() || repo.isNotesSynced(key) || !online()) return@launch
+                        mutable.update { it.copy(floaters = local, floatersLoading = false, hasLocalNotes = notes.isNotEmpty()) }
+                    if (notes.isNotEmpty() || repo.isNotesSynced(key) || !online()) return@launch
                 }
                 if (!online()) return@launch
                 val active = core() ?: return@launch
@@ -284,8 +294,9 @@ class WalkController(
                     active.api(HttpMethod.Get, "/notes?state=NORMAL&page_size=20"))
                 require(page.notes.all { it.belongsTo(key) && it.state == "NORMAL" } &&
                     page.notes.map { it.name }.distinct().size == page.notes.size) { "NOTE_LIST_INVALID" }
+                val selected = withContext(Dispatchers.Default) { walkStartingNotes(page.notes) }
                 if (stamp == floaterGeneration && key == account() && active === core())
-                    mutable.update { it.copy(floaters = walkStartingNotes(page.notes), floatersLoading = false) }
+                    mutable.update { it.copy(floaters = selected, floatersLoading = false) }
             } catch (error: Exception) {
                 if (error is CancellationException) throw error
                 if (stamp == floaterGeneration && key == account())

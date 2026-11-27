@@ -41,7 +41,6 @@ import androidx.compose.ui.unit.sp
 import io.github.fermin214.moerise.data.epochMillis
 import io.github.fermin214.moerise.domain.Note
 import kotlinx.coroutines.launch
-import kotlinx.serialization.json.*
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -201,7 +200,7 @@ fun DiscoveryScreen(page: String, mobile: MobileController, strings: Strings,
                     if (walk.result?.item != null && walk.result?.exhausted == false) WebAction(
                         if (loading) strings.text("翻找中…", "Looking…") else strings.text("继续漫步", "Continue walk"),
                         onClick = mobile.walk::next,
-                        enabled = !loading && (walk.offline && walk.floaters.isNotEmpty() || connection.connected && walk.embeddingEnabled == true),
+                        enabled = !loading && (walk.offline && walk.hasLocalNotes || connection.connected && walk.embeddingEnabled == true),
                         modifier = Modifier.testTag("walk_next"),
                     )
                 }
@@ -234,7 +233,8 @@ private fun WalkCards(note: Note, previous: Note?, loading: Boolean, pageScroll:
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                 Box(Modifier.width(1.dp).height(20.dp).background(MoeriseColors.Line))
                 Text("↑", style = MaterialTheme.typography.bodySmall, color = MoeriseColors.Muted)
-                Text(walkSummary(prior, strings), maxLines = 1, overflow = TextOverflow.Ellipsis,
+                val summary = remember(prior.content, prior.tags, prior.attachments) { walkSummaryPreview(prior) }
+                Text(summary.ifBlank { strings.text("笔记", "Note") }, maxLines = 1, overflow = TextOverflow.Ellipsis,
                     style = MaterialTheme.typography.bodySmall, color = MoeriseColors.Muted)
             }
         }
@@ -337,17 +337,8 @@ private fun DiscoveryMessage(text: String, error: Boolean = false, modifier: Mod
 }
 
 @Composable
-private fun walkSummary(note: Note, strings: Strings): String =
-    remember(note.content, note.tags, note.attachments) {
-        val body = walkSummaryBody(note.content, note.tags)
-        limitWalkSummary(body.ifBlank {
-            (note.attachments.firstOrNull()?.get("filename") as? JsonPrimitive)?.contentOrNull.orEmpty()
-        })
-    }.ifBlank { strings.text("笔记", "Note") }
-
-@Composable
 private fun WalkStart(walk: WalkState, connected: Boolean, timezone: String, strings: Strings, onStart: (String) -> Unit) {
-    val enabled = !walk.loading && (walk.offline && walk.floaters.isNotEmpty() || connected && walk.embeddingEnabled == true)
+    val enabled = !walk.loading && (walk.offline && walk.hasLocalNotes || connected && walk.embeddingEnabled == true)
     val looking = walk.loading || walk.initialConfigurationLoading
     Column {
         WebAction(if (looking) strings.text("翻找中…", "Looking…") else strings.text("随机开始", "Random start"),
@@ -362,7 +353,7 @@ private fun WalkStart(walk: WalkState, connected: Boolean, timezone: String, str
                 Column {
                     walk.floaters.take(count).forEachIndexed { index, note ->
                         if (index > 0) HorizontalDivider(color = MoeriseColors.Line)
-                        val summary = walkSummary(note, strings)
+                        val summary = note.summary.ifBlank { strings.text("笔记", "Note") }
                         val date = displayNoteDay(note.createTime, timezone, strings.text("zh", "en") == "en")
                         Row(Modifier.fillMaxWidth().heightIn(min = 52.dp).testTag("walk_floater_${note.name}")
                             .clickable(enabled = enabled, role = Role.Button) { onStart(note.name) }
