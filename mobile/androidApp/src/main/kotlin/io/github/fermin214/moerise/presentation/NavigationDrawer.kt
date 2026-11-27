@@ -29,6 +29,7 @@ import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.PointerType
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.util.VelocityTracker
 import androidx.compose.ui.layout.LayoutCoordinates
 import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.onGloballyPositioned
@@ -62,7 +63,11 @@ internal class NavigationDrawerState(private val scope: CoroutineScope) {
         fraction = (fraction + delta / width).coerceIn(0f, 1f)
     }
 
-    fun finishDrag(released: Boolean) = settle(if (released) fraction >= .5f else isOpen)
+    fun finishDrag(released: Boolean, velocity: Float, threshold: Float) = settle(when {
+        !released -> isOpen
+        isOpen -> velocity >= -threshold && fraction > .68f
+        else -> velocity > threshold || fraction >= .32f
+    })
 
     private fun settle(open: Boolean) {
         animation?.cancel()
@@ -132,7 +137,7 @@ internal fun NavigationDrawer(
     val dragStart by rememberUpdatedState(onDragStart)
     var coordinates by remember { mutableStateOf<LayoutCoordinates?>(null) }
     BoxWithConstraints(modifier.fillMaxSize().clipToBounds().onGloballyPositioned { coordinates = it }) {
-        val width = minOf(maxWidth, 320.dp)
+        val width = minOf(maxWidth * .78f, 296.dp)
         Box(Modifier.fillMaxSize().pointerInput(enabled, drawer, width) {
             if (!enabled || width <= 0.dp) return@pointerInput
             awaitEachGesture {
@@ -143,11 +148,13 @@ internal fun NavigationDrawer(
                     !canStartDrawerDrag(position, 32.dp.toPx(), if (open) emptyList() else regions.values)) return@awaitEachGesture
                 var dragging = false
                 var released = false
+                val velocity = VelocityTracker().apply { addPosition(down.uptimeMillis, down.position) }
                 try {
                     while (true) {
                         val event = awaitPointerEvent()
                         if (event.changes.count { it.pressed } > 1) break
                         val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                        velocity.addPosition(change.uptimeMillis, change.position)
                         if (!change.pressed) {
                             released = !change.isConsumed
                             if (dragging) change.consume()
@@ -168,7 +175,7 @@ internal fun NavigationDrawer(
                         change.consume()
                     }
                 } finally {
-                    if (dragging) drawer.finishDrag(released)
+                    if (dragging) drawer.finishDrag(released, velocity.calculateVelocity().x, 350.dp.toPx())
                 }
             }
         }) {

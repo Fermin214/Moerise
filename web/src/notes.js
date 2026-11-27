@@ -86,7 +86,65 @@ function copyAction(content) {
   };
 }
 
-export function renderNoteCard(note, { detail, formatTime, href, onTag, actions, pending }) {
+const foldReaders = new WeakMap();
+const bodyObserver = new ResizeObserver(entries => {
+  for (const { target, borderBoxSize } of entries) {
+    if (target.isConnected) foldReaders.get(target)?.(borderBoxSize?.[0]?.blockSize ?? target.offsetHeight);
+  }
+});
+
+export function observeFoldedBodies(list) {
+  bodyObserver.disconnect();
+  for (const body of list.querySelectorAll('.note-fold-body > .note-content')) bodyObserver.observe(body);
+}
+
+function foldBody(card, body, expandedNotes) {
+  const preview = el('div', 'note-fold-body');
+  const toggle = button('', 'ghost note-fold-toggle', () => {
+    const expanded = expandedNotes.has(card.dataset.name);
+    const header = document.querySelector('.mobile-header');
+    const readableTop = () => Math.max(0, header?.getBoundingClientRect().bottom || 0);
+    const above = expanded && card.getBoundingClientRect().top < readableTop();
+    if (expanded) expandedNotes.delete(card.dataset.name);
+    else expandedNotes.add(card.dataset.name);
+    update();
+    if (above && card.getBoundingClientRect().top < readableTop()) {
+      const top = window.scrollY + card.getBoundingClientRect().top - readableTop();
+      window.scrollTo({ top, behavior: 'instant' });
+    }
+  });
+  let long = false;
+  function update() {
+    const expanded = expandedNotes.has(card.dataset.name);
+    preview.classList.toggle('note-fold-collapsed', long && !expanded);
+    toggle.hidden = !long;
+    toggle.setAttribute('aria-expanded', String(expanded));
+    setText(toggle, expanded ? l("收起") : l("展开全文"));
+  }
+  foldReaders.set(body, height => {
+    if (!height || card.skipped) return;
+    long = height > 380;
+    update();
+  });
+  card.addEventListener('contentvisibilityautostatechange', event => {
+    if (!event.skipped && card.isConnected) {
+      requestAnimationFrame(() => {
+        if (card.isConnected && !card.skipped) foldReaders.get(body)?.(body.offsetHeight);
+      });
+    }
+  });
+  preview.addEventListener('focusin', event => {
+    if (!preview.classList.contains('note-fold-collapsed') ||
+        event.target.getBoundingClientRect().bottom <= preview.getBoundingClientRect().bottom) return;
+    expandedNotes.add(card.dataset.name);
+    update();
+  });
+  preview.append(body);
+  update();
+  return [preview, toggle];
+}
+
+export function renderNoteCard(note, { detail, formatTime, href, onTag, actions, pending, expandedNotes }) {
   const card = el('article', `card${detail ? ' note' : ''}`);
   card.dataset.name = note.name;
   card.dataset.sourceHash = note.source_hash;
@@ -116,7 +174,7 @@ export function renderNoteCard(note, { detail, formatTime, href, onTag, actions,
   const renderedTags = new Set();
   const body = noteBody(note, onTag, renderedTags), referenced = new Set([...body.querySelectorAll('img')].map(image => image.getAttribute('src')));
   appendTags(tags, note.tags, renderedTags, onTag);
-  card.append(header, body, renderAttachments(note, referenced), tags);
+  card.append(header, ...(expandedNotes ? foldBody(card, body, expandedNotes) : [body]), renderAttachments(note, referenced), tags);
   if (detail) {
     const bar = el('div', 'note-actions');
     for (const command of commands) {
@@ -129,7 +187,7 @@ export function renderNoteCard(note, { detail, formatTime, href, onTag, actions,
   return card;
 }
 
-export function renderReadingCard(note, { review = false, className = 'card big discovery-note', formatTime, openNote, onTag }) {
+export function renderReadingCard(note, { review = false, className = 'card big discovery-note', formatTime, openNote, onTag, bottomTags = false }) {
   const card = el('article', `${className}${review ? ' rv' : ''}`);
   card.dataset.name = note.name;
   const header = el('div', 'hd'), time = el('time', '', formatTime(note.create_time));
@@ -140,12 +198,15 @@ export function renderReadingCard(note, { review = false, className = 'card big 
   const metadata = el('div', 'discovery-meta');
   if (review && Number.isFinite(Date.parse(note.create_time))) {
     const days = Math.max(0, Math.floor((Date.now() - Date.parse(note.create_time)) / 86_400_000));
-    header.append(el('span', 'pill', days ? l("{0} 天前", { 0: days }) : l("今天"))); metadata.append(time);
+    header.append(el('span', 'pill', days ? l("{0} 天前", { 0: days }) : l("今天")));
+    if (!bottomTags) metadata.append(time);
   } else header.append(time);
   const renderedTags = new Set();
   const body = noteBody(note, onTag, renderedTags), referenced = new Set([...body.querySelectorAll('img')].map(image => image.getAttribute('src')));
-  appendTags(metadata, note.tags, renderedTags, onTag);
+  const tags = bottomTags ? el('div', 'note-tags') : metadata;
+  appendTags(tags, note.tags, renderedTags, onTag);
   metadata.append(open); header.append(metadata);
   card.append(header, body, renderAttachments(note, referenced));
+  if (bottomTags && tags.childElementCount) card.append(tags);
   return card;
 }

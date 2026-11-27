@@ -2,6 +2,7 @@ package io.github.fermin214.moerise.presentation
 
 import androidx.room.immediateTransaction
 import androidx.room.useWriterConnection
+import androidx.compose.material3.SnackbarHostState
 import io.github.fermin214.moerise.NetworkAvailability
 import io.github.fermin214.moerise.data.AttachmentEdits
 import io.github.fermin214.moerise.data.ACTIVE_NOTE_EDITOR
@@ -44,12 +45,18 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.TestCoroutineScheduler
+import kotlinx.coroutines.test.advanceTimeBy
+import kotlinx.coroutines.test.runCurrent
+import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import okhttp3.mockwebserver.Dispatcher
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
@@ -68,6 +75,114 @@ class WritingSyncTest {
     private suspend fun selectedSecrets(serverOrigin: String = origin) = MemorySecrets().apply {
         val key = "$serverOrigin\u0000instance\u0000users/owner"
         write("selected-profile", CoreJson.encodeToString(ConnectionProfile(serverOrigin, key, "instance", "users/owner", "Owner", "UTC")))
+    }
+
+    @Test
+    fun dismissFreezesInputWhileClearingTheActiveMarkerAndRetainsTheDraftOnFailure() = runBlocking<Unit> {
+        val folder = Files.createTempDirectory("moerise-editor-dismiss").toFile()
+        val db = testDatabase(folder.resolve("data.sqlite3").absolutePath)
+        val repo = NoteRepository(db)
+        val scope = CoroutineScope(coroutineContext + SupervisorJob())
+        val editor = EditorController({ repo }, { null }, scope)
+        try {
+            editor.open(account)
+            val id = assertNotNull(editor.state.value.draft).id
+            val marker = """{"kind":"new","draft_id":"$id"}"""
+            repo.putFeature(account, ACTIVE_NOTE_EDITOR, marker)
+            assertTrue(editor.change("accepted before close"))
+            assertFalse(editor.dismiss({ error("marker unavailable") }, { error("closed before clearing") }))
+            assertFalse(editor.state.value.busy)
+            assertEquals(marker, repo.feature(account, ACTIVE_NOTE_EDITOR))
+            assertTrue(editor.change("latest accepted text"))
+            val clearing = CompletableDeferred<Unit>()
+            val release = CompletableDeferred<Unit>()
+            val dismiss = async {
+                editor.dismiss({ draft ->
+                    clearing.complete(Unit)
+                    release.await()
+                    repo.clearActiveEditor(draft.accountKey, draft.id)
+                }, { assertTrue(editor.state.value.busy) })
+            }
+            withTimeout(10_000) { clearing.await() }
+            assertTrue(editor.state.value.busy)
+            assertFalse(editor.change("late IME input"))
+            assertFalse(editor.importing(id, true))
+            assertEquals("latest accepted text", db.dao().draft(id)?.content)
+            release.complete(Unit)
+            assertTrue(withTimeout(10_000) { dismiss.await() })
+            assertEquals("latest accepted text", editor.state.value.draft?.content)
+            assertEquals("latest accepted text", db.dao().draft(id)?.content)
+            assertEquals("{}", repo.feature(account, ACTIVE_NOTE_EDITOR))
+        } finally {
+            scope.coroutineContext[Job]!!.cancelAndJoin()
+            db.close()
+            folder.deleteRecursively()
+        }
+    }
+
+    @OptIn(ExperimentalCoroutinesApi::class)
+    @Test
+    fun archiveNoticesKeepTheirWindowWhenAnotherArchiveAndCopyArrive() = runTest {
+        val host = SnackbarHostState()
+        val messages = MobileNotices()
+        val undone = mutableListOf<String>()
+        backgroundScope.launch {
+            messages.collect(account) { host.showMobileNotice(it.code, "Undo", it.undo) }
+        }
+        messages.offer(MobileNotice(account, "Archived first", ArchiveUndo { undone += "first" }))
+        runCurrent()
+        advanceTimeBy(1000)
+        val second = ArchiveUndo { undone += "second" }
+        messages.offer(MobileNotice(account, "Archived second", second))
+        messages.offer(MobileNotice(account, "Copied"))
+        runCurrent()
+        advanceTimeBy(1999)
+        runCurrent()
+        assertEquals("Archived first", host.currentSnackbarData?.visuals?.message)
+        advanceTimeBy(1)
+        runCurrent()
+        assertEquals("Archived second", host.currentSnackbarData?.visuals?.message)
+        advanceTimeBy(2999)
+        runCurrent()
+        assertEquals("Archived second", host.currentSnackbarData?.visuals?.message)
+        host.currentSnackbarData?.performAction()
+        runCurrent()
+        assertEquals(listOf("second"), undone)
+        assertEquals("Copied", host.currentSnackbarData?.visuals?.message)
+
+        val rejected = ArchiveUndo { error("Rejected undo was invoked") }
+        messages.offer(MobileNotice(account, "Rejected archive", rejected))
+        messages.offer(MobileNotice(account, "Operation failed"))
+        runCurrent()
+        assertEquals("Rejected archive", host.currentSnackbarData?.visuals?.message)
+        rejected.reject()
+        runCurrent()
+        assertEquals("Operation failed", host.currentSnackbarData?.visuals?.message)
+    }
+
+    @OptIn(ExperimentalCoroutinesApi::class)
+    @Test
+    fun archiveUndoPreemptsTheVisibleCopyAndQueuedOrdinaryNotices() = runTest {
+        val host = SnackbarHostState()
+        val messages = MobileNotices()
+        backgroundScope.launch {
+            messages.collect(account) { host.showMobileNotice(it.code, "Undo", it.undo) }
+        }
+        messages.offer(MobileNotice(account, "Copied"))
+        runCurrent()
+        assertEquals("Copied", host.currentSnackbarData?.visuals?.message)
+        advanceTimeBy(100)
+        messages.offer(MobileNotice(account, "Saved"))
+        messages.offer(MobileNotice(account, "Archived", ArchiveUndo { }))
+        runCurrent()
+        assertEquals("Archived", host.currentSnackbarData?.visuals?.message)
+        assertEquals("Undo", host.currentSnackbarData?.visuals?.actionLabel)
+        advanceTimeBy(2999)
+        runCurrent()
+        assertEquals("Archived", host.currentSnackbarData?.visuals?.message)
+        advanceTimeBy(1)
+        runCurrent()
+        assertEquals("Saved", host.currentSnackbarData?.visuals?.message)
     }
 
     @Test
@@ -261,7 +376,7 @@ class WritingSyncTest {
             }
             assertEquals(composer, withTimeout(10_000) { opened.await() })
             assertTrue(mobile.noteEditors.value.isEmpty())
-            assertEquals("{}", repo.feature(key, ACTIVE_NOTE_EDITOR))
+            assertEquals("""{"kind":"new","draft_id":"${draft.id}"}""", repo.feature(key, ACTIVE_NOTE_EDITOR))
             val delivery = scope.async { mobile.sync.synchronizeOnce() }
             withTimeout(10_000) { postStarted.await() }
             mobile.editor.change(updated.content)
@@ -381,6 +496,98 @@ class WritingSyncTest {
     }
 
     @Test
+    fun confirmingAnEditOnTheSecondSearchPageKeepsTheLoadedRangeAndCardKey() = checkSearchAnchor(reranked = false)
+
+    @Test
+    fun rankedRefreshKeepsTheVisibleEditedCardUntilItArrivesOnTheThirdPage() = checkSearchAnchor(reranked = true)
+
+    private fun checkSearchAnchor(reranked: Boolean) = runBlocking<Unit> {
+        val folder = Files.createTempDirectory("moerise-search-anchor").toFile()
+        val db = testDatabase(folder.resolve("data.sqlite3").absolutePath)
+        val repo = NoteRepository(db)
+        val scope = CoroutineScope(coroutineContext + SupervisorJob())
+        val server = MockWebServer()
+        val original = Note("instance", "memos/second", "Original #writing", "NORMAL", "original", tags = listOf("writing"))
+        val updated = original.copy(content = "Edited #writing", sourceHash = "edited")
+        val first = original.copy(name = "memos/first")
+        val displaced = original.copy(name = "memos/displaced")
+        val confirmed = AtomicInteger()
+        val releaseRefresh = CountDownLatch(1)
+        val refreshStarted = CompletableDeferred<Unit>()
+        val query = if (reranked) SearchQuery(text = "writing", mode = "hybrid") else SearchQuery(tags = setOf("writing"))
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse = when {
+                request.path == "/api/app/v1/session" -> MockResponse().setBody(identity)
+                request.path == "/api/app/v1/notes/second" && request.method == "PATCH" -> {
+                    confirmed.incrementAndGet()
+                    MockResponse().setBody(CoreJson.encodeToString(updated))
+                }
+                request.path == "/api/app/v1/search" ||
+                    request.requestUrl?.encodedPath == "/api/app/v1/notes" && request.requestUrl?.queryParameter("tag") == "writing" -> {
+                    val token = if (reranked) CoreJson.parseToJsonElement(request.body.readUtf8())
+                        .jsonObject["page_token"]?.jsonPrimitive?.content else request.requestUrl?.queryParameter("page_token")
+                    val saved = confirmed.get() > 0
+                    val results = when (token) {
+                        "page-two" -> NotePage(listOf(original), "page-three")
+                        "updated-page-three" -> {
+                            refreshStarted.complete(Unit)
+                            check(releaseRefresh.await(10, TimeUnit.SECONDS))
+                            NotePage(listOf(updated), "updated-page-four")
+                        }
+                        "updated-page-two" -> if (reranked) NotePage(listOf(displaced), "updated-page-three") else {
+                            refreshStarted.complete(Unit)
+                            check(releaseRefresh.await(10, TimeUnit.SECONDS))
+                            NotePage(listOf(updated), "updated-page-four")
+                        }
+                        else -> NotePage(listOf(first), if (saved) "updated-page-two" else "page-two")
+                    }
+                    val body = if (reranked) CoreJson.encodeToString(SearchPage(results.notes, results.nextPageToken, "hybrid", SearchSemantic(used = true)))
+                    else CoreJson.encodeToString(results)
+                    MockResponse().setBody(body)
+                }
+                else -> MockResponse().setResponseCode(404)
+            }
+        }
+        server.start()
+        val session = SessionController(selectedSecrets(server.url("/").toString().removeSuffix("/")), true, scope)
+        val mobile = MobileController(session, { repo }, scope, initialForeground = false)
+        try {
+            withTimeout(10_000) { session.state.first { it.connected } }
+            withTimeout(10_000) { mobile.editor.state.first { it.draft != null } }
+            mobile.page("home")
+            mobile.foreground(true)
+            mobile.sync.foreground(false)
+            mobile.search.change(query)
+            mobile.search.search()
+            withTimeout(10_000) { mobile.search.state.first { it.next == "page-two" } }
+            mobile.search.search(append = true)
+            val loaded = withTimeout(10_000) { mobile.search.state.first { it.next == "page-three" } }
+            val keys = filteredTimelineEntries(loaded.notes, emptyList(), emptyMap()).map { it.key }
+            mobile.search.visibleCards(query, listOf(original.name))
+            mobile.editNote(original)
+            val editor = withTimeout(10_000) { mobile.noteEditors.first { original.name in it } }.getValue(original.name)
+            assertTrue(editor.change(updated.content))
+            mobile.saveNote(original.name)
+            withTimeout(10_000) { mobile.sync.state.first { it.notes.any { note -> note.content == updated.content } } }
+            assertTrue(mobile.sync.synchronizeOnce(SyncTrigger.BACKGROUND_JOB))
+            withTimeout(10_000) { refreshStarted.await() }
+            assertEquals(listOf(first, updated), mobile.search.state.value.notes)
+            releaseRefresh.countDown()
+            val refreshed = withTimeout(10_000) { mobile.search.state.first { it.next == "updated-page-four" } }
+            assertEquals(if (reranked) listOf(first, displaced, updated) else listOf(first, updated), refreshed.notes)
+            val refreshedKeys = filteredTimelineEntries(refreshed.notes, emptyList(), emptyMap()).map { it.key }
+            assertEquals(keys, refreshedKeys.filter { it != displaced.name })
+        } finally {
+            releaseRefresh.countDown()
+            session.close()
+            scope.coroutineContext[Job]!!.cancelAndJoin()
+            server.shutdown()
+            db.close()
+            folder.deleteRecursively()
+        }
+    }
+
+    @Test
     fun signingOutHidesQueuedBodiesBeforeAnOldCycleCanFinishCancelling() = runBlocking<Unit> {
         val folder = Files.createTempDirectory("moerise-queue-visibility-").toFile()
         val db = testDatabase(folder.resolve("data.sqlite3").absolutePath)
@@ -401,7 +608,7 @@ class WritingSyncTest {
         try {
             val draft = repo.restore(account).draft.copy(content = "Only for this account", revision = 1)
             repo.persist(draft)
-            repo.submit(draft, clearEditorRegistration = false)
+            repo.submit(draft)
             withTimeout(10_000) { sync.state.first { it.lastSyncAt == 100L } }
             val delivery = scope.async { sync.synchronizeOnce() }
             withTimeout(10_000) { entered.await() }
@@ -561,7 +768,7 @@ class WritingSyncTest {
             for (backgroundFirst in listOf(true, false)) {
                 val draft = repo.restore(account).draft.copy(content = "pending", revision = 1)
                 repo.persist(draft)
-                repo.submit(draft, clearEditorRegistration = false)
+                repo.submit(draft)
                 val before = checks.get()
                 val allowCycle = CompletableDeferred<Unit>()
                 blockedCheck = allowCycle

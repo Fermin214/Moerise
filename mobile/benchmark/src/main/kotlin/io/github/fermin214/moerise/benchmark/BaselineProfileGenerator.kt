@@ -20,8 +20,9 @@ class BaselineProfileGenerator {
         configure()
         pressHome()
         home()
-        device.findObject(By.res("note_editor")).text = "Baseline profile #android"
-        device.pressBack()
+        openComposer()
+        device.findObject(By.res("quick_editor")).text = "Baseline profile #android"
+        device.findObject(By.res("quick_cancel")).click()
     }
 
     @Test fun starRendering() = profile.collect(

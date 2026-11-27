@@ -19,16 +19,17 @@ class QuickNoteTest {
     private fun visualSetup() = InstrumentationRegistry.getArguments().getString("visualSetup") == "true"
 
     private fun saveNew(text: String): String {
-        compose.homeNode("note_editor").performTextReplacement(text)
-        compose.waitForEditor("note_editor", text)
+        compose.openComposer().performTextReplacement(text)
+        compose.waitForEditor("quick_editor", text)
         saveComposer()
         return compose.waitForCard(text.removeSuffix(" #android"))
     }
 
     private fun saveComposer() {
-        compose.clickHomeTag("save_note")
+        compose.clickTag("quick_save")
         try {
-            compose.waitForEditor("note_editor", "")
+            compose.waitUntil(20_000) { !compose.hasTag("quick_editor_sheet") }
+            check(compose.model().mobile.editor.state.value.draft?.content == "")
         } catch (failure: AssertionError) {
             val mobile = compose.model().mobile
             val state = mobile.editor.state.value
@@ -71,13 +72,14 @@ class QuickNoteTest {
 
     private fun changeState(name: String, expected: String) {
         compose.cardAction(name, "archive_note")
-        val actions = compose.model().mobile.noteActions
+        val mobile = compose.model().mobile
+        val destination = if (expected == "ARCHIVED") mobile.archive else mobile.timeline
         try {
-            compose.waitUntil(CORE_REQUEST_TIMEOUT_MILLIS + 5_000) { !actions.state.value.busy }
-            val state = actions.state.value
-            check(state.error == null && !state.pendingAction && state.note?.state == expected)
+            compose.waitUntil(CORE_REQUEST_TIMEOUT_MILLIS + 5_000) {
+                name !in mobile.stateActions.state.value && destination.state.value.notes.any { it.name == name && it.state == expected }
+            }
         } catch (failure: Throwable) {
-            throw AssertionError("笔记状态未确认：name=$name；expected=$expected；state=${actions.state.value}；" +
+            throw AssertionError("笔记状态未确认：name=$name；expected=$expected；state=${mobile.stateActions.state.value[name]}；" +
                 deviceDiagnostics(), failure)
         }
     }
@@ -89,62 +91,66 @@ class QuickNoteTest {
         val marker = System.currentTimeMillis()
         val text = "Android quick note $marker #android"
         val displayed = text.removeSuffix(" #android")
-        compose.homeNode("note_editor").performTextReplacement(text)
+        compose.openComposer().performTextReplacement(text)
         compose.activityRule.scenario.recreate()
-        compose.waitForEditor("note_editor", text)
+        compose.waitForEditor("quick_editor", text)
         saveComposer()
         val firstName = compose.waitForCard(displayed)
         val peerText = "Android peer note $marker #android"
         val peerName = saveNew(peerText)
 
         val unfinished = "Unfinished composer $marker"
-        compose.homeNode("note_editor").performTextReplacement(unfinished)
+        compose.openComposer().performTextReplacement(unfinished)
+        compose.closeWriting("quick_cancel")
         compose.cardAction(firstName, "edit_note")
         compose.assertSingleEditor(firstName, text)
         val edited = "Android quick note $marker local revision #android"
-        compose.homeNode("note_editor_$firstName").performTextReplacement(edited)
+        compose.onNodeWithTag("note_editor_$firstName").performTextReplacement(edited)
 
-        // 切换先落盘前一条；两条笔记的本机修订均不应进入阅读卡片。
+        compose.closeWriting("cancel_note_$firstName")
         compose.cardAction(peerName, "edit_note")
         compose.assertSingleEditor(peerName, peerText)
-        compose.waitForCard(displayed)
         val peerEdited = "Android peer note $marker local revision #android"
-        compose.homeNode("note_editor_$peerName").performTextReplacement(peerEdited)
+        compose.onNodeWithTag("note_editor_$peerName").performTextReplacement(peerEdited)
         compose.activityRule.scenario.recreate()
         compose.assertSingleEditor(peerName, peerEdited)
+        compose.closeWriting("cancel_note_$peerName")
         compose.navigate("settings")
         compose.navigate("home")
+        compose.waitForCard(displayed)
+        compose.cardAction(peerName, "edit_note")
         compose.assertSingleEditor(peerName, peerEdited)
+        compose.closeWriting("cancel_note_$peerName")
 
         compose.cardAction(firstName, "edit_note")
         compose.assertSingleEditor(firstName, edited)
-        compose.waitForCard(peerText.removeSuffix(" #android"))
-        // 不等待防抖落盘，保存必须采用点击时的最新修订。
         val saved = "Android quick note $marker saved revision #android"
-        compose.homeNode("note_editor_$firstName").performTextReplacement(saved)
-        compose.clickHomeTag("save_note_$firstName")
+        compose.onNodeWithTag("note_editor_$firstName").performTextReplacement(saved)
+        compose.closeWriting("save_note_$firstName")
         compose.waitForCard(saved.removeSuffix(" #android"))
-        compose.waitForEditor("note_editor", unfinished)
+        compose.openComposer()
+        compose.waitForEditor("quick_editor", unfinished)
+        compose.closeWriting("quick_cancel")
 
-        // 保存另一条不能提交或覆盖这条的本机修订；取消后重新编辑仍可恢复。
         compose.cardAction(peerName, "edit_note")
         compose.assertSingleEditor(peerName, peerEdited)
-        compose.homeNode("cancel_note_$peerName").performClick()
+        compose.closeWriting("cancel_note_$peerName")
         compose.waitForCard(peerText.removeSuffix(" #android"))
-        compose.waitForEditor("note_editor", unfinished)
         compose.activityRule.scenario.recreate()
-        compose.waitForEditor("note_editor", unfinished)
+        compose.waitForTag("compose_capsule")
+        compose.onNodeWithTag("quick_editor_sheet").assertDoesNotExist()
         compose.cardAction(peerName, "edit_note")
         compose.assertSingleEditor(peerName, peerEdited)
         val peerSaved = "Android peer note $marker saved revision #android"
-        compose.homeNode("note_editor_$peerName").performTextReplacement(peerSaved)
-        compose.clickHomeTag("save_note_$peerName")
+        compose.onNodeWithTag("note_editor_$peerName").performTextReplacement(peerSaved)
+        compose.closeWriting("save_note_$peerName")
         compose.waitForCard(peerSaved.removeSuffix(" #android"))
-        compose.waitForEditor("note_editor", unfinished)
         compose.cardAction(firstName, "edit_note")
         compose.assertSingleEditor(firstName, saved)
-        compose.homeNode("cancel_note_$firstName").performClick()
-        compose.waitForEditor("note_editor", unfinished)
+        compose.closeWriting("cancel_note_$firstName")
+        compose.openComposer()
+        compose.waitForEditor("quick_editor", unfinished)
+        compose.closeWriting("quick_cancel")
     }
 
     @Test
@@ -178,8 +184,7 @@ class QuickNoteTest {
         val content = "Timeline edited $marker"
         compose.waitForTag("note_editor_$target")
         compose.onNodeWithTag("note_editor_$target").performTextReplacement(content)
-        compose.dismissKeyboard()
-        compose.onNodeWithTag("save_note_$target").performClick()
+        compose.closeWriting("save_note_$target")
         waitTimeline("保存第 30 篇", CORE_REQUEST_TIMEOUT_MILLIS + 5_000) { state ->
             state.notes.any { it.name == target && it.content == content }
         }
@@ -236,17 +241,24 @@ class QuickNoteTest {
         val peerText = "Android delete peer $marker #android"
         val peerName = saveNew(peerText)
         val unfinished = "Unfinished action input $marker"
-        compose.homeNode("note_editor").performTextReplacement(unfinished)
+        compose.openComposer().performTextReplacement(unfinished)
+        compose.closeWriting("quick_cancel")
         changeState(firstName, "ARCHIVED")
         compose.navigate("archive")
         compose.waitForCard(text.removeSuffix(" #android"))
+        compose.cardAction(firstName, "edit_note")
+        compose.assertSingleEditor(firstName, text)
+        compose.closeWriting("cancel_note_$firstName")
+        compose.onNodeWithTag("archive_timeline").assertExists()
         changeState(firstName, "NORMAL")
         compose.navigate("home")
         compose.waitForCard(text.removeSuffix(" #android"))
         deleteCard(firstName)
         compose.waitForCard(peerText.removeSuffix(" #android"))
         deleteCard(peerName)
-        compose.waitForEditor("note_editor", unfinished)
+        compose.openComposer()
+        compose.waitForEditor("quick_editor", unfinished)
+        compose.closeWriting("quick_cancel")
     }
 
     @Test
@@ -254,7 +266,8 @@ class QuickNoteTest {
         compose.signIntoFixture()
         if (visualSetup()) return
         val unfinished = "Navigation draft ${System.currentTimeMillis()}"
-        compose.homeNode("note_editor").performTextReplacement(unfinished)
+        compose.openComposer().performTextReplacement(unfinished)
+        compose.closeWriting("quick_cancel")
         compose.navigate("review")
         compose.navigate("walk")
         acceptanceStep("漫步：等待配置或开始按钮")
@@ -280,6 +293,8 @@ class QuickNoteTest {
         compose.waitUntil(20_000) { compose.model().mobile.privacy.state.value.allowed == false }
         compose.onNodeWithTag("privacy_share").assertIsNotEnabled()
         compose.navigate("home")
-        compose.waitForEditor("note_editor", unfinished)
+        compose.openComposer()
+        compose.waitForEditor("quick_editor", unfinished)
+        compose.closeWriting("quick_cancel")
     }
 }

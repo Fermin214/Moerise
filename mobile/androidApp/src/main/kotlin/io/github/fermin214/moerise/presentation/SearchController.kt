@@ -54,12 +54,18 @@ class SearchController(
     private var filterGeneration = 0L
     private var request: Job? = null
     private var refreshPending = false
+    private var loadedPages = 0
+    private var visibleCards = emptyList<String>()
+    private var editedAnchor: String? = null
     private var filters: Job? = null
     private val cursors = mutableSetOf<String>()
 
     fun clear() {
         cursors.clear()
         refreshPending = false
+        loadedPages = 0
+        visibleCards = emptyList()
+        editedAnchor = null
         ++generation; ++filterGeneration; request?.cancel(); filters?.cancel()
         mutable.value = SearchState()
     }
@@ -67,6 +73,9 @@ class SearchController(
     fun change(query: SearchQuery) {
         if (query == state.value.query) return
         refreshPending = false
+        loadedPages = 0
+        visibleCards = emptyList()
+        editedAnchor = null
         ++generation; request?.cancel()
         val stateChanged = query.state != state.value.query.state
         if (stateChanged) {
@@ -90,7 +99,11 @@ class SearchController(
     fun tab(value: Int) { mutable.update { it.copy(tab = value) } }
     fun month(value: String) { mutable.update { it.copy(month = value) } }
 
-    internal fun replaceNote(note: Note, refresh: Boolean) {
+    internal fun visibleCards(query: SearchQuery, names: List<String>) {
+        if (query == state.value.query) visibleCards = names
+    }
+
+    internal fun replaceNote(note: Note, refresh: Boolean, hit: SearchHit? = null, edited: Boolean = false) {
         val zone = timezone()
         ++generation
         request?.cancel()
@@ -99,10 +112,16 @@ class SearchController(
         mutable.update { current ->
             val matches = current.query.matchesScope(note, zone) &&
                 (current.query.mode != "keyword" || current.query.matchesKeyword(note))
-            current.copy(notes = current.notes.mapNotNull { previous ->
+            val replaced = current.notes.mapNotNull { previous ->
                 if (previous.name != note.name) previous else note.takeIf { matches }
-            }, next = "", loading = false)
+            }
+            val notes = if (matches && hit?.query == current.query && replaced.none { it.name == note.name }) {
+                replaced.toMutableList().apply { add(hit.index.coerceIn(0, size), note) }
+            } else replaced
+            current.copy(notes = notes, next = "", loading = false)
         }
+        if (edited && (visibleCards.isEmpty() || note.name in visibleCards) &&
+            state.value.notes.any { it.name == note.name }) editedAnchor = note.name
         if (refresh) refreshIfNeeded()
     }
 
@@ -115,6 +134,8 @@ class SearchController(
         if (state.value.loading) return
         val query = state.value.query
         val token = if (append) state.value.next.takeIf { it.isNotEmpty() } ?: return else ""
+        val mutationRefresh = !append && refreshPending
+        val pagesToRead = if (mutationRefresh) maxOf(1, loadedPages) else 1
         val stamp = ++generation
         request?.cancel()
         val effectiveMode = if (query.text.isBlank()) "keyword" else query.mode
@@ -129,10 +150,14 @@ class SearchController(
                     val repo = repository!!.invoke()
                     if (repo.isNotesSynced(key)) {
                         val offset = if (append && token.startsWith("local:")) token.removePrefix("local:").toIntOrNull() ?: 0 else 0
-                        val (rows, hasMore) = repo.localSearch(key, query, timezone(), 20, offset)
+                        val (rows, hasMore) = repo.localSearch(key, query, timezone(), 20 * pagesToRead, offset)
                         if (stamp != generation || key != account()) return@launch
                         val next = if (hasMore) "local:${offset + rows.size}" else ""
-                        if (!append) refreshPending = false
+                        loadedPages = if (append) loadedPages + 1 else maxOf(1, (rows.size + 19) / 20)
+                        if (!append) {
+                            refreshPending = false
+                            editedAnchor = null
+                        }
                         mutable.update {
                             it.copy(
                                 notes = (if (append) it.notes + rows else rows).distinctBy { note -> note.name },
@@ -151,39 +176,62 @@ class SearchController(
                     mutable.update { it.copy(loading = true, error = null) }
                 }
                 val active = core() ?: return@launch
-                val page = if (effectiveMode == "keyword") {
-                    val parameters = buildList {
-                        add("state" to query.state); add("order" to "created_desc"); add("page_size" to "20")
-                        if (query.text.isNotEmpty()) add("query" to query.text)
-                        query.tags.sorted().forEach { add("tag" to it) }
-                        if (query.date.isNotEmpty()) add("date" to query.date)
-                        if (token.isNotEmpty()) add("page_token" to token)
-                    }.joinToString("&") { (name, value) -> "$name=${value.encodeURLQueryComponent(encodeFull = true)}" }
-                    val response = active.api(HttpMethod.Get, "/notes?$parameters")
-                    val notes = withContext(Dispatchers.Default) { CoreJson.decodeFromString<io.github.fermin214.moerise.domain.NotePage>(response) }
-                    SearchPage(notes.notes, notes.nextPageToken, "keyword", SearchSemantic())
-                } else {
-                    val body = buildJsonObject {
-                        put("query", query.text); put("mode", effectiveMode); put("state", query.state)
-                        put("tags", JsonArray(query.tags.sorted().map(::JsonPrimitive)))
-                        put("date", query.date); put("page_size", 20); put("page_token", token)
-                    }.toString()
-                    val response = active.api(HttpMethod.Post, "/search", body)
-                    withContext(Dispatchers.Default) { CoreJson.decodeFromString<SearchPage>(response) }
+                suspend fun readPage(cursor: String): SearchPage {
+                    val page = if (effectiveMode == "keyword") {
+                        val parameters = buildList {
+                            add("state" to query.state); add("order" to "created_desc"); add("page_size" to "20")
+                            if (query.text.isNotEmpty()) add("query" to query.text)
+                            query.tags.sorted().forEach { add("tag" to it) }
+                            if (query.date.isNotEmpty()) add("date" to query.date)
+                            if (cursor.isNotEmpty()) add("page_token" to cursor)
+                        }.joinToString("&") { (name, value) -> "$name=${value.encodeURLQueryComponent(encodeFull = true)}" }
+                        val response = active.api(HttpMethod.Get, "/notes?$parameters")
+                        val notes = withContext(Dispatchers.Default) { CoreJson.decodeFromString<io.github.fermin214.moerise.domain.NotePage>(response) }
+                        SearchPage(notes.notes, notes.nextPageToken, "keyword", SearchSemantic())
+                    } else {
+                        val body = buildJsonObject {
+                            put("query", query.text); put("mode", effectiveMode); put("state", query.state)
+                            put("tags", JsonArray(query.tags.sorted().map(::JsonPrimitive)))
+                            put("date", query.date); put("page_size", 20); put("page_token", cursor)
+                        }.toString()
+                        val response = active.api(HttpMethod.Post, "/search", body)
+                        withContext(Dispatchers.Default) { CoreJson.decodeFromString<SearchPage>(response) }
+                    }
+                    require(page.mode in setOf("keyword", "semantic", "hybrid")) { "INCOMPATIBLE_CORE" }
+                    require(page.notes.all { it.instanceId == key.split('\u0000')[1] &&
+                        Regex("^memos/[A-Za-z0-9_-]+$").matches(it.name) && it.sourceHash.isNotBlank() &&
+                        it.state in setOf("NORMAL", "ARCHIVED") && (query.state == "ALL" || it.state == query.state)
+                    }) { "ACCOUNT_CHANGED" }
+                    return page
                 }
-                require(page.mode in setOf("keyword", "semantic", "hybrid")) { "INCOMPATIBLE_CORE" }
-                require(page.notes.all { it.instanceId == key.split('\u0000')[1] &&
-                    Regex("^memos/[A-Za-z0-9_-]+$").matches(it.name) && it.sourceHash.isNotBlank() &&
-                    it.state in setOf("NORMAL", "ARCHIVED") && (query.state == "ALL" || it.state == query.state)
-                }) { "ACCOUNT_CHANGED" }
-                if (stamp != generation || key != account()) return@launch
+                val visited = if (append) cursors.toMutableSet() else mutableSetOf()
+                val pages = mutableListOf<SearchPage>()
+                val names = mutableSetOf<String>()
+                fun missingAnchor(): Boolean {
+                    if (!mutationRefresh || pages.first().mode == "keyword") return false
+                    val retained = state.value.notes.map { it.name }.toSet()
+                    val firstVisible = visibleCards.firstOrNull { it in retained }
+                    return listOfNotNull(firstVisible, editedAnchor).any { it in retained && it !in names }
+                }
+                var next = token
+                do {
+                    val page = readPage(next)
+                    if (stamp != generation || key != account()) return@launch
+                    pages.add(page)
+                    names.addAll(page.notes.map { it.name })
+                    next = page.nextPageToken.takeIf { it.isNotBlank() && visited.add(it) }.orEmpty()
+                } while (next.isNotEmpty() && (pages.size < pagesToRead || missingAnchor()))
+                cursors.clear()
+                cursors.addAll(visited)
+                loadedPages = if (append) loadedPages + 1 else pages.size
                 if (!append) {
-                    cursors.clear()
                     refreshPending = false
+                    editedAnchor = null
                 }
-                val next = page.nextPageToken.takeIf { it.isNotBlank() && cursors.add(it) }.orEmpty()
-                mutable.update { it.copy(notes = (if (append) it.notes + page.notes else page.notes).distinctBy { note -> note.name },
-                    next = next, responseMode = page.mode, semantic = page.semantic, loading = false) }
+                val rows = pages.flatMap { it.notes }
+                val first = pages.first()
+                mutable.update { it.copy(notes = (if (append) it.notes + rows else rows).distinctBy { note -> note.name },
+                    next = next, responseMode = first.mode, semantic = first.semantic, loading = false) }
                 if (!append) privacy?.record(operation, started = started)
             } catch (error: Exception) {
                 if (!append && key == account()) privacy?.record(operation, usageResult(error), started, error = error)

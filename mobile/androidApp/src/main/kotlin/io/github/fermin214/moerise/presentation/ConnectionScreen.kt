@@ -39,6 +39,7 @@ fun ConnectionScreen(controller: SessionController, strings: Strings, onConnecte
     var origin by rememberSaveable(state.profile?.origin) { mutableStateOf(state.profile?.origin ?: "") }
     var username by rememberSaveable { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
+    var passwordShown by remember { mutableStateOf(false) }
     var submitted by remember { mutableStateOf(false) }
     var changingServer by remember(state.profile?.origin) { mutableStateOf(state.profile == null) }
     var languageMenu by remember { mutableStateOf(false) }
@@ -48,11 +49,20 @@ fun ConnectionScreen(controller: SessionController, strings: Strings, onConnecte
             focusManager.clearFocus()
             keyboard?.hide()
             submitted = true
+            passwordShown = false
             controller.login(origin, username, password)
-            password = ""
         }
     }
-    LaunchedEffect(state.connected, state.busy) { if (submitted && state.connected && !state.busy) onConnected() }
+    LaunchedEffect(state.connected, state.busy, state.error) {
+        if (submitted && !state.busy) {
+            submitted = false
+            if (state.connected) {
+                password = ""
+                onConnected()
+            }
+        }
+    }
+    DisposableEffect(Unit) { onDispose { password = "" } }
     BoxWithConstraints(Modifier.fillMaxSize().imePadding()) {
         Column(
             Modifier.fillMaxWidth().verticalScroll(rememberScrollState())
@@ -94,7 +104,7 @@ fun ConnectionScreen(controller: SessionController, strings: Strings, onConnecte
                     Spacer(Modifier.height(24.dp))
                     Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
                         if (changingServer) ConnectionField(
-                            origin, { if (origin != it) { origin = it; password = ""; submitted = false } }, strings.text("服务地址", "Server address"),
+                            origin, { origin = it }, strings.text("服务地址", "Server address"),
                             "server_origin", !state.busy, placeholder = "https://notes.example.org",
                             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
                         ) else TextButton(onClick = { changingServer = true }, enabled = !state.busy, modifier = Modifier.testTag("server_change")) {
@@ -107,9 +117,16 @@ fun ConnectionScreen(controller: SessionController, strings: Strings, onConnecte
                         ConnectionField(
                             password, { password = it }, strings.text("密码", "Password"),
                             "server_password", !state.busy,
-                            visualTransformation = PasswordVisualTransformation(),
+                            visualTransformation = if (passwordShown && !state.busy) VisualTransformation.None else PasswordVisualTransformation(),
                             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
                             onSubmit = ::submitLogin,
+                            trailing = {
+                                IconButton(onClick = { passwordShown = !passwordShown }, enabled = !state.busy,
+                                    modifier = Modifier.size(44.dp).testTag("toggle_password")) {
+                                    WebIcon(if (passwordShown) WebIcon.EyeOff else WebIcon.Eye,
+                                        if (passwordShown) strings.text("隐藏密码", "Hide password") else strings.text("显示密码", "Show password"))
+                                }
+                            },
                         )
                         state.error?.let {
                             Text(connectionError(it, strings), color = MaterialTheme.colorScheme.error,
@@ -146,6 +163,7 @@ private fun ConnectionField(
     placeholder: String? = null, keyboardOptions: KeyboardOptions = KeyboardOptions.Default,
     visualTransformation: VisualTransformation = VisualTransformation.None,
     onSubmit: (() -> Unit)? = null,
+    trailing: (@Composable () -> Unit)? = null,
 ) {
     val focus = LocalFocusManager.current
     val textStyle = MaterialTheme.typography.bodyLarge.copy(fontSize = 16.sp, lineHeight = 20.sp)
@@ -162,15 +180,13 @@ private fun ConnectionField(
                 .border(1.dp, MoeriseColors.Line, RoundedCornerShape(6.dp))
                 .testTag(tag).semantics { contentDescription = label },
             decorationBox = { innerTextField ->
-                Box(
-                    Modifier.fillMaxWidth().heightIn(min = 44.dp).padding(horizontal = 12.dp, vertical = 10.dp)
-                        .testTag(if (value.isEmpty()) "${tag}_empty" else "${tag}_filled"),
-                    contentAlignment = Alignment.CenterStart,
-                ) {
-                    if (value.isEmpty() && placeholder != null) {
-                        Text(placeholder, style = textStyle, color = MoeriseColors.Muted)
+                Row(Modifier.fillMaxWidth().heightIn(min = 44.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Box(Modifier.weight(1f).padding(horizontal = 12.dp, vertical = 10.dp)
+                        .testTag(if (value.isEmpty()) "${tag}_empty" else "${tag}_filled")) {
+                        if (value.isEmpty() && placeholder != null) Text(placeholder, style = textStyle, color = MoeriseColors.Muted)
+                        innerTextField()
                     }
-                    innerTextField()
+                    trailing?.invoke()
                 }
             },
         )

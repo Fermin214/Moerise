@@ -136,7 +136,9 @@ data class WalkState(
     val configurationLoading: Boolean = false, val configurationError: String? = null,
     val offline: Boolean = false,
     val floaters: List<Note> = emptyList(), val floatersLoading: Boolean = false, val floaterError: String? = null,
-)
+) {
+    val initialConfigurationLoading: Boolean get() = configurationLoading && embeddingEnabled == null
+}
 
 class WalkController(
     private val core: () -> CoreClient?, private val account: () -> String?, private val scope: CoroutineScope,

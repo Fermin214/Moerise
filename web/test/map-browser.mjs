@@ -108,8 +108,10 @@ async function capture(page, name) { if (process.env.MOERISE_BROWSER_ARTIFACTS) 
 test('a tag in the star reader opens the home filter', async t => {
   const { page, state, url } = await fixture(t);
   state.notes[0].content += ' #想法。';
+  state.notes[0].tags.push('元数据');
   await login(page, url); await ready(page);
   await marker(page, 0).press('Enter');
+  await card(page).locator('.hd').getByRole('button', { name: '#元数据', exact: true }).waitFor();
   await card(page).getByRole('button', { name: '#想法', exact: true }).click();
   await page.waitForURL(value => value.pathname === '/' && value.searchParams.get('tag') === '想法');
 });

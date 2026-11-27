@@ -238,6 +238,45 @@ test('archive undo uses the returned hash and expires after three seconds', asyn
   assert.equal(note.state, 'ARCHIVED');
 });
 
+test('long timeline notes fold by height and collapse beneath the mobile sticky header', async t => {
+  const { page, state, url } = await fixture(t, 'zh-CN', { viewport: { width: 390, height: 844 }, isMobile: true });
+  const note = state.notes.get('n09');
+  note.content = Array.from({ length: 35 }, (_, index) => `正文 ${index} · 长卡片回归`).join('\n\n');
+  note.attachments = Array.from({ length: 4 }, (_, index) => ({
+    name: `attachments/doc${index}`, filename: `part-${index}.pdf`, type: 'application/pdf', size: 3,
+    content_url: `/api/app/v1/notes/n09/attachments/doc${index}/content`,
+  }));
+  await page.goto(url); await login(page);
+  const card = page.locator('#notes [data-name="memos/n09"]');
+  const preview = card.locator('.note-fold-body');
+  const expand = card.getByRole('button', { name: '展开全文', exact: true });
+  const collapse = card.getByRole('button', { name: '收起', exact: true });
+  await expand.waitFor();
+  assert.equal(await preview.evaluate(element => element.offsetHeight), 260);
+  assert.equal(await card.locator('.attachment-list a').count(), 4);
+  await expand.click();
+  assert.ok(await preview.evaluate(element => element.offsetHeight) > 380);
+  await page.evaluate(() => scrollTo(0, 0));
+  await collapse.scrollIntoViewIfNeeded();
+  assert.ok(await card.evaluate(element => element.getBoundingClientRect().top <
+    document.querySelector('.mobile-header').getBoundingClientRect().bottom));
+  await collapse.click();
+  await page.waitForFunction(() => {
+    const card = document.querySelector('#notes [data-name="memos/n09"]');
+    const header = document.querySelector('.mobile-header');
+    return Math.abs(card.getBoundingClientRect().top - header.getBoundingClientRect().bottom) <= 1;
+  });
+  await expand.click();
+  await card.locator('.note-tags').getByRole('button', { name: '#想法', exact: true }).click();
+  await page.waitForURL(value => value.searchParams.get('tag') === '想法');
+  await collapse.waitFor();
+  await collapse.click();
+  await expand.waitFor();
+  await page.goto(`${url}/?query=${encodeURIComponent('长卡片回归')}`);
+  await card.waitFor();
+  assert.equal(await preview.count(), 0);
+});
+
 test('CSRF renewal discards drafts and never replays a note after an instance or author change', async t => {
   const { page, state, url } = await fixture(t);
   await page.goto(url);

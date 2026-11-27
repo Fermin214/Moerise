@@ -139,15 +139,13 @@ class EditorController(
         }
     }
 
-    fun change(content: String) {
-        if (state.value.busy) return
-        val id = state.value.draft?.id ?: return
-        mutable.update { before ->
-            val draft = before.draft
-            if (draft?.id != id) before else before.copy(
-                draft = draft.copy(content = content, revision = draft.revision + 1), error = null)
-        }
+    fun change(content: String): Boolean {
+        val before = state.value
+        val draft = before.draft ?: return false
+        if (before.busy || !mutable.compareAndSet(before, before.copy(
+                draft = draft.copy(content = content, revision = draft.revision + 1), error = null))) return false
         scheduleFlush()
+        return true
     }
 
     private fun scheduleFlush(immediate: Boolean = false) {
@@ -209,6 +207,28 @@ class EditorController(
         false
     }
 
+    internal suspend fun dismiss(clearMarker: suspend (DraftEntity) -> Unit, onClosed: suspend () -> Unit): Boolean {
+        val before = state.value
+        val draft = before.draft ?: return false
+        if (before.busy || before.importing || !mutable.compareAndSet(before, before.copy(busy = true))) return false
+        val stamp = generation
+        return try {
+            localLock.withLock {
+                if (generation != stamp) return false
+                flushLatestLocked()
+                clearMarker(draft)
+            }
+            onClosed()
+            true
+        } catch (error: Exception) {
+            if (error is CancellationException) throw error
+            if (generation == stamp) mutable.update { it.copy(error = "LOCAL_WRITE_FAILED") }
+            false
+        } finally {
+            if (generation == stamp) mutable.update { it.copy(busy = false) }
+        }
+    }
+
     suspend fun enqueue(returnHome: Boolean = true, onEnqueued: (DraftEntity) -> Unit = {}): Boolean {
         val before = state.value
         if (before.busy || before.importing) return false
@@ -231,8 +251,8 @@ class EditorController(
                     current.baselineJson?.let { body -> CoreJson.decodeFromString<Note>(body) }
                 }
                 if (acknowledged != null && requireNotNull(previousWrite).draftRevision >= submitted.revision) {
+                    repo.clearActiveEditor(submitted.accountKey, submitted.id)
                     if (!returnHome) {
-                        repo.putFeature(submitted.accountKey, ACTIVE_NOTE_EDITOR, "{}")
                         mutable.value = EditorUiState(accountKey = submitted.accountKey)
                     }
                     return@withLock true
@@ -241,7 +261,7 @@ class EditorController(
                     completedDraft(submitted, requireNotNull(previousWrite), acknowledged)
                         .copy(queuedRevisionJson = null)
                     else submitted
-                val committed = repo.submit(frozen, clearEditorRegistration = !returnHome)
+                val committed = repo.submit(frozen)
                 val next = committed.home
                 val delivery = runCatching { onEnqueued(committed.frozen) }
                 mutable.update { latest ->
@@ -278,6 +298,7 @@ class EditorController(
 
     fun merge(content: String, remote: Note, attachments: AttachmentEdits = AttachmentEdits()) {
         val before = state.value
+        if (before.busy) return
         val draft = before.draft ?: return
         require(draft.conflictJson != null && draft.targetName == remote.name)
         mutable.value = before.copy(draft = draft.copy(content = content, revision = draft.revision + 1,
@@ -290,8 +311,10 @@ class EditorController(
         mutable.update { if (draftId == null || it.draft?.id == draftId) it.copy(error = code) else it }
     }
 
-    fun importing(draftId: String, value: Boolean) {
-        mutable.update { if (it.draft?.id == draftId) it.copy(importing = value) else it }
+    fun importing(draftId: String, value: Boolean): Boolean {
+        val before = state.value
+        return before.draft?.id == draftId && (!value || !before.busy) &&
+            mutable.compareAndSet(before, before.copy(importing = value))
     }
 
     fun attach(accountKey: String, draftId: String, files: List<StagedAttachment>): Boolean {

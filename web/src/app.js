@@ -3,7 +3,7 @@ import { Draft, readAttachments } from './draft.js';
 import { errorMessage as errorText } from './errors.js';
 import { pages, notePath, filters, timelineURL, safeFrom, detailURL, noteID, attachmentURL, rasterImage } from './routes.js';
 import { el, button } from './dom.js';
-import { validNote, renderNoteCard, renderReadingCard } from './notes.js';
+import { validNote, observeFoldedBodies, renderNoteCard, renderReadingCard } from './notes.js';
 import { createTimeline, readTimeline, storeTimelineSnapshot } from './timeline.js';
 import { createClient, validIdentity, sessionOwner } from './client.js';
 import { bindMenu, closeMenus } from './menus.js';
@@ -22,6 +22,7 @@ const shell = initShell(loadSidebar);
 const draft = new Draft(), snapshots = new Map();
 const editors = new Map(), pendingWrites = new Map(), failures = new Map();
 const noteSizes = new Map();
+const expandedNotes = new Set();
 const measuredCards = new Map();
 let cardMeasureFrame = null;
 const cardObserver = new ResizeObserver(entries => {
@@ -88,8 +89,8 @@ function readCapabilities() {
   return capabilitiesRequest;
 }
 const searchInput = bindSearchInput($('q'), query => sidebarFilter({ query }));
-const discoveryCard = (note, review = false, className) => renderReadingCard(note, {
-  review, className, formatTime, openNote,
+const discoveryCard = (note, review = false, className, bottomTags = true) => renderReadingCard(note, {
+  review, className, formatTime, openNote, bottomTags,
   onTag: tag => navigate(timelineURL('/', { tags: [tag] })),
 });
 const pageDirty = () => settingsPage?.hasChanges();
@@ -159,7 +160,7 @@ function hidePrivate({ resume = false } = {}) {
   for (const id of ['save-error', 'list-error', 'sidebar-error']) showError($(id), null);
   $('empty').hidden = $('account').hidden = true;
   setText($('account-name'), setText($('calendar-title'), ''));
-  cardObserver.disconnect(); noteSizes.clear(); measuredCards.clear(); clearMedia();
+  cardObserver.disconnect(); observeFoldedBodies($('notes')); noteSizes.clear(); expandedNotes.clear(); measuredCards.clear(); clearMedia();
   $('search-mode').value = 'keyword';
   snapshots.clear();
   discovery?.clear();
@@ -529,6 +530,7 @@ function renderNote(note, detail = false) {
   const card = renderNoteCard(note, {
     detail, formatTime, href: detailURL(note.name, router.url), actions,
     pending: pendingWrites.has(note.name),
+    expandedNotes: !detail && !sourceTimeline().values.query.trim() && !pendingWrites.has(note.name) ? expandedNotes : null,
     onTag: tag => {
       const source = sourceTimeline();
       sidebarFilter({ tags: [...new Set([...source.values.tags, tag])] });
@@ -578,6 +580,7 @@ function renderList(items, entering) {
       cardObserver.observe(card);
     });
   }
+  observeFoldedBodies(list);
   if (positions) {
     moveFrom(list.children, positions);
     const created = [...list.children].find(node => node.dataset.name === entering);
@@ -592,6 +595,7 @@ function replaceCard(note) {
     const next = renderNote(note, notePath.test(location.pathname));
     if (card === next) return;
     card.replaceWith(next);
+    observeFoldedBodies($('notes'));
     if (card.matches('.editor') !== next.matches('.editor')) animateMotion(next, [
       { transform: 'scale(.99)', opacity: .7 }, { transform: 'none', opacity: 1 },
     ]);
@@ -812,6 +816,7 @@ async function showRoute({ focus = false, returning = false } = {}) {
   moduleReload = false;
   $('notes').setAttribute('aria-busy', 'false');
   $('notes').replaceChildren(); closeMenus();
+  observeFoldedBodies($('notes'));
   $('notes').hidden = $('page-end').hidden = ['/settings', '/review', '/walk', '/map'].includes(location.pathname);
   for (const id of ['back', 'view-title', 'capability', 'empty', 'list-retry', 'filters', 'load-more']) $(id).hidden = true;
   showError($('list-error'), null); $('composer').hidden = location.pathname !== '/';
@@ -832,7 +837,7 @@ async function showRoute({ focus = false, returning = false } = {}) {
   });
   if (!isTimeline()) loadSidebar();
   if (isTimeline()) {
-    if (location.pathname === '/archived') { $('view-title').hidden = false; setText($('view-title'), l("归档笔记")); }
+    if (location.pathname === '/archived') { $('view-title').hidden = false; setText($('view-title'), l("归档")); }
     renderFilters();
     timeline = createTimeline({ key: router.key, url: router.url, snapshots, request, sessionRequest,
       render: renderList, showError, handleFailure, onSynced: recordSync });
@@ -876,7 +881,7 @@ async function showRoute({ focus = false, returning = false } = {}) {
     const saved = history.state?.mapView?.owner === owner ? history.state.mapView :
       mapView?.owner === owner ? mapView : null;
     mapPage = module.createMapPage({
-      request: sessionRequest, handleFailure, validNote, renderNote: note => discoveryCard(note, false, 'card map-note'),
+      request: sessionRequest, handleFailure, validNote, renderNote: note => discoveryCard(note, false, 'card map-note', false),
       initialView: saved, pushLayer: router.pushLayer,
       initialData: mapSnapshot,
       onData: value => {

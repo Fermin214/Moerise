@@ -1,6 +1,7 @@
 package io.github.fermin214.moerise.presentation
 
 import io.github.fermin214.moerise.data.*
+import io.github.fermin214.moerise.domain.ApiError
 import io.github.fermin214.moerise.domain.CoreException
 import io.github.fermin214.moerise.domain.IdentityChangedException
 import kotlinx.coroutines.*
@@ -36,8 +37,10 @@ class SessionController(
     private val mutablePreferencesError = MutableStateFlow<String?>(null)
     val preferencesError = mutablePreferencesError.asStateFlow()
     private val languageLock = Mutex()
+    private val invalidationLock = Mutex()
+    private val invalidationCleanups = mutableMapOf<String, Deferred<Result<Unit>>>()
     private var languageRevision = 0L
-    private var generation = 0L
+    @Volatile private var generation = 0L
     private var settingsRevision = 0L
     private var operation: Job? = null
     internal var onRequestFailure: (Long, Exception) -> Unit = { _, _ -> }
@@ -75,11 +78,62 @@ class SessionController(
     }
 
     private fun client(origin: String, stamp: Long): CoreClient =
-        CoreClient(origin, SessionCookies(origin, secrets), onUnauthorized = {
-            scope.launch { if (generation == stamp) mutableState.update { it.copy(connected = false, needsLogin = true) } }
+        CoreClient(origin, SessionCookies(origin, secrets), onUnauthorized = { account ->
+            invalidateDownloads(stamp, account)
         }, onRequestFailure = { started, error ->
             scope.launch { if (generation == stamp) onRequestFailure(started, error) }
         }, onRequest = onNetworkRequest)
+
+    private fun pendingInvalidation(account: String) = "protected-download-cleanup:$account"
+
+    private suspend fun invalidateDownloads(stamp: Long, account: String) {
+        try {
+            withContext(NonCancellable) {
+                val task = invalidationLock.withLock {
+                    if (generation != stamp || state.value.profile?.accountKey != account || state.value.needsLogin)
+                        return@withContext
+                    secrets.write(pendingInvalidation(account), "pending")
+                    if (generation == stamp) mutableState.update { it.copy(connected = false, needsLogin = true) }
+                    cleanupTaskLocked(account)
+                }
+                task.start()
+            }
+        } catch (error: Exception) {
+            if (error is CancellationException) throw error
+            reportInvalidationFailure(stamp)
+        }
+    }
+
+    private fun reportInvalidationFailure(stamp: Long) {
+        if (generation == stamp) mutableState.update {
+            it.copy(connected = false, needsLogin = true, error = "LOCAL_REMOVE_FAILED")
+        }
+    }
+
+    private fun cleanupTaskLocked(account: String): Deferred<Result<Unit>> =
+        invalidationCleanups[account]?.takeUnless { it.isCompleted } ?: scope.async(start = CoroutineStart.LAZY) {
+            try {
+                clearProtectedDownloads()
+                invalidationLock.withLock { secrets.write(pendingInvalidation(account), null) }
+                Result.success(Unit)
+            } catch (error: Exception) {
+                if (error is CancellationException) throw error
+                mutableState.update {
+                    if (it.profile?.accountKey == account && it.needsLogin) it.copy(error = "LOCAL_REMOVE_FAILED") else it
+                }
+                Result.failure(error)
+            }
+        }.also {
+            invalidationCleanups.entries.removeAll { entry -> entry.value.isCompleted }
+            invalidationCleanups[account] = it
+        }
+
+    private suspend fun awaitInvalidation(account: String) {
+        val task = invalidationLock.withLock {
+            if (secrets.read(pendingInvalidation(account)) == null) null else cleanupTaskLocked(account)
+        }
+        task?.await()?.getOrThrow()
+    }
 
     private suspend fun restore() {
         val stamp = ++generation
@@ -92,18 +146,7 @@ class SessionController(
             mutableState.value = SessionUiState(loading = false, profile = profile)
             if (profile == null) return
             val active = client(profile.origin, stamp).also { it.bindAccount(profile.accountKey); core = it }
-            val identity = withTimeout(CORE_REQUEST_TIMEOUT_MILLIS) { active.session() }
-            if (stamp != generation) return
-            val refreshed = repository.select(profile.origin, identity) { selected ->
-                if (stamp != generation) throw CancellationException("Account changed")
-                if (timeStamp == settingsRevision) selected else selected.copy(
-                    timezone = state.value.profile?.timezone ?: selected.timezone,
-                    stargazingEnabled = state.value.profile?.stargazingEnabled ?: selected.stargazingEnabled)
-            }
-            if (stamp == generation) mutableState.update { it.copy(profile = if (timeStamp == settingsRevision) refreshed
-                else refreshed.copy(timezone = it.profile?.timezone ?: refreshed.timezone,
-                    stargazingEnabled = it.profile?.stargazingEnabled ?: refreshed.stargazingEnabled),
-                connected = true, needsLogin = false) }
+            refreshConnection(active, profile, stamp, timeStamp)
         } catch (error: Exception) {
             if (error is CancellationException && error !is TimeoutCancellationException) throw error
             onConnectionFailure(error)
@@ -113,9 +156,10 @@ class SessionController(
 
     private suspend fun restoreSelection(): ConnectionProfile? {
         val profile = repository.selected() ?: return null
-        val notes = removalRepository?.invoke() ?: return profile
-        if (!notes.hasPendingLogout(profile.accountKey)) return profile
         try {
+            awaitInvalidation(profile.accountKey)
+            val notes = removalRepository?.invoke() ?: return profile
+            if (!notes.hasPendingLogout(profile.accountKey)) return profile
             clearProtectedDownloads()
             SessionCookies(profile.origin, secrets).clear()
             repository.clear()
@@ -169,7 +213,7 @@ class SessionController(
     }
 
     suspend fun checkConnection(): Boolean {
-        if (state.value.busy) return false
+        if (state.value.busy || state.value.needsLogin) return false
         val stamp = generation
         val timeStamp = settingsRevision
         val profile = state.value.profile ?: return false
@@ -178,20 +222,7 @@ class SessionController(
             core = it
         }
         return try {
-            val identity = withTimeout(CORE_REQUEST_TIMEOUT_MILLIS) { active.session() }
-            if (stamp != generation) return false
-            val refreshed = repository.select(profile.origin, identity) { selected ->
-                if (stamp != generation) throw CancellationException("Account changed")
-                if (timeStamp == settingsRevision) selected else selected.copy(
-                    timezone = state.value.profile?.timezone ?: selected.timezone,
-                    stargazingEnabled = state.value.profile?.stargazingEnabled ?: selected.stargazingEnabled)
-            }
-            if (stamp != generation) return false
-            mutableState.update { it.copy(profile = if (timeStamp == settingsRevision) refreshed
-                else refreshed.copy(timezone = it.profile?.timezone ?: refreshed.timezone,
-                    stargazingEnabled = it.profile?.stargazingEnabled ?: refreshed.stargazingEnabled),
-                connected = true, needsLogin = false, error = null) }
-            true
+            refreshConnection(active, profile, stamp, timeStamp)
         } catch (error: Exception) {
             if (error is CancellationException && error !is TimeoutCancellationException) throw error
             onConnectionFailure(error)
@@ -202,6 +233,28 @@ class SessionController(
                     error = errorCode(error))
             }
             false
+        }
+    }
+
+    private suspend fun refreshConnection(active: CoreClient, profile: ConnectionProfile, stamp: Long, timeStamp: Long): Boolean {
+        val sessionGeneration = active.sessionGeneration
+        val identity = withTimeout(CORE_REQUEST_TIMEOUT_MILLIS) { active.session() }
+        if (stamp != generation || !active.isSessionCurrent(sessionGeneration)) return false
+        val refreshed = repository.select(profile.origin, identity) { selected ->
+            if (stamp != generation) throw CancellationException("Account changed")
+            if (!active.isSessionCurrent(sessionGeneration)) throw CoreException(401, ApiError("SESSION_UNAUTHORIZED"))
+            if (timeStamp == settingsRevision) selected else selected.copy(
+                timezone = state.value.profile?.timezone ?: selected.timezone,
+                stargazingEnabled = state.value.profile?.stargazingEnabled ?: selected.stargazingEnabled)
+        }
+        return invalidationLock.withLock {
+            if (stamp != generation || !active.isSessionCurrent(sessionGeneration) || state.value.needsLogin)
+                return@withLock false
+            mutableState.update { it.copy(profile = if (timeStamp == settingsRevision) refreshed
+                else refreshed.copy(timezone = it.profile?.timezone ?: refreshed.timezone,
+                    stargazingEnabled = it.profile?.stargazingEnabled ?: refreshed.stargazingEnabled),
+                connected = true, error = null) }
+            true
         }
     }
 
@@ -240,8 +293,9 @@ class SessionController(
         retrySession()
     }
 
-    suspend fun logout() {
+    suspend fun logout(clearDownloads: suspend () -> Unit = clearProtectedDownloads) {
         stopForRemoval()
+        clearDownloads()
         finishLogout()
     }
 

@@ -23,6 +23,7 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import java.util.concurrent.atomic.AtomicReference
 import kotlin.time.TimeSource
 
 
@@ -34,14 +35,20 @@ class CoreClient(
     val origin: String,
     private val cookies: SessionCookies,
     private val engine: HttpClientEngine = platformHttpEngine(),
-    private val onUnauthorized: () -> Unit = {},
+    private val onUnauthorized: suspend (String) -> Unit = {},
     private val onRequestFailure: (Long, Exception) -> Unit = { _, _ -> },
     private val onRequest: () -> Unit = {},
 ) : AutoCloseable {
+    private data class SessionState(
+        val account: String? = null,
+        val identity: SessionIdentity? = null,
+        val generation: Long = 0,
+        val revoked: Boolean = false,
+    )
+
     private val sessionLock = Mutex()
     private val attachmentDownloads = Semaphore(2)
-    private var identity: SessionIdentity? = null
-    private var expectedAccount: String? = null
+    private val sessionState = AtomicReference(SessionState())
     private val client = HttpClient(engine) {
         followRedirects = false
         expectSuccess = false
@@ -53,7 +60,28 @@ class CoreClient(
         }
     }
 
-    fun bindAccount(accountKey: String) { expectedAccount = accountKey }
+    fun bindAccount(accountKey: String) { sessionState.updateAndGet { it.copy(account = accountKey) } }
+    internal val sessionGeneration get() = sessionState.get().generation
+    internal fun isSessionCurrent(generation: Long): Boolean =
+        sessionState.get().let { it.generation == generation && !it.revoked }
+
+    internal val attachmentAccountKey get() = sessionState.get().let { if (it.revoked) null else it.account }
+    internal suspend fun attachmentAccount(): String {
+        val current = sessionState.get()
+        require(!current.revoked) { "SESSION_UNAUTHORIZED" }
+        return current.account ?: session().accountKey(origin)
+    }
+
+    private suspend fun invalidateSession() {
+        val previous = revokeLocalSession()
+        previous.account?.let { onUnauthorized(it) }
+    }
+
+    private fun revokeLocalSession(clearAccount: Boolean = false) = sessionState.getAndUpdate {
+        it.copy(account = if (clearAccount) null else it.account, identity = null, generation = it.generation + 1, revoked = true)
+    }
+
+    private fun sessionUnauthorized() = CoreException(401, ApiError("SESSION_UNAUTHORIZED"))
 
     var lastCapabilities: Capabilities? = null
         private set
@@ -61,21 +89,22 @@ class CoreClient(
         .also { lastCapabilities = it }
 
     suspend fun login(username: String, password: String): SessionIdentity = sessionLock.withLock {
+        val before = sessionState.get()
         val body = buildJsonObject { put("username", username); put("password", password) }.toString()
         val next = CoreJson.decodeFromString<SessionIdentity>(send(HttpMethod.Post, "/session", body))
         require(next.csrfToken.isNotBlank() && next.instanceId.isNotBlank() && next.user.name.isNotBlank())
-        expectedAccount = next.accountKey(origin)
-        identity = next
+        if (!sessionState.compareAndSet(before, before.copy(account = next.accountKey(origin), identity = next, revoked = false)))
+            throw sessionUnauthorized()
         next
     }
 
     suspend fun session(): SessionIdentity = sessionLock.withLock { refreshSession() }
 
     suspend fun boundedMap(): String? {
-        sessionLock.withLock { identity ?: refreshSession() }
+        sessionLock.withLock { sessionState.get().identity ?: refreshSession() }
         onRequest()
         return client.prepareGet("$origin/api/app/v1/map").execute { response ->
-            if (response.status.value == 401) { identity = null; onUnauthorized() }
+            if (response.status.value == 401) invalidateSession()
             if (!response.status.isSuccess()) return@execute null
             val bytes = ByteArray(8 * 1024 * 1024 + 1)
             val channel = response.bodyAsChannel()
@@ -102,17 +131,18 @@ class CoreClient(
     }
 
     private suspend fun refreshSession(): SessionIdentity {
+        val before = sessionState.get()
+        if (before.revoked) throw sessionUnauthorized()
         val next = withTimeout(CORE_REQUEST_TIMEOUT_MILLIS) {
             CoreJson.decodeFromString<SessionIdentity>(send(HttpMethod.Get, "/session"))
         }
+        if (!isSessionCurrent(before.generation)) throw sessionUnauthorized()
         val key = next.accountKey(origin)
-        if (expectedAccount != null && expectedAccount != key) {
-            identity = null
-            onUnauthorized()
+        if (before.account != null && before.account != key) {
+            invalidateSession()
             throw IdentityChangedException()
         }
-        expectedAccount = key
-        identity = next
+        if (!sessionState.compareAndSet(before, before.copy(account = key, identity = next))) throw sessionUnauthorized()
         return next
     }
 
@@ -124,16 +154,33 @@ class CoreClient(
         }
     }
 
-    private suspend fun authenticated(method: HttpMethod, path: String, body: String?, idempotencyKey: String?): String {
-        val current = sessionLock.withLock { identity ?: refreshSession() }
+    internal suspend fun patchNoteState(path: String, body: String, key: String, online: () -> Boolean): String {
+        val started = epochMillis()
+        return try { authenticated(HttpMethod.Patch, path, body, key, online) }
+        catch (error: Exception) {
+            if (error !is CancellationException) onRequestFailure(started, error)
+            throw error
+        }
+    }
+
+    private suspend fun authenticated(method: HttpMethod, path: String, body: String?, idempotencyKey: String?,
+        online: (() -> Boolean)? = null): String {
+        suspend fun preflight(previous: SessionIdentity? = null): SessionIdentity = try {
+            sessionLock.withLock {
+                sessionState.get().identity?.takeUnless { it.csrfToken == previous?.csrfToken } ?: refreshSession()
+            }
+        } catch (error: Exception) {
+            if (online == null || error is CancellationException && !currentCoroutineContext().isActive) throw error
+            throw StateRequestNotSent(error)
+        }
+
+        val current = preflight()
         try {
-            return send(method, path, body, current.csrfToken, idempotencyKey)
+            return send(method, path, body, current.csrfToken, idempotencyKey, online = online)
         } catch (error: CoreException) {
             if (error.detail.code != "CSRF_REJECTED" || path == "/telemetry") throw error
-            val refreshed = sessionLock.withLock {
-                if (identity?.csrfToken == current.csrfToken) refreshSession() else identity ?: refreshSession()
-            }
-            return send(method, path, body, refreshed.csrfToken, idempotencyKey)
+            val refreshed = preflight(current)
+            return send(method, path, body, refreshed.csrfToken, idempotencyKey, online = online)
         }
     }
 
@@ -147,15 +194,15 @@ class CoreClient(
         val name = attachment["name"]?.jsonPrimitive?.content ?: error("INVALID_ATTACHMENT")
         require(Regex("^attachments/[A-Za-z0-9_-]+$").matches(name) &&
             note.attachments.any { it["name"]?.jsonPrimitive?.content == name })
-        val current = sessionLock.withLock { identity ?: refreshSession() }
+        val current = sessionLock.withLock { sessionState.get().identity ?: refreshSession() }
         require(note.instanceId == current.instanceId)
         val path = "/notes/${note.name.removePrefix("memos/")}/attachments/${name.removePrefix("attachments/")}/content"
         onRequest()
         client.prepareGet("$origin/api/app/v1$path").execute { response ->
+            if (response.status.value == 401) invalidateSession()
             if (response.status.value !in 200..299) {
                 val detail = runCatching { CoreJson.decodeFromString<ErrorEnvelope>(response.bodyAsText()).error }
                     .getOrElse { ApiError("HTTP_${response.status.value}") }
-                if (response.status.value == 401) { identity = null; onUnauthorized() }
                 throw CoreException(response.status.value, detail)
             }
             val length = response.headers[HttpHeaders.ContentLength]?.toLongOrNull()
@@ -188,11 +235,13 @@ class CoreClient(
         return result
     }
 
-    private suspend fun send(method: HttpMethod, path: String, body: String? = null, csrf: String? = null, idempotencyKey: String? = null, cookie: String? = null): String {
+    private suspend fun send(method: HttpMethod, path: String, body: String? = null, csrf: String? = null,
+        idempotencyKey: String? = null, cookie: String? = null, online: (() -> Boolean)? = null): String {
         val started = TimeSource.Monotonic.markNow()
         val readOnly = method == HttpMethod.Get ||
             method == HttpMethod.Post && path == "/search"
         if (!readOnly) discardIdleHttpConnections(engine)
+        if (online?.invoke() == false) throw StateRequestNotSent()
         try {
             return sendOnce(method, path, body, csrf, idempotencyKey, cookie)
         } catch (error: IOException) {
@@ -210,7 +259,7 @@ class CoreClient(
         require(path.startsWith("/") && !path.startsWith("//") && '#' !in path)
         onRequest()
         try {
-            val response = client.request("$origin/api/app/v1$path") {
+            return client.prepareRequest("$origin/api/app/v1$path") {
                 this.method = method
                 timeout { requestTimeoutMillis = timeoutMillis; socketTimeoutMillis = timeoutMillis }
                 if (method != HttpMethod.Get && method != HttpMethod.Head) {
@@ -220,15 +269,16 @@ class CoreClient(
                 idempotencyKey?.let { header("Idempotency-Key", it) }
                 cookie?.let { header(HttpHeaders.Cookie, it) }
                 if (body != null) { contentType(ContentType.Application.Json); setBody(body) }
+            }.execute { response ->
+                if (response.status.value == 401) invalidateSession()
+                val text = response.bodyAsText()
+                if (response.status.value !in 200..299) {
+                    val detail = runCatching { CoreJson.decodeFromString<ErrorEnvelope>(text).error }
+                        .getOrElse { ApiError("HTTP_${response.status.value}") }
+                    throw CoreException(response.status.value, detail)
+                }
+                text
             }
-            val text = response.bodyAsText()
-            if (response.status.value !in 200..299) {
-                val detail = runCatching { CoreJson.decodeFromString<ErrorEnvelope>(text).error }
-                    .getOrElse { ApiError("HTTP_${response.status.value}") }
-                if (response.status.value == 401) { identity = null; onUnauthorized() }
-                throw CoreException(response.status.value, detail)
-            }
-            return text
         } catch (error: IOException) {
             logClientFailure("${method.value} ${path.substringBefore('?').split('/')[1]}", error)
             throw error
@@ -236,9 +286,7 @@ class CoreClient(
     }
 
     suspend fun clearLocalSession(): RemoteLogout {
-        val csrf = identity?.csrfToken
-        identity = null
-        expectedAccount = null
+        val csrf = revokeLocalSession(clearAccount = true).identity?.csrfToken
         return RemoteLogout(cookies.detach()?.let(::renderCookieHeader), csrf)
     }
 
@@ -253,5 +301,5 @@ class CoreClient(
         revokeSession(clearLocalSession())
     }
 
-    override fun close() { identity = null; client.close() }
+    override fun close() { revokeLocalSession(clearAccount = true); client.close() }
 }

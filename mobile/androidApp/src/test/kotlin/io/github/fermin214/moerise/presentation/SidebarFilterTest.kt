@@ -4,6 +4,7 @@ import io.github.fermin214.moerise.data.*
 import io.github.fermin214.moerise.domain.Note
 import io.github.fermin214.moerise.domain.SyncNotesResponse
 import io.ktor.client.engine.mock.*
+import io.ktor.http.HttpMethod
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.content.OutgoingContent
 import java.nio.file.Files
@@ -243,12 +244,13 @@ class SidebarFilterTest {
             withTimeout(5_000) { sidebar.state.first { it.tags == listOf(TagCount("old", 1)) } }
             val version = repository.projection.value
             var changed = false
-            val controller = NoteDetailController({ repository }, { account }, { core }, scope) { _, _, _ -> changed = true }
+            val controller = NoteStateActions({ repository }, { account }, { core }, scope, { _, _, _ -> changed = true },
+                { _, _ -> }, {})
             val interrupt = launch(Dispatchers.Unconfined, start = CoroutineStart.UNDISPATCHED) {
                 repository.projection.drop(1).first()
                 controller.clear()
             }
-            controller.changeState(original)
+            controller.change(original)
             withTimeout(5_000) { interrupt.join() }
             assertEquals(archived, repository.localNote(account, original.name))
             assertFalse(changed)
@@ -268,7 +270,7 @@ class SidebarFilterTest {
     }
 
     @Test
-    fun queuedArchiveUndoUsesItsOwnHashAndReportsAStaleHash() = runBlocking<Unit> {
+    fun simultaneousNoteActionsKeepTheirOwnHashesAndRefreshARejectedRestore() = runBlocking<Unit> {
         val folder = Files.createTempDirectory("moerise-queued-undo").toFile()
         val db = testDatabase(folder.resolve("data.sqlite3").absolutePath)
         val repository = NoteRepository(db)
@@ -280,7 +282,7 @@ class SidebarFilterTest {
         val stale = archived.copy(name = "memos/stale", sourceHash = "stale-archive-response-hash")
         val otherStarted = CompletableDeferred<Unit>()
         val resume = CompletableDeferred<Unit>()
-        val undoBody = CompletableDeferred<String>()
+        val restoreBody = CompletableDeferred<String>()
         val staleBody = CompletableDeferred<String>()
         val core = CoreClient(origin, SessionCookies(origin, MemorySecrets()), MockEngine { request ->
             when (request.url.encodedPath) {
@@ -291,34 +293,42 @@ class SidebarFilterTest {
                     respond(CoreJson.encodeToString(other.copy(state = "ARCHIVED", sourceHash = "other-archived")))
                 }
                 "/api/app/v1/notes/archived" -> {
-                    undoBody.complete((request.body as OutgoingContent.ByteArrayContent).bytes().decodeToString())
+                    restoreBody.complete((request.body as OutgoingContent.ByteArrayContent).bytes().decodeToString())
                     respond(CoreJson.encodeToString(archived.copy(state = "NORMAL", sourceHash = "restored")))
                 }
                 "/api/app/v1/notes/stale" -> {
-                    staleBody.complete((request.body as OutgoingContent.ByteArrayContent).bytes().decodeToString())
-                    respond("""{"error":{"code":"SOURCE_CHANGED","message":"Note changed"}}""", HttpStatusCode.Conflict)
+                    if (request.method == HttpMethod.Get) respond(CoreJson.encodeToString(stale.copy(sourceHash = "current")))
+                    else {
+                        staleBody.complete((request.body as OutgoingContent.ByteArrayContent).bytes().decodeToString())
+                        respond("""{"error":{"code":"SOURCE_CHANGED","message":"Note changed"}}""", HttpStatusCode.Conflict)
+                    }
                 }
                 else -> error(request.url.encodedPath)
             }
         })
         try {
             val restored = CompletableDeferred<Note>()
+            val refreshed = CompletableDeferred<Note>()
             val failure = CompletableDeferred<String>()
-            val controller = NoteDetailController({ repository }, { account }, { core }, scope) { name, _, note ->
+            val controller = NoteStateActions({ repository }, { account }, { core }, scope, { name, _, note ->
                 if (name == archived.name && note != null) restored.complete(note)
-            }
-            controller.changeState(other)
+                if (name == stale.name && note != null) refreshed.complete(note)
+            }, { code, _ -> if (code != "NOTE_ARCHIVED") failure.complete(code) }, {})
+            controller.change(other)
             withTimeout(5_000) { otherStarted.await() }
-            controller.undoArchive(archived) { failure.complete(it) }
-            controller.undoArchive(stale) { failure.complete(it) }
-            assertFalse(undoBody.isCompleted)
-            resume.complete(Unit)
+            controller.change(archived)
+            controller.change(stale)
             assertEquals("NORMAL", withTimeout(5_000) { restored.await() }.state)
-            assertEquals("""{"source_hash":"archive-response-hash","state":"NORMAL"}""", undoBody.await())
-            assertEquals("SOURCE_CHANGED", withTimeout(5_000) { failure.await() })
+            assertEquals("""{"source_hash":"archive-response-hash","state":"NORMAL"}""", restoreBody.await())
+            assertEquals("NOTE_STATE_CONFLICT", withTimeout(5_000) { failure.await() })
             assertEquals("""{"source_hash":"stale-archive-response-hash","state":"NORMAL"}""", staleBody.await())
             assertEquals("restored", repository.localNote(account, archived.name)?.sourceHash)
+            assertEquals("current", withTimeout(5_000) { refreshed.await() }.sourceHash)
+            assertNull(repository.action(account, stale.name))
+            assertNotNull(repository.action(account, other.name))
+            resume.complete(Unit)
         } finally {
+            resume.complete(Unit)
             scope.coroutineContext[Job]!!.cancelAndJoin()
             core.close(); db.close(); folder.deleteRecursively()
         }

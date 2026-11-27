@@ -18,12 +18,13 @@ if mode not in ("run", "startup", "stars"):
     parser.error("用 --mode 或 device.json 指定 run、startup 或 stars")
 
 prefix = "io.github.fermin214.moerise.benchmark."
+startup_ready_metric = "note_editor_readyMs"
 expected = {}
 if mode in ("run", "startup"):
     profiles = ("WithoutProfile",) if device.get("profile_mode") == "without" else ("WithoutProfile", "WithProfile")
     for profile in profiles:
         expected[(prefix + "StartupBenchmark", "cold" + profile)] = (
-            50, {"timeToInitialDisplayMs", "timeToFullDisplayMs", "note_editor_readyMs"},
+            50, {"timeToInitialDisplayMs", "timeToFullDisplayMs", startup_ready_metric},
             {"timeToFullDisplayMs": 1000})
         expected[(prefix + "StartupBenchmark", "foreground" + profile)] = (
             50, {"note_foreground_readyMs"}, {"note_foreground_readyMs": 300})
@@ -118,6 +119,8 @@ for source in sorted(raw.rglob("*benchmarkData.json")):
                     metrics[name] = dict(source_name=source_name, iterations=len(runs), samples=len(samples),
                                          p50=percentile(samples, .5), p95=percentile(samples, .95),
                                          maximum=max(samples))
+                    if name == startup_ready_metric:
+                        metrics[name]["definition"] = "Activity 创建至草稿恢复后首页写作胶囊的首个可交互帧"
         for name in sorted(required - metrics.keys()):
             problems.append(f"缺少有效指标 {name}")
         profiler_outputs = benchmark.get("profilerOutputs", [])

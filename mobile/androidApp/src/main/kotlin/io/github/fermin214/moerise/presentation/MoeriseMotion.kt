@@ -7,6 +7,7 @@ import android.provider.Settings
 import android.view.HapticFeedbackConstants
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.CubicBezierEasing
+import androidx.compose.animation.core.FiniteAnimationSpec
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.runtime.*
@@ -51,7 +52,7 @@ internal fun rememberMoeriseHaptic(): () -> Unit {
 @Composable
 internal fun Modifier.motionEnter(
     key: Any?, distance: Float = 8f, initialScale: Float = 1f, delayMillis: Long = 0,
-    spatial: Boolean = false, animateInitial: Boolean = true,
+    spatial: Boolean = false, animateInitial: Boolean = true, spec: FiniteAnimationSpec<Float>? = null,
 ): Modifier {
     val reduced = LocalReducedMotion.current
     val appeared = remember { mutableStateOf(false) }
@@ -61,6 +62,7 @@ internal fun Modifier.motionEnter(
         if (!reduced && delayMillis > 0 && progress.value == 0f) delay(delayMillis)
         progress.animateTo(1f, when {
             reduced -> MoeriseMotion.fade()
+            spec != null -> spec
             spatial -> MoeriseMotion.spatial()
             else -> MoeriseMotion.responsive()
         })

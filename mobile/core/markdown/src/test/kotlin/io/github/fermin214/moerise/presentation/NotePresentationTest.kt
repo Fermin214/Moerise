@@ -51,6 +51,36 @@ class NotePresentationTest {
         assertEquals(listOf("日记"), NoteTagScanner("左 `\n\n#日记\n\n` 右", lightweight = true).spans().map { it.tag })
         assertEquals(listOf("日记"), NoteTagScanner("左 \\`\n#日记\n结尾`", lightweight = true).spans().map { it.tag })
     }
+
+    @Test
+    fun editorSpansFollowMarkdownSyntaxAndKeepRawOffsets() {
+        val text = "# 标题 **粗体** *斜体* ~~划去~~\n\n- 列表\n\n1. 列表\n\n1.无空格\n\n> 引用\n\n" +
+            "`#行内代码` [链接](https://example.test/#锚点) \\#转义\n\n```md\n# 围栏\n#代码标签\n```\n\n🙂 #日记"
+        val spans = markdownHighlightSpans(text)
+        fun samples(style: MarkdownHighlightStyle) = spans.filter { it.style == style }.map { text.substring(it.start, it.end) }
+        assertEquals(listOf("**粗体**"), samples(MarkdownHighlightStyle.Bold))
+        assertEquals(listOf("*斜体*"), samples(MarkdownHighlightStyle.Italic))
+        assertEquals(listOf("~~划去~~"), samples(MarkdownHighlightStyle.Strike))
+        assertEquals(listOf("- ", "1. "), samples(MarkdownHighlightStyle.ListPrefix))
+        assertEquals(listOf("> "), samples(MarkdownHighlightStyle.QuotePrefix))
+        assertEquals(listOf("`#行内代码`"), samples(MarkdownHighlightStyle.InlineCode))
+        assertEquals(listOf("链接"), samples(MarkdownHighlightStyle.LinkLabel))
+        assertEquals(listOf("#日记"), samples(MarkdownHighlightStyle.Tag))
+        assertEquals(1, samples(MarkdownHighlightStyle.Heading1).size)
+        assertTrue(samples(MarkdownHighlightStyle.CodeFence).single().contains("#代码标签"))
+        assertTrue(samples(MarkdownHighlightStyle.SyntaxMarker).containsAll(listOf("#", "(", ")", "`", "```")))
+        assertTrue(spans.all { it.start >= 0 && it.end <= text.length && it.start < it.end })
+    }
+
+    @Test
+    fun editorSpansDegradeAtSixteenKibibytesWithoutLeakingFencedTags() {
+        val text = "汉".repeat(6000) + "\n\n###### 标题 ######\r\n\n**普通** `#代码` #有效\n\n~~~md\n# 标题\n#隐藏\n~~~"
+        val spans = markdownHighlightSpans(text)
+        assertEquals(setOf(MarkdownHighlightStyle.Heading6, MarkdownHighlightStyle.SyntaxMarker,
+            MarkdownHighlightStyle.Tag, MarkdownHighlightStyle.CodeFence), spans.map { it.style }.toSet())
+        assertEquals("#有效", spans.single { it.style == MarkdownHighlightStyle.Tag }.let { text.substring(it.start, it.end) })
+    }
+
     @Test
     fun knownTagsOnlyAndMetadataOrder() {
         val tags = listOf("阅读", "Work", "阅读", "Work/Child", "Work")

@@ -69,9 +69,9 @@ dialog::backdrop { overflow:hidden; overscroll-behavior:contain; }
 .map-tools .focus-tool:not(:focus-visible) { position:absolute; width:1px; height:1px; padding:0; clip-path:inset(50%); overflow:hidden; }
 .map-reader > p { margin:12px 20px 20px; }
 .map-page .map-retry { position:absolute; left:1rem; top:1rem; z-index:5; }
-.snackbar { position:fixed; left:50%; bottom:max(16px,env(safe-area-inset-bottom)); z-index:30; translate:-50% 0; width:max-content; max-width:calc(100vw - 32px); display:flex; align-items:center; gap:12px; padding:8px 14px; min-height:44px; border-radius:12px; background:var(--ink); color:var(--surface); box-shadow:0 8px 24px #1f23282a; animation:snackbar-enter var(--motion-responsive-duration) var(--motion-responsive-easing); }
-.snackbar .ghost { height:32px; color:#DCE8FB; }
-.snackbar .ghost:hover { background:#ffffff20; }
+.snackbar { position:fixed; left:50%; bottom:max(16px,env(safe-area-inset-bottom)); z-index:30; translate:-50% 0; width:max-content; max-width:calc(100vw - 32px); display:flex; align-items:center; gap:12px; padding:8px 14px; min-height:44px; border:1px solid #D5E1F7; border-radius:14px; background:var(--surface); color:var(--ink); box-shadow:0 8px 24px #1f232814; animation:snackbar-enter var(--motion-responsive-duration) var(--motion-responsive-easing); }
+.snackbar .ghost { height:32px; color:#2A5BB5; }
+.snackbar .ghost:hover { background:#EAF1FD; }
 @keyframes snackbar-enter { from { opacity:0; transform:translateY(8px); } }
 @keyframes moerise-fade { from { opacity:0; } }
 @media (prefers-reduced-motion:reduce) { .snackbar { animation:moerise-fade 80ms linear; } }

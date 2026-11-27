@@ -58,6 +58,7 @@ fun DiscoveryScreen(page: String, mobile: MobileController, strings: Strings, re
     val error = if (isReview) review.error else walk.error
     val timezone = connection.profile?.timezone ?: "UTC"
     val reviewItem = review.batch?.items?.getOrNull(review.position)
+    val reviewDragOffset = remember(review.batch?.id) { mutableFloatStateOf(0f) }
     val haptic = rememberMoeriseHaptic()
     fun selectReview(index: Int) {
         if (index != review.position) { haptic(); mobile.review.select(index) }
@@ -98,7 +99,7 @@ fun DiscoveryScreen(page: String, mobile: MobileController, strings: Strings, re
                                             border = BorderStroke(1.dp, MoeriseColors.Line),
                                         ) {}
                                     }
-                                    ReviewStack(batch.id, batch.items.size, review.position, ::selectReview) { index, layer ->
+                                    ReviewStack(batch.id, batch.items.size, review.position, reviewDragOffset, ::selectReview) { index, layer ->
                                         val item = batch.items[index]
                                         val scroll = if (index == review.position) readingScroll else rememberScrollState()
                                         DiscoveryCard(layer.fillMaxSize(), scroll, "${batch.id}:$index", review = true) {
@@ -130,7 +131,8 @@ fun DiscoveryScreen(page: String, mobile: MobileController, strings: Strings, re
                             } else if (result?.exhausted != true) {
                                 BoxWithConstraints(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
                                     val startEnabled = !loading && (walk.offline && walk.floaters.isNotEmpty() || connection.connected && walk.embeddingEnabled == true)
-                                    walk.floaters.forEachIndexed { index, note ->
+                                    val narrow = maxWidth < 520.dp
+                                    walk.floaters.take(if (narrow) 4 else 6).forEachIndexed { index, note ->
                                         WalkFloater(note, index, strings, startEnabled, { mobile.walk.start(note.name) },
                                             Modifier.align(when (index) {
                                                 0 -> Alignment.TopStart
@@ -142,7 +144,7 @@ fun DiscoveryScreen(page: String, mobile: MobileController, strings: Strings, re
                                             }).padding(horizontal = maxWidth * .01f)
                                                 .offset(y = when (index) {
                                                     0 -> 28.dp; 1 -> 20.dp; 2 -> (-40).dp; 3 -> (-32).dp; 4 -> 6.dp; else -> (-8).dp
-                                                }).widthIn(max = 170.dp).width(maxWidth * .29f))
+                                                }).width(if (narrow) maxWidth * .42f else minOf(170.dp, maxWidth * .29f)))
                                     }
                                     Button(
                                         onClick = { mobile.walk.start() }, enabled = startEnabled,
@@ -152,8 +154,8 @@ fun DiscoveryScreen(page: String, mobile: MobileController, strings: Strings, re
                                             containerColor = MoeriseColors.BlueSurface, contentColor = MoeriseColors.Blue,
                                             disabledContainerColor = MoeriseColors.BlueSurface.copy(alpha = .6f),
                                             disabledContentColor = MoeriseColors.Blue.copy(alpha = .45f)),
-                                    ) { Text(strings.text(if (loading || walk.configurationLoading) "翻找中…" else "随机开始",
-                                        if (loading || walk.configurationLoading) "Looking…" else "Random start"), fontSize = 16.sp) }
+                                    ) { Text(strings.text(if (loading || walk.initialConfigurationLoading) "翻找中…" else "随机开始",
+                                        if (loading || walk.initialConfigurationLoading) "Looking…" else "Random start"), fontSize = 16.sp) }
                                 }
                                 walk.floaterError?.let {
                                     DiscoveryMessage(discoveryError(it, strings), error = true, modifier = Modifier.testTag("walk_floaters_error"))
@@ -209,7 +211,10 @@ fun DiscoveryScreen(page: String, mobile: MobileController, strings: Strings, re
                                 }
                                 WebAction(
                                     if (review.position + 1 < batch.items.size) strings.text("下一条", "Next note") else strings.text("再看一遍", "Start again"),
-                                    onClick = { selectReview((review.position + 1) % batch.items.size) }, modifier = Modifier.testTag("review_next"),
+                                    onClick = {
+                                        reviewDragOffset.floatValue = 0f
+                                        selectReview((review.position + 1) % batch.items.size)
+                                    }, modifier = Modifier.testTag("review_next"),
                                 )
                             }
                         }
@@ -285,10 +290,9 @@ private fun WalkCards(modifier: Modifier, note: Note, previous: Note?, scroll: S
 }
 
 @Composable
-private fun ReviewStack(batch: String, size: Int, position: Int, select: (Int) -> Unit,
+private fun ReviewStack(batch: String, size: Int, position: Int, offset: MutableFloatState, select: (Int) -> Unit,
     card: @Composable (Int, Modifier) -> Unit) {
     val reduced = LocalReducedMotion.current
-    val offset = remember(batch) { mutableFloatStateOf(0f) }
     val rebound = remember(batch) { Animatable(0f) }
     var shown by remember(batch) { mutableIntStateOf(position) }
     val progress = remember(batch, position) { Animatable(if (shown == position) 1f else 0f) }
@@ -378,7 +382,7 @@ private fun WalkFloater(note: Note, index: Int, strings: Strings, enabled: Boole
     }.ifBlank { strings.text("笔记", "Note") }
     OutlinedButton(onClick, enabled = enabled, interactionSource = interaction,
         modifier = modifier.heightIn(min = 76.dp).testTag("walk_floater_${note.name}")
-            .motionEnter(note.name, distance = -12f, delayMillis = index * 36L).graphicsLayer {
+            .motionEnter(note.name, distance = -12f, delayMillis = index * 36L, spec = MoeriseMotion.flip).graphicsLayer {
             translationY = 2.dp.toPx() * sink.value
             scaleX = 1f - .02f * sink.value
             scaleY = scaleX
@@ -396,7 +400,7 @@ private fun DiscoveryCard(modifier: Modifier, scroll: ScrollState, animationKey:
     review: Boolean = false, content: @Composable () -> Unit) {
     val appearance = if (review) modifier else modifier.motionEnter(animationKey, 18f, .975f, spatial = true)
     Surface(appearance, shape = RoundedCornerShape(if (review) 22.dp else 14.dp), color = Color.White,
-        border = BorderStroke(1.dp, MoeriseColors.Line), shadowElevation = 3.dp) {
+        border = BorderStroke(1.dp, MoeriseColors.Line), shadowElevation = if (review) 0.dp else 3.dp) {
         Column(Modifier.fillMaxSize().verticalScroll(scroll).padding(horizontal = 20.dp, vertical = 22.dp)) { content() }
     }
 }
@@ -410,6 +414,7 @@ internal fun DiscoveryNoteContent(note: Note, timezone: String, mobile: MobileCo
     val age = remember(note.createTime) {
         runCatching { ((epochMillis() - kotlin.time.Instant.parse(note.createTime).toEpochMilliseconds()) / 86_400_000).coerceAtLeast(0) }.getOrNull()
     }
+    val core = mobile.session.core
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             if (review && age != null) Surface(color = MoeriseColors.Selected, shape = RoundedCornerShape(50)) {
@@ -418,11 +423,7 @@ internal fun DiscoveryNoteContent(note: Note, timezone: String, mobile: MobileCo
                     style = MaterialTheme.typography.labelMedium, color = MoeriseColors.Blue,
                     modifier = Modifier.padding(horizontal = 10.dp, vertical = 2.dp))
             } else Text(date, color = MoeriseColors.Muted, style = MaterialTheme.typography.bodySmall)
-            FlowRow(Modifier.weight(1f), horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
-                verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                if (review && age != null) Text(date, color = MoeriseColors.Muted, style = MaterialTheme.typography.bodySmall,
-                    modifier = Modifier.align(Alignment.CenterVertically))
-                NoteTags(presentation.tags, Modifier.align(Alignment.CenterVertically), onTag)
+            Spacer(Modifier.weight(1f))
                 IconButton(onClick = { mobile.openNote(note.name) }, modifier = Modifier.size(44.dp)
                     .testTag("discovery_open")
                     .semantics { contentDescription = strings.text("在主页查看", "View on home") }) {
@@ -435,21 +436,15 @@ internal fun DiscoveryNoteContent(note: Note, timezone: String, mobile: MobileCo
                         drawLine(color, point(18f, 6f), point(7f, 17f), 1.7f * unit, StrokeCap.Round)
                     }
                 }
-            }
         }
         val typography = MaterialTheme.typography
         MaterialTheme(typography = typography.copy(
             bodyLarge = typography.bodyLarge.copy(fontSize = 18.sp, lineHeight = if (review) 36.sp else 34.2.sp),
         )) {
-            MarkdownBody(presentation.body, note = note, core = mobile.session.core, tags = presentation.inlineTags, onTag = onTag)
+            MarkdownBody(presentation.body, note = note, core = core, tags = presentation.inlineTags, onTag = onTag, strings = strings)
         }
-        mobile.session.core?.let { core ->
-            note.attachments.forEach { item ->
-                if (item["type"]?.jsonPrimitive?.content in setOf("image/png", "image/jpeg", "image/webp", "image/gif"))
-                    item["content_url"]?.jsonPrimitive?.content?.let { MarkdownBody("![]($it)", note = note, core = core) }
-                OpenAttachmentButton(note, item, core, strings)
-            }
-        }
+        NoteAttachments(note, core, strings)
+        NoteTags(presentation.tags, onTag = onTag)
     }
 }
 

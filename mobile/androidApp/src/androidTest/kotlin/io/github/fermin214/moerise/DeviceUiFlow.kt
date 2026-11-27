@@ -182,7 +182,7 @@ internal fun AndroidComposeTestRule<FixtureActivityRule, MainActivity>.signIntoF
             "connected=${session.connected}, profile=${session.profile != null}, " +
             "needsLogin=${session.needsLogin}, error=${session.error}, transport=$transport, protocol=$protocol", failure)
     }
-    waitUntil(20_000) { runCatching { homeNode("note_editor").assertExists() }.isSuccess }
+    waitForTag("compose_capsule")
 }
 
 internal fun AndroidComposeTestRule<FixtureActivityRule, MainActivity>.model(): AppModel =
@@ -252,10 +252,15 @@ internal fun AndroidComposeTestRule<FixtureActivityRule, MainActivity>.dismissKe
     }
 }
 
-internal fun AndroidComposeTestRule<FixtureActivityRule, MainActivity>.clickHomeTag(tag: String) {
-    dismissKeyboard()
-    homeNode(tag)
+internal fun ComposeTestRule.openComposer(): SemanticsNodeInteraction {
+    if (!hasTag("quick_editor")) clickTag("compose_capsule")
+    waitForTag("quick_editor")
+    return onNodeWithTag("quick_editor")
+}
+
+internal fun ComposeTestRule.closeWriting(tag: String) {
     clickTag(tag)
+    waitUntil(20_000) { !hasTag("quick_editor_sheet") }
 }
 
 private fun homeListMatcher() = hasScrollToIndexAction() and hasAnyAncestor(hasTestTag("home"))
@@ -354,21 +359,19 @@ internal fun AndroidComposeTestRule<FixtureActivityRule, MainActivity>.assertSin
     waitUntil(20_000) {
         mobile.noteEditors.value.size == 1 && mobile.getNoteEditor(key)?.state?.value?.draft?.content == text
     }
-    homeList().performScrollToIndex(0)
-    onNodeWithTag("note_editor").assertDoesNotExist()
-    onNodeWithTag("save_note").assertDoesNotExist()
-    homeNode("note_editor_$key")
+    waitForTag("quick_editor_sheet")
+    onNodeWithTag("quick_editor").assertDoesNotExist()
+    onNodeWithTag("quick_save").assertDoesNotExist()
     waitForEditor("note_editor_$key", text)
     val editors = SemanticsMatcher("笔记编辑器") {
         val tag = it.config.getOrNull(SemanticsProperties.TestTag).orEmpty()
-        tag == "note_editor" || tag.startsWith("note_editor_")
+        tag == "quick_editor" || tag.startsWith("note_editor_")
     }
     onAllNodes(editors).assertCountEquals(1)
 }
 
 internal fun ComposeTestRule.waitForEditor(tag: String, text: String) {
-    acceptanceStep(if (tag == "note_editor") "编辑器：等待新建草稿一致" else "编辑器：等待笔记修订一致")
-    if (tag == "note_editor" && !hasTag(tag)) homeList().performScrollToIndex(0)
+    acceptanceStep(if (tag == "quick_editor") "编辑器：等待新建草稿一致" else "编辑器：等待笔记修订一致")
     try {
         waitUntil(20_000) {
             editorConfiguration(tag)?.getOrNull(SemanticsProperties.EditableText)?.text == text
