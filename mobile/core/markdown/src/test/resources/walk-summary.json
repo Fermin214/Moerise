@@ -1,0 +1,56 @@
+[
+  {
+    "name": "literal underscores and valid decoration",
+    "content": "# 标题\n> field__name__suffix snake_case **外层 *内层* `#日记`** __正文__ ~~删线~~\n#日记",
+    "tags": ["日记"],
+    "summary": "标题 field__name__suffix snake_case 外层 内层 #日记 正文 删线"
+  },
+  {
+    "name": "fenced and indented code preserve line prefixes and decoration",
+    "content": "```js\n# 注释\n- **原样文本**\n2. __保留__\n#日记\n```\n\n    # 另一段\n    - ~~原样~~\n\n#日记",
+    "tags": ["日记"],
+    "summary": "# 注释 - **原样文本** 2. __保留__ #日记 # 另一段 - ~~原样~~"
+  },
+  {
+    "name": "multiline inline code preserves Markdown characters",
+    "content": "前缀 ``#日记\n    - **原样**\n1. `字面` `` 后缀\n\n#日记",
+    "tags": ["日记"],
+    "summary": "前缀 #日记 - **原样** 1. `字面` 后缀"
+  },
+  {
+    "name": "literal and escaped delimiters stay in the summary",
+    "content": "a ** 字面 ** end __ 未配对 \\**转义** snake_case\n#未知",
+    "tags": [],
+    "summary": "a ** 字面 ** end __ 未配对 \\**转义** snake_case #未知"
+  },
+  {
+    "name": "escaped star does not consume the following pair",
+    "content": "\\***加粗**",
+    "tags": [],
+    "summary": "\\*加粗"
+  },
+  {
+    "name": "unclosed list fence protects a confirmed tag",
+    "content": "- ```\n  #日记",
+    "tags": ["日记"],
+    "summary": "#日记"
+  },
+  {
+    "name": "list fence preserves literal Markdown and ends on outdent",
+    "content": "- 父项\n\n  ~~~text\n  # 注释\n  **原样**\n  #日记\n\n#日记",
+    "tags": ["日记"],
+    "summary": "父项 # 注释 **原样** #日记"
+  },
+  {
+    "name": "nested quote and list fences share the tag protection range",
+    "content": "> 1. ````md\n>    #日记\n>    # 注释\n>    ```\n>    **原样**\n>    ````\n\n#日记",
+    "tags": ["日记"],
+    "summary": "#日记 # 注释 ``` **原样**"
+  },
+  {
+    "name": "multiple container levels preserve literal quote and list markers",
+    "content": "- > ~~~\n  > > 字面引用\n  > - **原样**\n  > ~~~\n\n普通 **正文**\n#日记",
+    "tags": ["日记"],
+    "summary": "> 字面引用 - **原样** 普通 正文"
+  }
+]

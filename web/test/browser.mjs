@@ -65,7 +65,9 @@ async function fixture(t, language = 'zh-CN', options = {}) {
       json({ tags: [...counts].map(([tag, count]) => ({ tag, count })) }); return;
     }
     if (path === '/calendar') {
-      json({ month: url.searchParams.get('month'), days: [{ date: '2026-10-29', count: source.length }] }); return;
+      json({ month: url.searchParams.get('month'), days: [
+        { date: '2026-10-29', count: source.length }, { date: '2026-10-30', count: 1 },
+      ] }); return;
     }
     if (path === '/notes' && req.method === 'GET') {
       assert.equal(url.searchParams.get('order'), 'created_desc');
@@ -239,7 +241,7 @@ test('archive undo uses the returned hash and expires after three seconds', asyn
 });
 
 test('long timeline notes fold by height and collapse beneath the mobile sticky header', async t => {
-  const { page, state, url } = await fixture(t, 'zh-CN', { viewport: { width: 390, height: 844 }, isMobile: true });
+  const { page, state, url } = await fixture(t, 'zh-CN', { viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
   const note = state.notes.get('n09');
   note.content = Array.from({ length: 35 }, (_, index) => `正文 ${index} · 长卡片回归`).join('\n\n');
   note.attachments = Array.from({ length: 4 }, (_, index) => ({
@@ -255,6 +257,26 @@ test('long timeline notes fold by height and collapse beneath the mobile sticky 
   assert.equal(await preview.evaluate(element => element.offsetHeight), 260);
   assert.equal(await preview.locator('.attachment-list a').count(), 4);
   assert.equal(await preview.locator('.note-tags').count(), 1);
+  const colophon = card.locator(':scope > .note-colophon');
+  assert.equal(await colophon.locator('time').innerText(), '10月29日');
+  const more = colophon.getByRole('button', { name: '更多操作' });
+  assert.equal(await more.evaluate(node => getComputedStyle(node).opacity), '1');
+  const removed = await more.evaluate(element => {
+    element.style.transition = 'none';
+    let count = 0;
+    function removeHoverFallback(container) {
+      for (let index = container.cssRules.length - 1; index >= 0; index--) {
+        const rule = container.cssRules[index];
+        if (rule.conditionText === '(hover: none)' && rule.cssRules[0]?.selectorText === '.more') {
+          container.deleteRule(index); count++;
+        } else if (rule.cssRules) removeHoverFallback(rule);
+      }
+    }
+    for (const sheet of document.styleSheets) removeHoverFallback(sheet);
+    return count;
+  });
+  assert.equal(removed, 1);
+  assert.equal(await more.evaluate(node => getComputedStyle(node).opacity), '1');
   await expand.click();
   assert.ok(await preview.evaluate(element => element.offsetHeight) > 380);
   await page.evaluate(() => scrollTo(0, 0));
@@ -276,6 +298,187 @@ test('long timeline notes fold by height and collapse beneath the mobile sticky 
   await page.goto(`${url}/?query=${encodeURIComponent('长卡片回归')}`);
   await card.waitFor();
   assert.equal(await preview.count(), 0);
+});
+
+test('paper login disables incomplete and submitting forms, retaining rejected input', async t => {
+  const { page, url } = await fixture(t);
+  const auth = page.locator('#auth'), form = page.locator('#login-form');
+  const username = page.locator('#username'), password = page.locator('#password'), submit = page.locator('#login');
+  const language = auth.locator('[data-language]');
+  await page.goto(url);
+  await form.waitFor();
+  assert.equal(await page.locator('.memos-brand').innerText(), 'Moerise');
+  assert.deepEqual(await auth.evaluate(node => [getComputedStyle(node).backgroundColor,
+    getComputedStyle(node.querySelector('.memos-login')).backgroundColor]), ['rgb(247, 246, 242)', 'rgba(0, 0, 0, 0)']);
+  assert.deepEqual(await password.evaluate(node => {
+    const style = getComputedStyle(node);
+    return [style.backgroundColor, style.borderColor, style.height];
+  }), ['rgb(252, 251, 248)', 'rgb(145, 139, 128)', '44px']);
+  assert.equal(await submit.isDisabled(), true);
+  await username.evaluate(node => { node.value = ' owner '; });
+  assert.equal(await submit.isDisabled(), true);
+  await password.evaluate(node => { node.value = 'sample-password'; });
+  await page.waitForFunction(() => !document.getElementById('login').disabled);
+  assert.equal(await submit.isEnabled(), true);
+  const { promise: arrived, resolve: captured } = Promise.withResolvers();
+  const { promise: hold, resolve: release } = Promise.withResolvers();
+  await page.route('**/api/app/v1/session', async route => {
+    if (route.request().method() !== 'POST') return route.continue();
+    captured(); await hold;
+    await route.fulfill({ status: 401, json: { error: { code: 'INVALID_CREDENTIALS' } } });
+  }, { times: 1 });
+  try {
+    await password.press('Enter'); await arrived;
+    for (const control of [username, password, submit, language]) assert.equal(await control.isDisabled(), true);
+  } finally { release(); }
+  await page.locator('#auth-error').waitFor();
+  assert.equal(await username.inputValue(), ' owner ');
+  assert.equal(await password.inputValue(), 'sample-password');
+  assert.equal(await submit.isEnabled(), true);
+  await submit.click();
+  await page.locator('#workspace').waitFor();
+  assert.equal(await password.inputValue(), '');
+});
+
+test('mounted timeline colophons roll over in place without refetching or moving the editor', async t => {
+  const { page, state, url } = await fixture(t);
+  await page.clock.install({ time: new Date('2026-10-29T15:58:00Z') });
+  await page.clock.setSystemTime(new Date('2026-10-29T15:58:00Z'));
+  await page.goto(url); await login(page);
+  const card = page.locator('#notes [data-name="memos/n00"]');
+  const date = card.locator('.note-colophon time').filter({ hasText: '12:59' });
+  await date.waitFor();
+  await page.locator('#content').fill('未提交的新笔记');
+  const editing = page.locator('#notes [data-name="memos/n05"]');
+  await editing.getByRole('button', { name: '更多操作' }).click();
+  await editing.getByRole('menuitem', { name: '编辑', exact: true }).click();
+  await page.locator('.editor textarea').fill('未提交的编辑');
+  const scroll = await page.evaluate(() => {
+    const editor = document.querySelector('.editor');
+    globalThis.midnightView = { editor, date: document.querySelector('[data-name="memos/n00"] time') };
+    return scrollY;
+  });
+  const reads = state.requests.filter(item => item.path === '/notes').length;
+  await page.clock.fastForward(121_000);
+  await card.locator('time').filter({ hasText: '10月29日' }).waitFor({ state: 'attached' });
+  await setUILanguage(page, 'en');
+  assert.equal(await card.locator('time').textContent(), 'Oct 29');
+  await page.evaluate(() => {
+    Object.defineProperty(document, 'hidden', { configurable: true, value: true });
+    document.dispatchEvent(new Event('visibilitychange'));
+  });
+  await page.clock.setSystemTime(new Date('2027-01-01T00:00:00Z'));
+  assert.equal(await card.locator('time').textContent(), 'Oct 29');
+  await page.evaluate(() => {
+    Reflect.deleteProperty(document, 'hidden');
+    document.dispatchEvent(new Event('visibilitychange'));
+  });
+  assert.equal(await card.locator('time').textContent(), '2026-10-29');
+  assert.deepEqual(await page.evaluate(() => {
+    const { editor, date } = globalThis.midnightView;
+    return [editor === document.querySelector('.editor'), date === document.querySelector('[data-name="memos/n00"] time'),
+      editor.querySelector('textarea') === document.activeElement, scrollY];
+  }), [true, true, true, scroll]);
+  assert.equal(await page.locator('.editor textarea').inputValue(), '未提交的编辑');
+  assert.equal(await page.locator('#content').inputValue(), '未提交的新笔记');
+  assert.equal(state.requests.filter(item => item.path === '/notes').length, reads);
+});
+
+test('service midnight keeps sidebar focus and an active date filter', async t => {
+  const { page, state, url } = await fixture(t);
+  await page.clock.install({ time: new Date('2026-10-29T15:58:00Z') });
+  await page.clock.setSystemTime(new Date('2026-10-29T15:58:00Z'));
+  await page.goto(url); await login(page);
+  const day = value => page.locator(`#calendar [data-date="${value}"]`);
+  const aggregates = () => state.requests.filter(({ path }) => path === '/calendar' || path === '/tags').length;
+  await page.locator('#tags .tag-row').first().waitFor();
+  const today = day('2026-10-29');
+  assert.match(await today.getAttribute('class'), /\btoday\b/);
+  await today.focus();
+  const before = aggregates();
+  await page.clock.fastForward(121_000);
+  assert.match(await day('2026-10-30').getAttribute('class'), /\btoday\b/);
+  assert.doesNotMatch(await today.getAttribute('class'), /\btoday\b/);
+  assert.equal(await today.evaluate(node => node === document.activeElement), true);
+  assert.equal(aggregates(), before);
+
+  await page.clock.setSystemTime(new Date('2026-10-31T15:58:00Z'));
+  await page.goto(`${url}/?date=2026-10-31`);
+  const selected = day('2026-10-31');
+  await page.locator('#calendar .today.sel').waitFor();
+  await page.locator('#tags .tag-row').first().waitFor();
+  await selected.focus();
+  const filtered = aggregates();
+  await page.clock.fastForward(121_000);
+  assert.equal(new URL(page.url()).searchParams.get('date'), '2026-10-31');
+  assert.equal(await page.locator('#calendar-title').textContent(), '2026年10月');
+  assert.equal(await selected.getAttribute('aria-pressed'), 'true');
+  assert.doesNotMatch(await selected.getAttribute('class'), /\btoday\b/);
+  assert.equal(await selected.evaluate(node => node === document.activeElement), true);
+  assert.equal(aggregates(), filtered);
+
+  await page.clock.setSystemTime(new Date('2026-10-31T15:58:00Z'));
+  await page.goto(url);
+  await page.locator('#calendar .today').waitFor();
+  const tag = page.locator('#tags .tag-row').first();
+  await tag.focus();
+  const unfiltered = aggregates();
+  await page.clock.fastForward(121_000);
+  await day('2026-11-01').and(page.locator('.today:enabled')).waitFor();
+  assert.equal(await tag.evaluate(node => node === document.activeElement), true);
+  assert.equal(aggregates(), unfiltered + 1);
+});
+
+test('one visibility event after service midnight refreshes the sidebar without taking focus', async t => {
+  const { page, state, url } = await fixture(t);
+  await page.clock.install({ time: new Date('2026-10-29T15:58:00Z') });
+  await page.clock.setSystemTime(new Date('2026-10-29T15:58:00Z'));
+  await page.goto(url); await login(page);
+  const tag = page.locator('#tags [title="#想法"]');
+  const day = page.locator('#calendar [data-date="2026-10-29"]');
+  await tag.waitFor();
+  await day.and(page.locator(':enabled')).waitFor();
+  await tag.focus();
+  assert.equal(await tag.locator('em').textContent(), '47');
+  state.notes.set('external', { ...state.notes.get('n00'), name: 'memos/external', tags: ['想法'] });
+
+  const result = page.waitForResponse(response => response.ok() && new URL(response.url()).pathname === '/api/app/v1/tags', { timeout: 5_000 });
+  await page.clock.setSystemTime(new Date('2026-10-29T16:00:01Z'));
+  await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+  await result;
+  await day.and(page.getByRole('button', { name: '2026-10-29，48 条笔记', exact: true })).waitFor({ timeout: 5_000 });
+  assert.equal(await tag.evaluate(node => node === document.activeElement), true);
+  await day.focus();
+  await tag.locator('em').filter({ hasText: /^48$/ }).waitFor({ timeout: 5_000 });
+  assert.equal(await day.evaluate(node => node === document.activeElement), true);
+});
+
+test('a delayed tag refresh after saving a note survives the service month rollover', { timeout: 20_000 }, async t => {
+  const { page, url } = await fixture(t);
+  await page.clock.install({ time: new Date('2026-10-31T15:59:20Z') });
+  await page.clock.setSystemTime(new Date('2026-10-31T15:59:20Z'));
+  await page.goto(url); await login(page);
+  await page.locator('#tags .tag-row').first().waitFor();
+  await page.locator('#calendar .today:enabled').waitFor();
+  const card = page.locator('#notes [data-name="memos/n00"]');
+  await card.getByRole('button', { name: '更多操作' }).click();
+  await card.getByRole('menuitem', { name: '编辑', exact: true }).click();
+  await page.locator('form.editor textarea').fill('保存后刷新 #跨月');
+
+  const { promise: arrived, resolve: captured } = Promise.withResolvers();
+  const { promise: hold, resolve: release } = Promise.withResolvers();
+  await page.route('**/api/app/v1/tags?*', async route => {
+    const response = await route.fetch();
+    captured(); await hold;
+    await route.fulfill({ response });
+  }, { times: 1 });
+  try {
+    await page.locator('form.editor button.save').click();
+    await arrived;
+    await page.clock.fastForward(41_000);
+    await page.locator('#calendar .today:enabled[data-date="2026-11-01"]').waitFor({ timeout: 5_000 });
+  } finally { release(); }
+  await page.locator('#tags [title="#跨月"] em').filter({ hasText: /^1$/ }).waitFor({ timeout: 5_000 });
 });
 
 test('CSRF renewal discards drafts and never replays a note after an instance or author change', async t => {
@@ -1095,16 +1298,68 @@ test('sidebar reuses aggregates, cancels obsolete months and refreshes only affe
   assert.deepEqual(errors, []);
 });
 
-test('the selected current day uses white text on the accent background', async t => {
+test('sidebar selection and heatmap use warm-paper tones and a 3px current-day marker', async t => {
   const { page, url } = await fixture(t);
   await page.goto(url); await login(page);
-  await page.locator('#calendar .today').click();
+  const activeStyle = node => {
+    const { color, backgroundColor, fontWeight } = getComputedStyle(node);
+    return [color, backgroundColor, fontWeight];
+  };
+  const accent = 'rgb(47, 93, 98)', muted = 'rgb(236, 234, 228)';
+  assert.deepEqual(await page.locator('nav .ent.on').evaluate(activeStyle), [accent, muted, '600']);
+  await page.locator('#tags .tag-row').first().click();
+  assert.deepEqual(await page.locator('#tags .tag-row.on').evaluate(activeStyle), [accent, muted, '600']);
+  const current = page.locator('#calendar .today');
+  const marker = node => {
+    const { backgroundColor, width, height, borderRadius, left } = getComputedStyle(node, '::after');
+    return [backgroundColor, width, height, borderRadius,
+      Math.abs(parseFloat(left) + 1.5 - node.getBoundingClientRect().width / 2) <= 1];
+  };
+  assert.deepEqual(await current.evaluate(activeStyle), [accent, 'rgb(227, 231, 227)', '700']);
+  assert.deepEqual(await page.locator('#calendar .h2').evaluate(activeStyle), [accent, 'rgb(204, 215, 211)', '400']);
+  assert.equal(await current.evaluate(node => getComputedStyle(node).boxShadow), 'none');
+  assert.deepEqual(await current.evaluate(marker), [accent, '3px', '3px', '50%', true]);
+  const luminance = values => values.map(value => value / 255)
+    .map(value => value <= .04045 ? value / 12.92 : ((value + .055) / 1.055) ** 2.4)
+    .reduce((sum, value, index) => sum + value * [.2126, .7152, .0722][index], 0);
+  for (const background of [[227, 231, 227], [204, 215, 211], [236, 234, 228]]) {
+    assert.ok((luminance(background) + .05) / (luminance([47, 93, 98]) + .05) >= 4.5);
+  }
+  await current.click();
   const today = page.locator('#calendar .today.sel');
   await today.waitFor();
-  assert.deepEqual(await today.evaluate(node => {
-    const { color, backgroundColor } = getComputedStyle(node);
-    return [color, backgroundColor];
-  }), ['rgb(255, 255, 255)', 'rgb(47, 93, 98)']);
+  assert.deepEqual(await today.evaluate(activeStyle), ['rgb(255, 255, 255)', accent, '700']);
+  assert.deepEqual(await today.evaluate(marker), ['rgb(255, 255, 255)', '3px', '3px', '50%', true]);
+  await page.locator('#account-settings').click();
+  assert.deepEqual(await page.locator('#account-settings').evaluate(activeStyle), [accent, muted, '600']);
+});
+
+test('primary actions retain white text and note lists sit close to top-level paragraphs', async t => {
+  const { page, state, url } = await fixture(t);
+  state.notes.get('n00').content = '段落\n\n- 无序列表\n1.有序列表\n2、普通写法';
+  await page.goto(url);
+  await page.locator('#username').fill('test'); await page.locator('#password').fill('test');
+  const primaryStyle = node => {
+    const { backgroundColor, color } = getComputedStyle(node);
+    return [backgroundColor, color];
+  };
+  const signIn = page.locator('#login');
+  await signIn.hover();
+  assert.deepEqual(await signIn.evaluate(primaryStyle), ['rgb(37, 75, 79)', 'rgb(255, 255, 255)']);
+  await signIn.click();
+  await page.locator('#content').fill('未保存正文');
+  const save = page.locator('#save');
+  assert.deepEqual(await save.evaluate(primaryStyle), ['rgb(47, 93, 98)', 'rgb(255, 255, 255)']);
+  assert.equal(await save.locator('small').evaluate(node => getComputedStyle(node).color), 'rgb(232, 240, 238)');
+  const body = page.locator('article[data-name="memos/n00"] .note-content');
+  await body.waitFor();
+  const layout = await body.evaluate(node => {
+    const [intro, list, ordinary] = [...node.children].map(child => child.getBoundingClientRect());
+    return { gap: list.top - intro.bottom, left: intro.left, ordinaryLeft: ordinary.left };
+  });
+  assert.ok(layout.gap >= 6 && layout.gap <= 8);
+  assert.equal(layout.left, layout.ordinaryLeft);
+  assert.match(await body.locator('p').last().innerText(), /^1\.有序列表\n2、普通写法$/);
 });
 
 test('sidebar background refresh preserves tags and calendar through slow requests, failures and retry', { timeout: 60_000 }, async t => {
@@ -1248,7 +1503,7 @@ test('English fallback, live language switching and stored preference preserve o
   const renderedParagraphs = await note.locator('.note-content p').allTextContents();
   await page.getByRole('button', { name: 'Previous month' }).waitFor();
   await page.locator('#calendar-title').filter({ hasText: /^October 2026$/ }).waitFor();
-  assert.equal(await note.locator('time').first().textContent(), '2026-10-29 12:59');
+  assert.equal(await note.locator('time').first().textContent(), 'Oct 29');
   await page.locator('#content').fill('未保存的想法 #标签');
   await page.locator('#attachment-input').setInputFiles({ name: '图片.png', mimeType: 'image/png', buffer: png });
   await note.getByRole('button', { name: 'More actions' }).click();

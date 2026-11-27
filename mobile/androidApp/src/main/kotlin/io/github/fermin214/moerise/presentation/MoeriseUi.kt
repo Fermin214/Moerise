@@ -4,6 +4,10 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsFocusedAsState
+import androidx.compose.foundation.interaction.collectIsHoveredAsState
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.relocation.BringIntoViewRequester
@@ -123,17 +127,24 @@ fun WebSearchPanel(query: SearchQuery, strings: Strings, onChange: (SearchQuery)
 
 object MoeriseColors {
     val Paper = Color(0xFFF5F4F0)
-    val Surface = Color.White
+    val ScrollPaper = Color(0xFFF7F6F2)
+    val Surface = Color(0xFFFCFBF8)
+    val OnAccent = Color.White
     val SurfaceMuted = Color(0xFFECEAE4)
     val Hover = Color(0xFFE6E3DC)
-    val Line = Color(0xFFE3E0D8)
+    val Line = Color(0xFFE4E1D8)
     val FieldBorder = Color(0xFF918B80)
     val Ink = Color(0xFF1F1E1C)
+    val InkTag = Color(0xFF64605A)
+    val InkColophon = Color(0xFF757069)
+    val BrandInk = Color(0xFF2B2926)
     val Muted = Color(0xFF68645E)
     val Accent = Color(0xFF2F5D62)
+    val AccentHover = Color(0xFF254B4F)
     val AccentSurface = Color(0xFFE8F0EE)
     val AccentSurfaceStrong = Color(0xFFDCE8E5)
-    val HeatmapMedium = Color(0xFFB8D2CF)
+    val HeatmapLight = Color(0xFFE3E7E3)
+    val HeatmapMedium = Color(0xFFCCD7D3)
     val Danger = Color(0xFFB42318)
     val DangerSurface = Color(0xFFFDF2F1)
 }
@@ -147,10 +158,10 @@ private fun webText(size: Int, height: Float, weight: FontWeight = FontWeight.No
 fun MoeriseTheme(content: @Composable () -> Unit) {
     MaterialTheme(
         colorScheme = lightColorScheme(
-            primary = MoeriseColors.Accent, onPrimary = MoeriseColors.Surface,
+            primary = MoeriseColors.Accent, onPrimary = MoeriseColors.OnAccent,
             primaryContainer = MoeriseColors.AccentSurface, onPrimaryContainer = MoeriseColors.Accent,
             secondary = MoeriseColors.Accent, secondaryContainer = MoeriseColors.AccentSurface,
-            onSecondary = MoeriseColors.Surface, onSecondaryContainer = MoeriseColors.Accent,
+            onSecondary = MoeriseColors.OnAccent, onSecondaryContainer = MoeriseColors.Accent,
             background = MoeriseColors.Paper, onBackground = MoeriseColors.Ink,
             surface = MoeriseColors.Surface, onSurface = MoeriseColors.Ink,
             surfaceVariant = MoeriseColors.SurfaceMuted, onSurfaceVariant = MoeriseColors.Muted,
@@ -188,6 +199,12 @@ fun MoeriseTheme(content: @Composable () -> Unit) {
 }
 
 @Composable
+internal fun BrandTitle(modifier: Modifier = Modifier, title: String = "Moerise") {
+    Text(title, modifier, fontFamily = FontFamily.Serif, fontSize = 18.sp, fontWeight = FontWeight.Normal,
+        letterSpacing = 0.7.sp, color = MoeriseColors.BrandInk)
+}
+
+@Composable
 fun WebToolbar(
     strings: Strings,
     onMenu: () -> Unit,
@@ -213,8 +230,7 @@ fun WebToolbar(
             IconButton(onClick = onMenu, modifier = Modifier.size(44.dp).drawerOpener().testTag("open_menu")) {
                 WebIcon(WebIcon.Menu, strings.text("打开导航", "Open navigation"), Modifier.size(20.dp))
             }
-            Text(title, style = MaterialTheme.typography.titleMedium,
-                modifier = Modifier.weight(1f).padding(start = 8.dp))
+            BrandTitle(Modifier.weight(1f).padding(start = 8.dp), title)
             if (syncAction != null && syncStatus != null && (syncStatus != SyncStatus.CONNECTED || completedSync)) {
                 SyncButton(syncStatus, strings, syncAction)
             }
@@ -271,17 +287,52 @@ fun SyncGlyph(status: SyncStatus, modifier: Modifier = Modifier) {
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun WebAction(
     text: String, onClick: () -> Unit, modifier: Modifier = Modifier, enabled: Boolean = true,
+    contentPadding: PaddingValues = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
 ) {
-    Button(onClick = onClick, enabled = enabled, modifier = modifier.heightIn(min = 44.dp),
-        shape = RoundedCornerShape(10.dp), contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
-        colors = ButtonDefaults.buttonColors(
-            containerColor = MoeriseColors.AccentSurface, contentColor = MoeriseColors.Accent,
-            disabledContainerColor = MoeriseColors.AccentSurface.copy(alpha = .6f),
-            disabledContentColor = MoeriseColors.Accent.copy(alpha = .45f),
-        )) { Text(text, style = MaterialTheme.typography.labelLarge) }
+    val interaction = remember { MutableInteractionSource() }
+    val active = actionHighlighted(interaction)
+    CompositionLocalProvider(LocalRippleConfiguration provides null) {
+        Button(onClick = onClick, enabled = enabled, modifier = modifier.heightIn(min = 44.dp),
+            shape = RoundedCornerShape(10.dp), contentPadding = contentPadding, interactionSource = interaction,
+            colors = ButtonDefaults.buttonColors(
+                containerColor = if (active) MoeriseColors.AccentHover else MoeriseColors.Accent,
+                contentColor = MoeriseColors.OnAccent,
+                disabledContainerColor = MoeriseColors.Accent.copy(alpha = .65f),
+                disabledContentColor = MoeriseColors.OnAccent,
+            )) { Text(text, style = MaterialTheme.typography.labelLarge) }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun WebSecondaryAction(
+    text: String, onClick: () -> Unit, modifier: Modifier = Modifier, enabled: Boolean = true,
+) {
+    val interaction = remember { MutableInteractionSource() }
+    val active = actionHighlighted(interaction)
+    CompositionLocalProvider(LocalRippleConfiguration provides null) {
+        OutlinedButton(onClick = onClick, enabled = enabled, modifier = modifier.heightIn(min = 44.dp),
+            shape = RoundedCornerShape(10.dp), contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
+            interactionSource = interaction, border = BorderStroke(1.dp, MoeriseColors.Line),
+            colors = ButtonDefaults.outlinedButtonColors(
+                containerColor = if (active) MoeriseColors.SurfaceMuted else MoeriseColors.Surface,
+                contentColor = MoeriseColors.Ink,
+                disabledContainerColor = MoeriseColors.Surface,
+                disabledContentColor = MoeriseColors.Muted,
+            )) { Text(text, style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Medium)) }
+    }
+}
+
+@Composable
+internal fun actionHighlighted(interaction: MutableInteractionSource): Boolean {
+    val pressed by interaction.collectIsPressedAsState()
+    val hovered by interaction.collectIsHoveredAsState()
+    val focused by interaction.collectIsFocusedAsState()
+    return pressed || hovered || focused
 }
 
 @Composable

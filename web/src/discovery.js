@@ -4,6 +4,7 @@ import { noteID, listQuery } from './routes.js';
 import { validNote } from './notes.js';
 import { errorMessage as errorText } from './errors.js';
 import { animateMotion, reducedMotion } from './motion.js';
+import { walkSummaryBody } from './markdown.js';
 
 function discoveryText(value) {
   const code = typeof value === 'string' ? value : value?.code;
@@ -24,7 +25,13 @@ function discoveryText(value) {
   }[code] || (typeof value === 'string' ? l("服务提示：{0}", { 0: value }) : errorText(value));
 }
 
-export function createDiscovery({ request, sessionRequest, getIdentity, localToday, formatTime, discoveryCard, startFromNote, expire }) {
+function walkSummary(note, body = walkSummaryBody(note.content, note.tags || [])) {
+  const chars = [...(body || note.attachments?.[0]?.filename || '')];
+  if (!chars.length) return l("笔记");
+  return chars.length > 64 ? `${chars.slice(0, 64).join('')}…` : chars.join('');
+}
+
+export function createDiscovery({ request, sessionRequest, getIdentity, localToday, formatDate, discoveryCard, startFromNote, expire }) {
   let reviewView = null, walkView = null, walkConfiguration = null, walkFloaters = null;
   function createPage(kind, { key: pageKey, seedName }) {
     let alive = true, sequence = 0, controller = null, busy = false, failure = null, retry = null;
@@ -57,8 +64,9 @@ export function createDiscovery({ request, sessionRequest, getIdentity, localTod
       root.setAttribute('aria-busy', String(kind === 'review' ? busy && !reviewView :
         busy || (!!modelController && !walkConfiguration)));
     }
-    function render() {
+    function render(keepWalkPosition = false) {
       if (!alive) return;
+      const scroll = keepWalkPosition ? window.scrollY : null;
       cancelVisual();
       content.replaceChildren();
       for (const child of [...controls.children]) {
@@ -67,10 +75,12 @@ export function createDiscovery({ request, sessionRequest, getIdentity, localTod
       updateBusy();
       if (kind === 'review') renderReview();
       else renderWalk();
+      controls.hidden = !controls.childElementCount;
       if (failure) {
         message(discoveryText(failure), true);
         content.append(button(l("重试"), 'ghost discovery-retry', () => retry?.()));
       }
+      if (scroll !== null) window.scrollTo({ top: scroll, behavior: 'instant' });
     }
     function renderReview() {
       const batch = reviewView?.batch;
@@ -110,7 +120,7 @@ export function createDiscovery({ request, sessionRequest, getIdentity, localTod
       }
       const actions = el('div', 'discovery-actions'), current = batch.items[selected];
       if (!current.unavailable) {
-        if (current.note.state === 'NORMAL') actions.append(button(l("从这条漫步"), 'ghost', () => startFromNote(current.note)));
+        if (current.note.state === 'NORMAL') actions.append(button(l("从这条漫步"), 'secondary', () => startFromNote(current.note)));
       }
       actions.append(button(selected + 1 < batch.items.length ? l("下一条") : l("再看一遍"), 'save', () => {
         move((selected + 1) % batch.items.length, -1, 'next');
@@ -265,24 +275,31 @@ export function createDiscovery({ request, sessionRequest, getIdentity, localTod
         if (walkView.previous) {
           const previous = el('div', 'walk-trail');
           const arrow = el('span', 'sub', '↑'); arrow.setAttribute('aria-hidden', 'true');
-          previous.append(arrow, el('time', 'sub', formatTime(walkView.previous.create_time)),
-            el('span', 'walk-trail-text', walkView.previous.content.replace(/\s+/gu, ' ').trim()));
+          previous.append(arrow, el('span', 'walk-trail-text', walkSummary(walkView.previous)));
           notes.append(previous);
         }
         notes.append(discoveryCard(result.item.note)); content.append(notes);
       } else if (!result?.exhausted) {
         const start = el('div', 'walk-start');
-        floaters.slice(0, narrow.matches ? 4 : 6).forEach(note => {
-          const preview = [...note.content.replace(/\s+/gu, ' ').trim()].slice(0, 64).join('') || note.attachments?.[0]?.filename || l("笔记");
-          const floater = button('', 'flc walk-floater', () => walkRequest('/walks/start', { name: note.name }));
-          floater.append(el('span', '', preview));
-          floater.dataset.name = note.name;
-          setAttr(floater, 'aria-label', l("从这条笔记开始：{0}", { 0: preview }));
-          floater.disabled = busy || !configured;
-          start.append(floater);
-        });
         const control = button(busy || (modelController && !walkConfiguration) ? l("翻找中…") : l("随机开始"), 'save', () => walkRequest('/walks/start', {}));
-        control.disabled = busy || !configured; start.append(control); content.append(start);
+        control.disabled = busy || !configured;
+        start.append(control);
+        if (floaters.length) {
+          const list = el('div', 'walk-start-list');
+          for (const { note, body } of floaters.slice(0, narrow.matches ? 4 : 6)) {
+            const preview = walkSummary(note, body);
+            const floater = button('', 'walk-floater', () => walkRequest('/walks/start', { name: note.name }));
+            const date = el('time', '', formatDate(note.create_time));
+            date.dateTime = note.create_time;
+            floater.append(el('span', '', preview), date);
+            floater.dataset.name = note.name;
+            setAttr(floater, 'aria-label', l("从这条笔记开始：{0}", { 0: preview }));
+            floater.disabled = busy || !configured;
+            list.append(floater);
+          }
+          start.append(el('h2', '', l("从一条笔记开始")), list);
+        }
+        content.append(start);
         if (floaterFailure) {
           message(errorText(floaterFailure), true);
           content.append(button(l("重试加载笔记"), 'ghost discovery-retry', loadFloaters));
@@ -311,7 +328,18 @@ export function createDiscovery({ request, sessionRequest, getIdentity, localTod
         if (!Array.isArray(page?.notes) || page.notes.some(note => !validNote(note) || note.state !== 'NORMAL')) {
           throw Object.assign(new Error('Invalid notes'), { code: 'NOTE_LIST_INVALID' });
         }
-        walkFloaters = floaters = page.notes.slice(0, 6);
+        const tiers = [[], [], []];
+        let sliceStarted = performance.now();
+        for (const note of page.notes.slice(0, 20)) {
+          const body = walkSummaryBody(note.content, note.tags || []);
+          if (body || note.attachments?.length) tiers[[...body].length >= 12 ? 0 : body ? 1 : 2].push({ note, body });
+          if (performance.now() - sliceStarted >= 40) {
+            await (globalThis.scheduler?.yield ? scheduler.yield() : new Promise(resolve => setTimeout(resolve, 0)));
+            if (!alive || floaterController !== pending) return;
+            sliceStarted = performance.now();
+          }
+        }
+        walkFloaters = floaters = tiers.flat().slice(0, 6);
       } catch (err) {
         if (!alive || floaterController !== pending || err.name === 'AbortError') return;
         if (err.status === 401) { expire(err); return; }
@@ -366,7 +394,7 @@ export function createDiscovery({ request, sessionRequest, getIdentity, localTod
       const ticket = ++sequence;
       controller = pending?.controller || new AbortController(); busy = true; failure = null;
       retry = () => walkRequest(path, body); walkView.warnings = [];
-      if (!pending?.outcome?.result) render();
+      if (!pending?.outcome?.result) render(true);
       try {
         const outcome = pending ? pending.outcome || await pending.promise : { result: await fetchWalk(path, body, controller) };
         if (!active(ticket)) return;
@@ -396,13 +424,11 @@ export function createDiscovery({ request, sessionRequest, getIdentity, localTod
         failure = err;
       } finally {
         if (active(ticket)) {
-          controller = null; busy = false; render();
+          controller = null; busy = false; render(!entering);
           if (entering) {
             const reading = content.querySelector('.walk-cards');
-            if (path === '/walks/next') {
-              const toolbar = document.querySelector('.mobile-header').getBoundingClientRect();
-              window.scrollTo({ top: window.scrollY + reading.getBoundingClientRect().top - toolbar.bottom, behavior: 'instant' });
-            }
+            const toolbar = document.querySelector('.mobile-header').getBoundingClientRect();
+            window.scrollTo({ top: window.scrollY + reading.getBoundingClientRect().top - toolbar.bottom, behavior: 'instant' });
             const next = reading.querySelector('.discovery-note');
             const animation = animateMotion(next, [{ transform: 'translateY(24px)', opacity: 0 }, { opacity: 1 }],
               'tactile', { duration: 140, fill: 'backwards' });

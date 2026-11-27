@@ -71,6 +71,70 @@ function fenceMarker(line) {
   if (match && (!match[1].startsWith('`') || !line.slice(match[0].length).includes('`'))) return match[1];
 }
 
+const quoteContainer = / {0,3}>[ \t]?/y;
+const listContainer = / {0,3}(?:[-+*]|\d{1,9}[.)])(?=[ \t])/y;
+
+function indentTo(line, start, width) {
+  let offset = start, columns = 0;
+  while (columns < width && (line[offset] === ' ' || line[offset] === '\t')) {
+    columns += line[offset++] === '\t' ? 4 - (columns % 4) : 1;
+  }
+  return columns >= width ? offset : -1;
+}
+
+function summaryFenceLines(lines) {
+  const code = new Map(), containers = [];
+  let fence;
+  for (const [index, line] of lines.entries()) {
+    let offset = 0, depth = 0;
+    const blank = !line.trim();
+    for (const width of containers) {
+      if (width === 0) {
+        quoteContainer.lastIndex = offset;
+        if (!quoteContainer.test(line)) break;
+        offset = quoteContainer.lastIndex;
+      } else {
+        const indented = indentTo(line, offset, width);
+        if (indented < 0 && !blank) break;
+        offset = indented < 0 ? line.length : indented;
+      }
+      depth++;
+    }
+    if (depth < containers.length) {
+      containers.length = depth;
+      fence = undefined;
+    }
+    if (fence) {
+      const body = line.slice(offset), marker = fenced.exec(body);
+      if (marker && marker[1][0] === fence[0] && marker[1].length >= fence.length && /^[ \t]*$/.test(body.slice(marker[0].length))) {
+        fence = undefined;
+        code.set(index, '');
+      } else code.set(index, body);
+      continue;
+    }
+    while (offset < line.length) {
+      quoteContainer.lastIndex = listContainer.lastIndex = offset;
+      if (quoteContainer.test(line)) {
+        containers.push(0);
+        offset = quoteContainer.lastIndex;
+      } else if (listContainer.test(line)) {
+        const markerWidth = listContainer.lastIndex - offset;
+        const padding = /^[ \t]+/.exec(line.slice(listContainer.lastIndex))[0];
+        let width = markerWidth;
+        for (const char of padding) width += char === '\t' ? 4 - width % 4 : 1;
+        if (width - markerWidth > 4) {
+          width = markerWidth + (padding[0] === '\t' ? 4 - markerWidth % 4 : 1);
+          offset = listContainer.lastIndex + 1;
+        } else offset = listContainer.lastIndex + padding.length;
+        containers.push(width);
+      } else break;
+    }
+    fence = fenceMarker(line.slice(offset));
+    if (fence) code.set(index, '');
+  }
+  return code;
+}
+
 function tagSpans(text, tags) {
   if (!tags.length || !text.includes('#') || protectedLine.test(text)) return [];
   const protectedOffsets = new Uint8Array(text.length);
@@ -88,11 +152,12 @@ function tagSpans(text, tags) {
   return spans;
 }
 
-function removeTagLines(lines, tags) {
+function removeTagLines(lines, tags, summaryCode) {
   if (!tags.length) return lines;
   const kept = lines.slice();
   for (let start = 0; start < lines.length;) {
-    const marker = fenceMarker(lines[start]);
+    if (summaryCode?.has(start)) { start++; continue; }
+    const marker = summaryCode ? undefined : fenceMarker(lines[start]);
     if (marker) {
       const close = new RegExp(`^ {0,3}${marker[0]}{${marker.length},}\\s*$`);
       start++;
@@ -102,7 +167,7 @@ function removeTagLines(lines, tags) {
     }
     let stop = start + 1;
     if (lines[start].trim() && !paragraphBoundary.test(lines[start])) {
-      while (stop < lines.length && lines[stop].trim() && !paragraphBoundary.test(lines[stop])) stop++;
+      while (stop < lines.length && !summaryCode?.has(stop) && lines[stop].trim() && !paragraphBoundary.test(lines[stop])) stop++;
     }
     const spans = inlineSpans(lines.slice(start, stop).join('\n'), tags);
     let offset = 0, index = 0;
@@ -119,6 +184,10 @@ function removeTagLines(lines, tags) {
     }
     start = stop;
   }
+  if (summaryCode) {
+    const lastBody = kept.findLastIndex(line => line?.trim());
+    return lines.map((line, index) => index > lastBody && kept[index] === null ? '' : line);
+  }
   const result = [];
   for (let index = 0; index < kept.length;) {
     if (kept[index]?.trim()) { result.push(kept[index++]); continue; }
@@ -133,6 +202,76 @@ function removeTagLines(lines, tags) {
     else if (result.length && index < kept.length && blank !== undefined) result.push(blank);
   }
   return result;
+}
+
+export function walkSummaryBody(content, tags) {
+  const source = content.replace(/\r\n?/g, '\n').split('\n');
+  const code = summaryFenceLines(source);
+  const lines = removeTagLines(source, tags, code);
+  const parts = [], prose = [];
+  function finishProse() {
+    if (prose.length) parts.push(cleanSummaryProse(prose.join('\n')));
+    prose.length = 0;
+  }
+  for (const [index, line] of lines.entries()) {
+    if (code.has(index) || !line.trim() || (!prose.length && /^(?: {4}|\t)/.test(line))) {
+      finishProse();
+      parts.push(code.get(index) ?? line);
+    } else prose.push(line);
+  }
+  finishProse();
+  return parts.join(' ').replace(/\s+/gu, ' ').trim();
+}
+
+function cleanSummaryProse(text) {
+  const removed = new Uint8Array(text.length), code = codeSpans(text);
+  for (const span of code) {
+    removed.fill(1, span.opening, span.start);
+    removed.fill(1, span.stop, span.end);
+  }
+  let codeIndex = 0;
+  const insideCode = offset => {
+    while (code[codeIndex]?.end <= offset) codeIndex++;
+    return code[codeIndex]?.opening <= offset;
+  };
+  for (const prefix of text.matchAll(/^ {0,3}(?:#{1,6}[ \t]+|>[ \t]?|[-+*][ \t]+|\d+[.)][ \t]+)/gm)) {
+    if (!insideCode(prefix.index)) removed.fill(1, prefix.index, prefix.index + prefix[0].length);
+  }
+  codeIndex = 0;
+  const openers = new Map([['*', []], ['**', []], ['__', []], ['~~', []]]);
+  for (const run of text.matchAll(/\*+|_+|~+|\n/g)) {
+    const [raw] = run, end = run.index + raw.length;
+    if (raw === '\n') {
+      for (const stack of openers.values()) stack.length = 0;
+      continue;
+    }
+    const start = run.index + Number(escapedAt(text, run.index));
+    const marker = start === run.index ? raw : raw.slice(1);
+    const stack = openers.get(marker);
+    if (!stack || removed[start] || insideCode(start)) continue;
+    const before = start ? String.fromCodePoint(text.codePointAt(start - (/[\uDC00-\uDFFF]/.test(text[start - 1]) &&
+      /[\uD800-\uDBFF]/.test(text[start - 2] || '') ? 2 : 1))) : ' ';
+    const after = end < text.length ? String.fromCodePoint(text.codePointAt(end)) : ' ';
+    const beforeSpace = /\s/u.test(before), afterSpace = /\s/u.test(after);
+    const beforePunctuation = /[\p{P}\p{S}]/u.test(before), afterPunctuation = /[\p{P}\p{S}]/u.test(after);
+    const left = !afterSpace && (!afterPunctuation || beforeSpace || beforePunctuation);
+    const right = !beforeSpace && (!beforePunctuation || afterSpace || afterPunctuation);
+    if (stack.length && right && (marker !== '__' || !left || afterPunctuation)) {
+      const opening = stack.pop();
+      removed.fill(1, opening, opening + marker.length);
+      removed.fill(1, start, end);
+      for (const other of openers.values()) while (other.at(-1) > opening) other.pop();
+    } else if (left && (marker !== '__' || !right || beforePunctuation)) stack.push(start);
+  }
+  const parts = [];
+  let start = 0;
+  for (let offset = 0; offset < text.length; offset++) {
+    if (!removed[offset]) continue;
+    if (start < offset) parts.push(text.slice(start, offset));
+    start = offset + 1;
+  }
+  parts.push(text.slice(start));
+  return parts.join('');
 }
 
 function appendPlain(parent, text, start, end, spans, onTag, renderedTags) {

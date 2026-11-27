@@ -13,18 +13,23 @@ data class NoteTagSpan(val start: Int, val end: Int, val tag: String)
 fun notePresentation(content: String, tags: List<String>): NotePresentation =
     presentTags(content, tags.distinct(), noteTagSpans(content, tags))
 
+internal fun trailingTagPresentation(content: String, tags: List<String>, tree: ASTNode?): NotePresentation =
+    presentTags(content, tags.distinct(),
+        if (tree != null && tags.isNotEmpty() && '#' in content) NoteTagScanner(content, tree).spans(tags) else emptyList(),
+        trailingOnly = true)
+
 fun localNotePresentation(content: String): NotePresentation {
     val spans = noteTagSpans(content)
     return presentTags(content, spans.map { it.tag }.distinct(), spans)
 }
 
-private fun presentTags(content: String, tags: List<String>, spans: List<NoteTagSpan>): NotePresentation {
+private fun presentTags(content: String, tags: List<String>, spans: List<NoteTagSpan>, trailingOnly: Boolean = false): NotePresentation {
     if (spans.isEmpty()) return NotePresentation(content, tags)
     val removed = BooleanArray(content.length)
     spans.forEach { removed.fill(true, it.start, it.end) }
     val inline = mutableSetOf<String>()
     var index = 0
-    val body = withoutTagLines(content, removed) { start, end ->
+    val body = withoutTagLines(content, removed, trailingOnly) { start, end ->
         while (index < spans.size && spans[index].start < start) index++
         while (index < spans.size && spans[index].start < end) inline += spans[index++].tag
     }
@@ -134,25 +139,51 @@ private val escape = Regex("""\\[^\r\n]""")
 
 private data class Backticks(val start: Int, val end: Int, val escaped: Boolean)
 
+internal fun escapedDelimiter(text: String, start: Int): Boolean {
+    var slash = start
+    while (slash > 0 && text[slash - 1] == '\\') slash--
+    return (start - slash) % 2 != 0
+}
+
+internal data class InlineCodeSpan(val opening: Int, val start: Int, val stop: Int, val end: Int)
+
+internal fun inlineCodeSpans(text: String): List<InlineCodeSpan> {
+    if ('`' !in text) return emptyList()
+    val runs = backtickRun.findAll(text).map { run ->
+        Backticks(run.range.first, run.range.last + 1, escapedDelimiter(text, run.range.first))
+    }.toList()
+    return buildList {
+        forEachBacktickSpan(runs) { open, close ->
+            add(InlineCodeSpan(open.start + if (open.escaped) 1 else 0, open.end, close.start, close.end))
+            true
+        }
+    }
+}
+
+private fun forEachBacktickSpan(ticks: List<Backticks>, accept: (Backticks, Backticks) -> Boolean) {
+    val next = mutableMapOf<Int, Int>()
+    val closing = IntArray(ticks.size) { -1 }
+    for (index in ticks.indices.reversed()) {
+        val run = ticks[index]
+        val size = run.end - run.start
+        closing[index] = next[size - if (run.escaped) 1 else 0] ?: -1
+        next[size] = index
+    }
+    var index = 0
+    while (index < ticks.size) {
+        val stop = closing[index]
+        index = if (stop >= 0 && accept(ticks[index], ticks[stop])) stop + 1 else index + 1
+    }
+}
+
 private fun protectTagLines(content: String, protected: BooleanArray) {
     val ticks = mutableListOf<Backticks>()
     fun finishBlock() {
-        val next = mutableMapOf<Int, Int>()
-        val closing = IntArray(ticks.size) { -1 }
-        for (index in ticks.indices.reversed()) {
-            val run = ticks[index]
-            val size = run.end - run.start
-            closing[index] = next[size - if (run.escaped) 1 else 0] ?: -1
-            next[size] = index
-        }
-        var index = 0
-        while (index < ticks.size) {
-            val run = ticks[index]
-            val start = run.start + if (run.escaped) 1 else 0
-            val stop = closing[index]
-            if (stop < 0 || protected[start]) index++ else {
-                protected.fill(true, start, ticks[stop].end)
-                index = stop + 1
+        forEachBacktickSpan(ticks) { open, close ->
+            val start = open.start + if (open.escaped) 1 else 0
+            if (protected[start]) false else {
+                protected.fill(true, start, close.end)
+                true
             }
         }
         ticks.clear()
@@ -186,9 +217,7 @@ private fun protectTagLines(content: String, protected: BooleanArray) {
                 escape.findAll(body).forEach { protected[start + it.range.last] = true }
                 backtickRun.findAll(body).forEach { run ->
                     val at = start + run.range.first
-                    var slash = run.range.first
-                    while (slash > 0 && body[slash - 1] == '\\') slash--
-                    ticks += Backticks(at, start + run.range.last + 1, (run.range.first - slash) % 2 != 0)
+                    ticks += Backticks(at, start + run.range.last + 1, escapedDelimiter(body, run.range.first))
                 }
             }
         }
@@ -228,7 +257,7 @@ private fun tagBoundary(char: Char, before: Boolean): Boolean =
 
 private data class TagDisplayLine(val text: String, val ending: String, val tagOnly: Boolean)
 
-private fun withoutTagLines(content: String, removed: BooleanArray, onInlineLine: (Int, Int) -> Unit): String {
+private fun withoutTagLines(content: String, removed: BooleanArray, trailingOnly: Boolean, onInlineLine: (Int, Int) -> Unit): String {
     val lines = mutableListOf<TagDisplayLine>()
     var start = 0
     while (start < content.length) {
@@ -238,10 +267,16 @@ private fun withoutTagLines(content: String, removed: BooleanArray, onInlineLine
         if (next < content.length && content[next] == '\r') next++
         if (next < content.length && content[next] == '\n') next++
         val tagOnly = (start until end).all { removed[it] || content[it].isWhitespace() } && (start until end).any { removed[it] }
-        val text = if (tagOnly) "" else content.substring(start, end)
+        val text = if (tagOnly && !trailingOnly) "" else content.substring(start, end)
         if (!tagOnly) onInlineLine(start, end)
         lines += TagDisplayLine(text, content.substring(end, next), tagOnly)
         start = next
+    }
+    if (trailingOnly) {
+        val lastBody = lines.indexOfLast { !it.tagOnly && it.text.isNotBlank() }
+        return lines.withIndex().joinToString("") { (index, line) ->
+            if (index <= lastBody || !line.tagOnly) line.text + line.ending else ""
+        }
     }
     return buildString {
         var index = 0

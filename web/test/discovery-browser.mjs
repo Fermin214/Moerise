@@ -67,7 +67,8 @@ async function fixture(t, language = 'zh-CN', options = {}) {
     if (path === '/notes') {
       if (state.notesError) { error(state.notesError); return; }
       assert.equal(url.searchParams.get('state'), 'NORMAL');
-      reply({ notes: notes.filter(note => note.state === 'NORMAL').slice(0, 6), next_page_token: '' }); return;
+      assert.equal(url.searchParams.get('page_size'), '20');
+      reply({ notes: notes.filter(note => note.state === 'NORMAL').slice(0, 20), next_page_token: '' }); return;
     }
     if (path === '/reviews/daily') {
       assert.equal(req.method, 'GET');
@@ -149,6 +150,13 @@ async function assertDiscoverySpacing(page, content) {
   assert.ok(body.y - heading.y - heading.height < 100, 'Discovery content should follow the heading without a large blank area');
 }
 
+async function assertSecondary(control) {
+  assert.deepEqual(await control.evaluate(node => {
+    const { backgroundColor, color, borderTopColor, borderTopWidth, borderRadius } = getComputedStyle(node);
+    return [backgroundColor, color, borderTopColor, borderTopWidth, borderRadius];
+  }), ['rgb(252, 251, 248)', 'rgb(31, 30, 28)', 'rgb(228, 225, 216)', '1px', '10px']);
+}
+
 test('reading cards open a home tag filter from review and walk', async t => {
   const { page, state, url } = await fixture(t);
   state.notes.forEach(note => { note.content += ' #原始标签。'; });
@@ -225,9 +233,13 @@ test('review and walk share title coordinates through loading, reading, empty st
         state.hold = '/reviews/daily';
         await login(page, url, '/review');
         await waitFor(() => state.pending.length === 1);
-        const heading = await page.locator('.discovery-heading').boundingBox();
+        const headingPosition = () => page.locator('.discovery-heading').evaluate(node => {
+          const { x, y, width, height } = node.getBoundingClientRect();
+          return { x, y: y + window.scrollY, width, height };
+        });
+        const heading = await headingPosition();
         const assertPosition = async () => {
-          const actual = await page.locator('.discovery-heading').boundingBox();
+          const actual = await headingPosition();
           for (const axis of ['x', 'y', 'width', 'height']) {
             assert.ok(Math.abs(actual[axis] - heading[axis]) < 1, `${axis}: ${JSON.stringify({ actual, heading })}`);
           }
@@ -544,7 +556,7 @@ test('review keeps one opaque outgoing card and rapid changes cancel stale anima
     return result;
   });
   assert.deepEqual(layers.obsolete, ['idle', 'idle']);
-  assert.equal(layers.paper, 'rgb(255, 255, 255)');
+  assert.equal(layers.paper, 'rgb(252, 251, 248)');
   assert.equal(layers.opacity, 1);
   assert.ok(layers.overlap > 0);
   assert.ok(layers.ink > 0 && layers.ink < 1);
@@ -560,7 +572,7 @@ test('continuing from the bottom of a long walk opens the next note below the st
   await login(page, url, '/walk');
   await page.getByRole('button', { name: '随机开始', exact: true }).click();
   await card(page).getByText('笔记 1，段落 1', { exact: true }).waitFor();
-  await next(page).scrollIntoViewIfNeeded();
+  await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
   assert.ok(await page.evaluate(() => window.scrollY > 1000));
   await next(page).click();
   await card(page).getByText('笔记 2，段落 1', { exact: true }).waitFor();
@@ -572,6 +584,114 @@ test('continuing from the bottom of a long walk opens the next note below the st
   }));
   assert.ok(Math.abs(readingTop - toolbarBottom) <= 1);
   assert.ok(firstLine > toolbarBottom && firstLine < 250);
+});
+
+test('walk starts prefer substantive bodies, bound summaries and use service dates', async t => {
+  const { page, state, url } = await fixture(t);
+  for (const [index, note] of state.notes.slice(0, 20).entries()) {
+    Object.assign(note, { content: '', tags: [], attachments: [], create_time: '2026-10-29T17:30:00Z' });
+    if (index < 6) note.attachments = [{ filename: `attachment-${index}.pdf` }];
+  }
+  Object.assign(state.notes[8], { content: '# 标题\n> **正文** __强调__ *斜体* ~~删除~~ snake_case `#日记`\n#日记', tags: ['日记'] });
+  state.notes[11].content = '😀'.repeat(65);
+  state.notes[14].content = '短句\n#未知';
+  state.notes[17].content = '末位候选也有足够长的正文';
+  await login(page, url, '/walk');
+  const rows = page.locator('.walk-floater');
+  await rows.nth(5).waitFor();
+  assert.deepEqual(await rows.evaluateAll(nodes => nodes.map(node => node.dataset.name)),
+    ['memos/n8', 'memos/n11', 'memos/n17', 'memos/n14', 'memos/n0', 'memos/n1']);
+  assert.deepEqual(await rows.locator('span').allTextContents(), [
+    '标题 正文 强调 斜体 删除 snake_case #日记', `${'😀'.repeat(64)}…`, '末位候选也有足够长的正文',
+    '短句 #未知', 'attachment-0.pdf', 'attachment-1.pdf',
+  ]);
+  assert.equal(await rows.nth(1).getAttribute('aria-label'), `从这条笔记开始：${'😀'.repeat(64)}…`);
+  assert.deepEqual(await rows.locator('time').allTextContents(), Array(6).fill('2026年10月30日'));
+  await setUILanguage(page, 'en');
+  await page.getByRole('heading', { name: 'Start from a note' }).waitFor();
+  assert.deepEqual(await rows.locator('time').allTextContents(), Array(6).fill('2026-10-30'));
+});
+
+test('starting from the last row resets scroll and the mobile controls stay at the viewport bottom', async t => {
+  const { page, state, url } = await fixture(t, 'zh-CN', { viewport: { width: 320, height: 300 } });
+  state.notes[3].content = Array.from({ length: 45 }, (_, index) => `首篇正文 ${index + 1}`).join('\n\n');
+  await login(page, url, '/walk');
+  const controls = page.locator('.discovery-controls'), last = page.locator('.walk-floater').nth(3);
+  const assertAtBottom = async () => {
+    const difference = await controls.evaluate(node => innerHeight - node.getBoundingClientRect().bottom);
+    assert.ok(Math.abs(difference) <= 2, `Control bar is ${difference}px from the viewport bottom`);
+  };
+  await last.waitFor();
+  assert.equal(await controls.isHidden(), true);
+  await last.scrollIntoViewIfNeeded();
+  assert.ok(await page.evaluate(() => scrollY > 0));
+  state.hold = '/walks/start';
+  await last.click();
+  const stop = page.getByRole('button', { name: '停止', exact: true });
+  await stop.waitFor();
+  await assertAtBottom();
+  await assertSecondary(stop);
+  await waitFor(() => state.pending.length === 1);
+  state.hold = null; state.pending.shift().release();
+  await card(page).getByText('首篇正文 1', { exact: true }).waitFor();
+  await settleAnimation(page);
+  assert.ok(await card(page).locator('.note-content p').first().evaluate(node => {
+    const top = node.getBoundingClientRect().top;
+    return top >= document.querySelector('.mobile-header').getBoundingClientRect().bottom && top < 110;
+  }));
+  await assertAtBottom();
+  await page.evaluate(() => window.scrollTo(0, 400));
+  state.walkError = 'INDEX_NOT_READY';
+  await page.clock.setFixedTime(new Date('2026-10-30T04:01:01Z'));
+  assert.equal(await page.evaluate(() => scrollY), 400);
+  const action = await next(page).boundingBox();
+  await page.mouse.click(action.x + action.width / 2, action.y + action.height / 2);
+  await page.locator('.discovery-retry').waitFor();
+  assert.equal(await page.evaluate(() => scrollY), 400);
+  await assertAtBottom();
+  state.walkError = null;
+  await page.locator('.discovery-retry').evaluate(node => node.click());
+  await card(page).filter({ hasText: '末尾文字 0' }).waitFor();
+  await assertAtBottom();
+  assert.equal(await page.locator('.walk-trail time').count(), 0);
+  assert.match(await page.locator('.walk-trail').innerText(), /↑\s*首篇正文 1/);
+  assert.equal(await card(page).locator('.hd').count(), 0);
+  assert.equal(await card(page).locator('.discovery-footer time').innerText(), '2026年10月20日');
+  await card(page).locator('.discovery-footer').getByRole('button', { name: '打开笔记' }).waitFor();
+});
+
+test('desktop walk actions keep short-note coordinates and stay available on long notes', async t => {
+  const { page, state, url } = await fixture(t);
+  state.notes[0].content = '第一条短文。'; state.notes[0].attachments = [];
+  state.notes[1].content = '第二条短文。';
+  state.notes[2].content = Array.from({ length: 70 }, (_, index) => `第三条的第 ${index + 1} 段`).join('\n\n');
+  await login(page, url, '/walk');
+  await page.locator('.walk-start > .save').click();
+  await card(page).getByText('第一条短文。').waitFor();
+  const controls = page.locator('.discovery-controls');
+  const before = await controls.boundingBox();
+  await next(page).click();
+  await card(page).getByText('第二条短文。').waitFor();
+  assert.ok(Math.abs((await controls.boundingBox()).y - before.y) <= 2);
+  await next(page).click();
+  await card(page).getByText('第三条的第 1 段', { exact: true }).waitFor();
+  await page.evaluate(() => window.scrollBy(0, 300));
+  assert.equal(await controls.evaluate(node => getComputedStyle(node).position), 'sticky');
+  assert.ok(await controls.evaluate(node => Math.abs(innerHeight - node.getBoundingClientRect().bottom) <= 2));
+});
+
+test('review footer uses elapsed days across midnight and retains the secondary walk action', async t => {
+  const { page, state, url } = await fixture(t);
+  await page.clock.setFixedTime(new Date('2026-10-29T16:05:00Z'));
+  state.notes[0].create_time = '2026-10-29T15:55:00Z';
+  await login(page, url, '/review');
+  const footer = card(page).locator('.discovery-footer');
+  await footer.getByText('今天', { exact: true }).waitFor();
+  assert.equal(await card(page).locator('.hd,.pill,.discovery-footer svg').count(), 0);
+  assert.equal(await card(page).locator('.note-tags + .discovery-footer').count(), 1);
+  await assertSecondary(page.getByRole('button', { name: '从这条漫步', exact: true }));
+  await page.getByRole('button', { name: '第 4 / 6 条', exact: true }).click();
+  assert.equal(await card(page).locator('.discovery-footer').count(), 0);
 });
 
 test('reduced-motion walk waits for the exit signal and stop cancels it', async t => {
@@ -609,6 +729,7 @@ test('model availability can retry, disabled Embedding links to configuration, a
   await login(page, url, '/walk');
   await page.getByRole('alert').filter({ hasText: '服务暂时无法连接' }).waitFor();
   assert.equal(await page.getByRole('button', { name: '停止', exact: true }).count(), 0);
+  assert.equal(await page.locator('.discovery-controls').isHidden(), true);
   state.modelsError = null;
   await page.getByRole('button', { name: '重试', exact: true }).click();
   await page.getByRole('status').filter({ hasText: '请在设置中启用 Embedding' }).waitFor();
@@ -624,7 +745,7 @@ test('model availability can retry, disabled Embedding links to configuration, a
   assert.equal(await page.locator('#discovery-page').count(), 0);
 });
 
-test('English review and walk localize dates, navigation, errors and floating cards', async t => {
+test('English review and walk localize dates, navigation, errors and starting notes', async t => {
   const { page, state, url } = await fixture(t, 'en-US');
   await login(page, url, '/review');
   await page.getByRole('button', { name: 'Note 6 of 6', exact: true }).waitFor();
@@ -645,7 +766,7 @@ test('English review and walk localize dates, navigation, errors and floating ca
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
 });
 
-test('floating note starts, top-aligned titles and reduced motion work across desktop and touch viewports', { timeout: 60_000 }, async t => {
+test('single-column starts, top-aligned titles and reduced motion work across desktop and touch viewports', { timeout: 60_000 }, async t => {
   const { page, state, url } = await fixture(t, 'zh-CN', { hasTouch: true, isMobile: true });
   await login(page, url, '/walk');
   await page.locator('.walk-floater').nth(5).waitFor();
@@ -673,9 +794,11 @@ test('floating note starts, top-aligned titles and reduced motion work across de
       assert.equal(await previews.nth(index).evaluate(node => node === document.activeElement), true);
       await page.keyboard.press('Tab');
     }
-    for (const card of geometry.cards) {
-      assert.ok(card.x >= 0 && card.right <= viewport.width, 'Floating notes fit the viewport');
-      assert.ok(card.bottom <= geometry.start.y || card.y >= geometry.start.bottom, 'Notes leave the start button clear');
+    for (const [index, row] of geometry.cards.entries()) {
+      assert.ok(row.x >= 0 && row.right <= viewport.width && row.height >= 52);
+      assert.equal(row.x, geometry.cards[0].x);
+      assert.equal(row.width, geometry.cards[0].width);
+      assert.ok(row.y >= (index ? geometry.cards[index - 1].bottom : geometry.start.bottom + 20));
     }
     await screenshot(page, `walk-start-${viewport.width}.png`);
   }

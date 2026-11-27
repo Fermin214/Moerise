@@ -8,10 +8,11 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.horizontalScroll
@@ -25,6 +26,9 @@ import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.focus.onFocusChanged
@@ -32,6 +36,7 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.isCtrlPressed
@@ -51,6 +56,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import androidx.compose.ui.window.DialogWindowProvider
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
@@ -118,6 +124,7 @@ fun MoeriseApp(mobile: MobileController, onHomeReady: () -> Unit = {}) {
         }
     }
     val timezone = connection.profile?.timezone ?: "UTC"
+    val serviceDay = rememberServiceDay(timezone)
     var page by rememberSaveable(account) { mutableStateOf("home") }
     var searchOpen by rememberSaveable(account) { mutableStateOf(false) }
     var sourceTimeline by rememberSaveable(account) { mutableStateOf("home") }
@@ -128,7 +135,13 @@ fun MoeriseApp(mobile: MobileController, onHomeReady: () -> Unit = {}) {
     val sidebar = mobile.sidebar
     val sidebarFilters by sidebar.state.collectAsState()
     val filterRevision by mobile.filterReads.revision.collectAsState()
-    var month by rememberSaveable(account, timezone) { mutableStateOf(serviceMonth(timezone)) }
+    var month by rememberSaveable(account, timezone) { mutableStateOf(serviceDay.take(7)) }
+    var currentMonth by remember(account, timezone) { mutableStateOf(serviceDay.take(7)) }
+    LaunchedEffect(serviceDay) {
+        val nextMonth = serviceDay.take(7)
+        if (month == currentMonth) month = nextMonth
+        currentMonth = nextMonth
+    }
     val homeScroll = key(account) { rememberLazyListState() }
     val archiveScroll = key(account) { rememberLazyListState() }
     val mapNotesScroll = key(account) { rememberLazyListState() }
@@ -311,17 +324,17 @@ fun MoeriseApp(mobile: MobileController, onHomeReady: () -> Unit = {}) {
                         onMonth = { month = it }, onDate = { showFilter(query.copy(date = if (query.date == it) "" else it)) },
                         onTag = { tag -> showFilter(query.copy(tags = if (tag in query.tags) query.tags - tag else query.tags + tag)) },
                         selectedTags = query.tags,
-                        selectedDate = query.date, today = serviceToday(timezone),
+                        selectedDate = query.date, today = serviceDay,
                         stargazingEnabled = connection.profile?.stargazingEnabled != false)
                 }
             ) {
-                Surface(Modifier.fillMaxSize().platformTestTags(), color = MoeriseColors.Paper) {
+                Surface(Modifier.fillMaxSize().platformTestTags(),
+                    color = if (account == null || page == "connect" || page in setOf("home", "archive"))
+                        MoeriseColors.ScrollPaper else MoeriseColors.Paper) {
                     Box(Modifier.fillMaxSize()) {
                     when {
                         connection.loading -> Box(Modifier.safeDrawingPadding().padding(24.dp)) { CircularProgressIndicator() }
-                        account == null || page == "connect" -> Box(Modifier.safeDrawingPadding().imePadding()) {
-                            ConnectionScreen(session, strings) { page = "home" }
-                        }
+                        account == null || page == "connect" -> ConnectionScreen(session, strings) { page = "home" }
                         page == "settings" -> SettingsScreen(mobile, strings, onMenu = ::openDrawer, onSearch = { searchOpen = !searchOpen })
                         page in setOf("review", "walk") -> DiscoveryScreen(page, mobile, strings, onMenu = ::openDrawer,
                             onSearch = { searchOpen = !searchOpen }, onWalk = ::startWalk,
@@ -341,8 +354,8 @@ fun MoeriseApp(mobile: MobileController, onHomeReady: () -> Unit = {}) {
                                 contentAlignment = androidx.compose.ui.Alignment.TopCenter) {
                                 LazyColumn(Modifier.fillMaxHeight().widthIn(max = 800.dp).fillMaxWidth().testTag("${page}_timeline"),
                                     state = timelineScroll,
-                                    contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 20.dp,
-                                        bottom = if (page == "home") 88.dp else 20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                                    contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 6.dp,
+                                        bottom = if (page == "home") 92.dp else 24.dp), verticalArrangement = Arrangement.spacedBy(0.dp)) {
                                     if (page == "archive") item { Text(strings.text("归档", "Archive"),
                                         style = MaterialTheme.typography.titleLarge, modifier = Modifier.testTag("archive_page")) }
                                     if (query.tags.isNotEmpty() || query.date.isNotEmpty()) item { WebFilterBar(query, strings) { showFilter(it) } }
@@ -358,7 +371,7 @@ fun MoeriseApp(mobile: MobileController, onHomeReady: () -> Unit = {}) {
                                             }) { Text(strings.text("重试", "Retry")) }
                                         }
                                     }
-                                    items(if (connection.needsLogin || clearing) emptyList() else entries, key = { it.key }) { entry ->
+                                    itemsIndexed(if (connection.needsLogin || clearing) emptyList() else entries, key = { _, entry -> entry.key }) { index, entry ->
                                         Box(if (reducedMotion) Modifier else Modifier.animateItem(
                                             fadeInSpec = MoeriseMotion.tactile(),
                                             placementSpec = null,
@@ -377,6 +390,8 @@ fun MoeriseApp(mobile: MobileController, onHomeReady: () -> Unit = {}) {
                                         TimelineNoteCard(
                                             entry = entry,
                                             timezone = connection.profile!!.timezone,
+                                            today = serviceDay,
+                                            first = index == 0,
                                             strings = strings,
                                             core = session.core,
                                             onTag = { showFilter(query.copy(tags = query.tags + it)) },
@@ -446,15 +461,21 @@ fun MoeriseApp(mobile: MobileController, onHomeReady: () -> Unit = {}) {
                             }
                         }
                     }
-                    Box(Modifier.align(Alignment.BottomCenter).safeDrawingPadding().imePadding()
-                        .padding(horizontal = 16.dp, vertical = 12.dp).widthIn(max = 560.dp).fillMaxWidth()) {
-                        bottomAction.AnimatedContent(transitionSpec = {
-                            if (reducedMotion) fadeIn(tween(0)) togetherWith fadeOut(tween(0))
-                            else fadeIn(tween(120, delayMillis = 90)) togetherWith fadeOut(tween(90))
-                        }) { data ->
-                            when {
-                                data != null -> MobileSnackbar(data)
-                                capsuleVisible -> ComposerCapsule(composer.draft?.content.orEmpty(), strings, capsuleEnabled, mobile::openComposer)
+                    Box(Modifier.align(Alignment.BottomCenter).fillMaxWidth().safeDrawingPadding().imePadding(),
+                        contentAlignment = Alignment.BottomCenter) {
+                        if (capsuleVisible && (bottomAction.currentState == null || bottomAction.targetState == null)) {
+                            Box(Modifier.fillMaxWidth().height(88.dp).testTag("compose_feather")
+                                .background(Brush.verticalGradient(0f to Color.Transparent, .65f to MoeriseColors.ScrollPaper)))
+                        }
+                        Box(Modifier.padding(horizontal = 16.dp, vertical = 12.dp).widthIn(max = 560.dp).fillMaxWidth()) {
+                            bottomAction.AnimatedContent(transitionSpec = {
+                                if (reducedMotion) fadeIn(tween(0)) togetherWith fadeOut(tween(0))
+                                else fadeIn(tween(120, delayMillis = 90)) togetherWith fadeOut(tween(90))
+                            }) { data ->
+                                when {
+                                    data != null -> MobileSnackbar(data)
+                                    capsuleVisible -> ComposerCapsule(composer.draft?.content.orEmpty(), strings, capsuleEnabled, mobile::openComposer)
+                                }
                             }
                         }
                     }
@@ -503,13 +524,14 @@ fun MoeriseApp(mobile: MobileController, onHomeReady: () -> Unit = {}) {
 
 @Composable
 private fun ComposerCapsule(draft: String, strings: Strings, enabled: Boolean, onClick: () -> Unit) {
+    val preview = draft.lineSequence().firstOrNull { it.isNotBlank() }
     Surface(onClick = onClick, enabled = enabled, modifier = Modifier.fillMaxWidth().height(48.dp).testTag("compose_capsule"),
-        shape = RoundedCornerShape(24.dp), color = Color.White, border = BorderStroke(1.dp, MoeriseColors.Line),
-        shadowElevation = 3.dp) {
-        Row(Modifier.padding(horizontal = 15.dp), verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            Text(draft.lineSequence().firstOrNull { it.isNotBlank() } ?: strings.text("今天想到了什么……", "What came to mind today…"),
-                color = MoeriseColors.Muted, maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 15.sp)
+        shape = RoundedCornerShape(24.dp), color = MoeriseColors.Surface, border = BorderStroke(1.dp, MoeriseColors.Line),
+        shadowElevation = 2.dp) {
+        Box(Modifier.padding(horizontal = 15.dp), contentAlignment = Alignment.CenterStart) {
+            Text(preview ?: strings.text("今天想到了什么……", "What came to mind today…"),
+                color = if (preview == null) MoeriseColors.InkColophon else MoeriseColors.Ink,
+                maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 15.sp)
         }
     }
 }
@@ -560,15 +582,19 @@ private fun NoteComposerSheet(state: EditorUiState, controller: EditorController
         if (!state.busy && !state.importing) onClose()
     }
     Dialog(onDismissRequest = dismiss, properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) {
+        val window = (LocalView.current.parent as? DialogWindowProvider)?.window
+        SideEffect { window?.setDimAmount(0f) }
         val focus = LocalFocusManager.current
         val keyboard = LocalSoftwareKeyboardController.current
         val leave: () -> Unit = { focus.clearFocus(); keyboard?.hide() }
         ClearWritingOnStop(leave)
         CompositionLocalProvider(LocalLeaveWriting provides leave) {
-            Box(Modifier.fillMaxSize().imePadding().safeDrawingPadding()) {
-                Box(Modifier.matchParentSize().clickable(onClick = dismiss).semantics { contentDescription = strings.text("关闭写作", "Close writing") })
-                Box(Modifier.align(Alignment.BottomCenter).widthIn(max = 800.dp).fillMaxWidth()
-                    .padding(horizontal = 16.dp).testTag("quick_editor_sheet")) {
+            Box(Modifier.fillMaxSize()) {
+                Box(Modifier.matchParentSize().background(MoeriseColors.Ink.copy(alpha = 0.18f))
+                    .clickable(interactionSource = null, indication = null, onClick = dismiss)
+                    .semantics { contentDescription = strings.text("关闭写作", "Close writing") })
+                Box(Modifier.align(Alignment.BottomCenter).fillMaxWidth().statusBarsPadding().displayCutoutPadding().imePadding(),
+                    contentAlignment = Alignment.BottomCenter) {
                     SheetEditor(state, controller, strings, onSave, onConflict, dismiss, editorId,
                         pick, filters, filterRevision)
                 }
@@ -692,8 +718,8 @@ private fun SheetEditor(
                     WebIcon(WebIcon.Hash, strings.text("添加标签", "Add tag"), tint = MoeriseColors.Muted)
                 }
                 Spacer(Modifier.weight(1f))
-                TextButton(onClick = onCancel, enabled = !state.busy && !state.importing,
-                    modifier = Modifier.testTag(cancelTag)) { Text(strings.text("取消", "Cancel")) }
+                WebSecondaryAction(strings.text("取消", "Cancel"), onClick = onCancel, enabled = !state.busy && !state.importing,
+                    modifier = Modifier.testTag(cancelTag))
                 if (draft.conflictJson != null) {
                     WebAction(strings.text("处理冲突", "Resolve conflict"), onClick = { leaveWriting(); onConflict() })
                 } else WebAction(strings.text("保存", "Save"), onClick = { haptic(); onSave() },
@@ -701,9 +727,16 @@ private fun SheetEditor(
             }
         }
     }
-    Surface(modifier = if (LocalReducedMotion.current) Modifier else Modifier.animateContentSize(tween(140)),
-        shape = RoundedCornerShape(18.dp), border = BorderStroke(1.dp, MoeriseColors.Line), color = Color.White) {
-        Column(Modifier.padding(start = 20.dp, top = 14.dp, end = 20.dp, bottom = 8.dp),
+    Surface(modifier = Modifier.widthIn(max = 800.dp).fillMaxWidth().testTag("quick_editor_sheet")
+        .then(if (LocalReducedMotion.current) Modifier else Modifier.animateContentSize(tween(140))),
+        shape = RoundedCornerShape(topStart = 18.dp, topEnd = 18.dp, bottomStart = 0.dp, bottomEnd = 0.dp),
+        color = MoeriseColors.Surface, shadowElevation = 3.dp) {
+        Column(Modifier.drawWithContent {
+            drawContent()
+            val edge = 18.dp.toPx()
+            val line = 1.dp.toPx()
+            drawLine(MoeriseColors.Line, Offset(edge, line / 2), Offset(size.width - edge, line / 2), strokeWidth = line)
+        }.navigationBarsPadding().padding(start = 20.dp, top = 14.dp, end = 20.dp, bottom = 8.dp),
             verticalArrangement = Arrangement.spacedBy(2.dp)) {
             Column(Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState())) {
             BasicTextField(
@@ -724,7 +757,7 @@ private fun SheetEditor(
                     Box(Modifier.testTag(if (draft.content.isEmpty()) "${editorTag}_empty" else "${editorTag}_filled")) {
                         if (draft.content.isEmpty()) Text(
                             strings.text("今天想到了什么……", "What came to mind today…"),
-                            color = MoeriseColors.Muted, style = MaterialTheme.typography.bodyLarge,
+                            color = MoeriseColors.InkColophon, style = MaterialTheme.typography.bodyLarge,
                         )
                         input()
                     }

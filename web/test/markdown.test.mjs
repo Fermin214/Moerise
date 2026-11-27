@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { after, before, test } from 'node:test';
 import { performance } from 'node:perf_hooks';
 import { readFileSync } from 'node:fs';
-import { renderMarkdown, safeLink } from '../src/markdown.js';
+import { renderMarkdown, safeLink, walkSummaryBody } from '../src/markdown.js';
 
 class Node {
   constructor(tag, text = '') { this.tag = tag; this.children = []; this.text = text; }
@@ -38,6 +38,18 @@ for (const sample of shared) test(`shared reading contract: ${sample.name}`, () 
   assert.deepEqual(elements(result, 'button').map(node => node.textContent), sample.inline.map(tag => `#${tag}`));
   if (sample.blocks) assert.deepEqual(result.children.map(node => [node.tag, node.textContent]), sample.blocks);
   if (sample.repeatPrefix) assert.deepEqual(elements(result, 'code').map(node => node.textContent), ['代码 #日记 结束']);
+});
+
+const summaries = JSON.parse(readFileSync(new URL('../../mobile/core/markdown/src/test/resources/walk-summary.json', import.meta.url)));
+for (const sample of summaries) test(`shared walk summary: ${sample.name}`, () => {
+  assert.equal(walkSummaryBody(sample.content, sample.tags), sample.summary);
+});
+
+test('walk summary scans a 48 KB line of unclosed delimiters within the local budget', () => {
+  const body = `${'**word '.repeat(6900)}end`;
+  const started = performance.now();
+  assert.equal(walkSummaryBody(`${body}\n#日记`, ['日记']), body);
+  assert.ok(performance.now() - started < 1000);
 });
 
 const note = {

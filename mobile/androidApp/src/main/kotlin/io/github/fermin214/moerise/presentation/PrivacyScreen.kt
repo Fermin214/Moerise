@@ -59,9 +59,10 @@ fun WelcomeDialog(controller: PrivacyController, strings: Strings) {
                 Feedback(strings)
                 TextButton({ details = true }) { Text(strings.text("查看统计说明", "About statistics")) }
             }
-        } }, confirmButton = { Button({ controller.choose(checked) }, enabled = !state.choiceSaveFailed, modifier = Modifier.testTag("welcome_enter")) {
-            Text(strings.text("进入 Moerise", "Enter Moerise"))
-        } })
+        } }, confirmButton = {
+            WebAction(strings.text("进入 Moerise", "Enter Moerise"), { controller.choose(checked) },
+                enabled = !state.choiceSaveFailed, modifier = Modifier.testTag("welcome_enter"))
+        })
 }
 
 @Composable
