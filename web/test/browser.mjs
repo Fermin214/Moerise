@@ -257,6 +257,9 @@ test('long timeline notes fold by height and collapse beneath the mobile sticky 
   assert.equal(await preview.evaluate(element => element.offsetHeight), 260);
   assert.equal(await preview.locator('.attachment-list a').count(), 4);
   assert.equal(await preview.locator('.note-tags').count(), 1);
+  const colophon = card.locator(':scope > .note-colophon');
+  assert.equal(await colophon.locator('time').innerText(), '10月29日');
+  assert.equal(await colophon.getByRole('button', { name: '更多操作' }).isVisible(), true);
   await expand.click();
   assert.ok(await preview.evaluate(element => element.offsetHeight) > 380);
   await page.evaluate(() => scrollTo(0, 0));
@@ -278,6 +281,89 @@ test('long timeline notes fold by height and collapse beneath the mobile sticky 
   await page.goto(`${url}/?query=${encodeURIComponent('长卡片回归')}`);
   await card.waitFor();
   assert.equal(await preview.count(), 0);
+});
+
+test('paper login disables incomplete and submitting forms, retaining rejected input', async t => {
+  const { page, url } = await fixture(t);
+  const auth = page.locator('#auth'), form = page.locator('#login-form');
+  const username = page.locator('#username'), password = page.locator('#password'), submit = page.locator('#login');
+  const language = auth.locator('[data-language]');
+  await page.goto(url);
+  await form.waitFor();
+  assert.equal(await page.locator('.memos-brand').innerText(), 'Moerise');
+  assert.deepEqual(await auth.evaluate(node => [getComputedStyle(node).backgroundColor,
+    getComputedStyle(node.querySelector('.memos-login')).backgroundColor]), ['rgb(247, 246, 242)', 'rgba(0, 0, 0, 0)']);
+  assert.deepEqual(await password.evaluate(node => {
+    const style = getComputedStyle(node);
+    return [style.backgroundColor, style.borderColor, style.height];
+  }), ['rgb(252, 251, 248)', 'rgb(145, 139, 128)', '44px']);
+  assert.equal(await submit.isDisabled(), true);
+  await username.fill(' owner ');
+  assert.equal(await submit.isDisabled(), true);
+  await password.fill('sample-password');
+  assert.equal(await submit.isEnabled(), true);
+  const { promise: arrived, resolve: captured } = Promise.withResolvers();
+  const { promise: hold, resolve: release } = Promise.withResolvers();
+  await page.route('**/api/app/v1/session', async route => {
+    if (route.request().method() !== 'POST') return route.continue();
+    captured(); await hold;
+    await route.fulfill({ status: 401, json: { error: { code: 'INVALID_CREDENTIALS' } } });
+  }, { times: 1 });
+  try {
+    await submit.click(); await arrived;
+    for (const control of [username, password, submit, language]) assert.equal(await control.isDisabled(), true);
+  } finally { release(); }
+  await page.locator('#auth-error').waitFor();
+  assert.equal(await username.inputValue(), ' owner ');
+  assert.equal(await password.inputValue(), 'sample-password');
+  assert.equal(await submit.isEnabled(), true);
+  await submit.click();
+  await page.locator('#workspace').waitFor();
+  assert.equal(await password.inputValue(), '');
+});
+
+test('mounted timeline colophons roll over in place without refetching or moving the editor', async t => {
+  const { page, state, url } = await fixture(t);
+  await page.clock.install({ time: new Date('2026-10-29T15:58:00Z') });
+  await page.clock.setSystemTime(new Date('2026-10-29T15:58:00Z'));
+  await page.goto(url); await login(page);
+  const card = page.locator('#notes [data-name="memos/n00"]');
+  const date = card.locator('.note-colophon time').filter({ hasText: '12:59' });
+  await date.waitFor();
+  await page.locator('#content').fill('未提交的新笔记');
+  const editing = page.locator('#notes [data-name="memos/n05"]');
+  await editing.getByRole('button', { name: '更多操作' }).click();
+  await editing.getByRole('menuitem', { name: '编辑', exact: true }).click();
+  await page.locator('.editor textarea').fill('未提交的编辑');
+  const scroll = await page.evaluate(() => {
+    const editor = document.querySelector('.editor');
+    globalThis.midnightView = { editor, date: document.querySelector('[data-name="memos/n00"] time') };
+    return scrollY;
+  });
+  const reads = state.requests.filter(item => item.path === '/notes').length;
+  await page.clock.fastForward(121_000);
+  await card.locator('time').filter({ hasText: '10月29日' }).waitFor({ state: 'attached' });
+  await setUILanguage(page, 'en');
+  assert.equal(await card.locator('time').textContent(), 'Oct 29');
+  await page.evaluate(() => {
+    Object.defineProperty(document, 'hidden', { configurable: true, value: true });
+    document.dispatchEvent(new Event('visibilitychange'));
+  });
+  await page.clock.setSystemTime(new Date('2027-01-01T00:00:00Z'));
+  assert.equal(await card.locator('time').textContent(), 'Oct 29');
+  await page.evaluate(() => {
+    Reflect.deleteProperty(document, 'hidden');
+    document.dispatchEvent(new Event('visibilitychange'));
+  });
+  assert.equal(await card.locator('time').textContent(), '2026-10-29');
+  assert.deepEqual(await page.evaluate(() => {
+    const { editor, date } = globalThis.midnightView;
+    return [editor === document.querySelector('.editor'), date === document.querySelector('[data-name="memos/n00"] time'),
+      editor.querySelector('textarea') === document.activeElement, scrollY];
+  }), [true, true, true, scroll]);
+  assert.equal(await page.locator('.editor textarea').inputValue(), '未提交的编辑');
+  assert.equal(await page.locator('#content').inputValue(), '未提交的新笔记');
+  assert.equal(state.requests.filter(item => item.path === '/notes').length, reads);
 });
 
 test('CSRF renewal discards drafts and never replays a note after an instance or author change', async t => {
@@ -1302,7 +1388,7 @@ test('English fallback, live language switching and stored preference preserve o
   const renderedParagraphs = await note.locator('.note-content p').allTextContents();
   await page.getByRole('button', { name: 'Previous month' }).waitFor();
   await page.locator('#calendar-title').filter({ hasText: /^October 2026$/ }).waitFor();
-  assert.equal(await note.locator('time').first().textContent(), '2026-10-29 12:59');
+  assert.equal(await note.locator('time').first().textContent(), 'Oct 29');
   await page.locator('#content').fill('未保存的想法 #标签');
   await page.locator('#attachment-input').setInputFiles({ name: '图片.png', mimeType: 'image/png', buffer: png });
   await note.getByRole('button', { name: 'More actions' }).click();

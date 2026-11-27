@@ -1,5 +1,6 @@
 package io.github.fermin214.moerise.presentation
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
@@ -16,6 +17,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.focus.FocusDirection
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.testTag
@@ -26,7 +28,9 @@ import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 
 @Composable
 fun ConnectionScreen(controller: SessionController, strings: Strings, onConnected: () -> Unit = {}) {
@@ -61,82 +65,74 @@ fun ConnectionScreen(controller: SessionController, strings: Strings, onConnecte
         }
     }
     DisposableEffect(Unit) { onDispose { password = "" } }
-    BoxWithConstraints(Modifier.fillMaxSize().imePadding()) {
-        Column(
-            Modifier.fillMaxWidth().verticalScroll(rememberScrollState())
-                .heightIn(min = maxHeight).padding(16.dp),
-            verticalArrangement = Arrangement.Center,
-            horizontalAlignment = Alignment.CenterHorizontally,
-        ) {
-            Surface(
-                modifier = Modifier.widthIn(max = 360.dp).fillMaxWidth(),
-                shape = RoundedCornerShape(12.dp), color = MoeriseColors.Surface,
-            ) {
-                Column(Modifier.padding(28.dp)) {
-                    Box(Modifier.align(Alignment.End)) {
-                        TextButton(onClick = { languageMenu = true }, enabled = !state.busy, modifier = Modifier.testTag("login_language")) {
-                            Text(when (language) {
-                                UiLanguage.SYSTEM -> strings.text("跟随系统", "System")
-                                UiLanguage.CHINESE -> "简体中文"
-                                UiLanguage.ENGLISH -> "English"
-                            })
-                        }
-                        DropdownMenu(languageMenu, onDismissRequest = { languageMenu = false },
-                            modifier = Modifier.platformTestTags()) {
-                            UiLanguage.entries.forEach { choice -> DropdownMenuItem(text = { Text(when (choice) {
-                                UiLanguage.SYSTEM -> strings.text("跟随系统", "System")
-                                UiLanguage.CHINESE -> "简体中文"
-                                UiLanguage.ENGLISH -> "English"
-                            }) }, onClick = { languageMenu = false; controller.language(choice) }) }
-                        }
+    BoxWithConstraints(Modifier.fillMaxSize().background(MoeriseColors.ScrollPaper).safeDrawingPadding().imePadding()) {
+        val fieldSpace = maxHeight
+        Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).heightIn(min = fieldSpace)
+            .padding(horizontal = 16.dp, vertical = 56.dp),
+            verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
+            Column(Modifier.widthIn(max = 360.dp).fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
+                MoeriseBrandMark()
+                Text("Moerise", modifier = Modifier.padding(top = 12.dp), fontFamily = FontFamily.Serif,
+                    fontSize = 23.sp, letterSpacing = 1.6.sp, color = MoeriseColors.BrandInk)
+                Text(strings.text("欢迎回来。", "Welcome back."), color = MoeriseColors.InkColophon,
+                    fontSize = 13.5.sp, modifier = Modifier.padding(top = 4.dp))
+                Spacer(Modifier.height(24.dp))
+                Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                    if (changingServer) ConnectionField(
+                        origin, { origin = it }, strings.text("服务地址", "Server address"),
+                        "server_origin", !state.busy, placeholder = "https://notes.example.org",
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
+                    ) else TextButton(onClick = { changingServer = true }, enabled = !state.busy, modifier = Modifier.testTag("server_change")) {
+                        Text(strings.text("更换服务器", "Change server"))
                     }
-                    Text(
-                        strings.text("登录", "Sign in"),
-                        style = MaterialTheme.typography.titleLarge,
+                    ConnectionField(
+                        username, { username = it }, strings.text("用户名", "Username"),
+                        "server_username", !state.busy,
+                        keyboardOptions = KeyboardOptions(autoCorrectEnabled = false, capitalization = KeyboardCapitalization.None),
                     )
-                    Text(strings.text("欢迎回来。", "Welcome back."), color = MoeriseColors.Muted,
-                        style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(top = 4.dp))
-                    Spacer(Modifier.height(24.dp))
-                    Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
-                        if (changingServer) ConnectionField(
-                            origin, { origin = it }, strings.text("服务地址", "Server address"),
-                            "server_origin", !state.busy, placeholder = "https://notes.example.org",
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
-                        ) else TextButton(onClick = { changingServer = true }, enabled = !state.busy, modifier = Modifier.testTag("server_change")) {
-                            Text(strings.text("更换服务器", "Change server"))
-                        }
-                        ConnectionField(
-                            username, { username = it }, strings.text("用户名", "Username"),
-                            "server_username", !state.busy,
-                            keyboardOptions = KeyboardOptions(autoCorrectEnabled = false, capitalization = KeyboardCapitalization.None),
-                        )
-                        ConnectionField(
-                            password, { password = it }, strings.text("密码", "Password"),
-                            "server_password", !state.busy,
-                            visualTransformation = if (passwordShown && !state.busy) VisualTransformation.None else PasswordVisualTransformation(),
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
-                            onSubmit = ::submitLogin,
-                            trailing = {
-                                IconButton(onClick = { passwordShown = !passwordShown }, enabled = !state.busy,
-                                    modifier = Modifier.size(44.dp).testTag("toggle_password")) {
-                                    WebIcon(if (passwordShown) WebIcon.EyeOff else WebIcon.Eye,
-                                        if (passwordShown) strings.text("隐藏密码", "Hide password") else strings.text("显示密码", "Show password"))
-                                }
-                            },
-                        )
-                        state.error?.let {
-                            Text(connectionError(it, strings), color = MaterialTheme.colorScheme.error,
-                                style = MaterialTheme.typography.bodyMedium)
-                        }
-                        WebAction(
-                            if (state.busy) strings.text("连接中…", "Connecting…") else strings.text("登录", "Sign in"),
-                            onClick = ::submitLogin,
-                            enabled = canLogin,
-                            modifier = Modifier.fillMaxWidth().testTag("server_login"),
-                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 12.dp),
-                        )
+                    ConnectionField(
+                        password, { password = it }, strings.text("密码", "Password"),
+                        "server_password", !state.busy,
+                        visualTransformation = if (passwordShown && !state.busy) VisualTransformation.None else PasswordVisualTransformation(),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                        onSubmit = ::submitLogin,
+                        trailing = {
+                            IconButton(onClick = { passwordShown = !passwordShown }, enabled = !state.busy,
+                                modifier = Modifier.size(44.dp).testTag("toggle_password")) {
+                                WebIcon(if (passwordShown) WebIcon.EyeOff else WebIcon.Eye,
+                                    if (passwordShown) strings.text("隐藏密码", "Hide password") else strings.text("显示密码", "Show password"))
+                            }
+                        },
+                    )
+                    state.error?.let {
+                        Text(connectionError(it, strings), color = MaterialTheme.colorScheme.error,
+                            style = MaterialTheme.typography.bodyMedium)
                     }
+                    WebAction(
+                        if (state.busy) strings.text("连接中…", "Connecting…") else strings.text("登录", "Sign in"),
+                        onClick = ::submitLogin,
+                        enabled = canLogin,
+                        modifier = Modifier.fillMaxWidth().heightIn(min = 46.dp).testTag("server_login"),
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+                    )
                 }
+            }
+        }
+        Box(Modifier.align(Alignment.TopEnd).padding(end = 12.dp, top = 4.dp)) {
+            TextButton(onClick = { languageMenu = true }, enabled = !state.busy, modifier = Modifier.testTag("login_language"),
+                colors = ButtonDefaults.textButtonColors(contentColor = MoeriseColors.InkColophon)) {
+                Text(when (language) {
+                    UiLanguage.SYSTEM -> strings.text("跟随系统", "System")
+                    UiLanguage.CHINESE -> "简体中文"
+                    UiLanguage.ENGLISH -> "English"
+                })
+            }
+            DropdownMenu(languageMenu, onDismissRequest = { languageMenu = false }, modifier = Modifier.platformTestTags()) {
+                UiLanguage.entries.forEach { choice -> DropdownMenuItem(text = { Text(when (choice) {
+                    UiLanguage.SYSTEM -> strings.text("跟随系统", "System")
+                    UiLanguage.CHINESE -> "简体中文"
+                    UiLanguage.ENGLISH -> "English"
+                }) }, onClick = { languageMenu = false; controller.language(choice) }) }
             }
         }
     }
@@ -152,8 +148,10 @@ private fun ConnectionField(
 ) {
     val focus = LocalFocusManager.current
     val textStyle = MaterialTheme.typography.bodyLarge
+    val shape = RoundedCornerShape(10.dp)
+    var focused by remember { mutableStateOf(false) }
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        Text(label, style = MaterialTheme.typography.labelLarge)
+        Text(label, style = MaterialTheme.typography.bodySmall, color = Color(0xFF5C5852))
         BasicTextField(
             value = value, onValueChange = onValueChange, singleLine = true, enabled = enabled,
             keyboardOptions = keyboardOptions.copy(imeAction = if (onSubmit != null) ImeAction.Done else ImeAction.Next),
@@ -161,14 +159,15 @@ private fun ConnectionField(
             visualTransformation = visualTransformation,
             textStyle = textStyle.copy(color = MoeriseColors.Ink.copy(alpha = if (enabled) 1f else .5f)),
             cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
-            modifier = Modifier.fillMaxWidth().heightIn(min = 44.dp)
-                .border(1.dp, MoeriseColors.FieldBorder, RoundedCornerShape(6.dp))
+            modifier = Modifier.fillMaxWidth().heightIn(min = 46.dp).onFocusChanged { focused = it.isFocused }
+                .background(MoeriseColors.Surface, shape)
+                .border(1.dp, if (focused) MoeriseColors.Accent else MoeriseColors.FieldBorder, shape)
                 .testTag(tag).semantics { contentDescription = label },
             decorationBox = { innerTextField ->
-                Row(Modifier.fillMaxWidth().heightIn(min = 44.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Box(Modifier.weight(1f).padding(horizontal = 12.dp, vertical = 10.dp)
+                Row(Modifier.fillMaxWidth().heightIn(min = 46.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Box(Modifier.weight(1f).padding(horizontal = 12.dp, vertical = 8.dp)
                         .testTag(if (value.isEmpty()) "${tag}_empty" else "${tag}_filled")) {
-                        if (value.isEmpty() && placeholder != null) Text(placeholder, style = textStyle, color = MoeriseColors.Muted)
+                        if (value.isEmpty() && placeholder != null) Text(placeholder, style = textStyle, color = MoeriseColors.InkColophon)
                         innerTextField()
                     }
                     trailing?.invoke()

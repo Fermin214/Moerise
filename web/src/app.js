@@ -1,4 +1,4 @@
-import { l, setText, setAttr, resolveText, locale, monthLabel, weekdays, initI18n } from './i18n.js';
+import { l, setText, setAttr, resolveText, locale, monthLabel, weekdays, initI18n, localize } from './i18n.js';
 import { Draft, readAttachments } from './draft.js';
 import { errorMessage as errorText } from './errors.js';
 import { pages, notePath, filters, timelineURL, safeFrom, detailURL, noteID, attachmentURL, rasterImage } from './routes.js';
@@ -16,6 +16,7 @@ import { connectPrivacy, disconnectPrivacy, diagnose, resultOf, usage } from './
 import { syncStatus } from './sync-status.js';
 import { dismissSnackbar, snackbar } from './snackbar.js';
 import { animateMotion, motionPositions, moveFrom } from './motion.js';
+import { serviceDate, nextServiceDay, timelineTime } from './timeline-time.js';
 
 const $ = id => document.getElementById(id);
 const logoutKey = 'moerise.logout-pending';
@@ -58,7 +59,7 @@ const cardObserver = new ResizeObserver(entries => {
   });
 });
 const sidebarTags = new Map(), sidebarCalendars = new Map();
-let preloadController = null, preloadTimer = null, serviceDay = '';
+let preloadController = null, preloadTimer = null, serviceDay = '', serviceDayTimer = null;
 let sidebarTagState = '', sidebarCalendarKey = '';
 let sidebarFocusTimer = null, sidebarFocusRefresh = null;
 let epoch = 0, viewSequence = 0, sidebarSequence = 0;
@@ -80,7 +81,7 @@ const client = createClient({
     const timezoneChanged = identity.timezone !== value.timezone;
     identity = value; updateStargazing();
     if (timezoneChanged) {
-      serviceDay = localToday(); month = sourceTimeline().values.date?.slice(0, 7) || serviceDay.slice(0, 7);
+      refreshServiceDay(true); month = sourceTimeline().values.date?.slice(0, 7) || serviceDay.slice(0, 7);
       dirtySnapshots(); invalidateSidebar(); loadSidebar();
     }
   },
@@ -176,16 +177,21 @@ function hidePrivate({ resume = false } = {}) {
   snapshots.clear();
   discovery?.clear();
   mapView = mapSnapshot = null;
-  month = ''; identity = null; routeReturnKey = null;
+  clearTimeout(serviceDayTimer);
+  month = serviceDay = ''; identity = null; routeReturnKey = null;
   lastTimeline = { key: null, url: '/', path: '/', values: filters('') };
   closeMenus(); leaveGuard.update();
 }
+function loginReady() { return !!$('username').value.trim() && !!$('password').value; }
+function updateLoginButton() { $('login').disabled = authBusy || !loginReady(); }
 function authControls({ busy = false, login = true } = {}) {
   authBusy = busy;
   $('auth').setAttribute('aria-busy', String(busy));
   $('login-form').hidden = !login;
   $('retry-logout').hidden = !logoutCSRF || busy;
-  for (const id of ['username', 'password', 'login']) $(id).disabled = busy;
+  for (const id of ['username', 'password']) $(id).disabled = busy;
+  $('auth').querySelector('[data-language]').disabled = busy;
+  updateLoginButton();
 }
 function expire(err, resume = true) {
   disconnectPrivacy(true);
@@ -201,12 +207,29 @@ function handleFailure(element, err) {
   else showError(element, err);
 }
 function localToday() {
-  try {
-    const parts = new Intl.DateTimeFormat('en-CA', {
-      timeZone: identity?.timezone, year: 'numeric', month: '2-digit', day: '2-digit',
-    }).formatToParts(new Date());
-    return ['year', 'month', 'day'].map(type => parts.find(part => part.type === type).value).join('-');
-  } catch { return new Date().toISOString().slice(0, 10); }
+  const now = Date.now();
+  try { return serviceDate(identity?.timezone, now); }
+  catch { return serviceDate('UTC', now); }
+}
+function refreshServiceDay(timezoneChanged = false) {
+  clearTimeout(serviceDayTimer);
+  if (!identity) return;
+  const now = Date.now();
+  let timezone = identity.timezone, day;
+  try { day = serviceDate(timezone, now); }
+  catch { timezone = 'UTC'; day = serviceDate(timezone, now); }
+  const changed = serviceDay !== day;
+  if (changed) {
+    if (month === serviceDay.slice(0, 7)) month = day.slice(0, 7);
+    serviceDay = day;
+  }
+  if (changed || timezoneChanged) $('notes').querySelectorAll('.note-colophon time').forEach(localize);
+  if (!document.hidden) serviceDayTimer = setTimeout(() => { if (refreshServiceDay()) loadSidebar(); },
+    Math.max(1, nextServiceDay(timezone, now, day) - Date.now()));
+  return changed;
+}
+function formatTimelineTime(value) {
+  return () => timelineTime(value, identity?.timezone, serviceDay, locale() === 'en');
 }
 function formatTime(value) {
   if (!Number.isFinite(Date.parse(value))) return '';
@@ -274,7 +297,7 @@ async function enter(value, restored = false) {
   $('password').value = '';
   setText($('account-name'), identity.user.display_name?.trim() || identity.user.name.replace(/^users\//, ''));
   $('account').hidden = false;
-  serviceDay = localToday(); month = serviceDay.slice(0, 7);
+  refreshServiceDay(); month = serviceDay.slice(0, 7);
   $('content').value = draft.content;
   for (const editor of editors.values()) editor.update();
   updateComposer();
@@ -298,13 +321,14 @@ async function restore() {
     showError($('auth-error'), err.status === 401 ? null : err);
   }
 }
+$('login-form').addEventListener('input', updateLoginButton);
+$('login-form').addEventListener('change', updateLoginButton);
 $('login-form').addEventListener('submit', async event => {
   event.preventDefault();
-  if (authBusy || logoutCSRF) return;
+  if (authBusy || logoutCSRF || !loginReady()) return;
   const generation = invalidate();
   authControls({ busy: true }); showError($('auth-error'), null);
   const body = { username: $('username').value.trim(), password: $('password').value };
-  $('password').value = '';
   try {
     const value = await request('/session', { method: 'POST', body });
     stale(generation); authControls();
@@ -448,17 +472,13 @@ function schedulePreload() {
   }, 250);
 }
 function refreshSidebarOnFocus() {
+  refreshServiceDay();
   if (document.hidden) { stopPreload(); return; }
   if (!identity || sidebarFocusRefresh) return;
   clearTimeout(sidebarFocusTimer);
   sidebarFocusTimer = setTimeout(() => {
     sidebarFocusTimer = null;
     if (!identity || document.visibilityState !== 'visible') return;
-    const day = localToday();
-    if (day !== serviceDay) {
-      if (month === serviceDay.slice(0, 7)) month = day.slice(0, 7);
-      serviceDay = day;
-    }
     const pending = loadSidebar();
     sidebarFocusRefresh = pending;
     pending.finally(() => { if (sidebarFocusRefresh === pending) sidebarFocusRefresh = null; });
@@ -526,7 +546,7 @@ function renderCalendar(days, selected, disabled = false) {
   for (let i = 0; i < offset; i++) {
     const blank = button('', 'blank', () => {}); blank.disabled = true; blank.tabIndex = -1; calendar.append(blank);
   }
-  const today = localToday();
+  const today = serviceDay;
   for (let day = 1; day <= size; day++) {
     const date = `${month}-${String(day).padStart(2, '0')}`, count = counts.get(date) || 0;
     const cell = button(String(day), [selected === date ? 'sel' : count > 1 ? 'h2' : count ? 'h1' : '', date === today ? 'today' : ''].join(' '),
@@ -560,7 +580,7 @@ function renderNote(note, detail = false) {
     [l("删除"), () => confirmDelete(card, note), 'dg'],
   ];
   const card = renderNoteCard(note, {
-    detail, formatTime, href: detailURL(note.name, router.url), actions,
+    detail, formatTime, formatTimelineTime, href: detailURL(note.name, router.url), actions,
     pending: pendingWrites.has(note.name),
     expandedNotes: !detail && !sourceTimeline().values.query.trim() && !pendingWrites.has(note.name) ? expandedNotes : null,
     onTag: tag => {
@@ -952,6 +972,7 @@ async function showRoute({ focus = false, returning = false } = {}) {
           discovery?.invalidate({ settings: true });
         }
         if (before.timezone !== data.settings.timezone) {
+          refreshServiceDay(true);
           month = sourceTimeline().values.date?.slice(0, 7) || localToday().slice(0, 7);
           dirtySnapshots(); invalidateSidebar(); loadSidebar();
         }

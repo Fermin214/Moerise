@@ -189,6 +189,7 @@ async function beginOfflineLogout(page) {
   await page.locator('#account-settings').click();
   await page.locator('#logout').click();
   await page.locator('#retry-logout').waitFor();
+  assert.equal(await page.locator('#login-form').isHidden(), true);
   assert.equal(await page.locator('#app').isHidden(), true);
   await page.context().setOffline(false);
 }
@@ -270,7 +271,7 @@ test('settings card tools and dialog dismissal share the secondary button colors
     assert.deepEqual(await control.evaluate(node => {
       const { backgroundColor, color, borderTopColor, borderTopWidth, borderRadius } = getComputedStyle(node);
       return [backgroundColor, color, borderTopColor, borderTopWidth, borderRadius];
-    }), ['rgb(255, 255, 255)', 'rgb(31, 30, 28)', 'rgb(227, 224, 216)', '1px', '10px']);
+    }), ['rgb(252, 251, 248)', 'rgb(31, 30, 28)', 'rgb(228, 225, 216)', '1px', '10px']);
   }
   await assertSecondary(page.locator('#settings-account #logout'));
   await assertSecondary(page.locator('#settings-page').getByRole('button', { name: '同步', exact: true }));

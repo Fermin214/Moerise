@@ -111,7 +111,9 @@ test('a tag in the star reader opens the home filter', async t => {
   state.notes[0].tags.push('元数据');
   await login(page, url); await ready(page);
   await marker(page, 0).press('Enter');
-  await card(page).locator('.hd').getByRole('button', { name: '#元数据', exact: true }).waitFor();
+  const tag = card(page).locator('.hd').getByRole('button', { name: '#元数据', exact: true });
+  await tag.waitFor();
+  assert.equal(await tag.evaluate(node => getComputedStyle(node).backgroundColor), 'rgb(232, 240, 238)');
   assert.match(await card(page).locator('.hd time').innerText(), /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/);
   assert.equal(await card(page).locator('.hd button[aria-label="打开笔记"] svg').count(), 1);
   assert.equal(await card(page).locator('.discovery-footer').count(), 0);

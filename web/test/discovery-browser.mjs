@@ -154,7 +154,7 @@ async function assertSecondary(control) {
   assert.deepEqual(await control.evaluate(node => {
     const { backgroundColor, color, borderTopColor, borderTopWidth, borderRadius } = getComputedStyle(node);
     return [backgroundColor, color, borderTopColor, borderTopWidth, borderRadius];
-  }), ['rgb(255, 255, 255)', 'rgb(31, 30, 28)', 'rgb(227, 224, 216)', '1px', '10px']);
+  }), ['rgb(252, 251, 248)', 'rgb(31, 30, 28)', 'rgb(228, 225, 216)', '1px', '10px']);
 }
 
 test('reading cards open a home tag filter from review and walk', async t => {
@@ -556,7 +556,7 @@ test('review keeps one opaque outgoing card and rapid changes cancel stale anima
     return result;
   });
   assert.deepEqual(layers.obsolete, ['idle', 'idle']);
-  assert.equal(layers.paper, 'rgb(255, 255, 255)');
+  assert.equal(layers.paper, 'rgb(252, 251, 248)');
   assert.equal(layers.opacity, 1);
   assert.ok(layers.overlap > 0);
   assert.ok(layers.ink > 0 && layers.ink < 1);

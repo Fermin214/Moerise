@@ -35,7 +35,7 @@ fun WebSidebar(
     Column(Modifier.fillMaxHeight().safeDrawingPadding().padding(12.dp)) {
         Row(Modifier.fillMaxWidth().height(44.dp).padding(start = 8.dp),
             verticalAlignment = Alignment.CenterVertically) {
-            Text("Moerise", fontSize = 17.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
+            BrandTitle(Modifier.weight(1f))
             IconButton(onClick = onClose, modifier = Modifier.size(44.dp)) {
                 WebIcon(WebIcon.Close, strings.text("关闭导航", "Close navigation"))
             }
@@ -207,10 +207,10 @@ private fun SidebarCalendar(
                         else if (count > 0) MoeriseColors.HeatmapLight else Color.Transparent) {
                     Box(contentAlignment = Alignment.Center) {
                         if (valid) Text(day.toString(), fontSize = 13.sp,
-                            color = if (selectedDate == date) Color.White else if (count > 0) MoeriseColors.Accent else MoeriseColors.Muted,
+                            color = if (selectedDate == date) MoeriseColors.OnAccent else if (count > 0) MoeriseColors.Accent else MoeriseColors.Muted,
                             fontWeight = if (date == today) FontWeight.Bold else FontWeight.Normal)
                         if (valid && date == today) {
-                            val dotColor = if (selectedDate == date) MoeriseColors.Surface else MoeriseColors.Accent
+                            val dotColor = if (selectedDate == date) MoeriseColors.OnAccent else MoeriseColors.Accent
                             Box(Modifier.align(Alignment.BottomCenter).padding(bottom = 2.dp)
                                 .size(3.dp).background(dotColor, CircleShape))
                         }

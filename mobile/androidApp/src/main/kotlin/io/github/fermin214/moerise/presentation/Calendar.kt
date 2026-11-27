@@ -6,3 +6,6 @@ data class MonthGrid(val year: Int, val month: Int, val days: Int, val offset: I
 @OptIn(kotlin.time.ExperimentalTime::class)
 fun displayLocalNoteDate(epochMillis: Long, timezone: String, english: Boolean): String =
     if (epochMillis > 0) displayNoteDate(kotlin.time.Instant.fromEpochMilliseconds(epochMillis).toString(), timezone, english) else ""
+
+fun displayLocalTimelineTime(epochMillis: Long, timezone: String, today: String = serviceToday(timezone), english: Boolean): String =
+    if (epochMillis > 0) displayTimelineTime(java.time.Instant.ofEpochMilli(epochMillis).toString(), timezone, today, english) else ""

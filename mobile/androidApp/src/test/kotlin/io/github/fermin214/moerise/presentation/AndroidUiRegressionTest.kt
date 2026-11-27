@@ -34,6 +34,7 @@ import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.text.LinkAnnotation
@@ -68,14 +69,19 @@ import io.ktor.client.engine.mock.respond
 import java.io.ByteArrayOutputStream
 import java.nio.file.Files
 import java.time.Instant
+import java.time.Clock
+import java.time.ZoneId
+import java.time.ZoneOffset
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicReference
 import kotlin.test.*
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.async
 import kotlinx.coroutines.runBlocking
 import okhttp3.mockwebserver.Dispatcher
 import okhttp3.mockwebserver.MockResponse
@@ -106,7 +112,7 @@ class AndroidUiRegressionTest {
 
     private fun waitForMainCondition(description: String, condition: () -> Boolean) {
         compose.waitUntil(conditionDescription = description, timeoutMillis = 10_000) {
-            compose.runOnIdle {
+            compose.runOnUiThread {
                 shadowOf(Looper.getMainLooper()).idle()
                 condition()
             }
@@ -309,7 +315,10 @@ class AndroidUiRegressionTest {
         val date = compose.onNode(hasTestTag("note_card_date") and card, useUnmergedTree = true).getUnclippedBoundsInRoot()
         val body = compose.onNode(hasTestTag("note_card_body") and card, useUnmergedTree = true).getUnclippedBoundsInRoot()
         assertTrue(date.height < actionBounds.height)
-        assertTrue(body.top - actionBounds.bottom <= 6.dp, "Body starts at ${body.top}, action ends at ${actionBounds.bottom}")
+        assertTrue(body.top < date.top)
+        assertTrue(date.top >= actionBounds.top && date.bottom <= actionBounds.bottom)
+        compose.onNode(hasTestTag("note_card_date") and card, useUnmergedTree = true).assertIsDisplayed()
+        assertEquals(44.dp, actionBounds.width)
         assertEquals(44.dp, actionBounds.height)
         assertEquals(44.dp, compose.onNodeWithTag("queued_error_queued").getUnclippedBoundsInRoot().height)
 
@@ -510,10 +519,13 @@ class AndroidUiRegressionTest {
         }
     }
 
-    private fun activityBitmap(): Bitmap = compose.runOnIdle {
-        val window = host.get().window.decorView
-        Bitmap.createBitmap(window.width, window.height, Bitmap.Config.ARGB_8888).apply {
-            window.draw(android.graphics.Canvas(this))
+    private fun activityBitmap(waitForIdle: Boolean = true): Bitmap {
+        if (waitForIdle) compose.waitForIdle()
+        return compose.runOnUiThread {
+            val window = host.get().window.decorView
+            Bitmap.createBitmap(window.width, window.height, Bitmap.Config.ARGB_8888).apply {
+                window.draw(android.graphics.Canvas(this))
+            }
         }
     }
 
@@ -561,9 +573,9 @@ class AndroidUiRegressionTest {
                     "/api/app/v1/session" -> MockResponse().setBody("""{"instance_id":"instance","user":{"name":"users/owner"},"timezone":"$timezone","expires_at":"2099-01-01T00:00:00Z","csrf_token":"token"}""")
                     "/api/app/v1/models" -> MockResponse().setBody("""{"embedding":{"enabled":true,"configured":true}}""")
                     "/api/app/v1/notes" -> {
-                        assertEquals("20", request.requestUrl?.queryParameter("page_size"))
-                        assertEquals("NORMAL", request.requestUrl?.queryParameter("state"))
-                        MockResponse().setBody(CoreJson.encodeToString(NotePage(candidates)))
+                        if (request.requestUrl?.queryParameter("page_size") == "20" && request.requestUrl?.queryParameter("state") == "NORMAL")
+                            MockResponse().setBody(CoreJson.encodeToString(NotePage(candidates)))
+                        else MockResponse().setResponseCode(400)
                     }
                     "/api/app/v1/sync/notes" -> if (syncAvailable.get()) {
                         MockResponse().setBody(CoreJson.encodeToString(SyncNotesResponse(
@@ -598,7 +610,9 @@ class AndroidUiRegressionTest {
             assertFalse(mobile.walk.state.value.hasLocalNotes)
             val account = requireNotNull(session.state.value.profile).accountKey
             syncAvailable.set(true)
-            runBlocking { repository.syncNotes(account, requireNotNull(session.core)) }
+            val sync = compose.runOnUiThread { scope.async { repository.syncNotes(account, requireNotNull(session.core)) } }
+            waitForMainCondition("the Room sync finishes") { sync.isCompleted }
+            runBlocking { sync.await() }
             assertFalse(mobile.walk.state.value.hasLocalNotes)
             compose.runOnIdle { session.connectionFailed(account) }
             waitForMainCondition("an open walk refreshes the newly synced Room notes on disconnect") {
@@ -611,7 +625,9 @@ class AndroidUiRegressionTest {
             waitForMainCondition("offline continue uses the other synced note") {
                 mobile.walk.state.value.result?.path?.toSet() == syncedNotes.map { it.name }.toSet()
             }
-            assertTrue(runBlocking { session.checkConnection() })
+            val reconnect = compose.runOnUiThread { scope.async { session.checkConnection() } }
+            waitForMainCondition("the Core session check finishes") { reconnect.isCompleted }
+            assertTrue(runBlocking { reconnect.await() })
             compose.runOnIdle { page.value = "review"; mobile.page("review") }
             waitForMainCondition("the review batch loads") { mobile.review.state.value.batch?.id == review.id }
             val paragraph = compose.onNodeWithText("Review first paragraph")
@@ -628,11 +644,11 @@ class AndroidUiRegressionTest {
             assertButtonPalette(compose.onNodeWithTag("settings_sync"), MoeriseColors.Surface, MoeriseColors.Line)
             assertButtonPalette(compose.onNodeWithTag("account_logout").performScrollTo(), MoeriseColors.Surface, MoeriseColors.Line)
         } finally {
-            compose.runOnUiThread { session.close(); job.cancel() }
-            compose.waitForIdle()
-            server.shutdown()
-            database.close()
-            folder.deleteRecursively()
+            try {
+                try { compose.runOnUiThread { job.cancel(); session.close() } }
+                finally { server.shutdown() }
+                waitForMainCondition("the walk and review coroutines stop") { job.isCompleted }
+            } finally { database.close(); folder.deleteRecursively() }
         }
     }
 
@@ -926,7 +942,7 @@ class AndroidUiRegressionTest {
         assertEquals(MoeriseColors.Accent, dot())
         today.performClick()
         assertEquals(MoeriseColors.Accent, background(today))
-        assertEquals(MoeriseColors.Surface, dot())
+        assertEquals(MoeriseColors.OnAccent, dot())
         assertEquals(MoeriseColors.SurfaceMuted, background(compose.onNodeWithTag("nav_home").assertIsSelected()))
         val settings = compose.onNodeWithTag("nav_settings")
         settings.performClick().assertIsSelected()
@@ -955,10 +971,40 @@ class AndroidUiRegressionTest {
         val expand = compose.onNodeWithText("Expand")
         compose.waitUntil(10_000) { expand.isDisplayed() }
         assertTrue(body.getUnclippedBoundsInRoot().height in 316.dp..330.dp)
+        compose.onNodeWithTag("note_card_date").assertIsDisplayed()
+        val actions = compose.onNodeWithTag("note_more_memos/long").assertIsDisplayed()
+        assertTrue(body.getUnclippedBoundsInRoot().bottom <= actions.getUnclippedBoundsInRoot().top)
         expand.performClick()
         compose.waitUntil(10_000) { body.getUnclippedBoundsInRoot().height > 400.dp }
         compose.onNodeWithText("Collapse").performScrollTo().performClick()
         compose.waitUntil(10_000) { body.getUnclippedBoundsInRoot().height <= 350.dp }
+    }
+
+    @Test
+    fun toolbarKeepsAllSyncStatusesAndOnlyShowsCompletionAfterSyncing() {
+        createHost()
+        val status = mutableStateOf(SyncStatus.CONNECTED)
+        compose.runOnUiThread {
+            host.get().setContent {
+                MoeriseTheme {
+                    CompositionLocalProvider(LocalReducedMotion provides true) {
+                        WebToolbar(strings, {}, syncStatus = status.value, onSync = {})
+                    }
+                }
+            }
+        }
+        val button = compose.onNodeWithTag("sync_notes")
+        button.assertDoesNotExist()
+        val labels = mapOf(SyncStatus.PENDING to "Pending sync", SyncStatus.ATTENTION to "Sync conflict",
+            SyncStatus.SIGN_IN to "Sign in again", SyncStatus.OFFLINE to "Offline", SyncStatus.SYNCING to "Syncing")
+        for ((state, label) in labels) {
+            compose.runOnIdle { status.value = state }
+            button.assertIsDisplayed().assert(SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, label))
+        }
+        compose.runOnIdle { status.value = SyncStatus.CONNECTED }
+        button.assertIsDisplayed().assert(SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, "Connected"))
+        compose.mainClock.advanceTimeBy(1_250)
+        button.assertDoesNotExist()
     }
 
     @Test
@@ -975,18 +1021,16 @@ class AndroidUiRegressionTest {
                 }
             }
         }
-        val stack = compose.onNodeWithTag("review_frames").assertIsDisplayed()
+        val bounds = compose.onNodeWithTag("review_frames").assertIsDisplayed().fetchSemanticsNode().boundsInWindow
         compose.mainClock.autoAdvance = false
         try {
-            compose.runOnIdle {
+            compose.runOnUiThread {
                 position.value = 1
                 Snapshot.sendApplyNotifications()
-                shadowOf(Looper.getMainLooper()).idle()
             }
             compose.mainClock.advanceTimeByFrame()
             compose.mainClock.advanceTimeBy(208)
-            val bounds = stack.fetchSemanticsNode().boundsInWindow
-            val frame = activityBitmap()
+            val frame = activityBitmap(waitForIdle = false)
             try {
                 val overlap = Color(frame.getPixel((bounds.left + bounds.width / 12).toInt(), bounds.center.y.toInt()))
                 val exposed = Color(frame.getPixel((bounds.left + bounds.width * 3 / 4).toInt(), bounds.center.y.toInt()))
@@ -1069,23 +1113,36 @@ class AndroidUiRegressionTest {
         try {
             var connected = false
             compose.runOnUiThread { host.get().setContent { MoeriseTheme { ConnectionScreen(session, strings) { connected = true } } } }
-            compose.onNodeWithTag("server_origin").performTextReplacement(server.url("/").toString().removeSuffix("/"))
-            compose.onNodeWithTag("server_username").performTextReplacement(" owner ")
+            val origin = compose.onNodeWithTag("server_origin").assertIsDisplayed()
+            val user = compose.onNodeWithTag("server_username")
+            val submit = compose.onNodeWithTag("server_login").assertIsNotEnabled()
+            origin.performTextReplacement(server.url("/").toString().removeSuffix("/"))
+            user.performTextReplacement(" owner ")
+            submit.assertIsNotEnabled()
             val password = compose.onNodeWithTag("server_password")
             password.performTextReplacement("fixture-pass")
             compose.onNodeWithTag("toggle_password").performClick()
             password.assertTextContains("fixture-pass")
-            compose.onNodeWithTag("server_login").performScrollTo().performClick()
+            submit.assertIsEnabled().performScrollTo().performClick()
             waitForMainCondition("login is busy") { session.state.value.busy }
             password.assertIsNotEnabled().assert(SemanticsMatcher.keyIsDefined(SemanticsProperties.Password))
+            origin.assertIsNotEnabled()
+            user.assertIsNotEnabled()
+            submit.assertIsNotEnabled()
+            compose.onNodeWithTag("login_language").assertIsNotEnabled()
             release.countDown()
             waitForMainCondition("login was rejected") { session.state.value.error == "INVALID_CREDENTIALS" }
+            compose.onNodeWithText("Check your username and password, then sign in again.").assertIsDisplayed()
+            user.assertTextContains(" owner ")
             compose.onNodeWithTag("server_password_filled", useUnmergedTree = true).assertExists()
             compose.onNodeWithTag("toggle_password").performClick()
             password.assertTextContains("fixture-pass")
             compose.onNodeWithTag("server_login").performScrollTo().performClick()
             waitForMainCondition("login succeeds") { connected }
             compose.onNodeWithTag("server_password_empty", useUnmergedTree = true).assertExists()
+            origin.assertDoesNotExist()
+            compose.onNodeWithTag("server_change").assertIsDisplayed().performClick()
+            origin.assertIsDisplayed().assertTextContains(server.url("/").toString().removeSuffix("/"))
         } finally {
             release.countDown()
             compose.runOnUiThread { session.close(); job.cancel() }
@@ -1146,6 +1203,8 @@ class AndroidUiRegressionTest {
         val origin = "http://127.0.0.1:1"
         val account = "$origin\u0000instance\u0000users/owner"
         val note = Note("instance", "memos/test", "Original", "NORMAL", "hash", createTime = "2026-11-26T10:00:00Z", tags = listOf("writing"))
+        val now = AtomicReference(Instant.parse("2026-11-26T23:59:30Z"))
+        val clock = AdjustableClock(now)
         val job = SupervisorJob()
         val scope = CoroutineScope(job + Dispatchers.Main.immediate)
         runBlocking {
@@ -1161,7 +1220,9 @@ class AndroidUiRegressionTest {
         val session = SessionController(secrets, true, scope)
         try {
             val mobile = MobileController(session, { repository }, scope, initialForeground = true)
-            compose.runOnUiThread { host.get().setContent { MoeriseApp(mobile) } }
+            compose.runOnUiThread {
+                host.get().setContent { CompositionLocalProvider(LocalServiceClock provides clock) { MoeriseApp(mobile) } }
+            }
             fun waitForTag(tag: String) {
                 compose.waitUntil(10_000) { compose.onAllNodesWithTag(tag).fetchSemanticsNodes().size == 1 }
             }
@@ -1181,6 +1242,25 @@ class AndroidUiRegressionTest {
                 !mobile.composerOpen.value && mobile.noteEditors.value.isEmpty()
             }
             waitForTag("compose_capsule")
+            compose.onAllNodes(hasAnyAncestor(hasTestTag("compose_capsule")) and
+                SemanticsMatcher.expectValue(SemanticsProperties.Role, Role.Image), useUnmergedTree = true).assertCountEquals(0)
+            val datedCard = compose.onNodeWithTag("note_card_${note.name}")
+            val date = compose.onNode(hasTestTag("note_card_date") and hasAnyAncestor(hasTestTag("note_card_${note.name}")))
+            compose.waitUntil(10_000) { date.isDisplayed() }
+            date.assertTextEquals("10:00")
+            val initialOffset = datedCard.getUnclippedBoundsInRoot().top
+            openComposer()
+            composer.assertIsFocused().performTextReplacement("跨日草稿")
+            val sheet = compose.onNodeWithTag("quick_editor_sheet").getUnclippedBoundsInRoot()
+            assertEquals(0.dp, sheet.left)
+            assertEquals(360.dp, sheet.width)
+            now.set(Instant.parse("2026-11-27T00:00:00Z"))
+            compose.mainClock.advanceTimeBy(30_100)
+            date.assertTextEquals("Nov 26")
+            composer.assertIsFocused().assertTextContains("跨日草稿")
+            assertEquals(initialOffset, datedCard.getUnclippedBoundsInRoot().top)
+            compose.onNodeWithTag("quick_cancel").performClick()
+            closed()
             waitForMainCondition("first-screen tag and calendar data are available") {
                 mobile.filterReads.cached("NORMAL", serviceMonth("UTC")) != null
             }
@@ -1322,5 +1402,11 @@ class AndroidUiRegressionTest {
             database.close()
             folder.deleteRecursively()
         }
+    }
+
+    private class AdjustableClock(private val now: AtomicReference<Instant>, private val zone: ZoneId = ZoneOffset.UTC) : Clock() {
+        override fun instant(): Instant = now.get()
+        override fun getZone(): ZoneId = zone
+        override fun withZone(zone: ZoneId): Clock = AdjustableClock(now, zone)
     }
 }

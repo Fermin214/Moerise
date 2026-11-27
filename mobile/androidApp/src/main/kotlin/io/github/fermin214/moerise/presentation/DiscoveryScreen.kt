@@ -388,14 +388,9 @@ internal fun DiscoveryNoteContent(note: Note, timezone: String, mobile: MobileCo
     val age = if (review) remember(note.createTime) { elapsedNoteDays(note.createTime, epochMillis()) } else null
     val core = mobile.session.core
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        val typography = MaterialTheme.typography
-        MaterialTheme(typography = typography.copy(
-            bodyLarge = typography.bodyLarge.copy(fontSize = 17.sp, lineHeight = 28.sp),
-        )) {
-            MarkdownBody(presentation.body, note = note, core = core, tags = presentation.inlineTags, onTag = onTag, strings = strings)
-        }
+        MarkdownBody(presentation.body, note = note, core = core, tags = presentation.inlineTags, onTag = onTag, strings = strings)
         NoteAttachments(note, core, strings)
-        NoteTags(presentation.tags, onTag = onTag)
+        NoteTags(presentation.tags, plain = true, onTag = onTag)
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
             Text(when {
                 !review || age == null -> date

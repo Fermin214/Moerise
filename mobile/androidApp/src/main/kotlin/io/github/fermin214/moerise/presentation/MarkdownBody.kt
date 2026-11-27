@@ -1,5 +1,7 @@
 package io.github.fermin214.moerise.presentation
 
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.Arrangement
@@ -23,6 +25,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.UriHandler
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.LinkAnnotation
 import androidx.compose.ui.text.Placeholder
 import androidx.compose.ui.text.PlaceholderVerticalAlign
@@ -67,11 +70,17 @@ internal val LocalParseMarkdownTail = staticCompositionLocalOf<suspend (String, 
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-fun NoteTags(tags: List<String>, modifier: Modifier = Modifier, onTag: ((String) -> Unit)? = null) {
+fun NoteTags(tags: List<String>, modifier: Modifier = Modifier, plain: Boolean = false, onTag: ((String) -> Unit)? = null) {
     if (tags.isEmpty()) return
-    FlowRow(modifier, horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+    FlowRow(modifier, horizontalArrangement = Arrangement.spacedBy(if (plain) 10.dp else 6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
         tags.distinct().forEach { tag ->
-            if (onTag != null) WebTag(tag, { onTag(tag) })
+            if (plain) {
+                val interactions = remember { MutableInteractionSource() }
+                val active = actionHighlighted(interactions)
+                Text("#${tag.removePrefix("#")}", style = MaterialTheme.typography.bodySmall,
+                    color = if (active) MoeriseColors.Accent else MoeriseColors.InkTag,
+                    modifier = if (onTag == null) Modifier else Modifier.clickable(interactions, indication = null, role = Role.Button) { onTag(tag) })
+            } else if (onTag != null) WebTag(tag, { onTag(tag) })
             else Surface(color = MoeriseColors.AccentSurface, shape = RoundedCornerShape(6.dp)) {
                 Text("#${tag.removePrefix("#")}", style = MaterialTheme.typography.bodySmall,
                     color = MoeriseColors.Accent, modifier = Modifier.padding(horizontal = 8.dp, vertical = 1.dp))
@@ -245,14 +254,14 @@ fun MarkdownBody(content: String, modifier: Modifier = Modifier, note: Note? = n
             }
         }
     }
-    val body = MaterialTheme.typography.bodyLarge
-    val heading = MaterialTheme.typography.titleMedium
-    val minorHeading = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold)
+    val body = MaterialTheme.typography.bodyLarge.copy(letterSpacing = 0.2.sp)
+    val heading = body.copy(fontSize = 16.sp, lineHeight = 23.5.sp, fontWeight = FontWeight.SemiBold)
+    val minorHeading = body.copy(fontWeight = FontWeight.SemiBold)
     val colors = markdownColor(inlineCodeBackground = Color.Transparent, codeBackground = MoeriseColors.SurfaceMuted)
     val padding = markdownPadding(block = 2.dp, list = 0.dp, listItemTop = 2.dp, listItemBottom = 2.dp)
     val typography = markdownTypography(
-        h1 = MaterialTheme.typography.titleLarge,
-        h2 = heading, h3 = heading, h4 = heading,
+        h1 = heading.copy(fontSize = 18.sp, lineHeight = 26.sp),
+        h2 = heading, h3 = heading, h4 = minorHeading,
         h5 = minorHeading,
         h6 = minorHeading,
         text = body, paragraph = body, quote = body.copy(color = MoeriseColors.Muted),

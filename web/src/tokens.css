@@ -7,10 +7,14 @@
   --accent-surface-strong:#DCE8E5;
   --heatmap-light:#E3E7E3;
   --heatmap-medium:#CCD7D3;
-  --line:#E3E0D8;
+  --line:#E4E1D8;
   --field-border:#918B80;
   --paper:#F5F4F0;
-  --surface:#FFFFFF;
+  --scroll-paper:#F7F6F2;
+  --surface:#FCFBF8;
+  --on-accent:#FFFFFF;
+  --ink-tag:#64605A;
+  --ink-colophon:#757069;
   --surface-muted:#ECEAE4;
   --hover:#E6E3DC;
   --focus:var(--accent);
@@ -24,6 +28,7 @@
   --t3:.9375rem;
   --t4:.8125rem;
   --font-body:'PingFang SC','Noto Sans SC','Hiragino Sans GB','Microsoft YaHei',sans-serif;
+  --font-brand:Georgia,'Times New Roman','Songti SC',serif;
   --motion-tactile-duration:140ms;
   --motion-tactile-easing:cubic-bezier(.2,.8,.2,1);
   --motion-responsive-duration:240ms;

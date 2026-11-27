@@ -59,6 +59,8 @@ fun TimelineNoteCard(
     onCheckDeletion: ((Note) -> Unit)? = null,
     expanded: Boolean? = null,
     onExpand: (Boolean) -> Unit = {},
+    today: String = serviceToday(timezone),
+    first: Boolean = true,
 ) {
     val draft = (entry as? TimelineEntry.Local)?.draft
     val remote = (entry as? TimelineEntry.Remote)?.note
@@ -71,8 +73,9 @@ fun TimelineNoteCard(
     }
     val note = remote ?: baseline
     val presentation = rememberNotePresentation(content, remote?.tags)
-    val date = note?.createTime?.let { displayNoteDate(it, timezone, strings.text("zh", "en") == "en") }
-        ?: displayLocalNoteDate(draft?.createdAt ?: 0L, timezone, strings.text("zh", "en") == "en")
+    val english = strings.text("zh", "en") == "en"
+    val date = note?.createTime?.let { displayTimelineTime(it, timezone, today, english) }
+        ?: displayLocalTimelineTime(draft?.createdAt ?: 0L, timezone, today, english)
     val hasFailure = draft?.conflictJson != null
     val id = draft?.id ?: requireNotNull(remote).name
     val leaveWriting = LocalLeaveWriting.current
@@ -114,8 +117,8 @@ fun TimelineNoteCard(
         onTag = onTag.takeIf { remote != null },
         expanded = expanded,
         onExpand = onExpand,
-        headerActions = if (hasFailure) 2 else 1,
-        trailingHeader = {
+        first = first,
+        colophonActions = {
             if (hasFailure) {
                 Box(
                     Modifier.size(44.dp).clickable(role = Role.Button) { leaveWriting(); onOpenLocal(draft) }
@@ -133,23 +136,25 @@ fun TimelineNoteCard(
             }
             WebNoteMenu(strings, menuActions, tag = "note_more_$id")
         },
-        extraContent = {
+        stagedAttachments = {
             edits?.staged.orEmpty().forEach {
                 Text(it.filename, fontSize = 13.sp, color = MoeriseColors.Muted, modifier = Modifier.padding(top = 8.dp))
             }
+        },
+        extraContent = {
             error?.let { Text(editorError(it, strings), color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(top = 8.dp)) }
             if (busy) LinearProgressIndicator(Modifier.fillMaxWidth().padding(top = 8.dp))
             if (confirmDelete) {
-                Column(Modifier.motionEnter("delete confirm", distance = 4f, initialScale = .98f)) {
-                HorizontalDivider(Modifier.padding(top = 10.dp), color = MoeriseColors.Line)
-                Text(strings.text("删除这条笔记？删除后无法恢复。", "Delete this note? This cannot be undone."),
-                    style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 8.dp))
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                    TextButton(onClick = { confirmDelete = false }, enabled = !busy,
-                        modifier = Modifier.testTag("delete_cancel_$id")) { Text(strings.text("取消", "Cancel")) }
-                    TextButton(onClick = { confirmDelete = false; remote?.let { onDelete?.invoke(it) } }, enabled = online && !busy && !pendingAction,
-                        modifier = Modifier.testTag("delete_confirm_$id")) { Text(strings.text("删除", "Delete"), color = MaterialTheme.colorScheme.error) }
-                }
+                Column(Modifier.motionEnter("delete confirm", distance = 4f, initialScale = .98f)
+                    .background(MoeriseColors.DangerSurface, RoundedCornerShape(10.dp)).padding(12.dp)) {
+                    Text(strings.text("删除这条笔记？删除后无法恢复。", "Delete this note? This cannot be undone."),
+                        style = MaterialTheme.typography.bodySmall)
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                        TextButton(onClick = { confirmDelete = false }, enabled = !busy,
+                            modifier = Modifier.testTag("delete_cancel_$id")) { Text(strings.text("取消", "Cancel")) }
+                        TextButton(onClick = { confirmDelete = false; remote?.let { onDelete?.invoke(it) } }, enabled = online && !busy && !pendingAction,
+                            modifier = Modifier.testTag("delete_confirm_$id")) { Text(strings.text("删除", "Delete"), color = MaterialTheme.colorScheme.error) }
+                    }
                 }
             }
         },
@@ -168,34 +173,32 @@ private fun NoteCardScaffold(
     onTag: ((String) -> Unit)?,
     expanded: Boolean?,
     onExpand: (Boolean) -> Unit,
-    headerActions: Int,
-    trailingHeader: @Composable RowScope.() -> Unit,
+    first: Boolean,
+    colophonActions: @Composable RowScope.() -> Unit,
+    stagedAttachments: @Composable () -> Unit,
     extraContent: @Composable ColumnScope.() -> Unit,
 ) {
-    Surface(modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(12.dp), color = MoeriseColors.Surface) {
-        Box {
-            Column(Modifier.padding(start = 16.dp, end = 16.dp, bottom = 16.dp)) {
-                Box(Modifier.fillMaxWidth()
-                    .padding(top = 10.dp, end = (headerActions * 44).dp)) {
-                    Text(date, style = MaterialTheme.typography.bodySmall, color = MoeriseColors.Muted, modifier = Modifier.testTag("note_card_date"))
-                }
-                Box(Modifier.fillMaxWidth().padding(top = 4.dp).testTag("note_card_body")) {
-                    FoldableNoteBody(expanded, onExpand, strings) {
-                        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                            if (presentation.body.isNotBlank()) MarkdownBody(presentation.body, note = note, core = core,
-                                tags = presentation.inlineTags, onTag = onTag, originalContent = content, strings = strings,
-                                modifier = Modifier.testTag("note_markdown"))
-                            if (note != null) NoteAttachments(note, core, strings = strings)
-                            NoteTags(presentation.tags, onTag = onTag)
-                        }
+    Column(modifier.fillMaxWidth()) {
+        if (!first) HorizontalDivider(Modifier.padding(horizontal = 16.dp), thickness = 1.dp, color = MoeriseColors.Line)
+        Column(Modifier.padding(top = if (first) 10.dp else 15.dp, bottom = 15.dp)) {
+            Box(Modifier.fillMaxWidth().testTag("note_card_body")) {
+                FoldableNoteBody(expanded, onExpand, strings) {
+                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        if (presentation.body.isNotBlank()) MarkdownBody(presentation.body, note = note, core = core,
+                            tags = presentation.inlineTags, onTag = onTag, originalContent = content, strings = strings,
+                            modifier = Modifier.testTag("note_markdown"))
+                        if (note != null) NoteAttachments(note, core, strings = strings)
+                        stagedAttachments()
+                        NoteTags(presentation.tags, onTag = onTag, plain = true)
                     }
                 }
-                extraContent()
             }
-            if (headerActions > 0) {
-                Row(Modifier.align(Alignment.TopEnd).padding(end = 6.dp), content = trailingHeader)
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Text(date, style = MaterialTheme.typography.bodySmall.copy(fontSize = 12.sp, fontFeatureSettings = "tnum"),
+                    color = MoeriseColors.InkColophon, modifier = Modifier.weight(1f).testTag("note_card_date"))
+                colophonActions()
             }
+            extraContent()
         }
     }
 }
@@ -220,7 +223,7 @@ private fun FoldableNoteBody(
         val long = content[LongBody] == 0
         val shade = if (long && !expanded) subcompose(FoldSlot.Shade) {
             Box(Modifier.fillMaxWidth().height(36.dp).background(Brush.verticalGradient(
-                listOf(Color.Transparent, MoeriseColors.Surface))))
+                listOf(Color.Transparent, MoeriseColors.ScrollPaper))))
         }.single().measure(constraints.copy(minHeight = 0)) else null
         val toggle = if (long) subcompose(FoldSlot.Toggle) {
             val interactions = remember { MutableInteractionSource() }
@@ -258,7 +261,7 @@ fun WebNoteMenu(strings: Strings, actions: List<NoteMenuAction>, tag: String = "
         }.testTag(tag).semantics {
             stateDescription = if (open) strings.text("已展开", "Expanded") else strings.text("已收起", "Closed")
         }, contentAlignment = Alignment.Center) {
-            WebIcon(WebIcon.More, strings.text("更多操作", "More actions"), Modifier.size(16.dp))
+            WebIcon(WebIcon.More, strings.text("更多操作", "More actions"), Modifier.size(16.dp), tint = MoeriseColors.FieldBorder)
         }
         DropdownMenu(expanded = open, onDismissRequest = { open = false },
             modifier = Modifier.platformTestTags()) {

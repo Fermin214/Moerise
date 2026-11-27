@@ -144,20 +144,21 @@ function foldBody(card, body, expandedNotes) {
   return [preview, toggle];
 }
 
-export function renderNoteCard(note, { detail, formatTime, href, onTag, actions, pending, expandedNotes }) {
+export function renderNoteCard(note, { detail, formatTime, formatTimelineTime, href, onTag, actions, pending, expandedNotes }) {
   const card = el('article', `card${detail ? ' note' : ''}`);
   card.dataset.name = note.name;
   card.dataset.sourceHash = note.source_hash;
-  const header = el('div', 'hd'), time = el('time', '', formatTime(note.create_time));
+  const colophon = el('div', detail ? 'hd' : 'note-colophon');
+  const time = el('time', '', (detail ? formatTime : formatTimelineTime)(note.create_time));
   const copy = [l("复制"), copyAction(note.content), ''];
   const commands = [...actions];
   const destructive = commands.findIndex(([, , cls]) => cls === 'dg');
   commands.splice(destructive < 0 ? commands.length : destructive, 0, copy);
   if (Number.isFinite(Date.parse(note.create_time))) time.dateTime = note.create_time;
-  if (detail) header.append(time);
+  if (detail) colophon.append(time);
   else {
     const link = el('a', 'dlink');
-    link.href = href; link.dataset.route = ''; link.append(time); header.append(link);
+    link.href = href; link.dataset.route = ''; link.append(time); colophon.append(link);
     const wrap = el('div', 'mw'), menu = el('div', 'menu'), more = button('', 'btn s more', () => {});
     more.append(icon('M5 12h.01M12 12h.01M19 12h.01', 'i dots'));
     setAttr(more, 'aria-label', l("更多操作"));
@@ -167,7 +168,7 @@ export function renderNoteCard(note, { detail, formatTime, href, onTag, actions,
       const control = button(label, `mi ${cls}`, action);
       control.disabled = command !== copy && pending; menu.append(control);
     }
-    wrap.append(more, menu); header.append(wrap);
+    wrap.append(more, menu); colophon.append(wrap);
     bindMenu(more, menu);
   }
   const tags = el('div', 'note-tags');
@@ -175,12 +176,13 @@ export function renderNoteCard(note, { detail, formatTime, href, onTag, actions,
   const body = noteBody(note, onTag, renderedTags), referenced = new Set([...body.querySelectorAll('img')].map(image => image.getAttribute('src')));
   appendTags(tags, note.tags, renderedTags, onTag);
   const attachments = renderAttachments(note, referenced);
-  card.append(header);
+  if (detail) card.append(colophon);
   if (expandedNotes) {
     const content = el('div', 'note-fold-content');
     content.append(body, attachments, tags);
     card.append(...foldBody(card, content, expandedNotes));
   } else card.append(body, attachments, tags);
+  if (!detail) card.append(colophon);
   if (detail) {
     const bar = el('div', 'note-actions');
     for (const command of commands) {
