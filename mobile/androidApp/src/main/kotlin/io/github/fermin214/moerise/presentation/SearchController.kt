@@ -55,6 +55,8 @@ class SearchController(
     private var request: Job? = null
     private var refreshPending = false
     private var loadedPages = 0
+    private var visibleCards = emptyList<String>()
+    private var editedAnchor: String? = null
     private var filters: Job? = null
     private val cursors = mutableSetOf<String>()
 
@@ -62,6 +64,8 @@ class SearchController(
         cursors.clear()
         refreshPending = false
         loadedPages = 0
+        visibleCards = emptyList()
+        editedAnchor = null
         ++generation; ++filterGeneration; request?.cancel(); filters?.cancel()
         mutable.value = SearchState()
     }
@@ -70,6 +74,8 @@ class SearchController(
         if (query == state.value.query) return
         refreshPending = false
         loadedPages = 0
+        visibleCards = emptyList()
+        editedAnchor = null
         ++generation; request?.cancel()
         val stateChanged = query.state != state.value.query.state
         if (stateChanged) {
@@ -93,7 +99,11 @@ class SearchController(
     fun tab(value: Int) { mutable.update { it.copy(tab = value) } }
     fun month(value: String) { mutable.update { it.copy(month = value) } }
 
-    internal fun replaceNote(note: Note, refresh: Boolean, hit: SearchHit? = null) {
+    internal fun visibleCards(query: SearchQuery, names: List<String>) {
+        if (query == state.value.query) visibleCards = names
+    }
+
+    internal fun replaceNote(note: Note, refresh: Boolean, hit: SearchHit? = null, edited: Boolean = false) {
         val zone = timezone()
         ++generation
         request?.cancel()
@@ -110,6 +120,8 @@ class SearchController(
             } else replaced
             current.copy(notes = notes, next = "", loading = false)
         }
+        if (edited && (visibleCards.isEmpty() || note.name in visibleCards) &&
+            state.value.notes.any { it.name == note.name }) editedAnchor = note.name
         if (refresh) refreshIfNeeded()
     }
 
@@ -122,7 +134,8 @@ class SearchController(
         if (state.value.loading) return
         val query = state.value.query
         val token = if (append) state.value.next.takeIf { it.isNotEmpty() } ?: return else ""
-        val pagesToRead = if (!append && refreshPending) maxOf(1, loadedPages) else 1
+        val mutationRefresh = !append && refreshPending
+        val pagesToRead = if (mutationRefresh) maxOf(1, loadedPages) else 1
         val stamp = ++generation
         request?.cancel()
         val effectiveMode = if (query.text.isBlank()) "keyword" else query.mode
@@ -141,7 +154,10 @@ class SearchController(
                         if (stamp != generation || key != account()) return@launch
                         val next = if (hasMore) "local:${offset + rows.size}" else ""
                         loadedPages = if (append) loadedPages + 1 else maxOf(1, (rows.size + 19) / 20)
-                        if (!append) refreshPending = false
+                        if (!append) {
+                            refreshPending = false
+                            editedAnchor = null
+                        }
                         mutable.update {
                             it.copy(
                                 notes = (if (append) it.notes + rows else rows).distinctBy { note -> note.name },
@@ -190,17 +206,28 @@ class SearchController(
                 }
                 val visited = if (append) cursors.toMutableSet() else mutableSetOf()
                 val pages = mutableListOf<SearchPage>()
+                val names = mutableSetOf<String>()
+                fun missingAnchor(): Boolean {
+                    if (!mutationRefresh || pages.first().mode == "keyword") return false
+                    val retained = state.value.notes.map { it.name }.toSet()
+                    val firstVisible = visibleCards.firstOrNull { it in retained }
+                    return listOfNotNull(firstVisible, editedAnchor).any { it in retained && it !in names }
+                }
                 var next = token
                 do {
                     val page = readPage(next)
                     if (stamp != generation || key != account()) return@launch
                     pages.add(page)
+                    names.addAll(page.notes.map { it.name })
                     next = page.nextPageToken.takeIf { it.isNotBlank() && visited.add(it) }.orEmpty()
-                } while (pages.size < pagesToRead && next.isNotEmpty())
+                } while (next.isNotEmpty() && (pages.size < pagesToRead || missingAnchor()))
                 cursors.clear()
                 cursors.addAll(visited)
                 loadedPages = if (append) loadedPages + 1 else pages.size
-                if (!append) refreshPending = false
+                if (!append) {
+                    refreshPending = false
+                    editedAnchor = null
+                }
                 val rows = pages.flatMap { it.notes }
                 val first = pages.first()
                 mutable.update { it.copy(notes = (if (append) it.notes + rows else rows).distinctBy { note -> note.name },

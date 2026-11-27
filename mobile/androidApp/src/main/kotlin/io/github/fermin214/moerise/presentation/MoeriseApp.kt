@@ -104,8 +104,7 @@ fun MoeriseApp(mobile: MobileController, onHomeReady: () -> Unit = {}) {
     val snackbar = remember(account) { SnackbarHostState() }
     val currentStrings by rememberUpdatedState(strings)
     LaunchedEffect(mobile, account, snackbar) {
-        mobile.notices.collect { notice ->
-            if (notice.account != account) return@collect
+        mobile.notices.collect(account) { notice ->
             val labels = currentStrings
             val message = when (notice.code) {
                 "NOTE_ARCHIVED" -> labels.text("笔记已归档。", "Note archived.")
@@ -172,6 +171,20 @@ fun MoeriseApp(mobile: MobileController, onHomeReady: () -> Unit = {}) {
         }, stateActions, listState, query, timezone)
         if (filtered || page == "archive") filteredTimelineEntries(selected, visibleQueue, timeline.displayKeys)
         else timelineEntries(selected, visibleQueue, timeline.displayKeys)
+    }
+    if (page in setOf("home", "archive") && query.text.isNotBlank() && query.mode != "keyword") {
+        val cardNames by rememberUpdatedState(remember(entries) {
+            entries.associate<TimelineEntry, Any, String?> { entry ->
+                entry.key to when (entry) {
+                    is TimelineEntry.Remote -> entry.note.name
+                    is TimelineEntry.Local -> entry.draft.targetName
+                }
+            }
+        })
+        LaunchedEffect(account, query, page, timelineScroll) {
+            snapshotFlow { timelineScroll.layoutInfo.visibleItemsInfo.mapNotNull { cardNames[it.key] } }
+                .collect { mobile.search.visibleCards(query, it) }
+        }
     }
     val homeStatusVisible = homeNote.loading || homeNote.error != null || localError != null
     val focusTarget = homeNote.name

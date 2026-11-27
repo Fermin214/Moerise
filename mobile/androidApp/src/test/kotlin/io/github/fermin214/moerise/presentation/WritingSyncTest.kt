@@ -43,7 +43,6 @@ import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.cancelAndJoin
-import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
@@ -56,6 +55,8 @@ import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import okhttp3.mockwebserver.Dispatcher
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
@@ -123,17 +124,17 @@ class WritingSyncTest {
     @Test
     fun archiveNoticesKeepTheirWindowWhenAnotherArchiveAndCopyArrive() = runTest {
         val host = SnackbarHostState()
-        val messages = Channel<Pair<String, ArchiveUndo?>>(Channel.UNLIMITED)
+        val messages = MobileNotices()
         val undone = mutableListOf<String>()
         backgroundScope.launch {
-            for ((message, undo) in messages) host.showMobileNotice(message, "Undo", undo)
+            messages.collect(account) { host.showMobileNotice(it.code, "Undo", it.undo) }
         }
-        messages.send("Archived first" to ArchiveUndo { undone += "first" })
+        messages.offer(MobileNotice(account, "Archived first", ArchiveUndo { undone += "first" }))
         runCurrent()
         advanceTimeBy(1000)
         val second = ArchiveUndo { undone += "second" }
-        messages.send("Archived second" to second)
-        messages.send("Copied" to null)
+        messages.offer(MobileNotice(account, "Archived second", second))
+        messages.offer(MobileNotice(account, "Copied"))
         runCurrent()
         advanceTimeBy(1999)
         runCurrent()
@@ -150,14 +151,38 @@ class WritingSyncTest {
         assertEquals("Copied", host.currentSnackbarData?.visuals?.message)
 
         val rejected = ArchiveUndo { error("Rejected undo was invoked") }
-        messages.send("Rejected archive" to rejected)
-        messages.send("Operation failed" to null)
-        advanceTimeBy(3000)
+        messages.offer(MobileNotice(account, "Rejected archive", rejected))
+        messages.offer(MobileNotice(account, "Operation failed"))
         runCurrent()
         assertEquals("Rejected archive", host.currentSnackbarData?.visuals?.message)
         rejected.reject()
         runCurrent()
         assertEquals("Operation failed", host.currentSnackbarData?.visuals?.message)
+    }
+
+    @OptIn(ExperimentalCoroutinesApi::class)
+    @Test
+    fun archiveUndoPreemptsTheVisibleCopyAndQueuedOrdinaryNotices() = runTest {
+        val host = SnackbarHostState()
+        val messages = MobileNotices()
+        backgroundScope.launch {
+            messages.collect(account) { host.showMobileNotice(it.code, "Undo", it.undo) }
+        }
+        messages.offer(MobileNotice(account, "Copied"))
+        runCurrent()
+        assertEquals("Copied", host.currentSnackbarData?.visuals?.message)
+        advanceTimeBy(100)
+        messages.offer(MobileNotice(account, "Saved"))
+        messages.offer(MobileNotice(account, "Archived", ArchiveUndo { }))
+        runCurrent()
+        assertEquals("Archived", host.currentSnackbarData?.visuals?.message)
+        assertEquals("Undo", host.currentSnackbarData?.visuals?.actionLabel)
+        advanceTimeBy(2999)
+        runCurrent()
+        assertEquals("Archived", host.currentSnackbarData?.visuals?.message)
+        advanceTimeBy(1)
+        runCurrent()
+        assertEquals("Saved", host.currentSnackbarData?.visuals?.message)
     }
 
     @Test
@@ -471,7 +496,12 @@ class WritingSyncTest {
     }
 
     @Test
-    fun confirmingAnEditOnTheSecondSearchPageKeepsTheLoadedRangeAndCardKey() = runBlocking<Unit> {
+    fun confirmingAnEditOnTheSecondSearchPageKeepsTheLoadedRangeAndCardKey() = checkSearchAnchor(reranked = false)
+
+    @Test
+    fun rankedRefreshKeepsTheVisibleEditedCardUntilItArrivesOnTheThirdPage() = checkSearchAnchor(reranked = true)
+
+    private fun checkSearchAnchor(reranked: Boolean) = runBlocking<Unit> {
         val folder = Files.createTempDirectory("moerise-search-anchor").toFile()
         val db = testDatabase(folder.resolve("data.sqlite3").absolutePath)
         val repo = NoteRepository(db)
@@ -480,9 +510,11 @@ class WritingSyncTest {
         val original = Note("instance", "memos/second", "Original #writing", "NORMAL", "original", tags = listOf("writing"))
         val updated = original.copy(content = "Edited #writing", sourceHash = "edited")
         val first = original.copy(name = "memos/first")
+        val displaced = original.copy(name = "memos/displaced")
         val confirmed = AtomicInteger()
-        val refreshSecondPage = CountDownLatch(1)
+        val releaseRefresh = CountDownLatch(1)
         val refreshStarted = CompletableDeferred<Unit>()
+        val query = if (reranked) SearchQuery(text = "writing", mode = "hybrid") else SearchQuery(tags = setOf("writing"))
         server.dispatcher = object : Dispatcher() {
             override fun dispatch(request: RecordedRequest): MockResponse = when {
                 request.path == "/api/app/v1/session" -> MockResponse().setBody(identity)
@@ -490,19 +522,28 @@ class WritingSyncTest {
                     confirmed.incrementAndGet()
                     MockResponse().setBody(CoreJson.encodeToString(updated))
                 }
-                request.requestUrl?.encodedPath == "/api/app/v1/notes" && request.requestUrl?.queryParameter("tag") == "writing" -> {
-                    val token = request.requestUrl?.queryParameter("page_token")
+                request.path == "/api/app/v1/search" ||
+                    request.requestUrl?.encodedPath == "/api/app/v1/notes" && request.requestUrl?.queryParameter("tag") == "writing" -> {
+                    val token = if (reranked) CoreJson.parseToJsonElement(request.body.readUtf8())
+                        .jsonObject["page_token"]?.jsonPrimitive?.content else request.requestUrl?.queryParameter("page_token")
                     val saved = confirmed.get() > 0
                     val results = when (token) {
                         "page-two" -> NotePage(listOf(original), "page-three")
-                        "updated-page-two" -> {
+                        "updated-page-three" -> {
                             refreshStarted.complete(Unit)
-                            check(refreshSecondPage.await(10, TimeUnit.SECONDS))
-                            NotePage(listOf(updated), "updated-page-three")
+                            check(releaseRefresh.await(10, TimeUnit.SECONDS))
+                            NotePage(listOf(updated), "updated-page-four")
+                        }
+                        "updated-page-two" -> if (reranked) NotePage(listOf(displaced), "updated-page-three") else {
+                            refreshStarted.complete(Unit)
+                            check(releaseRefresh.await(10, TimeUnit.SECONDS))
+                            NotePage(listOf(updated), "updated-page-four")
                         }
                         else -> NotePage(listOf(first), if (saved) "updated-page-two" else "page-two")
                     }
-                    MockResponse().setBody(CoreJson.encodeToString(results))
+                    val body = if (reranked) CoreJson.encodeToString(SearchPage(results.notes, results.nextPageToken, "hybrid", SearchSemantic(used = true)))
+                    else CoreJson.encodeToString(results)
+                    MockResponse().setBody(body)
                 }
                 else -> MockResponse().setResponseCode(404)
             }
@@ -516,12 +557,13 @@ class WritingSyncTest {
             mobile.page("home")
             mobile.foreground(true)
             mobile.sync.foreground(false)
-            mobile.search.change(SearchQuery(tags = setOf("writing")))
+            mobile.search.change(query)
             mobile.search.search()
             withTimeout(10_000) { mobile.search.state.first { it.next == "page-two" } }
             mobile.search.search(append = true)
             val loaded = withTimeout(10_000) { mobile.search.state.first { it.next == "page-three" } }
             val keys = filteredTimelineEntries(loaded.notes, emptyList(), emptyMap()).map { it.key }
+            mobile.search.visibleCards(query, listOf(original.name))
             mobile.editNote(original)
             val editor = withTimeout(10_000) { mobile.noteEditors.first { original.name in it } }.getValue(original.name)
             assertTrue(editor.change(updated.content))
@@ -530,12 +572,13 @@ class WritingSyncTest {
             assertTrue(mobile.sync.synchronizeOnce(SyncTrigger.BACKGROUND_JOB))
             withTimeout(10_000) { refreshStarted.await() }
             assertEquals(listOf(first, updated), mobile.search.state.value.notes)
-            refreshSecondPage.countDown()
-            val refreshed = withTimeout(10_000) { mobile.search.state.first { it.next == "updated-page-three" } }
-            assertEquals(listOf(first, updated), refreshed.notes)
-            assertEquals(keys, filteredTimelineEntries(refreshed.notes, emptyList(), emptyMap()).map { it.key })
+            releaseRefresh.countDown()
+            val refreshed = withTimeout(10_000) { mobile.search.state.first { it.next == "updated-page-four" } }
+            assertEquals(if (reranked) listOf(first, displaced, updated) else listOf(first, updated), refreshed.notes)
+            val refreshedKeys = filteredTimelineEntries(refreshed.notes, emptyList(), emptyMap()).map { it.key }
+            assertEquals(keys, refreshedKeys.filter { it != displaced.name })
         } finally {
-            refreshSecondPage.countDown()
+            releaseRefresh.countDown()
             session.close()
             scope.coroutineContext[Job]!!.cancelAndJoin()
             server.shutdown()

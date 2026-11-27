@@ -101,6 +101,58 @@ class NoteActionRecoveryTest {
     @Test fun earlyUndoSurvivesRestartAfterConversionBeforeRestoreRequest() = earlyUndo(disconnectAfterReceipt = true)
 
     @Test
+    fun undoAfterConfirmedArchiveRollsBackWhenItCannotSendAndDoesNotRetryOnReconnect() = runBlocking<Unit> {
+        val directory = Files.createTempDirectory("moerise-offline-undo").toFile()
+        val db = testDatabase(directory.resolve("notes.sqlite3").absolutePath)
+        val repo = NoteRepository(db)
+        val scope = CoroutineScope(coroutineContext + SupervisorJob())
+        val origin = "https://notes.example"
+        val key = "$origin\u0000one\u0000users/owner"
+        val note = Note("one", "memos/one", "original", "NORMAL", "original")
+        val archived = note.copy(state = "ARCHIVED", sourceHash = "archived")
+        val changed = CompletableDeferred<Note>()
+        val undo = CompletableDeferred<() -> Unit>()
+        val failed = CompletableDeferred<String>()
+        val refresh = CompletableDeferred<Unit>()
+        var online = true
+        var patches = 0
+        val core = CoreClient(origin, SessionCookies(origin, MemorySecrets()), MockEngine { request ->
+            if (request.method == HttpMethod.Get) respond(identity) else {
+                patches++
+                assertTrue("\"ARCHIVED\"" in request.body.toByteArray().decodeToString())
+                respond(CoreJson.encodeToString(archived))
+            }
+        })
+        try {
+            repo.recordLocalNote(key, note)
+            val actions = NoteStateActions({ repo }, { key }, { core.takeIf { online } }, scope,
+                { _, _, result -> if (result != null) changed.complete(result) },
+                { code, callback -> if (callback != null) undo.complete(callback) else failed.complete(code) },
+                { refresh.complete(Unit) })
+            actions.change(note)
+            assertEquals(archived, withTimeout(10_000) { changed.await() })
+            withTimeout(10_000) { actions.state.first { it.isEmpty() } }
+            online = false
+            withTimeout(10_000) { undo.await().invoke() }
+            assertEquals("CONNECTION_FAILED", withTimeout(10_000) { failed.await() })
+            withTimeout(10_000) { refresh.await() }
+            assertTrue(actions.state.value.isEmpty())
+            assertNull(repo.action(key, note.name))
+            assertEquals(archived, repo.localNote(key, note.name))
+
+            online = true
+            actions.recover(key)
+            assertEquals(1, patches)
+            assertTrue(repo.stateActions(key).isEmpty())
+        } finally {
+            scope.coroutineContext[Job]!!.cancelAndJoin()
+            core.close()
+            db.close()
+            directory.deleteRecursively()
+        }
+    }
+
+    @Test
     fun replayWithLatestOppositeStateSettlesArchiveAndRestore() = runBlocking<Unit> {
         val directory = Files.createTempDirectory("moerise-opposite-replay").toFile()
         val db = testDatabase(directory.resolve("notes.sqlite3").absolutePath)

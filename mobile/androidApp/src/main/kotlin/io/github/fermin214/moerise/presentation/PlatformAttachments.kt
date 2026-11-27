@@ -59,6 +59,39 @@ suspend fun clearAttachmentCache(context: android.content.Context) = withContext
     }
 }
 
+internal suspend fun cacheAttachmentForOpening(
+    context: android.content.Context, note: Note, item: JsonObject, core: CoreClient, filename: String,
+): File {
+    val cacheEpoch = OpenFileCache.epoch.get()
+    val account = core.attachmentAccount()
+    val file = withContext(Dispatchers.IO) {
+        OpenFileCache.lock.withLock {
+            if (cacheEpoch != OpenFileCache.epoch.get()) throw CancellationException("Account changed")
+            val parent = File(context.cacheDir, "attachments").apply { mkdirs() }
+            OpenFileCache.prune(parent)
+            val identity = "$account\u0000${note.name}\u0000${note.sourceHash}\u0000${item["name"]}"
+            val folder = File(parent, sha256(identity.encodeToByteArray())).apply { mkdirs() }
+            val destination = File(folder, filename)
+            if (!destination.exists()) {
+                val temporary = File(folder, ".download")
+                try {
+                    temporary.outputStream().use { output ->
+                        core.downloadAttachment(note, item) { bytes, count -> output.write(bytes, 0, count) }
+                    }
+                    if (cacheEpoch != OpenFileCache.epoch.get()) throw CancellationException("Account changed")
+                    check(temporary.renameTo(destination))
+                } finally { temporary.delete() }
+            }
+            folder.setLastModified(System.currentTimeMillis())
+            OpenFileCache.prune(parent, folder)
+            destination
+        }
+    }
+    if (cacheEpoch != OpenFileCache.epoch.get() || core.attachmentAccountKey != account)
+        throw CancellationException("Account changed")
+    return file
+}
+
 @Composable
 internal fun AttachmentPicker(mobile: MobileController): (DraftEntity) -> Unit {
     val context = LocalContext.current.applicationContext
@@ -151,34 +184,8 @@ fun OpenAttachmentButton(note: Note, item: JsonObject, core: CoreClient, strings
         if (!busy) scope.launch {
             busy = true
             error = null
-            val cacheEpoch = OpenFileCache.epoch.get()
             try {
-                val account = core.attachmentAccount()
-                val file = withContext(Dispatchers.IO) {
-                    OpenFileCache.lock.withLock {
-                    if (cacheEpoch != OpenFileCache.epoch.get()) throw CancellationException("Account changed")
-                    val parent = File(context.cacheDir, "attachments").apply { mkdirs() }
-                    OpenFileCache.prune(parent)
-                    val identity = "$account\u0000${note.name}\u0000${note.sourceHash}\u0000${item["name"]}"
-                    val folder = File(parent, sha256(identity.encodeToByteArray())).apply { mkdirs() }
-                    val destination = File(folder, filename)
-                    if (!destination.exists()) {
-                        val temporary = File(folder, ".download")
-                        try {
-                            temporary.outputStream().use { output ->
-                                core.downloadAttachment(note, item) { bytes, count -> output.write(bytes, 0, count) }
-                            }
-                            if (cacheEpoch != OpenFileCache.epoch.get()) throw CancellationException("Account changed")
-                            check(temporary.renameTo(destination))
-                        } finally { temporary.delete() }
-                    }
-                    folder.setLastModified(System.currentTimeMillis())
-                    OpenFileCache.prune(parent, folder)
-                    destination
-                    }
-                }
-                if (cacheEpoch != OpenFileCache.epoch.get() || core.attachmentAccountKey != account)
-                    throw CancellationException("Account changed")
+                val file = cacheAttachmentForOpening(context, note, item, core, filename)
                 val uri = FileProvider.getUriForFile(context, "${context.packageName}.files", file)
                 context.startActivity(Intent(Intent.ACTION_VIEW).apply {
                     setDataAndType(uri, item["type"]?.jsonPrimitive?.content ?: "application/octet-stream")

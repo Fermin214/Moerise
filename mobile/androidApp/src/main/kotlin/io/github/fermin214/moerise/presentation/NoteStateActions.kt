@@ -158,7 +158,7 @@ internal class NoteStateActions(
             val action = next
             val write = action.write
             val active = core()
-            val fresh = action.fresh && write.status == "prepared" && action.intent?.undo != true
+            val fresh = action.fresh && write.status == "prepared"
             try {
                 if (active == null) throw StateRequestNotSent()
                 boundary.withLock {

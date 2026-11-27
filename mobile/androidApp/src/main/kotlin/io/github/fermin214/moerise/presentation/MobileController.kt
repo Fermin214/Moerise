@@ -5,6 +5,7 @@ import io.github.fermin214.moerise.domain.Note
 import kotlinx.coroutines.*
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.*
+import kotlinx.coroutines.selects.select
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.json.*
@@ -14,6 +15,43 @@ data class LogoutState(val account: String, val counts: LocalRemovalCounts? = nu
 enum class SaveOutcome { COMMITTED, NOT_COMMITTED }
 
 internal data class MobileNotice(val account: String?, val code: String, val undo: (() -> Unit)? = null)
+
+internal class MobileNotices {
+    private val undo = Channel<MobileNotice>(Channel.UNLIMITED)
+    private val ordinary = Channel<MobileNotice>(Channel.UNLIMITED)
+
+    fun offer(notice: MobileNotice) {
+        (if (notice.undo == null) ordinary else undo).trySend(notice)
+    }
+
+    suspend fun collect(account: String?, show: suspend (MobileNotice) -> Unit) = coroutineScope {
+        fun canShow(notice: MobileNotice) = notice.account == account && (notice.undo as? ArchiveUndo)?.failed != true
+        var priority: MobileNotice? = null
+        while (isActive) {
+            val notice = priority ?: select {
+                undo.onReceive { it }
+                ordinary.onReceive { it }
+            }
+            priority = null
+            if (!canShow(notice)) continue
+            if (notice.undo != null) {
+                show(notice)
+            } else {
+                val showing = launch { show(notice) }
+                try {
+                    do {
+                        priority = select {
+                            undo.onReceive { it }
+                            showing.onJoin { null }
+                        }
+                    } while (priority?.let { !canShow(it) } == true)
+                } finally {
+                    showing.cancelAndJoin()
+                }
+            }
+        }
+    }
+}
 
 class MobileController(
     val session: SessionController,
@@ -57,12 +95,11 @@ class MobileController(
     val review = ReviewController({ session.core }, { session.state.value.profile?.accountKey }, scope, privacy, repository)
     val walk = WalkController({ session.core }, { session.state.value.profile?.accountKey }, scope, privacy, repository, enablePrefetch = true, online = { session.state.value.connected })
     val stars = StarMapController(repository, { session.core }, { session.state.value.profile?.accountKey }, scope, privacy, online = { session.state.value.connected })
-    private val mutableNotices = Channel<MobileNotice>(Channel.UNLIMITED)
-    internal val notices = mutableNotices.receiveAsFlow()
+    internal val notices = MobileNotices()
     private val mutableNewTimelineKey = MutableStateFlow<String?>(null)
     internal val newTimelineKey = mutableNewTimelineKey.asStateFlow()
     internal fun notice(code: String, undo: (() -> Unit)? = null) {
-        mutableNotices.trySend(MobileNotice(session.state.value.profile?.accountKey, code, undo))
+        notices.offer(MobileNotice(session.state.value.profile?.accountKey, code, undo))
     }
     val settings = SettingsController({ session.core }, { session.state.value.profile?.accountKey }, scope,
         ::settingsChanged, { notice(it) })
@@ -129,7 +166,7 @@ class MobileController(
         } else null
         timeline.onSaved(key, note, displayKey = stableKey)
         archive.onSaved(key, note, displayKey = stableKey)
-        search.replaceNote(note, refresh = inForeground && visiblePage in setOf("home", "archive"))
+        search.replaceNote(note, refresh = inForeground && visiblePage in setOf("home", "archive"), edited = draftId != null)
         homeNote.acceptSaved(key, note)
     }
 

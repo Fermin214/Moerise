@@ -7,7 +7,10 @@ import org.robolectric.annotation.Config
 import androidx.sqlite.driver.AndroidSQLiteDriver
 import androidx.test.core.app.ApplicationProvider
 import java.nio.file.Files
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.*
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.first
@@ -15,16 +18,158 @@ import kotlinx.coroutines.flow.drop
 import io.github.fermin214.moerise.presentation.EditorController
 import io.github.fermin214.moerise.presentation.MobileController
 import io.github.fermin214.moerise.presentation.SessionController
+import io.github.fermin214.moerise.presentation.cacheAttachmentForOpening
 import io.github.fermin214.moerise.presentation.clearAttachmentCache
+import io.github.fermin214.moerise.domain.CoreException
+import io.github.fermin214.moerise.domain.Note
 import io.ktor.http.HttpMethod
 import io.ktor.http.Cookie
 import io.ktor.http.Url
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
+import okhttp3.mockwebserver.Dispatcher
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
+import okhttp3.mockwebserver.RecordedRequest
 
 @RunWith(RobolectricTestRunner::class)
 @Config(manifest = Config.NONE, sdk = [29])
 class LocalDraftRecoveryTest {
+    private val sessionIdentity = """{"instance_id":"instance","user":{"name":"users/owner","display_name":"Owner"},"timezone":"UTC","expires_at":"2099-01-01T00:00:00Z","csrf_token":"token"}"""
+
+    private fun unauthorizedResponse() =
+        MockResponse().setResponseCode(401).setBody("""{"error":{"code":"SESSION_UNAUTHORIZED"}}""")
+
+    private suspend fun selectedConnection(origin: String) = MemorySecrets().apply {
+        val key = "$origin\u0000instance\u0000users/owner"
+        write("selected-profile", CoreJson.encodeToString(ConnectionProfile(origin, key, "instance", "users/owner", "Owner", "UTC")))
+    }
+
+    @Test
+    fun concurrentApiAndExternalAttachment401sAllowCleanupAndSessionRetry() = runBlocking<Unit> {
+        val context = ApplicationProvider.getApplicationContext<android.content.Context>()
+        val attachmentStarted = CompletableDeferred<Unit>()
+        val rejectAttachment = CountDownLatch(1)
+        val cleanupStarted = CompletableDeferred<Unit>()
+        val cleanupCount = AtomicInteger()
+        val server = MockWebServer()
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse = when (request.path) {
+                "/api/app/v1/session" -> MockResponse().setBody(sessionIdentity)
+                "/api/app/v1/notes" -> unauthorizedResponse()
+                "/api/app/v1/notes/one/attachments/one/content" -> {
+                    attachmentStarted.complete(Unit)
+                    check(rejectAttachment.await(10, TimeUnit.SECONDS))
+                    unauthorizedResponse()
+                }
+                else -> MockResponse().setResponseCode(404)
+            }
+        }
+        server.start()
+        val origin = server.url("/").toString().removeSuffix("/")
+        val secrets = selectedConnection(origin)
+        val scope = CoroutineScope(coroutineContext + SupervisorJob())
+        val session = SessionController(secrets, true, scope, clearProtectedDownloads = {
+            cleanupCount.incrementAndGet()
+            cleanupStarted.complete(Unit)
+            clearAttachmentCache(context)
+        })
+        try {
+            val connected = withTimeout(10_000) { session.state.first { it.connected } }
+            val key = assertNotNull(connected.profile).accountKey
+            val core = assertNotNull(session.core)
+            val item = buildJsonObject { put("name", "attachments/one") }
+            val note = Note("instance", "memos/one", "Attachment", "NORMAL", "hash", attachments = listOf(item))
+            val attachment = scope.async {
+                assertEquals(401, assertFailsWith<CoreException> {
+                    cacheAttachmentForOpening(context, note, item, core, "file.txt")
+                }.status)
+            }
+            withTimeout(10_000) { attachmentStarted.await() }
+            assertEquals(401, assertFailsWith<CoreException> { core.api(HttpMethod.Get, "/notes") }.status)
+            withTimeout(10_000) { cleanupStarted.await() }
+            assertEquals("pending", secrets.read("protected-download-cleanup:$key"))
+            rejectAttachment.countDown()
+            withTimeout(10_000) { attachment.await() }
+            assertTrue(session.state.value.needsLogin)
+            session.retrySession()
+            withTimeout(10_000) { session.state.first { it.connected && !it.needsLogin } }
+            assertEquals(1, cleanupCount.get())
+            assertNull(secrets.read("protected-download-cleanup:$key"))
+            assertFalse(context.cacheDir.resolve("attachments").exists())
+        } finally {
+            rejectAttachment.countDown()
+            session.close()
+            scope.coroutineContext[Job]!!.cancelAndJoin()
+            server.shutdown()
+            clearAttachmentCache(context)
+        }
+    }
+
+    @Test
+    fun lateSuccessfulSessionResponseCannotOpenCacheWhileUnauthorizedCleanupIsPending() = runBlocking<Unit> {
+        val notesStarted = CompletableDeferred<Unit>()
+        val oldSessionStarted = CompletableDeferred<Unit>()
+        val cleanupStarted = CompletableDeferred<Unit>()
+        val finishCleanup = CompletableDeferred<Unit>()
+        val rejectNotes = CountDownLatch(1)
+        val releaseOldSession = CountDownLatch(1)
+        val sessionRequests = AtomicInteger()
+        val server = MockWebServer()
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse = when (request.path) {
+                "/api/app/v1/session" -> {
+                    if (sessionRequests.incrementAndGet() == 1) MockResponse().setBody(sessionIdentity) else {
+                        oldSessionStarted.complete(Unit)
+                        check(releaseOldSession.await(10, TimeUnit.SECONDS))
+                        MockResponse().setBody(sessionIdentity.replace("Owner", "Stale"))
+                    }
+                }
+                "/api/app/v1/notes" -> {
+                    notesStarted.complete(Unit)
+                    check(rejectNotes.await(10, TimeUnit.SECONDS))
+                    unauthorizedResponse()
+                }
+                else -> MockResponse().setResponseCode(404)
+            }
+        }
+        server.start()
+        val origin = server.url("/").toString().removeSuffix("/")
+        val secrets = selectedConnection(origin)
+        val scope = CoroutineScope(coroutineContext + SupervisorJob())
+        val session = SessionController(secrets, true, scope, clearProtectedDownloads = {
+            cleanupStarted.complete(Unit)
+            finishCleanup.await()
+        })
+        try {
+            val ready = withTimeout(10_000) { session.state.first { it.connected } }
+            val key = assertNotNull(ready.profile).accountKey
+            val core = assertNotNull(session.core)
+            val notes = scope.async { assertFailsWith<CoreException> { core.api(HttpMethod.Get, "/notes") } }
+            withTimeout(10_000) { notesStarted.await() }
+            val checking = scope.async { session.checkConnection() }
+            withTimeout(10_000) { oldSessionStarted.await() }
+            rejectNotes.countDown()
+            assertEquals(401, withTimeout(10_000) { notes.await() }.status)
+            withTimeout(10_000) { cleanupStarted.await() }
+            releaseOldSession.countDown()
+            assertFalse(withTimeout(10_000) { checking.await() })
+            assertNull(core.attachmentAccountKey)
+            assertFailsWith<IllegalArgumentException> { core.attachmentAccount() }
+            assertTrue(session.state.value.needsLogin)
+            assertFalse(session.state.value.connected)
+            assertEquals("Owner", session.state.value.profile?.displayName)
+            assertEquals("pending", secrets.read("protected-download-cleanup:$key"))
+        } finally {
+            rejectNotes.countDown()
+            releaseOldSession.countDown()
+            finishCleanup.complete(Unit)
+            session.close()
+            scope.coroutineContext[Job]!!.cancelAndJoin()
+            server.shutdown()
+        }
+    }
+
     @Test
     fun unauthorizedImageCleanupResumesBeforeTheOfflineAccountIsExposed() = runBlocking<Unit> {
         val context = ApplicationProvider.getApplicationContext<android.content.Context>()
