@@ -33,10 +33,11 @@ function settings() {
 }
 
 async function fixture(t, { language = 'zh-CN', mobile = false, returning = true } = {}) {
-  const state = { value: settings(), session: false, gets: 0, patches: [], checks: [], telemetry: false, batches: [],
+  const state = { value: settings(), sessions: new Map(), sessionRequests: [], sessionReadUnavailable: false,
+    gets: 0, patches: [], checks: [], telemetry: false, batches: [],
     index: 'disabled', mapReads: 0, rebuilds: 0, deliveries: [], retries: [], fail: null, checkFail: null,
     hold: null, holdCheck: null, holdNotes: null, notesFail: null, nextSettingsRead: null, csrf: false,
-    notes: [], notesReads: [], mapData: null, modelVersion: null };
+    notes: [], notesReads: [], mapData: null, modelVersion: null, holdLogout: null };
   const core = http.createServer(async (req, res) => {
     const path = new URL(req.url, 'http://localhost').pathname;
     const raw = await readRequestText(req);
@@ -45,20 +46,35 @@ async function fixture(t, { language = 'zh-CN', mobile = false, returning = true
       res.writeHead(status, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(data));
     };
     const error = (code, status) => json({ error: { code } }, status);
+    let sessionId = /(?:^|;\s*)settings-session=(\d+)/.exec(req.headers.cookie || '')?.[1];
+    let csrf = state.sessions.get(sessionId);
     if (path === '/api/app/v1/session') {
-      if (req.method === 'POST') state.session = true;
-      if (req.method === 'DELETE') { state.session = false; res.writeHead(204); res.end(); return; }
-      if (!state.session) { error('SESSION_UNAUTHORIZED', 401); return; }
+      state.sessionRequests.push({ method: req.method, sessionId, csrf: req.headers['x-csrf-token'] });
+      if (req.method === 'POST') {
+        sessionId = String(state.sessionRequests.filter(request => request.method === 'POST').length);
+        csrf = `csrf-settings-${sessionId}`;
+        state.sessions.set(sessionId, csrf);
+        res.setHeader('Set-Cookie', `settings-session=${sessionId}; HttpOnly; SameSite=Lax; Path=/`);
+      }
+      if (req.method === 'DELETE') {
+        if (state.holdLogout) await state.holdLogout;
+        if (csrf && req.headers['x-csrf-token'] !== csrf) { error('CSRF_REJECTED', 403); return; }
+        state.sessions.delete(sessionId);
+        res.setHeader('Set-Cookie', 'settings-session=; Max-Age=0; HttpOnly; SameSite=Lax; Path=/');
+        res.writeHead(204); res.end(); return;
+      }
+      if (!csrf) { error('SESSION_UNAUTHORIZED', 401); return; }
+      if (req.method === 'GET' && state.sessionReadUnavailable) { error('SOURCE_UNAVAILABLE', 503); return; }
       json({ user: { name: 'users/1', display_name: '设置测试' }, timezone: state.value.settings.timezone,
-        stargazing_enabled: state.value.settings.stargazing.enabled, csrf_token: 'csrf-settings' });
+        stargazing_enabled: state.value.settings.stargazing.enabled, csrf_token: csrf });
       return;
     }
-    if (!state.session) { error('SESSION_UNAUTHORIZED', 401); return; }
+    if (!csrf) { error('SESSION_UNAUTHORIZED', 401); return; }
     if (path === '/api/app/v1/capabilities') {
       json({ version: '1.2.3', telemetry: { schema: 1, allowed: state.telemetry } }); return;
     }
     if (path === '/api/app/v1/telemetry') {
-      assert.equal(req.headers['x-csrf-token'], 'csrf-settings');
+      assert.equal(req.headers['x-csrf-token'], csrf);
       state.batches.push(JSON.parse(raw)); res.writeHead(204); res.end(); return;
     }
     if (path === '/api/app/v1/models') {
@@ -71,11 +87,11 @@ async function fixture(t, { language = 'zh-CN', mobile = false, returning = true
         layout_frame: '', vector_generation: '', points: [] }); return;
     }
     if (path === '/api/app/v1/map/rebuild') {
-      assert.equal(req.headers['x-csrf-token'], 'csrf-settings');
+      assert.equal(req.headers['x-csrf-token'], csrf);
       state.rebuilds++; json({ status: 'queued' }); return;
     }
     if (['/api/app/v1/models/embedding/check', '/api/app/v1/channels/check'].includes(path)) {
-      assert.equal(req.headers['x-csrf-token'], 'csrf-settings');
+      assert.equal(req.headers['x-csrf-token'], csrf);
       const body = JSON.parse(raw);
       state.checks.push({ path, ...body });
       if (body.version !== state.value.version) { error('SETTINGS_CONFLICT', 409); return; }
@@ -108,7 +124,7 @@ async function fixture(t, { language = 'zh-CN', mobile = false, returning = true
       json(reply); return;
     }
     assert.equal(req.method, 'PATCH');
-    assert.equal(req.headers['x-csrf-token'], 'csrf-settings');
+    assert.equal(req.headers['x-csrf-token'], csrf);
     if (state.csrf) { state.csrf = false; error('CSRF_REJECTED', 403); return; }
     const body = JSON.parse(raw);
     state.patches.push(body);
@@ -166,6 +182,99 @@ const save = page => dialog(page).locator('button.save').click();
 const operation = (page, label) => dialog(page).getByRole('combobox', { name: `${label}操作`, exact: true });
 const newSecret = (page, label) => dialog(page).getByLabel(`${label}新值`, { exact: true });
 const confirmation = (page, text) => page.locator('.snackbar').getByText(text, { exact: true }).waitFor();
+
+async function beginOfflineLogout(page) {
+  await page.locator('#empty').waitFor();
+  await page.context().setOffline(true);
+  await page.locator('#account-settings').click();
+  await page.locator('#logout').click();
+  await page.locator('#retry-logout').waitFor();
+  assert.equal(await page.locator('#app').isHidden(), true);
+  await page.context().setOffline(false);
+}
+
+test('first offline settings visit offers logout and retries without restoring private content', async t => {
+  const { page, state, url } = await fixture(t);
+  await login(page, url, '/');
+  await beginOfflineLogout(page);
+  assert.equal(state.sessions.size, 1);
+  await page.locator('#retry-logout').click();
+  await page.locator('#login-form').waitFor();
+  assert.equal(state.sessions.size, 0);
+});
+
+test('reloading after offline logout revokes the session while upstream authentication is unavailable', async t => {
+  const { page, state, url } = await fixture(t);
+  await login(page, url, '/');
+  await beginOfflineLogout(page);
+  assert.equal(state.sessions.size, 1);
+  state.sessionReadUnavailable = true;
+  const before = state.sessionRequests.length;
+  let release;
+  state.holdLogout = new Promise(resolve => { release = resolve; });
+  try {
+    const revoking = page.waitForRequest(request => request.method() === 'DELETE' && request.url().endsWith('/session'), { timeout: 5000 });
+    await page.reload();
+    await revoking;
+    assert.equal(await page.locator('#app').isHidden(), true);
+    assert.equal(await page.locator('#login-form').isHidden(), true);
+    assert.equal(state.sessions.size, 1);
+  } finally { release(); state.holdLogout = null; }
+  await page.locator('#login-form').waitFor();
+  assert.equal(state.sessions.size, 0);
+  assert.deepEqual(state.sessionRequests.slice(before), [{ method: 'DELETE', sessionId: '1', csrf: 'csrf-settings-1' }]);
+  assert.equal(await page.evaluate(() => sessionStorage.length), 0);
+});
+
+test('a tab retrying its old logout cannot revoke a new login of the same user in another tab', async t => {
+  const { page, state, url } = await fixture(t);
+  const newTab = await page.context().newPage();
+  await returningBrowser(newTab);
+  await newTab.goto(url);
+  await newTab.locator('#login-form').waitFor();
+  await login(page, url, '/');
+  await beginOfflineLogout(page);
+  await newTab.locator('#username').fill('test');
+  await newTab.locator('#password').fill('test');
+  await newTab.locator('#login').click();
+  await newTab.locator('#workspace').waitFor();
+  const before = state.sessionRequests.length;
+  await page.reload();
+  await page.locator('#login-form').waitFor();
+  assert.equal(await page.locator('#app').isHidden(), true);
+  assert.equal(await page.evaluate(() => sessionStorage.length), 0);
+  assert.deepEqual(state.sessionRequests.slice(before), [{ method: 'DELETE', sessionId: '2', csrf: 'csrf-settings-1' }]);
+  await newTab.reload();
+  await newTab.locator('#workspace').waitFor();
+  assert.equal(state.sessions.get('2'), 'csrf-settings-2');
+});
+
+test('settings request failure leaves the account and logout usable', async t => {
+  const { page, state, url } = await fixture(t);
+  await page.route('**/api/app/v1/settings', route => route.fulfill({ status: 500, json: { error: { code: 'HTTP_500' } } }));
+  await login(page, url);
+  await page.locator('#settings-page').getByRole('alert').waitFor();
+  await page.locator('#settings-account').getByText('设置测试').waitFor();
+  await page.locator('#logout').click();
+  await page.locator('#login-form').waitFor();
+  assert.equal(state.sessions.size, 0);
+});
+
+test('an incomplete successful settings response keeps logout and settings recovery usable', async t => {
+  const { page, state, url, errors } = await fixture(t);
+  const incomplete = structuredClone(state.value);
+  delete incomplete.settings.stargazing;
+  state.nextSettingsRead = incomplete;
+  await login(page, url);
+  await page.getByRole('alert').filter({ hasText: '服务返回的设置不完整' }).waitFor({ timeout: 5000 });
+  await page.locator('#settings-account').getByText('设置测试').waitFor();
+  assert.equal(await page.locator('#logout').isVisible(), true);
+  await page.getByRole('button', { name: '重新加载设置' }).click();
+  await page.locator('#settings-panel-general #logout').click();
+  await page.locator('#login-form').waitFor();
+  assert.equal(state.sessions.size, 0);
+  assert.deepEqual(errors, []);
+});
 
 for (const language of ['zh-CN', 'en-US']) for (const mobile of [false, true]) {
   test(`stargazing is atomic and independent of embeddings (${language}, ${mobile ? 'mobile' : 'desktop'})`, async t => {
@@ -361,11 +470,11 @@ test('leaving settings during a read discards the old response', async t => {
   let release;
   state.hold = new Promise(resolve => { release = resolve; });
   const reading = page.waitForRequest('**/api/app/v1/settings');
-  await page.locator('a[data-route][href="/settings"]').click(); await reading;
+  await page.locator('#account-settings').click(); await reading;
   await page.locator('nav a[href="/"]').click(); release(); state.hold = null;
   await page.locator('#empty').waitFor();
   assert.equal(await page.locator('#settings-page').count(), 0);
-  await page.locator('a[data-route][href="/settings"]').click(); await tabs(page).waitFor();
+  await page.locator('#account-settings').click(); await tabs(page).waitFor();
   assert.deepEqual(errors, []);
 });
 
@@ -469,8 +578,8 @@ test('manual refresh waits for a successful notes read and safely handles naviga
   await trigger.click();
   await page.locator('#list-error').waitFor();
   assert.equal(await page.locator('#sync-status').getAttribute('data-sync'), 'failure');
-  await page.locator('a[data-route][href="/settings"]').click();
-  const sync = page.getByRole('button', { name: '立即同步' });
+  await page.locator('#account-settings').click();
+  const sync = page.locator('#settings-panel-general').getByRole('button', { name: '同步' });
   state.notesFail = null;
   let release;
   state.holdNotes = new Promise(resolve => { release = resolve; });
@@ -480,7 +589,7 @@ test('manual refresh waits for a successful notes read and safely handles naviga
   await page.locator('#settings-page').waitFor({ state: 'detached' });
   release(); state.holdNotes = null;
   await page.locator('#empty').waitFor();
-  await page.locator('a[data-route][href="/settings"]').click();
+  await page.locator('#account-settings').click();
   state.notesFail = 401;
   await sync.click();
   await page.locator('#login-form').waitFor();
@@ -569,9 +678,9 @@ test('refreshing from settings updates the filtered timeline snapshot for offlin
   await login(page, url, '/archived?tag=work');
   const card = page.locator('#notes article[data-name="memos/archived"]');
   await card.getByText('Old archived content').waitFor();
-  await page.locator('a[data-route][href="/settings"]').click();
+  await page.locator('#account-settings').click();
   state.notes = [{ ...note, content: 'Refreshed archived content', source_hash: 'next-hash' }];
-  await page.getByRole('button', { name: '立即同步' }).click();
+  await page.locator('#settings-panel-general').getByRole('button', { name: '同步' }).click();
   await confirmation(page, '已从 Core 刷新笔记。');
   assert.equal(state.notesReads.at(-1).tag, 'work');
   assert.equal(state.notesReads.at(-1).state, 'ARCHIVED');

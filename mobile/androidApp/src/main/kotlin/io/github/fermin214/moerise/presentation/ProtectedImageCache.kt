@@ -20,7 +20,7 @@ import kotlinx.serialization.json.*
 
 internal sealed interface ProtectedImageResult {
     data class Loaded(val bitmap: ImageBitmap) : ProtectedImageResult
-    data class Failed(val retryable: Boolean) : ProtectedImageResult
+    data class Failed(val retryable: Boolean, val external: Boolean = false) : ProtectedImageResult
 }
 
 internal object ProtectedImageCache {
@@ -36,11 +36,22 @@ internal object ProtectedImageCache {
     private val mutableEpoch = MutableStateFlow(0L)
     val epoch = mutableEpoch.asStateFlow()
 
-    private fun key(account: String, item: JsonObject) =
-        "$account\u0000${item["name"]?.jsonPrimitive?.content}\u0000${item["content_url"]?.jsonPrimitive?.content}"
+    private fun key(account: String, note: Note, item: JsonObject) =
+        "$account\u0000${note.name}\u0000${item["name"]?.jsonPrimitive?.content}\u0000${item["content_url"]?.jsonPrimitive?.content}"
 
-    fun peek(core: CoreClient, item: JsonObject, stamp: Long): ImageBitmap? =
-        core.attachmentAccountKey?.let { memory.get(key(it, item)) }?.takeIf { stamp == epoch.value }
+    private fun destination(root: File, account: String, id: String) =
+        File(File(root, sha256(account.encodeToByteArray())), sha256(id.encodeToByteArray()))
+
+    fun peek(core: CoreClient, note: Note, item: JsonObject, stamp: Long): ImageBitmap? =
+        core.attachmentAccountKey?.let { memory.get(key(it, note, item)) }?.takeIf { stamp == epoch.value }
+
+    suspend fun openOriginal(context: Context, core: CoreClient, access: CoreClient.AttachmentAccess,
+        note: Note, item: JsonObject, stamp: Long) = lock.withLock {
+        checkEpoch(stamp)
+        core.checkAttachmentAccess(access)
+        val file = destination(File(context.cacheDir, "image_cache"), access.account, key(access.account, note, item))
+        file.takeIf { it.length() in 1..inlineLimit.toLong() }?.inputStream()
+    }
 
     suspend fun clear(context: Context) = withContext(Dispatchers.IO) {
         lock.withLock {
@@ -53,14 +64,14 @@ internal object ProtectedImageCache {
     }
 
     suspend fun load(context: Context, core: CoreClient, note: Note, item: JsonObject, stamp: Long): ProtectedImageResult {
-        if ((item["size"]?.jsonPrimitive?.longOrNull ?: 0L) > inlineLimit) return ProtectedImageResult.Failed(false)
+        if ((item["size"]?.jsonPrimitive?.longOrNull ?: 0L) > inlineLimit) return ProtectedImageResult.Failed(false, external = true)
         val account = try { core.attachmentAccount() }
         catch (error: Exception) {
             if (error is CancellationException && (error !is TimeoutCancellationException || !currentCoroutineContext().isActive)) throw error
             return failure(error)
         }
         if (account.split('\u0000').getOrNull(1) != note.instanceId) return ProtectedImageResult.Failed(false)
-        val id = key(account, item)
+        val id = key(account, note, item)
         val task = lock.withLock {
             checkEpoch(stamp)
             memory.get(id)?.let { return ProtectedImageResult.Loaded(it) }
@@ -81,7 +92,7 @@ internal object ProtectedImageCache {
     private suspend fun fetch(context: Context, core: CoreClient, note: Note, item: JsonObject, account: String,
         id: String, stamp: Long): ProtectedImageResult = decoders.withPermit {
         val root = File(context.cacheDir, "image_cache")
-        val destination = File(File(root, sha256(account.encodeToByteArray())), sha256(id.encodeToByteArray()))
+        val destination = destination(root, account, id)
         try {
             val cached = lock.withLock {
                 checkEpoch(stamp, core, account)
@@ -89,7 +100,7 @@ internal object ProtectedImageCache {
             }
             val decoded = cached?.let { decodeProtectedImage(it) }
             val bytes = if (decoded == null) core.attachmentBytes(note, item, inlineLimit) else cached
-            val bitmap = decoded ?: decodeProtectedImage(requireNotNull(bytes)) ?: return@withPermit ProtectedImageResult.Failed(false)
+            val bitmap = decoded ?: decodeProtectedImage(requireNotNull(bytes)) ?: return@withPermit ProtectedImageResult.Failed(false, external = true)
             lock.withLock {
                 checkEpoch(stamp, core, account)
                 if (decoded == null) runCatching {
@@ -125,7 +136,7 @@ internal object ProtectedImageCache {
         is CoreException -> error.status == 408 || error.status == 429 || error.status >= 500
         is IllegalArgumentException -> error.message == "ATTACHMENT_DOWNLOAD_INCOMPLETE"
         else -> true
-    })
+    }, external = error is IllegalArgumentException && error.message == "ATTACHMENT_DOWNLOAD_TOO_LARGE")
 
     private fun prune(root: File, keep: File, incoming: Int) {
         val files = root.walkTopDown().filter { it.isFile }.toList()

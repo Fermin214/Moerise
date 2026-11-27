@@ -3,10 +3,16 @@ package io.github.fermin214.moerise.presentation
 import android.content.ClipData
 import android.content.Intent
 import android.content.ActivityNotFoundException
+import android.content.ContentUris
+import android.content.ContentValues
+import android.content.Context
 import android.net.Uri
+import android.os.Environment
 import android.util.Log
 import android.graphics.BitmapFactory
+import android.provider.MediaStore
 import android.provider.OpenableColumns
+import android.webkit.MimeTypeMap
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.material3.Text
@@ -25,6 +31,7 @@ import io.github.fermin214.moerise.data.*
 import io.github.fermin214.moerise.domain.Note
 import java.io.ByteArrayOutputStream
 import java.io.File
+import java.util.UUID
 import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.*
 import kotlinx.coroutines.sync.Mutex
@@ -53,9 +60,141 @@ private object OpenFileCache {
 
 suspend fun clearAttachmentCache(context: android.content.Context) = withContext(Dispatchers.IO) {
     OpenFileCache.epoch.incrementAndGet()
-    ProtectedImageCache.clear(context.applicationContext)
-    OpenFileCache.lock.withLock {
-        check(File(context.applicationContext.cacheDir, "attachments").deleteRecursively()) { "LOCAL_REMOVE_FAILED" }
+    GalleryExports.clear(context.applicationContext) {
+        ProtectedImageCache.clear(context.applicationContext)
+        OpenFileCache.lock.withLock {
+            check(File(context.applicationContext.cacheDir, "attachments").deleteRecursively()) { "LOCAL_REMOVE_FAILED" }
+        }
+    }
+}
+
+internal suspend fun recoverGalleryExports(context: Context) = withContext(Dispatchers.IO) {
+    GalleryExports.recover(context.applicationContext)
+}
+
+internal suspend fun saveImageToGallery(context: Context, note: Note, item: JsonObject, core: CoreClient) {
+    val cacheStamp = ProtectedImageCache.epoch.value
+    val stamp = GalleryExports.generation.get()
+    val access = core.imageExportAccess(note, item)
+    val mime = item.getValue("type").jsonPrimitive.content
+    val extension = MimeTypeMap.getSingleton().getExtensionFromMimeType(mime) ?: "img"
+    val filename = item["filename"]?.jsonPrimitive?.content?.takeIf(::validFilename) ?: "Moerise.$extension"
+    val temporary = "moerise-pending-${UUID.randomUUID()}.$extension"
+    val app = context.applicationContext
+    withContext(Dispatchers.IO) {
+        val job = currentCoroutineContext()
+        fun current() {
+            job.ensureActive()
+            core.checkAttachmentAccess(access)
+            if (stamp != GalleryExports.generation.get() || cacheStamp != ProtectedImageCache.epoch.value)
+                throw CancellationException("Attachment cache cleared")
+        }
+        var uri: Uri? = null
+        try {
+            uri = GalleryExports.begin(app, temporary, mime, ::current)
+            val resolver = app.contentResolver
+            requireNotNull(resolver.openOutputStream(uri, "w")).use { output ->
+                val cached = ProtectedImageCache.openOriginal(app, core, access, note, item, cacheStamp)
+                if (cached != null) cached.use { input ->
+                    val buffer = ByteArray(16 * 1024)
+                    while (true) {
+                        val count = input.read(buffer)
+                        if (count < 0) break
+                        current()
+                        output.write(buffer, 0, count)
+                    }
+                } else core.downloadAttachment(note, item) { buffer, count ->
+                    current()
+                    output.write(buffer, 0, count)
+                }
+            }
+            GalleryExports.publish(app, temporary, uri, filename, core, access, ::current)
+        } finally {
+            withContext(NonCancellable) { GalleryExports.discard(app, temporary, uri) }
+        }
+    }
+}
+
+internal object GalleryExports {
+    private val lock = Mutex()
+    val generation = AtomicLong()
+    private var clearing = 0
+    private val active = mutableSetOf<String>()
+    private val collection = MediaStore.Images.Media.EXTERNAL_CONTENT_URI
+    private val path = "${Environment.DIRECTORY_PICTURES}/Moerise/"
+    private const val pending = MediaStore.Images.Media.IS_PENDING
+    private const val name = MediaStore.Images.Media.DISPLAY_NAME
+    private const val relative = MediaStore.Images.Media.RELATIVE_PATH
+    private const val id = MediaStore.Images.Media._ID
+
+    private fun records(context: Context) = context.getSharedPreferences("pending-gallery-exports", Context.MODE_PRIVATE)
+
+    suspend fun recover(context: Context) = lock.withLock {
+        recoverRecords(context)
+    }
+
+    suspend fun clear(context: Context, clearFiles: suspend () -> Unit) {
+        lock.withLock { clearing++; generation.incrementAndGet() }
+        try {
+            lock.withLock { recoverRecords(context, includeActive = true) }
+        } finally {
+            try { clearFiles() }
+            finally { withContext(NonCancellable) { lock.withLock { clearing-- } } }
+        }
+    }
+
+    suspend fun begin(context: Context, temporary: String, mime: String, checkCurrent: () -> Unit): Uri = lock.withLock {
+        if (clearing != 0) throw CancellationException("Attachment cache clearing")
+        recoverRecords(context)
+        checkCurrent()
+        val ledger = records(context)
+        check(ledger.edit().putString(temporary, "").commit())
+        active += temporary
+        val uri = requireNotNull(context.contentResolver.insert(collection, ContentValues().apply {
+            put(name, temporary); put(relative, path); put(MediaStore.Images.Media.MIME_TYPE, mime); put(pending, 1)
+        }))
+        check(ledger.edit().putString(temporary, uri.toString()).commit())
+        uri
+    }
+
+    suspend fun publish(context: Context, temporary: String, uri: Uri, filename: String, core: CoreClient,
+        access: CoreClient.AttachmentAccess, checkCurrent: () -> Unit) = lock.withLock {
+        core.withAttachmentCommit(access) {
+            checkCurrent()
+            check(context.contentResolver.update(uri, ContentValues().apply {
+                put(name, filename); put(pending, 0)
+            }, null, null) == 1)
+        }
+        records(context).edit().remove(temporary).commit()
+    }
+
+    suspend fun discard(context: Context, temporary: String, uri: Uri?) = lock.withLock {
+        active -= temporary
+        val ledger = records(context)
+        if (ledger.contains(temporary)) {
+            removePending(context, temporary, uri ?: ledger.getString(temporary, null)?.takeIf(String::isNotBlank)?.let(Uri::parse))
+            check(ledger.edit().remove(temporary).commit())
+        }
+    }
+
+    private fun recoverRecords(context: Context, includeActive: Boolean = false) {
+        val ledger = records(context)
+        for ((temporary, stored) in ledger.all) {
+            if (!includeActive && temporary in active) continue
+            removePending(context, temporary, (stored as? String)?.takeIf(String::isNotBlank)?.let(Uri::parse))
+            check(ledger.edit().remove(temporary).commit())
+        }
+    }
+
+    @Suppress("DEPRECATION")
+    private fun removePending(context: Context, temporary: String, uri: Uri?) {
+        val resolver = context.contentResolver
+        val filter = if (uri == null) "$pending=1 AND $relative=? AND $name=?" else "$pending=1"
+        val pendingRows = requireNotNull(resolver.query(MediaStore.setIncludePending(uri ?: collection), arrayOf(id),
+            filter, if (uri == null) arrayOf(path, temporary) else null, null)).use { rows ->
+            buildList { while (rows.moveToNext()) add(ContentUris.withAppendedId(collection, rows.getLong(0))) }
+        }
+        for (row in pendingRows) check(resolver.delete(row, "$pending=1", null) == 1)
     }
 }
 

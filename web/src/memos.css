@@ -8,38 +8,35 @@
   background: var(--paper);
   color: var(--ink);
   font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans", sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji";
-  font-size: 16px;
+  font-size:var(--t3);
   line-height: 24px;
 }
 .memos-login {
   width: 360px;
   max-width: 100%;
-  border: 1px solid var(--line);
   border-radius: 12px;
-  background: white;
+  background: var(--surface);
   padding: 28px;
-  box-shadow: 0 1px 3px 0 rgb(0 0 0 / .1), 0 1px 2px -1px rgb(0 0 0 / .1);
 }
 .memos-brand { display: flex; align-items: center; gap: 8px; margin-bottom: 24px; }
-.memos-brand span { font-size: 14px; font-weight: 600; }
-.memos-login h1 { margin: 0; font-size: 18px; font-weight: 600; line-height: 28px; letter-spacing: -.025em; }
-.memos-welcome { margin: 4px 0 0; color: var(--muted); font-size: 14px; line-height: 20px; }
+.memos-brand span { font-size:var(--t3); font-weight: 600; }
+.memos-login h1 { margin: 0; font-size:var(--t1); font-weight: 600; line-height: 1.4; }
+.memos-welcome { margin: 4px 0 0; color: var(--muted); font-size:var(--t3); line-height: 20px; }
 .memos-login form { display: flex; flex-direction: column; gap: 16px; width: 100%; margin-top: 24px; }
 .memos-login form > div { display: flex; flex-direction: column; gap: 6px; }
-.memos-login label { font-size: 14px; font-weight: 500; line-height: 14px; }
+.memos-login label { font-size:var(--t3); font-weight: 500; line-height: 14px; }
 .memos-login input {
   box-sizing: border-box;
   width: 100%;
   min-width: 0;
   height: 32px;
-  border: 1px solid var(--line);
+  border: 1px solid var(--field-border);
   border-radius: 6px;
   padding: 4px 12px;
   background: transparent;
   color: inherit;
-  font-size: 16px;
+  font-size:var(--t3);
   line-height: 20px;
-  box-shadow: 0 1px 2px 0 rgb(0 0 0 / .05);
 }
 .memos-login input::placeholder { color: var(--muted); }
 .memos-login button {
@@ -51,14 +48,13 @@
   padding: 0 12px;
   border: 0;
   border-radius: 6px;
-  background: oklch(0.45 0.08 250);
-  color: #fff;
-  font-size: 14px;
+  background: var(--accent);
+  color: var(--surface);
+  font-size:var(--t3);
   font-weight: 500;
   line-height: 20px;
   cursor: pointer;
-  box-shadow: 0 1px 2px 0 rgb(0 0 0 / .05);
 }
-.memos-login button:hover { background: oklch(0.45 0.08 250 / .9); }
+.memos-login button:hover { background: var(--accent-surface-strong); color:var(--accent); }
+#retry-logout { margin-top:16px; }
 .memos-login :disabled { pointer-events: none; opacity: .5; }
-@media (min-width: 768px) { .memos-login input { font-size: 14px; } }

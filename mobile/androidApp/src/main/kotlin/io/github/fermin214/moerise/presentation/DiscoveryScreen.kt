@@ -4,6 +4,7 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsFocusedAsState
 import androidx.compose.foundation.interaction.collectIsHoveredAsState
@@ -17,11 +18,15 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.snap
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.core.LinearEasing
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
@@ -46,7 +51,7 @@ import kotlinx.serialization.json.*
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-fun DiscoveryScreen(page: String, mobile: MobileController, strings: Strings, readingScroll: ScrollState,
+fun DiscoveryScreen(page: String, mobile: MobileController, strings: Strings,
     onMenu: () -> Unit, onSearch: () -> Unit,
     onWalk: (Note) -> Unit, onSettings: () -> Unit,
     onCompose: (() -> Unit)? = null, onTag: ((String) -> Unit)? = null) {
@@ -63,46 +68,43 @@ fun DiscoveryScreen(page: String, mobile: MobileController, strings: Strings, re
     fun selectReview(index: Int) {
         if (index != review.position) { haptic(); mobile.review.select(index) }
     }
-    LaunchedEffect(page, reviewItem?.name, walk.result?.item?.note?.name) { readingScroll.scrollTo(0) }
+    val pageScroll = rememberScrollState()
 
     Column(Modifier.fillMaxSize().safeDrawingPadding().testTag("${page}_page")) {
         WebToolbar(strings, onMenu, onSearch, onCompose = onCompose)
         BoxWithConstraints(Modifier.weight(1f).fillMaxWidth()) {
             val readingHeight = (maxHeight - 184.dp).coerceIn(360.dp, 480.dp)
-            val topSpace = 20.dp + ((maxHeight - readingHeight - 151.dp) / 2).coerceAtLeast(0.dp)
             Column(
-                Modifier.fillMaxSize().verticalScroll(rememberScrollState()),
+                Modifier.fillMaxSize().verticalScroll(pageScroll),
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
                 Column(
                     Modifier.widthIn(max = 800.dp).fillMaxWidth()
-                        .padding(start = 16.dp, end = 16.dp, top = topSpace, bottom = 20.dp),
+                        .padding(start = 16.dp, end = 16.dp, top = 16.dp, bottom = 20.dp),
                     verticalArrangement = Arrangement.spacedBy(16.dp),
                 ) {
                     Text(strings.text(if (isReview) "回顾" else "漫步", if (isReview) "Review" else "Walk"),
-                        style = MaterialTheme.typography.titleLarge, modifier = Modifier.heightIn(min = 35.dp))
-                    Column(Modifier.fillMaxWidth().height(readingHeight),
-                        verticalArrangement = Arrangement.spacedBy(12.dp, Alignment.CenterVertically)) {
+                        style = MaterialTheme.typography.titleLarge)
+                    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                         if (isReview) {
                             val batch = review.batch
                             when {
                                 batch == null && loading -> DiscoveryMessage(strings.text("正在加载回顾…", "Loading review…"))
                                 batch?.items?.isEmpty() == true ->
                                     DiscoveryMessage(strings.text("今天没有可回顾的旧笔记。", "No old notes to review today."))
-                                reviewItem != null -> Box(Modifier.weight(1f).fillMaxWidth().padding(bottom = 22.dp)) {
+                                reviewItem != null -> Box(Modifier.fillMaxWidth().height(readingHeight).padding(bottom = 22.dp)) {
                                     val remaining = batch!!.items.size - review.position - 1
                                     for (depth in minOf(2, remaining) downTo 1) {
                                         Surface(
                                             Modifier.fillMaxSize().offset(y = (depth * 8).dp)
                                                 .scale(1f - depth * .04f).alpha(if (depth == 1) .8f else .5f),
-                                            shape = RoundedCornerShape(22.dp), color = Color.White,
+                                            shape = RoundedCornerShape(12.dp), color = MoeriseColors.Surface,
                                             border = BorderStroke(1.dp, MoeriseColors.Line),
                                         ) {}
                                     }
                                     ReviewStack(batch.id, batch.items.size, review.position, reviewDragOffset, ::selectReview) { index, layer ->
                                         val item = batch.items[index]
-                                        val scroll = if (index == review.position) readingScroll else rememberScrollState()
-                                        DiscoveryCard(layer.fillMaxSize(), scroll, "${batch.id}:$index", review = true) {
+                                        DiscoveryCard(layer.fillMaxSize(), rememberScrollState()) {
                                             if (item.unavailable) DiscoveryMessage(strings.text(
                                                 "这条笔记已不存在或无法访问。", "This note was deleted or is no longer accessible."))
                                             else item.note?.let { note ->
@@ -127,13 +129,13 @@ fun DiscoveryScreen(page: String, mobile: MobileController, strings: Strings, re
                             }
                             val result = walk.result
                             if (result?.item != null) {
-                                WalkCards(Modifier.weight(1f), result.item.note, walk.previous, readingScroll, timezone, mobile, strings, onTag)
+                                WalkCards(result.item.note, walk.previous, loading, pageScroll, timezone, mobile, strings, onTag)
                             } else if (result?.exhausted != true) {
-                                BoxWithConstraints(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
+                                BoxWithConstraints(Modifier.height(readingHeight).fillMaxWidth(), contentAlignment = Alignment.Center) {
                                     val startEnabled = !loading && (walk.offline && walk.floaters.isNotEmpty() || connection.connected && walk.embeddingEnabled == true)
                                     val narrow = maxWidth < 520.dp
                                     walk.floaters.take(if (narrow) 4 else 6).forEachIndexed { index, note ->
-                                        WalkFloater(note, index, strings, startEnabled, { mobile.walk.start(note.name) },
+                                        WalkFloater(note, strings, startEnabled, { mobile.walk.start(note.name) },
                                             Modifier.align(when (index) {
                                                 0 -> Alignment.TopStart
                                                 1 -> Alignment.TopEnd
@@ -151,11 +153,11 @@ fun DiscoveryScreen(page: String, mobile: MobileController, strings: Strings, re
                                         modifier = Modifier.heightIn(min = 52.dp).testTag("walk_start"),
                                         shape = RoundedCornerShape(10.dp), contentPadding = PaddingValues(horizontal = 28.dp),
                                         colors = ButtonDefaults.buttonColors(
-                                            containerColor = MoeriseColors.BlueSurface, contentColor = MoeriseColors.Blue,
-                                            disabledContainerColor = MoeriseColors.BlueSurface.copy(alpha = .6f),
-                                            disabledContentColor = MoeriseColors.Blue.copy(alpha = .45f)),
+                                            containerColor = MoeriseColors.AccentSurface, contentColor = MoeriseColors.Accent,
+                                            disabledContainerColor = MoeriseColors.AccentSurface.copy(alpha = .6f),
+                                            disabledContentColor = MoeriseColors.Accent.copy(alpha = .45f)),
                                     ) { Text(strings.text(if (loading || walk.initialConfigurationLoading) "翻找中…" else "随机开始",
-                                        if (loading || walk.initialConfigurationLoading) "Looking…" else "Random start"), fontSize = 16.sp) }
+                                        if (loading || walk.initialConfigurationLoading) "Looking…" else "Random start"), fontSize = 15.sp) }
                                 }
                                 walk.floaterError?.let {
                                     DiscoveryMessage(discoveryError(it, strings), error = true, modifier = Modifier.testTag("walk_floaters_error"))
@@ -199,7 +201,7 @@ fun DiscoveryScreen(page: String, mobile: MobileController, strings: Strings, re
                                         contentAlignment = Alignment.Center,
                                     ) {
                                         Box(Modifier.size(20.dp, 8.dp).graphicsLayer { scaleX = dotScale.value }
-                                            .background(if (index == review.position) Color(0xFF5B8DEF) else Color(0xFFD5DBE5), RoundedCornerShape(4.dp)))
+                                            .background(if (index == review.position) MoeriseColors.Accent else MoeriseColors.FieldBorder, RoundedCornerShape(4.dp)))
                                     }
                                 }
                             }
@@ -223,7 +225,7 @@ fun DiscoveryScreen(page: String, mobile: MobileController, strings: Strings, re
                             verticalArrangement = Arrangement.spacedBy(8.dp)) {
                             OutlinedButton(onClick = mobile.walk::end, shape = RoundedCornerShape(10.dp),
                                 modifier = Modifier.heightIn(min = 44.dp).testTag("walk_end"),
-                                border = BorderStroke(1.dp, Color(0xFFD5E1F7))) { Text(strings.text("停止", "Stop")) }
+                                border = BorderStroke(1.dp, MoeriseColors.FieldBorder)) { Text(strings.text("停止", "Stop")) }
                             if (walk.result?.item != null && walk.result?.exhausted == false) WebAction(
                                 strings.text(if (loading) "翻找中…" else "继续漫步", if (loading) "Looking…" else "Continue walk"),
                                 onClick = mobile.walk::next, enabled = !loading && (walk.offline && walk.floaters.isNotEmpty() || connection.connected && walk.embeddingEnabled == true),
@@ -238,51 +240,43 @@ fun DiscoveryScreen(page: String, mobile: MobileController, strings: Strings, re
 }
 
 @Composable
-private fun WalkCards(modifier: Modifier, note: Note, previous: Note?, scroll: ScrollState, timezone: String,
+private fun WalkCards(note: Note, previous: Note?, loading: Boolean, pageScroll: ScrollState, timezone: String,
     mobile: MobileController, strings: Strings, onTag: ((String) -> Unit)?) {
     val reduced = LocalReducedMotion.current
-    var displayed by remember { mutableStateOf(note.name) }
-    val advancing = previous?.name == displayed && displayed != note.name
-    val progress = remember(note.name) { Animatable(if (advancing) 0f else 1f) }
-    LaunchedEffect(note.name, reduced) {
-        if (advancing) progress.animateTo(1f, if (reduced) MoeriseMotion.fade() else MoeriseMotion.spatial())
-        displayed = note.name
+    var displayed by remember { mutableStateOf(note to previous) }
+    val progress = remember { Animatable(0f) }
+    LaunchedEffect(note, reduced, loading) {
+        if (displayed.first.name == note.name) {
+            progress.snapTo(0f)
+            displayed = note to previous
+        } else {
+            progress.animateTo(-1f, tween(if (reduced) 80 else 100))
+            pageScroll.scrollTo(0)
+            progress.snapTo(1f)
+            displayed = note to previous
+            progress.animateTo(0f, tween(if (reduced) 80 else 140))
+        }
     }
-    BoxWithConstraints(modifier.fillMaxWidth()) {
-        val cardHeight = (maxHeight - 70.dp).coerceAtLeast(0.dp)
-        Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(10.dp),
-            horizontalAlignment = Alignment.CenterHorizontally) {
-            Box(Modifier.fillMaxWidth().height(60.dp), contentAlignment = Alignment.Center) {
-                if (previous != null) Surface(Modifier.fillMaxWidth(.92f).fillMaxHeight().graphicsLayer {
-                    alpha = .6f * progress.value.coerceIn(0f, 1f)
-                }, color = Color.White, shape = RoundedCornerShape(14.dp), border = BorderStroke(1.dp, MoeriseColors.Line)) {
-                    Column(Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
-                        Text(displayNoteDate(previous.createTime, timezone, strings.text("zh", "en") == "en"),
-                            style = MaterialTheme.typography.bodySmall, color = MoeriseColors.Muted)
-                        Text(previous.content, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodySmall)
-                    }
-                }
-            }
-            DiscoveryCard(Modifier.weight(1f).fillMaxWidth(), scroll, note.name) {
-                DiscoveryNoteContent(note, timezone, mobile, strings, onTag = onTag)
+    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        displayed.second?.let { prior ->
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                Box(Modifier.width(1.dp).height(20.dp).background(MoeriseColors.Line))
+                Text("↑", style = MaterialTheme.typography.bodySmall, color = MoeriseColors.Muted)
+                Text(displayNoteDate(prior.createTime, timezone, strings.text("zh", "en") == "en"),
+                    style = MaterialTheme.typography.bodySmall, color = MoeriseColors.Muted)
+                val summary = remember(prior.content) { prior.content.replace(Regex("\\s+"), " ").trim() }
+                Text(summary, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                    style = MaterialTheme.typography.bodySmall, color = MoeriseColors.Muted)
             }
         }
-        if (advancing && previous != null && cardHeight > 0.dp) {
-            Surface(Modifier.fillMaxWidth().height(cardHeight).offset(y = 70.dp).clearAndSetSemantics {}.graphicsLayer {
-                val fraction = progress.value.coerceIn(0f, 1f)
-                alpha = 1f - fraction
-                if (!reduced) {
-                    transformOrigin = androidx.compose.ui.graphics.TransformOrigin(.5f, 0f)
-                    translationY = -70.dp.toPx() * fraction
-                    scaleX = 1f - .08f * fraction
-                    scaleY = 1f + ((60.dp / cardHeight).coerceAtMost(1f) - 1f) * fraction
-                }
-            }, shape = RoundedCornerShape(14.dp), color = Color.White, border = BorderStroke(1.dp, MoeriseColors.Line)) {
-                Column(Modifier.padding(horizontal = 20.dp, vertical = 22.dp)) {
-                    Text(displayNoteDate(previous.createTime, timezone, strings.text("zh", "en") == "en"),
-                        style = MaterialTheme.typography.bodySmall, color = MoeriseColors.Muted)
-                    val body = rememberNotePresentation(previous.content, previous.tags)
-                    MarkdownBody(body.body)
+        key(displayed.first.name) {
+            Surface(Modifier.fillMaxWidth().graphicsLayer {
+                val displacement = progress.value
+                alpha = 1f - kotlin.math.abs(displacement)
+                if (!reduced) translationY = 24.dp.toPx() * displacement
+            }, shape = RoundedCornerShape(12.dp), color = MoeriseColors.Surface) {
+                Column(Modifier.padding(horizontal = 20.dp, vertical = 16.dp)) {
+                    DiscoveryNoteContent(displayed.first, timezone, mobile, strings, onTag = onTag)
                 }
             }
         }
@@ -290,21 +284,27 @@ private fun WalkCards(modifier: Modifier, note: Note, previous: Note?, scroll: S
 }
 
 @Composable
-private fun ReviewStack(batch: String, size: Int, position: Int, offset: MutableFloatState, select: (Int) -> Unit,
+internal fun ReviewStack(batch: String, size: Int, position: Int, offset: MutableFloatState, select: (Int) -> Unit,
     card: @Composable (Int, Modifier) -> Unit) {
     val reduced = LocalReducedMotion.current
     val rebound = remember(batch) { Animatable(0f) }
-    var shown by remember(batch) { mutableIntStateOf(position) }
-    val progress = remember(batch, position) { Animatable(if (shown == position) 1f else 0f) }
-    var direction by remember(batch) { mutableFloatStateOf(-1f) }
+    val lastPosition = remember(batch) { intArrayOf(position) }
+    val from = remember(batch, position) { lastPosition[0] }
+    val origin = remember(batch, position) { offset.floatValue }
+    val direction = if (origin != 0f) kotlin.math.sign(origin) else if (position > from || from == size - 1 && position == 0) -1f else 1f
+    val progress = remember(batch, position) { Animatable(if (from == position) 1f else 0f) }
+    val fadeIn = remember(batch, position) { Animatable(if (from == position) 1f else 0f) }
+    var outgoing by remember(batch, position) { mutableStateOf(from != position) }
+    SideEffect { lastPosition[0] = position }
     val selected by rememberUpdatedState(select)
     val scope = rememberCoroutineScope()
     val threshold = with(LocalDensity.current) { 72.dp.toPx() }
     LaunchedEffect(progress, reduced) {
-        if (shown != position) {
-            progress.animateTo(1f, if (reduced) MoeriseMotion.fade() else MoeriseMotion.flip)
-            shown = position
-            offset.floatValue = 0f
+        offset.floatValue = 0f
+        if (from != position) {
+            progress.animateTo(1f, tween(if (reduced) 80 else 240, easing = LinearEasing))
+            outgoing = false
+            if (reduced) fadeIn.animateTo(1f, tween(80))
         }
     }
     fun settle() {
@@ -315,16 +315,16 @@ private fun ReviewStack(batch: String, size: Int, position: Int, offset: Mutable
             rebound.animateTo(0f, if (reduced) snap() else MoeriseMotion.responsive())
         }
     }
-    Box(Modifier.fillMaxSize().drawerGestureRegion().pointerInput(batch, size, position, shown) {
-        if (size < 2 || shown != position) return@pointerInput
+    Box(Modifier.fillMaxSize().clipToBounds().drawerGestureRegion().pointerInput(batch, size, position) {
+        if (size < 2) return@pointerInput
         detectHorizontalDragGestures(
+            onDragStart = { outgoing = false; scope.launch { fadeIn.snapTo(1f); rebound.snapTo(0f) } },
             onDragCancel = ::settle,
             onDragEnd = {
                 val distance = offset.floatValue
                 if (kotlin.math.abs(distance) < threshold) settle()
                 else {
-                    direction = if (distance < 0f) -1f else 1f
-                    selected((position + (if (direction < 0f) 1 else -1) + size) % size)
+                    selected((position + (if (distance < 0f) 1 else -1) + size) % size)
                 }
             },
         ) { change, distance ->
@@ -332,23 +332,31 @@ private fun ReviewStack(batch: String, size: Int, position: Int, offset: Mutable
             offset.floatValue += distance
         }
     }) {
-        val switching = shown != position
-        if (switching) card(position, Modifier.graphicsLayer {
-            alpha = .72f + progress.value * .28f
-            if (!reduced) {
-                translationY = 12.dp.toPx() * (1 - progress.value)
-                scaleX = .955f + .045f * progress.value
-                scaleY = scaleX
+        if (!reduced || !outgoing) key(position) {
+            card(position, Modifier.graphicsLayer {
+                if (reduced) alpha = fadeIn.value
+                else if (outgoing) {
+                    translationY = 8.dp.toPx() * (1f - progress.value)
+                    scaleX = .96f + .04f * progress.value
+                    scaleY = scaleX
+                    alpha = .92f + .08f * progress.value
+                } else translationX = offset.floatValue + rebound.value
+            })
+        }
+        if (outgoing) key(from) {
+            if (reduced) {
+                card(from, Modifier.clearAndSetSemantics {}.graphicsLayer { alpha = 1f - progress.value })
+            } else {
+                Box(Modifier.fillMaxSize().clearAndSetSemantics {}.graphicsLayer {
+                    val fraction = progress.value
+                    val end = direction * this.size.width * .92f
+                    translationX = origin + (end - origin) * fraction
+                    rotationZ = direction * 2.5f * fraction
+                }.clip(RoundedCornerShape(12.dp)).background(MoeriseColors.Surface)) {
+                    card(from, Modifier.graphicsLayer { alpha = ((1f - progress.value) / .3f).coerceAtMost(1f) })
+                }
             }
-        })
-        card(shown, Modifier.graphicsLayer {
-            if (switching) alpha = 1f - progress.value
-            if (!reduced) translationX = if (switching) {
-                val start = offset.floatValue
-                val end = if (start == 0f) -42.dp.toPx() else start + direction * 42.dp.toPx()
-                start + (end - start) * progress.value
-            } else offset.floatValue + rebound.value
-        })
+        }
     }
 }
 
@@ -360,7 +368,7 @@ private fun DiscoveryMessage(text: String, error: Boolean = false, modifier: Mod
 }
 
 @Composable
-private fun WalkFloater(note: Note, index: Int, strings: Strings, enabled: Boolean, onClick: () -> Unit, modifier: Modifier) {
+private fun WalkFloater(note: Note, strings: Strings, enabled: Boolean, onClick: () -> Unit, modifier: Modifier) {
     val interaction = remember(note.name) { MutableInteractionSource() }
     val focused by interaction.collectIsFocusedAsState()
     val hovered by interaction.collectIsHoveredAsState()
@@ -382,25 +390,23 @@ private fun WalkFloater(note: Note, index: Int, strings: Strings, enabled: Boole
     }.ifBlank { strings.text("笔记", "Note") }
     OutlinedButton(onClick, enabled = enabled, interactionSource = interaction,
         modifier = modifier.heightIn(min = 76.dp).testTag("walk_floater_${note.name}")
-            .motionEnter(note.name, distance = -12f, delayMillis = index * 36L, spec = MoeriseMotion.flip).graphicsLayer {
+            .graphicsLayer {
             translationY = 2.dp.toPx() * sink.value
             scaleX = 1f - .02f * sink.value
             scaleY = scaleX
         }.semantics { contentDescription = strings.text("从这条笔记开始：$preview", "Start from this note: $preview") },
-        shape = RoundedCornerShape(10.dp), contentPadding = PaddingValues(horizontal = 8.dp, vertical = 10.dp),
-        border = BorderStroke(1.dp, if (active) MoeriseColors.Blue else MoeriseColors.Line),
+        shape = RoundedCornerShape(12.dp), contentPadding = PaddingValues(horizontal = 8.dp, vertical = 10.dp),
+        border = BorderStroke(1.dp, if (active) MoeriseColors.Accent else Color.Transparent),
         colors = ButtonDefaults.outlinedButtonColors(containerColor = Color.White, contentColor = MoeriseColors.Ink,
             disabledContainerColor = Color.White, disabledContentColor = MoeriseColors.Muted)) {
-        Text(preview, maxLines = 4, overflow = TextOverflow.Clip, fontSize = 12.sp, lineHeight = 20.4.sp)
+        Text(preview, maxLines = 4, overflow = TextOverflow.Clip, fontSize = 13.sp, lineHeight = 20.4.sp)
     }
 }
 
 @Composable
-private fun DiscoveryCard(modifier: Modifier, scroll: ScrollState, animationKey: String,
-    review: Boolean = false, content: @Composable () -> Unit) {
-    val appearance = if (review) modifier else modifier.motionEnter(animationKey, 18f, .975f, spatial = true)
-    Surface(appearance, shape = RoundedCornerShape(if (review) 22.dp else 14.dp), color = Color.White,
-        border = BorderStroke(1.dp, MoeriseColors.Line), shadowElevation = if (review) 0.dp else 3.dp) {
+private fun DiscoveryCard(modifier: Modifier, scroll: ScrollState, content: @Composable () -> Unit) {
+    Surface(modifier, shape = RoundedCornerShape(12.dp), color = MoeriseColors.Surface,
+        border = BorderStroke(1.dp, MoeriseColors.Line)) {
         Column(Modifier.fillMaxSize().verticalScroll(scroll).padding(horizontal = 20.dp, vertical = 22.dp)) { content() }
     }
 }
@@ -417,10 +423,10 @@ internal fun DiscoveryNoteContent(note: Note, timezone: String, mobile: MobileCo
     val core = mobile.session.core
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            if (review && age != null) Surface(color = MoeriseColors.Selected, shape = RoundedCornerShape(50)) {
+            if (review && age != null) Surface(color = MoeriseColors.AccentSurface, shape = RoundedCornerShape(50)) {
                 Text(if (age == 0L) strings.text("今天", "Today")
                     else strings.text("$age 天前", "$age ${if (age == 1L) "day" else "days"} ago"),
-                    style = MaterialTheme.typography.labelMedium, color = MoeriseColors.Blue,
+                    style = MaterialTheme.typography.labelMedium, color = MoeriseColors.Accent,
                     modifier = Modifier.padding(horizontal = 10.dp, vertical = 2.dp))
             } else Text(date, color = MoeriseColors.Muted, style = MaterialTheme.typography.bodySmall)
             Spacer(Modifier.weight(1f))
@@ -439,7 +445,7 @@ internal fun DiscoveryNoteContent(note: Note, timezone: String, mobile: MobileCo
         }
         val typography = MaterialTheme.typography
         MaterialTheme(typography = typography.copy(
-            bodyLarge = typography.bodyLarge.copy(fontSize = 18.sp, lineHeight = if (review) 36.sp else 34.2.sp),
+            bodyLarge = typography.bodyLarge.copy(fontSize = 17.sp, lineHeight = 28.sp),
         )) {
             MarkdownBody(presentation.body, note = note, core = core, tags = presentation.inlineTags, onTag = onTag, strings = strings)
         }

@@ -77,13 +77,13 @@ fun WebSearchPanel(query: SearchQuery, strings: Strings, onChange: (SearchQuery)
         verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
             Surface(Modifier.weight(1f), color = Color.White, shape = RoundedCornerShape(10.dp),
-                border = BorderStroke(1.dp, MoeriseColors.Line)) {
+                border = BorderStroke(1.dp, MoeriseColors.FieldBorder)) {
                 Row(Modifier.padding(horizontal = 11.dp), verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     WebIcon(WebIcon.Search, modifier = Modifier.size(16.dp))
                     BasicTextField(query.text, { onChange(query.copy(text = it)) }, singleLine = true,
                         textStyle = MaterialTheme.typography.bodyLarge.copy(color = MoeriseColors.Ink),
-                        cursorBrush = SolidColor(MoeriseColors.Blue),
+                        cursorBrush = SolidColor(MoeriseColors.Accent),
                         keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
                         keyboardActions = KeyboardActions(onSearch = { onSubmit() }),
                         modifier = Modifier.weight(1f).heightIn(min = 44.dp).drawerGestureRegion().focusRequester(focus).testTag("search_query")
@@ -122,16 +122,20 @@ fun WebSearchPanel(query: SearchQuery, strings: Strings, onChange: (SearchQuery)
 }
 
 object MoeriseColors {
-    val Paper = Color(0xFFF7F9FC)
-    val Ink = Color(0xFF1F2328)
-    val Muted = Color(0xFF5F6672)
-    val Line = Color(0xFFE3E8EF)
-    val Blue = Color(0xFF1E4A9A)
-    val BlueSurface = Color(0xFFDCE8FB)
-    val Hover = Color(0xFFE9EEF5)
-    val Selected = Color(0xFFE3ECFA)
-    val TagSurface = Color(0xFFEEF4FD)
-    val TagLine = Color(0xFFC9DAF5)
+    val Paper = Color(0xFFF5F4F0)
+    val Surface = Color.White
+    val SurfaceMuted = Color(0xFFECEAE4)
+    val Hover = Color(0xFFE6E3DC)
+    val Line = Color(0xFFE3E0D8)
+    val FieldBorder = Color(0xFF918B80)
+    val Ink = Color(0xFF1F1E1C)
+    val Muted = Color(0xFF68645E)
+    val Accent = Color(0xFF2F5D62)
+    val AccentSurface = Color(0xFFE8F0EE)
+    val AccentSurfaceStrong = Color(0xFFDCE8E5)
+    val HeatmapMedium = Color(0xFFB8D2CF)
+    val Danger = Color(0xFFB42318)
+    val DangerSurface = Color(0xFFFDF2F1)
 }
 
 private fun webText(size: Int, height: Float, weight: FontWeight = FontWeight.Normal) = TextStyle(
@@ -143,31 +147,35 @@ private fun webText(size: Int, height: Float, weight: FontWeight = FontWeight.No
 fun MoeriseTheme(content: @Composable () -> Unit) {
     MaterialTheme(
         colorScheme = lightColorScheme(
-            primary = MoeriseColors.Blue, onPrimary = Color.White,
-            primaryContainer = MoeriseColors.BlueSurface, onPrimaryContainer = MoeriseColors.Blue,
-            secondary = MoeriseColors.Blue, secondaryContainer = MoeriseColors.Selected,
-            onSecondaryContainer = MoeriseColors.Blue,
+            primary = MoeriseColors.Accent, onPrimary = MoeriseColors.Surface,
+            primaryContainer = MoeriseColors.AccentSurface, onPrimaryContainer = MoeriseColors.Accent,
+            secondary = MoeriseColors.Accent, secondaryContainer = MoeriseColors.AccentSurface,
+            onSecondary = MoeriseColors.Surface, onSecondaryContainer = MoeriseColors.Accent,
             background = MoeriseColors.Paper, onBackground = MoeriseColors.Ink,
-            surface = Color.White, onSurface = MoeriseColors.Ink,
-            surfaceVariant = MoeriseColors.Paper, onSurfaceVariant = MoeriseColors.Muted,
-            surfaceContainer = MoeriseColors.Paper, surfaceContainerLow = MoeriseColors.Paper,
-            surfaceContainerHigh = Color.White, surfaceTint = Color.White,
-            outline = MoeriseColors.Line, outlineVariant = MoeriseColors.Line,
-            error = Color(0xFFB42318),
+            surface = MoeriseColors.Surface, onSurface = MoeriseColors.Ink,
+            surfaceVariant = MoeriseColors.SurfaceMuted, onSurfaceVariant = MoeriseColors.Muted,
+            surfaceContainer = MoeriseColors.Surface, surfaceContainerLow = MoeriseColors.Paper,
+            surfaceContainerHigh = MoeriseColors.Surface, surfaceTint = MoeriseColors.Surface,
+            outline = MoeriseColors.FieldBorder, outlineVariant = MoeriseColors.Line,
+            error = MoeriseColors.Danger, errorContainer = MoeriseColors.DangerSurface,
+            onErrorContainer = MoeriseColors.Danger,
         ),
         typography = Typography(
-            headlineLarge = webText(28, 39.2f, FontWeight.SemiBold),
-            headlineMedium = webText(24, 33.6f, FontWeight.SemiBold),
-            headlineSmall = webText(22, 30.8f, FontWeight.SemiBold),
-            titleLarge = webText(22, 30.8f, FontWeight.SemiBold),
-            titleMedium = webText(17, 27.2f, FontWeight.SemiBold),
-            titleSmall = webText(14, 22.4f, FontWeight.SemiBold),
-            bodyLarge = webText(16, 29.6f),
-            bodyMedium = webText(14, 22.4f),
-            bodySmall = webText(13, 20.8f),
-            labelLarge = webText(14, 22.4f, FontWeight.SemiBold),
-            labelMedium = webText(12, 19.2f),
-            labelSmall = webText(11, 17.6f),
+            displayLarge = webText(20, 28f, FontWeight.SemiBold),
+            displayMedium = webText(20, 28f, FontWeight.SemiBold),
+            displaySmall = webText(20, 28f, FontWeight.SemiBold),
+            headlineLarge = webText(20, 28f, FontWeight.SemiBold),
+            headlineMedium = webText(20, 28f, FontWeight.SemiBold),
+            headlineSmall = webText(20, 28f, FontWeight.SemiBold),
+            titleLarge = webText(20, 28f, FontWeight.SemiBold),
+            titleMedium = webText(17, 25.5f, FontWeight.SemiBold),
+            titleSmall = webText(15, 24f, FontWeight.SemiBold),
+            bodyLarge = webText(15, 24f),
+            bodyMedium = webText(15, 24f),
+            bodySmall = webText(13, 19.5f),
+            labelLarge = webText(15, 24f, FontWeight.Medium),
+            labelMedium = webText(13, 19.5f),
+            labelSmall = webText(13, 19.5f),
         ),
         shapes = Shapes(
             extraSmall = RoundedCornerShape(6.dp), small = RoundedCornerShape(8.dp),
@@ -220,7 +228,6 @@ fun WebToolbar(
             }
         }
         LocalWebSearchPanel.current?.invoke()
-        HorizontalDivider(color = MoeriseColors.Line, thickness = 1.dp)
     }
 }
 
@@ -236,7 +243,7 @@ fun SyncButton(status: SyncStatus, strings: Strings, onClick: () -> Unit) {
     }
     IconButton(onClick = onClick, modifier = Modifier.size(44.dp).testTag("sync_notes").semantics {
         contentDescription = if (status == SyncStatus.SIGN_IN) strings.text("重新登录", "Sign in again")
-            else strings.text("同步笔记", "Sync notes")
+            else strings.text("同步", "Sync")
         stateDescription = state
     }) {
         SyncGlyph(status)
@@ -249,12 +256,12 @@ fun SyncGlyph(status: SyncStatus, modifier: Modifier = Modifier) {
         rememberInfiniteTransition(label = "sync").animateFloat(1f, .55f,
             animationSpec = infiniteRepeatable(tween(550, easing = FastOutSlowInEasing), RepeatMode.Reverse), label = "breath") else null
     val (icon, tint, dotColor) = when (status) {
-        SyncStatus.SYNCING -> Triple(WebIcon.Sync, MoeriseColors.Blue, MoeriseColors.Blue)
-        SyncStatus.CONNECTED -> Triple(WebIcon.Check, Color(0xFF51816A), null)
-        SyncStatus.PENDING -> Triple(WebIcon.Sync, MoeriseColors.Blue, MoeriseColors.Blue)
-        SyncStatus.ATTENTION -> Triple(WebIcon.Alert, Color(0xFFB42318), Color(0xFFB42318))
-        SyncStatus.SIGN_IN -> Triple(WebIcon.SignIn, Color(0xFFB47724), Color(0xFFB47724))
-        SyncStatus.OFFLINE -> Triple(WebIcon.CloudOff, Color(0xFFE05246), Color(0xFFE05246))
+        SyncStatus.SYNCING -> Triple(WebIcon.Sync, MoeriseColors.Accent, MoeriseColors.Accent)
+        SyncStatus.CONNECTED -> Triple(WebIcon.Check, MoeriseColors.Accent, null)
+        SyncStatus.PENDING -> Triple(WebIcon.Sync, MoeriseColors.Accent, MoeriseColors.Accent)
+        SyncStatus.ATTENTION -> Triple(WebIcon.Alert, MoeriseColors.Danger, MoeriseColors.Danger)
+        SyncStatus.SIGN_IN -> Triple(WebIcon.SignIn, MoeriseColors.Danger, MoeriseColors.Danger)
+        SyncStatus.OFFLINE -> Triple(WebIcon.CloudOff, MoeriseColors.Danger, MoeriseColors.Danger)
     }
     Box(modifier.size(20.dp), contentAlignment = androidx.compose.ui.Alignment.Center) {
         WebIcon(icon, modifier = Modifier.fillMaxSize().graphicsLayer { alpha = pulse?.value ?: 1f }, tint = tint)
@@ -271,10 +278,10 @@ fun WebAction(
     Button(onClick = onClick, enabled = enabled, modifier = modifier.heightIn(min = 44.dp),
         shape = RoundedCornerShape(10.dp), contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
         colors = ButtonDefaults.buttonColors(
-            containerColor = MoeriseColors.BlueSurface, contentColor = MoeriseColors.Blue,
-            disabledContainerColor = MoeriseColors.BlueSurface.copy(alpha = .6f),
-            disabledContentColor = MoeriseColors.Blue.copy(alpha = .45f),
-        )) { Text(text, fontSize = 14.sp, fontWeight = FontWeight.SemiBold) }
+            containerColor = MoeriseColors.AccentSurface, contentColor = MoeriseColors.Accent,
+            disabledContainerColor = MoeriseColors.AccentSurface.copy(alpha = .6f),
+            disabledContentColor = MoeriseColors.Accent.copy(alpha = .45f),
+        )) { Text(text, style = MaterialTheme.typography.labelLarge) }
 }
 
 @Composable
@@ -288,13 +295,11 @@ fun WebTabs(labels: List<String>, selected: Int, onSelect: (Int) -> Unit, modifi
     val position = animateFloatAsState(target?.first ?: 0f, if (reduced) snap() else MoeriseMotion.responsive(), label = "tab position")
     val width = animateFloatAsState(target?.second ?: 0f, if (reduced) snap() else MoeriseMotion.responsive(), label = "tab width")
     val density = LocalDensity.current
-    Surface(modifier.fillMaxWidth(), color = Color(0xFFF0F4F9), shape = RoundedCornerShape(12.dp)) {
+    Surface(modifier.fillMaxWidth(), color = MoeriseColors.SurfaceMuted, shape = RoundedCornerShape(12.dp)) {
         Box(Modifier.horizontalScroll(rememberScrollState()).padding(4.dp)) {
-        if (target != null) Box(Modifier.size(1.dp, 44.dp).graphicsLayer {
-            transformOrigin = androidx.compose.ui.graphics.TransformOrigin(0f, .5f)
+        if (target != null) Box(Modifier.width(with(density) { width.value.toDp() }).height(44.dp).graphicsLayer {
             translationX = position.value
-            scaleX = width.value / with(density) { 1.dp.toPx() }
-        }.background(Color.White))
+        }.background(MoeriseColors.Surface, RoundedCornerShape(8.dp)))
         Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
             labels.forEachIndexed { index, label ->
                 val bringIntoView = remember { BringIntoViewRequester() }
@@ -323,7 +328,7 @@ fun WebTabs(labels: List<String>, selected: Int, onSelect: (Int) -> Unit, modifi
                 ) {
                     Box(Modifier.heightIn(min = 44.dp).padding(horizontal = 14.dp, vertical = 10.dp),
                         contentAlignment = androidx.compose.ui.Alignment.Center) {
-                        Text(label, fontSize = 14.sp, color = if (selected == index) MoeriseColors.Blue else MoeriseColors.Muted,
+                        Text(label, fontSize = 15.sp, color = if (selected == index) MoeriseColors.Accent else MoeriseColors.Muted,
                             fontWeight = if (selected == index) FontWeight.SemiBold else FontWeight.Normal)
                     }
                 }
@@ -335,9 +340,9 @@ fun WebTabs(labels: List<String>, selected: Int, onSelect: (Int) -> Unit, modifi
 
 @Composable
 fun WebTag(text: String, onClick: () -> Unit, modifier: Modifier = Modifier) {
-    Surface(modifier.clickable(onClick = onClick), color = MoeriseColors.TagSurface,
-        shape = RoundedCornerShape(50), border = BorderStroke(1.dp, MoeriseColors.TagLine)) {
-        Text("#${text.removePrefix("#")}", fontSize = 13.sp, lineHeight = 22.sp,
-            color = Color(0xFF2A5BB5), modifier = Modifier.padding(horizontal = 9.dp))
+    Surface(modifier.clickable(onClick = onClick), color = MoeriseColors.AccentSurface,
+        shape = RoundedCornerShape(6.dp)) {
+        Text("#${text.removePrefix("#")}", style = MaterialTheme.typography.bodySmall,
+            color = MoeriseColors.Accent, modifier = Modifier.padding(horizontal = 8.dp, vertical = 1.dp))
     }
 }

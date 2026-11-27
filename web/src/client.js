@@ -69,14 +69,9 @@ export function createClient({ generation, session, onSession, onOwnerChange }) 
     const headers = { ...options.headers, 'X-CSRF-Token': session()?.csrf_token };
     try { return await request(path, { ...options, headers }); }
     catch (err) {
-      if (err.code !== 'CSRF_REJECTED') throw err;
+      if (err.code !== 'CSRF_REJECTED' || (path === '/session' && options.method === 'DELETE')) throw err;
       stale(expected);
-      let token;
-      try { token = await renewCSRF(); }
-      catch (refreshError) {
-        if (path === '/session' && options.method === 'DELETE' && refreshError.status === 401) return request(path, { ...options, headers });
-        throw refreshError;
-      }
+      const token = await renewCSRF();
       stale(expected);
       return request(path, { ...options, headers: { ...headers, 'X-CSRF-Token': token } });
     }

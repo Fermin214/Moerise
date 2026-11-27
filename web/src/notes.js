@@ -20,7 +20,7 @@ export function renderAttachments(note, referenced = new Set()) {
   for (const item of note.attachments || []) {
     const url = attachmentURL(note, item);
     if (referenced.has(url) && rasterImage(item.type)) continue;
-    if (!url) { box.append(el('span', 'attachment sub', l("{0} · 暂时无法打开", { 0: item.filename || l("附件") }))); continue; }
+    if (!url) { box.append(el('span', 'attachment sub', l("{0}，暂时无法打开", { 0: item.filename || l("附件") }))); continue; }
     const link = el('a', rasterImage(item.type) ? 'image-link' : 'attachment');
     link.href = url;
     if (rasterImage(item.type)) {
@@ -29,7 +29,7 @@ export function renderAttachments(note, referenced = new Set()) {
       image.src = url; setAttr(image, 'alt', item.filename || l("图片"));
       prepareImage(image, `${note.source_hash}:${url}`);
       image.addEventListener('error', () => {
-        image.remove(); link.className = 'attachment'; setText(link, l("{0} · 打开原图", { 0: item.filename || l("图片") }));
+        image.remove(); link.className = 'attachment'; setText(link, l("{0}，打开原图", { 0: item.filename || l("图片") }));
       }, { once: true });
       link.append(image);
     } else {
@@ -95,7 +95,7 @@ const bodyObserver = new ResizeObserver(entries => {
 
 export function observeFoldedBodies(list) {
   bodyObserver.disconnect();
-  for (const body of list.querySelectorAll('.note-fold-body > .note-content')) bodyObserver.observe(body);
+  for (const body of list.querySelectorAll('.note-fold-content')) bodyObserver.observe(body);
 }
 
 function foldBody(card, body, expandedNotes) {
@@ -119,7 +119,7 @@ function foldBody(card, body, expandedNotes) {
     preview.classList.toggle('note-fold-collapsed', long && !expanded);
     toggle.hidden = !long;
     toggle.setAttribute('aria-expanded', String(expanded));
-    setText(toggle, expanded ? l("收起") : l("展开全文"));
+    setText(toggle, expanded ? l("收起") : l("展开"));
   }
   foldReaders.set(body, height => {
     if (!height || card.skipped) return;
@@ -174,7 +174,13 @@ export function renderNoteCard(note, { detail, formatTime, href, onTag, actions,
   const renderedTags = new Set();
   const body = noteBody(note, onTag, renderedTags), referenced = new Set([...body.querySelectorAll('img')].map(image => image.getAttribute('src')));
   appendTags(tags, note.tags, renderedTags, onTag);
-  card.append(header, ...(expandedNotes ? foldBody(card, body, expandedNotes) : [body]), renderAttachments(note, referenced), tags);
+  const attachments = renderAttachments(note, referenced);
+  card.append(header);
+  if (expandedNotes) {
+    const content = el('div', 'note-fold-content');
+    content.append(body, attachments, tags);
+    card.append(...foldBody(card, content, expandedNotes));
+  } else card.append(body, attachments, tags);
   if (detail) {
     const bar = el('div', 'note-actions');
     for (const command of commands) {

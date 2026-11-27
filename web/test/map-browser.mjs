@@ -375,10 +375,11 @@ test('mobile touch drag and pinch zoom fill the workspace and never select on ca
 test('session expiry and active logout remove private maps and cancel pending reads', async t => {
   const { page, state, url } = await fixture(t); await login(page, url); await ready(page);
   state.hold.add('/notes/n0'); await marker(page, 0).click(); await wait(() => state.pending.length === 1);
-  await page.locator('#user-menu').click(); await page.locator('#logout').click(); await page.locator('#auth').waitFor({ state: 'visible' });
+  await page.locator('#account-settings').click(); await page.locator('#logout').click(); await page.locator('#auth').waitFor({ state: 'visible' });
   await wait(() => state.aborted.includes('/notes/n0')); state.pending.shift().release();
   assert.equal(await page.locator('.map-page').count(), 0); assert.equal((await page.evaluate(() => history.state)).mapView, null);
-  state.hold.clear(); await page.locator('#username').fill('owner'); await page.locator('#password').fill('password'); await page.locator('#login').click(); await ready(page);
+  state.hold.clear(); await page.locator('#username').fill('owner'); await page.locator('#password').fill('password'); await page.locator('#login').click();
+  await page.locator('nav a[href="/map"]').click(); await ready(page);
   state.session = false; await page.locator('#map-field').press('r'); await page.locator('#auth').waitFor({ state: 'visible' });
   assert.equal(await page.locator('.map-page').count(), 0);
 });

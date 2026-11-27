@@ -45,7 +45,6 @@ import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.TextRange
-import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -58,6 +57,7 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import io.github.fermin214.moerise.data.*
 import io.github.fermin214.moerise.domain.Note
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
@@ -93,8 +93,6 @@ fun MoeriseApp(mobile: MobileController, onHomeReady: () -> Unit = {}) {
     val clearing by mobile.clearing.collectAsState()
     val logout by mobile.logoutState.collectAsState()
     val localError by mobile.localError.collectAsState()
-    val review by mobile.review.state.collectAsState()
-    val walk by mobile.walk.state.collectAsState()
     val sync by mobile.sync.state.collectAsState()
     val manualSync by mobile.sync.manualSync.collectAsState()
     val search by mobile.search.state.collectAsState()
@@ -112,7 +110,6 @@ fun MoeriseApp(mobile: MobileController, onHomeReady: () -> Unit = {}) {
                 "NOTE_STATE_CONFLICT" -> labels.text("笔记已在服务器上变化，请刷新后重试。", "The note changed on the server. Refresh and try again.")
                 "NOTE_STATE_REJECTED" -> labels.text("服务器拒绝了笔记状态变更。", "The server rejected the note state change.")
                 "NOTE_UNDO_FAILED" -> labels.text("撤销归档失败，请刷新笔记后重试。", "Undo failed. Refresh the note and try again.")
-                "NOTE_SAVED" -> labels.text("笔记已保存。", "Note saved.")
                 "COPIED" -> labels.text("已复制", "Copied")
                 "COPY_FAILED" -> labels.text("复制失败", "Copy failed")
                 else -> settingsMessage(notice.code, labels)
@@ -134,8 +131,6 @@ fun MoeriseApp(mobile: MobileController, onHomeReady: () -> Unit = {}) {
     var month by rememberSaveable(account, timezone) { mutableStateOf(serviceMonth(timezone)) }
     val homeScroll = key(account) { rememberLazyListState() }
     val archiveScroll = key(account) { rememberLazyListState() }
-    val reviewScroll = key(account, review.batch?.id, review.position) { rememberScrollState() }
-    val walkScroll = key(account, walk.result?.item?.note?.name) { rememberScrollState() }
     val mapNotesScroll = key(account) { rememberLazyListState() }
     val query = search.query
     val filtered = query.filtered
@@ -328,8 +323,7 @@ fun MoeriseApp(mobile: MobileController, onHomeReady: () -> Unit = {}) {
                             ConnectionScreen(session, strings) { page = "home" }
                         }
                         page == "settings" -> SettingsScreen(mobile, strings, onMenu = ::openDrawer, onSearch = { searchOpen = !searchOpen })
-                        page in setOf("review", "walk") -> DiscoveryScreen(page, mobile, strings,
-                            if (page == "review") reviewScroll else walkScroll, onMenu = ::openDrawer,
+                        page in setOf("review", "walk") -> DiscoveryScreen(page, mobile, strings, onMenu = ::openDrawer,
                             onSearch = { searchOpen = !searchOpen }, onWalk = ::startWalk,
                             onSettings = { navigate("settings") }, onCompose = openComposer, onTag = tagFromReading)
                         page == "map" -> StarMapScreen(mobile, strings, mapNotesScroll,
@@ -367,7 +361,7 @@ fun MoeriseApp(mobile: MobileController, onHomeReady: () -> Unit = {}) {
                                     items(if (connection.needsLogin || clearing) emptyList() else entries, key = { it.key }) { entry ->
                                         Box(if (reducedMotion) Modifier else Modifier.animateItem(
                                             fadeInSpec = MoeriseMotion.tactile(),
-                                            placementSpec = MoeriseMotion.responsive(),
+                                            placementSpec = null,
                                             fadeOutSpec = MoeriseMotion.tactile(),
                                         )) {
                                         val remote = (entry as? TimelineEntry.Remote)?.note
@@ -407,15 +401,15 @@ fun MoeriseApp(mobile: MobileController, onHomeReady: () -> Unit = {}) {
                                             stateActionSending = stateAction != null && !stateAction.unknown,
                                             deleteUnknown = noteAction.deleteUnknown,
                                             onCheckDeletion = { mobile.checkNoteDeletion(it.name) },
-                                            expanded = remote?.takeIf { query.text.isBlank() && stateAction == null }
-                                                ?.let { expandedNotes[it.name] == true },
+                                            expanded = if (query.text.isBlank() && stateAction == null && !noteAction.pendingAction)
+                                                expandedNotes[entry.key] == true else null,
                                             onExpand = { expanded ->
-                                                if (remote != null) {
+                                                scope.launch(start = CoroutineStart.UNDISPATCHED) {
                                                     val layout = timelineScroll.layoutInfo
                                                     val item = layout.visibleItemsInfo.firstOrNull { it.key == entry.key }
-                                                    expandedNotes[remote.name] = expanded
+                                                    expandedNotes[entry.key] = expanded
                                                     if (!expanded && item != null && item.offset < layout.viewportStartOffset) {
-                                                        scope.launch { timelineScroll.animateScrollToItem(item.index) }
+                                                        timelineScroll.scrollToItem(item.index)
                                                     }
                                                 }
                                             },
@@ -514,9 +508,8 @@ private fun ComposerCapsule(draft: String, strings: Strings, enabled: Boolean, o
         shadowElevation = 3.dp) {
         Row(Modifier.padding(horizontal = 15.dp), verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            WebIcon(WebIcon.Plus, null, tint = MoeriseColors.Muted)
             Text(draft.lineSequence().firstOrNull { it.isNotBlank() } ?: strings.text("今天想到了什么……", "What came to mind today…"),
-                color = Color(0xFF69727F), maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 14.sp)
+                color = MoeriseColors.Muted, maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 15.sp)
         }
     }
 }
@@ -547,11 +540,11 @@ internal suspend fun SnackbarHostState.showMobileNotice(message: String, undoLab
 @Composable
 private fun MobileSnackbar(data: SnackbarData) {
     Surface(Modifier.fillMaxWidth().heightIn(min = 48.dp).semantics { liveRegion = LiveRegionMode.Polite }, shape = RoundedCornerShape(14.dp),
-        color = Color.White, border = BorderStroke(1.dp, Color(0xFFD5E1F7)), shadowElevation = 4.dp) {
+        color = Color.White, border = BorderStroke(1.dp, MoeriseColors.Line), shadowElevation = 4.dp) {
         Row(Modifier.padding(horizontal = 14.dp, vertical = 2.dp), verticalAlignment = Alignment.CenterVertically) {
-            Text(data.visuals.message, Modifier.weight(1f), color = MoeriseColors.Ink, fontSize = 14.sp)
+            Text(data.visuals.message, Modifier.weight(1f), color = MoeriseColors.Ink, fontSize = 15.sp)
             data.visuals.actionLabel?.let {
-                TextButton(onClick = data::performAction, colors = ButtonDefaults.textButtonColors(contentColor = MoeriseColors.Blue)) {
+                TextButton(onClick = data::performAction, colors = ButtonDefaults.textButtonColors(contentColor = MoeriseColors.Accent)) {
                     Text(it)
                 }
             }
@@ -682,10 +675,10 @@ private fun SheetEditor(
                     modifier = Modifier.size(44.dp).testTag("add_attachment")) {
                     WebIcon(WebIcon.Plus, if (state.importing) strings.text("读取附件…", "Reading files…") else strings.text("添加附件", "Add files"))
                 }
-                TextButton(enabled = !state.busy && field.composition == null, onClick = {
+                IconButton(enabled = !state.busy && field.composition == null, onClick = {
                     if (field.selection.collapsed && scanner?.prefixAt(field.selection.start) != null) {
                         editorFocus.requestFocus()
-                        return@TextButton
+                        return@IconButton
                     }
                     val start = field.selection.min
                     val insertion = tagMarkerAt(field.text, start, field.selection.max)
@@ -695,8 +688,9 @@ private fun SheetEditor(
                     val preview = field.text.replaceRange(marker + 1, marker + 1, "a")
                     insertedMarker = marker.takeIf { NoteTagScanner(preview).prefixAt(marker + 2)?.start == marker }
                     editorFocus.requestFocus()
-                }, colors = ButtonDefaults.textButtonColors(contentColor = MoeriseColors.Ink),
-                    modifier = Modifier.testTag("insert_tag").semantics { contentDescription = strings.text("添加标签", "Add tag") }) { Text("#") }
+                }, modifier = Modifier.size(44.dp).testTag("insert_tag")) {
+                    WebIcon(WebIcon.Hash, strings.text("添加标签", "Add tag"), tint = MoeriseColors.Muted)
+                }
                 Spacer(Modifier.weight(1f))
                 TextButton(onClick = onCancel, enabled = !state.busy && !state.importing,
                     modifier = Modifier.testTag(cancelTag)) { Text(strings.text("取消", "Cancel")) }
@@ -724,13 +718,13 @@ private fun SheetEditor(
                         contentDescription = strings.text("写点什么", "Write a note")
                 },
                 readOnly = state.busy,
-                cursorBrush = SolidColor(MoeriseColors.Blue),
-                textStyle = TextStyle(color = MoeriseColors.Ink, fontSize = 17.sp, lineHeight = 30.6.sp),
+                cursorBrush = SolidColor(MoeriseColors.Accent),
+                textStyle = MaterialTheme.typography.bodyLarge.copy(color = MoeriseColors.Ink),
                 decorationBox = { input ->
                     Box(Modifier.testTag(if (draft.content.isEmpty()) "${editorTag}_empty" else "${editorTag}_filled")) {
                         if (draft.content.isEmpty()) Text(
                             strings.text("今天想到了什么……", "What came to mind today…"),
-                            color = Color(0xFF9299A3), fontSize = 14.sp, lineHeight = 30.6.sp,
+                            color = MoeriseColors.Muted, style = MaterialTheme.typography.bodyLarge,
                         )
                         input()
                     }

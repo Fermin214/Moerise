@@ -29,7 +29,10 @@ export function createDiscovery({ request, sessionRequest, getIdentity, localTod
   function createPage(kind, { key: pageKey, seedName }) {
     let alive = true, sequence = 0, controller = null, busy = false, failure = null, retry = null;
     let modelHint = '', configured = walkConfiguration?.enabled === true, modelController = null;
-    let floaters = walkFloaters || [], floaterController, floaterFailure, animatedNote, preparedNext = null, enteredFloaters = false;
+    let floaters = walkFloaters || [], floaterController, floaterFailure, preparedNext = null;
+    const narrow = matchMedia('(max-width:960px)');
+    let cancelVisual = () => {};
+    function resizePreviews() { if (content.querySelector('.walk-start')) render(); }
     let positions, positionedBatch, moveReview;
     let seedPending = kind === 'walk' && !!seedName && walkView?.key !== pageKey;
     const root = el('div', `stage discovery-page ${kind}-page`);
@@ -43,6 +46,7 @@ export function createDiscovery({ request, sessionRequest, getIdentity, localTod
       preparedNext?.controller.abort(); preparedNext = null;
     }
     function cancel() {
+      cancelVisual();
       sequence++; controller?.abort(); controller = null; busy = false; discardNext();
     }
     function message(text, error = false) {
@@ -55,8 +59,7 @@ export function createDiscovery({ request, sessionRequest, getIdentity, localTod
     }
     function render() {
       if (!alive) return;
-      const outgoing = content.querySelector('.walk-cards > .discovery-note');
-      const footprint = outgoing?.getBoundingClientRect();
+      cancelVisual();
       content.replaceChildren();
       for (const child of [...controls.children]) {
         if (child !== positions || positionedBatch !== reviewView?.batch) child.remove();
@@ -64,23 +67,6 @@ export function createDiscovery({ request, sessionRequest, getIdentity, localTod
       updateBusy();
       if (kind === 'review') renderReview();
       else renderWalk();
-      if (outgoing && footprint && outgoing.dataset.name !== animatedNote && walkView?.previous) {
-        const slot = content.querySelector('.walk-trail');
-        if (slot) {
-          const cards = slot.parentElement, bounds = cards.getBoundingClientRect(), destination = slot.getBoundingClientRect();
-          const overlay = el('div', 'card walk-outgoing');
-          overlay.append(...outgoing.childNodes);
-          overlay.setAttribute('aria-hidden', 'true'); overlay.inert = true;
-          overlay.style.top = `${footprint.top - bounds.top}px`; overlay.style.height = `${footprint.height}px`;
-          cards.append(overlay);
-          const transition = animateMotion(overlay, [
-            { transform: 'none', opacity: 1 },
-            { transform: `translateY(${destination.top - footprint.top}px) scale(${destination.width / footprint.width},${destination.height / footprint.height})`, opacity: 0 },
-          ], 'spatial', { fill: 'forwards' });
-          transition.finished.catch(() => {}).then(() => overlay.remove());
-          animateMotion(slot, [{ opacity: 0 }, { opacity: .6 }], 'spatial');
-        }
-      }
       if (failure) {
         message(discoveryText(failure), true);
         content.append(button(l("重试"), 'ghost discovery-retry', () => retry?.()));
@@ -143,24 +129,37 @@ export function createDiscovery({ request, sessionRequest, getIdentity, localTod
         visual.classList.remove('discovery-note');
         visual.classList.add('review-outgoing');
         visual.inert = true; visual.setAttribute('aria-hidden', 'true');
-        visual.append(...card.childNodes);
+        const outgoingContent = el('div', 'review-outgoing-content');
+        outgoingContent.append(...card.childNodes);
+        visual.append(outgoingContent);
         nextStack.append(visual);
         visual.scrollTop = scroll;
-        const leaving = animateMotion(visual, [
-          { transform: `translateX(${from}px)`, opacity: 1 },
-          { transform: `translateX(${from + direction * 42}px)`, opacity: 0 },
-        ], 'responsive', { fill: 'forwards' });
-        animateMotion(next, [
-          { transform: 'translateY(12px) scale(.955)', opacity: .72 },
-          { transform: 'none', opacity: 1 },
-        ]);
-        leaving.finished.catch(() => {}).then(() => visual.remove());
+        const reduce = reducedMotion(), destination = direction * nextStack.clientWidth * .92;
+        const angle = direction * 2.5;
+        const leaving = animateMotion(visual, reduce ? [{ opacity: 1 }, { opacity: 0 }] : [
+          { transform: `translateX(${from}px) rotate(0deg)` },
+          { transform: `translateX(${destination}px) rotate(${angle}deg)` },
+        ], 'responsive', { fill: 'both', easing: 'linear' });
+        const fade = reduce ? null : animateMotion(outgoingContent, [
+          { opacity: 1 }, { opacity: 1, offset: .7 }, { opacity: 0 },
+        ], 'responsive', { fill: 'both', easing: 'linear' });
+        let entering, canceled = false;
+        if (reduce) next.style.opacity = '0';
+        else entering = animateMotion(next, [{ transform: 'translateY(8px) scale(.96)', opacity: .92 }, { transform: 'none', opacity: 1 }]);
+        cancelVisual = () => { canceled = true; leaving.cancel(); fade?.cancel(); entering?.cancel(); visual.remove(); next.style.opacity = ''; };
+        leaving.finished.then(() => {
+          visual.remove();
+          if (reduce && !canceled) {
+            entering = animateMotion(next, [{ opacity: 0 }, { opacity: 1 }], 'tactile', { fill: 'backwards' });
+            next.style.opacity = '';
+          }
+        }, () => {});
         if (focus === 'next') root.querySelector('.discovery-actions .save')?.focus({ preventScroll: true });
         else if (focus != null) root.querySelectorAll('.review-positions button')[focus]?.focus({ preventScroll: true });
       }
       function startDrag(target, x, y, id) {
         if (batch.items.length < 2 || target.closest('button,a,input,pre')) return;
-        animation?.cancel();
+        cancelVisual(); animation?.cancel();
         drag = { id, x, y, offset: 0 };
       }
       function dragTo(x, y, id) {
@@ -180,7 +179,7 @@ export function createDiscovery({ request, sessionRequest, getIdentity, localTod
         if (!reducedMotion()) {
           const progress = Math.min(1, Math.abs(offset) / stack.clientWidth);
           card.style.transform = `translateX(${offset}px)`;
-          if (drag.preview) drag.preview.style.transform = `translateY(${12 * (1 - progress)}px) scale(${.955 + .045 * progress})`;
+          if (drag.preview) drag.preview.style.transform = `translateY(${8 * (1 - progress)}px) scale(${.96 + .04 * progress})`;
         }
         return true;
       }
@@ -253,7 +252,7 @@ export function createDiscovery({ request, sessionRequest, getIdentity, localTod
     }
     function stopWalk() {
       cancel(); seedPending = false; walkView = { key: pageKey, result: null, previous: null };
-      animatedNote = null; enteredFloaters = false; failure = retry = null; render();
+      failure = retry = null; render();
     }
     function renderWalk() {
       if (modelHint) {
@@ -263,23 +262,17 @@ export function createDiscovery({ request, sessionRequest, getIdentity, localTod
       const result = walkView?.result;
       if (result?.item) {
         const notes = el('div', 'walk-cards');
-        const previous = el('div', 'card walk-trail');
-        previous.setAttribute('aria-hidden', 'true');
         if (walkView.previous) {
-          previous.append(el('span', 'sub', formatTime(walkView.previous.create_time)),
-            el('div', 'walk-trail-text', walkView.previous.content));
-        } else previous.classList.add('walk-trail-empty');
-        notes.append(previous);
-        const current = discoveryCard(result.item.note);
-        const entering = animatedNote !== result.item.note.name;
-        animatedNote = result.item.note.name;
-        notes.append(current); content.append(notes);
-        if (entering) animateMotion(current, [
-          { transform: 'translateY(18px) scale(.975)', opacity: 0 }, { transform: 'none', opacity: 1 },
-        ], 'spatial');
+          const previous = el('div', 'walk-trail');
+          const arrow = el('span', 'sub', '↑'); arrow.setAttribute('aria-hidden', 'true');
+          previous.append(arrow, el('time', 'sub', formatTime(walkView.previous.create_time)),
+            el('span', 'walk-trail-text', walkView.previous.content.replace(/\s+/gu, ' ').trim()));
+          notes.append(previous);
+        }
+        notes.append(discoveryCard(result.item.note)); content.append(notes);
       } else if (!result?.exhausted) {
         const start = el('div', 'walk-start');
-        floaters.forEach((note, index) => {
+        floaters.slice(0, narrow.matches ? 4 : 6).forEach(note => {
           const preview = [...note.content.replace(/\s+/gu, ' ').trim()].slice(0, 64).join('') || note.attachments?.[0]?.filename || l("笔记");
           const floater = button('', 'flc walk-floater', () => walkRequest('/walks/start', { name: note.name }));
           floater.append(el('span', '', preview));
@@ -287,11 +280,7 @@ export function createDiscovery({ request, sessionRequest, getIdentity, localTod
           setAttr(floater, 'aria-label', l("从这条笔记开始：{0}", { 0: preview }));
           floater.disabled = busy || !configured;
           start.append(floater);
-          if (!enteredFloaters) animateMotion(floater, [
-            { transform: 'translateY(-12px)', opacity: 0 }, { transform: 'none', opacity: 1 },
-          ], 'responsive', { delay: index * 36, fill: 'backwards' });
         });
-        enteredFloaters ||= floaters.length > 0;
         const control = button(busy || (modelController && !walkConfiguration) ? l("翻找中…") : l("随机开始"), 'save', () => walkRequest('/walks/start', {}));
         control.disabled = busy || !configured; start.append(control); content.append(start);
         if (floaterFailure) {
@@ -366,6 +355,8 @@ export function createDiscovery({ request, sessionRequest, getIdentity, localTod
     }
     async function walkRequest(path, body) {
       if (busy || !configured) return;
+      cancelVisual();
+      let entering = false;
       const started = performance.now();
       let pending = path === '/walks/next' && preparedNext?.source === walkView?.result &&
         preparedNext.key === JSON.stringify(body) ? preparedNext : null;
@@ -387,7 +378,15 @@ export function createDiscovery({ request, sessionRequest, getIdentity, localTod
           failure = { code: 'WALK_RESOURCE_LIMIT' };
         } else {
           if (result.item) {
+            const current = content.querySelector('.walk-cards > .discovery-note');
+            if (current) {
+              const leaving = animateMotion(current, [{ opacity: 1 }, { transform: 'translateY(-24px)', opacity: 0 }],
+                'tactile', { duration: 100, fill: 'forwards' });
+              cancelVisual = () => leaving.cancel();
+              if (!await leaving.finished.then(() => active(ticket), () => false)) return;
+            }
             walkView.previous = walkView.result?.item?.note || null; walkView.result = result;
+            entering = true;
           } else walkView.result = { ...result, item: walkView.result?.item };
         }
       } catch (err) {
@@ -398,6 +397,17 @@ export function createDiscovery({ request, sessionRequest, getIdentity, localTod
       } finally {
         if (active(ticket)) {
           controller = null; busy = false; render();
+          if (entering) {
+            const reading = content.querySelector('.walk-cards');
+            if (path === '/walks/next') {
+              const toolbar = document.querySelector('.mobile-header').getBoundingClientRect();
+              window.scrollTo({ top: window.scrollY + reading.getBoundingClientRect().top - toolbar.bottom, behavior: 'instant' });
+            }
+            const next = reading.querySelector('.discovery-note');
+            const animation = animateMotion(next, [{ transform: 'translateY(24px)', opacity: 0 }, { opacity: 1 }],
+              'tactile', { duration: 140, fill: 'backwards' });
+            cancelVisual = () => animation.cancel();
+          }
           if (!failure) prepareNext();
         }
       }
@@ -443,6 +453,7 @@ export function createDiscovery({ request, sessionRequest, getIdentity, localTod
         parent.append(root);
         if (kind === 'review') await loadReview();
         else {
+          narrow.addEventListener('change', resizePreviews);
           walkView ||= { key: null, result: null, previous: null };
           if (seedPending) walkView = { key: pageKey, result: null, previous: null };
           if (walkConfiguration) {
@@ -457,11 +468,11 @@ export function createDiscovery({ request, sessionRequest, getIdentity, localTod
         if (kind === 'review') loadReview();
         else {
           walkView = { key: pageKey, result: null, previous: null };
-          animatedNote = null; failure = retry = null; render();
+          failure = retry = null; render();
           loadWalk(); loadFloaters();
         }
       },
-      destroy() { alive = false; cancel(); modelController?.abort(); floaterController?.abort(); root.remove(); },
+      destroy() { alive = false; cancel(); narrow.removeEventListener('change', resizePreviews); modelController?.abort(); floaterController?.abort(); root.remove(); },
     };
   }
   return {

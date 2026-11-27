@@ -34,7 +34,7 @@ internal fun InformationOverlay(title: String, strings: Strings, onDismiss: () -
                 shape = RoundedCornerShape(14.dp), color = Color.White) {
                 Column(Modifier.padding(horizontal = 12.dp, vertical = 6.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(title, Modifier.weight(1f), fontSize = 18.sp, fontWeight = FontWeight.SemiBold)
+                        Text(title, Modifier.weight(1f), fontSize = 17.sp, fontWeight = FontWeight.SemiBold)
                         IconButton(onDismiss, modifier = Modifier.testTag("${tag}_close")) { WebIcon(WebIcon.Close, strings.text("关闭", "Close")) }
                     }
                     content()

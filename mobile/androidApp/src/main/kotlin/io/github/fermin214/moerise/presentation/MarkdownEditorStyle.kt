@@ -20,17 +20,18 @@ internal fun markdownEditorTransformation(text: String): VisualTransformation {
             append(original)
             for ((start, end, style) in spans) {
                 addStyle(when (style) {
-                    Heading1, Heading2, Heading3, Heading4, Heading5, Heading6 ->
-                        SpanStyle(fontWeight = FontWeight.Bold, fontSize = (22 - style.ordinal).coerceAtLeast(17).sp)
-                    SyntaxMarker -> SpanStyle(color = Color(0xFF9299A3))
-                    ListPrefix, QuotePrefix -> SpanStyle(color = Color(0xFF657D9F))
+                    Heading1 -> SpanStyle(fontWeight = FontWeight.SemiBold, fontSize = 20.sp)
+                    Heading2, Heading3, Heading4 -> SpanStyle(fontWeight = FontWeight.SemiBold, fontSize = 17.sp)
+                    Heading5, Heading6 -> SpanStyle(fontWeight = FontWeight.Bold, fontSize = 15.sp)
+                    SyntaxMarker -> SpanStyle(color = MoeriseColors.Muted)
+                    ListPrefix, QuotePrefix -> SpanStyle(color = MoeriseColors.Muted)
                     Bold -> SpanStyle(fontWeight = FontWeight.Bold)
                     Italic -> SpanStyle(fontStyle = FontStyle.Italic)
                     Strike -> SpanStyle(textDecoration = TextDecoration.LineThrough)
                     InlineCode, CodeFence -> SpanStyle(fontFamily = FontFamily.Monospace, color = MoeriseColors.Muted)
-                    LinkLabel -> SpanStyle(color = MoeriseColors.Blue, textDecoration = TextDecoration.Underline)
+                    LinkLabel -> SpanStyle(color = MoeriseColors.Accent, textDecoration = TextDecoration.Underline)
                     LinkMeta -> SpanStyle(color = MoeriseColors.Muted)
-                    Tag -> SpanStyle(color = Color(0xFF2A5BB5))
+                    Tag -> SpanStyle(color = MoeriseColors.Accent)
                 }, start, end)
             }
         } else original

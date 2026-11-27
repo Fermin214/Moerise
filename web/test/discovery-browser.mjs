@@ -510,11 +510,97 @@ test('stop, navigation and logout abort pending walk requests and isolate late r
   await page.getByRole('button', { name: '‹ 返回漫步', exact: true }).click();
   await card(page).filter({ hasText: '末尾文字 0' }).waitFor();
   state.hold = '/walks/next'; await next(page).click(); await waitFor(() => state.pending.length === 1);
-  await page.locator('#user-menu').click(); await page.locator('#logout').click();
+  await page.locator('#account-settings').click(); await page.locator('#logout').click();
   await page.locator('#login-form').waitFor({ state: 'visible' });
   state.pending.shift().release();
   await page.evaluate(() => new Promise(requestAnimationFrame));
   assert.equal(await page.locator('#discovery-page').count(), 0);
+});
+
+test('review keeps one opaque outgoing card and rapid changes cancel stale animation layers', async t => {
+  const { page, url } = await fixture(t);
+  await login(page, url, '/review');
+  await card(page).waitFor();
+  const layers = await page.evaluate(() => {
+    const animations = [];
+    const animate = Element.prototype.animate;
+    Element.prototype.animate = function (frames, options) {
+      const animation = animate.call(this, frames, options);
+      if (this.matches('.review-outgoing, .review-outgoing-content')) { animations.push(animation); animation.pause(); }
+      return animation;
+    };
+    document.querySelector('.discovery-actions .save').click();
+    document.querySelector('.discovery-actions .save').click();
+    const outgoing = document.querySelector('.review-outgoing');
+    const ink = outgoing.querySelector('.review-outgoing-content');
+    const current = outgoing.getAnimations()[0], fade = ink?.getAnimations()[0];
+    current.currentTime = 204;
+    if (fade) fade.currentTime = 204;
+    const result = { obsolete: animations.filter(animation => !animation.effect.target.isConnected).map(animation => animation.playState),
+      paper: getComputedStyle(outgoing).backgroundColor, opacity: Number(getComputedStyle(outgoing).opacity),
+      ink: ink && Number(getComputedStyle(ink).opacity), overlap: outgoing.getBoundingClientRect().right - outgoing.parentElement.getBoundingClientRect().left };
+    current.finish(); fade?.finish();
+    Element.prototype.animate = animate;
+    return result;
+  });
+  assert.deepEqual(layers.obsolete, ['idle', 'idle']);
+  assert.equal(layers.paper, 'rgb(255, 255, 255)');
+  assert.equal(layers.opacity, 1);
+  assert.ok(layers.overlap > 0);
+  assert.ok(layers.ink > 0 && layers.ink < 1);
+  await page.locator('.review-outgoing').waitFor({ state: 'detached' });
+  await page.getByRole('button', { name: '第 3 / 6 条', pressed: true }).waitFor();
+});
+
+test('continuing from the bottom of a long walk opens the next note below the sticky toolbar', async t => {
+  const { page, state, url } = await fixture(t, 'zh-CN', { viewport: { width: 390, height: 844 } });
+  for (const [index, note] of state.notes.slice(0, 2).entries()) {
+    note.content = Array.from({ length: 80 }, (_, paragraph) => `笔记 ${index + 1}，段落 ${paragraph + 1}`).join('\n\n');
+  }
+  await login(page, url, '/walk');
+  await page.getByRole('button', { name: '随机开始', exact: true }).click();
+  await card(page).getByText('笔记 1，段落 1', { exact: true }).waitFor();
+  await next(page).scrollIntoViewIfNeeded();
+  assert.ok(await page.evaluate(() => window.scrollY > 1000));
+  await next(page).click();
+  await card(page).getByText('笔记 2，段落 1', { exact: true }).waitFor();
+  await settleAnimation(page);
+  const { readingTop, toolbarBottom, firstLine } = await page.evaluate(() => ({
+    readingTop: document.querySelector('.walk-cards').getBoundingClientRect().top,
+    toolbarBottom: document.querySelector('.mobile-header').getBoundingClientRect().bottom,
+    firstLine: document.querySelector('.walk-cards .note-content p').getBoundingClientRect().top,
+  }));
+  assert.ok(Math.abs(readingTop - toolbarBottom) <= 1);
+  assert.ok(firstLine > toolbarBottom && firstLine < 250);
+});
+
+test('reduced-motion walk waits for the exit signal and stop cancels it', async t => {
+  const { page, url } = await fixture(t);
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  await login(page, url, '/walk');
+  await page.getByRole('button', { name: '随机开始', exact: true }).click();
+  await card(page).filter({ hasText: '末尾文字 0' }).waitFor();
+  await page.evaluate(() => {
+    const animate = Element.prototype.animate;
+    Element.prototype.animate = function (frames, options) {
+      const animation = animate.call(this, frames, options);
+      if (this.matches('.walk-cards > article') && frames.at(-1).opacity === 0) {
+        window.walkExit = animation; animation.pause();
+      }
+      return animation;
+    };
+  });
+  await next(page).click();
+  await page.waitForFunction(() => window.walkExit?.playState === 'paused');
+  assert.match(await card(page).innerText(), /末尾文字 0/);
+  await page.evaluate(() => window.walkExit.finish());
+  await card(page).filter({ hasText: '末尾文字 1' }).waitFor();
+  await next(page).click();
+  await page.waitForFunction(() => window.walkExit?.playState === 'paused');
+  await page.getByRole('button', { name: '停止', exact: true }).click();
+  assert.equal(await page.evaluate(() => window.walkExit.playState), 'idle');
+  await page.getByRole('button', { name: '随机开始', exact: true }).waitFor();
+  assert.equal(await card(page).count(), 0);
 });
 
 test('model availability can retry, disabled Embedding links to configuration, and session expiry removes discovery content', { timeout: 60_000 }, async t => {
@@ -559,29 +645,33 @@ test('English review and walk localize dates, navigation, errors and floating ca
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
 });
 
-test('floating note starts, centered groups and reduced motion work across desktop and touch viewports', { timeout: 60_000 }, async t => {
+test('floating note starts, top-aligned titles and reduced motion work across desktop and touch viewports', { timeout: 60_000 }, async t => {
   const { page, state, url } = await fixture(t, 'zh-CN', { hasTouch: true, isMobile: true });
   await login(page, url, '/walk');
   await page.locator('.walk-floater').nth(5).waitFor();
   for (const viewport of [{ width: 1360, height: 960 }, { width: 390, height: 844 },
     { width: 320, height: 568 }, { width: 430, height: 932 }, { width: 932, height: 430 }]) {
     await page.setViewportSize(viewport);
+    const expected = viewport.width <= 960 ? 4 : 6;
+    await page.waitForFunction(count => document.querySelectorAll('.walk-floater').length === count, expected);
     await page.waitForFunction(() => parseFloat(document.querySelector('#app').style.getPropertyValue('--shell-top')) ===
       document.querySelector('#mobile-header').getBoundingClientRect().height);
     const geometry = await page.evaluate(() => {
       const box = node => node.getBoundingClientRect().toJSON();
       const root = document.querySelector('#discovery-page');
-      return { heading: box(root.firstElementChild), end: box(root.lastElementChild),
+      return { heading: box(root.firstElementChild),
         toolbar: box(document.querySelector('#mobile-header')), width: innerWidth, height: innerHeight,
         overflow: document.documentElement.scrollWidth > innerWidth,
         cards: [...document.querySelectorAll('.walk-floater')].map(box),
         start: box(document.querySelector('.walk-start .save')) };
     });
     assert.equal(geometry.overflow, false);
-    assert.ok(geometry.heading.y >= geometry.toolbar.height, 'Heading stays below the toolbar');
-    if (geometry.end.bottom < viewport.height) {
-      assert.ok(Math.abs((geometry.heading.y + geometry.end.bottom) / 2 -
-        (geometry.toolbar.height + viewport.height) / 2) < 12, 'The whole group is vertically centered');
+    assert.ok(geometry.heading.y - geometry.toolbar.height >= 16 && geometry.heading.y - geometry.toolbar.height <= 48);
+    const previews = page.locator('.walk-floater');
+    await previews.first().focus();
+    for (let index = 0; index < expected; index++) {
+      assert.equal(await previews.nth(index).evaluate(node => node === document.activeElement), true);
+      await page.keyboard.press('Tab');
     }
     for (const card of geometry.cards) {
       assert.ok(card.x >= 0 && card.right <= viewport.width, 'Floating notes fit the viewport');
@@ -596,9 +686,9 @@ test('floating note starts, centered groups and reduced motion work across deskt
   await page.getByRole('button', { name: '停止', exact: true }).tap();
   await page.emulateMedia({ reducedMotion: 'reduce' });
   assert.equal(await page.locator('.walk-floater').first().evaluate(node => getComputedStyle(node).animationName), 'none');
-  await page.locator('.walk-floater[data-name="memos/n4"]').tap();
-  await page.locator('.discovery-note[data-name="memos/n4"]:visible').waitFor();
-  assert.deepEqual(requests(state, '/walks/start').at(-1).body, { name: 'memos/n4' });
+  await page.locator('.walk-floater[data-name="memos/n2"]').tap();
+  await page.locator('.discovery-note[data-name="memos/n2"]:visible').waitFor();
+  assert.deepEqual(requests(state, '/walks/start').at(-1).body, { name: 'memos/n2' });
   assert.equal(await card(page).evaluate(node => getComputedStyle(node).animationName), 'none');
   await page.locator('#navigation-toggle').tap();
   await page.locator('nav a[href="/review"]').tap();
@@ -608,7 +698,7 @@ test('floating note starts, centered groups and reduced motion work across deskt
   await page.emulateMedia({ reducedMotion: 'no-preference' });
   await page.getByRole('button', { name: '第 5 / 6 条', exact: true }).click();
   await page.getByRole('button', { name: '第 5 / 6 条', pressed: true }).waitFor();
-  await screenshot(page, 'review-centered-mobile.png');
+  await screenshot(page, 'review-mobile.png');
   await page.locator('#navigation-toggle').tap();
   await page.locator('nav a[href="/"]').tap();
   state.notes[0].content = '长笔记完整内容'.repeat(2500);

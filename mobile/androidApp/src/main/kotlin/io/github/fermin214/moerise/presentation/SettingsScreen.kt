@@ -83,7 +83,7 @@ fun SettingsScreen(
             ) {
                 Text(
                     strings.text("设置", "Settings"),
-                    fontSize = 22.sp,
+                    fontSize = 20.sp,
                     lineHeight = 30.8.sp,
                     fontWeight = FontWeight.SemiBold,
                     modifier = Modifier.semantics { heading() },
@@ -105,7 +105,7 @@ fun SettingsScreen(
                         hint = lastSync ?: strings.text("尚未同步", "No sync yet"),
                         separator = false,
                     ) {
-                        SettingsGhost(strings.text("立即同步", "Sync now"),
+                        SettingsGhost(strings.text("同步", "Sync"),
                             LocalWebSyncAction.current ?: mobile::synchronize,
                             modifier = Modifier.testTag("settings_sync"))
                     }
@@ -230,12 +230,12 @@ fun SettingsScreen(
 private fun SettingsSummary(label: String, detail: String, strings: Strings, edit: () -> Unit) {
     Row(Modifier.fillMaxWidth().padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
         Column(Modifier.weight(1f)) {
-            Text(label, fontSize = 14.sp)
+            Text(label, fontSize = 15.sp)
             if (detail.isNotBlank()) SettingsHint(detail)
         }
         SettingsGhost(strings.text("编辑", "Edit"), edit)
     }
-    HorizontalDivider(color = Color(0xFFF0F4F9))
+    HorizontalDivider(color = MoeriseColors.SurfaceMuted)
 }
 
 @Composable
@@ -273,7 +273,7 @@ private fun SettingsReview(controller: SettingsController, state: SettingsUiStat
         }?.takeIf { it.isNotBlank() } ?: state.snapshot.settingsObject("channel_status").settingsObject(kind).settingsText("peer")
         if (!target.isNullOrBlank()) SettingsHint(strings.text("接收会话：$target", "Receiving chat: $target"))
         else if (kind !in setOf("none", "feishu-webhook")) SettingsHint(strings.text("等待建立私聊", "Waiting for a private chat"))
-        SettingsSummary(strings.text("推送时段", "Delivery times"), state.times.joinToString(" · "), strings) { edit("times") }
+        SettingsSummary(strings.text("推送时段", "Delivery times"), state.times.joinToString(strings.text("、", ", ")), strings) { edit("times") }
     }
 }
 
@@ -355,9 +355,9 @@ private fun SettingsModels(state: SettingsUiState, strings: Strings, edit: () ->
             else -> strings.text("索引状态不可用", "Index status unavailable")
         }
         val progressText = if (showProgress) strings.text(
-            " · $completed/$total 个片段",
-            " · $completed/$total ${if (total == 1L) "chunk" else "chunks"}",
-        ) + building.settingsText("last_error")?.takeIf { it.isNotBlank() }?.let { " · $it" }.orEmpty() else ""
+            "，$completed/$total 个片段",
+            "，$completed/$total ${if (total == 1L) "chunk" else "chunks"}",
+        ) + building.settingsText("last_error")?.takeIf { it.isNotBlank() }?.let { "，$it" }.orEmpty() else ""
         val pollError = state.checkErrors["models"]
         if (pollError != null && !state.conflict) {
             SettingsMessage(settingsMessage(pollError, strings), error = true)
@@ -475,7 +475,7 @@ private fun SettingsChannels(state: SettingsUiState, strings: Strings, edit: (St
             val configured = state.snapshot.settingsObject("secrets").settingsObject(secret).settingsBoolean("configured")
             val detail = listOf(channelLabel(status.settingsText("state") ?: if (configured) "configured" else "disabled", strings),
                 channelLabel(status.settingsText("detail"), strings), status.settingsText("peer").orEmpty())
-                .filter { it.isNotBlank() }.joinToString(" · ")
+                .filter { it.isNotBlank() }.joinToString(strings.text("、", ", "))
             SettingsSummary(channelLabel(kind, strings), detail, strings) { edit(kind) }
         }
         val telegram = channels.settingsObject("telegram")
@@ -537,7 +537,7 @@ private fun SettingsHistory(controller: SettingsController, state: SettingsUiSta
             val status = item.settingsText("status")
             val id = item.settingsText("id").orEmpty()
             SettingsHint(listOfNotNull(item.settingsText("date"), item.settingsText("clock"), kind,
-                channelLabel(status, strings), item.settingsText("last_error")).filter { it.isNotBlank() }.joinToString(" · "))
+                channelLabel(status, strings), item.settingsText("last_error")).filter { it.isNotBlank() }.joinToString(strings.text("、", ", ")))
             if (status == "failed" && id.isNotEmpty()) key(id) {
                 SettingsGhost(strings.text("重试", "Retry"), { controller.retryDelivery(id) },
                     enabled = id !in state.resending && !state.busy)
@@ -553,11 +553,10 @@ private fun SettingsSection(title: String, content: @Composable ColumnScope.() -
         modifier = Modifier.fillMaxWidth(),
         color = Color.White,
         shape = RoundedCornerShape(14.dp),
-        border = BorderStroke(1.dp, MoeriseColors.Line),
     ) {
         Column(Modifier.padding(start = 18.dp, top = 14.dp, end = 18.dp, bottom = 16.dp)) {
             Text(
-                title, fontSize = 16.sp, lineHeight = 25.6.sp, fontWeight = FontWeight.SemiBold,
+                title, style = MaterialTheme.typography.titleMedium,
                 modifier = Modifier.padding(bottom = 4.dp).semantics { heading() },
             )
             content()
@@ -577,12 +576,12 @@ private fun SettingsRow(
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-            Text(label, fontSize = 14.sp, lineHeight = 22.4.sp)
+            Text(label, fontSize = 15.sp, lineHeight = 22.4.sp)
             if (hint.isNotBlank()) SettingsHint(hint)
         }
         content()
     }
-    if (separator) HorizontalDivider(color = Color(0xFFF0F4F9))
+    if (separator) HorizontalDivider(color = MoeriseColors.SurfaceMuted)
 }
 
 @Composable
@@ -641,7 +640,7 @@ private fun SettingsCheckbox(
     val haptic = rememberMoeriseHaptic()
     Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
         Column(Modifier.weight(1f)) {
-            Text(label, fontSize = 14.sp)
+            Text(label, fontSize = 15.sp)
             if (hint.isNotBlank()) SettingsHint(hint)
         }
         Switch(checked = (if (atomic) state.atomicValues[path] ?: state.values[path] else state.values[path]) == "true", onCheckedChange = {
@@ -650,7 +649,7 @@ private fun SettingsCheckbox(
         }, enabled = enabled && (!atomic || !state.conflict),
             modifier = Modifier.testTag("settings_${path.replace('.', '_')}").semantics { contentDescription = label })
     }
-    HorizontalDivider(color = Color(0xFFF0F4F9))
+    HorizontalDivider(color = MoeriseColors.SurfaceMuted)
 }
 
 @Composable
@@ -724,16 +723,16 @@ private fun SettingsInput(
         singleLine = !multiline,
         minLines = minLines,
         textStyle = MaterialTheme.typography.bodyLarge.copy(
-            fontSize = 16.sp, lineHeight = 25.6.sp,
+            fontSize = 15.sp, lineHeight = 25.6.sp,
             color = MoeriseColors.Ink.copy(alpha = if (enabled) 1f else .5f),
         ),
         keyboardOptions = KeyboardOptions(keyboardType = keyboard, autoCorrectEnabled = false),
         visualTransformation = if (password) PasswordVisualTransformation() else VisualTransformation.None,
-        cursorBrush = SolidColor(MoeriseColors.Blue),
+        cursorBrush = SolidColor(MoeriseColors.Accent),
         modifier = modifier.drawerGestureRegion()
             .focusRequester(focus)
             .onFocusChanged { focused = it.isFocused }
-            .border(1.dp, if (focused) Color(0xFFB5CCF2) else MoeriseColors.Line, RoundedCornerShape(8.dp))
+            .border(1.dp, if (focused) MoeriseColors.Accent else MoeriseColors.FieldBorder, RoundedCornerShape(8.dp))
             .semantics { contentDescription = label },
         decorationBox = { input ->
             Box(
@@ -742,7 +741,7 @@ private fun SettingsInput(
                 contentAlignment = Alignment.TopStart,
             ) {
                 if (value.isEmpty() && placeholder.isNotEmpty()) Text(
-                    placeholder, fontSize = 16.sp, lineHeight = 25.6.sp, color = MoeriseColors.Muted,
+                    placeholder, fontSize = 15.sp, lineHeight = 25.6.sp, color = MoeriseColors.Muted,
                 )
                 input()
             }
@@ -767,7 +766,7 @@ private fun SettingsSelect(
         Surface(
             color = Color.White,
             shape = RoundedCornerShape(8.dp),
-            border = BorderStroke(1.dp, if (focused) Color(0xFFB5CCF2) else MoeriseColors.Line),
+            border = BorderStroke(1.dp, if (focused) MoeriseColors.Accent else MoeriseColors.FieldBorder),
             modifier = Modifier.fillMaxWidth().testTag(tag)
                 .onFocusChanged { focused = it.hasFocus }
                 .semantics { contentDescription = label }
@@ -780,7 +779,7 @@ private fun SettingsSelect(
             ) {
                 Text(
                     options.firstOrNull { it.first == value }?.second ?: value,
-                    fontSize = 16.sp, lineHeight = 25.6.sp,
+                    fontSize = 15.sp, lineHeight = 25.6.sp,
                     color = MoeriseColors.Ink.copy(alpha = if (enabled) 1f else .5f),
                     modifier = Modifier.weight(1f),
                 )
@@ -794,7 +793,7 @@ private fun SettingsSelect(
             modifier = Modifier.platformTestTags()) {
             options.forEach { (choice, title) ->
                 DropdownMenuItem(
-                    text = { Text(title, fontSize = 16.sp) },
+                    text = { Text(title, fontSize = 15.sp) },
                     modifier = Modifier.semantics { selected = choice == value },
                     enabled = enabled,
                     onClick = { expanded = false; onSelect(choice) },
@@ -814,10 +813,10 @@ private fun SettingsGhost(
     OutlinedButton(
         onClick, enabled = enabled, modifier = modifier.heightIn(min = 44.dp),
         shape = RoundedCornerShape(10.dp),
-        border = BorderStroke(1.dp, MoeriseColors.Line),
+        border = BorderStroke(1.dp, MoeriseColors.FieldBorder),
         contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
         colors = ButtonDefaults.outlinedButtonColors(contentColor = MoeriseColors.Muted),
-    ) { Text(label, fontSize = 14.sp, lineHeight = 22.4.sp, fontWeight = FontWeight.Normal) }
+    ) { Text(label, fontSize = 15.sp, lineHeight = 22.4.sp, fontWeight = FontWeight.Normal) }
 }
 
 @Composable

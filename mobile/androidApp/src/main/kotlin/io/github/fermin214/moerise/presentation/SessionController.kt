@@ -138,9 +138,11 @@ class SessionController(
     private suspend fun restore() {
         val stamp = ++generation
         val timeStamp = settingsRevision
-        core?.close()
+        val previousCore = core
         core = null
         try {
+            previousCore?.retire()
+            currentCoroutineContext().ensureActive()
             val profile = restoreSelection()
             if (stamp != generation) return
             mutableState.value = SessionUiState(loading = false, profile = profile)
@@ -174,14 +176,15 @@ class SessionController(
     fun login(originText: String, username: String, password: String) {
         if (state.value.busy) return
         val stamp = ++generation
-        core?.close()
+        val previousCore = core
         core = null
         mutableState.update { it.copy(busy = true, error = null, connected = false) }
         val previous = operation
         previous?.cancel()
-        operation = scope.launch {
+        operation = scope.launch(start = CoroutineStart.UNDISPATCHED) {
             var active: CoreClient? = null
             try {
+                previousCore?.retire()
                 previous?.join()
                 if (restoreSelection() == null && state.value.profile != null)
                     mutableState.update { it.copy(profile = null, connected = false) }
@@ -208,8 +211,13 @@ class SessionController(
 
     fun retrySession() {
         if (state.value.busy) return
-        operation?.cancel()
-        operation = scope.launch { restore() }
+        val previous = operation
+        previous?.cancel()
+        operation = scope.launch {
+            withContext(NonCancellable) { previous?.join() }
+            currentCoroutineContext().ensureActive()
+            restore()
+        }
     }
 
     suspend fun checkConnection(): Boolean {
@@ -284,6 +292,7 @@ class SessionController(
     suspend fun stopForRemoval() {
         ++generation
         mutableState.update { it.copy(connected = false, busy = true) }
+        core?.pauseAttachmentCommits()
         operation?.cancelAndJoin()
         operation = null
     }
@@ -305,7 +314,7 @@ class SessionController(
             finishLogout()
             notes.completePendingLogout(account)
         } catch (error: Exception) {
-            core?.close()
+            core?.retire()
             core = null
             mutableState.value = SessionUiState(loading = false)
             reportRemovalFailure()

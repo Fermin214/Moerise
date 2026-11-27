@@ -1,6 +1,5 @@
 package io.github.fermin214.moerise.presentation
 
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
@@ -22,13 +21,12 @@ import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 
 @Composable
 fun ConnectionScreen(controller: SessionController, strings: Strings, onConnected: () -> Unit = {}) {
@@ -50,7 +48,7 @@ fun ConnectionScreen(controller: SessionController, strings: Strings, onConnecte
             keyboard?.hide()
             submitted = true
             passwordShown = false
-            controller.login(origin, username, password)
+            controller.login(origin, username.trim(), password)
         }
     }
     LaunchedEffect(state.connected, state.busy, state.error) {
@@ -72,8 +70,7 @@ fun ConnectionScreen(controller: SessionController, strings: Strings, onConnecte
         ) {
             Surface(
                 modifier = Modifier.widthIn(max = 360.dp).fillMaxWidth(),
-                shape = RoundedCornerShape(12.dp), color = Color.White,
-                border = BorderStroke(1.dp, MoeriseColors.Line), shadowElevation = 1.dp,
+                shape = RoundedCornerShape(12.dp), color = MoeriseColors.Surface,
             ) {
                 Column(Modifier.padding(28.dp)) {
                     Box(Modifier.align(Alignment.End)) {
@@ -95,9 +92,7 @@ fun ConnectionScreen(controller: SessionController, strings: Strings, onConnecte
                     }
                     Text(
                         strings.text("登录", "Sign in"),
-                        style = MaterialTheme.typography.titleMedium.copy(
-                            fontSize = 18.sp, lineHeight = 28.sp, fontWeight = FontWeight.SemiBold,
-                        ),
+                        style = MaterialTheme.typography.titleLarge,
                     )
                     Text(strings.text("欢迎回来。", "Welcome back."), color = MoeriseColors.Muted,
                         style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(top = 4.dp))
@@ -113,6 +108,7 @@ fun ConnectionScreen(controller: SessionController, strings: Strings, onConnecte
                         ConnectionField(
                             username, { username = it }, strings.text("用户名", "Username"),
                             "server_username", !state.busy,
+                            keyboardOptions = KeyboardOptions(autoCorrectEnabled = false, capitalization = KeyboardCapitalization.None),
                         )
                         ConnectionField(
                             password, { password = it }, strings.text("密码", "Password"),
@@ -147,7 +143,7 @@ fun ConnectionScreen(controller: SessionController, strings: Strings, onConnecte
                         ) {
                             Text(
                                 if (state.busy) strings.text("连接中…", "Connecting…") else strings.text("登录", "Sign in"),
-                                fontSize = 14.sp, lineHeight = 20.sp, fontWeight = FontWeight.Medium,
+                                style = MaterialTheme.typography.labelLarge,
                             )
                         }
                     }
@@ -166,9 +162,9 @@ private fun ConnectionField(
     trailing: (@Composable () -> Unit)? = null,
 ) {
     val focus = LocalFocusManager.current
-    val textStyle = MaterialTheme.typography.bodyLarge.copy(fontSize = 16.sp, lineHeight = 20.sp)
+    val textStyle = MaterialTheme.typography.bodyLarge
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        Text(label, fontSize = 14.sp, lineHeight = 14.sp, fontWeight = FontWeight.Medium)
+        Text(label, style = MaterialTheme.typography.labelLarge)
         BasicTextField(
             value = value, onValueChange = onValueChange, singleLine = true, enabled = enabled,
             keyboardOptions = keyboardOptions.copy(imeAction = if (onSubmit != null) ImeAction.Done else ImeAction.Next),
@@ -177,7 +173,7 @@ private fun ConnectionField(
             textStyle = textStyle.copy(color = MoeriseColors.Ink.copy(alpha = if (enabled) 1f else .5f)),
             cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
             modifier = Modifier.fillMaxWidth().heightIn(min = 44.dp)
-                .border(1.dp, MoeriseColors.Line, RoundedCornerShape(6.dp))
+                .border(1.dp, MoeriseColors.FieldBorder, RoundedCornerShape(6.dp))
                 .testTag(tag).semantics { contentDescription = label },
             decorationBox = { innerTextField ->
                 Row(Modifier.fillMaxWidth().heightIn(min = 44.dp), verticalAlignment = Alignment.CenterVertically) {

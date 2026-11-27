@@ -335,7 +335,8 @@ try {
     assert.deepEqual(fixture.violations, []); assert.deepEqual(evidence.pageErrors, []); assert.deepEqual(evidence.sourceFailures, []);
     await api('DELETE', '/session', undefined, 204); await api('GET', '/models', undefined, 401);
     await page.locator('#navigation-toggle').click();
-    await page.locator('#user-menu').click(); await page.locator('#logout').click();
+    await page.locator('#account-settings').click();
+    await page.locator('#settings-tab-general').click(); await page.locator('#logout').click();
     await page.locator('#login-form').waitFor({ state: 'visible' });
   });
   success = true;

@@ -24,6 +24,8 @@ enum class WebIcon {
     Menu,
     Search,
     Plus,
+    Hash,
+    Download,
     Close,
     Home,
     Review,
@@ -105,14 +107,17 @@ private fun WebIcon.svgPath(): String = when (this) {
     WebIcon.Menu -> "M4 6h16M4 12h16M4 18h16"
     WebIcon.Search -> "M20 20l-4.5-4.5"
     WebIcon.Plus -> "M12 5v14M5 12h14"
+    WebIcon.Hash -> "M6 9h14M4 15h14M11 4 7 20M17 4l-4 16"
+    WebIcon.Download -> "M12 3v12M7 10l5 5 5-5M4 16v4h16v-4"
     WebIcon.Close -> "m6 6 12 12M6 18 18 6"
     WebIcon.Home -> "M5 6h14M5 12h14M5 18h9"
     WebIcon.Review -> "M8 3v4M16 3v4M4 10h16M9 15l2 2 4-4"
     WebIcon.Walk -> "M4 8h3c4 0 6 8 10 8h3M4 16h3c1.6 0 2.8-1.2 3.8-2.6" +
         "M20 8h-3c-1.4 0-2.5.9-3.4 2M18 5l2 3-2 3M18 13l2 3-2 3"
     WebIcon.Map -> "M8.3 8.3l2.4 7.4M15.9 8l-2.8 7.8M8.5 7h7"
-    WebIcon.Settings -> "M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1" +
-        "M16.3 16.3l2.1 2.1M18.4 5.6l-2.1 2.1M7.7 16.3l-2.1 2.1"
+    WebIcon.Settings -> "M9.6 3H14.4L15 5.6L16.6 6.5L19.1 5.7L21.5 9.8L19.6 11.6V13.4L21.5 15.2" +
+        "L19.1 19.3L16.6 18.5L15 19.4L14.4 22H9.6L9 19.4L7.4 18.5L4.9 19.3L2.5 15.2L4.4 13.4" +
+        "V11.6L2.5 9.8L4.9 5.7L7.4 6.5L9 5.6Z"
     WebIcon.User -> "M5 20c1-4 4-5.5 7-5.5s6 1.5 7 5.5"
     WebIcon.More -> "M5 12h.01M12 12h.01M19 12h.01"
     WebIcon.ChevronLeft -> "M14 6l-6 6 6 6"
