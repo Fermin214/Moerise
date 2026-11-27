@@ -58,11 +58,11 @@ const cardObserver = new ResizeObserver(entries => {
     measuredCards.clear();
   });
 });
-const sidebarTags = new Map(), sidebarCalendars = new Map();
+const sidebarTags = new Map(), sidebarCalendars = new Map(), sidebarCommits = new Map();
 let preloadController = null, preloadTimer = null, serviceDay = '', serviceDayTimer = null;
 let sidebarTagState = '', sidebarCalendarKey = '';
 let sidebarFocusTimer = null, sidebarFocusRefresh = null;
-let epoch = 0, viewSequence = 0, sidebarSequence = 0;
+let epoch = 0, viewSequence = 0, sidebarTagSequence = 0, sidebarCalendarSequence = 0;
 let identity = null, authBusy = false, saving = false, readingFiles = false;
 let loginAutofillTimer;
 let draftOwner = null;
@@ -242,7 +242,6 @@ function refreshServiceDay(timezoneChanged = false) {
   if (changed || timezoneChanged) $('notes').querySelectorAll('.note-colophon time').forEach(localize);
   if (!document.hidden) serviceDayTimer = setTimeout(refreshServiceDay,
     Math.max(1, nextServiceDay(timezone, now, day) - Date.now()));
-  return changed;
 }
 function formatTimelineTime(value) {
   return () => timelineTime(value, identity?.timezone, serviceDay, locale() === 'en');
@@ -419,7 +418,8 @@ function renderFilters() {
   }
 }
 function invalidateSidebar() {
-  sidebarSequence++;
+  sidebarTagSequence++; sidebarCalendarSequence++;
+  sidebarCommits.clear();
   clearTimeout(sidebarFocusTimer);
   sidebarFocusTimer = sidebarFocusRefresh = null;
   for (const cache of [sidebarTags, sidebarCalendars]) {
@@ -492,9 +492,9 @@ function schedulePreload() {
   }, 250);
 }
 function refreshSidebarOnFocus() {
-  const dayChanged = refreshServiceDay();
+  refreshServiceDay();
   if (document.hidden) { stopPreload(); return; }
-  if (!identity || sidebarFocusRefresh || dayChanged) return;
+  if (!identity || sidebarFocusRefresh) return;
   clearTimeout(sidebarFocusTimer);
   sidebarFocusTimer = setTimeout(() => {
     sidebarFocusTimer = null;
@@ -504,15 +504,28 @@ function refreshSidebarOnFocus() {
     pending.finally(() => { if (sidebarFocusRefresh === pending) sidebarFocusRefresh = null; });
   }, 100);
 }
+function commitSidebar(host, preserveFocus, current, render) {
+  const commit = () => { if (current()) render(); };
+  if (preserveFocus && host.contains(document.activeElement)) sidebarCommits.set(host, commit);
+  else {
+    sidebarCommits.delete(host);
+    commit();
+  }
+}
 async function loadSidebar(owner, { calendarOnly = false, preserveFocus = false } = {}) {
   if (!(owner instanceof AbortController)) owner = null;
   if (!identity) return;
-  const sequence = ++sidebarSequence, generation = epoch;
+  const generation = epoch;
   const { path, values } = sourceTimeline();
   const state = path === '/archived' ? 'ARCHIVED' : 'NORMAL', selectedMonth = month;
   const calendarKey = `${state}:${selectedMonth}`;
   const tagsHost = $('tags'), calendarHost = $('calendar');
   calendarOnly = calendarOnly && sidebarTagState === state && tagsHost.hasChildNodes();
+  const tagSequence = calendarOnly ? null : ++sidebarTagSequence;
+  const calendarSequence = ++sidebarCalendarSequence;
+  const contextCurrent = () => generation === epoch && sourceTimeline().path === path;
+  const tagsCurrent = () => tagSequence === sidebarTagSequence && contextCurrent();
+  const calendarCurrent = () => calendarSequence === sidebarCalendarSequence && selectedMonth === month && contextCurrent();
   showError($('sidebar-error'), null); $('sidebar-retry').hidden = true;
   if (sidebarTagState !== state) {
     $('tags').replaceChildren();
@@ -522,24 +535,35 @@ async function loadSidebar(owner, { calendarOnly = false, preserveFocus = false 
     renderCalendar([], values.date, true);
     sidebarCalendarKey = calendarKey;
   }
-  try {
-    const [tags, calendar] = calendarOnly ? [null, await readCalendar(state, selectedMonth)] : owner
-      ? [await readTags(state, owner), await readCalendar(state, selectedMonth, owner)]
-      : await Promise.all([readTags(state), readCalendar(state, selectedMonth)]);
-    if (generation !== epoch || sequence !== sidebarSequence) return;
-    if ((!calendarOnly && !Array.isArray(tags?.tags)) || !Array.isArray(calendar?.days) || calendar.month !== selectedMonth) {
-      sidebarTags.delete(state); sidebarCalendars.delete(calendarKey);
-      throw Object.assign(new Error('Invalid sidebar data'), { code: 'NOTE_LIST_INVALID' });
+  async function receive(read, current, publish) {
+    if (!current()) return;
+    try {
+      const data = await read();
+      if (current()) publish(data);
+    } catch (err) {
+      if (!current() || err.name === 'AbortError') return;
+      handleFailure($('sidebar-error'), err);
+      if (identity) $('sidebar-retry').hidden = false;
     }
-    if (!calendarOnly && (!preserveFocus || !tagsHost.contains(document.activeElement))) renderTags(tags.tags, values.tags);
-    if (!preserveFocus || !calendarHost.contains(document.activeElement)) {
-      renderCalendar(calendar.days, values.date);
+  }
+  const invalidData = () => Object.assign(new Error('Invalid sidebar data'), { code: 'NOTE_LIST_INVALID' });
+  const tags = () => receive(() => readTags(state, owner), tagsCurrent, data => {
+    if (!Array.isArray(data?.tags)) { sidebarTags.delete(state); throw invalidData(); }
+    commitSidebar(tagsHost, preserveFocus, tagsCurrent, () => renderTags(data.tags, sourceTimeline().values.tags));
+  });
+  const calendar = () => receive(() => readCalendar(state, selectedMonth, owner), calendarCurrent, data => {
+    if (!Array.isArray(data?.days) || data.month !== selectedMonth) { sidebarCalendars.delete(calendarKey); throw invalidData(); }
+    commitSidebar(calendarHost, preserveFocus, calendarCurrent, () => {
+      renderCalendar(data.days, sourceTimeline().values.date);
       sidebarCalendarKey = calendarKey;
-    }
-  } catch (err) {
-    if (generation !== epoch || sequence !== sidebarSequence || err.name === 'AbortError') return;
-    handleFailure($('sidebar-error'), err);
-    if (identity) $('sidebar-retry').hidden = false;
+    });
+  });
+  if (calendarOnly) await calendar();
+  else if (owner) {
+    await tags();
+    await calendar();
+  } else {
+    await Promise.all([tags(), calendar()]);
   }
 }
 function renderTags(items, selectedTags) {
@@ -1129,6 +1153,12 @@ document.addEventListener('click', event => {
   }
 });
 $('navigation-dialog').addEventListener('close', closeMenus);
+for (const host of [$('tags'), $('calendar')]) host.addEventListener('focusout', event => {
+  if (host.contains(event.relatedTarget)) return;
+  const commit = sidebarCommits.get(host);
+  sidebarCommits.delete(host);
+  commit?.();
+});
 window.addEventListener('pagehide', () => { clearInterval(loginAutofillTimer); disconnectPrivacy(); invalidate(); hidePrivate(); });
 window.addEventListener('pageshow', event => { if (event.persisted) restore(); });
 window.addEventListener('focus', refreshSidebarOnFocus);

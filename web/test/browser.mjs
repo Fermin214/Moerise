@@ -429,6 +429,58 @@ test('service midnight keeps sidebar focus and an active date filter', async t =
   assert.equal(aggregates(), unfiltered + 1);
 });
 
+test('one visibility event after service midnight refreshes the sidebar without taking focus', async t => {
+  const { page, state, url } = await fixture(t);
+  await page.clock.install({ time: new Date('2026-10-29T15:58:00Z') });
+  await page.clock.setSystemTime(new Date('2026-10-29T15:58:00Z'));
+  await page.goto(url); await login(page);
+  const tag = page.locator('#tags [title="#想法"]');
+  const day = page.locator('#calendar [data-date="2026-10-29"]');
+  await tag.waitFor();
+  await day.and(page.locator(':enabled')).waitFor();
+  await tag.focus();
+  assert.equal(await tag.locator('em').textContent(), '47');
+  state.notes.set('external', { ...state.notes.get('n00'), name: 'memos/external', tags: ['想法'] });
+
+  const result = page.waitForResponse(response => response.ok() && new URL(response.url()).pathname === '/api/app/v1/tags', { timeout: 5_000 });
+  await page.clock.setSystemTime(new Date('2026-10-29T16:00:01Z'));
+  await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+  await result;
+  await day.and(page.getByRole('button', { name: '2026-10-29，48 条笔记', exact: true })).waitFor({ timeout: 5_000 });
+  assert.equal(await tag.evaluate(node => node === document.activeElement), true);
+  await day.focus();
+  await tag.locator('em').filter({ hasText: /^48$/ }).waitFor({ timeout: 5_000 });
+  assert.equal(await day.evaluate(node => node === document.activeElement), true);
+});
+
+test('a delayed tag refresh after saving a note survives the service month rollover', { timeout: 20_000 }, async t => {
+  const { page, url } = await fixture(t);
+  await page.clock.install({ time: new Date('2026-10-31T15:59:20Z') });
+  await page.clock.setSystemTime(new Date('2026-10-31T15:59:20Z'));
+  await page.goto(url); await login(page);
+  await page.locator('#tags .tag-row').first().waitFor();
+  await page.locator('#calendar .today:enabled').waitFor();
+  const card = page.locator('#notes [data-name="memos/n00"]');
+  await card.getByRole('button', { name: '更多操作' }).click();
+  await card.getByRole('menuitem', { name: '编辑', exact: true }).click();
+  await page.locator('form.editor textarea').fill('保存后刷新 #跨月');
+
+  const { promise: arrived, resolve: captured } = Promise.withResolvers();
+  const { promise: hold, resolve: release } = Promise.withResolvers();
+  await page.route('**/api/app/v1/tags?*', async route => {
+    const response = await route.fetch();
+    captured(); await hold;
+    await route.fulfill({ response });
+  }, { times: 1 });
+  try {
+    await page.locator('form.editor button.save').click();
+    await arrived;
+    await page.clock.fastForward(41_000);
+    await page.locator('#calendar .today:enabled[data-date="2026-11-01"]').waitFor({ timeout: 5_000 });
+  } finally { release(); }
+  await page.locator('#tags [title="#跨月"] em').filter({ hasText: /^1$/ }).waitFor({ timeout: 5_000 });
+});
+
 test('CSRF renewal discards drafts and never replays a note after an instance or author change', async t => {
   const { page, state, url } = await fixture(t);
   await page.goto(url);
