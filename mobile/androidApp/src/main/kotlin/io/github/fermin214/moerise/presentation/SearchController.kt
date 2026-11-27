@@ -80,7 +80,7 @@ class SearchController(
         val stateChanged = query.state != state.value.query.state
         if (stateChanged) {
             ++filterGeneration; filters?.cancel()
-            mutable.update { it.copy(tags = emptyList(), calendar = null, filtersLoading = false, filtersError = null) }
+            mutable.update { it.copy(tags = emptyList(), filtersLoading = false, filtersError = null) }
         }
         val keepLocalList = !stateChanged && query.text.isBlank() && state.value.query.text.isBlank()
         mutable.update {
@@ -265,7 +265,7 @@ class SearchController(
                 val page = reads?.filters(sourceState, month) ?: FilterPage(
                     CoreJson.decodeFromString(requireNotNull(active).api(HttpMethod.Get, "/tags?state=$sourceState")),
                     CoreJson.decodeFromString(requireNotNull(active).api(HttpMethod.Get,
-                        "/calendar?state=$sourceState&month=${month.encodeURLQueryComponent(encodeFull = true)}")),
+                        "/calendar?state=NORMAL&month=${month.encodeURLQueryComponent(encodeFull = true)}")),
                 )
                 require(page.calendar.month == month)
                 if (stamp == filterGeneration && key == account() && sourceState == state.value.query.state) mutable.update { it.copy(

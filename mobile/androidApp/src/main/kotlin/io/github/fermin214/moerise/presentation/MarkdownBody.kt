@@ -5,6 +5,7 @@ import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.padding
@@ -17,6 +18,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.onSizeChanged
@@ -40,6 +42,7 @@ import com.mikepenz.markdown.m3.Markdown
 import com.mikepenz.markdown.m3.markdownColor
 import com.mikepenz.markdown.model.markdownPadding
 import com.mikepenz.markdown.m3.markdownTypography
+import com.mikepenz.markdown.compose.elements.MarkdownParagraph
 import com.mikepenz.markdown.model.*
 import com.mikepenz.markdown.model.State as MdState
 import com.mikepenz.markdown.utils.getUnescapedTextInNode
@@ -279,7 +282,9 @@ fun MarkdownBody(content: String, modifier: Modifier = Modifier, note: Note? = n
                 val client = latestCore
                 val item = link?.let { managedAttachment(parent, it) }
                 if (item != null && parent != null && client != null) {
-                    if (item.isImageAttachment()) ProtectedAttachmentImage(parent, item, client, latestStrings)
+                    if (item.isImageAttachment()) Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+                        ProtectedAttachmentImage(parent, item, client, latestStrings)
+                    }
                     else OpenAttachmentButton(parent, item, client, latestStrings)
                 }
                 else if (link != null && externalLink(link)) TextButton(onClick = { safeUri.openUri(link) }) { Text(link) }
@@ -292,6 +297,19 @@ fun MarkdownBody(content: String, modifier: Modifier = Modifier, note: Note? = n
     }
     val retainedBlocks = remember(originalContent, defBlocks) { mutableMapOf<String, MdState.Success>() }
     var retainedTail by remember(originalContent) { mutableStateOf<MdState.Success?>(null) }
+            paragraph = { model ->
+                val image = model.node.children.singleOrNull { it.type != MarkdownTokenTypes.WHITE_SPACE }
+                    ?.takeIf { it.type == MarkdownElementTypes.IMAGE }
+                val parent = latestNote
+                val client = latestCore
+                val link = image?.findChildOfTypeRecursive(MarkdownElementTypes.LINK_DESTINATION)?.getUnescapedTextInNode(model.content)
+                val item = link?.let { managedAttachment(parent, it) }
+                if (item?.isImageAttachment() == true && parent != null && client != null) {
+                    Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+                        ProtectedAttachmentImage(parent, item, client, latestStrings)
+                    }
+                } else MarkdownParagraph(model.content, model.node, style = model.typography.paragraph)
+            },
     CompositionLocalProvider(LocalUriHandler provides safeUri) {
         Column(modifier.then(if (attachments.isEmpty()) Modifier else Modifier.onSizeChanged { markdownWidth = it.width }),
             verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -341,7 +359,8 @@ fun MarkdownBody(content: String, modifier: Modifier = Modifier, note: Note? = n
                     if (note != null && core != null) {
                         for (image in images) {
                             if (image.start > offset) Text(tail.substring(offset, image.start), Modifier.fillMaxWidth(), style = body)
-                            ProtectedAttachmentImage(note, image.item, core, strings, Modifier.widthIn(max = inlineMaxWidth))
+                            ProtectedAttachmentImage(note, image.item, core, strings,
+                                Modifier.align(Alignment.CenterHorizontally).widthIn(max = inlineMaxWidth))
                             offset = image.end
                         }
                     }

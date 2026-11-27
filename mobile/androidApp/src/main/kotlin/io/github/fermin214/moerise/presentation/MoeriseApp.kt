@@ -128,6 +128,7 @@ fun MoeriseApp(mobile: MobileController, onHomeReady: () -> Unit = {}) {
     var page by rememberSaveable(account) { mutableStateOf("home") }
     var searchOpen by rememberSaveable(account) { mutableStateOf(false) }
     var sourceTimeline by rememberSaveable(account) { mutableStateOf("home") }
+    val sidebarTagState = if (page == "archive") "ARCHIVED" else "NORMAL"
     var conflictKey by remember(account) { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
     val drawer = remember(account, scope) { NavigationDrawerState(scope) }
@@ -285,9 +286,9 @@ fun MoeriseApp(mobile: MobileController, onHomeReady: () -> Unit = {}) {
         targetPositioned = true
     }
     LaunchedEffect(query.text, query.mode) { if (searchOpen) { delay(250); if (searchOpen) showFilter(query) } }
-    LaunchedEffect(drawerVisible, month, account, connection.connected, connection.needsLogin, sourceTimeline, timezone, filterRevision) {
+    LaunchedEffect(drawerVisible, month, account, connection.connected, connection.needsLogin, sidebarTagState, timezone, filterRevision) {
         if (drawerVisible && account != null && !connection.needsLogin) {
-            sidebar.change(query.copy(state = if (sourceTimeline == "archive") "ARCHIVED" else "NORMAL"))
+            sidebar.change(SearchQuery(state = sidebarTagState))
             sidebar.filters(month)
         } else sidebar.leave()
     }
@@ -319,18 +320,25 @@ fun MoeriseApp(mobile: MobileController, onHomeReady: () -> Unit = {}) {
                 modifier = Modifier.platformTestTags().testTag(if (platformImeVisible()) "ime_visible" else "ime_hidden"),
                 sheet = {
                     WebSidebar(page, strings, connection.profile?.let { it.displayName.trim().ifBlank { it.userName.removePrefix("users/") } }.orEmpty(),
-                        sidebarFilters, month, onClose = drawer::close,
+                        sidebarFilters.let { if (it.query.state == sidebarTagState) it else it.copy(tags = emptyList()) },
+                        month, onClose = drawer::close,
                         onNavigate = { target -> drawer.close(); navigate(target) },
-                        onMonth = { month = it }, onDate = { showFilter(query.copy(date = if (query.date == it) "" else it)) },
-                        onTag = { tag -> showFilter(query.copy(tags = if (tag in query.tags) query.tags - tag else query.tags + tag)) },
-                        selectedTags = query.tags,
-                        selectedDate = query.date, today = serviceDay,
+                        onMonth = { month = it }, onDate = { date ->
+                            val next = if (page == "home") query.copy(date = if (query.date == date) "" else date)
+                                else SearchQuery(date = date)
+                            showFilter(next, "home")
+                        },
+                        onTag = { tag ->
+                            val value = if (page in setOf("home", "archive")) query else SearchQuery(state = sidebarTagState)
+                            showFilter(value.copy(tags = if (tag in value.tags) value.tags - tag else value.tags + tag),
+                                if (sidebarTagState == "ARCHIVED") "archive" else "home")
+                        },
+                        selectedTags = if (page in setOf("home", "archive") && query.state == sidebarTagState) query.tags else emptySet(),
+                        selectedDate = if (page == "home") query.date else "", today = serviceDay,
                         stargazingEnabled = connection.profile?.stargazingEnabled != false)
                 }
             ) {
-                Surface(Modifier.fillMaxSize().platformTestTags(),
-                    color = if (account == null || page == "connect" || page in setOf("home", "archive"))
-                        MoeriseColors.ScrollPaper else MoeriseColors.Paper) {
+                Surface(Modifier.fillMaxSize().platformTestTags(), color = MoeriseColors.Paper) {
                     Box(Modifier.fillMaxSize()) {
                     when {
                         connection.loading -> Box(Modifier.safeDrawingPadding().padding(24.dp)) { CircularProgressIndicator() }
@@ -562,7 +570,7 @@ internal suspend fun SnackbarHostState.showMobileNotice(message: String, undoLab
 @Composable
 private fun MobileSnackbar(data: SnackbarData) {
     Surface(Modifier.fillMaxWidth().heightIn(min = 48.dp).semantics { liveRegion = LiveRegionMode.Polite }, shape = RoundedCornerShape(14.dp),
-        color = Color.White, border = BorderStroke(1.dp, MoeriseColors.Line), shadowElevation = 4.dp) {
+        color = MoeriseColors.SheetSurface, border = BorderStroke(1.dp, MoeriseColors.Line), shadowElevation = 4.dp) {
         Row(Modifier.padding(horizontal = 14.dp, vertical = 2.dp), verticalAlignment = Alignment.CenterVertically) {
             Text(data.visuals.message, Modifier.weight(1f), color = MoeriseColors.Ink, fontSize = 15.sp)
             data.visuals.actionLabel?.let {
@@ -720,6 +728,7 @@ private fun SheetEditor(
                 Spacer(Modifier.weight(1f))
                 WebSecondaryAction(strings.text("取消", "Cancel"), onClick = onCancel, enabled = !state.busy && !state.importing,
                     modifier = Modifier.testTag(cancelTag))
+                Spacer(Modifier.width(8.dp))
                 if (draft.conflictJson != null) {
                     WebAction(strings.text("处理冲突", "Resolve conflict"), onClick = { leaveWriting(); onConflict() })
                 } else WebAction(strings.text("保存", "Save"), onClick = { haptic(); onSave() },
@@ -730,7 +739,7 @@ private fun SheetEditor(
     Surface(modifier = Modifier.widthIn(max = 800.dp).fillMaxWidth().testTag("quick_editor_sheet")
         .then(if (LocalReducedMotion.current) Modifier else Modifier.animateContentSize(tween(140))),
         shape = RoundedCornerShape(topStart = 18.dp, topEnd = 18.dp, bottomStart = 0.dp, bottomEnd = 0.dp),
-        color = MoeriseColors.Surface, shadowElevation = 3.dp) {
+        color = MoeriseColors.SheetSurface, shadowElevation = 3.dp) {
         Column(Modifier.drawWithContent {
             drawContent()
             val edge = 18.dp.toPx()

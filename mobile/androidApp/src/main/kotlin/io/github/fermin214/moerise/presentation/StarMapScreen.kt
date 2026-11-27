@@ -190,7 +190,7 @@ fun StarMapScreen(controller: StarMapController, core: CoreClient?, enabled: Boo
 private fun MapUnplacedNotes(controller: StarMapController, core: CoreClient?, state: StarMapState, strings: Strings,
     timezone: String, noteScroll: LazyListState, onClose: () -> Unit,
     modifier: Modifier, bottomSheet: Boolean = false, onTag: ((String) -> Unit)? = null) {
-    Surface(modifier, color = Color.White,
+    Surface(modifier, color = MoeriseColors.Surface,
         shape = if (bottomSheet) RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp) else RoundedCornerShape(14.dp),
         border = BorderStroke(1.dp, MoeriseColors.Line), shadowElevation = if (bottomSheet) 8.dp else 0.dp) {
         Column {

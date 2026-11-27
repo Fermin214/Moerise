@@ -18,7 +18,6 @@ import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.platform.LocalUriHandler
@@ -29,12 +28,10 @@ import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import java.time.ZoneId
 import java.util.TimeZone
 import kotlinx.serialization.json.JsonObject
@@ -83,9 +80,8 @@ fun SettingsScreen(
             ) {
                 Text(
                     strings.text("设置", "Settings"),
-                    fontSize = 20.sp,
-                    lineHeight = 30.8.sp,
-                    fontWeight = FontWeight.SemiBold,
+                    style = MaterialTheme.typography.titleLarge,
+                    color = MoeriseColors.Ink,
                     modifier = Modifier.semantics { heading() },
                 )
                 WebTabs(
@@ -230,12 +226,12 @@ fun SettingsScreen(
 private fun SettingsSummary(label: String, detail: String, strings: Strings, edit: () -> Unit) {
     Row(Modifier.fillMaxWidth().padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
         Column(Modifier.weight(1f)) {
-            Text(label, fontSize = 15.sp)
+            Text(label, style = MaterialTheme.typography.bodyMedium, color = MoeriseColors.Ink)
             if (detail.isNotBlank()) SettingsHint(detail)
         }
         SettingsGhost(strings.text("编辑", "Edit"), edit)
     }
-    HorizontalDivider(color = MoeriseColors.SurfaceMuted)
+    HorizontalDivider(color = MoeriseColors.Line)
 }
 
 @Composable
@@ -552,12 +548,13 @@ private fun SettingsHistory(controller: SettingsController, state: SettingsUiSta
 private fun SettingsSection(title: String, content: @Composable ColumnScope.() -> Unit) {
     Surface(
         modifier = Modifier.fillMaxWidth(),
-        color = Color.White,
+        color = MoeriseColors.Surface,
         shape = RoundedCornerShape(14.dp),
+        border = BorderStroke(1.dp, MoeriseColors.Line),
     ) {
         Column(Modifier.padding(start = 18.dp, top = 14.dp, end = 18.dp, bottom = 16.dp)) {
             Text(
-                title, style = MaterialTheme.typography.titleMedium,
+                title, style = MaterialTheme.typography.titleMedium, color = MoeriseColors.Ink,
                 modifier = Modifier.padding(bottom = 4.dp).semantics { heading() },
             )
             content()
@@ -577,12 +574,12 @@ private fun SettingsRow(
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-            Text(label, fontSize = 15.sp, lineHeight = 22.4.sp)
+            Text(label, style = MaterialTheme.typography.bodyMedium, color = MoeriseColors.Ink)
             if (hint.isNotBlank()) SettingsHint(hint)
         }
         content()
     }
-    if (separator) HorizontalDivider(color = MoeriseColors.SurfaceMuted)
+    if (separator) HorizontalDivider(color = MoeriseColors.Line)
 }
 
 @Composable
@@ -641,7 +638,7 @@ private fun SettingsCheckbox(
     val haptic = rememberMoeriseHaptic()
     Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
         Column(Modifier.weight(1f)) {
-            Text(label, fontSize = 15.sp)
+            Text(label, style = MaterialTheme.typography.bodyMedium, color = MoeriseColors.Ink)
             if (hint.isNotBlank()) SettingsHint(hint)
         }
         Switch(checked = (if (atomic) state.atomicValues[path] ?: state.values[path] else state.values[path]) == "true", onCheckedChange = {
@@ -650,7 +647,7 @@ private fun SettingsCheckbox(
         }, enabled = enabled && (!atomic || !state.conflict),
             modifier = Modifier.testTag("settings_${path.replace('.', '_')}").semantics { contentDescription = label })
     }
-    HorizontalDivider(color = MoeriseColors.SurfaceMuted)
+    HorizontalDivider(color = MoeriseColors.Line)
 }
 
 @Composable
@@ -724,7 +721,6 @@ private fun SettingsInput(
         singleLine = !multiline,
         minLines = minLines,
         textStyle = MaterialTheme.typography.bodyLarge.copy(
-            fontSize = 15.sp, lineHeight = 25.6.sp,
             color = MoeriseColors.Ink.copy(alpha = if (enabled) 1f else .5f),
         ),
         keyboardOptions = KeyboardOptions(keyboardType = keyboard, autoCorrectEnabled = false),
@@ -742,7 +738,7 @@ private fun SettingsInput(
                 contentAlignment = Alignment.TopStart,
             ) {
                 if (value.isEmpty() && placeholder.isNotEmpty()) Text(
-                    placeholder, fontSize = 15.sp, lineHeight = 25.6.sp, color = MoeriseColors.Muted,
+                    placeholder, style = MaterialTheme.typography.bodyLarge, color = MoeriseColors.InkColophon,
                 )
                 input()
             }
@@ -765,7 +761,7 @@ private fun SettingsSelect(
     LaunchedEffect(enabled) { if (!enabled) expanded = false }
     Box(modifier) {
         Surface(
-            color = Color.White,
+            color = MoeriseColors.Surface,
             shape = RoundedCornerShape(8.dp),
             border = BorderStroke(1.dp, if (focused) MoeriseColors.Accent else MoeriseColors.FieldBorder),
             modifier = Modifier.fillMaxWidth().testTag(tag)
@@ -780,7 +776,7 @@ private fun SettingsSelect(
             ) {
                 Text(
                     options.firstOrNull { it.first == value }?.second ?: value,
-                    fontSize = 15.sp, lineHeight = 25.6.sp,
+                    style = MaterialTheme.typography.bodyLarge,
                     color = MoeriseColors.Ink.copy(alpha = if (enabled) 1f else .5f),
                     modifier = Modifier.weight(1f),
                 )
@@ -794,7 +790,7 @@ private fun SettingsSelect(
             modifier = Modifier.platformTestTags()) {
             options.forEach { (choice, title) ->
                 DropdownMenuItem(
-                    text = { Text(title, fontSize = 15.sp) },
+                    text = { Text(title, style = MaterialTheme.typography.bodyLarge) },
                     modifier = Modifier.semantics { selected = choice == value },
                     enabled = enabled,
                     onClick = { expanded = false; onSelect(choice) },
@@ -816,14 +812,15 @@ private fun SettingsGhost(
 
 @Composable
 private fun SettingsHint(text: String, modifier: Modifier = Modifier) {
-    Text(text, modifier = modifier, color = MoeriseColors.Muted, fontSize = 13.sp, lineHeight = 22.1.sp)
+    Text(text, modifier = modifier, color = MoeriseColors.Muted,
+        style = MaterialTheme.typography.bodySmall.copy(fontFeatureSettings = "tnum"))
 }
 
 @Composable
 private fun SettingsMessage(text: String, error: Boolean = false) {
     Text(
         text, color = if (error) MaterialTheme.colorScheme.error else MoeriseColors.Muted,
-        fontSize = 13.sp, lineHeight = 20.8.sp,
+        style = MaterialTheme.typography.bodySmall,
         modifier = Modifier.semantics {
             liveRegion = if (error) LiveRegionMode.Assertive else LiveRegionMode.Polite
         },

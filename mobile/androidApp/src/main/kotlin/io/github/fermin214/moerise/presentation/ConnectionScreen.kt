@@ -14,7 +14,6 @@ import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.focus.FocusDirection
 import androidx.compose.ui.focus.onFocusChanged
@@ -71,10 +70,10 @@ fun ConnectionScreen(controller: SessionController, strings: Strings, onConnecte
             .padding(horizontal = 16.dp, vertical = 56.dp),
             verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
             Column(Modifier.widthIn(max = 360.dp).fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
-                MoeriseBrandMark()
-                Text("Moerise", modifier = Modifier.padding(top = 12.dp), fontFamily = FontFamily.Serif,
+                MoeriseBrandMark(modifier = Modifier.testTag("login_brand_mark"))
+                Text("Moerise", modifier = Modifier.padding(start = 1.6.dp, top = 12.dp), fontFamily = FontFamily.Serif,
                     fontSize = 23.sp, letterSpacing = 1.6.sp, color = MoeriseColors.BrandInk)
-                Text(strings.text("欢迎回来。", "Welcome back."), color = MoeriseColors.InkColophon,
+                Text(strings.text("欢迎回来", "Welcome back"), color = MoeriseColors.InkColophon,
                     fontSize = 13.5.sp, modifier = Modifier.padding(top = 4.dp))
                 Spacer(Modifier.height(24.dp))
                 Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
@@ -151,7 +150,7 @@ private fun ConnectionField(
     val shape = RoundedCornerShape(10.dp)
     var focused by remember { mutableStateOf(false) }
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        Text(label, style = MaterialTheme.typography.bodySmall, color = Color(0xFF5C5852))
+        Text(label, style = MaterialTheme.typography.bodySmall, color = MoeriseColors.Muted)
         BasicTextField(
             value = value, onValueChange = onValueChange, singleLine = true, enabled = enabled,
             keyboardOptions = keyboardOptions.copy(imeAction = if (onSubmit != null) ImeAction.Done else ImeAction.Next),

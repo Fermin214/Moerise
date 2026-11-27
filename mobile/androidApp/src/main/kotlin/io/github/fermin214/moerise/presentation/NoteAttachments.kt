@@ -49,11 +49,13 @@ internal fun JsonObject.isImageAttachment() = this["type"]?.jsonPrimitive?.conte
 fun NoteAttachments(note: Note, core: CoreClient?, strings: Strings) {
     if (core == null || note.attachments.isEmpty()) return
     val (images, other) = note.attachments.partition(JsonObject::isImageAttachment)
-    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        if (images.size == 1) ProtectedAttachmentImage(note, images.single(), core, strings)
+    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        if (images.size == 1) ProtectedAttachmentImage(note, images.single(), core, strings,
+            Modifier.align(Alignment.CenterHorizontally))
         if (images.size > 1) {
             val columns = if (images.size == 2) 2 else 3
-            Column(Modifier.widthIn(max = 360.dp).fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Column(Modifier.align(Alignment.CenterHorizontally).widthIn(max = 360.dp).fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 images.chunked(columns).forEach { row ->
                     Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                         for (item in row) key(item["name"], item["content_url"]) {
@@ -99,7 +101,7 @@ internal fun ProtectedAttachmentImage(note: Note, item: JsonObject, core: CoreCl
                     if (image.retryable) TextButton(onClick = { result = null; retry++ }) { Text(strings.text("重试", "Retry")) }
                 }
             }
-            is ProtectedImageResult.Loaded -> BoxWithConstraints(width.fillMaxWidth()) {
+            is ProtectedImageResult.Loaded -> BoxWithConstraints(width.fillMaxWidth(), contentAlignment = Alignment.Center) {
                 val bitmap = image.bitmap
                 val ratio = bitmap.width.toFloat() / bitmap.height
                 if (onRatio != null) SideEffect { onRatio(ratio) }
@@ -186,11 +188,11 @@ private fun ImagePreviewDialog(bitmap: ImageBitmap, filename: String, note: Note
                 }.testTag("attachment_preview"), contentScale = ContentScale.Fit)
             IconButton(onClick = close, modifier = Modifier.align(Alignment.TopEnd).padding(8.dp)
                 .background(Color.Black.copy(alpha = .45f), CircleShape)) {
-                WebIcon(WebIcon.Close, strings.text("关闭图片", "Close image"), tint = Color.White)
+                WebIcon(WebIcon.Close, strings.text("关闭图片", "Close image"), tint = MoeriseColors.OnImageOverlay)
             }
             IconButton(onClick = ::save, enabled = !saving, modifier = Modifier.align(Alignment.BottomEnd).padding(8.dp)
                 .background(Color.Black.copy(alpha = .45f), CircleShape).testTag("attachment_save")) {
-                WebIcon(WebIcon.Download, saveLabel, tint = Color.White.copy(alpha = if (saving) .55f else 1f))
+                WebIcon(WebIcon.Download, saveLabel, tint = MoeriseColors.OnImageOverlay.copy(alpha = if (saving) .55f else 1f))
             }
             if (saving) LinearProgressIndicator(Modifier.align(Alignment.BottomCenter).fillMaxWidth())
             feedback?.let { success ->

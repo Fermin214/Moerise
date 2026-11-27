@@ -231,6 +231,26 @@ class NotePresentationTest {
     }
 
     @Test
+    fun walkSummaryFoldsUnicodeWhitespace() {
+        assertEquals("甲 乙 丙 丁", walkSummaryBody("\u3000甲\u00a0乙\t丙\n丁\u3000", emptyList()))
+    }
+
+    @Test
+    fun productionRegularExpressionsUseAndroidCompatibleFlags() {
+        val mobile = generateSequence(java.io.File(System.getProperty("user.dir"))) { it.parentFile }
+            .first { it.name == "mobile" }
+        val literal = Regex("""\b(?:Regex|Pattern\s*\.\s*compile)\s*\(\s*("{3}[\s\S]*?"{3}|"(?:\\.|[^"\\])*")""")
+        val unsupportedFlag = Regex("""(?<!\\)\(\?[idmsuxU-]*U[idmsuxU-]*(?:[:)])""")
+        val matches = mobile.walkTopDown().onEnter { it.name !in setOf("build", ".gradle", ".kotlin", "test", "androidTest") }
+            .filter { it.extension == "kt" && "/src/main/" in it.invariantSeparatorsPath }
+            .flatMap { file ->
+                literal.findAll(file.readText()).filter { unsupportedFlag.containsMatchIn(it.groupValues[1]) }
+                    .map { "${file.relativeTo(mobile)}: ${it.value}" }
+            }.toList()
+        assertTrue(matches.isEmpty(), matches.joinToString("\n"))
+    }
+
+    @Test
     fun sharedWalkSummariesPreserveCodeAndLiteralDelimiters() {
         val source = requireNotNull(javaClass.getResourceAsStream("/walk-summary.json"))
         val cases = source.bufferedReader().use { Json.parseToJsonElement(it.readText()).jsonArray }

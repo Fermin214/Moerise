@@ -82,7 +82,7 @@ const client = createClient({
     const timezoneChanged = identity.timezone !== value.timezone;
     identity = value; updateStargazing();
     if (timezoneChanged) {
-      refreshServiceDay(true); month = sourceTimeline().values.date?.slice(0, 7) || serviceDay.slice(0, 7);
+      refreshServiceDay(true); month = sidebarDate().slice(0, 7) || serviceDay.slice(0, 7);
       dirtySnapshots(); invalidateSidebar(); loadSidebar();
     }
   },
@@ -234,7 +234,7 @@ function refreshServiceDay(timezoneChanged = false) {
     calendar.querySelector('.today')?.classList.remove('today');
     calendar.querySelector(`[data-date="${day}"]`)?.classList.add('today');
     if (!timezoneChanged && month === previous.slice(0, 7) && month && month !== day.slice(0, 7) &&
-        !sourceTimeline().values.date && !calendar.contains(document.activeElement)) {
+        !sidebarDate() && !calendar.contains(document.activeElement)) {
       month = day.slice(0, 7);
       loadSidebar(null, { calendarOnly: true });
     }
@@ -282,6 +282,15 @@ function sidebarFilter(change) {
   const source = sourceTimeline();
   navigate(timelineURL(source.path, { ...source.values, query: $('q').value, ...change }));
 }
+function sidebarTagContext() {
+  const from = new URL(safeFrom(new URLSearchParams(location.search).get('from')), location.origin);
+  if (isTimeline()) return { path: location.pathname, values: filters(location.search) };
+  if (notePath.test(location.pathname) && from.pathname === '/archived') {
+    return { path: from.pathname, values: filters(from.search) };
+  }
+  return { path: '/', values: filters('') };
+}
+const sidebarDate = () => location.pathname === '/' ? filters(location.search).date : '';
 function recordSync() {
   lastSyncAt = Date.now();
   window.dispatchEvent(new Event('moerisesync'));
@@ -432,8 +441,8 @@ function discard(cache, key) {
   cache.delete(key);
 }
 function readTags(state, owner) { return sidebarData(sidebarTags, state, `/tags?${new URLSearchParams({ state })}`, owner); }
-function readCalendar(state, month, owner) {
-  return sidebarData(sidebarCalendars, `${state}:${month}`, `/calendar?${new URLSearchParams({ state, month })}`, owner);
+function readCalendar(month, owner) {
+  return sidebarData(sidebarCalendars, `NORMAL:${month}`, `/calendar?${new URLSearchParams({ state: 'NORMAL', month })}`, owner);
 }
 function sidebarChanged(before, after) {
   const dayOf = note => note && resolveText(formatTime(note.create_time)).slice(0, 10);
@@ -442,7 +451,7 @@ function sidebarChanged(before, after) {
   const tagsOf = note => JSON.stringify([...(note?.tags || [])].sort());
   for (const [note, day] of [[before, oldDay], [after, newDay]]) {
     if (!note) continue;
-    if (changedState || oldDay !== newDay) discard(sidebarCalendars, `${note.state}:${day.slice(0, 7)}`);
+    if (note.state === 'NORMAL' && (changedState || oldDay !== newDay)) discard(sidebarCalendars, `NORMAL:${day.slice(0, 7)}`);
     if ((changedState && note.tags?.length) || tagsOf(before) !== tagsOf(after)) discard(sidebarTags, note.state);
   }
   loadSidebar();
@@ -516,23 +525,23 @@ async function loadSidebar(owner, { calendarOnly = false, preserveFocus = false 
   if (!(owner instanceof AbortController)) owner = null;
   if (!identity) return;
   const generation = epoch;
-  const { path, values } = sourceTimeline();
+  const { path } = sidebarTagContext();
   const state = path === '/archived' ? 'ARCHIVED' : 'NORMAL', selectedMonth = month;
-  const calendarKey = `${state}:${selectedMonth}`;
+  const calendarKey = `NORMAL:${selectedMonth}`;
   const tagsHost = $('tags'), calendarHost = $('calendar');
   calendarOnly = calendarOnly && sidebarTagState === state && tagsHost.hasChildNodes();
   const tagSequence = calendarOnly ? null : ++sidebarTagSequence;
   const calendarSequence = ++sidebarCalendarSequence;
-  const contextCurrent = () => generation === epoch && sourceTimeline().path === path;
+  const contextCurrent = () => generation === epoch && sidebarTagContext().path === path;
   const tagsCurrent = () => tagSequence === sidebarTagSequence && contextCurrent();
-  const calendarCurrent = () => calendarSequence === sidebarCalendarSequence && selectedMonth === month && contextCurrent();
+  const calendarCurrent = () => calendarSequence === sidebarCalendarSequence && selectedMonth === month && generation === epoch;
   showError($('sidebar-error'), null); $('sidebar-retry').hidden = true;
   if (sidebarTagState !== state) {
     $('tags').replaceChildren();
     sidebarTagState = state;
   }
   if (sidebarCalendarKey !== calendarKey && (!preserveFocus || !calendarHost.contains(document.activeElement))) {
-    renderCalendar([], values.date, true);
+    renderCalendar([], sidebarDate(), true);
     sidebarCalendarKey = calendarKey;
   }
   async function receive(read, current, publish) {
@@ -549,12 +558,12 @@ async function loadSidebar(owner, { calendarOnly = false, preserveFocus = false 
   const invalidData = () => Object.assign(new Error('Invalid sidebar data'), { code: 'NOTE_LIST_INVALID' });
   const tags = () => receive(() => readTags(state, owner), tagsCurrent, data => {
     if (!Array.isArray(data?.tags)) { sidebarTags.delete(state); throw invalidData(); }
-    commitSidebar(tagsHost, preserveFocus, tagsCurrent, () => renderTags(data.tags, sourceTimeline().values.tags));
+    commitSidebar(tagsHost, preserveFocus, tagsCurrent, () => renderTags(data.tags, sidebarTagContext().values.tags));
   });
-  const calendar = () => receive(() => readCalendar(state, selectedMonth, owner), calendarCurrent, data => {
+  const calendar = () => receive(() => readCalendar(selectedMonth, owner), calendarCurrent, data => {
     if (!Array.isArray(data?.days) || data.month !== selectedMonth) { sidebarCalendars.delete(calendarKey); throw invalidData(); }
     commitSidebar(calendarHost, preserveFocus, calendarCurrent, () => {
-      renderCalendar(data.days, sourceTimeline().values.date);
+      renderCalendar(data.days, sidebarDate());
       sidebarCalendarKey = calendarKey;
     });
   });
@@ -574,9 +583,9 @@ function renderTags(items, selectedTags) {
   for (const item of matches) {
     const on = selected.has(item.tag);
     const link = button('', `ent tag-row${on ? ' on' : ''}`, () => {
-      const source = sourceTimeline();
-      sidebarFilter({ tags: source.values.tags.includes(item.tag)
-        ? source.values.tags.filter(tag => tag !== item.tag) : [...source.values.tags, item.tag] });
+      const { path, values } = sidebarTagContext();
+      const tags = values.tags.includes(item.tag) ? values.tags.filter(tag => tag !== item.tag) : [...values.tags, item.tag];
+      navigate(timelineURL(path, { ...values, query: isTimeline() ? $('q').value : values.query, tags }));
     });
     link.setAttribute('aria-pressed', String(on)); link.title = `#${item.tag}`;
     link.append(el('span', '', `#${item.tag}`), el('em', '', String(item.count)));
@@ -599,7 +608,9 @@ function renderCalendar(days, selected, disabled = false) {
   for (let day = 1; day <= size; day++) {
     const date = `${month}-${String(day).padStart(2, '0')}`, count = counts.get(date) || 0;
     const cell = button(String(day), [selected === date ? 'sel' : count > 1 ? 'h2' : count ? 'h1' : '', date === today ? 'today' : ''].join(' '),
-      () => sidebarFilter({ date: sourceTimeline().values.date === date ? '' : date }));
+      () => navigate(timelineURL('/', location.pathname === '/'
+        ? { ...filters(location.search), query: $('q').value, date: sidebarDate() === date ? '' : date }
+        : { date })));
     cell.disabled = disabled;
     cell.dataset.date = date;
     setAttr(cell, 'aria-label', l("{0}，{1} 条笔记", { 0: date, 1: count }));
@@ -932,7 +943,7 @@ async function showRoute({ focus = false, returning = false } = {}) {
   if ($('q').value !== sourceTimeline().values.query) $('q').value = sourceTimeline().values.query;
   $('search-mode').value = sourceTimeline().values.mode;
   lastTimeline = sourceTimeline();
-  if (sourceTimeline().values.date) month = sourceTimeline().values.date.slice(0, 7);
+  if (sidebarDate()) month = sidebarDate().slice(0, 7);
   document.querySelectorAll('[data-route]').forEach(link => {
     const active = link.getAttribute('href') === location.pathname; link.classList.toggle('on', active);
     if (active) link.setAttribute('aria-current', 'page'); else link.removeAttribute('aria-current');

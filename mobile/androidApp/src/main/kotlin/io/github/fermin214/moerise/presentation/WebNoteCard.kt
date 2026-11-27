@@ -27,6 +27,7 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.LineHeightStyle
 import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -124,13 +125,13 @@ fun TimelineNoteCard(
                     Modifier.size(44.dp).clickable(role = Role.Button) { leaveWriting(); onOpenLocal(draft) }
                         .testTag("queued_error_${draft.id}")
                         .semantics { contentDescription = strings.text("同步失败或冲突", "Sync failed or conflicted") },
-                    contentAlignment = Alignment.Center,
+                    contentAlignment = Alignment.TopCenter,
                 ) {
                     Box(
-                        Modifier.size(20.dp).background(MoeriseColors.Danger, CircleShape),
+                        Modifier.padding(top = 8.dp).size(20.dp).background(MoeriseColors.Danger, CircleShape),
                         contentAlignment = Alignment.Center,
                     ) {
-                        Text("!", color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Bold, lineHeight = 12.sp)
+                        Text("!", color = MoeriseColors.OnDanger, fontSize = 13.sp, fontWeight = FontWeight.Bold, lineHeight = 12.sp)
                     }
                 }
             }
@@ -180,10 +181,10 @@ private fun NoteCardScaffold(
 ) {
     Column(modifier.fillMaxWidth()) {
         if (!first) HorizontalDivider(Modifier.padding(horizontal = 16.dp), thickness = 1.dp, color = MoeriseColors.Line)
-        Column(Modifier.padding(top = if (first) 10.dp else 15.dp, bottom = 15.dp)) {
+        Column(Modifier.padding(top = if (first) 10.dp else 14.dp)) {
             Box(Modifier.fillMaxWidth().testTag("note_card_body")) {
                 FoldableNoteBody(expanded, onExpand, strings) {
-                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         if (presentation.body.isNotBlank()) MarkdownBody(presentation.body, note = note, core = core,
                             tags = presentation.inlineTags, onTag = onTag, originalContent = content, strings = strings,
                             modifier = Modifier.testTag("note_markdown"))
@@ -193,9 +194,14 @@ private fun NoteCardScaffold(
                     }
                 }
             }
-            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                Text(date, style = MaterialTheme.typography.bodySmall.copy(fontSize = 12.sp, fontFeatureSettings = "tnum"),
-                    color = MoeriseColors.InkColophon, modifier = Modifier.weight(1f).testTag("note_card_date"))
+            Row(Modifier.fillMaxWidth().height(44.dp), verticalAlignment = Alignment.Top) {
+                Box(Modifier.weight(1f).padding(top = 10.dp).height(16.dp).testTag("note_card_date")
+                    .semantics(mergeDescendants = true) {},
+                    contentAlignment = Alignment.CenterStart) {
+                    Text(date, style = MaterialTheme.typography.labelSmall.copy(lineHeight = 16.sp, fontFeatureSettings = "tnum",
+                        lineHeightStyle = LineHeightStyle(LineHeightStyle.Alignment.Center, LineHeightStyle.Trim.None)),
+                        color = MoeriseColors.InkColophon, maxLines = 1)
+                }
                 colophonActions()
             }
             extraContent()
@@ -260,8 +266,9 @@ fun WebNoteMenu(strings: Strings, actions: List<NoteMenuAction>, tag: String = "
             open = !open
         }.testTag(tag).semantics {
             stateDescription = if (open) strings.text("已展开", "Expanded") else strings.text("已收起", "Closed")
-        }, contentAlignment = Alignment.Center) {
-            WebIcon(WebIcon.More, strings.text("更多操作", "More actions"), Modifier.size(16.dp), tint = MoeriseColors.FieldBorder)
+        }, contentAlignment = Alignment.TopCenter) {
+            WebIcon(WebIcon.More, strings.text("更多操作", "More actions"), Modifier.padding(top = 10.dp).size(16.dp),
+                tint = MoeriseColors.FieldBorder)
         }
         DropdownMenu(expanded = open, onDismissRequest = { open = false },
             modifier = Modifier.platformTestTags()) {

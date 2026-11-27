@@ -173,7 +173,7 @@ test('reading cards open a home tag filter from review and walk', async t => {
   await page.waitForURL(value => value.pathname === '/' && value.searchParams.get('tag') === '第二标签');
 });
 
-test('daily review exposes all six fixed positions, full text/images, unavailable items and detail return without read writes', { timeout: 60_000 }, async t => {
+test('daily review exposes six fixed positions, full text and images, and a bottom colophon', { timeout: 60_000 }, async t => {
   const { page, state, url } = await fixture(t);
   await login(page, url, '/review');
   await page.getByRole('button', { name: '第 6 / 6 条', exact: true }).waitFor();
@@ -183,17 +183,22 @@ test('daily review exposes all six fixed positions, full text/images, unavailabl
   assert.equal(await card(page).locator('.tag').count(), 2);
   await page.waitForFunction(() => document.querySelector('.discovery-note img')?.naturalWidth > 0);
   await card(page).getByRole('link', { name: /source.pdf/ }).waitFor();
+  assert.equal(await card(page).getByRole('button', { name: '打开笔记' }).count(), 0);
+  const colophonGap = node => {
+    const card = node.getBoundingClientRect();
+    const footer = node.querySelector('.review-colophon').getBoundingClientRect();
+    return card.bottom - footer.bottom - parseFloat(getComputedStyle(node).paddingBottom);
+  };
+  await card(page).evaluate(node => { node.scrollTop = node.scrollHeight; });
+  assert.ok(Math.abs(await card(page).evaluate(colophonGap)) <= 2);
   await screenshot(page, 'review-desktop.png');
   await page.getByRole('button', { name: '第 4 / 6 条', exact: true }).click();
   assert.match(await card(page).innerText(), /已不存在或无法访问/);
   assert.equal(await card(page).getByRole('button', { name: '打开笔记' }).count(), 0);
   await page.getByRole('button', { name: '第 6 / 6 条', exact: true }).click();
   await assertDiscoverySpacing(page, card(page));
-  await card(page).getByRole('button', { name: '打开笔记' }).click();
-  await page.locator('article.note[data-name="memos/n5"]').waitFor();
-  assert.equal(new URL(page.url()).searchParams.get('from'), '/review');
-  await page.getByRole('button', { name: '‹ 返回回顾', exact: true }).click();
-  await card(page).filter({ hasText: '末尾文字 5' }).waitFor();
+  assert.equal(await card(page).getByRole('button', { name: '打开笔记' }).count(), 0);
+  assert.ok(Math.abs(await card(page).evaluate(colophonGap)) <= 2);
   assert.equal(await page.getByRole('button', { name: '第 6 / 6 条', exact: true }).getAttribute('aria-pressed'), 'true');
   const reads = requests(state, '/reviews/daily').length;
   await page.getByRole('button', { name: '再看一遍', exact: true }).click();
@@ -425,10 +430,21 @@ test('touch review takes horizontal swipes while the header still opens the draw
     await client.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
   };
   const bounds = await card(page).boundingBox();
-  await swipe(215, -36, bounds.y + 12);
+  const offset = node => {
+    const footer = node.querySelector('.review-colophon');
+    const style = getComputedStyle(node);
+    return node.offsetHeight - footer.offsetTop - footer.offsetHeight - parseFloat(style.paddingBottom);
+  };
+  await client.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: 215, y: bounds.y + 12 }] });
+  await client.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x: 179, y: bounds.y + 12 }] });
+  const preview = page.locator('.review-preview');
+  await preview.waitFor();
+  const previewGap = await preview.evaluate(offset);
+  await client.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
   assert.equal(await page.getByRole('button', { name: '第 1 / 6 条', pressed: true }).count(), 1);
   await swipe(215, -145, bounds.y + 12);
   await page.getByRole('button', { name: '第 2 / 6 条', pressed: true }).waitFor();
+  assert.ok(Math.abs(await card(page).evaluate(offset) - previewGap) <= 2);
   await swipe(20, 145, bounds.y + 12);
   await page.getByRole('button', { name: '第 1 / 6 条', pressed: true }).waitFor();
   assert.equal(await page.locator('#navigation-dialog').evaluate(node => node.open), false);

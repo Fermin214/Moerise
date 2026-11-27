@@ -129,6 +129,7 @@ try {
       content: `discovery note ${index}\n\n${index === 0 ? '完整正文'.repeat(120) : '第二段原文'}\n\n末尾文字 ${index} #原始标签`,
       visibility: 'PRIVATE',
     }));
+    await sourceAPI('/attachments', { memo: fixtures[0].name, filename: 'walk.png', type: 'image/png', content: png.toString('base64') });
     image = await sourceAPI('/memos', { content: '', visibility: 'PRIVATE' });
     await sourceAPI('/attachments', { memo: image.name, filename: 'private.png', type: 'image/png', content: png.toString('base64') });
     file = await sourceAPI('/memos', { content: '', visibility: 'PRIVATE' });
@@ -216,7 +217,7 @@ try {
     await page.getByRole('button', { name: '进入 Moerise', exact: true }).click();
     await page.getByRole('button', { name: '第 6 / 6 条', exact: true }).waitFor();
   });
-  await check('全天固定回顾、完整原文、纯图及受保护详情', async () => {
+  await check('全天固定回顾、完整原文、纯图及附件鉴权', async () => {
     assert.equal(await page.locator('[data-review-index]').count(), 6);
     const textPosition = planNames(batch).indexOf(fixtures[0].name);
     await page.getByRole('button', { name: `第 ${textPosition + 1} / 6 条`, exact: true }).click();
@@ -229,12 +230,7 @@ try {
     const imageURL = await card().locator('img').getAttribute('src');
     assert.match(imageURL, /^\/api\/app\/v1\/notes\/.+\/attachments\/.+\/content$/);
     await request(url, imageURL, {}, 401);
-    await card().getByRole('button', { name: '打开笔记', exact: true }).click();
-    await page.locator(`article.note[data-name="${image.name}"]`).waitFor();
-    await page.waitForFunction(() => document.querySelector('article.note img')?.naturalWidth > 0);
-    assert.equal(new URL(page.url()).searchParams.get('from'), '/review');
-    await page.getByRole('button', { name: '‹ 返回回顾', exact: true }).click();
-    await page.locator(`.discovery-note[data-name="${image.name}"]:visible`).waitFor();
+    assert.equal(await card().getByRole('button', { name: '打开笔记', exact: true }).count(), 0);
     assert.equal(await page.getByRole('button', { name: `第 ${imagePosition + 1} / 6 条`, exact: true }).getAttribute('aria-pressed'), 'true');
     const reads = evidence.browserRequests.filter(req => req.path.endsWith('/reviews/daily')).length;
     await page.getByRole('button', { name: '第 6 / 6 条', exact: true }).click();
@@ -275,6 +271,9 @@ try {
     await page.locator(`.discovery-note[data-name="${specified.name}"]:visible`).waitFor();
     const started = evidence.browserRequests.filter(req => req.path.endsWith('/walks/start')).length;
     await card().getByRole('button', { name: '打开笔记', exact: true }).click();
+    await page.locator(`article.note[data-name="${specified.name}"]`).waitFor();
+    await page.waitForFunction(() => document.querySelector('article.note img')?.naturalWidth > 0);
+    assert.equal(new URL(page.url()).searchParams.get('from'), '/walk');
     await page.getByRole('button', { name: '‹ 返回漫步', exact: true }).click();
     await page.locator(`.discovery-note[data-name="${specified.name}"]:visible`).waitFor();
     assert.equal(evidence.browserRequests.filter(req => req.path.endsWith('/walks/start')).length, started);

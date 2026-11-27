@@ -113,7 +113,7 @@ class SidebarFilterTest {
             assertFalse(sidebar.state.value.filtersLoading)
             assertEquals(prewarmed.calendar, sidebar.state.value.calendar)
             assertEquals(1, readsFromRepository)
-            assertSame(prewarmed, reads.filters("NORMAL", month))
+            assertEquals(prewarmed, reads.filters("NORMAL", month))
             assertEquals(1, readsFromRepository)
 
             val retagged = original.copy(tags = listOf("new"))
@@ -129,7 +129,10 @@ class SidebarFilterTest {
             repository.recordLocalNote(account, archived)
             reads.changed(retagged, archived)
             assertTrue(reads.filters("NORMAL", month).calendar.days.isEmpty())
-            assertEquals(listOf(DayCount("2026-03-01", 1)), reads.filters("ARCHIVED", month).calendar.days)
+            val archivePage = reads.filters("ARCHIVED", month)
+            assertEquals(listOf(TagCount("new", 1)), archivePage.tags.tags)
+            assertTrue(archivePage.calendar.days.isEmpty())
+            assertSame(archivePage.calendar, reads.filters("NORMAL", month).calendar)
             zone = "America/New_York"
             assertNull(reads.cached("ARCHIVED", month))
             assertTrue(reads.filters("ARCHIVED", month).calendar.days.isEmpty())
@@ -143,6 +146,47 @@ class SidebarFilterTest {
             scope.coroutineContext[Job]!!.cancelAndJoin()
             db.close()
             folder.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun remoteAndOfflineCalendarShareNormalSnapshotsAcrossTagScopes() = runBlocking<Unit> {
+        val folder = Files.createTempDirectory("moerise-calendar-snapshots").toFile()
+        val db = testDatabase(folder.resolve("data.sqlite3").absolutePath)
+        val repository = NoteRepository(db)
+        val scope = CoroutineScope(coroutineContext + SupervisorJob())
+        val owner = "https://notes.example\u0000instance\u0000users/owner"
+        val month = "2026-03"
+        val expected = CalendarPage(month, listOf(DayCount("$month-01", 2)))
+        val archiveTags = TagPage(listOf(TagCount("archived", 1)))
+        val requests = mutableListOf<String>()
+        val core = CoreClient("https://notes.example", SessionCookies("https://notes.example", MemorySecrets()), MockEngine { request ->
+            val state = request.url.parameters["state"]
+            if (state != null) requests += "${request.url.encodedPath}:$state"
+            respond(when (request.url.encodedPath) {
+                "/api/app/v1/session" -> """{"instance_id":"instance","user":{"name":"users/owner"},"timezone":"UTC","expires_at":"2027-01-01T00:00:00Z","csrf_token":"token"}"""
+                "/api/app/v1/tags" -> CoreJson.encodeToString(if (state == "ARCHIVED") archiveTags else TagPage(listOf(TagCount("normal", 2))))
+                "/api/app/v1/calendar" -> {
+                    assertEquals("NORMAL", state)
+                    assertEquals(month, request.url.parameters["month"])
+                    CoreJson.encodeToString(expected)
+                }
+                else -> error(request.url.encodedPath)
+            })
+        })
+        try {
+            repository.putSnapshot(SnapshotEntity(owner, "UTC:calendar:ARCHIVED:$month",
+                CoreJson.encodeToString(CalendarPage(month, listOf(DayCount("$month-02", 99)))), epochMillis()))
+            val reads = FilterReads({ repository }, { core }, { owner }, { "UTC" }, scope)
+            val archived = reads.filters("ARCHIVED", month)
+            assertEquals(FilterPage(archiveTags, expected), archived)
+            assertSame(archived.calendar, reads.filters("NORMAL", month).calendar)
+            assertEquals(listOf("/api/app/v1/tags:ARCHIVED", "/api/app/v1/calendar:NORMAL", "/api/app/v1/tags:NORMAL"), requests)
+            val offline = FilterReads({ repository }, { null }, { owner }, { "UTC" }, scope)
+            assertEquals(archived, offline.filters("ARCHIVED", month))
+        } finally {
+            scope.coroutineContext[Job]!!.cancelAndJoin()
+            core.close(); db.close(); folder.deleteRecursively()
         }
     }
 

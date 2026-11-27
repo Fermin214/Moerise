@@ -166,6 +166,7 @@ async function fixture(t, language = 'zh-CN', options = {}) {
 async function login(page) {
   await page.locator('#login-form').waitFor({ state: 'visible' });
   assert.equal(await page.locator('.memos-brand').innerText(), 'Moerise');
+  assert.match(await page.locator('.memos-welcome').innerText(), /^(欢迎回来|Welcome back)$/);
   await page.locator('#username').fill('test');
   await page.locator('#password').fill('test');
   await page.locator('#login').click();
@@ -661,6 +662,88 @@ test('browser explicit search modes, relevance pagination, filters, return and m
   assert.equal(await page.locator('[data-name="memos/old"]').count(), 0);
   assert.deepEqual(errors, []);
 });
+
+test('archive tags stay scoped to archive while calendar dates always filter home', async t => {
+  const { page, state, url } = await fixture(t);
+  const archived = state.notes.get('old');
+  archived.tags = ['归档标签'];
+  await page.goto(url); await login(page);
+  const day = page.locator('#calendar [data-date="2026-10-29"]');
+  const archiveTag = page.locator('#tags button[title="#归档标签"]');
+  const normalTag = page.locator('#tags button[title="#想法"]');
+  for (const route of ['/settings', '/review']) {
+    await page.locator('nav a[href="/archived"]').click();
+    await archiveTag.click();
+    await page.waitForURL(value => value.pathname === '/archived' && value.searchParams.get('tag') === '归档标签');
+    assert.equal(await day.getAttribute('aria-label'), '2026-10-29，47 条笔记');
+    await page.locator(route === '/settings' ? '#account-settings' : 'nav a[href="/review"]').click();
+    await normalTag.waitFor();
+    assert.equal(await archiveTag.count(), 0);
+    assert.equal(await day.getAttribute('aria-label'), '2026-10-29，47 条笔记');
+    await day.click();
+    await page.waitForURL(value => value.pathname === '/' && value.search === '?date=2026-10-29');
+    await page.locator('[data-name="memos/n00"]').waitFor();
+    await day.click();
+    await page.waitForURL(value => value.pathname === '/' && !value.search);
+  }
+  assert.ok(state.requests.some(request => request.path === '/tags' && request.query.get('state') === 'ARCHIVED'));
+  assert.ok(state.requests.filter(request => request.path === '/calendar').every(request => request.query.get('state') === 'NORMAL'));
+});
+
+test('timeline colophons align with full touch targets below both tagged and untagged bodies', async t => {
+  const { page, state, url } = await fixture(t);
+  state.notes.get('n00').content = '带标签正文\n\n#想法';
+  state.notes.get('n00').tags = ['想法'];
+  state.notes.get('n01').content = '正文';
+  state.notes.get('n01').tags = [];
+  await page.goto(url); await login(page);
+  for (const [id, tagged] of [['n00', true], ['n01', false]]) {
+    const layout = await page.locator(`article[data-name="memos/${id}"]`).evaluate(node => {
+      const rect = selector => node.querySelector(selector).getBoundingClientRect();
+      const content = rect('.note-content'), tags = rect('.note-tags'), body = rect('.note-fold-body');
+      const date = rect('.note-colophon .dlink'), more = rect('.note-colophon .more');
+      const dots = rect('.note-colophon .more svg');
+      return {
+        tags: tags.height ? tags.top - content.bottom : null,
+        dateTop: date.top - body.bottom, dateBottom: node.getBoundingClientRect().bottom - date.bottom,
+        hitTop: more.top - body.bottom, width: more.width, height: more.height,
+        icon: (dots.top + dots.bottom - date.top - date.bottom) / 2,
+      };
+    });
+    assert.equal(layout.tags, tagged ? 8 : null);
+    assert.ok(layout.dateTop >= 8 && layout.dateTop <= 10, JSON.stringify(layout));
+    assert.ok(layout.dateBottom >= 14 && layout.dateBottom <= 16, JSON.stringify(layout));
+    assert.ok(layout.hitTop >= 0, JSON.stringify(layout));
+    assert.equal(layout.width, 44);
+    assert.equal(layout.height, 44);
+    assert.ok(Math.abs(layout.icon) <= 1, JSON.stringify(layout));
+  }
+});
+
+test('note images center independently of file attachments', async t => {
+  const { page, state, url } = await fixture(t);
+  const note = state.notes.get('n02');
+  const source = note.content;
+  note.content = '图片与文件';
+  await page.goto(url); await login(page);
+  const card = page.locator('article[data-name="memos/n02"]');
+  const image = card.locator('.attachment-list img');
+  await image.waitFor();
+  const centered = node => {
+    const bounds = node.getBoundingClientRect();
+    const parent = node.closest('.attachment-list, .note-content').getBoundingClientRect();
+    return Math.abs(bounds.left + bounds.right - parent.left - parent.right) <= 2;
+  };
+  assert.equal(await image.evaluate(centered), true);
+  const file = card.locator('.attachment-list .attachment');
+  assert.equal(await file.evaluate(node => node.getBoundingClientRect().left ===
+    node.closest('.attachment-list').getBoundingClientRect().left), true);
+  note.content = source;
+  await page.reload();
+  const inline = card.locator('.note-content img');
+  await inline.waitFor();
+  assert.equal(await inline.evaluate(centered), true);
+});
 async function menu(page, id, label) {
   const card = page.locator(`[data-name="memos/${id}"]`);
   await card.getByRole('button', { name: '更多操作' }).click();
@@ -819,6 +902,8 @@ test('mobile sync conflict has one cloud status and a distinct sidebar action', 
   assert.notEqual(await action.locator('path').getAttribute('d'), statusPath);
   assert.equal(await action.locator('svg').getAttribute('aria-hidden'), 'true');
   assert.equal(await page.locator('#sync-status[data-sync="conflict"]').count(), 1);
+  assert.equal(await conflict.locator('.sync-dot').count(), 0);
+  assert.equal(await conflict.evaluate(node => getComputedStyle(node).color), 'rgb(180, 35, 24)');
 });
 
 test('search composition, menu keyboard, route focus and refresh protection preserve input', async t => {
@@ -860,6 +945,45 @@ test('search composition, menu keyboard, route focus and refresh protection pres
   await page.waitForFunction(() => document.activeElement.matches('.dlink'));
   await page.locator('#content').fill('刷新保护正文');
   const rejected = page.waitForEvent('dialog').then(dialog => { assert.equal(dialog.type(), 'beforeunload'); return dialog.dismiss(); });
+test('successful writes are silent, failed and unconfirmed writes use the warning cloud, and offline is visible', async t => {
+  const { page, context, url } = await fixture(t);
+  await page.goto(url); await login(page);
+  const status = page.locator('#sync-status');
+  assert.equal(await status.isHidden(), true);
+  let release;
+  t.after(() => release?.());
+  const gate = new Promise(resolve => { release = resolve; });
+  const writes = route => route.request().method() === 'POST';
+  const endpoint = '**/api/app/v1/notes';
+  const delayed = async route => {
+    if (writes(route)) await gate;
+    await route.continue();
+  };
+  await page.route(endpoint, delayed);
+  const request = page.waitForRequest(req => req.url().endsWith('/notes') && req.method() === 'POST');
+  await page.locator('#content').fill('测试同步');
+  await page.locator('#save').click();
+  await request;
+  assert.equal(await status.isHidden(), true);
+  release();
+  await page.locator('[data-name="memos/created-1"]').waitFor();
+  assert.equal(await status.isHidden(), true);
+  await page.unroute(endpoint, delayed);
+  await page.locator('#content').fill('测试失败与重试');
+  for (const [error, mode] of [['UPSTREAM_UNAVAILABLE', 'failure'], ['WRITE_OUTCOME_UNKNOWN', 'unknown']]) {
+    const fail = route => writes(route) ? route.fulfill({ status: 503, json: { error: { code: error } } }) : route.continue();
+    await page.route(endpoint, fail);
+    await page.locator('#save').click();
+    await status.and(page.locator(`[data-sync="${mode}"]`)).waitFor();
+    assert.equal(await status.locator('.sync-dot').count(), 0);
+    await page.unroute(endpoint, fail);
+  }
+  await context.setOffline(true);
+  await status.and(page.locator('[data-sync="offline"]')).waitFor();
+  assert.equal(await status.locator('.sync-dot').count(), 0);
+  await context.setOffline(false);
+});
+
   const reload = page.reload({ timeout: 1500 }).catch(() => {});
   await rejected; await reload;
   assert.equal(await page.locator('#content').inputValue(), '刷新保护正文');
@@ -1305,7 +1429,7 @@ test('sidebar selection and heatmap use warm-paper tones and a 3px current-day m
     const { color, backgroundColor, fontWeight } = getComputedStyle(node);
     return [color, backgroundColor, fontWeight];
   };
-  const accent = 'rgb(47, 93, 98)', muted = 'rgb(236, 234, 228)';
+  const accent = 'rgb(47, 93, 98)', muted = 'rgb(236, 241, 240)';
   assert.deepEqual(await page.locator('nav .ent.on').evaluate(activeStyle), [accent, muted, '600']);
   await page.locator('#tags .tag-row').first().click();
   assert.deepEqual(await page.locator('#tags .tag-row.on').evaluate(activeStyle), [accent, muted, '600']);
@@ -1315,20 +1439,20 @@ test('sidebar selection and heatmap use warm-paper tones and a 3px current-day m
     return [backgroundColor, width, height, borderRadius,
       Math.abs(parseFloat(left) + 1.5 - node.getBoundingClientRect().width / 2) <= 1];
   };
-  assert.deepEqual(await current.evaluate(activeStyle), [accent, 'rgb(227, 231, 227)', '700']);
-  assert.deepEqual(await page.locator('#calendar .h2').evaluate(activeStyle), [accent, 'rgb(204, 215, 211)', '400']);
+  assert.deepEqual(await current.evaluate(activeStyle), [accent, 'rgb(227, 231, 227)', '600']);
+  assert.deepEqual(await page.locator('#calendar .h2').evaluate(activeStyle), [accent, 'rgb(204, 215, 211)', '500']);
   assert.equal(await current.evaluate(node => getComputedStyle(node).boxShadow), 'none');
   assert.deepEqual(await current.evaluate(marker), [accent, '3px', '3px', '50%', true]);
   const luminance = values => values.map(value => value / 255)
     .map(value => value <= .04045 ? value / 12.92 : ((value + .055) / 1.055) ** 2.4)
     .reduce((sum, value, index) => sum + value * [.2126, .7152, .0722][index], 0);
-  for (const background of [[227, 231, 227], [204, 215, 211], [236, 234, 228]]) {
+  for (const background of [[227, 231, 227], [204, 215, 211], [236, 241, 240]]) {
     assert.ok((luminance(background) + .05) / (luminance([47, 93, 98]) + .05) >= 4.5);
   }
   await current.click();
   const today = page.locator('#calendar .today.sel');
   await today.waitFor();
-  assert.deepEqual(await today.evaluate(activeStyle), ['rgb(255, 255, 255)', accent, '700']);
+  assert.deepEqual(await today.evaluate(activeStyle), ['rgb(255, 255, 255)', accent, '600']);
   assert.deepEqual(await today.evaluate(marker), ['rgb(255, 255, 255)', '3px', '3px', '50%', true]);
   await page.locator('#account-settings').click();
   assert.deepEqual(await page.locator('#account-settings').evaluate(activeStyle), [accent, muted, '600']);
@@ -1421,7 +1545,7 @@ test('sidebar background refresh preserves tags and calendar through slow reques
   await page.locator('#tags button.on').waitFor();
   assert.equal(requests.length, 6);
   assert.deepEqual(await page.locator('.app, .side, #account').evaluateAll(nodes =>
-    nodes.map(node => getComputedStyle(node).backgroundColor)), Array(3).fill('rgb(245, 244, 240)'));
+    nodes.map(node => getComputedStyle(node).backgroundColor)), Array(3).fill('rgb(247, 246, 242)'));
   assert.deepEqual(errors, []);
 });
 
