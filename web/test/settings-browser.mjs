@@ -33,7 +33,8 @@ function settings() {
 }
 
 async function fixture(t, { language = 'zh-CN', mobile = false, returning = true } = {}) {
-  const state = { value: settings(), session: false, gets: 0, patches: [], checks: [], telemetry: false, batches: [],
+  const state = { value: settings(), sessions: new Map(), sessionRequests: [], sessionReadUnavailable: false,
+    gets: 0, patches: [], checks: [], telemetry: false, batches: [],
     index: 'disabled', mapReads: 0, rebuilds: 0, deliveries: [], retries: [], fail: null, checkFail: null,
     hold: null, holdCheck: null, holdNotes: null, notesFail: null, nextSettingsRead: null, csrf: false,
     notes: [], notesReads: [], mapData: null, modelVersion: null, holdLogout: null };
@@ -45,24 +46,35 @@ async function fixture(t, { language = 'zh-CN', mobile = false, returning = true
       res.writeHead(status, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(data));
     };
     const error = (code, status) => json({ error: { code } }, status);
+    let sessionId = /(?:^|;\s*)settings-session=(\d+)/.exec(req.headers.cookie || '')?.[1];
+    let csrf = state.sessions.get(sessionId);
     if (path === '/api/app/v1/session') {
-      if (req.method === 'POST') state.session = true;
+      state.sessionRequests.push({ method: req.method, sessionId, csrf: req.headers['x-csrf-token'] });
+      if (req.method === 'POST') {
+        sessionId = String(state.sessionRequests.filter(request => request.method === 'POST').length);
+        csrf = `csrf-settings-${sessionId}`;
+        state.sessions.set(sessionId, csrf);
+        res.setHeader('Set-Cookie', `settings-session=${sessionId}; HttpOnly; SameSite=Lax; Path=/`);
+      }
       if (req.method === 'DELETE') {
         if (state.holdLogout) await state.holdLogout;
-        if (state.session && req.headers['x-csrf-token'] !== 'csrf-settings') { error('CSRF_REJECTED', 403); return; }
-        state.session = false; res.writeHead(204); res.end(); return;
+        if (csrf && req.headers['x-csrf-token'] !== csrf) { error('CSRF_REJECTED', 403); return; }
+        state.sessions.delete(sessionId);
+        res.setHeader('Set-Cookie', 'settings-session=; Max-Age=0; HttpOnly; SameSite=Lax; Path=/');
+        res.writeHead(204); res.end(); return;
       }
-      if (!state.session) { error('SESSION_UNAUTHORIZED', 401); return; }
+      if (!csrf) { error('SESSION_UNAUTHORIZED', 401); return; }
+      if (req.method === 'GET' && state.sessionReadUnavailable) { error('SOURCE_UNAVAILABLE', 503); return; }
       json({ user: { name: 'users/1', display_name: '设置测试' }, timezone: state.value.settings.timezone,
-        stargazing_enabled: state.value.settings.stargazing.enabled, csrf_token: 'csrf-settings' });
+        stargazing_enabled: state.value.settings.stargazing.enabled, csrf_token: csrf });
       return;
     }
-    if (!state.session) { error('SESSION_UNAUTHORIZED', 401); return; }
+    if (!csrf) { error('SESSION_UNAUTHORIZED', 401); return; }
     if (path === '/api/app/v1/capabilities') {
       json({ version: '1.2.3', telemetry: { schema: 1, allowed: state.telemetry } }); return;
     }
     if (path === '/api/app/v1/telemetry') {
-      assert.equal(req.headers['x-csrf-token'], 'csrf-settings');
+      assert.equal(req.headers['x-csrf-token'], csrf);
       state.batches.push(JSON.parse(raw)); res.writeHead(204); res.end(); return;
     }
     if (path === '/api/app/v1/models') {
@@ -75,11 +87,11 @@ async function fixture(t, { language = 'zh-CN', mobile = false, returning = true
         layout_frame: '', vector_generation: '', points: [] }); return;
     }
     if (path === '/api/app/v1/map/rebuild') {
-      assert.equal(req.headers['x-csrf-token'], 'csrf-settings');
+      assert.equal(req.headers['x-csrf-token'], csrf);
       state.rebuilds++; json({ status: 'queued' }); return;
     }
     if (['/api/app/v1/models/embedding/check', '/api/app/v1/channels/check'].includes(path)) {
-      assert.equal(req.headers['x-csrf-token'], 'csrf-settings');
+      assert.equal(req.headers['x-csrf-token'], csrf);
       const body = JSON.parse(raw);
       state.checks.push({ path, ...body });
       if (body.version !== state.value.version) { error('SETTINGS_CONFLICT', 409); return; }
@@ -112,7 +124,7 @@ async function fixture(t, { language = 'zh-CN', mobile = false, returning = true
       json(reply); return;
     }
     assert.equal(req.method, 'PATCH');
-    assert.equal(req.headers['x-csrf-token'], 'csrf-settings');
+    assert.equal(req.headers['x-csrf-token'], csrf);
     if (state.csrf) { state.csrf = false; error('CSRF_REJECTED', 403); return; }
     const body = JSON.parse(raw);
     state.patches.push(body);
@@ -171,32 +183,33 @@ const operation = (page, label) => dialog(page).getByRole('combobox', { name: `$
 const newSecret = (page, label) => dialog(page).getByLabel(`${label}新值`, { exact: true });
 const confirmation = (page, text) => page.locator('.snackbar').getByText(text, { exact: true }).waitFor();
 
-test('first offline settings visit offers logout and retries without restoring private content', async t => {
-  const { page, state, url } = await fixture(t);
-  await login(page, url, '/');
+async function beginOfflineLogout(page) {
   await page.locator('#empty').waitFor();
   await page.context().setOffline(true);
   await page.locator('#account-settings').click();
   await page.locator('#logout').click();
   await page.locator('#retry-logout').waitFor();
   assert.equal(await page.locator('#app').isHidden(), true);
-  assert.equal(state.session, true);
   await page.context().setOffline(false);
-  await page.locator('#retry-logout').click();
-  await page.locator('#login-form').waitFor();
-  assert.equal(state.session, false);
-});
+}
 
-test('reloading after offline logout revokes the session before exposing private content', async t => {
+test('first offline settings visit offers logout and retries without restoring private content', async t => {
   const { page, state, url } = await fixture(t);
   await login(page, url, '/');
-  await page.locator('#empty').waitFor();
-  await page.context().setOffline(true);
-  await page.locator('#account-settings').click();
-  await page.locator('#logout').click();
-  await page.locator('#retry-logout').waitFor();
-  assert.equal(state.session, true);
-  await page.context().setOffline(false);
+  await beginOfflineLogout(page);
+  assert.equal(state.sessions.size, 1);
+  await page.locator('#retry-logout').click();
+  await page.locator('#login-form').waitFor();
+  assert.equal(state.sessions.size, 0);
+});
+
+test('reloading after offline logout revokes the session while upstream authentication is unavailable', async t => {
+  const { page, state, url } = await fixture(t);
+  await login(page, url, '/');
+  await beginOfflineLogout(page);
+  assert.equal(state.sessions.size, 1);
+  state.sessionReadUnavailable = true;
+  const before = state.sessionRequests.length;
   let release;
   state.holdLogout = new Promise(resolve => { release = resolve; });
   try {
@@ -205,11 +218,35 @@ test('reloading after offline logout revokes the session before exposing private
     await revoking;
     assert.equal(await page.locator('#app').isHidden(), true);
     assert.equal(await page.locator('#login-form').isHidden(), true);
-    assert.equal(state.session, true);
+    assert.equal(state.sessions.size, 1);
   } finally { release(); state.holdLogout = null; }
   await page.locator('#login-form').waitFor();
-  assert.equal(state.session, false);
+  assert.equal(state.sessions.size, 0);
+  assert.deepEqual(state.sessionRequests.slice(before), [{ method: 'DELETE', sessionId: '1', csrf: 'csrf-settings-1' }]);
   assert.equal(await page.evaluate(() => sessionStorage.length), 0);
+});
+
+test('a tab retrying its old logout cannot revoke a new login of the same user in another tab', async t => {
+  const { page, state, url } = await fixture(t);
+  const newTab = await page.context().newPage();
+  await returningBrowser(newTab);
+  await newTab.goto(url);
+  await newTab.locator('#login-form').waitFor();
+  await login(page, url, '/');
+  await beginOfflineLogout(page);
+  await newTab.locator('#username').fill('test');
+  await newTab.locator('#password').fill('test');
+  await newTab.locator('#login').click();
+  await newTab.locator('#workspace').waitFor();
+  const before = state.sessionRequests.length;
+  await page.reload();
+  await page.locator('#login-form').waitFor();
+  assert.equal(await page.locator('#app').isHidden(), true);
+  assert.equal(await page.evaluate(() => sessionStorage.length), 0);
+  assert.deepEqual(state.sessionRequests.slice(before), [{ method: 'DELETE', sessionId: '2', csrf: 'csrf-settings-1' }]);
+  await newTab.reload();
+  await newTab.locator('#workspace').waitFor();
+  assert.equal(state.sessions.get('2'), 'csrf-settings-2');
 });
 
 test('settings request failure leaves the account and logout usable', async t => {
@@ -220,7 +257,7 @@ test('settings request failure leaves the account and logout usable', async t =>
   await page.locator('#settings-account').getByText('设置测试').waitFor();
   await page.locator('#logout').click();
   await page.locator('#login-form').waitFor();
-  assert.equal(state.session, false);
+  assert.equal(state.sessions.size, 0);
 });
 
 test('an incomplete successful settings response keeps logout and settings recovery usable', async t => {
@@ -235,7 +272,7 @@ test('an incomplete successful settings response keeps logout and settings recov
   await page.getByRole('button', { name: '重新加载设置' }).click();
   await page.locator('#settings-panel-general #logout').click();
   await page.locator('#login-form').waitFor();
-  assert.equal(state.session, false);
+  assert.equal(state.sessions.size, 0);
   assert.deepEqual(errors, []);
 });
 

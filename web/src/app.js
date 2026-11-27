@@ -19,12 +19,12 @@ import { animateMotion, motionPositions, moveFrom } from './motion.js';
 
 const $ = id => document.getElementById(id);
 const logoutKey = 'moerise.logout-pending';
-let logoutPending = false;
-try { logoutPending = sessionStorage.getItem(logoutKey) === '1'; } catch {}
-function setLogoutPending(pending) {
-  logoutPending = pending;
+let logoutCSRF = null;
+try { logoutCSRF = sessionStorage.getItem(logoutKey); } catch {}
+function setLogoutCSRF(token) {
+  logoutCSRF = token;
   try {
-    if (pending) sessionStorage.setItem(logoutKey, '1');
+    if (token) sessionStorage.setItem(logoutKey, token);
     else sessionStorage.removeItem(logoutKey);
   } catch {}
 }
@@ -62,7 +62,7 @@ let preloadController = null, preloadTimer = null, serviceDay = '';
 let sidebarTagState = '', sidebarCalendarKey = '';
 let sidebarFocusTimer = null, sidebarFocusRefresh = null;
 let epoch = 0, viewSequence = 0, sidebarSequence = 0;
-let identity = null, logoutSession = null, authBusy = false, saving = false, readingFiles = false;
+let identity = null, authBusy = false, saving = false, readingFiles = false;
 let draftOwner = null;
 let timeline = null;
 let month = '', routeReturnKey = null;
@@ -75,9 +75,8 @@ let settingsAccount = null;
 let mapPage = null, mapView = null, mapSnapshot = null;
 let discoveryPage = null, discovery = null;
 const client = createClient({
-  generation: () => epoch, session: () => identity || logoutSession,
+  generation: () => epoch, session: () => identity,
   onSession: value => {
-    if (!identity) { logoutSession = value; return; }
     const timezoneChanged = identity.timezone !== value.timezone;
     identity = value; updateStargazing();
     if (timezoneChanged) {
@@ -85,10 +84,7 @@ const client = createClient({
       dirtySnapshots(); invalidateSidebar(); loadSidebar();
     }
   },
-  onOwnerChange: () => {
-    if (logoutPending) logoutSession = null;
-    else expire({ code: 'SESSION_UNAUTHORIZED' }, false);
-  },
+  onOwnerChange: () => expire({ code: 'SESSION_UNAUTHORIZED' }, false),
 });
 const { request, sessionRequest } = client;
 let capabilitiesRequest;
@@ -188,13 +184,13 @@ function authControls({ busy = false, login = true } = {}) {
   authBusy = busy;
   $('auth').setAttribute('aria-busy', String(busy));
   $('login-form').hidden = !login;
-  $('retry-logout').hidden = !logoutPending || busy;
+  $('retry-logout').hidden = !logoutCSRF || busy;
   for (const id of ['username', 'password', 'login']) $(id).disabled = busy;
 }
 function expire(err, resume = true) {
   disconnectPrivacy(true);
   leaveGuard.cancel(); router.cancel();
-  invalidate(); hidePrivate({ resume }); logoutSession = null; authControls();
+  invalidate(); hidePrivate({ resume }); authControls();
   showError($('auth-error'), err);
   $('username').focus();
 }
@@ -262,7 +258,6 @@ async function enter(value, restored = false) {
   updateStargazing();
   if (draftOwner && draftOwner !== sessionOwner(identity)) clearDrafts();
   draftOwner = null;
-  logoutSession = null;
   $('auth').hidden = true;
   $('app').hidden = $('workspace').hidden = false;
   $('password').value = '';
@@ -276,7 +271,7 @@ async function enter(value, restored = false) {
   await showRoute();
 }
 async function restore() {
-  if (logoutPending) {
+  if (logoutCSRF) {
     authBusy = false;
     return logout();
   }
@@ -294,7 +289,7 @@ async function restore() {
 }
 $('login-form').addEventListener('submit', async event => {
   event.preventDefault();
-  if (authBusy || logoutPending) return;
+  if (authBusy || logoutCSRF) return;
   const generation = invalidate();
   authControls({ busy: true }); showError($('auth-error'), null);
   const body = { username: $('username').value.trim(), password: $('password').value };
@@ -312,33 +307,25 @@ async function logout() {
   if (authBusy) return;
   if (identity && !(await leaveGuard.confirm())) return;
   if (authBusy) return;
-  logoutSession ||= identity;
-  if (!logoutSession && !logoutPending) return;
-  setLogoutPending(true);
+  const token = logoutCSRF || identity?.csrf_token;
+  if (!token) return;
+  setLogoutCSRF(token);
   disconnectPrivacy(true);
   history.replaceState({ ...history.state, mapView: null }, '');
   const generation = invalidate();
   hidePrivate(); authControls({ busy: true, login: false }); showError($('auth-error'), null);
   try {
-    const options = { method: 'DELETE' };
-    if (logoutSession) await sessionRequest('/session', options);
-    else {
-      try { await request('/session', options); }
-      catch (err) {
-        if (err.code !== 'CSRF_REJECTED') throw err;
-        const value = validIdentity(await request('/session'));
-        stale(generation);
-        logoutSession = value;
-        await sessionRequest('/session', options);
-      }
-    }
-    stale(generation); logoutSession = null; setLogoutPending(false); authControls(); $('username').focus();
+    await request('/session', { method: 'DELETE', headers: { 'X-CSRF-Token': token } });
   } catch (err) {
     if (generation !== epoch) return;
-    authControls({ login: false });
-    showError($('auth-error'), err.name === 'AbortError' ? { code: 'SESSION_UNAUTHORIZED' } : err);
-    $('retry-logout').focus();
+    if (err.status !== 403 || err.code !== 'CSRF_REJECTED') {
+      authControls({ login: false });
+      showError($('auth-error'), err);
+      $('retry-logout').focus();
+      return;
+    }
   }
+  setLogoutCSRF(null); authControls(); $('username').focus();
 }
 
 function renderFilters() {

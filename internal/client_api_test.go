@@ -257,6 +257,11 @@ func TestClientOriginCredentialsAndOfflineLogout(t *testing.T) {
 	fixture.mu.Lock()
 	fixture.userStatus, fixture.patStatus, fixture.signoutStatus = 503, 503, 503
 	fixture.mu.Unlock()
+	api.app.Sessions.ExpireCache()
+	response = clientCall(api, "GET", "/api/app/v1/session", "", cookie, "", "")
+	if response.Code != 503 {
+		t.Fatalf("uncached upstream identity: %d %s", response.Code, response.Body.String())
+	}
 	response = clientCall(api, "DELETE", "/api/app/v1/session", "", cookie, fixture.settings.Web.PublicOrigin, identity.CSRFToken)
 	if response.Code != 204 || response.Result().Cookies()[0].MaxAge != -1 {
 		t.Fatalf("offline logout: %d %s", response.Code, response.Body.String())
