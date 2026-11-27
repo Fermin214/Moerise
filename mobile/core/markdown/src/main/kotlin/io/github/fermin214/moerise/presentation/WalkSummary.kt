@@ -1,32 +1,54 @@
 package io.github.fermin214.moerise.presentation
 
+import org.intellij.markdown.MarkdownElementTypes
+import org.intellij.markdown.MarkdownTokenTypes
+import org.intellij.markdown.ast.ASTNode
+
 private val summaryPrefix = Regex("""^ {0,3}(?:#{1,6}[ \t]+|>[ \t]?|[-+*][ \t]+|\d+[.)][ \t]+)""", RegexOption.MULTILINE)
 private val summaryRuns = Regex("""\*+|_+|~+|\n""")
 private val summaryWhitespace = Regex("""(?U)\s+""")
 
 fun walkSummaryBody(content: String, tags: List<String>): String {
-    val body = notePresentation(content, tags, trailingOnly = true).body
+    val normalized = content.replace("\r\n", "\n").replace('\r', '\n')
+    val scanTags = tags.isNotEmpty() && '#' in normalized
+    val tree = if (scanTags || "```" in normalized || "~~~" in normalized) markdownTree(normalized, parseInlines = scanTags) else null
+    val body = trailingTagPresentation(normalized, tags, tree).body
+    val parts = mutableListOf<String>()
+    var offset = 0
+    fun visit(node: ASTNode) {
+        if (node.type == MarkdownElementTypes.CODE_FENCE) {
+            val lineStart = body.lastIndexOf('\n', node.startOffset - 1) + 1
+            val start = maxOf(lineStart, offset)
+            if (start > offset) parts += summarizeProse(body.substring(offset, start))
+            for (child in node.children) {
+                if (child.type == MarkdownTokenTypes.CODE_FENCE_CONTENT) {
+                    parts += body.substring(child.startOffset, child.endOffset)
+                }
+            }
+            offset = node.endOffset
+        } else {
+            node.children.forEach(::visit)
+        }
+    }
+    tree?.let(::visit)
+    parts += summarizeProse(body.substring(offset))
+    return parts.joinToString(" ").replace(summaryWhitespace, " ").trim()
+}
+
+private fun summarizeProse(text: String): String {
     val parts = mutableListOf<String>()
     val prose = mutableListOf<String>()
-    var fence: String? = null
     fun finishProse() {
         if (prose.isNotEmpty()) parts += cleanSummaryProse(prose.joinToString("\n"))
         prose.clear()
     }
-    for (line in body.lineSequence()) {
-        val open = fence
-        if (open != null) {
-            if (closesMarkdownFence(line, open)) fence = null else parts += line
-        } else {
-            fence = markdownFence(line)
-            if (fence != null || line.isBlank() || (prose.isEmpty() && (line.startsWith("    ") || line.startsWith('\t')))) {
-                finishProse()
-                if (fence == null) parts += line
-            } else prose += line
-        }
+    for (line in text.lineSequence()) {
+        if (line.isBlank()) finishProse()
+        else if (prose.isEmpty() && (line.startsWith("    ") || line.startsWith('\t'))) parts += line
+        else prose += line
     }
     finishProse()
-    return parts.joinToString(" ").replace(summaryWhitespace, " ").trim()
+    return parts.joinToString(" ")
 }
 
 private fun cleanSummaryProse(text: String): String {

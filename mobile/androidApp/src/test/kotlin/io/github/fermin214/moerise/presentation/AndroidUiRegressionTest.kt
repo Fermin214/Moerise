@@ -59,6 +59,7 @@ import io.github.fermin214.moerise.data.epochMillis
 import io.github.fermin214.moerise.data.testDatabase
 import io.github.fermin214.moerise.domain.Note
 import io.github.fermin214.moerise.domain.NotePage
+import io.github.fermin214.moerise.domain.SyncNotesResponse
 import io.github.fermin214.moerise.domain.StarMap
 import io.github.fermin214.moerise.domain.StarPoint
 import io.github.fermin214.moerise.domain.StarView
@@ -551,6 +552,8 @@ class AndroidUiRegressionTest {
             ReviewItem(recent.name, recent.sourceHash, recent.createTime, unavailable = false, note = recent),
             ReviewItem("memos/missing", "deleted", recent.createTime, unavailable = true),
         ))
+        val syncAvailable = java.util.concurrent.atomic.AtomicBoolean()
+        val syncedNotes = listOf(recent, recent.copy(name = "memos/synced", content = "Synced while the walk was open"))
         val server = MockWebServer().apply {
             dispatcher = object : Dispatcher() {
                 override fun dispatch(request: RecordedRequest): MockResponse = when (request.requestUrl?.encodedPath) {
@@ -562,6 +565,10 @@ class AndroidUiRegressionTest {
                         assertEquals("NORMAL", request.requestUrl?.queryParameter("state"))
                         MockResponse().setBody(CoreJson.encodeToString(NotePage(candidates)))
                     }
+                    "/api/app/v1/sync/notes" -> if (syncAvailable.get()) {
+                        MockResponse().setBody(CoreJson.encodeToString(SyncNotesResponse(
+                            mode = "full", items = syncedNotes, nextCursor = "synced", hasMore = false, syncGeneration = "walk-test")))
+                    } else MockResponse().setResponseCode(404)
                     "/api/app/v1/reviews/daily" -> MockResponse().setBody(CoreJson.encodeToString(review))
                     else -> MockResponse().setResponseCode(404)
                 }
@@ -588,6 +595,23 @@ class AndroidUiRegressionTest {
             compose.onNodeWithTag("walk_floater_memos/short").assert(hasContentDescription("Start from this note: 短句 #未知"))
             compose.onNodeWithTag("walk_floater_memos/file-1").assert(hasContentDescription("Start from this note: file-1.pdf"))
             compose.onNodeWithTag("walk_end").assertDoesNotExist()
+            assertFalse(mobile.walk.state.value.hasLocalNotes)
+            val account = requireNotNull(session.state.value.profile).accountKey
+            syncAvailable.set(true)
+            runBlocking { repository.syncNotes(account, requireNotNull(session.core)) }
+            assertFalse(mobile.walk.state.value.hasLocalNotes)
+            compose.runOnIdle { session.connectionFailed(account) }
+            waitForMainCondition("an open walk refreshes the newly synced Room notes on disconnect") {
+                val walk = mobile.walk.state.value
+                walk.offline && walk.hasLocalNotes && walk.floaters.map { it.name }.toSet() == syncedNotes.map { it.name }.toSet()
+            }
+            compose.onNodeWithTag("walk_start").assertIsEnabled().performClick()
+            waitForMainCondition("offline random start uses the synced notes") { mobile.walk.state.value.result?.path?.size == 1 }
+            compose.onNodeWithTag("walk_next").assertIsEnabled().performClick()
+            waitForMainCondition("offline continue uses the other synced note") {
+                mobile.walk.state.value.result?.path?.toSet() == syncedNotes.map { it.name }.toSet()
+            }
+            assertTrue(runBlocking { session.checkConnection() })
             compose.runOnIdle { page.value = "review"; mobile.page("review") }
             waitForMainCondition("the review batch loads") { mobile.review.state.value.batch?.id == review.id }
             val paragraph = compose.onNodeWithText("Review first paragraph")

@@ -229,10 +229,12 @@ class WalkController(
     fun retryConfiguration() = loadConfiguration()
     fun retryFloaters() = loadFloaters()
     fun connectivityChanged() {
-        if (state.value.offline == !online()) return
-        mutable.update { it.copy(offline = !online()) }
+        val offline = !online()
+        if (state.value.offline == offline) return
+        mutable.update { it.copy(offline = offline) }
         cancelPrefetch()
-        if (visible && online()) loadConfiguration()
+        if (!visible) return
+        if (offline) loadFloaters() else loadConfiguration()
     }
 
     fun configurationChanged() {

@@ -10,8 +10,13 @@ data class NotePresentation(val body: String, val tags: List<String>, val inline
 
 data class NoteTagSpan(val start: Int, val end: Int, val tag: String)
 
-fun notePresentation(content: String, tags: List<String>, trailingOnly: Boolean = false): NotePresentation =
-    presentTags(content, tags.distinct(), noteTagSpans(content, tags), trailingOnly)
+fun notePresentation(content: String, tags: List<String>): NotePresentation =
+    presentTags(content, tags.distinct(), noteTagSpans(content, tags))
+
+internal fun trailingTagPresentation(content: String, tags: List<String>, tree: ASTNode?): NotePresentation =
+    presentTags(content, tags.distinct(),
+        if (tree != null && tags.isNotEmpty() && '#' in content) NoteTagScanner(content, tree).spans(tags) else emptyList(),
+        trailingOnly = true)
 
 fun localNotePresentation(content: String): NotePresentation {
     val spans = noteTagSpans(content)

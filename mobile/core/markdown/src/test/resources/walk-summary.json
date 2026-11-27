@@ -28,5 +28,29 @@
     "content": "\\***加粗**",
     "tags": [],
     "summary": "\\*加粗"
+  },
+  {
+    "name": "unclosed list fence protects a confirmed tag",
+    "content": "- ```\n  #日记",
+    "tags": ["日记"],
+    "summary": "#日记"
+  },
+  {
+    "name": "list fence preserves literal Markdown and ends on outdent",
+    "content": "- 父项\n\n  ~~~text\n  # 注释\n  **原样**\n  #日记\n\n#日记",
+    "tags": ["日记"],
+    "summary": "父项 # 注释 **原样** #日记"
+  },
+  {
+    "name": "nested quote and list fences share the tag protection range",
+    "content": "> 1. ````md\n>    #日记\n>    # 注释\n>    ```\n>    **原样**\n>    ````\n\n#日记",
+    "tags": ["日记"],
+    "summary": "#日记 # 注释 ``` **原样**"
+  },
+  {
+    "name": "multiple container levels preserve literal quote and list markers",
+    "content": "- > ~~~\n  > > 字面引用\n  > - **原样**\n  > ~~~\n\n普通 **正文**\n#日记",
+    "tags": ["日记"],
+    "summary": "> 字面引用 - **原样** 普通 正文"
   }
 ]
